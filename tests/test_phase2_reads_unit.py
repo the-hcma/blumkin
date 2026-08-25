@@ -279,6 +279,38 @@ def test_chat_find_auth_error_propagates(monkeypatch) -> None:
         assert getattr(exc, "response_status_code", None) == 401
 
 
+def test_chat_find_mixed_all_skip_errors_raise_generic(monkeypatch) -> None:
+    forbidden = SimpleNamespace(id="chat-forbidden", topic="Meeting", chat_type="meeting")
+    throttled = SimpleNamespace(id="chat-throttled", topic="Broken", chat_type="group")
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(
+        return_value=SimpleNamespace(value=[forbidden, throttled], odata_next_link=None)
+    )
+
+    def by_chat_id(chat_id: str):
+        stub = MagicMock()
+        if chat_id == "chat-forbidden":
+            err = RuntimeError("forbidden")
+            err.response_status_code = 403  # type: ignore[attr-defined]
+            stub.members.get = AsyncMock(side_effect=err)
+        else:
+            stub.members.get = AsyncMock(side_effect=RuntimeError("429 throttled"))
+        return stub
+
+    client.me.chats.by_chat_id.side_effect = by_chat_id
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    try:
+        asyncio.run(chat_find(with_name="daniel"))
+        raise AssertionError("expected generic RuntimeError")
+    except RuntimeError as exc:
+        assert "all 2 chats" in str(exc)
+        assert getattr(exc, "response_status_code", None) is None
+
+
 def test_chat_find_skips_forbidden_member_fetch(monkeypatch) -> None:
     bad = SimpleNamespace(id="chat-bad", topic="Meeting", chat_type="meeting")
     good = SimpleNamespace(id="chat-good", topic="Hit", chat_type="oneOnOne")
