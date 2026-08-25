@@ -14,8 +14,12 @@ from msal import SerializableTokenCache
 
 from blumkin.config import BlumkinConfig, load_config
 
+# Prefer Calendars.ReadWrite (not .Read): MSAL silent refresh matches granted
+# scope names exactly. A cache minted with ReadWrite will not satisfy get_token
+# for Calendars.Read, which falls through to interactive login (and often Entra
+# "Need admin approval" when user consent is disabled).
 SCOPES = [
-    "Calendars.Read",
+    "Calendars.ReadWrite",
     "User.Read",
 ]
 
