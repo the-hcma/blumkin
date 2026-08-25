@@ -121,6 +121,8 @@ def test_calendar_cancel_mocked(monkeypatch) -> None:
     )
     payload = asyncio.run(calendar_cancel(event_id="evt-9"))
     assert payload == {"cancelled": "evt-9"}
+    client.me.events.by_event_id.assert_called_once_with("evt-9")
+    client.me.events.by_event_id.return_value.cancel.post.assert_awaited_once()
 
 
 def test_calendar_create_mocked(monkeypatch) -> None:
@@ -185,3 +187,5 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
     assert posted.to_recipients[0].email_address.address == "a@b.com"
     sent = asyncio.run(mail_send_draft(draft_id="draft-1"))
     assert sent == {"sent": "draft-1"}
+    client.me.messages.by_message_id.assert_called_once_with("draft-1")
+    client.me.messages.by_message_id.return_value.send.post.assert_awaited_once()
