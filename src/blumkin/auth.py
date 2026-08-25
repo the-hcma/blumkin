@@ -81,6 +81,8 @@ def reload_token_cache_from_disk(config: BlumkinConfig | None = None) -> None:
 
 def save_token_cache(config: BlumkinConfig | None = None) -> None:
     cfg = config or load_config()
+    if _cache_bound_path != str(cfg.token_cache_path):
+        return
     if _token_cache.has_state_changed:
         cfg.config_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         _write_secret_text(cfg.token_cache_path, _token_cache.serialize())

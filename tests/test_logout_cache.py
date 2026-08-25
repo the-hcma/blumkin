@@ -33,4 +33,5 @@ def test_logout_clears_bound_cache_so_atexit_cannot_rewrite(tmp_path: Path, monk
     auth._token_cache.has_state_changed = True
     auth._save_bound_token_cache_at_exit()
     assert not cache_path.is_file()
-    save_token_cache(cfg)  # no-op path when unbound / empty
+    save_token_cache(cfg)
+    assert not cache_path.is_file()
