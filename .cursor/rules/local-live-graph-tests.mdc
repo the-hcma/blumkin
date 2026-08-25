@@ -1,0 +1,29 @@
+---
+description: Run live Graph/auth tests locally (CI mocks only)
+globs: src/blumkin/auth.py,src/blumkin/graph.py,src/blumkin/skills/**/*.py,tests/test_auth*.py,tests/test_live*.py
+alwaysApply: false
+---
+
+# Local live Graph / auth tests
+
+CI runs **mocked** unit tests only (`pytest -m 'not live'`). Silent refresh and real Graph reads are validated **on this machine**.
+
+When changing auth, Graph client, calendar/mail/chat skills, or live/auth tests:
+
+1. Unit (same as CI):
+   ```bash
+   uv run pytest -m 'not live'
+   ```
+2. Live reads + forced access-token expiry → silent refresh:
+   ```bash
+   BLUMKIN_LIVE=1 uv run pytest -m live
+   ```
+   Requires `~/.config/blumkin/` (`config.toml`, `msal_token_cache.json`, `auth_record.json`) with a refresh token. Do not commit those files.
+
+3. Smoke CLI after live green:
+   ```bash
+   blumkin auth status
+   blumkin calendar today --json
+   ```
+
+Do not skip step 2 for auth/token-cache changes: the live test force-expires the cached access token and asserts Graph still works and `auth status` shows a future expiry.

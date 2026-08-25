@@ -127,6 +127,38 @@ jobs:
           test -f .github/CODEOWNERS
           test -f .github/stacking-tool
           test -x .github/ci/secret-scan
+          test -x .github/ci/python-static
+          test -x .github/ci/pytest-hermetic
+
+  python-static:
+    name: Python lint & format checks
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: latest
+      - name: Python lint & format checks
+        run: bash .github/ci/python-static
+
+  test:
+    name: Pytest (hermetic)
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: latest
+      - name: Pytest (hermetic)
+        run: bash .github/ci/pytest-hermetic
 
   secret-scan:
     name: Secret Scan
