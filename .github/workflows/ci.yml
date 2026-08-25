@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+    branches-ignore:
+      - '**/graphite-base/**'
+
+  push:
+    branches-ignore:
+      - 'gh-readonly-queue/**'
+      - main
+      - '**/graphite-base/**'
+  schedule:
+    - cron: '0 7 * * 4'
+  workflow_dispatch:
+
+  merge_group:
+
+# Cancel in-progress reruns for the same trigger only. push and pull_request must
+# not share a group: cancel-in-progress would leave CANCELLED required checks on
+# the PR commit and block merge even when pull_request CI passed. pull_request
+# actions are also split (opened/synchronize vs edited) so review-bot description
+# patches do not cancel an in-flight test run for the same commit.
+#
+# Overlapping runs can still leave CANCELLED rows beside SUCCESS for the same
+# check name on one head. scripts/lib/ci-check-rollup prefers non-CANCELLED
+# outcomes and treats CANCELLED-only as pending (repository-helpers#454), so
+# dep-updater / post-pr-submission-checks do not close or fail solely on
+# concurrency cancels.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.event.action || github.event_name }}
+  cancel-in-progress: true
+
+# Explicit least privilege (org default is already read-only). Jobs that need
+# more declare it locally (e.g. guard needs pull-requests: read).
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    permissions:
+      contents: read
+      pull-requests: read
+    name: Guard
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.set-skip.outputs.skip }}
+    steps:
+      - id: pr-state
+        uses: nick-fields/retry@v4
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        with:
+          timeout_seconds: 15
+          max_attempts: 3
+          retry_wait_seconds: 5
+          command: |
+            if [[ -z "$PR_NUMBER" ]]; then exit 0; fi
+            state=$(gh pr view "$PR_NUMBER" --repo "$REPOSITORY" --json state -q .state)
+            echo "state=$state" >> "$GITHUB_OUTPUT"
+
+      - id: set-skip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+          PR_STATE: ${{ steps.pr-state.outputs.state }}
+        run: |
+          # Skip Graphite MQ staging branches only (gtmq_merge_*). GitHub's
+          # native merge queue uses merge_group events — those MUST run CI
+          # (required checks). Pushes to gh-readonly-queue/** are ignored via
+          # branches-ignore above so they do not double-trigger.
+          # Skip when the PR is already merged — a restack push after merge would
+          # otherwise trigger a redundant CI run on an already-validated diff.
+          if [[ "$HEAD_REF" == gtmq_merge_* ]] || [[ "$PR_STATE" == "MERGED" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+
+          # CodeRabbit appends review summaries to the PR description (pull_request
+          # edited). We want its review comments only, not a second full CI run.
+          if [[ "${{ github.event_name }}" == "pull_request" ]] \
+              && [[ "${{ github.event.action }}" == "edited" ]] \
+              && [[ "${{ github.event.sender.login }}" == "coderabbitai[bot]" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Pull request CI skipped: CodeRabbit description edit (review metadata only)"
+            exit 0
+          fi
+          # Skip push CI when an open PR already covers this branch.
+          # GitHub always delivers pull_request synchronize for PR-head pushes;
+          # the push trigger is only for restacks without an open PR.
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            BRANCH="${GITHUB_REF#refs/heads/}"
+            PR_COUNT=0
+            if count="$(gh pr list --repo "$GITHUB_REPOSITORY" \
+                --head "$BRANCH" --state open \
+                --json number --jq 'length' 2>/dev/null)"; then
+              PR_COUNT="$count"
+            fi
+            if [[ "$PR_COUNT" -gt 0 ]]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Push CI skipped: open PR exists; pull_request handles this push"
+              exit 0
+            fi
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+  secret-scan:
+    name: Secret Scan
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Secret Scan
+        env:
+          GITLEAKS_BASE: ${{ github.event.pull_request.base.sha || '' }}
+          GITLEAKS_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/ci/secret-scan
