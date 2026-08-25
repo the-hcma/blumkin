@@ -16,9 +16,17 @@ from blumkin.skills.calendar_writes import (
     calendar_accept,
     calendar_cancel,
     calendar_create,
+    format_accept_human,
+    format_cancel_human,
+    format_create_human,
     parse_duration,
 )
-from blumkin.skills.mail import mail_draft, mail_send_draft
+from blumkin.skills.mail import (
+    format_draft_human,
+    format_send_draft_human,
+    mail_draft,
+    mail_send_draft,
+)
 
 
 def test_parse_duration() -> None:
@@ -189,3 +197,25 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
     assert sent == {"sent": "draft-1"}
     client.me.messages.by_message_id.assert_called_once_with("draft-1")
     client.me.messages.by_message_id.return_value.send.post.assert_awaited_once()
+
+
+def test_write_formatters_human() -> None:
+    assert any("evt-1" in line for line in format_accept_human({"accepted": ["evt-1"], "count": 1}))
+    assert any("evt-9" in line for line in format_cancel_human({"cancelled": "evt-9"}))
+    create_lines = format_create_human(
+        {
+            "event": {
+                "end": "2026-08-26T11:30",
+                "id": "evt-new",
+                "online_join_url": "https://teams.example/join",
+                "start": "2026-08-26T11:00",
+                "subject": "Sync",
+            }
+        }
+    )
+    assert any("evt-new" in line for line in create_lines)
+    assert any("teams.example" in line for line in create_lines)
+    draft_lines = format_draft_human({"draft": {"id": "draft-1", "subject": "Hi", "to": "a@b.com"}})
+    assert any("draft-1" in line for line in draft_lines)
+    assert any("a@b.com" in line for line in draft_lines)
+    assert any("draft-1" in line for line in format_send_draft_human({"sent": "draft-1"}))
