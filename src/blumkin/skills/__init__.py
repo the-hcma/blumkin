@@ -56,6 +56,7 @@ SKILLS: list[SkillSpec] = [
             {"name": "--event-id", "required": False, "type": "string"},
             {"name": "--today-pending", "required": False, "type": "flag"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+            {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
     SkillSpec(
@@ -65,7 +66,10 @@ SKILLS: list[SkillSpec] = [
         mutates=True,
         notifies_others=True,
         scopes=["Calendars.ReadWrite"],
-        args=[{"name": "--event-id", "required": True, "type": "string"}],
+        args=[
+            {"name": "--event-id", "required": True, "type": "string"},
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
     ),
     SkillSpec(
         id="calendar.create",
@@ -81,6 +85,7 @@ SKILLS: list[SkillSpec] = [
             {"name": "--duration", "required": False, "type": "duration"},
             {"name": "--teams", "required": False, "type": "flag"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+            {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
     SkillSpec(
@@ -181,7 +186,10 @@ SKILLS: list[SkillSpec] = [
         mutates=True,
         notifies_others=True,
         scopes=["Mail.Send"],
-        args=[{"name": "--id", "required": True, "type": "string"}],
+        args=[
+            {"name": "--id", "required": True, "type": "string"},
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
     ),
     SkillSpec(
         id="skills.describe",

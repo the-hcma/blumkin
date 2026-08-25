@@ -8,6 +8,27 @@ from blumkin.cli import main
 from blumkin.exit_codes import EXIT_AUTH, EXIT_USAGE
 
 
+def test_calendar_accept_invalid_tz_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["calendar", "accept", "--today-pending", "--yes", "--tz", "Not/ARealZone"],
+    )
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_calendar_accept_without_yes_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["calendar", "accept", "--event-id", "evt-1"])
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_calendar_cancel_without_yes_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["calendar", "cancel", "--event-id", "evt-1"])
+    assert result.exit_code == EXIT_USAGE
+
+
 def test_calendar_create_without_yes_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(
@@ -23,6 +44,12 @@ def test_calendar_create_without_yes_exits_usage() -> None:
             "2026-08-26T11:00",
         ],
     )
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_send_draft_without_yes_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "send-draft", "--id", "draft-1"])
     assert result.exit_code == EXIT_USAGE
 
 
