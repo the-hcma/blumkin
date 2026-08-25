@@ -6,18 +6,32 @@ Blumkin turns Graph flows into **small, invokable skills** any coding agent (**C
 
 It uses **delegated** Microsoft Graph access (acts as the signed-in user).
 
+## Status
+
+**M1 shipped** ([#10](https://github.com/the-hcma/blumkin/pull/10)): packaging, auth under `~/.config/blumkin/`, `skills` / `doctor`, `calendar today`, Cursor skill, hermetic CI + local live tests.
+
 Tracking: [#9 Cursor agent integration (M1 MVP)](https://github.com/the-hcma/blumkin/issues/9).
 
-## Install
+## Install (`blumkin` on `PATH`)
+
+From a clone (dev):
 
 ```bash
-uv sync
+uv sync --group dev
 uv tool install -e .
-# then invoke on PATH:
+```
+
+Then invoke the binary directly — **not** `uv run blumkin`:
+
+```bash
+blumkin --version
+blumkin auth login          # once per machine / when cache is cold
 blumkin auth status
 blumkin skills list --json
 blumkin calendar today --json
 ```
+
+`uv tool install` puts `blumkin` on your tool bin dir (often `~/.local/bin`). Ensure that directory is on `PATH`.
 
 ## Config (`~/.config/blumkin/`)
 

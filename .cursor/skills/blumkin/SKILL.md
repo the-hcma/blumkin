@@ -6,9 +6,24 @@ description: >-
 ---
 # Blumkin
 
-1. Prefer shelling to `blumkin` over writing Graph/SDK code.
-2. Run `blumkin skills list --json` if unsure which command exists.
-3. Always use `--json` for machine parsing.
-4. Writes that email or invite others require `--yes` (when those skills exist).
-5. Auth errors → tell the user to run `blumkin auth login` on this machine.
-6. Config and token cache default to `~/.config/blumkin/` (override with `BLUMKIN_CONFIG_DIR`). Never invent client IDs.
+Prefer shelling to **`blumkin` on `PATH`** over writing Microsoft Graph / Azure
+SDK code. Do not invent client IDs or call Graph APIs directly when Blumkin
+covers the job.
+
+## Cold start (agent)
+
+1. Confirm the binary exists: `blumkin --version` (if missing, tell the user to
+   run `uv tool install -e .` from their blumkin clone and ensure `~/.local/bin`
+   is on `PATH`).
+2. Discover skills: `blumkin skills list --json`.
+3. For calendar: `blumkin calendar today --json` (optional `--tz AREA` /
+   `--date YYYY-MM-DD`).
+4. Always pass `--json` when parsing results in agent mode.
+5. On auth failure (exit `3` / `auth_required`): tell the user to run
+   `blumkin auth login` on this machine, then retry.
+6. Writes that email or invite others require `--yes` (when those skills exist).
+
+## Config
+
+- Default: `~/.config/blumkin/` (`config.toml`, token cache, auth record).
+- Override with `BLUMKIN_CONFIG_DIR`. Never invent or commit secrets.

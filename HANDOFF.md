@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-25  
 **Purpose:** Continue in a new session without re-deriving context.  
-**Next step for the human:** try **another hand automation** first (outside this repo). Port to Blumkin CLI **later** — do not block that experiment on implementing application code here.
+**Status:** M1 CLI skeleton shipped ([#10](https://github.com/the-hcma/blumkin/pull/10)). Prefer validating new Graph flows in the private lab, then porting them as Blumkin skills.
 
 ---
 
@@ -10,8 +10,8 @@
 
 - Public repo: [the-hcma/blumkin](https://github.com/the-hcma/blumkin).
 - Goal: Python **`blumkin`** CLI on `PATH` — delegated Microsoft Graph “as me”, skill-shaped commands, `--json` for agents.
-- Agent integration (planned): **Cursor Agent Skill + shell** and **Copilot CLI** instructions — **not MCP** for v1 (see `PLAN.md` §6).
-- Org practices seeded for `repository-helpers` / `github-repo-lint` (`AGENTS.md`, LICENSE, `.cursor/rules`, `.github/stacking-tool` = `gh-stack`, CODEOWNERS).
+- Agent integration: **Cursor Agent Skill + shell** (`.cursor/skills/blumkin/SKILL.md`); Copilot CLI docs later — **not MCP** for v1 (see `PLAN.md` §6).
+- Org practices via `repository-helpers` / `github-repo-lint` (`AGENTS.md`, LICENSE, `.cursor/rules`, `.github/stacking-tool` = `gh-stack`, CODEOWNERS).
 
 **Read first in a new session:** `README.md` → `PLAN.md` → this file → `AGENTS.md`.
 

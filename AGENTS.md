@@ -41,10 +41,13 @@ Always implement in `.worktrees/<stack-name>-wt`.
 - Target **Python 3.14+**.
 - Use **`uv`** for packaging and local gates (`uv sync`, `uv run ruff` /
   `pytest` / `pyright`).
-- Product CLI is **`blumkin` on `PATH`** (see `PLAN.md`) — agents and humans
-  invoke `blumkin …`, not `uv run blumkin`. Application code is not present
-  yet — follow `PLAN.md` when implementing.
+- Product CLI is **`blumkin` on `PATH`** — install with `uv tool install -e .`
+  from a clone (see `README.md`). Agents and humans invoke `blumkin …`, not
+  `uv run blumkin`.
 - Runtime config + token cache: **`~/.config/blumkin/`** (never commit).
+- **Ruff `target-version = "py314"`:** bare `except A, B:` is valid on 3.14 and
+  `ruff format` may strip parentheses from `except (A, B):`. Do not “fix” that
+  style for older Python — this repo requires 3.14+.
 
 ---
 
