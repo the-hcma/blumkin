@@ -51,6 +51,10 @@ def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
     raise SystemExit(EXIT_OTHER) from exc
 
 
+def _tz_name(ctx: click.Context, tz_flag: str | None) -> str | None:
+    return tz_flag if tz_flag is not None else ctx.obj.get("tz_name")
+
+
 @click.group()
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_name", default=None, help="IANA timezone (default from config).")
@@ -240,11 +244,14 @@ def calendar() -> None:
 @calendar.command("today")
 @click.option("--date", "day", type=click.DateTime(formats=["%Y-%m-%d"]), default=None)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
-def calendar_today_cmd(ctx: click.Context, day: Any, as_json_flag: bool) -> None:
+def calendar_today_cmd(
+    ctx: click.Context, day: Any, as_json_flag: bool, tz_flag: str | None
+) -> None:
     """List events for today (or --date YYYY-MM-DD)."""
     as_json = _as_json(ctx, as_json_flag)
-    tz_name = ctx.obj["tz_name"]
+    tz_name = _tz_name(ctx, tz_flag)
     day_value: date | None = day.date() if day is not None else None
     try:
         payload = asyncio.run(calendar_today(day=day_value, tz_name=tz_name))
@@ -267,13 +274,20 @@ def calendar_today_cmd(ctx: click.Context, day: Any, as_json_flag: bool) -> None
 @click.option("--from", "from_day", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option("--to", "to_day", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
-def calendar_view_cmd(ctx: click.Context, from_day: Any, to_day: Any, as_json_flag: bool) -> None:
+def calendar_view_cmd(
+    ctx: click.Context,
+    from_day: Any,
+    to_day: Any,
+    as_json_flag: bool,
+    tz_flag: str | None,
+) -> None:
     """List events in half-open local range [--from, --to)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
         cfg = load_config()
-        tz = ZoneInfo(ctx.obj["tz_name"] or cfg.default_tz)
+        tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
         start = datetime(from_day.year, from_day.month, from_day.day, tzinfo=tz)
         end = datetime(to_day.year, to_day.month, to_day.day, tzinfo=tz)
         payload = asyncio.run(calendar_view(start=start, end=end))
@@ -301,6 +315,7 @@ def calendar_view_cmd(ctx: click.Context, from_day: Any, to_day: Any, as_json_fl
 @click.option("--start", "start_raw", required=True, help="Local start datetime.")
 @click.option("--end", "end_raw", required=True, help="Local end datetime.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
 def calendar_freebusy_cmd(
     ctx: click.Context,
@@ -308,12 +323,13 @@ def calendar_freebusy_cmd(
     start_raw: str,
     end_raw: str,
     as_json_flag: bool,
+    tz_flag: str | None,
 ) -> None:
     """Get free/busy for one or more people."""
     as_json = _as_json(ctx, as_json_flag)
     try:
         cfg = load_config()
-        tz = ZoneInfo(ctx.obj["tz_name"] or cfg.default_tz)
+        tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
         start = parse_local_datetime(start_raw, tz)
         end = parse_local_datetime(end_raw, tz)
         payload = asyncio.run(

@@ -23,7 +23,7 @@ covers the job.
    - Mail: `blumkin mail inbox --top 10 --json`
    - Chat: `blumkin chat find --with "Name" --json`,
      `blumkin chat last --with "Name" --n 3 --json`
-4. Global TZ: `blumkin --tz AREA …` (or omit for config default).
+4. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).
 5. On auth failure (exit `3` / `auth_required`): tell the user to run
    `blumkin auth login` on this machine, then retry.
 6. Writes that email or invite others require `--yes` (when those skills exist).

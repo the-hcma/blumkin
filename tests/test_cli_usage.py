@@ -14,6 +14,16 @@ def test_calendar_today_invalid_tz_exits_usage() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
+def test_calendar_view_accepts_subcommand_tz() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["calendar", "view", "--from", "2026-08-25", "--to", "2026-08-26", "--tz", "Not/ARealZone"],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "No such option" not in (result.output or "")
+
+
 def test_doctor_auth_cache_incomplete_exits_auth(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
