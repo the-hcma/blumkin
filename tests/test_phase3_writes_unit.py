@@ -39,8 +39,9 @@ def test_calendar_accept_by_event_id_mocked(monkeypatch) -> None:
     payload = asyncio.run(calendar_accept(event_id="evt-1", today_pending=False))
     assert payload == {"accepted": ["evt-1"], "count": 1}
     client.me.events.by_event_id.assert_called_once_with("evt-1")
-    accept_body = client.me.events.by_event_id.return_value.accept.post.await_args.args[0]
-    assert accept_body.send_response is True
+    accept_await = client.me.events.by_event_id.return_value.accept.post.await_args
+    assert accept_await is not None
+    assert accept_await.args[0].send_response is True
 
 
 def test_calendar_accept_today_pending_mocked(monkeypatch) -> None:
@@ -66,8 +67,9 @@ def test_calendar_accept_today_pending_mocked(monkeypatch) -> None:
     payload = asyncio.run(calendar_accept(event_id=None, today_pending=True))
     assert payload["accepted"] == ["a"]
     assert payload["count"] == 1
-    accept_body = client.me.events.by_event_id.return_value.accept.post.await_args.args[0]
-    assert accept_body.send_response is True
+    accept_await = client.me.events.by_event_id.return_value.accept.post.await_args
+    assert accept_await is not None
+    assert accept_await.args[0].send_response is True
 
 
 def test_needs_accept_filters_responses() -> None:
@@ -175,7 +177,9 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
     )
     saved = asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello"))
     assert saved["draft"]["id"] == "draft-1"
-    posted = client.me.messages.post.await_args.args[0]
+    post_await = client.me.messages.post.await_args
+    assert post_await is not None
+    posted = post_await.args[0]
     assert posted.subject == "Hi"
     assert posted.body.content == "Hello"
     assert posted.to_recipients[0].email_address.address == "a@b.com"
