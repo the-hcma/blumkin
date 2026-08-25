@@ -492,8 +492,8 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 - [x] `chat.find|last`  
 
 ### Phase 3 — Write skills (gated with `--yes`)
-- `calendar.accept|create|cancel`  
-- `mail.draft|send-draft`  
+- [x] `calendar.accept|create|cancel`  
+- [x] `mail.draft|send-draft`  
 
 ### Phase 4 — Post–Identity follow-up
 - Enable delegated add-on scopes once Identity grants the private-lab follow-up  

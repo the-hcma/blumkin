@@ -23,10 +23,16 @@ covers the job.
    - Mail: `blumkin mail inbox --top 10 --json`
    - Chat: `blumkin chat find --with "Name" --json`,
      `blumkin chat last --with "Name" --n 3 --json`
-4. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).
-5. On auth failure (exit `3` / `auth_required`): tell the user to run
+4. Writes (require `--yes` when they notify others):
+   - `blumkin calendar accept --event-id '<id>' --yes`
+   - `blumkin calendar create --subject … --with email --start … --yes`
+   - `blumkin calendar cancel --event-id '<id>' --yes`
+   - `blumkin mail draft --to … --subject … --body …` (draft only)
+   - `blumkin mail send-draft --id '<draft-id>' --yes`
+5. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).
+6. On auth failure (exit `3` / `auth_required`): tell the user to run
    `blumkin auth login` on this machine, then retry.
-6. Writes that email or invite others require `--yes` (when those skills exist).
+7. Writes that email or invite others require `--yes`.
 
 ## Config
 

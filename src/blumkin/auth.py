@@ -15,13 +15,13 @@ from msal import SerializableTokenCache
 from blumkin.config import BlumkinConfig, load_config
 
 # Request exact granted scope names for MSAL silent refresh (e.g. Calendars.ReadWrite
-# not .Read). Only include scopes consumed by shipped skills so read paths do not mint
-# unused write tokens (e.g. Mail.Send). Write skills must still gate mutations with
-# --yes; scopes are not a substitute.
+# not .Read). Include scopes for shipped skills; write paths still require --yes.
+# Mail.Send is included for mail send-draft (re-consent after scope changes).
 SCOPES = [
     "Calendars.ReadWrite",
     "Chat.Read",
     "Mail.ReadWrite",
+    "Mail.Send",
     "User.Read",
 ]
 

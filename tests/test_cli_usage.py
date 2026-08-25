@@ -8,6 +8,24 @@ from blumkin.cli import main
 from blumkin.exit_codes import EXIT_AUTH, EXIT_USAGE
 
 
+def test_calendar_create_without_yes_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "calendar",
+            "create",
+            "--subject",
+            "x",
+            "--with",
+            "a@b.com",
+            "--start",
+            "2026-08-26T11:00",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+
+
 def test_calendar_today_invalid_tz_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--tz", "Not/ARealZone", "calendar", "today"])

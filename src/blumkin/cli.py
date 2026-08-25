@@ -31,8 +31,23 @@ from blumkin.skills.calendar import (
     format_view_human,
     parse_local_datetime,
 )
+from blumkin.skills.calendar_writes import (
+    calendar_accept,
+    calendar_cancel,
+    calendar_create,
+    format_accept_human,
+    format_cancel_human,
+    format_create_human,
+)
 from blumkin.skills.chat import chat_find, chat_last, format_find_human, format_last_human
-from blumkin.skills.mail import format_inbox_human, mail_inbox
+from blumkin.skills.mail import (
+    format_draft_human,
+    format_inbox_human,
+    format_send_draft_human,
+    mail_draft,
+    mail_inbox,
+    mail_send_draft,
+)
 
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
@@ -53,6 +68,16 @@ def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
 
 def _tz_name(ctx: click.Context, tz_flag: str | None) -> str | None:
     return tz_flag if tz_flag is not None else ctx.obj.get("tz_name")
+
+
+def _require_yes(*, yes: bool, as_json: bool) -> None:
+    if not yes:
+        emit_error(
+            error="usage_error",
+            message="--yes is required for this command",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
 
 
 @click.group()
@@ -354,6 +379,134 @@ def calendar_freebusy_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
+@calendar.command("accept")
+@click.option("--event-id", "event_id", default=None, help="Single event id to accept.")
+@click.option(
+    "--today-pending",
+    "today_pending",
+    is_flag=True,
+    help="Accept all not-yet-responded events for today.",
+)
+@click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def calendar_accept_cmd(
+    ctx: click.Context,
+    event_id: str | None,
+    today_pending: bool,
+    yes: bool,
+    tz_flag: str | None,
+    as_json_flag: bool,
+) -> None:
+    """Accept calendar invitation(s). Requires --yes."""
+    as_json = _as_json(ctx, as_json_flag)
+    _require_yes(yes=yes, as_json=as_json)
+    try:
+        payload = asyncio.run(
+            calendar_accept(
+                event_id=event_id,
+                today_pending=today_pending,
+                tz_name=_tz_name(ctx, tz_flag),
+            )
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_accept_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@calendar.command("cancel")
+@click.option("--event-id", "event_id", required=True)
+@click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_flag: bool) -> None:
+    """Cancel a calendar event. Requires --yes."""
+    as_json = _as_json(ctx, as_json_flag)
+    _require_yes(yes=yes, as_json=as_json)
+    try:
+        payload = asyncio.run(calendar_cancel(event_id=event_id))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_cancel_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@calendar.command("create")
+@click.option("--subject", required=True)
+@click.option("--with", "with_emails", multiple=True, required=True, help="Attendee email.")
+@click.option("--start", "start_raw", required=True, help="Local start datetime.")
+@click.option("--duration", default="30m", show_default=True, help="Length (e.g. 30m, 1h).")
+@click.option("--teams", is_flag=True, help="Create as Teams online meeting.")
+@click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def calendar_create_cmd(
+    ctx: click.Context,
+    subject: str,
+    with_emails: tuple[str, ...],
+    start_raw: str,
+    duration: str,
+    teams: bool,
+    yes: bool,
+    tz_flag: str | None,
+    as_json_flag: bool,
+) -> None:
+    """Create a calendar event. Requires --yes."""
+    as_json = _as_json(ctx, as_json_flag)
+    _require_yes(yes=yes, as_json=as_json)
+    try:
+        payload = asyncio.run(
+            calendar_create(
+                subject=subject,
+                with_emails=list(with_emails),
+                start_raw=start_raw,
+                duration=duration,
+                teams=teams,
+                tz_name=_tz_name(ctx, tz_flag),
+            )
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_create_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
 @main.group()
 def chat() -> None:
     """Teams chat read skills."""
@@ -439,6 +592,62 @@ def mail_inbox_cmd(ctx: click.Context, top: int, as_json_flag: bool) -> None:
         emit_json(payload)
     else:
         emit_lines(format_inbox_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("draft")
+@click.option("--to", required=True, help="Recipient email.")
+@click.option("--subject", required=True)
+@click.option("--body", required=True)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_draft_cmd(
+    ctx: click.Context, to: str, subject: str, body: str, as_json_flag: bool
+) -> None:
+    """Create a mail draft (does not send)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(mail_draft(to=to, subject=subject, body=body))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_draft_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("send-draft")
+@click.option("--id", "draft_id", required=True, help="Draft message id.")
+@click.option("--yes", "yes", is_flag=True, help="Confirm send.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_flag: bool) -> None:
+    """Send an existing draft. Requires --yes."""
+    as_json = _as_json(ctx, as_json_flag)
+    _require_yes(yes=yes, as_json=as_json)
+    try:
+        payload = asyncio.run(mail_send_draft(draft_id=draft_id))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_send_draft_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 
