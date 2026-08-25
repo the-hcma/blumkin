@@ -16,9 +16,14 @@ covers the job.
    run `uv tool install -e .` from their blumkin clone and ensure `~/.local/bin`
    is on `PATH`).
 2. Discover skills: `blumkin skills list --json`.
-3. For calendar: `blumkin calendar today --json` (optional `--date YYYY-MM-DD`;
-   global TZ as `blumkin --tz AREA calendar today --json`).
-4. Always pass `--json` when parsing results in agent mode.
+3. Reads (prefer `--json`):
+   - Calendar: `blumkin calendar today --json`,
+     `blumkin calendar view --from YYYY-MM-DD --to YYYY-MM-DD --json`
+     (half-open `[from,to)`), `blumkin calendar freebusy --with email --start … --end … --json`
+   - Mail: `blumkin mail inbox --top 10 --json`
+   - Chat: `blumkin chat find --with "Name" --json`,
+     `blumkin chat last --with "Name" --n 3 --json`
+4. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).
 5. On auth failure (exit `3` / `auth_required`): tell the user to run
    `blumkin auth login` on this machine, then retry.
 6. Writes that email or invite others require `--yes` (when those skills exist).
