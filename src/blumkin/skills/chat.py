@@ -36,6 +36,7 @@ async def chat_find(
         lambda url: client.me.chats.with_url(url).get(),
     )
     sem = asyncio.Semaphore(_MEMBER_FETCH_CONCURRENCY)
+    skip_errors: list[BaseException] = []
 
     async def _match(chat: Any) -> Any:
         chat_id = chat.id
@@ -51,6 +52,7 @@ async def chat_find(
             except Exception as exc:
                 if _is_reauth_error(exc):
                     raise
+                skip_errors.append(exc)
                 # Skip chats Graph refuses (403 ACL, throttle, lost access); keep searching.
                 return _SKIPPED
         member_names = [
@@ -70,6 +72,10 @@ async def chat_find(
     attempted = sum(1 for chat in chats if chat.id)
     matches = [item for item in matched if item is not None and item is not _SKIPPED]
     if attempted and skipped == attempted and not matches:
+        if skip_errors and all(
+            getattr(exc, "response_status_code", None) == 403 for exc in skip_errors
+        ):
+            raise skip_errors[-1]
         raise RuntimeError(f"Graph member fetch failed for all {skipped} chats")
     matches.sort(key=_chat_sort_key)
     return {

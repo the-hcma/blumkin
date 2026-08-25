@@ -239,6 +239,25 @@ def test_chat_find_all_member_failures_raise(monkeypatch) -> None:
         assert "all 1 chats" in str(exc)
 
 
+def test_chat_find_all_forbidden_reraises_403(monkeypatch) -> None:
+    bad = SimpleNamespace(id="chat-bad", topic="Broken", chat_type="group")
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(return_value=SimpleNamespace(value=[bad], odata_next_link=None))
+    err = RuntimeError("forbidden")
+    err.response_status_code = 403  # type: ignore[attr-defined]
+    client.me.chats.by_chat_id.return_value.members.get = AsyncMock(side_effect=err)
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    try:
+        asyncio.run(chat_find(with_name="daniel"))
+        raise AssertionError("expected 403")
+    except RuntimeError as exc:
+        assert getattr(exc, "response_status_code", None) == 403
+
+
 def test_chat_find_auth_error_propagates(monkeypatch) -> None:
     chat = SimpleNamespace(id="chat-1", topic="Standup", chat_type="oneOnOne")
     client = MagicMock()
