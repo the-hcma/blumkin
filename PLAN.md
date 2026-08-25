@@ -2,7 +2,7 @@
 
 Personal Microsoft 365 / Graph **skills CLI**. Named after Rose “Mrs. B” Blumkin.
 
-**Language decision:** **Python 3.14+** with **`uv`** (reuse Graph work from `personal-automation`; Blumkin is a Graph skills CLI, not a Bot Framework host).
+**Language decision:** **Python 3.14+** with **`uv`** for packaging and local gates (Blumkin is a Graph skills CLI, not a Bot Framework host). End users and agents invoke **`blumkin` on `PATH`**, not `uv run blumkin`.
 
 Blumkin = delegated Graph access **as the signed-in user**.
 
@@ -52,7 +52,7 @@ blumkin [--json] [-v|--verbose] [--tz AREA] <command> ...
 | `-v`, `--verbose` | Log request labels (never tokens) on stderr |
 | `--tz AREA` | Default `America/New_York`; used for display + parsing local times |
 
-Install (planned): `uv sync` + `uv run blumkin …`, or `uv tool install -e .`.
+Install (planned): put `blumkin` on `PATH` via `uv tool install` (or `pipx` / equivalent). Dev checkouts use `uv sync`; do **not** document `uv run blumkin` as the product interface.
 
 ### 3.2 Command tree
 
@@ -327,7 +327,7 @@ Optional later:
 
 | Piece | Role |
 |-------|------|
-| **CLI binary** | `blumkin` on `PATH` (e.g. `uv tool install` or `uv run blumkin`) |
+| **CLI binary** | `blumkin` on `PATH` (e.g. `uv tool install`) |
 | **Skill** | Project skill `.cursor/skills/blumkin/SKILL.md` and/or personal `~/.cursor/skills/blumkin/` so *any* repo session can use it |
 | **When to trigger** | Description: Microsoft 365, Outlook calendar/mail, Teams chat, free/busy, Graph “as me” |
 | **Behavior** | Skill instructs: discover via `blumkin skills list --json`; always pass `--json` in agent mode; never invent Graph calls if Blumkin covers the job; require `--yes` for notify-others; on exit 3 run/login guidance |
@@ -423,7 +423,7 @@ Dev: `ruff`, `pyright`, `pytest`.
 
 ## 8. Repository-helpers / `github-repo-lint` readiness
 
-Blumkin lives under `~/work/ai` and should comply with
+Blumkin ([the-hcma/blumkin](https://github.com/the-hcma/blumkin)) should comply with
 [repository-helpers](https://github.com/the-hcma/repository-helpers) **github-repo-lint**
 like `bunnify` / `domesti-bot`.
 
@@ -436,13 +436,11 @@ like `bunnify` / `domesti-bot`.
 | `.github/stacking-tool` | `gh-stack` |
 | `.cursor/rules/*.mdc` | read-agents, stacking, pr-ship, commit identity, lexicographic, repo-practices-after-config-change, main-worktree-off-limits |
 
-### When a GitHub remote exists — run
+### Lint from a repository-helpers clone
 ```bash
-cd ~/work/ai/blumkin   # or stack worktree
-~/work/ai/repository-helpers/scripts/github-repo-lint --new-repo --suggest
-# after origin is set:
-~/work/ai/repository-helpers/scripts/github-repo-lint --repo OWNER/NAME --suggest
-~/work/ai/repository-helpers/scripts/github-repo-lint --repo OWNER/NAME --apply-fix
+# in a stack worktree of this repo, or with --repo:
+scripts/github-repo-lint --repo the-hcma/blumkin --suggest
+scripts/github-repo-lint --repo the-hcma/blumkin --apply-fix
 ```
 
 ### Expected to appear via lint / apply-fix (do not hand-roll forever)
@@ -455,7 +453,9 @@ cd ~/work/ai/blumkin   # or stack worktree
 
 ### Local gates (after code)
 ```bash
-~/work/ai/repository-helpers/scripts/dev/pre-pr-checks
+# from repository-helpers:
+scripts/dev/pre-pr-checks
+# from this repo (dev tooling — not the product CLI):
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
@@ -471,17 +471,17 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 ## 9. Phases
 
 ### Phase 0 — Docs & practices scaffold (current)
-- [x] Repo `~/work/ai/blumkin`  
+- [x] Repo [the-hcma/blumkin](https://github.com/the-hcma/blumkin)  
 - [x] `README.md`, expanded `PLAN.md`  
 - [x] `AGENTS.md`, `LICENSE`, CODEOWNERS, stacking marker, cursor rules  
-- [ ] Initial commit (when you ask)  
-- [ ] GitHub remote + `github-repo-lint --new-repo` / `--apply-fix`  
+- [x] Initial commit + public remote  
+- [x] `github-repo-lint --strict-onboarding` (protect-main, MQ, CI hygiene)  
 
 ### Phase 1 — Skeleton CLI
-- `pyproject.toml` + `uv.lock` + `blumkin` entrypoint  
+- `pyproject.toml` + `uv.lock` + `blumkin` entrypoint on `PATH`  
 - `auth login|status|logout`  
 - `skills list|describe`, `doctor`  
-- Port auth/cache from `personal-automation`  
+- Port auth/cache from the private Graph lab  
 - Ruff/pyright/pytest wired; adopt `.github/ci/python-static` + secret-scan  
 
 ### Phase 2 — Read skills
@@ -521,16 +521,15 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 
 1. **Config path:** XDG `~/.config/blumkin/` only, or also allow repo-local `.blumkin.toml`?  
 2. **People resolve:** keep `--with "Display Name"` fuzzy match, or require email once `People.Read` lands?  
-3. **Migrate `personal-automation`:** leave as lab until Blumkin Phase 2–3, then archive?  
-4. **GitHub owner/name:** `thehcma/blumkin` vs personal fork — affects CODEOWNERS / lint `--repo`?  
-5. **Default duration** for `calendar create` if `--duration` omitted (propose `30m`)?  
-6. **Skill install:** project-only (`.cursor/skills/blumkin`) vs also document personal `~/.cursor/skills/` for Copilot/Cursor across all repos?  
-7. **MCP later:** skip until a concrete host requires it, or stub a no-op adapter early?  
+3. **Migrate private Graph lab:** leave as lab until Blumkin Phase 2–3, then archive?  
+4. **Default duration** for `calendar create` if `--duration` omitted (propose `30m`)?  
+5. **Skill install:** project-only (`.cursor/skills/blumkin`) vs also document personal `~/.cursor/skills/` for Copilot/Cursor across all repos?  
+6. **MCP later:** skip until a concrete host requires it, or stub a no-op adapter early?  
 
 ---
 
 ## 12. References
 
-- Lab scripts: `~/work/brk-tech/personal-automation`  
-- Identity: `TICKET-graph-access*.md`, follow-up WO0000001161564  
-- Org tooling: `~/work/ai/repository-helpers` (`github-repo-lint`, `pre-pr-checks`, `start-development`)
+- Private Graph lab (hand automations; not in this repo)  
+- Identity follow-up: WO0000001161564  
+- Org tooling: [repository-helpers](https://github.com/the-hcma/repository-helpers) (`github-repo-lint`, `pre-pr-checks`, `start-development`)

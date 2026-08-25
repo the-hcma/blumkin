@@ -11,17 +11,19 @@ It uses **delegated** Microsoft Graph access (acts as the signed-in user).
 Planning + org-practices scaffold. **No application code yet.**
 
 - [`PLAN.md`](./PLAN.md) — **CLI design for review** (commands, JSON, **Cursor/Copilot integration**, lint)  
-- [`HANDOFF.md`](./HANDOFF.md) — **session handoff** (what works in the lab, open Identity follow-up, what to do next)  
+- [`HANDOFF.md`](./HANDOFF.md) — **session handoff** (proven flows, open Identity follow-up, what to do next)  
 - [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
 
-Proven ad-hoc flows live in `~/work/brk-tech/personal-automation` until ported here. **Prefer finishing new hand experiments there first**, then encode them as Blumkin skills.
+Hand-proven Graph flows are encoded as Blumkin skills once they settle; prefer validating a new flow outside this repo first, then porting it here.
 
 ## Intended usage (future)
 
+Install so `blumkin` is on your `PATH` (planned: `uv tool install` / equivalent). Agents and humans invoke the binary directly — not via `uv run`:
+
 ```bash
-uv run blumkin auth status
-uv run blumkin calendar today --json
-uv run blumkin skills list --json
+blumkin auth status
+blumkin calendar today --json
+blumkin skills list --json
 ```
 
 ## Repository practices
@@ -29,10 +31,11 @@ uv run blumkin skills list --json
 This tree is set up to work with
 [repository-helpers](https://github.com/the-hcma/repository-helpers) /
 `github-repo-lint` (stacking `gh-stack`, Cursor rules, CODEOWNERS, MIT license,
-`AGENTS.md`). After a GitHub remote exists:
+`AGENTS.md`):
 
 ```bash
-~/work/ai/repository-helpers/scripts/github-repo-lint --new-repo --suggest
+# from a repository-helpers clone:
+scripts/github-repo-lint --repo the-hcma/blumkin --suggest
 ```
 
 ## License

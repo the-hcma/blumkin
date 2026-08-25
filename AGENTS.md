@@ -39,9 +39,11 @@ Always implement in `.worktrees/<stack-name>-wt`.
 ## Language & runtime
 
 - Target **Python 3.14+**.
-- Use **`uv`** as the package manager and runner (`uv sync`, `uv run …`).
-- CLI entrypoint will be `blumkin` (see `PLAN.md`). Application code is not
-  present yet — follow `PLAN.md` when implementing.
+- Use **`uv`** for packaging and local gates (`uv sync`, `uv run ruff` /
+  `pytest` / `pyright`).
+- Product CLI is **`blumkin` on `PATH`** (see `PLAN.md`) — agents and humans
+  invoke `blumkin …`, not `uv run blumkin`. Application code is not present
+  yet — follow `PLAN.md` when implementing.
 
 ---
 
