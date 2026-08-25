@@ -125,9 +125,10 @@ def test_chat_find_and_last_mocked(monkeypatch) -> None:
         from_=SimpleNamespace(user=SimpleNamespace(display_name="Daniel Erickson", id="u1")),
     )
     client = MagicMock()
-    client.me.chats.get = AsyncMock(return_value=SimpleNamespace(value=[chat]))
+    first_page = SimpleNamespace(value=[chat], odata_next_link=None)
+    client.me.chats.get = AsyncMock(return_value=first_page)
     client.me.chats.by_chat_id.return_value.members.get = AsyncMock(
-        return_value=SimpleNamespace(value=[member])
+        return_value=SimpleNamespace(value=[member], odata_next_link=None)
     )
     client.me.chats.by_chat_id.return_value.messages.get = AsyncMock(
         return_value=SimpleNamespace(value=[message])
@@ -143,6 +144,41 @@ def test_chat_find_and_last_mocked(monkeypatch) -> None:
     last = asyncio.run(chat_last(with_name="daniel", n=1))
     assert last["chat"]["id"] == "chat-1"
     assert last["items"][0]["body_text"] == "ping"
+
+
+def test_chat_find_follows_next_link(monkeypatch) -> None:
+    page1_chat = SimpleNamespace(id="chat-a", topic="Other", chat_type="group")
+    page2_chat = SimpleNamespace(id="chat-b", topic="Hit", chat_type="oneOnOne")
+    page1 = SimpleNamespace(value=[page1_chat], odata_next_link="https://example/next")
+    page2 = SimpleNamespace(value=[page2_chat], odata_next_link=None)
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(return_value=page1)
+    client.me.chats.with_url.return_value.get = AsyncMock(return_value=page2)
+
+    def members_for(chat_id: str):
+        name = "Other Person" if chat_id == "chat-a" else "Scott Young"
+        return AsyncMock(
+            return_value=SimpleNamespace(
+                value=[SimpleNamespace(display_name=name)],
+                odata_next_link=None,
+            )
+        )
+
+    def by_chat_id(chat_id: str):
+        stub = MagicMock()
+        stub.members.get = members_for(chat_id)
+        stub.members.with_url.return_value.get = AsyncMock()
+        return stub
+
+    client.me.chats.by_chat_id.side_effect = by_chat_id
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    found = asyncio.run(chat_find(with_name="Scott Young"))
+    assert [c["id"] for c in found["items"]] == ["chat-b"]
+    client.me.chats.with_url.assert_called_once_with("https://example/next")
 
 
 def test_calendar_view_rejects_inverted_range(monkeypatch) -> None:

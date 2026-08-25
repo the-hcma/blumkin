@@ -15,17 +15,13 @@ from msal import SerializableTokenCache
 from blumkin.config import BlumkinConfig, load_config
 
 # Request exact granted scope names for MSAL silent refresh (e.g. Calendars.ReadWrite
-# not .Read). The Entra app already has these delegated scopes from the private Graph
-# lab; caches are minted under those names. Asking for a missing name falls through to
-# interactive login and — with user consent disabled — Entra "Need admin approval".
-# Write skills must still gate mutations with --yes; scopes are not a substitute.
+# not .Read). Only include scopes consumed by shipped skills so read paths do not mint
+# unused write tokens (e.g. Mail.Send). Write skills must still gate mutations with
+# --yes; scopes are not a substitute.
 SCOPES = [
     "Calendars.ReadWrite",
-    "Channel.ReadBasic.All",
     "Chat.Read",
     "Mail.ReadWrite",
-    "Mail.Send",
-    "Team.ReadBasic.All",
     "User.Read",
 ]
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import html as html_lib
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from blumkin.config import BlumkinConfig, load_config
@@ -22,28 +24,34 @@ async def chat_find(
         raise ValueError("--with requires a non-empty display name")
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    matches: list[dict[str, Any]] = []
-    chats = await client.me.chats.get()
-    for chat in [] if chats is None else (chats.value or []):
+    chats = await _collect_pages(
+        await client.me.chats.get(),
+        lambda url: client.me.chats.with_url(url).get(),
+    )
+
+    async def _match(chat: Any) -> dict[str, Any] | None:
         chat_id = chat.id
         if not chat_id:
-            continue
-        members = await client.me.chats.by_chat_id(chat_id).members.get()
-        member_names: list[str] = []
-        for member in [] if members is None else (members.value or []):
-            name = getattr(member, "display_name", None)
-            if name:
-                member_names.append(str(name))
-        if not any(_name_matches(needle, name) for name in member_names):
-            continue
-        matches.append(
-            {
-                "chat_type": str(chat.chat_type) if chat.chat_type is not None else None,
-                "id": chat_id,
-                "members": sorted(member_names),
-                "topic": chat.topic,
-            }
+            return None
+        members_page = await client.me.chats.by_chat_id(chat_id).members.get()
+        members = await _collect_pages(
+            members_page,
+            lambda url: client.me.chats.by_chat_id(chat_id).members.with_url(url).get(),
         )
+        member_names = [
+            str(name) for member in members if (name := getattr(member, "display_name", None))
+        ]
+        if not any(_name_matches(needle, name) for name in member_names):
+            return None
+        return {
+            "chat_type": str(chat.chat_type) if chat.chat_type is not None else None,
+            "id": chat_id,
+            "members": sorted(member_names),
+            "topic": chat.topic,
+        }
+
+    matched = await asyncio.gather(*[_match(chat) for chat in chats])
+    matches = [item for item in matched if item is not None]
     matches.sort(key=_chat_sort_key)
     return {"items": matches, "query": with_name}
 
@@ -113,19 +121,26 @@ def _chat_sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
     return (prefer, str(item.get("topic") or ""), str(item.get("id") or ""))
 
 
+async def _collect_pages(
+    first_page: Any,
+    fetch_next: Callable[[str], Awaitable[Any]],
+) -> list[Any]:
+    """Walk ``@odata.nextLink`` until exhausted; return concatenated ``value`` lists."""
+    items: list[Any] = []
+    page = first_page
+    while page is not None:
+        items.extend(page.value or [])
+        link = getattr(page, "odata_next_link", None)
+        if not link:
+            break
+        page = await fetch_next(link)
+    return items
+
+
 def _html_to_text(raw: str) -> str:
     text = _TAG_RE.sub(" ", raw)
     text = html_lib.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
-
-
-def _name_matches(needle: str, display_name: str) -> bool:
-    """Match when every whitespace token in ``needle`` appears in ``display_name``."""
-    hay = display_name.lower()
-    tokens = [t for t in needle.split() if t]
-    if not tokens:
-        return False
-    return all(token in hay for token in tokens)
 
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:
@@ -145,3 +160,12 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
         "from_user": from_user,
         "id": msg.id,
     }
+
+
+def _name_matches(needle: str, display_name: str) -> bool:
+    """Match when every whitespace token in ``needle`` appears in ``display_name``."""
+    hay = display_name.lower()
+    tokens = [t for t in needle.split() if t]
+    if not tokens:
+        return False
+    return all(token in hay for token in tokens)
