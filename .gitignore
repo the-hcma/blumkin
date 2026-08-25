@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.msal_token_cache.json
+.auth_record.json
+.blumkin.toml
+*.egg-info/
+dist/
+build/
+.DS_Store
+.worktrees/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.python-version
+

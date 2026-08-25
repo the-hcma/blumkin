@@ -1,0 +1,7 @@
+# Code owners for blumkin
+
+* @thehcma
+
+/.github/ @thehcma
+/pyproject.toml @thehcma
+/uv.lock @thehcma
