@@ -417,6 +417,9 @@ def calendar_accept_cmd(
             raise SystemExit(EXIT_AUTH) from exc
         emit_error(error="usage_error", message=msg, as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:

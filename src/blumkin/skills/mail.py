@@ -97,8 +97,9 @@ async def mail_send_draft(
 
 def format_draft_human(payload: dict[str, Any]) -> list[str]:
     draft = payload.get("draft") or {}
+    to_addr = sanitize_terminal(str(draft.get("to") or ""))
     return [
-        f"Draft saved: {draft.get('subject')!r} → {draft.get('to')}",
+        f"Draft saved: {draft.get('subject')!r} → {to_addr}",
         f"  id={draft.get('id')}",
     ]
 

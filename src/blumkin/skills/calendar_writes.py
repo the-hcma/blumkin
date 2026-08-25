@@ -21,6 +21,7 @@ from msgraph.generated.users.item.events.item.cancel.cancel_post_request_body im
 
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client
+from blumkin.output import sanitize_terminal
 from blumkin.skills.calendar import (
     _event_to_dict,
     _to_graph_dtz,
@@ -122,11 +123,11 @@ def format_cancel_human(payload: dict[str, Any]) -> list[str]:
 
 def format_create_human(payload: dict[str, Any]) -> list[str]:
     event = payload.get("event") or {}
-    subject = event.get("subject") or "(no subject)"
+    subject = sanitize_terminal(str(event.get("subject") or "(no subject)"))
     when = f"{event.get('start')} → {event.get('end')}"
     lines = [f"Created: {subject!r} ({when})"]
     if event.get("online_join_url"):
-        lines.append(f"  join: {event['online_join_url']}")
+        lines.append(f"  join: {sanitize_terminal(str(event['online_join_url']))}")
     lines.append(f"  id={event.get('id')}")
     return lines
 
@@ -147,4 +148,4 @@ def _needs_accept(item: dict[str, Any]) -> bool:
     if item.get("is_organizer"):
         return False
     response = (item.get("response") or "").lower()
-    return "notresponded" in response or "tentative" in response or response in {"", "none"}
+    return "notresponded" in response or response in {"", "none"}

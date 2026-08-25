@@ -6,10 +6,13 @@ import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
+from blumkin.skills.calendar import _event_to_dict
 from blumkin.skills.calendar_writes import (
+    _needs_accept,
     calendar_accept,
     calendar_cancel,
     calendar_create,
@@ -44,6 +47,9 @@ def test_calendar_accept_today_pending_mocked(monkeypatch) -> None:
             "items": [
                 {"id": "a", "is_organizer": False, "response": "ResponseType.NotResponded"},
                 {"id": "b", "is_organizer": True, "response": "ResponseType.NotResponded"},
+                {"id": "c", "is_organizer": False, "response": "ResponseType.Accepted"},
+                {"id": "d", "is_organizer": False, "response": "ResponseType.Declined"},
+                {"id": "e", "is_organizer": False, "response": "ResponseType.TentativelyAccepted"},
             ]
         }
 
@@ -58,6 +64,45 @@ def test_calendar_accept_today_pending_mocked(monkeypatch) -> None:
     payload = asyncio.run(calendar_accept(event_id=None, today_pending=True))
     assert payload["accepted"] == ["a"]
     assert payload["count"] == 1
+
+
+def test_needs_accept_filters_responses() -> None:
+    assert _needs_accept({"is_organizer": False, "response": "ResponseType.NotResponded"})
+    assert _needs_accept({"is_organizer": False, "response": None})
+    assert not _needs_accept({"is_organizer": True, "response": "ResponseType.NotResponded"})
+    assert not _needs_accept({"is_organizer": False, "response": "ResponseType.Accepted"})
+    assert not _needs_accept({"is_organizer": False, "response": "ResponseType.Declined"})
+    assert not _needs_accept(
+        {"is_organizer": False, "response": "ResponseType.TentativelyAccepted"}
+    )
+
+
+def test_needs_accept_from_event_to_dict() -> None:
+    tz = ZoneInfo("UTC")
+
+    def event(*, response: str | None, is_organizer: bool = False) -> SimpleNamespace:
+        response_status = None if response is None else SimpleNamespace(response=response)
+        return SimpleNamespace(
+            end=None,
+            id="evt-1",
+            is_all_day=False,
+            is_organizer=is_organizer,
+            location=None,
+            online_meeting=None,
+            organizer=None,
+            response_status=response_status,
+            start=None,
+            subject="Sync",
+        )
+
+    pending = _event_to_dict(event(response="NotResponded"), tz)
+    missing = _event_to_dict(event(response=None), tz)
+    accepted = _event_to_dict(event(response="Accepted"), tz)
+    assert _needs_accept(pending)
+    assert _needs_accept(missing)
+    assert not _needs_accept(accepted)
+    assert "response" in pending
+    assert "is_organizer" in pending
 
 
 def test_calendar_cancel_mocked(monkeypatch) -> None:
