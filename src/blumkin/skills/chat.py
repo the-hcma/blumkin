@@ -12,6 +12,7 @@ from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client
 
 _MEMBER_FETCH_CONCURRENCY = 8
+_SKIPPED = object()
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -31,7 +32,7 @@ async def chat_find(
     )
     sem = asyncio.Semaphore(_MEMBER_FETCH_CONCURRENCY)
 
-    async def _match(chat: Any) -> dict[str, Any] | None:
+    async def _match(chat: Any) -> Any:
         chat_id = chat.id
         if not chat_id:
             return None
@@ -42,9 +43,11 @@ async def chat_find(
                     members_page,
                     lambda url: client.me.chats.by_chat_id(chat_id).members.with_url(url).get(),
                 )
-            except Exception:
+            except Exception as exc:
+                if _is_auth_class_error(exc):
+                    raise
                 # Skip chats Graph refuses (throttle, lost access); keep searching.
-                return None
+                return _SKIPPED
         member_names = [
             str(name) for member in members if (name := getattr(member, "display_name", None))
         ]
@@ -58,9 +61,18 @@ async def chat_find(
         }
 
     matched = await asyncio.gather(*[_match(chat) for chat in chats])
-    matches = [item for item in matched if item is not None]
+    skipped = sum(1 for item in matched if item is _SKIPPED)
+    attempted = sum(1 for chat in chats if chat.id)
+    matches = [item for item in matched if item is not None and item is not _SKIPPED]
+    if attempted and skipped == attempted and not matches:
+        raise RuntimeError(f"Graph member fetch failed for all {skipped} chats")
     matches.sort(key=_chat_sort_key)
-    return {"items": matches, "query": with_name}
+    return {
+        "items": matches,
+        "partial": skipped > 0,
+        "query": with_name,
+        "skipped": skipped,
+    }
 
 
 async def chat_last(
@@ -74,12 +86,21 @@ async def chat_last(
     found = await chat_find(with_name=with_name, config=config)
     items = found["items"]
     if not items:
-        return {"chat": None, "items": [], "query": with_name}
+        return {
+            "chat": None,
+            "items": [],
+            "partial": found["partial"],
+            "query": with_name,
+            "skipped": found["skipped"],
+        }
     chat = items[0]
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    messages = await client.me.chats.by_chat_id(chat["id"]).messages.get()
-    raw = [] if messages is None else (messages.value or [])
+    chat_id = chat["id"]
+    raw = await _collect_pages(
+        await client.me.chats.by_chat_id(chat_id).messages.get(),
+        lambda url: client.me.chats.by_chat_id(chat_id).messages.with_url(url).get(),
+    )
     # Graph returns newest-first; take first n ordinary message rows.
     selected: list[dict[str, Any]] = []
     for msg in raw:
@@ -89,11 +110,20 @@ async def chat_last(
         selected.append(_message_to_dict(msg))
         if len(selected) >= n:
             break
-    return {"chat": chat, "items": selected, "query": with_name}
+    return {
+        "chat": chat,
+        "items": selected,
+        "partial": found["partial"],
+        "query": with_name,
+        "skipped": found["skipped"],
+    }
 
 
 def format_find_human(payload: dict[str, Any]) -> list[str]:
     lines = [f"Chats matching {payload['query']!r}: {len(payload['items'])}"]
+    skipped = int(payload.get("skipped") or 0)
+    if skipped:
+        lines.append(f"  (skipped {skipped} chat(s) due to Graph errors; results may be partial)")
     if not payload["items"]:
         lines.append("  (none)")
         return lines
@@ -107,10 +137,18 @@ def format_find_human(payload: dict[str, Any]) -> list[str]:
 
 def format_last_human(payload: dict[str, Any]) -> list[str]:
     chat = payload.get("chat")
+    skipped = int(payload.get("skipped") or 0)
     if chat is None:
-        return [f"No chat matched {payload['query']!r}"]
+        lines = [f"No chat matched {payload['query']!r}"]
+        if skipped:
+            lines.append(
+                f"  (skipped {skipped} chat(s) due to Graph errors; results may be partial)"
+            )
+        return lines
     topic = chat.get("topic") or "(no topic)"
     lines = [f"Last messages in {topic!r} ({chat.get('id')}):"]
+    if skipped:
+        lines.append(f"  (skipped {skipped} chat(s) while matching; results may be partial)")
     if not payload["items"]:
         lines.append("  (none)")
         return lines
@@ -148,6 +186,11 @@ def _html_to_text(raw: str) -> str:
     text = _TAG_RE.sub(" ", raw)
     text = html_lib.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _is_auth_class_error(exc: BaseException) -> bool:
+    """True for HTTP 401/403 so callers surface auth/graph_error instead of skipping."""
+    return getattr(exc, "response_status_code", None) in {401, 403}
 
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:

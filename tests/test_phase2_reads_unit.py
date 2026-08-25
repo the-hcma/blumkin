@@ -210,6 +210,88 @@ def test_chat_find_skips_failing_member_fetch(monkeypatch) -> None:
     )
     found = asyncio.run(chat_find(with_name="daniel"))
     assert [c["id"] for c in found["items"]] == ["chat-good"]
+    assert found["skipped"] == 1
+    assert found["partial"] is True
+
+
+def test_chat_find_all_member_failures_raise(monkeypatch) -> None:
+    bad = SimpleNamespace(id="chat-bad", topic="Broken", chat_type="group")
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(return_value=SimpleNamespace(value=[bad], odata_next_link=None))
+    client.me.chats.by_chat_id.return_value.members.get = AsyncMock(
+        side_effect=RuntimeError("429 throttled")
+    )
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    try:
+        asyncio.run(chat_find(with_name="daniel"))
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "all 1 chats" in str(exc)
+
+
+def test_chat_find_auth_error_propagates(monkeypatch) -> None:
+    chat = SimpleNamespace(id="chat-1", topic="Standup", chat_type="oneOnOne")
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(
+        return_value=SimpleNamespace(value=[chat], odata_next_link=None)
+    )
+    err = RuntimeError("forbidden")
+    err.response_status_code = 403  # type: ignore[attr-defined]
+    client.me.chats.by_chat_id.return_value.members.get = AsyncMock(side_effect=err)
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    try:
+        asyncio.run(chat_find(with_name="daniel"))
+        raise AssertionError("expected auth-class error")
+    except RuntimeError as exc:
+        assert getattr(exc, "response_status_code", None) == 403
+
+
+def test_chat_last_follows_message_next_link(monkeypatch) -> None:
+    chat = SimpleNamespace(id="chat-1", topic="Standup", chat_type="oneOnOne")
+    member = SimpleNamespace(display_name="Daniel Erickson")
+    page1_msg = SimpleNamespace(
+        id="msg-event",
+        message_type="systemEventMessage",
+        created_date_time="2026-08-25T12:02:00+00:00",
+        body=SimpleNamespace(content="joined"),
+        from_=None,
+    )
+    page2_msg = SimpleNamespace(
+        id="msg-1",
+        message_type="message",
+        created_date_time="2026-08-25T12:00:00+00:00",
+        body=SimpleNamespace(content="<p>ping</p>"),
+        from_=SimpleNamespace(user=SimpleNamespace(display_name="Daniel Erickson", id="u1")),
+    )
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(
+        return_value=SimpleNamespace(value=[chat], odata_next_link=None)
+    )
+    stub = MagicMock()
+    stub.members.get = AsyncMock(return_value=SimpleNamespace(value=[member], odata_next_link=None))
+    stub.messages.get = AsyncMock(
+        return_value=SimpleNamespace(value=[page1_msg], odata_next_link="https://example/msgs")
+    )
+    stub.messages.with_url.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(value=[page2_msg], odata_next_link=None)
+    )
+    client.me.chats.by_chat_id.return_value = stub
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    last = asyncio.run(chat_last(with_name="daniel", n=1))
+    assert last["items"][0]["id"] == "msg-1"
+    stub.messages.with_url.assert_called_once_with("https://example/msgs")
 
 
 def test_calendar_view_rejects_inverted_range(monkeypatch) -> None:
