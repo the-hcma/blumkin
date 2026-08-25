@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -43,18 +44,31 @@ def create_credential(config: BlumkinConfig | None = None) -> InteractiveBrowser
         kwargs["authentication_record"] = record
 
     credential = InteractiveBrowserCredential(**kwargs)
-    if not record:
-        record = credential.authenticate(scopes=SCOPES)
-        _save_auth_record(cfg, record)
-        save_token_cache(cfg)
+    if record:
+        try:
+            credential.get_token(*SCOPES)
+            save_token_cache(cfg)
+            return credential
+        except Exception:
+            # Stale auth record / missing refresh token — force interactive login.
+            pass
+
+    record = credential.authenticate(scopes=SCOPES)
+    _save_auth_record(cfg, record)
+    save_token_cache(cfg)
     return credential
 
 
 def logout(config: BlumkinConfig | None = None) -> None:
+    global _cache_bound_path
     cfg = config or load_config()
     for path in (cfg.token_cache_path, cfg.auth_record_path):
         if path.is_file():
             path.unlink()
+    # Drop in-memory cache so atexit cannot recreate deleted secrets.
+    _token_cache.deserialize("")
+    if _cache_bound_path == str(cfg.token_cache_path):
+        _cache_bound_path = None
 
 
 def reload_token_cache_from_disk(config: BlumkinConfig | None = None) -> None:
@@ -69,8 +83,7 @@ def save_token_cache(config: BlumkinConfig | None = None) -> None:
     cfg = config or load_config()
     if _token_cache.has_state_changed:
         cfg.config_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-        cfg.token_cache_path.write_text(_token_cache.serialize())
-        cfg.token_cache_path.chmod(0o600)
+        _write_secret_text(cfg.token_cache_path, _token_cache.serialize())
 
 
 def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
@@ -154,8 +167,7 @@ def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
 
 def _save_auth_record(cfg: BlumkinConfig, record: AuthenticationRecord) -> None:
     cfg.config_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-    cfg.auth_record_path.write_text(record.serialize())
-    cfg.auth_record_path.chmod(0o600)
+    _write_secret_text(cfg.auth_record_path, record.serialize())
 
 
 def _save_bound_token_cache_at_exit() -> None:
@@ -164,5 +176,13 @@ def _save_bound_token_cache_at_exit() -> None:
         return
     path = Path(_cache_bound_path)
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    path.write_text(_token_cache.serialize())
-    path.chmod(0o600)
+    _write_secret_text(path, _token_cache.serialize())
+
+
+def _write_secret_text(path: Path, text: str) -> None:
+    """Write sensitive text with mode 0600 (no world-readable window)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, text.encode())
+    finally:
+        os.close(fd)

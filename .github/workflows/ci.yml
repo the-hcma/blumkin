@@ -138,6 +138,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
       - uses: astral-sh/setup-uv@v10.0.1
         with:
@@ -153,6 +154,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
       - uses: astral-sh/setup-uv@v10.0.1
         with:

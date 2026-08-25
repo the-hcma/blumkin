@@ -18,7 +18,8 @@ When changing auth, Graph client, calendar/mail/chat skills, or live/auth tests:
    ```bash
    BLUMKIN_LIVE=1 uv run pytest -m live
    ```
-   Requires `~/.config/blumkin/` (`config.toml`, `msal_token_cache.json`, `auth_record.json`) with a refresh token. Do not commit those files.
+   Requires config + token cache + auth record with a refresh token under
+   `~/.config/blumkin/` (or `BLUMKIN_CONFIG_DIR`). Do not commit those files.
 
 3. Smoke CLI after live green:
    ```bash

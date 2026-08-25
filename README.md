@@ -45,7 +45,8 @@ uv run pytest -m 'not live'          # CI-equivalent (mocks / offline)
 BLUMKIN_LIVE=1 uv run pytest -m live # live Graph reads + silent refresh
 ```
 
-Live tests need `~/.config/blumkin/` (config + token cache + auth record). Never commit those files.
+Live tests need `~/.config/blumkin/` by default (override with `BLUMKIN_CONFIG_DIR`):
+`config.toml`, token cache, auth record, and a usable refresh token. Never commit those files.
 
 ## Docs
 

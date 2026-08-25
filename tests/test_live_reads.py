@@ -82,4 +82,5 @@ def test_live_silent_refresh_after_forced_access_token_expiry() -> None:
     except BaseException:
         cache_path.write_text(backup)
         cache_path.chmod(0o600)
+        reload_token_cache_from_disk(cfg)
         raise

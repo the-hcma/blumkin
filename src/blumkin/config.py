@@ -14,7 +14,6 @@ DEFAULT_TZ = "America/New_York"
 @dataclass(frozen=True, slots=True)
 class BlumkinConfig:
     client_id: str
-    client_secret: str | None
     config_dir: Path
     default_tz: str
     tenant_id: str
@@ -59,13 +58,8 @@ def load_config() -> BlumkinConfig:
         or file_values.get("default_tz", "").strip()
         or DEFAULT_TZ
     )
-    secret_env = os.environ.get("BLUMKIN_CLIENT_SECRET", "").strip()
-    client_secret = secret_env or file_values.get("client_secret") or None
-    if client_secret is not None:
-        client_secret = client_secret.strip() or None
     return BlumkinConfig(
         client_id=client_id,
-        client_secret=client_secret,
         config_dir=directory,
         default_tz=default_tz,
         tenant_id=tenant_id,

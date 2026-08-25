@@ -13,7 +13,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # Install the pin from .python-version (or uv default) without syncing the project.
-uv python install
+timeout 120 uv python install
 uv run --no-project python - <<'PY'
 from __future__ import annotations
 
