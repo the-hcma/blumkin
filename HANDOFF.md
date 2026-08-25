@@ -66,16 +66,16 @@ After grant: add scopes to the client, delete token cache + auth record, re-logi
 ## What to do next (ordered)
 
 1. **Human:** run the **new hand automation** you care about in the private lab (or a scratch script there). Note: command, Graph APIs, scopes, failure modes.
-2. **When ready for CLI:** implement per `PLAN.md` phases (Phase 1 skeleton → read skills → write skills). Add a row to the skill inventory for the new hand flow.
+2. **When ready for CLI:** port proven flows per `PLAN.md` Phase 2+ (read skills → write skills). Add a row to the skill inventory for the new hand flow.
 3. **When Identity returns:** wire follow-up scopes; unlock chat write + meeting transcription skills.
-4. **Agent DX (Phase 5):** `.cursor/skills/blumkin/SKILL.md` + Copilot CLI instruction snippet — shell to `blumkin`, not MCP first.
+4. **Agent DX (Phase 5):** personal skill install + Copilot CLI instruction snippet — shell to `blumkin`, not MCP first.
 
 ---
 
 ## Intentional non-work in this repo right now
 
-- No application code yet (by design until hand experiments settle).
 - Do not block new hand automation on Blumkin implementation.
+- Identity-blocked scopes stay out until the private-lab follow-up lands.
 
 ---
 
