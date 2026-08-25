@@ -487,9 +487,9 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 - [x] Project Cursor skill: `.cursor/skills/blumkin/SKILL.md`  
 
 ### Phase 2 — Read skills
-- `calendar.view|freebusy` (today already shipped)  
-- `mail.inbox`  
-- `chat.find|last`  
+- [x] `calendar.view|freebusy` (today already shipped)  
+- [x] `mail.inbox`  
+- [x] `chat.find|last`  
 
 ### Phase 3 — Write skills (gated with `--yes`)
 - `calendar.accept|create|cancel`  

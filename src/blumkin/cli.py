@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, datetime
 from typing import Any
-from zoneinfo import ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import click
 
@@ -21,7 +21,17 @@ from blumkin.exit_codes import (
 )
 from blumkin.output import emit_error, emit_json, emit_lines
 from blumkin.skills import describe_skill, skills_catalog
-from blumkin.skills.calendar import calendar_today, format_today_human
+from blumkin.skills.calendar import (
+    calendar_freebusy,
+    calendar_today,
+    calendar_view,
+    format_freebusy_human,
+    format_today_human,
+    format_view_human,
+    parse_local_datetime,
+)
+from blumkin.skills.chat import chat_find, chat_last, format_find_human, format_last_human
+from blumkin.skills.mail import format_inbox_human, mail_inbox
 
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
@@ -238,6 +248,174 @@ def calendar_today_cmd(ctx: click.Context, day: Any, as_json_flag: bool) -> None
         emit_json(payload)
     else:
         emit_lines(format_today_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@calendar.command("view")
+@click.option("--from", "from_day", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--to", "to_day", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def calendar_view_cmd(ctx: click.Context, from_day: Any, to_day: Any, as_json_flag: bool) -> None:
+    """List events in half-open local range [--from, --to)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        cfg = load_config()
+        tz = ZoneInfo(ctx.obj["tz_name"] or cfg.default_tz)
+        start = datetime(from_day.year, from_day.month, from_day.day, tzinfo=tz)
+        end = datetime(to_day.year, to_day.month, to_day.day, tzinfo=tz)
+        payload = asyncio.run(calendar_view(start=start, end=end))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        emit_error(error="graph_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_view_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@calendar.command("freebusy")
+@click.option("--with", "with_emails", multiple=True, required=True, help="Email to query.")
+@click.option("--start", "start_raw", required=True, help="Local start datetime.")
+@click.option("--end", "end_raw", required=True, help="Local end datetime.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def calendar_freebusy_cmd(
+    ctx: click.Context,
+    with_emails: tuple[str, ...],
+    start_raw: str,
+    end_raw: str,
+    as_json_flag: bool,
+) -> None:
+    """Get free/busy for one or more people."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        cfg = load_config()
+        tz = ZoneInfo(ctx.obj["tz_name"] or cfg.default_tz)
+        start = parse_local_datetime(start_raw, tz)
+        end = parse_local_datetime(end_raw, tz)
+        payload = asyncio.run(
+            calendar_freebusy(with_emails=list(with_emails), start=start, end=end)
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        emit_error(error="graph_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_freebusy_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@main.group()
+def chat() -> None:
+    """Teams chat read skills."""
+
+
+@chat.command("find")
+@click.option("--with", "with_name", required=True, help="Display-name substring.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def chat_find_cmd(ctx: click.Context, with_name: str, as_json_flag: bool) -> None:
+    """Find chats whose members match a display name."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(chat_find(with_name=with_name))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        emit_error(error="graph_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_find_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@chat.command("last")
+@click.option("--with", "with_name", required=True, help="Display-name substring.")
+@click.option("--n", "n", default=3, show_default=True, type=int)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool) -> None:
+    """Show last N messages from a matched chat."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(chat_last(with_name=with_name, n=n))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        emit_error(error="graph_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_last_human(payload))
+    if payload.get("chat") is None:
+        raise SystemExit(EXIT_NOT_FOUND)
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@main.group()
+def mail() -> None:
+    """Mail read skills."""
+
+
+@mail.command("inbox")
+@click.option("--top", default=10, show_default=True, type=int)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_inbox_cmd(ctx: click.Context, top: int, as_json_flag: bool) -> None:
+    """List recent inbox messages."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(mail_inbox(top=top))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        emit_error(error="graph_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_inbox_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 

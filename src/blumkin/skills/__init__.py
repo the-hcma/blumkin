@@ -1,4 +1,4 @@
-"""Skill catalog and calendar skills."""
+"""Skill catalog and skill metadata."""
 
 from __future__ import annotations
 
@@ -46,6 +46,20 @@ SKILLS: list[SkillSpec] = [
         args=[],
     ),
     SkillSpec(
+        id="calendar.freebusy",
+        cli=["blumkin", "calendar", "freebusy"],
+        summary="Get free/busy for one or more email addresses",
+        mutates=False,
+        notifies_others=False,
+        scopes=["Calendars.ReadWrite"],
+        args=[
+            {"name": "--with", "required": True, "type": "email", "multiple": True},
+            {"name": "--start", "required": True, "type": "datetime"},
+            {"name": "--end", "required": True, "type": "datetime"},
+            {"name": "--tz", "required": False, "type": "iana_tz"},
+        ],
+    ),
+    SkillSpec(
         id="calendar.today",
         cli=["blumkin", "calendar", "today"],
         summary="List the signed-in user's events for today",
@@ -58,6 +72,40 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="calendar.view",
+        cli=["blumkin", "calendar", "view"],
+        summary="List events in a half-open local date range [--from, --to)",
+        mutates=False,
+        notifies_others=False,
+        scopes=["Calendars.ReadWrite"],
+        args=[
+            {"name": "--from", "required": True, "type": "date"},
+            {"name": "--to", "required": True, "type": "date"},
+            {"name": "--tz", "required": False, "type": "iana_tz"},
+        ],
+    ),
+    SkillSpec(
+        id="chat.find",
+        cli=["blumkin", "chat", "find"],
+        summary="Find Teams chats whose members match a display name",
+        mutates=False,
+        notifies_others=False,
+        scopes=["Chat.Read"],
+        args=[{"name": "--with", "required": True, "type": "string"}],
+    ),
+    SkillSpec(
+        id="chat.last",
+        cli=["blumkin", "chat", "last"],
+        summary="Show the last N messages from a chat matched by display name",
+        mutates=False,
+        notifies_others=False,
+        scopes=["Chat.Read"],
+        args=[
+            {"name": "--with", "required": True, "type": "string"},
+            {"name": "--n", "required": False, "type": "int"},
+        ],
+    ),
+    SkillSpec(
         id="doctor",
         cli=["blumkin", "doctor"],
         summary="Check config, cache, and skill scope requirements",
@@ -65,6 +113,15 @@ SKILLS: list[SkillSpec] = [
         notifies_others=False,
         scopes=[],
         args=[],
+    ),
+    SkillSpec(
+        id="mail.inbox",
+        cli=["blumkin", "mail", "inbox"],
+        summary="List recent inbox messages",
+        mutates=False,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[{"name": "--top", "required": False, "type": "int"}],
     ),
     SkillSpec(
         id="skills.describe",
