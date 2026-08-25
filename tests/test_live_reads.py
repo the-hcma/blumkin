@@ -79,7 +79,7 @@ def test_live_silent_refresh_after_forced_access_token_expiry() -> None:
         assert after["access_token_expires_at"] is not None
         assert after["access_token_expires_in_seconds"] is not None
         assert after["access_token_expires_in_seconds"] > 0
-    except Exception:
+    except BaseException:
         cache_path.write_text(backup)
         cache_path.chmod(0o600)
         raise

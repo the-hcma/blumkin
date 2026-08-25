@@ -29,7 +29,7 @@ tenant_id = "brk.tech"
 default_tz = "America/New_York"
 ```
 
-Optional: `client_secret` in the same file or `BLUMKIN_CLIENT_SECRET` (not required for interactive public-client browser auth).
+Interactive browser auth is public-client only (`client_id` + `tenant_id`). Do not set a client secret for this flow.
 
 Token cache files (written by `blumkin auth login`):
 

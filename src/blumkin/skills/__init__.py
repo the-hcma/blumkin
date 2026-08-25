@@ -51,7 +51,7 @@ SKILLS: list[SkillSpec] = [
         summary="List the signed-in user's events for today",
         mutates=False,
         notifies_others=False,
-        scopes=["Calendars.ReadWrite"],
+        scopes=["Calendars.Read"],
         args=[
             {"name": "--date", "required": False, "type": "date"},
             {"name": "--tz", "required": False, "type": "iana_tz"},

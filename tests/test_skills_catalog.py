@@ -18,3 +18,4 @@ def test_describe_calendar_today() -> None:
     assert skill is not None
     assert skill.cli == ["blumkin", "calendar", "today"]
     assert skill.mutates is False
+    assert skill.scopes == ["Calendars.Read"]

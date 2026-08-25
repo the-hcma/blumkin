@@ -5,13 +5,20 @@ from __future__ import annotations
 import asyncio
 from datetime import date
 from typing import Any
+from zoneinfo import ZoneInfoNotFoundError
 
 import click
 
 from blumkin import __version__
 from blumkin.auth import create_credential, logout, save_token_cache, status_dict
 from blumkin.config import load_config
-from blumkin.exit_codes import EXIT_AUTH, EXIT_NOT_FOUND, EXIT_OTHER, EXIT_SUCCESS
+from blumkin.exit_codes import (
+    EXIT_AUTH,
+    EXIT_NOT_FOUND,
+    EXIT_OTHER,
+    EXIT_SUCCESS,
+    EXIT_USAGE,
+)
 from blumkin.output import emit_error, emit_json, emit_lines
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import calendar_today, format_today_human
@@ -199,7 +206,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
             emit_lines([f"problem: {problem}"])
         emit_lines([f"skills: {', '.join(payload['skills'])}"])
     if problems:
-        raise SystemExit(EXIT_AUTH if "client_id" in problems[0] else EXIT_OTHER)
+        raise SystemExit(EXIT_AUTH)
 
 
 @main.group()
@@ -221,6 +228,9 @@ def calendar_today_cmd(ctx: click.Context, day: Any, as_json_flag: bool) -> None
     except ValueError as exc:
         emit_error(error="auth_required", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_AUTH) from exc
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
         emit_error(error="graph_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_OTHER) from exc

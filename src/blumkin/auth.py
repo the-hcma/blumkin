@@ -13,12 +13,7 @@ from msal import SerializableTokenCache
 from blumkin.config import BlumkinConfig, load_config
 
 SCOPES = [
-    "Calendars.ReadWrite",
-    "Channel.ReadBasic.All",
-    "Chat.Read",
-    "Mail.ReadWrite",
-    "Mail.Send",
-    "Team.ReadBasic.All",
+    "Calendars.Read",
     "User.Read",
 ]
 
