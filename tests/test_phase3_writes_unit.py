@@ -52,6 +52,13 @@ def test_calendar_accept_by_event_id_mocked(monkeypatch) -> None:
     assert accept_await.args[0].send_response is True
 
 
+def test_calendar_accept_requires_exactly_one_mode() -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        asyncio.run(calendar_accept(event_id=None, today_pending=False))
+    with pytest.raises(ValueError, match="exactly one"):
+        asyncio.run(calendar_accept(event_id="evt-1", today_pending=True))
+
+
 def test_calendar_accept_today_pending_mocked(monkeypatch) -> None:
     async def fake_today(**_kwargs):
         return {
