@@ -281,7 +281,7 @@ Blocked until `OnlineMeetings.ReadWrite` is on the Entra app + re-consent.
 1. `blumkin skills list --json`  
 2. Run skill with `--json`  
 3. On `auth_required` / exit `3` → ask user to `blumkin auth login`  
-4. On `missing_scope` / exit `4` → point at Identity follow-up WO  
+4. On `missing_scope` / exit `4` → point at private-lab Identity follow-up notes (not public WO numbers)  
 
 Full integration guidance (skill vs MCP, Cursor / Copilot CLIs): **§6**.
 
@@ -494,7 +494,7 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 - `mail.draft|send-draft`  
 
 ### Phase 4 — Post–Identity follow-up
-- Enable scopes from Remedy **WO0000001162425** (delegated add-ons)  
+- Enable delegated add-on scopes once Identity grants the private-lab follow-up  
 - `chat.send|edit|delete`, `meeting.get|transcription`  
 
 ### Phase 5 — Agent DX (Cursor Agent CLI + Copilot CLI)
@@ -531,5 +531,5 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 ## 12. References
 
 - Private Graph lab (hand automations; not in this repo)  
-- Identity follow-up: Remedy **WO0000001162425**  
+- Identity follow-up: private Graph lab notes (Remedy WO — not published here)  
 - Org tooling: [repository-helpers](https://github.com/the-hcma/repository-helpers) (`github-repo-lint`, `pre-pr-checks`, `start-development`)
