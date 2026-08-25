@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
+from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
 
 from blumkin.skills.calendar import _event_to_dict
 from blumkin.skills.calendar_writes import (
@@ -176,6 +177,7 @@ def test_calendar_create_mocked(monkeypatch) -> None:
     posted = await_args.args[0]
     assert posted.subject == "Sync"
     assert posted.is_online_meeting is True
+    assert posted.online_meeting_provider is OnlineMeetingProviderType.TeamsForBusiness
     assert posted.attendees[0].email_address.address == "peer@example.com"
     start = datetime.fromisoformat(posted.start.date_time)
     end = datetime.fromisoformat(posted.end.date_time)
