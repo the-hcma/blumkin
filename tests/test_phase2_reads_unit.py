@@ -245,8 +245,8 @@ def test_chat_find_auth_error_propagates(monkeypatch) -> None:
     client.me.chats.get = AsyncMock(
         return_value=SimpleNamespace(value=[chat], odata_next_link=None)
     )
-    err = RuntimeError("forbidden")
-    err.response_status_code = 403  # type: ignore[attr-defined]
+    err = RuntimeError("unauthorized")
+    err.response_status_code = 401  # type: ignore[attr-defined]
     client.me.chats.by_chat_id.return_value.members.get = AsyncMock(side_effect=err)
     monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
@@ -257,7 +257,41 @@ def test_chat_find_auth_error_propagates(monkeypatch) -> None:
         asyncio.run(chat_find(with_name="daniel"))
         raise AssertionError("expected auth-class error")
     except RuntimeError as exc:
-        assert getattr(exc, "response_status_code", None) == 403
+        assert getattr(exc, "response_status_code", None) == 401
+
+
+def test_chat_find_skips_forbidden_member_fetch(monkeypatch) -> None:
+    bad = SimpleNamespace(id="chat-bad", topic="Meeting", chat_type="meeting")
+    good = SimpleNamespace(id="chat-good", topic="Hit", chat_type="oneOnOne")
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(
+        return_value=SimpleNamespace(value=[bad, good], odata_next_link=None)
+    )
+
+    def by_chat_id(chat_id: str):
+        stub = MagicMock()
+        if chat_id == "chat-bad":
+            err = RuntimeError("forbidden")
+            err.response_status_code = 403  # type: ignore[attr-defined]
+            stub.members.get = AsyncMock(side_effect=err)
+        else:
+            stub.members.get = AsyncMock(
+                return_value=SimpleNamespace(
+                    value=[SimpleNamespace(display_name="Daniel Erickson")],
+                    odata_next_link=None,
+                )
+            )
+        return stub
+
+    client.me.chats.by_chat_id.side_effect = by_chat_id
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    found = asyncio.run(chat_find(with_name="daniel"))
+    assert [c["id"] for c in found["items"]] == ["chat-good"]
+    assert found["skipped"] == 1
 
 
 def test_chat_last_follows_message_next_link(monkeypatch) -> None:
