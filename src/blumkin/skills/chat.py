@@ -11,6 +11,7 @@ from typing import Any
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client
 
+_MEMBER_FETCH_CONCURRENCY = 8
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -28,16 +29,22 @@ async def chat_find(
         await client.me.chats.get(),
         lambda url: client.me.chats.with_url(url).get(),
     )
+    sem = asyncio.Semaphore(_MEMBER_FETCH_CONCURRENCY)
 
     async def _match(chat: Any) -> dict[str, Any] | None:
         chat_id = chat.id
         if not chat_id:
             return None
-        members_page = await client.me.chats.by_chat_id(chat_id).members.get()
-        members = await _collect_pages(
-            members_page,
-            lambda url: client.me.chats.by_chat_id(chat_id).members.with_url(url).get(),
-        )
+        async with sem:
+            try:
+                members_page = await client.me.chats.by_chat_id(chat_id).members.get()
+                members = await _collect_pages(
+                    members_page,
+                    lambda url: client.me.chats.by_chat_id(chat_id).members.with_url(url).get(),
+                )
+            except Exception:
+                # Skip chats Graph refuses (throttle, lost access); keep searching.
+                return None
         member_names = [
             str(name) for member in members if (name := getattr(member, "display_name", None))
         ]

@@ -181,6 +181,37 @@ def test_chat_find_follows_next_link(monkeypatch) -> None:
     client.me.chats.with_url.assert_called_once_with("https://example/next")
 
 
+def test_chat_find_skips_failing_member_fetch(monkeypatch) -> None:
+    bad = SimpleNamespace(id="chat-bad", topic="Broken", chat_type="group")
+    good = SimpleNamespace(id="chat-good", topic="Hit", chat_type="oneOnOne")
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(
+        return_value=SimpleNamespace(value=[bad, good], odata_next_link=None)
+    )
+
+    def by_chat_id(chat_id: str):
+        stub = MagicMock()
+        if chat_id == "chat-bad":
+            stub.members.get = AsyncMock(side_effect=RuntimeError("429 throttled"))
+        else:
+            stub.members.get = AsyncMock(
+                return_value=SimpleNamespace(
+                    value=[SimpleNamespace(display_name="Daniel Erickson")],
+                    odata_next_link=None,
+                )
+            )
+        return stub
+
+    client.me.chats.by_chat_id.side_effect = by_chat_id
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    found = asyncio.run(chat_find(with_name="daniel"))
+    assert [c["id"] for c in found["items"]] == ["chat-good"]
+
+
 def test_calendar_view_rejects_inverted_range(monkeypatch) -> None:
     monkeypatch.setattr(
         "blumkin.skills.calendar.load_config",
