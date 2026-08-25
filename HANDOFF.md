@@ -51,13 +51,13 @@ Auth caching: Keychain-only failed under Cursor; **file cache + AuthenticationRe
 
 ## Identity / permissions follow-up (open)
 
-A Remedy follow-up is open for **delegated** add-ons (ticket details stay in the private Graph lab — not this repo). Keep existing scopes; request:
+A Remedy follow-up is open for **delegated** add-ons (ticket details stay in the private Graph lab — not this repo). **Already granted / in use:** `Calendars.ReadWrite`, `Chat.Read`, `Mail.ReadWrite`, `Mail.Send`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `User.Read`. Keep those; request add-ons:
 
 - Teams: `Chat.ReadWrite`, `ChannelMessage.Read.All`, `ChannelMessage.Send`, `OnlineMeetings.ReadWrite`, `OnlineMeetingTranscript.Read.All`, `Presence.Read`
 - Mailbox: `MailboxSettings.Read`
 - Productivity: `Files.ReadWrite`, `Tasks.ReadWrite`, `Contacts.ReadWrite`, `People.Read`, `Notes.ReadWrite`
 
-After grant: add scopes to the client, delete token cache + auth record, re-login.
+After grant: add the **new** scopes to the client, delete token cache + auth record, re-login.
 
 **Do not** request app-only / broad shared `*.All` / RSC all-messages in that follow-up.
 

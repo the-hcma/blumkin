@@ -483,7 +483,7 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 - [x] `skills list|describe`, `doctor`  
 - [x] Port auth/cache pattern from the private Graph lab  
 - [x] Ruff/pyright/pytest wired; `.github/ci/python-static` + hermetic pytest + secret-scan  
-- [x] First skill: `calendar.today` (M1 Graph scopes: `Calendars.Read`, `User.Read`)  
+- [x] First skill: `calendar.today` (M1 Graph scopes: `Calendars.ReadWrite`, `User.Read`)  
 - [x] Project Cursor skill: `.cursor/skills/blumkin/SKILL.md`  
 
 ### Phase 2 — Read skills
