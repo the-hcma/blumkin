@@ -51,7 +51,7 @@ Auth caching: Keychain-only failed under Cursor; **file cache + AuthenticationRe
 
 ## Identity / permissions follow-up (open)
 
-References existing WO **`WO0000001161564`**. Asks for **delegated** add-ons (keep existing scopes):
+Remedy follow-up **`WO0000001162425`** asks for **delegated** add-ons (keep existing scopes):
 
 - Teams: `Chat.ReadWrite`, `ChannelMessage.Read.All`, `ChannelMessage.Send`, `OnlineMeetings.ReadWrite`, `OnlineMeetingTranscript.Read.All`, `Presence.Read`
 - Mailbox: `MailboxSettings.Read`

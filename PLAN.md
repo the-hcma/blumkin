@@ -494,7 +494,7 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 - `mail.draft|send-draft`  
 
 ### Phase 4 — Post–Identity follow-up
-- Enable scopes from `TICKET-graph-access-followup.md` / WO0000001161564  
+- Enable scopes from Remedy **WO0000001162425** (delegated add-ons)  
 - `chat.send|edit|delete`, `meeting.get|transcription`  
 
 ### Phase 5 — Agent DX (Cursor Agent CLI + Copilot CLI)
@@ -531,5 +531,5 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 ## 12. References
 
 - Private Graph lab (hand automations; not in this repo)  
-- Identity follow-up: WO0000001161564  
+- Identity follow-up: Remedy **WO0000001162425**  
 - Org tooling: [repository-helpers](https://github.com/the-hcma/repository-helpers) (`github-repo-lint`, `pre-pr-checks`, `start-development`)
