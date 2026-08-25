@@ -14,10 +14,12 @@ from msal import SerializableTokenCache
 
 from blumkin.config import BlumkinConfig, load_config
 
-# Prefer Calendars.ReadWrite (not .Read): MSAL silent refresh matches granted
-# scope names exactly. A cache minted with ReadWrite will not satisfy get_token
-# for Calendars.Read, which falls through to interactive login (and often Entra
-# "Need admin approval" when user consent is disabled).
+# Request Calendars.ReadWrite (not .Read): MSAL silent refresh matches granted
+# scope *names* exactly. The Entra app already has delegated Calendars.ReadWrite
+# (proven in the private Graph lab); caches are minted under that name. Asking for
+# Calendars.Read misses the cache, falls through to interactive login, and — with
+# user consent disabled — hits Entra "Need admin approval". Write skills must still
+# gate mutations with --yes; do not treat this scope as a substitute for --yes.
 SCOPES = [
     "Calendars.ReadWrite",
     "User.Read",
