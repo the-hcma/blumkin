@@ -8,7 +8,12 @@ from blumkin.cli import main
 from blumkin.exit_codes import EXIT_AUTH, EXIT_USAGE
 
 
-def test_calendar_accept_invalid_tz_exits_usage() -> None:
+def test_calendar_accept_invalid_tz_exits_usage(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        'client_id = "00000000-0000-0000-0000-000000000001"\n'
+        'tenant_id = "example.onmicrosoft.com"\n'
+    )
     runner = CliRunner()
     result = runner.invoke(
         main,

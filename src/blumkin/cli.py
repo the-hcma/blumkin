@@ -403,11 +403,15 @@ def calendar_accept_cmd(
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
+        tz_name = _tz_name(ctx, tz_flag)
+        if today_pending:
+            cfg = load_config()
+            ZoneInfo(tz_name or cfg.default_tz)
         payload = asyncio.run(
             calendar_accept(
                 event_id=event_id,
                 today_pending=today_pending,
-                tz_name=_tz_name(ctx, tz_flag),
+                tz_name=tz_name,
             )
         )
     except ValueError as exc:
