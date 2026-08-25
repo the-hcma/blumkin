@@ -44,6 +44,7 @@ Always implement in `.worktrees/<stack-name>-wt`.
 - Product CLI is **`blumkin` on `PATH`** (see `PLAN.md`) — agents and humans
   invoke `blumkin …`, not `uv run blumkin`. Application code is not present
   yet — follow `PLAN.md` when implementing.
+- Runtime config + token cache: **`~/.config/blumkin/`** (never commit).
 
 ---
 
@@ -66,6 +67,11 @@ Always implement in `.worktrees/<stack-name>-wt`.
 - Tests live under `tests/`.
 - Prefer `uv run pytest` (or a small `./test` wrapper once added).
 - New behavior needs tests. Do not merge if the suite fails.
+- **CI:** mocked / offline only — `uv run pytest -m 'not live'`.
+- **Local (required for auth / Graph / live tests):** with
+  `~/.config/blumkin/` configured, also run
+  `BLUMKIN_LIVE=1 uv run pytest -m live` (includes silent refresh after
+  forced access-token expiry). See `.cursor/rules/local-live-graph-tests.mdc`.
 
 ---
 

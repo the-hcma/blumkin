@@ -6,37 +6,54 @@ Blumkin turns Graph flows into **small, invokable skills** any coding agent (**C
 
 It uses **delegated** Microsoft Graph access (acts as the signed-in user).
 
-## Status
+Tracking: [#9 Cursor agent integration (M1 MVP)](https://github.com/the-hcma/blumkin/issues/9).
 
-Planning + org-practices scaffold. **No application code yet.**
-
-- [`PLAN.md`](./PLAN.md) — **CLI design for review** (commands, JSON, **Cursor/Copilot integration**, lint)  
-- [`HANDOFF.md`](./HANDOFF.md) — **session handoff** (proven flows, open Identity follow-up, what to do next)  
-- [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
-
-Hand-proven Graph flows are encoded as Blumkin skills once they settle; prefer validating a new flow outside this repo first, then porting it here.
-
-## Intended usage (future)
-
-Install so `blumkin` is on your `PATH` (planned: `uv tool install` / equivalent). Agents and humans invoke the binary directly — not via `uv run`:
+## Install
 
 ```bash
+uv sync
+uv tool install -e .
+# then invoke on PATH:
 blumkin auth status
-blumkin calendar today --json
 blumkin skills list --json
+blumkin calendar today --json
 ```
 
-## Repository practices
+## Config (`~/.config/blumkin/`)
 
-This tree is set up to work with
-[repository-helpers](https://github.com/the-hcma/repository-helpers) /
-`github-repo-lint` (stacking `gh-stack`, Cursor rules, CODEOWNERS, MIT license,
-`AGENTS.md`):
+Create `~/.config/blumkin/config.toml` (mode `0600`):
+
+```toml
+client_id = "<entra-public-client-id>"
+tenant_id = "brk.tech"
+default_tz = "America/New_York"
+```
+
+Interactive browser auth is public-client only (`client_id` + `tenant_id`). Do not set a client secret for this flow.
+
+Token cache files (written by `blumkin auth login`):
+
+- `~/.config/blumkin/msal_token_cache.json`
+- `~/.config/blumkin/auth_record.json`
+
+Override config directory with `BLUMKIN_CONFIG_DIR`. Never commit these files.
+
+## Tests
 
 ```bash
-# from a repository-helpers clone:
-scripts/github-repo-lint --repo the-hcma/blumkin --suggest
+uv run pytest -m 'not live'          # CI-equivalent (mocks / offline)
+BLUMKIN_LIVE=1 uv run pytest -m live # live Graph reads + silent refresh
 ```
+
+Live tests need `~/.config/blumkin/` by default (override with `BLUMKIN_CONFIG_DIR`):
+`config.toml`, token cache, auth record, and a usable refresh token. Never commit those files.
+
+## Docs
+
+- [`PLAN.md`](./PLAN.md) — CLI design  
+- [`HANDOFF.md`](./HANDOFF.md) — session handoff  
+- [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
+- [`.cursor/skills/blumkin/SKILL.md`](./.cursor/skills/blumkin/SKILL.md) — Cursor agent skill  
 
 ## License
 

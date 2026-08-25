@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "blumkin"
+version = "0.1.0"
+description = "Personal Microsoft 365 / Graph skills CLI (delegated as me)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"
+authors = [
+    { name = "Henrique Andrade", email = "thehcma@users.noreply.github.com" },
+]
+keywords = [
+    "blumkin",
+    "cli",
+    "microsoft-graph",
+    "outlook",
+    "teams",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Communications :: Email",
+]
+dependencies = [
+    "azure-identity>=1.23.0",
+    "click>=8.2.0",
+    "msal>=1.32.0",
+    "msgraph-sdk>=1.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyright>=1.1.400",
+    "pytest>=8.3.0",
+    "ruff>=0.12.0",
+]
+
+[project.scripts]
+blumkin = "blumkin.cli:main"
+
+[tool.pytest.ini_options]
+markers = [
+    "live: live Graph read tests (needs ~/.config/blumkin and network)",
+]
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.14"
+typeCheckingMode = "basic"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.400",
+    "pytest>=8.3.0",
+    "ruff>=0.12.0",
+]
