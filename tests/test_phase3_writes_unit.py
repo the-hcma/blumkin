@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -39,6 +39,8 @@ def test_calendar_accept_by_event_id_mocked(monkeypatch) -> None:
     payload = asyncio.run(calendar_accept(event_id="evt-1", today_pending=False))
     assert payload == {"accepted": ["evt-1"], "count": 1}
     client.me.events.by_event_id.assert_called_once_with("evt-1")
+    accept_body = client.me.events.by_event_id.return_value.accept.post.await_args.args[0]
+    assert accept_body.send_response is True
 
 
 def test_calendar_accept_today_pending_mocked(monkeypatch) -> None:
@@ -64,6 +66,8 @@ def test_calendar_accept_today_pending_mocked(monkeypatch) -> None:
     payload = asyncio.run(calendar_accept(event_id=None, today_pending=True))
     assert payload["accepted"] == ["a"]
     assert payload["count"] == 1
+    accept_body = client.me.events.by_event_id.return_value.accept.post.await_args.args[0]
+    assert accept_body.send_response is True
 
 
 def test_needs_accept_filters_responses() -> None:
@@ -153,6 +157,10 @@ def test_calendar_create_mocked(monkeypatch) -> None:
     posted = await_args.args[0]
     assert posted.subject == "Sync"
     assert posted.is_online_meeting is True
+    assert posted.attendees[0].email_address.address == "peer@example.com"
+    start = datetime.fromisoformat(posted.start.date_time)
+    end = datetime.fromisoformat(posted.end.date_time)
+    assert end - start == timedelta(minutes=30)
 
 
 def test_mail_draft_and_send_mocked(monkeypatch) -> None:
@@ -167,5 +175,9 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
     )
     saved = asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello"))
     assert saved["draft"]["id"] == "draft-1"
+    posted = client.me.messages.post.await_args.args[0]
+    assert posted.subject == "Hi"
+    assert posted.body.content == "Hello"
+    assert posted.to_recipients[0].email_address.address == "a@b.com"
     sent = asyncio.run(mail_send_draft(draft_id="draft-1"))
     assert sent == {"sent": "draft-1"}
