@@ -470,22 +470,24 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 
 ## 9. Phases
 
-### Phase 0 — Docs & practices scaffold (current)
+### Phase 0 — Docs & practices scaffold
 - [x] Repo [the-hcma/blumkin](https://github.com/the-hcma/blumkin)  
 - [x] `README.md`, expanded `PLAN.md`  
 - [x] `AGENTS.md`, `LICENSE`, CODEOWNERS, stacking marker, cursor rules  
 - [x] Initial commit + public remote  
 - [x] `github-repo-lint --strict-onboarding` (protect-main, MQ, CI hygiene)  
 
-### Phase 1 — Skeleton CLI
-- `pyproject.toml` + `uv.lock` + `blumkin` entrypoint on `PATH`  
-- `auth login|status|logout`  
-- `skills list|describe`, `doctor`  
-- Port auth/cache from the private Graph lab  
-- Ruff/pyright/pytest wired; adopt `.github/ci/python-static` + secret-scan  
+### Phase 1 — Skeleton CLI (M1 — shipped in [#10](https://github.com/the-hcma/blumkin/pull/10))
+- [x] `pyproject.toml` + `uv.lock` + `blumkin` entrypoint on `PATH` (`uv tool install`)  
+- [x] `auth login|status|logout`  
+- [x] `skills list|describe`, `doctor`  
+- [x] Port auth/cache pattern from the private Graph lab  
+- [x] Ruff/pyright/pytest wired; `.github/ci/python-static` + hermetic pytest + secret-scan  
+- [x] First skill: `calendar.today` (M1 Graph scopes: `Calendars.Read`, `User.Read`)  
+- [x] Project Cursor skill: `.cursor/skills/blumkin/SKILL.md`  
 
 ### Phase 2 — Read skills
-- `calendar.today|view|freebusy`  
+- `calendar.view|freebusy` (today already shipped)  
 - `mail.inbox`  
 - `chat.find|last`  
 
@@ -499,8 +501,8 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 
 ### Phase 5 — Agent DX (Cursor Agent CLI + Copilot CLI)
 - Freeze `skills list --json` schema  
-- Ship `.cursor/skills/blumkin/SKILL.md` (shell-first; see §6)  
-- Doc snippet for Copilot CLI custom instructions  
+- [x] Ship `.cursor/skills/blumkin/SKILL.md` (shell-first; see §6)  
+- Document personal `~/.cursor/skills/blumkin/` install + Copilot CLI custom-instructions snippet  
 - **No MCP in v1**; optional thin MCP wrapper later if a host needs it  
 
 ---
