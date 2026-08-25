@@ -146,7 +146,9 @@ def test_chat_find_and_last_mocked(monkeypatch) -> None:
     assert last["items"][0]["body_text"] == "ping"
     stub_get = client.me.chats.by_chat_id.return_value.messages.get
     assert stub_get.await_count == 1
-    cfg = stub_get.await_args.args[0]
+    await_args = stub_get.await_args
+    assert await_args is not None
+    cfg = await_args.args[0]
     assert cfg.query_parameters.orderby == ["createdDateTime desc"]
 
 
