@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from azure.identity import AuthenticationRecord, InteractiveBrowserCredential
@@ -18,6 +19,7 @@ SCOPES = [
 ]
 
 _token_cache = SerializableTokenCache()
+_atexit_registered = False
 _cache_bound_path: str | None = None
 
 
@@ -127,7 +129,7 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
 
 
 def _ensure_cache(cfg: BlumkinConfig) -> None:
-    global _cache_bound_path
+    global _atexit_registered, _cache_bound_path
     path = str(cfg.token_cache_path)
     if _cache_bound_path == path:
         return
@@ -135,7 +137,10 @@ def _ensure_cache(cfg: BlumkinConfig) -> None:
     if cfg.token_cache_path.is_file():
         _token_cache.deserialize(cfg.token_cache_path.read_text())
     _cache_bound_path = path
-    atexit.register(lambda: save_token_cache(cfg))
+    # Register once: save only the currently bound path (never stale dirs).
+    if not _atexit_registered:
+        atexit.register(_save_bound_token_cache_at_exit)
+        _atexit_registered = True
 
 
 def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
@@ -151,3 +156,13 @@ def _save_auth_record(cfg: BlumkinConfig, record: AuthenticationRecord) -> None:
     cfg.config_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     cfg.auth_record_path.write_text(record.serialize())
     cfg.auth_record_path.chmod(0o600)
+
+
+def _save_bound_token_cache_at_exit() -> None:
+    """Persist the in-memory MSAL cache to the currently bound path only."""
+    if _cache_bound_path is None or not _token_cache.has_state_changed:
+        return
+    path = Path(_cache_bound_path)
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    path.write_text(_token_cache.serialize())
+    path.chmod(0o600)
