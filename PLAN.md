@@ -501,8 +501,8 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 
 ### Phase 5 — Agent DX (Cursor Agent CLI + Copilot CLI)
 - Freeze `skills list --json` schema  
-- [x] Ship `.cursor/skills/blumkin/SKILL.md` (shell-first; see §6) — expand for personal install / Copilot CLI docs  
-- Doc snippet for Copilot CLI custom instructions  
+- [x] Ship `.cursor/skills/blumkin/SKILL.md` (shell-first; see §6)  
+- Document personal `~/.cursor/skills/blumkin/` install + Copilot CLI custom-instructions snippet  
 - **No MCP in v1**; optional thin MCP wrapper later if a host needs it  
 
 ---
