@@ -8,9 +8,14 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from blumkin.config import BlumkinConfig, load_config
-from blumkin.graph import create_graph_client
+from msgraph.generated.users.item.chats.item.messages.messages_request_builder import (
+    MessagesRequestBuilder,
+)
 
+from blumkin.config import BlumkinConfig, load_config
+from blumkin.graph import create_graph_client, request_config
+
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _MEMBER_FETCH_CONCURRENCY = 8
 _SKIPPED = object()
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -97,19 +102,27 @@ async def chat_last(
     cfg = config or load_config()
     client = create_graph_client(cfg)
     chat_id = chat["id"]
-    raw = await _collect_pages(
-        await client.me.chats.by_chat_id(chat_id).messages.get(),
-        lambda url: client.me.chats.by_chat_id(chat_id).messages.with_url(url).get(),
+    query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+        orderby=["createdDateTime desc"],
+        top=50,
     )
-    # Graph returns newest-first; take first n ordinary message rows.
+    page = await client.me.chats.by_chat_id(chat_id).messages.get(request_config(query))
+    # Newest-first via $orderby; stop once we have n ordinary messages.
     selected: list[dict[str, Any]] = []
-    for msg in raw:
-        msg_type = getattr(msg, "message_type", None)
-        if msg_type is not None and str(msg_type) != "message":
-            continue
-        selected.append(_message_to_dict(msg))
+    while page is not None and len(selected) < n:
+        for msg in page.value or []:
+            msg_type = getattr(msg, "message_type", None)
+            if msg_type is not None and str(msg_type) != "message":
+                continue
+            selected.append(_message_to_dict(msg))
+            if len(selected) >= n:
+                break
         if len(selected) >= n:
             break
+        link = getattr(page, "odata_next_link", None)
+        if not link:
+            break
+        page = await client.me.chats.by_chat_id(chat_id).messages.with_url(link).get()
     return {
         "chat": chat,
         "items": selected,
@@ -153,8 +166,8 @@ def format_last_human(payload: dict[str, Any]) -> list[str]:
         lines.append("  (none)")
         return lines
     for item in payload["items"]:
-        who = item.get("from_name") or "(unknown)"
-        text = item.get("body_text") or ""
+        who = _sanitize_terminal(str(item.get("from_name") or "(unknown)"))
+        text = _sanitize_terminal(str(item.get("body_text") or ""))
         lines.append(f"  • {item.get('created')} {who}: {text}")
     return lines
 
@@ -189,7 +202,7 @@ def _html_to_text(raw: str) -> str:
 
 
 def _is_auth_class_error(exc: BaseException) -> bool:
-    """True for HTTP 401/403 so callers surface auth/graph_error instead of skipping."""
+    """True for HTTP 401/403 so CLI maps to EXIT_AUTH / EXIT_MISSING_SCOPE."""
     return getattr(exc, "response_status_code", None) in {401, 403}
 
 
@@ -219,3 +232,8 @@ def _name_matches(needle: str, display_name: str) -> bool:
     if not tokens:
         return False
     return all(token in hay for token in tokens)
+
+
+def _sanitize_terminal(text: str) -> str:
+    """Strip C0/C1 control chars that could hijack a terminal in human output."""
+    return _CONTROL_RE.sub("", text)

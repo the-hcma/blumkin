@@ -14,7 +14,7 @@ from blumkin.skills.calendar import (
     format_view_human,
     parse_local_datetime,
 )
-from blumkin.skills.chat import chat_find, chat_last, format_find_human
+from blumkin.skills.chat import chat_find, chat_last, format_find_human, format_last_human
 from blumkin.skills.mail import format_inbox_human, mail_inbox
 
 
@@ -144,6 +144,10 @@ def test_chat_find_and_last_mocked(monkeypatch) -> None:
     last = asyncio.run(chat_last(with_name="daniel", n=1))
     assert last["chat"]["id"] == "chat-1"
     assert last["items"][0]["body_text"] == "ping"
+    stub_get = client.me.chats.by_chat_id.return_value.messages.get
+    assert stub_get.await_count == 1
+    cfg = stub_get.await_args.args[0]
+    assert cfg.query_parameters.orderby == ["createdDateTime desc"]
 
 
 def test_chat_find_follows_next_link(monkeypatch) -> None:
@@ -292,6 +296,28 @@ def test_chat_last_follows_message_next_link(monkeypatch) -> None:
     last = asyncio.run(chat_last(with_name="daniel", n=1))
     assert last["items"][0]["id"] == "msg-1"
     stub.messages.with_url.assert_called_once_with("https://example/msgs")
+
+
+def test_format_last_human_strips_control_chars() -> None:
+    payload = {
+        "chat": {"id": "c1", "topic": "T"},
+        "items": [
+            {
+                "body_text": "hi\x1b[2Jthere",
+                "created": "2026-08-25",
+                "from_name": "Dan\x07iel",
+            }
+        ],
+        "partial": False,
+        "query": "dan",
+        "skipped": 0,
+    }
+    lines = format_last_human(payload)
+    joined = "\n".join(lines)
+    assert "\x1b" not in joined
+    assert "\x07" not in joined
+    assert "hi[2Jthere" in joined
+    assert "Daniel" in joined
 
 
 def test_calendar_view_rejects_inverted_range(monkeypatch) -> None:

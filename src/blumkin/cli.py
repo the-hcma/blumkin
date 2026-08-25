@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime
-from typing import Any
+from typing import Any, NoReturn
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import click
@@ -14,6 +14,7 @@ from blumkin.auth import create_credential, logout, save_token_cache, status_dic
 from blumkin.config import load_config
 from blumkin.exit_codes import (
     EXIT_AUTH,
+    EXIT_MISSING_SCOPE,
     EXIT_NOT_FOUND,
     EXIT_OTHER,
     EXIT_SUCCESS,
@@ -36,6 +37,18 @@ from blumkin.skills.mail import format_inbox_human, mail_inbox
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
     return bool(ctx.obj.get("as_json") or as_json_flag)
+
+
+def _raise_chat_graph_error(exc: BaseException, *, as_json: bool) -> NoReturn:
+    status = getattr(exc, "response_status_code", None)
+    if status == 401:
+        emit_error(error="auth_required", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_AUTH) from exc
+    if status == 403:
+        emit_error(error="missing_scope", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_MISSING_SCOPE) from exc
+    emit_error(error="graph_error", message=str(exc), as_json=as_json)
+    raise SystemExit(EXIT_OTHER) from exc
 
 
 @click.group()
@@ -350,8 +363,7 @@ def chat_find_cmd(ctx: click.Context, with_name: str, as_json_flag: bool) -> Non
         emit_error(error="usage_error", message=msg, as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
-        emit_error(error="graph_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
+        _raise_chat_graph_error(exc, as_json=as_json)
     if as_json:
         emit_json(payload)
     else:
@@ -377,8 +389,7 @@ def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool
         emit_error(error="usage_error", message=msg, as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
-        emit_error(error="graph_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
+        _raise_chat_graph_error(exc, as_json=as_json)
     if as_json:
         emit_json(payload)
     else:
