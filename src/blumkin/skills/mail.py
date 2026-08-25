@@ -12,6 +12,7 @@ from msgraph.generated.users.item.messages.messages_request_builder import (
 
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, request_config
+from blumkin.output import sanitize_terminal
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -51,8 +52,8 @@ def format_inbox_human(payload: dict[str, Any]) -> list[str]:
         return lines
     for item in payload["items"]:
         unread = "" if item.get("is_read") else " [unread]"
-        who = item.get("from_name") or item.get("from_email") or "(unknown)"
-        subject = item.get("subject") or "(no subject)"
+        who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
+        subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
         lines.append(f"  • {item.get('received')}{unread} — {who}: {subject}")
     return lines
 

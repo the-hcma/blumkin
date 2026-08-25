@@ -14,8 +14,8 @@ from msgraph.generated.users.item.chats.item.messages.messages_request_builder i
 
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, request_config
+from blumkin.output import sanitize_terminal
 
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _MEMBER_FETCH_CONCURRENCY = 8
 _SKIPPED = object()
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -141,8 +141,8 @@ def format_find_human(payload: dict[str, Any]) -> list[str]:
         lines.append("  (none)")
         return lines
     for item in payload["items"]:
-        topic = item.get("topic") or "(no topic)"
-        members = ", ".join(item.get("members") or [])
+        topic = sanitize_terminal(str(item.get("topic") or "(no topic)"))
+        members = sanitize_terminal(", ".join(item.get("members") or []))
         lines.append(f"  • {topic} [{item.get('chat_type')}] members={members}")
         lines.append(f"    id={item.get('id')}")
     return lines
@@ -158,7 +158,7 @@ def format_last_human(payload: dict[str, Any]) -> list[str]:
                 f"  (skipped {skipped} chat(s) due to Graph errors; results may be partial)"
             )
         return lines
-    topic = chat.get("topic") or "(no topic)"
+    topic = sanitize_terminal(str(chat.get("topic") or "(no topic)"))
     lines = [f"Last messages in {topic!r} ({chat.get('id')}):"]
     if skipped:
         lines.append(f"  (skipped {skipped} chat(s) while matching; results may be partial)")
@@ -166,8 +166,8 @@ def format_last_human(payload: dict[str, Any]) -> list[str]:
         lines.append("  (none)")
         return lines
     for item in payload["items"]:
-        who = _sanitize_terminal(str(item.get("from_name") or "(unknown)"))
-        text = _sanitize_terminal(str(item.get("body_text") or ""))
+        who = sanitize_terminal(str(item.get("from_name") or "(unknown)"))
+        text = sanitize_terminal(str(item.get("body_text") or ""))
         lines.append(f"  • {item.get('created')} {who}: {text}")
     return lines
 
@@ -232,8 +232,3 @@ def _name_matches(needle: str, display_name: str) -> bool:
     if not tokens:
         return False
     return all(token in hay for token in tokens)
-
-
-def _sanitize_terminal(text: str) -> str:
-    """Strip C0/C1 control chars that could hijack a terminal in human output."""
-    return _CONTROL_RE.sub("", text)

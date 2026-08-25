@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import Any
 
@@ -32,3 +33,11 @@ def emit_json(payload: Any) -> None:
 def emit_lines(lines: list[str]) -> None:
     for line in lines:
         print(line)
+
+
+def sanitize_terminal(text: str) -> str:
+    """Strip C0/C1 control chars that could hijack a terminal in human output."""
+    return _CONTROL_RE.sub("", text)
+
+
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]")

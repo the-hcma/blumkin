@@ -39,7 +39,7 @@ def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
     return bool(ctx.obj.get("as_json") or as_json_flag)
 
 
-def _raise_chat_graph_error(exc: BaseException, *, as_json: bool) -> NoReturn:
+def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
     status = getattr(exc, "response_status_code", None)
     if status == 401:
         emit_error(error="auth_required", message=str(exc), as_json=as_json)
@@ -255,8 +255,7 @@ def calendar_today_cmd(ctx: click.Context, day: Any, as_json_flag: bool) -> None
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
-        emit_error(error="graph_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
+        _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
         emit_json(payload)
     else:
@@ -289,8 +288,7 @@ def calendar_view_cmd(ctx: click.Context, from_day: Any, to_day: Any, as_json_fl
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
-        emit_error(error="graph_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
+        _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
         emit_json(payload)
     else:
@@ -332,8 +330,7 @@ def calendar_freebusy_cmd(
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
-        emit_error(error="graph_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
+        _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
         emit_json(payload)
     else:
@@ -363,7 +360,7 @@ def chat_find_cmd(ctx: click.Context, with_name: str, as_json_flag: bool) -> Non
         emit_error(error="usage_error", message=msg, as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
-        _raise_chat_graph_error(exc, as_json=as_json)
+        _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
         emit_json(payload)
     else:
@@ -389,7 +386,7 @@ def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool
         emit_error(error="usage_error", message=msg, as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
-        _raise_chat_graph_error(exc, as_json=as_json)
+        _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
         emit_json(payload)
     else:
@@ -421,8 +418,7 @@ def mail_inbox_cmd(ctx: click.Context, top: int, as_json_flag: bool) -> None:
         emit_error(error="usage_error", message=msg, as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
-        emit_error(error="graph_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
+        _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
         emit_json(payload)
     else:
