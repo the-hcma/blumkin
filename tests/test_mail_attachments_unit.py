@@ -85,6 +85,34 @@ def test_mail_attachments_list_message_not_found(monkeypatch) -> None:
         asyncio.run(mail_attachments_list(message_id="missing"))
 
 
+def test_mail_attachments_list_follows_next_link(monkeypatch) -> None:
+    first_att = _file_attachment(attachment_id="att-1", name="a.docx")
+    second_att = _file_attachment(attachment_id="att-2", name="b.docx")
+    first_page = SimpleNamespace(
+        value=[first_att],
+        odata_next_link="https://graph.microsoft.com/v1.0/next",
+    )
+    second_page = SimpleNamespace(value=[second_att], odata_next_link=None)
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=_message_stub())
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=first_page
+    )
+    client.me.messages.by_message_id.return_value.attachments.with_url.return_value.get = AsyncMock(
+        return_value=second_page
+    )
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    payload = asyncio.run(mail_attachments_list(message_id="msg-1"))
+    assert [item["id"] for item in payload["attachments"]] == ["att-1", "att-2"]
+    client.me.messages.by_message_id.return_value.attachments.with_url.assert_called_once_with(
+        "https://graph.microsoft.com/v1.0/next"
+    )
+
+
 def test_mail_attachments_download_content_bytes(tmp_path, monkeypatch) -> None:
     file_att = _file_attachment(content=b"hello")
     client = MagicMock()
@@ -142,6 +170,65 @@ def test_mail_attachments_download_value_fallback(tmp_path, monkeypatch) -> None
     call_args = client.request_adapter.send_primitive_async.await_args
     assert call_args is not None
     assert call_args.args[1] == "bytes"
+    request_info = call_args.args[0]
+    assert "msg-1" in request_info.url
+    assert "att-1" in request_info.url
+    assert "{" not in request_info.url
+
+
+def test_mail_attachments_download_into_existing_directory(tmp_path, monkeypatch) -> None:
+    file_att = _file_attachment(content=b"hello")
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=_message_stub())
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[file_att])
+    )
+    client.me.messages.by_message_id.return_value.attachments.by_attachment_id.return_value.get = (
+        AsyncMock(return_value=file_att)
+    )
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    out_dir = tmp_path / "downloads"
+    out_dir.mkdir()
+    payload = asyncio.run(
+        mail_attachments_download(
+            message_id="msg-1",
+            attachment_id="att-1",
+            out=str(out_dir),
+        )
+    )
+    saved = out_dir / "report.docx"
+    assert saved.read_bytes() == b"hello"
+    assert payload["saved"][0]["saved_path"] == str(saved.resolve())
+
+
+def test_mail_attachments_download_value_fallback_empty_raises(tmp_path, monkeypatch) -> None:
+    file_att = _file_attachment(content=b"fallback", include_bytes=False)
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=_message_stub())
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[file_att])
+    )
+    client.me.messages.by_message_id.return_value.attachments.by_attachment_id.return_value.get = (
+        AsyncMock(return_value=file_att)
+    )
+    client.request_adapter.send_primitive_async = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(RuntimeError, match="empty attachment content"):
+        asyncio.run(
+            mail_attachments_download(
+                message_id="msg-1",
+                attachment_id="att-1",
+                out=str(tmp_path / "saved.docx"),
+            )
+        )
 
 
 def test_mail_attachments_download_all_skips_item_attachment(tmp_path, monkeypatch) -> None:

@@ -57,9 +57,13 @@ def format_attachments_download_human(payload: dict[str, Any]) -> list[str]:
         f"Saved {len(payload.get('saved', []))} attachment(s) for {payload.get('message_id')!r}"
     ]
     for item in payload.get("saved") or []:
-        lines.append(f"  • {item.get('name')!r} → {item.get('saved_path')}")
+        name = sanitize_terminal(str(item.get("name") or ""))
+        saved_path = sanitize_terminal(str(item.get("saved_path") or ""))
+        lines.append(f"  • {name!r} → {saved_path}")
     for item in payload.get("skipped") or []:
-        lines.append(f"  • skipped {item.get('name')!r}: {item.get('reason')}")
+        name = sanitize_terminal(str(item.get("name") or ""))
+        reason = sanitize_terminal(str(item.get("reason") or ""))
+        lines.append(f"  • skipped {name!r}: {reason}")
     return lines
 
 
@@ -71,14 +75,15 @@ def format_attachments_human(payload: dict[str, Any]) -> list[str]:
         return lines
     for item in attachments:
         if item.get("skipped"):
-            lines.append(
-                f"  • {item.get('name') or item.get('id')!r} "
-                f"[{item.get('attachment_type')}] skipped: {item.get('skip_reason')}"
-            )
+            label = sanitize_terminal(str(item.get("name") or item.get("id") or ""))
+            attachment_type = sanitize_terminal(str(item.get("attachment_type") or ""))
+            skip_reason = sanitize_terminal(str(item.get("skip_reason") or ""))
+            lines.append(f"  • {label!r} [{attachment_type}] skipped: {skip_reason}")
         else:
+            name = sanitize_terminal(str(item.get("name") or ""))
+            content_type = sanitize_terminal(str(item.get("content_type") or ""))
             lines.append(
-                f"  • {item.get('name')!r} ({item.get('size')} bytes, {item.get('content_type')}) "
-                f"id={item.get('id')}"
+                f"  • {name!r} ({item.get('size')} bytes, {content_type}) id={item.get('id')}"
             )
     return lines
 
@@ -129,7 +134,13 @@ async def mail_attachments_list(
         select=["id", "name", "size", "contentType", "isInline"],
     )
     page = await client.me.messages.by_message_id(mid).attachments.get(request_config(query))
-    raw = [] if page is None else (page.value or [])
+    raw: list[Any] = []
+    while page is not None:
+        raw.extend(page.value or [])
+        link = getattr(page, "odata_next_link", None)
+        if not link:
+            break
+        page = await client.me.messages.by_message_id(mid).attachments.with_url(link).get()
     return {"attachments": [_attachment_to_dict(att) for att in raw], "message_id": mid}
 
 
