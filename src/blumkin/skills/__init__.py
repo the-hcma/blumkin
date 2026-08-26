@@ -214,6 +214,42 @@ SKILLS: list[SkillSpec] = [
         args=[],
     ),
     SkillSpec(
+        id="mail.attachments",
+        cli=["blumkin", "mail", "attachments"],
+        summary="List attachments on a message",
+        mutates=False,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[{"name": "--id", "required": True, "type": "string"}],
+    ),
+    SkillSpec(
+        id="mail.attachments.download",
+        cli=["blumkin", "mail", "attachments", "download"],
+        summary=(
+            "Download one or all file attachments from a message "
+            "(exactly one of --attachment-id or --all; --out is a file or directory)"
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[
+            {"name": "--message-id", "required": True, "type": "string"},
+            {
+                "name": "--attachment-id",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --attachment-id or --all",
+            },
+            {
+                "name": "--all",
+                "required": False,
+                "type": "flag",
+                "note": "exactly one of --attachment-id or --all; --out must be a directory",
+            },
+            {"name": "--out", "required": True, "type": "path"},
+        ],
+    ),
+    SkillSpec(
         id="mail.delete-draft",
         cli=["blumkin", "mail", "delete-draft"],
         summary="Delete a draft message (does not notify recipients)",

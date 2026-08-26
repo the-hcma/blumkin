@@ -11,7 +11,13 @@ from kiota_abstractions.api_error import APIError
 from blumkin.cli import main
 from blumkin.config import load_config
 from blumkin.exit_codes import EXIT_AUTH, EXIT_NOT_FOUND, EXIT_OTHER, EXIT_USAGE
-from blumkin.skills.mail import MailBodyFileError, MailDraftNotFoundError
+from blumkin.skills.mail import (
+    MailAttachmentNotFoundError,
+    MailAttachmentSkippedError,
+    MailBodyFileError,
+    MailDraftNotFoundError,
+    MailMessageNotFoundError,
+)
 
 
 def _patch_wo1162425_enabled(monkeypatch) -> None:
@@ -69,6 +75,68 @@ def test_mail_send_draft_without_yes_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "send-draft", "--id", "draft-1"])
     assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_attachments_list_missing_id_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "attachments"])
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_attachments_list_emits_json(monkeypatch) -> None:
+    async def _ok(**kwargs):
+        return {
+            "attachments": [{"id": "att-1", "name": "a.docx"}],
+            "message_id": kwargs["message_id"],
+        }
+
+    monkeypatch.setattr("blumkin.cli.mail_attachments_list", _ok)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "attachments", "--id", "msg-1", "--json"])
+    assert result.exit_code == 0
+    assert '"message_id"' in (result.output or "")
+
+
+def test_mail_attachments_download_missing_selector_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "attachments", "download", "--message-id", "msg-1", "--out", "out.bin"],
+    )
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_attachments_download_wires_options_and_emits_json(tmp_path, monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _ok(**kwargs):
+        seen.update(kwargs)
+        return {"message_id": kwargs["message_id"], "saved": [{"name": "a.docx"}], "skipped": []}
+
+    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _ok)
+    runner = CliRunner()
+    out = tmp_path / "saved.docx"
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "attachments",
+            "download",
+            "--message-id",
+            "msg-9",
+            "--attachment-id",
+            "att-1",
+            "--out",
+            str(out),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    assert seen["message_id"] == "msg-9"
+    assert seen["attachment_id"] == "att-1"
+    assert seen["out"] == str(out)
+    assert seen["download_all"] is False
+    assert '"saved"' in (result.output or "")
 
 
 def test_chat_send_without_yes_exits_usage(monkeypatch) -> None:
@@ -193,6 +261,116 @@ def test_meeting_get_not_found_exits(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.cli.meeting_get", _boom)
     runner = CliRunner()
     result = runner.invoke(main, ["meeting", "get", "--event-id", "evt-1", "--json"])
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_mail_attachments_download_all_existing_file_out_exits_usage(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ValueError("--out must be a directory when using --all")
+
+    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "attachments",
+            "download",
+            "--message-id",
+            "msg-1",
+            "--all",
+            "--out",
+            "report.docx",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
+def test_mail_attachments_download_attachment_not_found_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise MailAttachmentNotFoundError("attachment not found: missing")
+
+    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "attachments",
+            "download",
+            "--message-id",
+            "msg-1",
+            "--attachment-id",
+            "missing",
+            "--out",
+            "out.bin",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_mail_attachments_download_skipped_exits_usage(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise MailAttachmentSkippedError("#microsoft.graph.itemAttachment not supported in v1")
+
+    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "attachments",
+            "download",
+            "--message-id",
+            "msg-1",
+            "--attachment-id",
+            "att-inline",
+            "--out",
+            "out.bin",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
+def test_mail_attachments_download_not_found_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise MailMessageNotFoundError("message not found: missing")
+
+    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "attachments",
+            "download",
+            "--message-id",
+            "missing",
+            "--attachment-id",
+            "att-1",
+            "--out",
+            "out.bin",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_mail_attachments_list_not_found_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise MailMessageNotFoundError("message not found: missing")
+
+    monkeypatch.setattr("blumkin.cli.mail_attachments_list", _boom)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "attachments", "--id", "missing", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
     assert "not_found" in (result.output or "")
 

@@ -54,12 +54,19 @@ from blumkin.skills.chat import (
     format_delete_human as format_chat_delete_human,
 )
 from blumkin.skills.mail import (
+    MailAttachmentNotFoundError,
+    MailAttachmentSkippedError,
     MailBodyFileError,
     MailDraftNotFoundError,
+    MailMessageNotFoundError,
+    format_attachments_download_human,
+    format_attachments_human,
     format_delete_draft_human,
     format_draft_human,
     format_inbox_human,
     format_send_draft_human,
+    mail_attachments_download,
+    mail_attachments_list,
     mail_delete_draft,
     mail_draft,
     mail_inbox,
@@ -789,6 +796,90 @@ def mail_inbox_cmd(ctx: click.Context, top: int, as_json_flag: bool) -> None:
         emit_json(payload)
     else:
         emit_lines(format_inbox_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.group("attachments", invoke_without_command=True)
+@click.option("--id", "message_id", default=None, help="Message id.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_attachments_cmd(ctx: click.Context, message_id: str | None, as_json_flag: bool) -> None:
+    """List attachments on a message (default when no subcommand)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    as_json = _as_json(ctx, as_json_flag)
+    if not message_id or not message_id.strip():
+        emit_error(error="usage_error", message="--id is required", as_json=as_json)
+        raise SystemExit(EXIT_USAGE)
+    try:
+        payload = asyncio.run(mail_attachments_list(message_id=message_id))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except MailMessageNotFoundError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_attachments_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail_attachments_cmd.command("download")
+@click.option("--message-id", required=True, help="Message id.")
+@click.option("--attachment-id", default=None, help="Attachment id (omit with --all).")
+@click.option("--all", "download_all", is_flag=True, help="Download every file attachment.")
+@click.option("--out", required=True, type=click.Path(), help="Output file or directory.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_attachments_download_cmd(
+    ctx: click.Context,
+    message_id: str,
+    attachment_id: str | None,
+    download_all: bool,
+    out: str,
+    as_json_flag: bool,
+) -> None:
+    """Download one or all file attachments from a message."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            mail_attachments_download(
+                message_id=message_id,
+                attachment_id=attachment_id,
+                download_all=download_all,
+                out=out,
+            )
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except MailMessageNotFoundError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except MailAttachmentNotFoundError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except MailAttachmentSkippedError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_attachments_download_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 
