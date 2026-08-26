@@ -15,17 +15,19 @@ from msal import SerializableTokenCache
 from blumkin.config import BlumkinConfig, load_config
 
 # Request exact granted scope names for MSAL silent refresh (e.g. Calendars.ReadWrite
-# not .Read). Include scopes for shipped skills; write paths still require --yes.
-# Chat.ReadWrite / OnlineMeetings.ReadWrite need Entra grant + re-consent for live Graph.
-# Keep Chat.Read during transition so shipped chat reads keep working until grant lands.
-SCOPES = [
+# not .Read). Phase 4 add-ons stay off until config/env enables them and Entra grant
+# + re-consent land (see wo1162425_scopes / BLUMKIN_WO1162425_SCOPES).
+BASE_SCOPES = [
     "Calendars.ReadWrite",
     "Chat.Read",
-    "Chat.ReadWrite",
     "Mail.ReadWrite",
     "Mail.Send",
-    "OnlineMeetings.ReadWrite",
     "User.Read",
+]
+
+PHASE4_SCOPES = [
+    "Chat.ReadWrite",
+    "OnlineMeetings.ReadWrite",
 ]
 
 _token_cache = SerializableTokenCache()
@@ -36,6 +38,7 @@ _cache_bound_path: str | None = None
 def create_credential(config: BlumkinConfig | None = None) -> InteractiveBrowserCredential:
     """Build a credential that can silently reuse the cached refresh token."""
     cfg = config or load_config()
+    scopes = effective_scopes(cfg)
     if not cfg.client_id:
         raise ValueError(
             "Missing client_id — set client_id in ~/.config/blumkin/config.toml "
@@ -55,17 +58,25 @@ def create_credential(config: BlumkinConfig | None = None) -> InteractiveBrowser
     credential = InteractiveBrowserCredential(**kwargs)
     if record:
         try:
-            credential.get_token(*SCOPES)
+            credential.get_token(*scopes)
             save_token_cache(cfg)
             return credential
         except Exception:
             # Stale auth record / missing refresh token — force interactive login.
             pass
 
-    record = credential.authenticate(scopes=SCOPES)
+    record = credential.authenticate(scopes=scopes)
     _save_auth_record(cfg, record)
     save_token_cache(cfg)
     return credential
+
+
+def effective_scopes(config: BlumkinConfig | None = None) -> list[str]:
+    """Return MSAL scopes for the current config (Phase 4 add-ons optional)."""
+    cfg = config or load_config()
+    if cfg.wo1162425_scopes:
+        return [*BASE_SCOPES, *PHASE4_SCOPES]
+    return list(BASE_SCOPES)
 
 
 def logout(config: BlumkinConfig | None = None) -> None:
@@ -108,7 +119,9 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "client_id_configured": bool(cfg.client_id),
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),
+        "wo1162425_scopes": cfg.wo1162425_scopes,
         "refresh_token_present": access.get("refresh_token_present", False),
+        "requested_scopes": effective_scopes(cfg),
         "tenant_id": cfg.tenant_id,
         "token_cache": cfg.token_cache_path.is_file(),
     }

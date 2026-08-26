@@ -19,6 +19,7 @@ def test_load_config_from_toml(tmp_path: Path, monkeypatch) -> None:
     assert cfg.tenant_id == "contoso.com"
     assert cfg.default_tz == "UTC"
     assert cfg.config_dir == tmp_path
+    assert cfg.wo1162425_scopes is False
 
 
 def test_env_overrides_toml(tmp_path: Path, monkeypatch) -> None:

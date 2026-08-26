@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from click.testing import CliRunner
 from kiota_abstractions.api_error import APIError
 
 from blumkin.cli import main
+from blumkin.config import load_config
 from blumkin.exit_codes import EXIT_AUTH, EXIT_NOT_FOUND, EXIT_OTHER, EXIT_USAGE
 from blumkin.skills.mail import MailBodyFileError, MailDraftNotFoundError
+
+
+def _patch_wo1162425_enabled(monkeypatch) -> None:
+    def _load():
+        return replace(load_config(), wo1162425_scopes=True)
+
+    monkeypatch.setattr("blumkin.cli.load_config", _load)
 
 
 def test_calendar_accept_invalid_tz_exits_usage(tmp_path, monkeypatch) -> None:
@@ -67,6 +77,8 @@ def test_chat_send_without_yes_exits_usage() -> None:
 
 
 def test_chat_send_ambiguous_exits_usage(monkeypatch) -> None:
+    _patch_wo1162425_enabled(monkeypatch)
+
     async def _boom(**_kwargs):
         raise ValueError("ambiguous chat match for 'dan' (2 chats); pass --chat-id")
 
@@ -101,7 +113,18 @@ def test_meeting_transcription_enable_without_yes_exits_usage() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
+def test_wo1162425_scopes_disabled_blocks_chat_send() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["chat", "send", "--with", "Ada", "--text", "hi", "--yes", "--json"],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "WO1162425 add-on scopes are disabled" in (result.output or "")
+
+
 def test_chat_send_wires_options_and_emits_json(monkeypatch) -> None:
+    _patch_wo1162425_enabled(monkeypatch)
     seen: dict[str, object] = {}
 
     async def _ok(**kwargs):
@@ -127,6 +150,8 @@ def test_chat_send_wires_options_and_emits_json(monkeypatch) -> None:
 
 
 def test_meeting_get_not_found_exits(monkeypatch) -> None:
+    _patch_wo1162425_enabled(monkeypatch)
+
     async def _boom(**_kwargs):
         raise LookupError("event is not a Teams online meeting: evt-1")
 

@@ -114,6 +114,24 @@ def _tz_name(ctx: click.Context, tz_flag: str | None) -> str | None:
     return tz_flag if tz_flag is not None else ctx.obj.get("tz_name")
 
 
+def _require_wo1162425_scopes(*, as_json: bool) -> None:
+    cfg = load_config()
+    if cfg.wo1162425_scopes:
+        return
+    emit_error(
+        error="usage_error",
+        message=(
+            "WO1162425 add-on scopes are disabled. Calendar/mail/chat read skills work "
+            "without them; chat write and meeting skills need wo1162425_scopes = true "
+            "in config.toml (or BLUMKIN_WO1162425_SCOPES=1) after Remedy WO1162425 "
+            "grants Chat.ReadWrite + OnlineMeetings.ReadWrite — then wipe token cache, "
+            "auth record, and re-login."
+        ),
+        as_json=as_json,
+    )
+    raise SystemExit(EXIT_USAGE)
+
+
 def _require_yes(*, yes: bool, as_json: bool) -> None:
     if not yes:
         emit_error(
@@ -290,6 +308,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         problems.append("auth cache incomplete — run: blumkin auth login")
     payload = {
         "ok": not problems,
+        "wo1162425_scopes": cfg.wo1162425_scopes,
         "problems": problems,
         "status": status,
         "skills": [s["id"] for s in skills_catalog()["skills"]],
@@ -298,6 +317,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_json(payload)
     else:
         emit_lines([f"ok: {payload['ok']}"])
+        emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         for problem in problems:
             emit_lines([f"problem: {problem}"])
         emit_lines([f"skills: {', '.join(payload['skills'])}"])
@@ -578,6 +598,7 @@ def chat_delete_cmd(
 ) -> None:
     """Soft-delete a chat message."""
     as_json = _as_json(ctx, as_json_flag)
+    _require_wo1162425_scopes(as_json=as_json)
     _require_yes(yes=yes, as_json=as_json)
     try:
         payload = asyncio.run(chat_delete(chat_id=chat_id, message_id=message_id))
@@ -614,6 +635,7 @@ def chat_edit_cmd(
 ) -> None:
     """Edit a chat message body in place."""
     as_json = _as_json(ctx, as_json_flag)
+    _require_wo1162425_scopes(as_json=as_json)
     _require_yes(yes=yes, as_json=as_json)
     try:
         payload = asyncio.run(chat_edit(chat_id=chat_id, message_id=message_id, text=text))
@@ -713,6 +735,7 @@ def chat_send_cmd(
 ) -> None:
     """Send a text message to a matched or explicit chat."""
     as_json = _as_json(ctx, as_json_flag)
+    _require_wo1162425_scopes(as_json=as_json)
     _require_yes(yes=yes, as_json=as_json)
     try:
         payload = asyncio.run(chat_send(with_name=with_name, chat_id=chat_id, text=text))
@@ -972,6 +995,7 @@ def meeting() -> None:
 def meeting_get_cmd(ctx: click.Context, event_id: str, as_json_flag: bool) -> None:
     """Show online-meeting details for a calendar event."""
     as_json = _as_json(ctx, as_json_flag)
+    _require_wo1162425_scopes(as_json=as_json)
     try:
         payload = asyncio.run(meeting_get(event_id=event_id))
     except LookupError as exc:
@@ -1008,6 +1032,7 @@ def meeting_transcription_cmd(
 ) -> None:
     """Show or enable transcription on an event's online meeting."""
     as_json = _as_json(ctx, as_json_flag)
+    _require_wo1162425_scopes(as_json=as_json)
     if enable:
         _require_yes(yes=yes, as_json=as_json)
     try:

@@ -48,3 +48,8 @@ covers the job.
 
 - Default: `~/.config/blumkin/` (`config.toml`, token cache, auth record).
 - Override with `BLUMKIN_CONFIG_DIR`. Never invent or commit secrets.
+- **WO1162425 add-on scopes (off by default):** `wo1162425_scopes = true` in
+  `config.toml` or `BLUMKIN_WO1162425_SCOPES=1` after Remedy WO1162425 grants
+  `Chat.ReadWrite` + `OnlineMeetings.ReadWrite`. Then delete token cache + auth
+  record and `blumkin auth login`. While off, calendar/mail/chat **read** skills
+  use the base scope set; chat write + meeting commands refuse with `usage_error`.
