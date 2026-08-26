@@ -63,7 +63,7 @@ requested delegated add-ons (details stay in the private lab — not this repo).
 
 - [ ] **TODO (validate):** after grant — add **new** scopes to the Entra client,
   delete the token cache + auth record under the effective config dir
-  (`BLUMKIN_CONFIG_DIR` if set, else `~/.config/blumkin/`), run
+  (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), run
   `blumkin auth login`, confirm consent includes at least `Chat.ReadWrite` and
   `OnlineMeetings.ReadWrite`, then smoke `chat` write + meeting transcription
   in the lab before implementing Blumkin skills.

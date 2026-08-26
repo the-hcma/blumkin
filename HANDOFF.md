@@ -61,7 +61,7 @@ A Remedy follow-up is open for **delegated** add-ons (ticket details stay in the
 - Mailbox: `MailboxSettings.Read`
 - Productivity: `Files.ReadWrite`, `Tasks.ReadWrite`, `Contacts.ReadWrite`, `People.Read`, `Notes.ReadWrite`
 
-- [ ] **TODO (validate after grant):** add the **new** scopes to the Entra client, delete token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR` if set, else `~/.config/blumkin/`), `blumkin auth login`, confirm consent includes at least `Chat.ReadWrite` and `OnlineMeetings.ReadWrite`, then smoke the blocked lab flows before implementing Blumkin Phase 4 skills.
+- [ ] **TODO (validate after grant):** add the **new** scopes to the Entra client, delete token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), `blumkin auth login`, confirm consent includes at least `Chat.ReadWrite` and `OnlineMeetings.ReadWrite`, then smoke the blocked lab flows before implementing Blumkin Phase 4 skills.
 
 **Do not** request app-only permissions, broad shared permissions, or RSC all-messages.
 Keep the delegated `*.All` scopes listed above only when the corresponding flow requires them.
