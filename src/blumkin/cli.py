@@ -65,6 +65,9 @@ def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
     if status == 403:
         emit_error(error="missing_scope", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_MISSING_SCOPE) from exc
+    if status == 404:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
     emit_error(error="graph_error", message=str(exc), as_json=as_json)
     raise SystemExit(EXIT_OTHER) from exc
 

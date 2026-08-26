@@ -338,6 +338,13 @@ def test_resolve_mail_body_oserror_propagates(tmp_path, monkeypatch) -> None:
         resolve_mail_body(body_file=str(path))
 
 
+def test_resolve_mail_body_unicode_decode_error(tmp_path) -> None:
+    path = tmp_path / "binary.bin"
+    path.write_bytes(b"\xff\xfe not utf-8")
+    with pytest.raises(MailBodyFileError, match="cannot read --body-file"):
+        resolve_mail_body(body_file=str(path))
+
+
 def test_write_formatters_human() -> None:
     assert any("evt-1" in line for line in format_accept_human({"accepted": ["evt-1"], "count": 1}))
     assert any("evt-9" in line for line in format_cancel_human({"cancelled": "evt-9"}))
