@@ -9,7 +9,7 @@ Context: [PR #10](https://github.com/the-hcma/blumkin/pull/10) delivered the fir
 
 - Stack worktree + `gh-stack` submit stayed clean; signed commits without Co-authored-by.
 - Hermetic CI (`python-static` + `pytest -m 'not live'`) caught real issues; live Graph covered locally via `BLUMKIN_LIVE=1`.
-- Reply-before-resolve + `wait-for-agent-review` kept agent threads auditable.
+- Reply-before-resolve + `wait-for-agent-review` kept agent-review threads auditable.
 - Review pressure produced durable fixes: minimal Graph scopes, `get_token` verify on login, `0600` secret writes, single atexit handler, `save_token_cache` bound-path guard.
 
 ## What hurt
@@ -56,7 +56,7 @@ See `AGENTS.md` (agent review) for the operator note.
 ## Identity / Phase 4 posture (forward)
 
 Phases 2–3 mail/calendar writes and chat reads are shipped. Phase 4 chat write +
-meeting transcription stay gated on delegated add-on scopes.
+meeting get/transcription stay gated on delegated add-on scopes.
 
 **Assumption:** the private-lab Identity / Remedy follow-up will grant the
 requested delegated add-ons (details stay in the private lab — not this repo).
@@ -65,7 +65,7 @@ requested delegated add-ons (details stay in the private lab — not this repo).
   delete the token cache + auth record under the effective config dir
   (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), run
   `blumkin auth login`, confirm consent includes at least `Chat.ReadWrite` and
-  `OnlineMeetings.ReadWrite`, then smoke `chat` write + meeting transcription
+  `OnlineMeetings.ReadWrite`, then smoke `chat` write + `meeting get|transcription`
   in the lab before implementing Blumkin skills.
 
 Tracked in `HANDOFF.md` and `PLAN.md` § Phase 4.

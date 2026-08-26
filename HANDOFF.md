@@ -72,7 +72,7 @@ Keep the delegated `*.All` scopes listed above only when the corresponding flow 
 
 1. **Agent DX (Phase 5):** [#20](https://github.com/the-hcma/blumkin/issues/20) — personal skill install + Copilot CLI instruction snippet — shell to `blumkin`, not MCP first.
 2. **Human:** run any **new hand automation** in the private lab. Note: command, Graph APIs, scopes, failure modes.
-3. **After Identity grant (validate TODO above):** wire follow-up scopes; unlock `chat.send|edit|delete` + meeting transcription (Phase 4).
+3. **After Identity grant (validate TODO above):** wire follow-up scopes; unlock `chat.send|edit|delete` + `meeting get|transcription` (Phase 4).
 4. **Bugbot validate TODO:** after Bugbot is enabled on this repo, confirm a real review on a PR head (`RETROSPECTIVE-M1.md`).
 
 ---
