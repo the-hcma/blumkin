@@ -75,7 +75,9 @@ def test_mail_draft_body_file_oserror_exits_usage_not_auth(tmp_path, monkeypatch
     path.write_text("x", encoding="utf-8")
 
     async def _boom(**_kwargs):
-        raise OSError(13, "Permission denied", str(path))
+        from blumkin.skills.mail import MailBodyFileError
+
+        raise MailBodyFileError(f"cannot read --body-file {path}: Permission denied")
 
     monkeypatch.setattr("blumkin.cli.mail_draft", _boom)
     runner = CliRunner()

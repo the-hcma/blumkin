@@ -23,6 +23,10 @@ from blumkin.output import sanitize_terminal
 MailBodyType = Literal["html", "text"]
 
 
+class MailBodyFileError(Exception):
+    """--body-file could not be read (usage, not auth)."""
+
+
 def format_delete_draft_human(payload: dict[str, Any]) -> list[str]:
     return [f"Draft deleted: {payload.get('deleted')!r}"]
 
@@ -160,9 +164,11 @@ def resolve_mail_body(
     label = _parse_body_type(body_type)
     graph_type = BodyType.Html if label == "html" else BodyType.Text
     if has_file:
-        # Propagate OSError (do not wrap as ValueError): CLI auth sniff matches
-        # "client_id" in ValueError messages, and paths may contain that substring.
-        content = Path(str(body_file)).read_text(encoding="utf-8")
+        path = Path(str(body_file))
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise MailBodyFileError(f"cannot read --body-file {path}: {exc}") from exc
     else:
         content = str(body)
     return content, label, graph_type

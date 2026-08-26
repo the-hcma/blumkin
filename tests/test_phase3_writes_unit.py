@@ -24,6 +24,7 @@ from blumkin.skills.calendar_writes import (
     parse_duration,
 )
 from blumkin.skills.mail import (
+    MailBodyFileError,
     format_delete_draft_human,
     format_draft_human,
     format_send_draft_human,
@@ -286,6 +287,21 @@ def test_mail_draft_html_and_body_file(tmp_path, monkeypatch) -> None:
     assert posted_file.body.content == "<h1>File</h1>"
     assert posted_file.body.content_type == BodyType.Html
 
+    text_path = tmp_path / "message.txt"
+    text_path.write_text("plain file body", encoding="utf-8")
+    asyncio.run(
+        mail_draft(
+            to="a@b.com",
+            subject="TextFile",
+            body_file=str(text_path),
+        )
+    )
+    text_await = client.me.messages.post.await_args
+    assert text_await is not None
+    posted_text = text_await.args[0]
+    assert posted_text.body.content == "plain file body"
+    assert posted_text.body.content_type == BodyType.Text
+
 
 def test_mail_delete_draft_mocked(monkeypatch) -> None:
     client = MagicMock()
@@ -318,7 +334,7 @@ def test_resolve_mail_body_oserror_propagates(tmp_path, monkeypatch) -> None:
         raise PermissionError(13, "Permission denied", str(path))
 
     monkeypatch.setattr(type(path), "read_text", _boom)
-    with pytest.raises(OSError):
+    with pytest.raises(MailBodyFileError, match="cannot read --body-file"):
         resolve_mail_body(body_file=str(path))
 
 

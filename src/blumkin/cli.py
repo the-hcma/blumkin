@@ -41,6 +41,7 @@ from blumkin.skills.calendar_writes import (
 )
 from blumkin.skills.chat import chat_find, chat_last, format_find_human, format_last_human
 from blumkin.skills.mail import (
+    MailBodyFileError,
     format_delete_draft_human,
     format_draft_human,
     format_inbox_human,
@@ -671,10 +672,10 @@ def mail_draft_cmd(
                 body_type=body_type,
             )
         )
-    except OSError as exc:
+    except MailBodyFileError as exc:
         emit_error(
             error="usage_error",
-            message=f"cannot read --body-file: {exc}",
+            message=str(exc),
             as_json=as_json,
         )
         raise SystemExit(EXIT_USAGE) from exc
