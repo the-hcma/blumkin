@@ -548,6 +548,26 @@ def test_mail_update_draft_refetches_when_patch_returns_none(monkeypatch) -> Non
     assert client.me.messages.by_message_id.return_value.get.await_count == 2
 
 
+def test_mail_update_draft_errors_when_patch_and_refetch_empty(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=None,
+        to_recipients=[],
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(side_effect=[existing, None])
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(RuntimeError, match="no message after update-draft"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", subject="New"))
+
+
 def test_mail_update_draft_to_only(monkeypatch) -> None:
     existing = SimpleNamespace(
         id="draft-1",
