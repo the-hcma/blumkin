@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
+from kiota_serialization_json.json_serialization_writer import JsonSerializationWriter
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
 
@@ -403,6 +405,13 @@ def test_mail_update_draft_mocked(monkeypatch) -> None:
     assert posted.body.content_type == BodyType.Html
     assert posted.body.content == "<p>new</p>"
     assert posted.to_recipients is None
+    writer = JsonSerializationWriter()
+    posted.serialize(writer)
+    wire = json.loads(writer.get_serialized_content())
+    assert "subject" in wire
+    assert "body" in wire
+    assert "toRecipients" not in wire
+    assert "ccRecipients" not in wire
 
 
 def test_mail_update_draft_requires_at_least_one_field() -> None:
@@ -461,6 +470,11 @@ def test_mail_update_draft_subject_only(monkeypatch) -> None:
     assert posted.subject == "OnlySubject"
     assert posted.body is None
     assert posted.to_recipients is None
+    writer = JsonSerializationWriter()
+    posted.serialize(writer)
+    wire = json.loads(writer.get_serialized_content())
+    assert set(wire) <= {"@odata.type", "subject"}
+    assert wire["subject"] == "OnlySubject"
 
 
 def test_mail_update_draft_to_only(monkeypatch) -> None:
@@ -534,7 +548,7 @@ def test_mail_update_draft_rejects_non_draft(monkeypatch) -> None:
         "blumkin.skills.mail.load_config",
         lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
     )
-    with pytest.raises(ValueError, match="not a draft"):
+    with pytest.raises(MailDraftNotFoundError, match="not a draft"):
         asyncio.run(mail_update_draft(draft_id="msg-1", subject="Nope"))
 
 

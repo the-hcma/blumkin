@@ -189,9 +189,9 @@ async def mail_update_draft(
     mid = draft_id.strip()
     existing = await client.me.messages.by_message_id(mid).get()
     if existing is None or not existing.id:
-        raise ValueError(f"message not found: {mid}")
+        raise MailDraftNotFoundError(f"message not found: {mid}")
     if not existing.is_draft:
-        raise ValueError(f"message is not a draft: {mid}")
+        raise MailDraftNotFoundError(f"message is not a draft: {mid}")
     patch = Message()
     if subject is not None:
         if not subject.strip():

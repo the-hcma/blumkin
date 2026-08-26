@@ -155,6 +155,20 @@ def test_mail_draft_missing_body_exits_usage() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
+def test_mail_update_draft_not_a_draft_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise MailDraftNotFoundError("message is not a draft: msg-1")
+
+    monkeypatch.setattr("blumkin.cli.mail_update_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "update-draft", "--id", "msg-1", "--subject", "x", "--json"],
+    )
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
 def test_calendar_today_invalid_tz_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--tz", "Not/ARealZone", "calendar", "today"])

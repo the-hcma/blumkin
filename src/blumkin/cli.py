@@ -801,6 +801,9 @@ def mail_update_draft_cmd(
             as_json=as_json,
         )
         raise SystemExit(EXIT_USAGE) from exc
+    except MailDraftNotFoundError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
     except ValueError as exc:
         msg = str(exc)
         if "client_id" in msg or "Missing" in msg:
