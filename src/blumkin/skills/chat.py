@@ -120,7 +120,7 @@ async def chat_find(
             getattr(exc, "response_status_code", None) == 403 for exc in skip_errors
         ):
             raise skip_errors[-1]
-        raise LookupError(f"Graph member fetch failed for all {skipped} chats")
+        raise RuntimeError(f"Graph member fetch failed for all {skipped} chats")
     matches.sort(key=_chat_sort_key)
     return {
         "items": matches,

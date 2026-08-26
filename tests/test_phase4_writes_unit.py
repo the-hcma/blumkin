@@ -92,6 +92,8 @@ def test_chat_send_refuses_partial_match(monkeypatch) -> None:
     with pytest.raises(ValueError, match="partial"):
         asyncio.run(chat_send(with_name="dan", text="hi"))
 
+
+def test_chat_send_refuses_ambiguous_match(monkeypatch) -> None:
     async def fake_find(*, with_name: str, config=None):
         return {
             "items": [
