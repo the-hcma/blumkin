@@ -68,7 +68,30 @@ def test_chat_send_mocked(monkeypatch) -> None:
     assert "Sent message" in format_send_human(payload)[0]
 
 
-def test_chat_send_ambiguous_match_raises(monkeypatch) -> None:
+def test_chat_send_refuses_partial_match(monkeypatch) -> None:
+    async def fake_find(*, with_name: str, config=None):
+        return {
+            "items": [
+                {
+                    "chat_type": "group",
+                    "id": "chat-g",
+                    "members": ["Daniel"],
+                    "topic": "Group",
+                }
+            ],
+            "partial": True,
+            "query": with_name,
+            "skipped": 2,
+        }
+
+    monkeypatch.setattr("blumkin.skills.chat.chat_find", fake_find)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(client_id="x"),
+    )
+    with pytest.raises(ValueError, match="partial"):
+        asyncio.run(chat_send(with_name="dan", text="hi"))
+
     async def fake_find(*, with_name: str, config=None):
         return {
             "items": [

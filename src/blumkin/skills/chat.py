@@ -120,7 +120,7 @@ async def chat_find(
             getattr(exc, "response_status_code", None) == 403 for exc in skip_errors
         ):
             raise skip_errors[-1]
-        raise RuntimeError(f"Graph member fetch failed for all {skipped} chats")
+        raise LookupError(f"Graph member fetch failed for all {skipped} chats")
     matches.sort(key=_chat_sort_key)
     return {
         "items": matches,
@@ -211,6 +211,12 @@ async def chat_send(
         skipped = int(found["skipped"])
         if not items:
             raise LookupError(f"no chat matched {name!r}")
+        if found.get("partial"):
+            raise ValueError(
+                f"chat match for {name!r} is partial "
+                f"(skipped {int(found.get('skipped') or 0)} chat(s)); "
+                "retry later or pass --chat-id from `chat find`"
+            )
         if len(items) > 1:
             ids = ", ".join(str(item.get("id")) for item in items)
             raise ValueError(
@@ -293,11 +299,15 @@ def format_send_human(payload: dict[str, Any]) -> list[str]:
     msg = payload.get("message") or {}
     topic = sanitize_terminal(str(chat.get("topic") or "(no topic)"))
     text = sanitize_terminal(str(msg.get("body_text") or ""))
-    return [
+    lines = [
         f"Sent message in {topic!r} ({chat.get('id')})",
         f"  id={msg.get('id')}",
         f"  text: {text}",
     ]
+    skipped = int(payload.get("skipped") or 0)
+    if payload.get("partial") or skipped:
+        lines.append(f"  (skipped {skipped} chat(s) while matching; results may be partial)")
+    return lines
 
 
 def _body_is_html(content_type: Any) -> bool:
