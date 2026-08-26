@@ -178,13 +178,24 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="chat.send",
         cli=["blumkin", "chat", "send"],
-        summary="Send a text message to a chat matched by display name",
+        summary="Send a text message to a chat (exactly one of --with or --chat-id)",
         mutates=True,
         notifies_others=True,
         scopes=["Chat.ReadWrite"],
         args=[
-            {"name": "--with", "required": True, "type": "string"},
+            {
+                "name": "--chat-id",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --with or --chat-id",
+            },
             {"name": "--text", "required": True, "type": "string"},
+            {
+                "name": "--with",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --with or --chat-id; refuses if multiple matches",
+            },
             {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
@@ -273,7 +284,10 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="meeting.get",
         cli=["blumkin", "meeting", "get"],
-        summary="Show online-meeting details and transcription flags for a calendar event",
+        summary=(
+            "Show online-meeting details for a calendar event you organize "
+            "(attendee-only meetings are not in /me/onlineMeetings)"
+        ),
         mutates=False,
         notifies_others=False,
         scopes=["Calendars.ReadWrite", "OnlineMeetings.ReadWrite"],
@@ -282,7 +296,7 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="meeting.transcription",
         cli=["blumkin", "meeting", "transcription"],
-        summary="Show or enable allowTranscription on an event's online meeting",
+        summary=("Show or enable allowTranscription on an online meeting you organize"),
         mutates=True,
         notifies_others=False,
         scopes=["Calendars.ReadWrite", "OnlineMeetings.ReadWrite"],

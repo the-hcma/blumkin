@@ -66,6 +66,20 @@ def test_chat_send_without_yes_exits_usage() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
+def test_chat_send_ambiguous_exits_usage(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ValueError("ambiguous chat match for 'dan' (2 chats); pass --chat-id")
+
+    monkeypatch.setattr("blumkin.cli.chat_send", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["chat", "send", "--with", "dan", "--text", "hi", "--yes", "--json"],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
 def test_chat_edit_without_yes_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(

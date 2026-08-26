@@ -184,31 +184,52 @@ async def chat_last(
 
 async def chat_send(
     *,
-    with_name: str,
     text: str,
+    with_name: str | None = None,
+    chat_id: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     body_text = text.strip()
     if not body_text:
         raise ValueError("--text must be non-empty")
-    found = await chat_find(with_name=with_name, config=config)
-    items = found["items"]
-    if not items:
-        raise LookupError(f"no chat matched {with_name!r}")
-    chat = items[0]
-    chat_id = str(chat["id"])
+    name = (with_name or "").strip() or None
+    explicit_id = (chat_id or "").strip() or None
+    if bool(name) == bool(explicit_id):
+        raise ValueError("exactly one of --with or --chat-id is required")
     cfg = config or load_config()
+    partial = False
+    skipped = 0
+    query: str | None = name
+    if explicit_id is not None:
+        chat = {"chat_type": None, "id": explicit_id, "members": [], "topic": None}
+        target_id = explicit_id
+    else:
+        assert name is not None
+        found = await chat_find(with_name=name, config=cfg)
+        items = found["items"]
+        partial = bool(found["partial"])
+        skipped = int(found["skipped"])
+        if not items:
+            raise LookupError(f"no chat matched {name!r}")
+        if len(items) > 1:
+            ids = ", ".join(str(item.get("id")) for item in items)
+            raise ValueError(
+                f"ambiguous chat match for {name!r} ({len(items)} chats); "
+                f"pass --chat-id with one of: {ids}"
+            )
+        chat = items[0]
+        target_id = str(chat["id"])
     client = create_graph_client(cfg)
     message = ChatMessage(body=ItemBody(content=body_text, content_type=BodyType.Text))
-    created = await client.me.chats.by_chat_id(chat_id).messages.post(message)
+    created = await client.me.chats.by_chat_id(target_id).messages.post(message)
     if created is None:
         raise RuntimeError("chat message create returned empty response")
     return {
         "chat": chat,
         "message": _message_to_dict(created),
-        "partial": found["partial"],
-        "query": with_name,
-        "skipped": found["skipped"],
+        "partial": partial,
+        "query": query,
+        "skipped": skipped,
     }
 
 
@@ -279,6 +300,17 @@ def format_send_human(payload: dict[str, Any]) -> list[str]:
     ]
 
 
+def _body_is_html(content_type: Any) -> bool:
+    if content_type is None:
+        # Graph chat reads usually return HTML when type is omitted.
+        return True
+    if content_type is BodyType.Html:
+        return True
+    if content_type is BodyType.Text:
+        return False
+    return "html" in str(content_type).lower()
+
+
 def _chat_sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
     # Prefer 1:1 chats, then topic / id for stability.
     chat_type = (item.get("chat_type") or "").lower()
@@ -315,8 +347,18 @@ def _is_reauth_error(exc: BaseException) -> bool:
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:
     body = msg.body
-    body_html = body.content if body is not None else None
-    body_text = _html_to_text(body_html) if body_html else ""
+    raw = body.content if body is not None else None
+    content_type = getattr(body, "content_type", None) if body is not None else None
+    is_html = _body_is_html(content_type)
+    if raw is None:
+        body_html = None
+        body_text = ""
+    elif is_html:
+        body_html = raw
+        body_text = _html_to_text(raw)
+    else:
+        body_html = None
+        body_text = raw
     from_name = None
     from_user = None
     if msg.from_ and msg.from_.user:

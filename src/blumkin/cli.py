@@ -687,23 +687,35 @@ def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool
 
 
 @chat.command("send")
-@click.option("--with", "with_name", required=True, help="Display-name substring.")
+@click.option(
+    "--with",
+    "with_name",
+    default=None,
+    help="Display-name match (exclusive with --chat-id).",
+)
+@click.option(
+    "--chat-id",
+    "chat_id",
+    default=None,
+    help="Explicit chat id (exclusive with --with).",
+)
 @click.option("--text", required=True, help="Message text to send.")
 @click.option("--yes", is_flag=True, help="Confirm send (required).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def chat_send_cmd(
     ctx: click.Context,
-    with_name: str,
+    with_name: str | None,
+    chat_id: str | None,
     text: str,
     yes: bool,
     as_json_flag: bool,
 ) -> None:
-    """Send a text message to a matched chat."""
+    """Send a text message to a matched or explicit chat."""
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
-        payload = asyncio.run(chat_send(with_name=with_name, text=text))
+        payload = asyncio.run(chat_send(with_name=with_name, chat_id=chat_id, text=text))
     except LookupError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc

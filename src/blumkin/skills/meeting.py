@@ -127,5 +127,9 @@ async def _online_meeting_by_join_url(client: Any, *, join_url: str) -> Any:
     page = await client.me.online_meetings.get(request_config(query))
     meetings = list(page.value or []) if page is not None else []
     if not meetings:
-        raise LookupError("online meeting not found for event join URL")
+        raise LookupError(
+            "online meeting not found for event join URL "
+            "(GET /me/onlineMeetings only returns meetings you organize; "
+            "attendee-only calendar events cannot be resolved this way)"
+        )
     return meetings[0]

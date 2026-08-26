@@ -219,12 +219,13 @@ blumkin chat last --with "David McKenzie" --n 1 --json
 
 # After Chat.ReadWrite follow-up is granted (and re-consent):
 blumkin chat send --with "…" --text "…" --yes
+blumkin chat send --chat-id '<id>' --text "…" --yes   # when --with is ambiguous
 blumkin chat edit --chat-id … --message-id … --text "…" --yes
 blumkin chat delete --chat-id … --message-id … --yes
 ```
 
-- `--with` matches display name (case-insensitive) preferring 1:1 chats.  
-- Strip HTML in human mode; JSON may include `body_text` + `body_html`.  
+- `--with` matches display name (case-insensitive) preferring 1:1 chats; `chat send` refuses if more than one match (use `--chat-id`).  
+- Strip HTML in human mode for HTML bodies; JSON may include `body_text` + `body_html`.  
 - Commands are implemented; **live** Graph success still needs Identity grant + re-login (see Phase 4 TODO).
 
 ### 3.8 Meetings
@@ -235,7 +236,7 @@ blumkin meeting transcription --event-id '<id>'          # show flags
 blumkin meeting transcription --event-id '<id>' --enable --yes
 ```
 
-Implemented against Graph; **live** enablement needs `OnlineMeetings.ReadWrite` on the Entra app + re-consent.
+Resolves via `GET /me/onlineMeetings` filtered by the event join URL — **organizer-only**. Attendee-only events return not_found. Implemented against Graph; **live** enablement needs `OnlineMeetings.ReadWrite` on the Entra app + re-consent.
 
 ---
 
