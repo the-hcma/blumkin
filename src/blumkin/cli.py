@@ -794,10 +794,10 @@ def mail_update_draft_cmd(
                 body_type=body_type,
             )
         )
-    except OSError as exc:
+    except MailBodyFileError as exc:
         emit_error(
             error="usage_error",
-            message=f"cannot read --body-file: {exc}",
+            message=str(exc),
             as_json=as_json,
         )
         raise SystemExit(EXIT_USAGE) from exc
