@@ -1,10 +1,11 @@
-"""Mail read skills."""
+"""Mail read and draft skills."""
 
 from __future__ import annotations
 
 import html as html_lib
 import re
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.email_address import EmailAddress
@@ -19,7 +20,103 @@ from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, request_config
 from blumkin.output import sanitize_terminal
 
-_TAG_RE = re.compile(r"<[^>]+>")
+MailBodyType = Literal["html", "text"]
+
+
+class MailBodyFileError(Exception):
+    """--body-file could not be read (usage, not auth)."""
+
+
+class MailDraftNotFoundError(Exception):
+    """Draft id missing or not a draft (not_found)."""
+
+
+def format_delete_draft_human(payload: dict[str, Any]) -> list[str]:
+    return [f"Draft deleted: {payload.get('deleted')!r}"]
+
+
+def format_draft_human(payload: dict[str, Any]) -> list[str]:
+    draft = payload.get("draft") or {}
+    to_addr = sanitize_terminal(str(draft.get("to") or ""))
+    body_type = draft.get("body_type") or "text"
+    return [
+        f"Draft saved: {draft.get('subject')!r} → {to_addr} ({body_type})",
+        f"  id={draft.get('id')}",
+    ]
+
+
+def format_inbox_human(payload: dict[str, Any]) -> list[str]:
+    lines = [f"Inbox (top {payload['top']}): {len(payload['items'])} message(s)"]
+    if not payload["items"]:
+        lines.append("  (none)")
+        return lines
+    for item in payload["items"]:
+        unread = "" if item.get("is_read") else " [unread]"
+        who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
+        subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
+        lines.append(f"  • {item.get('received')}{unread} — {who}: {subject}")
+    return lines
+
+
+def format_send_draft_human(payload: dict[str, Any]) -> list[str]:
+    return [f"Sent draft {payload.get('sent')!r}"]
+
+
+async def mail_delete_draft(
+    *,
+    draft_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    if not draft_id.strip():
+        raise ValueError("--id is required")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    mid = draft_id.strip()
+    existing = await client.me.messages.by_message_id(mid).get()
+    if existing is None or not existing.id:
+        raise MailDraftNotFoundError(f"message not found: {mid}")
+    if not existing.is_draft:
+        raise MailDraftNotFoundError(f"message is not a draft: {mid}")
+    await client.me.messages.by_message_id(mid).delete()
+    return {"deleted": mid}
+
+
+async def mail_draft(
+    *,
+    to: str,
+    subject: str,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_type: str = "text",
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    if not to.strip():
+        raise ValueError("--to is required")
+    if not subject.strip():
+        raise ValueError("--subject is required")
+    content, body_type_label, graph_body_type = resolve_mail_body(
+        body=body, body_file=body_file, body_type=body_type
+    )
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    message = Message(
+        body=ItemBody(content_type=graph_body_type, content=content),
+        subject=subject.strip(),
+        to_recipients=[
+            Recipient(email_address=EmailAddress(address=to.strip())),
+        ],
+    )
+    created = await client.me.messages.post(message)
+    if created is None or not created.id:
+        raise RuntimeError("Graph returned no draft message")
+    return {
+        "draft": {
+            "body_type": body_type_label,
+            "id": created.id,
+            "subject": created.subject,
+            "to": to.strip(),
+        }
+    }
 
 
 async def mail_inbox(
@@ -50,38 +147,6 @@ async def mail_inbox(
     return {"items": [_message_to_dict(msg) for msg in items], "top": top}
 
 
-async def mail_draft(
-    *,
-    to: str,
-    subject: str,
-    body: str,
-    config: BlumkinConfig | None = None,
-) -> dict[str, Any]:
-    if not to.strip():
-        raise ValueError("--to is required")
-    if not subject.strip():
-        raise ValueError("--subject is required")
-    cfg = config or load_config()
-    client = create_graph_client(cfg)
-    message = Message(
-        body=ItemBody(content_type=BodyType.Text, content=body),
-        subject=subject.strip(),
-        to_recipients=[
-            Recipient(email_address=EmailAddress(address=to.strip())),
-        ],
-    )
-    created = await client.me.messages.post(message)
-    if created is None or not created.id:
-        raise RuntimeError("Graph returned no draft message")
-    return {
-        "draft": {
-            "id": created.id,
-            "subject": created.subject,
-            "to": to.strip(),
-        }
-    }
-
-
 async def mail_send_draft(
     *,
     draft_id: str,
@@ -95,30 +160,31 @@ async def mail_send_draft(
     return {"sent": draft_id.strip()}
 
 
-def format_draft_human(payload: dict[str, Any]) -> list[str]:
-    draft = payload.get("draft") or {}
-    to_addr = sanitize_terminal(str(draft.get("to") or ""))
-    return [
-        f"Draft saved: {draft.get('subject')!r} → {to_addr}",
-        f"  id={draft.get('id')}",
-    ]
+def resolve_mail_body(
+    *,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_type: str = "text",
+) -> tuple[str, MailBodyType, BodyType]:
+    """Resolve --body / --body-file and --body-type into content for Graph."""
+    has_body = body is not None
+    has_file = body_file is not None
+    if has_body == has_file:
+        raise ValueError("exactly one of --body or --body-file is required")
+    label = _parse_body_type(body_type)
+    graph_type = BodyType.Html if label == "html" else BodyType.Text
+    if has_file:
+        path = Path(str(body_file))
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise MailBodyFileError(f"cannot read --body-file {path}: {exc}") from exc
+    else:
+        content = str(body)
+    return content, label, graph_type
 
 
-def format_inbox_human(payload: dict[str, Any]) -> list[str]:
-    lines = [f"Inbox (top {payload['top']}): {len(payload['items'])} message(s)"]
-    if not payload["items"]:
-        lines.append("  (none)")
-        return lines
-    for item in payload["items"]:
-        unread = "" if item.get("is_read") else " [unread]"
-        who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
-        subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
-        lines.append(f"  • {item.get('received')}{unread} — {who}: {subject}")
-    return lines
-
-
-def format_send_draft_human(payload: dict[str, Any]) -> list[str]:
-    return [f"Sent draft {payload.get('sent')!r}"]
+_TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _html_to_text(raw: str) -> str:
@@ -150,3 +216,10 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
         "received": str(msg.received_date_time) if msg.received_date_time else None,
         "subject": msg.subject,
     }
+
+
+def _parse_body_type(raw: str) -> MailBodyType:
+    label = raw.strip().lower()
+    if label not in {"html", "text"}:
+        raise ValueError("--body-type must be 'text' or 'html'")
+    return label  # type: ignore[return-value]

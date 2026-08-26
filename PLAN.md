@@ -76,6 +76,7 @@ blumkin
 ├── mail
 │   ├── inbox
 │   ├── draft
+│   ├── delete-draft
 │   └── send-draft
 ├── chat
 │   ├── find
@@ -195,10 +196,15 @@ blumkin calendar cancel --event-id '<id>' --yes
 blumkin mail inbox --top 10
 blumkin mail inbox --top 10 --json
 blumkin mail draft --to hcma@hcma.info --subject "hello you!" --body "hello you!"
+blumkin mail draft --to hcma@hcma.info --subject "html" --body "<p>Hi</p>" --body-type html
+blumkin mail draft --to hcma@hcma.info --subject "from file" --body-file ./message.html --body-type html
+blumkin mail delete-draft --id '<draft-id>'
 blumkin mail send-draft --id '<draft-id>' --yes
 ```
 
 - Default: create **draft** only (safe).  
+- `--body` and `--body-file` are mutually exclusive; `--body-type` is `text` (default) or `html`.  
+- `delete-draft` does not require `--yes` (no recipient notify).  
 - Sending always `--yes`.  
 - Optional later: `mail send` one-shot (still `--yes`).
 
@@ -247,6 +253,7 @@ Blocked until `OnlineMeetings.ReadWrite` is on the Entra app + re-consent.
 | `calendar.create` | `calendar create` | yes | yes | Calendars.ReadWrite | yes |
 | `calendar.cancel` | `calendar cancel` | yes | yes | Calendars.ReadWrite | yes |
 | `mail.inbox` | `mail inbox` | no | no | Mail.Read* | yes |
+| `mail.delete-draft` | `mail delete-draft` | yes | no | Mail.ReadWrite | yes |
 | `mail.draft` | `mail draft` | yes | no | Mail.ReadWrite | yes |
 | `mail.send-draft` | `mail send-draft` | yes | yes | Mail.Send | yes |
 | `chat.find` | `chat find` | no | no | Chat.Read / ReadWrite | yes |
@@ -494,6 +501,7 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 ### Phase 3 — Write skills (gated with `--yes`)
 - [x] `calendar.accept|create|cancel`  
 - [x] `mail.draft|send-draft`  
+- [x] `mail.delete-draft`; HTML / `--body-file` on `mail draft`  
 
 ### Phase 4 — Post–Identity follow-up
 - Enable delegated add-on scopes once Identity grants the private-lab follow-up  

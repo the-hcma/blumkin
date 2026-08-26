@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from click.testing import CliRunner
+from kiota_abstractions.api_error import APIError
 
 from blumkin.cli import main
-from blumkin.exit_codes import EXIT_AUTH, EXIT_USAGE
+from blumkin.exit_codes import EXIT_AUTH, EXIT_NOT_FOUND, EXIT_USAGE
+from blumkin.skills.mail import MailDraftNotFoundError
 
 
 def test_calendar_accept_invalid_tz_exits_usage(tmp_path, monkeypatch) -> None:
@@ -55,6 +57,101 @@ def test_calendar_create_without_yes_exits_usage() -> None:
 def test_mail_send_draft_without_yes_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "send-draft", "--id", "draft-1"])
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_delete_draft_without_yes_succeeds(monkeypatch) -> None:
+    async def _delete(*, draft_id: str):
+        return {"deleted": draft_id}
+
+    monkeypatch.setattr("blumkin.cli.mail_delete_draft", _delete)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "delete-draft", "--id", "draft-1", "--json"])
+    assert result.exit_code == 0
+    assert '"deleted"' in (result.output or "")
+    assert "draft-1" in (result.output or "")
+
+
+def test_mail_delete_draft_not_draft_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise MailDraftNotFoundError("message is not a draft: msg-1")
+
+    monkeypatch.setattr("blumkin.cli.mail_delete_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "delete-draft", "--id", "msg-1", "--json"])
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_graph_404_via_api_error_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise APIError("gone", response_status_code=404)
+
+    monkeypatch.setattr("blumkin.cli.mail_delete_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "delete-draft", "--id", "gone", "--json"])
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_mail_draft_body_file_oserror_exits_usage_not_auth(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "client_id.txt"
+    path.write_text("x", encoding="utf-8")
+
+    async def _boom(**_kwargs):
+        from blumkin.skills.mail import MailBodyFileError
+
+        raise MailBodyFileError(f"cannot read --body-file {path}: Permission denied")
+
+    monkeypatch.setattr("blumkin.cli.mail_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "draft",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "x",
+            "--body-file",
+            str(path),
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert result.exit_code != EXIT_AUTH
+    assert "auth_required" not in (result.output or "")
+
+
+def test_mail_draft_both_body_sources_exits_usage(tmp_path) -> None:
+    path = tmp_path / "body.txt"
+    path.write_text("from file", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "draft",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "x",
+            "--body",
+            "inline",
+            "--body-file",
+            str(path),
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_draft_missing_body_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "draft", "--to", "a@b.com", "--subject", "x"],
+    )
     assert result.exit_code == EXIT_USAGE
 
 

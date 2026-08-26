@@ -158,16 +158,39 @@ SKILLS: list[SkillSpec] = [
         args=[],
     ),
     SkillSpec(
+        id="mail.delete-draft",
+        cli=["blumkin", "mail", "delete-draft"],
+        summary="Delete a draft message (does not notify recipients)",
+        mutates=True,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[{"name": "--id", "required": True, "type": "string"}],
+    ),
+    SkillSpec(
         id="mail.draft",
         cli=["blumkin", "mail", "draft"],
-        summary="Create a mail draft (does not send)",
+        summary=(
+            "Create a mail draft (exactly one of --body or --body-file required; does not send)"
+        ),
         mutates=True,
         notifies_others=False,
         scopes=["Mail.ReadWrite"],
         args=[
             {"name": "--to", "required": True, "type": "email"},
             {"name": "--subject", "required": True, "type": "string"},
-            {"name": "--body", "required": True, "type": "string"},
+            {
+                "name": "--body",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --body or --body-file",
+            },
+            {
+                "name": "--body-file",
+                "required": False,
+                "type": "path",
+                "note": "exactly one of --body or --body-file",
+            },
+            {"name": "--body-type", "required": False, "type": "enum", "values": ["text", "html"]},
         ],
     ),
     SkillSpec(

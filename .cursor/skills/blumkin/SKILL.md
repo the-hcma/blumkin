@@ -27,7 +27,8 @@ covers the job.
    - `blumkin calendar accept --event-id '<id>' --yes`
    - `blumkin calendar create --subject … --with email --start … --yes`
    - `blumkin calendar cancel --event-id '<id>' --yes`
-   - `blumkin mail draft --to … --subject … --body …` (draft only)
+   - `blumkin mail draft --to … --subject … --body …` (draft only; `--body-type html` / `--body-file` optional)
+   - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
    - `blumkin mail send-draft --id '<draft-id>' --yes`
 5. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).
 6. On auth failure (exit `3` / `auth_required`): tell the user to run
