@@ -42,6 +42,7 @@ from blumkin.skills.calendar_writes import (
 from blumkin.skills.chat import chat_find, chat_last, format_find_human, format_last_human
 from blumkin.skills.mail import (
     MailBodyFileError,
+    MailDraftNotFoundError,
     format_delete_draft_human,
     format_draft_human,
     format_inbox_human,
@@ -57,8 +58,23 @@ def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
     return bool(ctx.obj.get("as_json") or as_json_flag)
 
 
+def _graph_http_status(exc: BaseException) -> int | None:
+    """Best-effort HTTP status from kiota/msgraph exceptions."""
+    for attr in ("response_status_code", "status_code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    if response is not None:
+        for attr in ("status_code", "status"):
+            value = getattr(response, attr, None)
+            if isinstance(value, int):
+                return value
+    return None
+
+
 def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
-    status = getattr(exc, "response_status_code", None)
+    status = _graph_http_status(exc)
     if status == 401:
         emit_error(error="auth_required", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_AUTH) from exc
@@ -617,6 +633,9 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(mail_delete_draft(draft_id=draft_id))
+    except MailDraftNotFoundError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
     except ValueError as exc:
         msg = str(exc)
         if "client_id" in msg or "Missing" in msg:

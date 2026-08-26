@@ -25,6 +25,7 @@ from blumkin.skills.calendar_writes import (
 )
 from blumkin.skills.mail import (
     MailBodyFileError,
+    MailDraftNotFoundError,
     format_delete_draft_human,
     format_draft_human,
     format_send_draft_human,
@@ -304,7 +305,9 @@ def test_mail_draft_html_and_body_file(tmp_path, monkeypatch) -> None:
 
 
 def test_mail_delete_draft_mocked(monkeypatch) -> None:
+    existing = SimpleNamespace(id="draft-1", is_draft=True)
     client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
     client.me.messages.by_message_id.return_value.delete = AsyncMock(return_value=None)
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
@@ -313,8 +316,22 @@ def test_mail_delete_draft_mocked(monkeypatch) -> None:
     )
     payload = asyncio.run(mail_delete_draft(draft_id="draft-1"))
     assert payload == {"deleted": "draft-1"}
-    client.me.messages.by_message_id.assert_called_once_with("draft-1")
+    client.me.messages.by_message_id.assert_called_with("draft-1")
     client.me.messages.by_message_id.return_value.delete.assert_awaited_once()
+
+
+def test_mail_delete_draft_rejects_non_draft(monkeypatch) -> None:
+    existing = SimpleNamespace(id="msg-1", is_draft=False)
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(MailDraftNotFoundError, match="not a draft"):
+        asyncio.run(mail_delete_draft(draft_id="msg-1"))
+    client.me.messages.by_message_id.return_value.delete.assert_not_called()
 
 
 def test_resolve_mail_body_mutual_exclusion() -> None:

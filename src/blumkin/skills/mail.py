@@ -27,6 +27,10 @@ class MailBodyFileError(Exception):
     """--body-file could not be read (usage, not auth)."""
 
 
+class MailDraftNotFoundError(Exception):
+    """Draft id missing or not a draft (not_found)."""
+
+
 def format_delete_draft_human(payload: dict[str, Any]) -> list[str]:
     return [f"Draft deleted: {payload.get('deleted')!r}"]
 
@@ -67,8 +71,14 @@ async def mail_delete_draft(
         raise ValueError("--id is required")
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    await client.me.messages.by_message_id(draft_id.strip()).delete()
-    return {"deleted": draft_id.strip()}
+    mid = draft_id.strip()
+    existing = await client.me.messages.by_message_id(mid).get()
+    if existing is None or not existing.id:
+        raise MailDraftNotFoundError(f"message not found: {mid}")
+    if not existing.is_draft:
+        raise MailDraftNotFoundError(f"message is not a draft: {mid}")
+    await client.me.messages.by_message_id(mid).delete()
+    return {"deleted": mid}
 
 
 async def mail_draft(
