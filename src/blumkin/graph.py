@@ -6,7 +6,7 @@ from azure.identity import InteractiveBrowserCredential
 from kiota_abstractions.base_request_configuration import RequestConfiguration
 from msgraph.graph_service_client import GraphServiceClient
 
-from blumkin.auth import SCOPES, create_credential
+from blumkin.auth import create_credential, effective_scopes
 from blumkin.config import BlumkinConfig, load_config
 
 
@@ -16,7 +16,7 @@ def create_graph_client(
 ) -> GraphServiceClient:
     cfg = config or load_config()
     cred = credential or create_credential(cfg)
-    return GraphServiceClient(credentials=cred, scopes=SCOPES)
+    return GraphServiceClient(credentials=cred, scopes=effective_scopes(cfg))
 
 
 def request_config(query_parameters) -> RequestConfiguration:

@@ -6,6 +6,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 DEFAULT_TENANT_ID = "brk.tech"
 DEFAULT_TZ = "America/New_York"
@@ -17,6 +18,7 @@ class BlumkinConfig:
     config_dir: Path
     default_tz: str
     tenant_id: str
+    wo1162425_scopes: bool
 
     @property
     def auth_record_path(self) -> Path:
@@ -44,7 +46,8 @@ def config_dir() -> Path:
 def load_config() -> BlumkinConfig:
     """Return config; env vars override config.toml keys."""
     directory = config_dir()
-    file_values = _read_toml(directory / "config.toml")
+    file_data = _read_toml(directory / "config.toml")
+    file_values = {key: value for key, value in file_data.items() if isinstance(value, str)}
     client_id = (
         os.environ.get("BLUMKIN_CLIENT_ID", "").strip() or file_values.get("client_id", "").strip()
     )
@@ -63,15 +66,47 @@ def load_config() -> BlumkinConfig:
         config_dir=directory,
         default_tz=default_tz,
         tenant_id=tenant_id,
+        wo1162425_scopes=_wo1162425_scopes_enabled(file_data),
     )
 
 
-def _read_toml(path: Path) -> dict[str, str]:
+def _coerce_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+def _env_bool(name: str) -> bool | None:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return None
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _read_toml(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
-    data = tomllib.loads(path.read_text())
-    out: dict[str, str] = {}
-    for key, value in data.items():
-        if isinstance(value, str):
-            out[str(key)] = value
-    return out
+    return tomllib.loads(path.read_text())
+
+
+def _wo1162425_scopes_enabled(file_data: dict[str, Any]) -> bool:
+    env = _env_bool("BLUMKIN_WO1162425_SCOPES")
+    if env is not None:
+        return env
+    if "wo1162425_scopes" in file_data:
+        coerced = _coerce_bool(file_data["wo1162425_scopes"])
+        if coerced is not None:
+            return coerced
+    return False

@@ -74,10 +74,12 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="calendar.create",
         cli=["blumkin", "calendar", "create"],
-        summary="Create a calendar event (optional Teams online meeting)",
+        summary=(
+            "Create a calendar event; --teams needs wo1162425_scopes + OnlineMeetings.ReadWrite"
+        ),
         mutates=True,
         notifies_others=True,
-        scopes=["Calendars.ReadWrite"],
+        scopes=["Calendars.ReadWrite", "OnlineMeetings.ReadWrite"],
         args=[
             {"name": "--subject", "required": True, "type": "string"},
             {"name": "--with", "required": True, "type": "email", "multiple": True},
@@ -130,7 +132,7 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="chat.delete",
         cli=["blumkin", "chat", "delete"],
-        summary="Soft-delete a chat message",
+        summary="Soft-delete a chat message (requires wo1162425_scopes)",
         mutates=True,
         notifies_others=True,
         scopes=["Chat.ReadWrite"],
@@ -143,7 +145,7 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="chat.edit",
         cli=["blumkin", "chat", "edit"],
-        summary="Edit a chat message body in place",
+        summary="Edit a chat message body in place (requires wo1162425_scopes)",
         mutates=True,
         notifies_others=True,
         scopes=["Chat.ReadWrite"],
@@ -160,7 +162,7 @@ SKILLS: list[SkillSpec] = [
         summary="Find Teams chats whose members match a display name",
         mutates=False,
         notifies_others=False,
-        scopes=["Chat.ReadWrite"],
+        scopes=["Chat.Read"],
         args=[{"name": "--with", "required": True, "type": "string"}],
     ),
     SkillSpec(
@@ -169,7 +171,7 @@ SKILLS: list[SkillSpec] = [
         summary="Show the last N messages from a chat matched by display name",
         mutates=False,
         notifies_others=False,
-        scopes=["Chat.ReadWrite"],
+        scopes=["Chat.Read"],
         args=[
             {"name": "--with", "required": True, "type": "string"},
             {"name": "--n", "required": False, "type": "int"},
@@ -178,7 +180,10 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="chat.send",
         cli=["blumkin", "chat", "send"],
-        summary="Send a text message to a chat (exactly one of --with or --chat-id)",
+        summary=(
+            "Send a text message to a chat (requires wo1162425_scopes; "
+            "exactly one of --with or --chat-id)"
+        ),
         mutates=True,
         notifies_others=True,
         scopes=["Chat.ReadWrite"],
@@ -286,7 +291,7 @@ SKILLS: list[SkillSpec] = [
         cli=["blumkin", "meeting", "get"],
         summary=(
             "Show online-meeting details for a calendar event you organize "
-            "(attendee-only meetings are not in /me/onlineMeetings)"
+            "(requires wo1162425_scopes; attendee-only meetings are not in /me/onlineMeetings)"
         ),
         mutates=False,
         notifies_others=False,
@@ -296,7 +301,9 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="meeting.transcription",
         cli=["blumkin", "meeting", "transcription"],
-        summary=("Show or enable allowTranscription on an online meeting you organize"),
+        summary=(
+            "Show or enable allowTranscription on an online meeting (requires wo1162425_scopes)"
+        ),
         mutates=True,
         notifies_others=False,
         scopes=["Calendars.ReadWrite", "OnlineMeetings.ReadWrite"],
