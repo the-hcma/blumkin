@@ -41,9 +41,11 @@ from blumkin.skills.calendar_writes import (
 )
 from blumkin.skills.chat import chat_find, chat_last, format_find_human, format_last_human
 from blumkin.skills.mail import (
+    format_delete_draft_human,
     format_draft_human,
     format_inbox_human,
     format_send_draft_human,
+    mail_delete_draft,
     mail_draft,
     mail_inbox,
     mail_send_draft,
@@ -602,19 +604,73 @@ def mail_inbox_cmd(ctx: click.Context, top: int, as_json_flag: bool) -> None:
     raise SystemExit(EXIT_SUCCESS)
 
 
+@mail.command("delete-draft")
+@click.option("--id", "draft_id", required=True, help="Draft message id.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool) -> None:
+    """Delete a draft message (does not notify recipients)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(mail_delete_draft(draft_id=draft_id))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_delete_draft_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
 @mail.command("draft")
 @click.option("--to", required=True, help="Recipient email.")
 @click.option("--subject", required=True)
-@click.option("--body", required=True)
+@click.option("--body", default=None, help="Message body (mutually exclusive with --body-file).")
+@click.option(
+    "--body-file",
+    "body_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    help="Read body from a UTF-8 file.",
+)
+@click.option(
+    "--body-type",
+    "body_type",
+    default="text",
+    show_default=True,
+    type=click.Choice(["text", "html"], case_sensitive=False),
+    help="Body content type.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_draft_cmd(
-    ctx: click.Context, to: str, subject: str, body: str, as_json_flag: bool
+    ctx: click.Context,
+    to: str,
+    subject: str,
+    body: str | None,
+    body_file: str | None,
+    body_type: str,
+    as_json_flag: bool,
 ) -> None:
     """Create a mail draft (does not send)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = asyncio.run(mail_draft(to=to, subject=subject, body=body))
+        payload = asyncio.run(
+            mail_draft(
+                to=to,
+                subject=subject,
+                body=body,
+                body_file=body_file,
+                body_type=body_type,
+            )
+        )
     except ValueError as exc:
         msg = str(exc)
         if "client_id" in msg or "Missing" in msg:

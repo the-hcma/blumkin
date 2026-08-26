@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
+from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
 
 from blumkin.skills.calendar import _event_to_dict
@@ -23,10 +24,13 @@ from blumkin.skills.calendar_writes import (
     parse_duration,
 )
 from blumkin.skills.mail import (
+    format_delete_draft_human,
     format_draft_human,
     format_send_draft_human,
+    mail_delete_draft,
     mail_draft,
     mail_send_draft,
+    resolve_mail_body,
 )
 
 
@@ -233,16 +237,77 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
     )
     saved = asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello"))
     assert saved["draft"]["id"] == "draft-1"
+    assert saved["draft"]["body_type"] == "text"
     post_await = client.me.messages.post.await_args
     assert post_await is not None
     posted = post_await.args[0]
     assert posted.subject == "Hi"
     assert posted.body.content == "Hello"
+    assert posted.body.content_type == BodyType.Text
     assert posted.to_recipients[0].email_address.address == "a@b.com"
     sent = asyncio.run(mail_send_draft(draft_id="draft-1"))
     assert sent == {"sent": "draft-1"}
     client.me.messages.by_message_id.assert_called_once_with("draft-1")
     client.me.messages.by_message_id.return_value.send.post.assert_awaited_once()
+
+
+def test_mail_draft_html_and_body_file(tmp_path, monkeypatch) -> None:
+    draft = SimpleNamespace(id="draft-html", subject="Html")
+    client = MagicMock()
+    client.me.messages.post = AsyncMock(return_value=draft)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    saved = asyncio.run(
+        mail_draft(to="a@b.com", subject="Html", body="<p>Hi</p>", body_type="html")
+    )
+    assert saved["draft"]["body_type"] == "html"
+    post_await = client.me.messages.post.await_args
+    assert post_await is not None
+    posted = post_await.args[0]
+    assert posted.body.content_type == BodyType.Html
+    assert posted.body.content == "<p>Hi</p>"
+
+    path = tmp_path / "message.html"
+    path.write_text("<h1>File</h1>", encoding="utf-8")
+    asyncio.run(
+        mail_draft(
+            to="a@b.com",
+            subject="File",
+            body_file=str(path),
+            body_type="html",
+        )
+    )
+    file_await = client.me.messages.post.await_args
+    assert file_await is not None
+    posted_file = file_await.args[0]
+    assert posted_file.body.content == "<h1>File</h1>"
+    assert posted_file.body.content_type == BodyType.Html
+
+
+def test_mail_delete_draft_mocked(monkeypatch) -> None:
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.delete = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    payload = asyncio.run(mail_delete_draft(draft_id="draft-1"))
+    assert payload == {"deleted": "draft-1"}
+    client.me.messages.by_message_id.assert_called_once_with("draft-1")
+    client.me.messages.by_message_id.return_value.delete.assert_awaited_once()
+
+
+def test_resolve_mail_body_mutual_exclusion() -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        resolve_mail_body(body=None, body_file=None)
+    with pytest.raises(ValueError, match="exactly one"):
+        resolve_mail_body(body="x", body_file="y")
+    with pytest.raises(ValueError, match="body-type"):
+        resolve_mail_body(body="x", body_type="markdown")
 
 
 def test_write_formatters_human() -> None:
@@ -265,3 +330,4 @@ def test_write_formatters_human() -> None:
     assert any("draft-1" in line for line in draft_lines)
     assert any("a@b.com" in line for line in draft_lines)
     assert any("draft-1" in line for line in format_send_draft_human({"sent": "draft-1"}))
+    assert any("draft-1" in line for line in format_delete_draft_human({"deleted": "draft-1"}))
