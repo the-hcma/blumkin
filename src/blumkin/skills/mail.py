@@ -160,6 +160,66 @@ async def mail_send_draft(
     return {"sent": draft_id.strip()}
 
 
+async def mail_update_draft(
+    *,
+    draft_id: str,
+    subject: str | None = None,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_type: str = "text",
+    to: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    if not draft_id.strip():
+        raise ValueError("--id is required")
+    has_body = body is not None or body_file is not None
+    if subject is None and not has_body and to is None:
+        raise ValueError("provide at least one of --subject, --body/--body-file, or --to")
+    content: str | None = None
+    body_type_label: MailBodyType | None = None
+    graph_body_type: BodyType | None = None
+    if has_body:
+        content, body_type_label, graph_body_type = resolve_mail_body(
+            body=body, body_file=body_file, body_type=body_type
+        )
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    mid = draft_id.strip()
+    existing = await client.me.messages.by_message_id(mid).get()
+    if existing is None or not existing.id:
+        raise ValueError(f"message not found: {mid}")
+    if not existing.is_draft:
+        raise ValueError(f"message is not a draft: {mid}")
+    patch = Message()
+    if subject is not None:
+        if not subject.strip():
+            raise ValueError("--subject must be non-empty when provided")
+        patch.subject = subject.strip()
+    if content is not None and graph_body_type is not None:
+        patch.body = ItemBody(content_type=graph_body_type, content=content)
+    if to is not None:
+        if not to.strip():
+            raise ValueError("--to must be non-empty when provided")
+        patch.to_recipients = [
+            Recipient(email_address=EmailAddress(address=to.strip())),
+        ]
+    updated = await client.me.messages.by_message_id(mid).patch(patch)
+    if updated is None:
+        updated = existing
+    to_out = to.strip() if to is not None and to.strip() else _primary_to_address(updated)
+    body_out = body_type_label
+    if body_out is None and updated.body and updated.body.content_type is not None:
+        body_out = "html" if updated.body.content_type == BodyType.Html else "text"
+    return {
+        "draft": {
+            "body_type": body_out or "text",
+            "id": updated.id or mid,
+            "subject": updated.subject if updated.subject is not None else existing.subject,
+            "to": to_out,
+        }
+    }
+
+
 def resolve_mail_body(
     *,
     body: str | None = None,
@@ -223,3 +283,13 @@ def _parse_body_type(raw: str) -> MailBodyType:
     if label not in {"html", "text"}:
         raise ValueError("--body-type must be 'text' or 'html'")
     return label  # type: ignore[return-value]
+
+
+def _primary_to_address(msg: Any) -> str | None:
+    recipients = getattr(msg, "to_recipients", None) or []
+    for recipient in recipients:
+        email = getattr(recipient, "email_address", None)
+        address = getattr(email, "address", None) if email is not None else None
+        if address:
+            return str(address)
+    return None
