@@ -169,6 +169,20 @@ def test_mail_update_draft_not_a_draft_exits_not_found(monkeypatch) -> None:
     assert "not_found" in (result.output or "")
 
 
+def test_graph_404_exits_not_found(monkeypatch) -> None:
+    class _NotFound(Exception):
+        response_status_code = 404
+
+    async def _boom(**_kwargs):
+        raise _NotFound("Resource not found")
+
+    monkeypatch.setattr("blumkin.cli.mail_delete_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "delete-draft", "--id", "gone", "--json"])
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
 def test_calendar_today_invalid_tz_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--tz", "Not/ARealZone", "calendar", "today"])

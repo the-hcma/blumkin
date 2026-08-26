@@ -210,6 +210,9 @@ async def mail_update_draft(
         ]
     updated = await client.me.messages.by_message_id(mid).patch(patch)
     if updated is None:
+        # Empty 2xx body — re-fetch so JSON/human output reflects post-PATCH state.
+        updated = await client.me.messages.by_message_id(mid).get()
+    if updated is None:
         updated = existing
     to_out = to.strip() if to is not None and to.strip() else _primary_to_address(updated)
     body_out = body_type_label
