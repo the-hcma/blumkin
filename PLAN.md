@@ -217,14 +217,15 @@ blumkin chat find --with "Daniel Erickson"
 blumkin chat last --with "Daniel Erickson" --n 3
 blumkin chat last --with "David McKenzie" --n 1 --json
 
-# After Chat.ReadWrite follow-up is granted:
+# After Chat.ReadWrite follow-up is granted (and re-consent):
 blumkin chat send --with "…" --text "…" --yes
 blumkin chat edit --chat-id … --message-id … --text "…" --yes
 blumkin chat delete --chat-id … --message-id … --yes
 ```
 
 - `--with` matches display name (case-insensitive) preferring 1:1 chats.  
-- Strip HTML in human mode; JSON may include `body_text` + `body_html`.
+- Strip HTML in human mode; JSON may include `body_text` + `body_html`.  
+- Commands are implemented; **live** Graph success still needs Identity grant + re-login (see Phase 4 TODO).
 
 ### 3.8 Meetings
 
@@ -234,7 +235,7 @@ blumkin meeting transcription --event-id '<id>'          # show flags
 blumkin meeting transcription --event-id '<id>' --enable --yes
 ```
 
-Blocked until `OnlineMeetings.ReadWrite` is on the Entra app + re-consent.
+Implemented against Graph; **live** enablement needs `OnlineMeetings.ReadWrite` on the Entra app + re-consent.
 
 ---
 
@@ -259,13 +260,13 @@ Blocked until `OnlineMeetings.ReadWrite` is on the Entra app + re-consent.
 | `mail.draft` | `mail draft` | yes | no | Mail.ReadWrite | yes |
 | `mail.send-draft` | `mail send-draft` | yes | yes | Mail.Send | yes |
 | `mail.update-draft` | `mail update-draft` | yes | no | Mail.ReadWrite | yes |
-| `chat.find` | `chat find` | no | no | Chat.Read / ReadWrite | yes |
-| `chat.last` | `chat last` | no | no | Chat.Read / ReadWrite | yes |
-| `chat.send` | `chat send` | yes | yes | Chat.ReadWrite | pending Identity validate |
-| `chat.edit` | `chat edit` | yes | yes | Chat.ReadWrite | pending Identity validate |
-| `chat.delete` | `chat delete` | yes | yes | Chat.ReadWrite | pending Identity validate |
-| `meeting.get` | `meeting get` | no | no | Calendars + OnlineMeetings | partial |
-| `meeting.transcription` | `meeting transcription` | yes if `--enable` | no* | OnlineMeetings.ReadWrite | pending Identity validate |
+| `chat.find` | `chat find` | no | no | Chat.ReadWrite | yes |
+| `chat.last` | `chat last` | no | no | Chat.ReadWrite | yes |
+| `chat.send` | `chat send` | yes | yes | Chat.ReadWrite | mocked; live pending Identity |
+| `chat.edit` | `chat edit` | yes | yes | Chat.ReadWrite | mocked; live pending Identity |
+| `chat.delete` | `chat delete` | yes | yes | Chat.ReadWrite | mocked; live pending Identity |
+| `meeting.get` | `meeting get` | no | no | Calendars + OnlineMeetings | mocked; live pending Identity |
+| `meeting.transcription` | `meeting transcription` | yes if `--enable` | no* | OnlineMeetings.ReadWrite | mocked; live pending Identity |
 
 \*Enabling transcription does not email attendees by itself.
 
@@ -509,9 +510,8 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 
 ### Phase 4 — Post–Identity follow-up
 **Assumption:** private-lab Identity / Remedy follow-up will grant delegated add-ons (see `HANDOFF.md`).  
-- [ ] **TODO (validate):** after grant — update Entra client scopes, wipe token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), re-login, confirm consent includes `Chat.ReadWrite` + `OnlineMeetings.ReadWrite` (and any other add-ons we enable)  
-- [ ] Implement `chat.send|edit|delete`, `meeting.get|transcription` only after that validation  
- 
+- [x] Implement `chat.send|edit|delete`, `meeting.get|transcription` (hermetic / mocked tests)  
+- [ ] **TODO (validate live):** after grant — update Entra client scopes, wipe token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), re-login, confirm consent includes `Chat.ReadWrite` + `OnlineMeetings.ReadWrite`, then smoke chat write + meeting transcription against Graph  
 
 ### Phase 5 — Agent DX (Cursor Agent CLI + Copilot CLI)
 - Freeze `skills list --json` schema  
