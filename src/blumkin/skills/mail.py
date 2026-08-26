@@ -182,6 +182,8 @@ async def mail_update_draft(
         content, body_type_label, graph_body_type = resolve_mail_body(
             body=body, body_file=body_file, body_type=body_type
         )
+        if not content.strip():
+            raise ValueError("--body/--body-file must be non-empty when provided")
     cfg = config or load_config()
     client = create_graph_client(cfg)
     mid = draft_id.strip()
@@ -200,6 +202,9 @@ async def mail_update_draft(
     if to is not None:
         if not to.strip():
             raise ValueError("--to must be non-empty when provided")
+        existing_tos = list(existing.to_recipients or [])
+        if len(existing_tos) > 1:
+            raise ValueError("draft has multiple To recipients; --to would replace the entire list")
         patch.to_recipients = [
             Recipient(email_address=EmailAddress(address=to.strip())),
         ]

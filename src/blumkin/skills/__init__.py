@@ -224,7 +224,7 @@ SKILLS: list[SkillSpec] = [
         args=[
             {"name": "--id", "required": True, "type": "string"},
             {"name": "--subject", "required": False, "type": "string"},
-            {"name": "--to", "required": False, "type": "email"},
+            {"name": "--to", "required": False, "type": "email", "note": "replaces entire To list"},
             {"name": "--body", "required": False, "type": "string"},
             {"name": "--body-file", "required": False, "type": "path"},
             {"name": "--body-type", "required": False, "type": "enum", "values": ["text", "html"]},

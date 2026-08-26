@@ -28,7 +28,7 @@ covers the job.
    - `blumkin calendar create --subject … --with email --start … --yes`
    - `blumkin calendar cancel --event-id '<id>' --yes`
    - `blumkin mail draft --to … --subject … --body …` (draft only; `--body-type html` / `--body-file` optional)
-   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`)
+   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` replaces the whole To list and refuses multi-To drafts)
    - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
    - `blumkin mail send-draft --id '<draft-id>' --yes`
 5. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).

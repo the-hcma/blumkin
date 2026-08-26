@@ -748,7 +748,11 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
 @mail.command("update-draft")
 @click.option("--id", "draft_id", required=True, help="Draft message id.")
 @click.option("--subject", default=None, help="New subject (omit to leave unchanged).")
-@click.option("--to", default=None, help="New recipient email (omit to leave unchanged).")
+@click.option(
+    "--to",
+    default=None,
+    help="Replace the entire To list with this single address (omit to leave unchanged).",
+)
 @click.option("--body", default=None, help="New body (mutually exclusive with --body-file).")
 @click.option(
     "--body-file",
@@ -790,6 +794,13 @@ def mail_update_draft_cmd(
                 body_type=body_type,
             )
         )
+    except OSError as exc:
+        emit_error(
+            error="usage_error",
+            message=f"cannot read --body-file: {exc}",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE) from exc
     except ValueError as exc:
         msg = str(exc)
         if "client_id" in msg or "Missing" in msg:
