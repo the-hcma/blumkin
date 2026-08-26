@@ -167,7 +167,7 @@ def resolve_mail_body(
         path = Path(str(body_file))
         try:
             content = path.read_text(encoding="utf-8")
-        except OSError, UnicodeDecodeError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             raise MailBodyFileError(f"cannot read --body-file {path}: {exc}") from exc
     else:
         content = str(body)
