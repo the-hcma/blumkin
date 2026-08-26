@@ -51,6 +51,7 @@ from blumkin.skills.mail import (
     mail_draft,
     mail_inbox,
     mail_send_draft,
+    mail_update_draft,
 )
 
 
@@ -741,6 +742,81 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
         emit_json(payload)
     else:
         emit_lines(format_send_draft_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("update-draft")
+@click.option("--id", "draft_id", required=True, help="Draft message id.")
+@click.option("--subject", default=None, help="New subject (omit to leave unchanged).")
+@click.option(
+    "--to",
+    default=None,
+    help="Replace the entire To list with this single address (omit to leave unchanged).",
+)
+@click.option("--body", default=None, help="New body (mutually exclusive with --body-file).")
+@click.option(
+    "--body-file",
+    "body_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    help="Read new body from a UTF-8 file.",
+)
+@click.option(
+    "--body-type",
+    "body_type",
+    default="text",
+    show_default=True,
+    type=click.Choice(["text", "html"], case_sensitive=False),
+    help="Body content type when updating body.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_update_draft_cmd(
+    ctx: click.Context,
+    draft_id: str,
+    subject: str | None,
+    to: str | None,
+    body: str | None,
+    body_file: str | None,
+    body_type: str,
+    as_json_flag: bool,
+) -> None:
+    """Patch an existing draft in place (does not send)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            mail_update_draft(
+                draft_id=draft_id,
+                subject=subject,
+                to=to,
+                body=body,
+                body_file=body_file,
+                body_type=body_type,
+            )
+        )
+    except MailBodyFileError as exc:
+        emit_error(
+            error="usage_error",
+            message=str(exc),
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE) from exc
+    except MailDraftNotFoundError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_draft_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 

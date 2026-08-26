@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
+from kiota_serialization_json.json_serialization_writer import JsonSerializationWriter
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
 
@@ -32,6 +34,7 @@ from blumkin.skills.mail import (
     mail_delete_draft,
     mail_draft,
     mail_send_draft,
+    mail_update_draft,
     resolve_mail_body,
 )
 
@@ -360,6 +363,296 @@ def test_resolve_mail_body_unicode_decode_error(tmp_path) -> None:
     path.write_bytes(b"\xff\xfe not utf-8")
     with pytest.raises(MailBodyFileError, match="cannot read --body-file"):
         resolve_mail_body(body_file=str(path))
+
+
+def test_mail_update_draft_mocked(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=SimpleNamespace(content_type=BodyType.Text, content="old"),
+        to_recipients=[SimpleNamespace(email_address=SimpleNamespace(address="a@b.com"))],
+    )
+    patched = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="New",
+        body=SimpleNamespace(content_type=BodyType.Html, content="<p>new</p>"),
+        to_recipients=[SimpleNamespace(email_address=SimpleNamespace(address="a@b.com"))],
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    payload = asyncio.run(
+        mail_update_draft(
+            draft_id="draft-1",
+            subject="New",
+            body="<p>new</p>",
+            body_type="html",
+        )
+    )
+    assert payload["draft"]["subject"] == "New"
+    assert payload["draft"]["body_type"] == "html"
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
+    assert posted.subject == "New"
+    assert posted.body.content_type == BodyType.Html
+    assert posted.body.content == "<p>new</p>"
+    assert posted.to_recipients is None
+    writer = JsonSerializationWriter()
+    posted.serialize(writer)
+    wire = json.loads(writer.get_serialized_content())
+    assert "subject" in wire
+    assert "body" in wire
+    assert "toRecipients" not in wire
+    assert "ccRecipients" not in wire
+
+
+def test_mail_update_draft_requires_at_least_one_field() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        asyncio.run(mail_update_draft(draft_id="draft-1"))
+
+
+def test_mail_update_draft_rejects_empty_body(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=SimpleNamespace(content_type=BodyType.Text, content="old"),
+        to_recipients=[],
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(ValueError, match="non-empty"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", body=""))
+    with pytest.raises(ValueError, match="non-empty"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", body="   "))
+
+
+def test_mail_update_draft_subject_only(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=SimpleNamespace(content_type=BodyType.Html, content="<p>old</p>"),
+        to_recipients=[SimpleNamespace(email_address=SimpleNamespace(address="a@b.com"))],
+    )
+    patched = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="OnlySubject",
+        body=existing.body,
+        to_recipients=existing.to_recipients,
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", subject="OnlySubject"))
+    assert payload["draft"]["to"] == "a@b.com"
+    assert payload["draft"]["body_type"] == "html"
+    assert payload["draft"]["subject"] == "OnlySubject"
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
+    assert posted.subject == "OnlySubject"
+    assert posted.body is None
+    assert posted.to_recipients is None
+    writer = JsonSerializationWriter()
+    posted.serialize(writer)
+    wire = json.loads(writer.get_serialized_content())
+    assert set(wire) <= {"@odata.type", "subject"}
+    assert wire["subject"] == "OnlySubject"
+
+
+def test_mail_update_draft_body_file(tmp_path, monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=SimpleNamespace(content_type=BodyType.Text, content="old"),
+        to_recipients=[],
+    )
+    path = tmp_path / "upd.html"
+    path.write_text("<p>from file</p>", encoding="utf-8")
+    patched = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=SimpleNamespace(content_type=BodyType.Html, content="<p>from file</p>"),
+        to_recipients=[],
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    payload = asyncio.run(
+        mail_update_draft(draft_id="draft-1", body_file=str(path), body_type="html")
+    )
+    assert payload["draft"]["body_type"] == "html"
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
+    assert posted.body.content == "<p>from file</p>"
+    assert posted.body.content_type == BodyType.Html
+    empty = tmp_path / "empty.txt"
+    empty.write_text("   ", encoding="utf-8")
+    with pytest.raises(ValueError, match="non-empty"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", body_file=str(empty)))
+
+
+def test_mail_update_draft_refetches_when_patch_returns_none(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=SimpleNamespace(content_type=BodyType.Text, content="old"),
+        to_recipients=[SimpleNamespace(email_address=SimpleNamespace(address="a@b.com"))],
+    )
+    after = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="New",
+        body=existing.body,
+        to_recipients=existing.to_recipients,
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(side_effect=[existing, after])
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", subject="New"))
+    assert payload["draft"]["subject"] == "New"
+    assert client.me.messages.by_message_id.return_value.get.await_count == 2
+
+
+def test_mail_update_draft_errors_when_patch_and_refetch_empty(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=None,
+        to_recipients=[],
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(side_effect=[existing, None])
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(RuntimeError, match="no message after update-draft"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", subject="New"))
+
+
+def test_mail_update_draft_to_only(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=SimpleNamespace(content_type=BodyType.Text, content="old"),
+        to_recipients=[SimpleNamespace(email_address=SimpleNamespace(address="a@b.com"))],
+    )
+    patched = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=existing.body,
+        to_recipients=[SimpleNamespace(email_address=SimpleNamespace(address="c@d.com"))],
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", to="c@d.com"))
+    assert payload["draft"]["to"] == "c@d.com"
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
+    assert posted.subject is None
+    assert posted.body is None
+    assert len(posted.to_recipients) == 1
+    assert posted.to_recipients[0].email_address.address == "c@d.com"
+
+
+def test_mail_update_draft_rejects_to_when_multiple_recipients(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=None,
+        to_recipients=[
+            SimpleNamespace(email_address=SimpleNamespace(address="a@b.com")),
+            SimpleNamespace(email_address=SimpleNamespace(address="c@d.com")),
+        ],
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(ValueError, match="multiple To recipients"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", to="e@f.com"))
+
+
+def test_mail_update_draft_rejects_non_draft(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="msg-1",
+        is_draft=False,
+        subject="Sent",
+        body=None,
+        to_recipients=[],
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(MailDraftNotFoundError, match="not a draft"):
+        asyncio.run(mail_update_draft(draft_id="msg-1", subject="Nope"))
+
+
+def test_mail_update_draft_message_not_found(monkeypatch) -> None:
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(MailDraftNotFoundError, match="message not found"):
+        asyncio.run(mail_update_draft(draft_id="missing", subject="x"))
 
 
 def test_write_formatters_human() -> None:

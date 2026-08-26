@@ -215,6 +215,22 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="mail.update-draft",
+        cli=["blumkin", "mail", "update-draft"],
+        summary="Patch an existing draft in place (does not send)",
+        mutates=True,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string"},
+            {"name": "--subject", "required": False, "type": "string"},
+            {"name": "--to", "required": False, "type": "email", "note": "replaces entire To list"},
+            {"name": "--body", "required": False, "type": "string"},
+            {"name": "--body-file", "required": False, "type": "path"},
+            {"name": "--body-type", "required": False, "type": "enum", "values": ["text", "html"]},
+        ],
+    ),
+    SkillSpec(
         id="skills.describe",
         cli=["blumkin", "skills", "describe"],
         summary="Describe one skill by id",

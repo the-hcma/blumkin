@@ -6,8 +6,8 @@ from click.testing import CliRunner
 from kiota_abstractions.api_error import APIError
 
 from blumkin.cli import main
-from blumkin.exit_codes import EXIT_AUTH, EXIT_NOT_FOUND, EXIT_USAGE
-from blumkin.skills.mail import MailDraftNotFoundError
+from blumkin.exit_codes import EXIT_AUTH, EXIT_NOT_FOUND, EXIT_OTHER, EXIT_USAGE
+from blumkin.skills.mail import MailBodyFileError, MailDraftNotFoundError
 
 
 def test_calendar_accept_invalid_tz_exits_usage(tmp_path, monkeypatch) -> None:
@@ -153,6 +153,107 @@ def test_mail_draft_missing_body_exits_usage() -> None:
         ["mail", "draft", "--to", "a@b.com", "--subject", "x"],
     )
     assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_update_draft_not_a_draft_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise MailDraftNotFoundError("message is not a draft: msg-1")
+
+    monkeypatch.setattr("blumkin.cli.mail_update_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "update-draft", "--id", "msg-1", "--subject", "x", "--json"],
+    )
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_mail_update_draft_missing_fields_exits_usage(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ValueError("provide at least one of --subject, --body/--body-file, or --to")
+
+    monkeypatch.setattr("blumkin.cli.mail_update_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "update-draft", "--id", "draft-1"])
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_update_draft_body_file_error_exits_usage(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "body.txt"
+    path.write_text("x", encoding="utf-8")
+
+    async def _boom(**_kwargs):
+        raise MailBodyFileError(f"cannot read --body-file {path}: boom")
+
+    monkeypatch.setattr("blumkin.cli.mail_update_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "update-draft", "--id", "draft-1", "--body-file", str(path), "--json"],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
+def test_mail_update_draft_wires_options_and_emits_json(tmp_path, monkeypatch) -> None:
+    seen: dict[str, object] = {}
+    path = tmp_path / "upd.html"
+    path.write_text("<p>Hi</p>", encoding="utf-8")
+
+    async def _ok(**kwargs):
+        seen.update(kwargs)
+        return {
+            "draft": {
+                "body_type": kwargs.get("body_type") or "text",
+                "id": kwargs["draft_id"],
+                "subject": kwargs.get("subject") or "kept",
+                "to": kwargs.get("to") or "a@b.com",
+            }
+        }
+
+    monkeypatch.setattr("blumkin.cli.mail_update_draft", _ok)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "update-draft",
+            "--id",
+            "draft-9",
+            "--subject",
+            "Subj",
+            "--to",
+            "b@c.com",
+            "--body-file",
+            str(path),
+            "--body-type",
+            "html",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    assert seen["draft_id"] == "draft-9"
+    assert seen["subject"] == "Subj"
+    assert seen["to"] == "b@c.com"
+    assert seen["body"] is None
+    assert seen["body_file"] == str(path)
+    assert seen["body_type"] == "html"
+    assert '"id": "draft-9"' in (result.output or "") or '"id":"draft-9"' in (result.output or "")
+
+
+def test_mail_update_draft_runtime_error_exits_other(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise RuntimeError("Graph returned no message after update-draft: draft-1")
+
+    monkeypatch.setattr("blumkin.cli.mail_update_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "update-draft", "--id", "draft-1", "--subject", "x", "--json"],
+    )
+    assert result.exit_code == EXIT_OTHER
+    assert "graph_error" in (result.output or "")
 
 
 def test_calendar_today_invalid_tz_exits_usage() -> None:

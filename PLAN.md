@@ -77,6 +77,7 @@ blumkin
 │   ├── inbox
 │   ├── draft
 │   ├── delete-draft
+│   ├── update-draft
 │   └── send-draft
 ├── chat
 │   ├── find
@@ -199,12 +200,13 @@ blumkin mail draft --to hcma@hcma.info --subject "hello you!" --body "hello you!
 blumkin mail draft --to hcma@hcma.info --subject "html" --body "<p>Hi</p>" --body-type html
 blumkin mail draft --to hcma@hcma.info --subject "from file" --body-file ./message.html --body-type html
 blumkin mail delete-draft --id '<draft-id>'
+blumkin mail update-draft --id '<draft-id>' --subject "revised" --body-file ./message.html --body-type html
 blumkin mail send-draft --id '<draft-id>' --yes
 ```
 
 - Default: create **draft** only (safe).  
 - `--body` and `--body-file` are mutually exclusive; `--body-type` is `text` (default) or `html`.  
-- `delete-draft` does not require `--yes` (no recipient notify).  
+- `delete-draft` / `update-draft` do not require `--yes` (no recipient notify).  
 - Sending always `--yes`.  
 - Optional later: `mail send` one-shot (still `--yes`).
 
@@ -256,6 +258,7 @@ Blocked until `OnlineMeetings.ReadWrite` is on the Entra app + re-consent.
 | `mail.delete-draft` | `mail delete-draft` | yes | no | Mail.ReadWrite | yes |
 | `mail.draft` | `mail draft` | yes | no | Mail.ReadWrite | yes |
 | `mail.send-draft` | `mail send-draft` | yes | yes | Mail.Send | yes |
+| `mail.update-draft` | `mail update-draft` | yes | no | Mail.ReadWrite | yes |
 | `chat.find` | `chat find` | no | no | Chat.Read / ReadWrite | yes |
 | `chat.last` | `chat last` | no | no | Chat.Read / ReadWrite | yes |
 | `chat.send` | `chat send` | yes | yes | Chat.ReadWrite | blocked |
@@ -502,6 +505,7 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 - [x] `calendar.accept|create|cancel`  
 - [x] `mail.draft|send-draft`  
 - [x] `mail.delete-draft`; HTML / `--body-file` on `mail draft`  
+- [x] `mail.update-draft` (PATCH in place)  
 
 ### Phase 4 — Post–Identity follow-up
 - Enable delegated add-on scopes once Identity grants the private-lab follow-up  
