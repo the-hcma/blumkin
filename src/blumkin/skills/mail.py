@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import html as html_lib
 import re
 from pathlib import Path
@@ -180,13 +181,19 @@ async def mail_attachments_download(
                 match.get("skip_reason") or "unsupported attachment type"
             )
         targets = [match]
-        if out_path.exists() and out_path.is_dir():
-            filename = _sanitize_attachment_filename(match.get("name") or aid)
-            out_path = _resolve_attachment_dest(out_path, filename)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        filename = _sanitize_attachment_filename(match.get("name") or aid)
+        if _out_is_directory_intent(out, out_path):
+            if not out_path.exists():
+                out_path.mkdir(parents=True, exist_ok=True)
+            if not out_path.is_dir():
+                raise ValueError("--out must be a directory")
+            unique = _unique_filename(filename, _existing_entry_names(out_path))
+            out_path = _resolve_attachment_dest(out_path, unique)
+        else:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
     saved: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    used_names = _existing_filenames(out_path) if download_all else set()
+    used_names = _existing_entry_names(out_path) if download_all else set()
     for meta in attachments if download_all else targets:
         if meta.get("skipped"):
             skipped.append(
@@ -215,7 +222,7 @@ async def mail_attachments_download(
                 _sanitize_attachment_filename(meta.get("name") or aid),
                 used_names,
             )
-            dest = out_path / filename
+            dest = _resolve_attachment_dest(out_path, filename)
         else:
             dest = out_path
         dest.write_bytes(content)
@@ -463,7 +470,10 @@ async def _fetch_attachment_bytes(
         if isinstance(raw, bytes):
             return raw
         if isinstance(raw, str):
-            return base64.b64decode(raw)
+            try:
+                return base64.b64decode(raw)
+            except (ValueError, binascii.Error) as exc:
+                raise ValueError(f"invalid attachment contentBytes encoding: {exc}") from exc
     request_info = RequestInformation(
         Method.GET,
         "https://graph.microsoft.com/v1.0/me/messages/{message%2Did}/attachments/{attachment%2Did}/$value",
@@ -527,8 +537,14 @@ async def _require_message(client: Any, message_id: str) -> None:
         raise MailMessageNotFoundError(f"message not found: {message_id}")
 
 
-def _existing_filenames(directory: Path) -> set[str]:
-    return {path.name for path in directory.iterdir() if path.is_file()}
+def _existing_entry_names(directory: Path) -> set[str]:
+    return {path.name for path in directory.iterdir()}
+
+
+def _out_is_directory_intent(out: str, out_path: Path) -> bool:
+    if out.rstrip().endswith(("/", "\\")):
+        return True
+    return out_path.exists() and out_path.is_dir()
 
 
 def _prepare_download_out_directory(out: str) -> Path:

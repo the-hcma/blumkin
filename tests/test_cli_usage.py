@@ -339,6 +339,31 @@ def test_mail_attachments_download_skipped_exits_usage(monkeypatch) -> None:
     assert "usage_error" in (result.output or "")
 
 
+def test_mail_attachments_download_not_found_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise MailMessageNotFoundError("message not found: missing")
+
+    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "attachments",
+            "download",
+            "--message-id",
+            "missing",
+            "--attachment-id",
+            "att-1",
+            "--out",
+            "out.bin",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
 def test_mail_attachments_list_not_found_exits_not_found(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise MailMessageNotFoundError("message not found: missing")
