@@ -17,8 +17,10 @@ from blumkin.config import BlumkinConfig, load_config
 # Request exact granted scope names for MSAL silent refresh (e.g. Calendars.ReadWrite
 # not .Read). Include scopes for shipped skills; write paths still require --yes.
 # Chat.ReadWrite / OnlineMeetings.ReadWrite need Entra grant + re-consent for live Graph.
+# Keep Chat.Read during transition so shipped chat reads keep working until grant lands.
 SCOPES = [
     "Calendars.ReadWrite",
+    "Chat.Read",
     "Chat.ReadWrite",
     "Mail.ReadWrite",
     "Mail.Send",

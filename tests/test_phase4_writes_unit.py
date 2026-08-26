@@ -93,6 +93,19 @@ def test_chat_send_refuses_partial_match(monkeypatch) -> None:
         asyncio.run(chat_send(with_name="dan", text="hi"))
 
 
+def test_chat_send_refuses_partial_empty_match(monkeypatch) -> None:
+    async def fake_find(*, with_name: str, config=None):
+        return {"items": [], "partial": True, "query": with_name, "skipped": 3}
+
+    monkeypatch.setattr("blumkin.skills.chat.chat_find", fake_find)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(client_id="x"),
+    )
+    with pytest.raises(ValueError, match="partial"):
+        asyncio.run(chat_send(with_name="dan", text="hi"))
+
+
 def test_chat_send_refuses_ambiguous_match(monkeypatch) -> None:
     async def fake_find(*, with_name: str, config=None):
         return {

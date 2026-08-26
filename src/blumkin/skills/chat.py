@@ -209,14 +209,14 @@ async def chat_send(
         items = found["items"]
         partial = bool(found["partial"])
         skipped = int(found["skipped"])
-        if not items:
-            raise LookupError(f"no chat matched {name!r}")
         if found.get("partial"):
             raise ValueError(
                 f"chat match for {name!r} is partial "
                 f"(skipped {int(found.get('skipped') or 0)} chat(s)); "
                 "retry later or pass --chat-id from `chat find`"
             )
+        if not items:
+            raise LookupError(f"no chat matched {name!r}")
         if len(items) > 1:
             ids = ", ".join(str(item.get("id")) for item in items)
             raise ValueError(
