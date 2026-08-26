@@ -1,8 +1,8 @@
 # Handoff — Graph lab → Blumkin CLI
 
-**Date:** 2026-08-25  
+**Date:** 2026-08-26  
 **Purpose:** Continue in a new session without re-deriving context.  
-**Status:** M1 CLI skeleton shipped ([#10](https://github.com/the-hcma/blumkin/pull/10)). Prefer validating new Graph flows in the private lab, then porting them as Blumkin skills.
+**Status:** M1 shipped ([#10](https://github.com/the-hcma/blumkin/pull/10)); M1 retro closed ([#11](https://github.com/the-hcma/blumkin/issues/11) / [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md)). Phases 2–3 read/write skills are on `main`. Prefer validating new Graph flows in the private lab, then porting them as Blumkin skills.
 
 ---
 
@@ -51,31 +51,36 @@ Auth caching: Keychain-only failed under Cursor; **file cache + AuthenticationRe
 
 ## Identity / permissions follow-up (open)
 
-A Remedy follow-up is open for **delegated** add-ons (ticket details stay in the private Graph lab — not this repo). **Already granted / in use:** `Calendars.ReadWrite`, `Chat.Read`, `Mail.ReadWrite`, `Mail.Send`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `User.Read`. Keep those; request add-ons:
+A Remedy follow-up is open for **delegated** add-ons (ticket details stay in the private Graph lab — not this repo).
+
+**Working assumption:** those add-ons will be granted. Leave Phase 4 skill code until the validation TODO below passes — do not merge chat-write / meeting-transcription commands against scopes we have not confirmed in consent.
+
+**Already granted / in use:** `Calendars.ReadWrite`, `Chat.Read`, `Mail.ReadWrite`, `Mail.Send`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `User.Read`. Keep those; request add-ons:
 
 - Teams: `Chat.ReadWrite`, `ChannelMessage.Read.All`, `ChannelMessage.Send`, `OnlineMeetings.ReadWrite`, `OnlineMeetingTranscript.Read.All`, `Presence.Read`
 - Mailbox: `MailboxSettings.Read`
 - Productivity: `Files.ReadWrite`, `Tasks.ReadWrite`, `Contacts.ReadWrite`, `People.Read`, `Notes.ReadWrite`
 
-After grant: add the **new** scopes to the client, delete token cache + auth record, re-login.
+- [ ] **TODO (validate after grant):** add the **new** scopes to the Entra client, delete token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), `blumkin auth login`, confirm consent includes at least `Chat.ReadWrite` and `OnlineMeetings.ReadWrite`, then smoke the blocked lab flows before implementing Blumkin Phase 4 skills.
 
-**Do not** request app-only / broad shared `*.All` / RSC all-messages in that follow-up.
+**Do not** request app-only permissions, broad shared permissions, or RSC all-messages.
+Keep the delegated `*.All` scopes listed above only when the corresponding flow requires them.
 
 ---
 
 ## What to do next (ordered)
 
-1. **Human:** run the **new hand automation** you care about in the private lab (or a scratch script there). Note: command, Graph APIs, scopes, failure modes.
-2. **When ready for CLI:** port proven flows per `PLAN.md` Phase 2+ (read skills → write skills). Add a row to the skill inventory for the new hand flow.
-3. **When Identity returns:** wire follow-up scopes; unlock chat write + meeting transcription skills.
-4. **Agent DX (Phase 5):** personal skill install + Copilot CLI instruction snippet — shell to `blumkin`, not MCP first.
+1. **Agent DX (Phase 5):** [#20](https://github.com/the-hcma/blumkin/issues/20) — personal skill install + Copilot CLI instruction snippet — shell to `blumkin`, not MCP first.
+2. **Human:** run any **new hand automation** in the private lab. Note: command, Graph APIs, scopes, failure modes.
+3. **After Identity grant (validate TODO above):** wire follow-up scopes; unlock `chat.send|edit|delete` + `meeting get|transcription` (Phase 4).
+4. **Bugbot validate TODO:** after Bugbot is enabled on this repo, confirm a real review on a PR head (`RETROSPECTIVE-M1.md`).
 
 ---
 
 ## Intentional non-work in this repo right now
 
 - Do not block new hand automation on Blumkin implementation.
-- Identity-blocked scopes stay out until the private-lab follow-up lands.
+- Do not ship Phase 4 Graph calls until the Identity **validate** TODO is checked off.
 
 ---
 

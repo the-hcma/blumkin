@@ -261,11 +261,11 @@ Blocked until `OnlineMeetings.ReadWrite` is on the Entra app + re-consent.
 | `mail.update-draft` | `mail update-draft` | yes | no | Mail.ReadWrite | yes |
 | `chat.find` | `chat find` | no | no | Chat.Read / ReadWrite | yes |
 | `chat.last` | `chat last` | no | no | Chat.Read / ReadWrite | yes |
-| `chat.send` | `chat send` | yes | yes | Chat.ReadWrite | blocked |
-| `chat.edit` | `chat edit` | yes | yes | Chat.ReadWrite | blocked |
-| `chat.delete` | `chat delete` | yes | yes | Chat.ReadWrite | blocked |
+| `chat.send` | `chat send` | yes | yes | Chat.ReadWrite | pending Identity validate |
+| `chat.edit` | `chat edit` | yes | yes | Chat.ReadWrite | pending Identity validate |
+| `chat.delete` | `chat delete` | yes | yes | Chat.ReadWrite | pending Identity validate |
 | `meeting.get` | `meeting get` | no | no | Calendars + OnlineMeetings | partial |
-| `meeting.transcription` | `meeting transcription` | yes if `--enable` | no* | OnlineMeetings.ReadWrite | blocked |
+| `meeting.transcription` | `meeting transcription` | yes if `--enable` | no* | OnlineMeetings.ReadWrite | pending Identity validate |
 
 \*Enabling transcription does not email attendees by itself.
 
@@ -508,8 +508,10 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 - [x] `mail.update-draft` (PATCH in place)  
 
 ### Phase 4 — Post–Identity follow-up
-- Enable delegated add-on scopes once Identity grants the private-lab follow-up  
-- `chat.send|edit|delete`, `meeting.get|transcription`  
+**Assumption:** private-lab Identity / Remedy follow-up will grant delegated add-ons (see `HANDOFF.md`).  
+- [ ] **TODO (validate):** after grant — update Entra client scopes, wipe token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), re-login, confirm consent includes `Chat.ReadWrite` + `OnlineMeetings.ReadWrite` (and any other add-ons we enable)  
+- [ ] Implement `chat.send|edit|delete`, `meeting.get|transcription` only after that validation  
+ 
 
 ### Phase 5 — Agent DX (Cursor Agent CLI + Copilot CLI)
 - Freeze `skills list --json` schema  

@@ -67,6 +67,7 @@ Live tests need `~/.config/blumkin/` by default (override with `BLUMKIN_CONFIG_D
 - [`PLAN.md`](./PLAN.md) — CLI design  
 - [`HANDOFF.md`](./HANDOFF.md) — session handoff  
 - [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
+- [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md) — M1 ship retrospective (#11)  
 - [`.cursor/skills/blumkin/SKILL.md`](./.cursor/skills/blumkin/SKILL.md) — Cursor agent skill  
 
 ## License

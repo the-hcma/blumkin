@@ -87,6 +87,20 @@ Always implement in `.worktrees/<stack-name>-wt`.
 
 ---
 
+## Agent review (this repo)
+
+- Default quota chain matches repository-helpers:
+  `coderabbit,copilot,bugbot`.
+- **Bugbot:** keep in the chain; assume it will be (re)enabled for
+  `the-hcma/blumkin`. Until enabled, operators may use
+  `AGENT_REVIEW_QUOTA_FALLBACK_CHAIN=coderabbit,copilot` to skip disabled-stub
+  churn. **TODO (validate):** confirm a real Bugbot review on a PR head after
+  enablement — see `RETROSPECTIVE-M1.md`.
+- Reply-before-resolve and `wait-for-agent-review` remain mandatory
+  (`.cursor/rules/pr-ship-and-review.mdc`).
+
+---
+
 ## Commits, stacking & PRs
 
 - Stacking backend is **`gh-stack`** (`.github/stacking-tool`). Do **not** use
