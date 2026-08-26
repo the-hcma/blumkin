@@ -300,8 +300,7 @@ SKILLS: list[SkillSpec] = [
         id="meeting.transcription",
         cli=["blumkin", "meeting", "transcription"],
         summary=(
-            "Show or enable allowTranscription on an online meeting "
-            "(requires wo1162425_scopes)"
+            "Show or enable allowTranscription on an online meeting (requires wo1162425_scopes)"
         ),
         mutates=True,
         notifies_others=False,
