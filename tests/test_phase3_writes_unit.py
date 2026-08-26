@@ -455,7 +455,9 @@ def test_mail_update_draft_subject_only(monkeypatch) -> None:
         lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
     )
     asyncio.run(mail_update_draft(draft_id="draft-1", subject="OnlySubject"))
-    posted = client.me.messages.by_message_id.return_value.patch.await_args.args[0]
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
     assert posted.subject == "OnlySubject"
     assert posted.body is None
     assert posted.to_recipients is None
@@ -486,7 +488,9 @@ def test_mail_update_draft_to_only(monkeypatch) -> None:
     )
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", to="c@d.com"))
     assert payload["draft"]["to"] == "c@d.com"
-    posted = client.me.messages.by_message_id.return_value.patch.await_args.args[0]
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
     assert posted.subject is None
     assert posted.body is None
     assert len(posted.to_recipients) == 1
