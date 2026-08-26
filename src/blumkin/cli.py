@@ -318,6 +318,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
     else:
         emit_lines([f"ok: {payload['ok']}"])
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
+        emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
         for problem in problems:
             emit_lines([f"problem: {problem}"])
         emit_lines([f"skills: {', '.join(payload['skills'])}"])

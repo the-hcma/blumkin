@@ -88,7 +88,17 @@ def _env_bool(name: str) -> bool | None:
     raw = os.environ.get(name, "").strip().lower()
     if not raw:
         return None
-    return raw in {"1", "true", "yes", "on"}
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _read_toml(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    return tomllib.loads(path.read_text())
 
 
 def _wo1162425_scopes_enabled(file_data: dict[str, Any]) -> bool:
@@ -100,9 +110,3 @@ def _wo1162425_scopes_enabled(file_data: dict[str, Any]) -> bool:
         if coerced is not None:
             return coerced
     return False
-
-
-def _read_toml(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    return tomllib.loads(path.read_text())
