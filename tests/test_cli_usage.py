@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from click.testing import CliRunner
 from kiota_abstractions.api_error import APIError
