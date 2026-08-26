@@ -118,6 +118,33 @@ def test_meeting_transcription_enable_without_yes_exits_usage(monkeypatch) -> No
     assert result.exit_code == EXIT_USAGE
 
 
+def test_wo1162425_scopes_disabled_blocks_calendar_create_teams(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
+    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "calendar",
+            "create",
+            "--subject",
+            "Sync",
+            "--with",
+            "ada@example.com",
+            "--start",
+            "2026-08-27T10:00",
+            "--teams",
+            "--yes",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "WO1162425 add-on scopes are disabled" in (result.output or "")
+
+
 def test_wo1162425_scopes_disabled_blocks_chat_send(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)

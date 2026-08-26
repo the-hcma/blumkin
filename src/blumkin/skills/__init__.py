@@ -74,10 +74,12 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="calendar.create",
         cli=["blumkin", "calendar", "create"],
-        summary="Create a calendar event (optional Teams online meeting)",
+        summary=(
+            "Create a calendar event; --teams needs wo1162425_scopes + OnlineMeetings.ReadWrite"
+        ),
         mutates=True,
         notifies_others=True,
-        scopes=["Calendars.ReadWrite"],
+        scopes=["Calendars.ReadWrite", "OnlineMeetings.ReadWrite"],
         args=[
             {"name": "--subject", "required": True, "type": "string"},
             {"name": "--with", "required": True, "type": "email", "multiple": True},

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from blumkin.auth import BASE_SCOPES, PHASE4_SCOPES, effective_scopes
+from blumkin.auth import BASE_SCOPES, WO1162425_SCOPES, effective_scopes
 from blumkin.config import BlumkinConfig, load_config
 
 
@@ -13,7 +13,7 @@ def test_effective_scopes_default_excludes_phase4() -> None:
 
 
 def test_effective_scopes_enabled_includes_phase4() -> None:
-    assert effective_scopes(_cfg(wo1162425_scopes=True)) == [*BASE_SCOPES, *PHASE4_SCOPES]
+    assert effective_scopes(_cfg(wo1162425_scopes=True)) == [*BASE_SCOPES, *WO1162425_SCOPES]
 
 
 def test_wo1162425_scopes_from_env(tmp_path: Path, monkeypatch) -> None:

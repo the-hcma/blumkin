@@ -122,7 +122,8 @@ def _require_wo1162425_scopes(*, as_json: bool) -> None:
         error="usage_error",
         message=(
             "WO1162425 add-on scopes are disabled. Calendar/mail/chat read skills work "
-            "without them; chat write and meeting skills need wo1162425_scopes = true "
+            "without them; chat write, meeting skills, and calendar create --teams need "
+            "wo1162425_scopes = true "
             "in config.toml (or BLUMKIN_WO1162425_SCOPES=1) after Remedy WO1162425 "
             "grants Chat.ReadWrite + OnlineMeetings.ReadWrite — then wipe token cache, "
             "auth record, and re-login."
@@ -549,6 +550,8 @@ def calendar_create_cmd(
     """Create a calendar event. Requires --yes."""
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
+    if teams:
+        _require_wo1162425_scopes(as_json=as_json)
     try:
         payload = asyncio.run(
             calendar_create(

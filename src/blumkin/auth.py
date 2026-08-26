@@ -25,7 +25,7 @@ BASE_SCOPES = [
     "User.Read",
 ]
 
-PHASE4_SCOPES = [
+WO1162425_SCOPES = [
     "Chat.ReadWrite",
     "OnlineMeetings.ReadWrite",
 ]
@@ -75,7 +75,7 @@ def effective_scopes(config: BlumkinConfig | None = None) -> list[str]:
     """Return MSAL scopes for the current config (Phase 4 add-ons optional)."""
     cfg = config or load_config()
     if cfg.wo1162425_scopes:
-        return [*BASE_SCOPES, *PHASE4_SCOPES]
+        return [*BASE_SCOPES, *WO1162425_SCOPES]
     return list(BASE_SCOPES)
 
 
