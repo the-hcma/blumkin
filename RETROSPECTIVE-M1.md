@@ -56,17 +56,17 @@ See `AGENTS.md` (agent review) for the operator note.
 ## Identity / Phase 4 posture (forward)
 
 Phases 2–3 mail/calendar writes and chat reads are shipped. Phase 4 chat write +
-meeting get/transcription stay gated on delegated add-on scopes.
+meeting get/transcription CLI skills are **implemented with mocked tests**.
 
 **Assumption:** the private-lab Identity / Remedy follow-up will grant the
 requested delegated add-ons (details stay in the private lab — not this repo).
 
-- [ ] **TODO (validate):** after grant — add **new** scopes to the Entra client,
+- [ ] **TODO (validate live):** after grant — add **new** scopes to the Entra client,
   delete the token cache + auth record under the effective config dir
   (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), run
   `blumkin auth login`, confirm consent includes at least `Chat.ReadWrite` and
-  `OnlineMeetings.ReadWrite`, then smoke `chat` write + `meeting get|transcription`
-  in the lab before implementing Blumkin skills.
+  `OnlineMeetings.ReadWrite`, then smoke `chat send|edit|delete` +
+  `meeting get|transcription` against Graph.
 
 Tracked in `HANDOFF.md` and `PLAN.md` § Phase 4.
 

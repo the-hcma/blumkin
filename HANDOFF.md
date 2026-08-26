@@ -53,15 +53,15 @@ Auth caching: Keychain-only failed under Cursor; **file cache + AuthenticationRe
 
 A Remedy follow-up is open for **delegated** add-ons (ticket details stay in the private Graph lab — not this repo).
 
-**Working assumption:** those add-ons will be granted. Leave Phase 4 skill code until the validation TODO below passes — do not merge chat-write / meeting-transcription commands against scopes we have not confirmed in consent.
+**Working assumption:** those add-ons will be granted. Phase 4 CLI skills are **implemented with mocked tests**; do not treat live Graph success as proven until the validation TODO below passes.
 
-**Already granted / in use:** `Calendars.ReadWrite`, `Chat.Read`, `Mail.ReadWrite`, `Mail.Send`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `User.Read`. Keep those; request add-ons:
+**Already granted / in use:** `Calendars.ReadWrite`, `Chat.Read`, `Mail.ReadWrite`, `Mail.Send`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `User.Read`. Keep those; request add-ons (Blumkin auth `SCOPES` already lists `Chat.ReadWrite` + `OnlineMeetings.ReadWrite` for re-consent):
 
 - Teams: `Chat.ReadWrite`, `ChannelMessage.Read.All`, `ChannelMessage.Send`, `OnlineMeetings.ReadWrite`, `OnlineMeetingTranscript.Read.All`, `Presence.Read`
 - Mailbox: `MailboxSettings.Read`
 - Productivity: `Files.ReadWrite`, `Tasks.ReadWrite`, `Contacts.ReadWrite`, `People.Read`, `Notes.ReadWrite`
 
-- [ ] **TODO (validate after grant):** add the **new** scopes to the Entra client, delete token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), `blumkin auth login`, confirm consent includes at least `Chat.ReadWrite` and `OnlineMeetings.ReadWrite`, then smoke the blocked lab flows before implementing Blumkin Phase 4 skills.
+- [ ] **TODO (validate live after grant):** add the **new** scopes to the Entra client, delete token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), `blumkin auth login`, confirm consent includes at least `Chat.ReadWrite` and `OnlineMeetings.ReadWrite`, then smoke `chat send|edit|delete` + `meeting get|transcription` against Graph.
 
 **Do not** request app-only permissions, broad shared permissions, or RSC all-messages.
 Keep the delegated `*.All` scopes listed above only when the corresponding flow requires them.
@@ -72,7 +72,7 @@ Keep the delegated `*.All` scopes listed above only when the corresponding flow 
 
 1. **Agent DX (Phase 5):** [#20](https://github.com/the-hcma/blumkin/issues/20) — personal skill install + Copilot CLI instruction snippet — shell to `blumkin`, not MCP first.
 2. **Human:** run any **new hand automation** in the private lab. Note: command, Graph APIs, scopes, failure modes.
-3. **After Identity grant (validate TODO above):** wire follow-up scopes; unlock `chat.send|edit|delete` + `meeting get|transcription` (Phase 4).
+3. **After Identity grant (validate TODO above):** live-smoke Phase 4 skills (`chat send|edit|delete`, `meeting get|transcription`); check off the TODO.
 4. **Bugbot validate TODO:** after Bugbot is enabled on this repo, confirm a real review on a PR head (`RETROSPECTIVE-M1.md`).
 
 ---
@@ -80,7 +80,7 @@ Keep the delegated `*.All` scopes listed above only when the corresponding flow 
 ## Intentional non-work in this repo right now
 
 - Do not block new hand automation on Blumkin implementation.
-- Do not ship Phase 4 Graph calls until the Identity **validate** TODO is checked off.
+- Do not claim Phase 4 live Graph coverage until the Identity **validate live** TODO is checked off.
 
 ---
 

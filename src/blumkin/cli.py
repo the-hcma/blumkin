@@ -39,7 +39,20 @@ from blumkin.skills.calendar_writes import (
     format_cancel_human,
     format_create_human,
 )
-from blumkin.skills.chat import chat_find, chat_last, format_find_human, format_last_human
+from blumkin.skills.chat import (
+    chat_delete,
+    chat_edit,
+    chat_find,
+    chat_last,
+    chat_send,
+    format_edit_human,
+    format_find_human,
+    format_last_human,
+    format_send_human,
+)
+from blumkin.skills.chat import (
+    format_delete_human as format_chat_delete_human,
+)
 from blumkin.skills.mail import (
     MailBodyFileError,
     MailDraftNotFoundError,
@@ -52,6 +65,14 @@ from blumkin.skills.mail import (
     mail_inbox,
     mail_send_draft,
     mail_update_draft,
+)
+from blumkin.skills.meeting import (
+    format_get_human as format_meeting_get_human,
+)
+from blumkin.skills.meeting import (
+    format_transcription_human,
+    meeting_get,
+    meeting_transcription,
 )
 
 
@@ -539,7 +560,77 @@ def calendar_create_cmd(
 
 @main.group()
 def chat() -> None:
-    """Teams chat read skills."""
+    """Teams chat skills."""
+
+
+@chat.command("delete")
+@click.option("--chat-id", required=True, help="Teams chat id.")
+@click.option("--message-id", required=True, help="Chat message id.")
+@click.option("--yes", is_flag=True, help="Confirm soft-delete (required).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def chat_delete_cmd(
+    ctx: click.Context,
+    chat_id: str,
+    message_id: str,
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Soft-delete a chat message."""
+    as_json = _as_json(ctx, as_json_flag)
+    _require_yes(yes=yes, as_json=as_json)
+    try:
+        payload = asyncio.run(chat_delete(chat_id=chat_id, message_id=message_id))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_chat_delete_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@chat.command("edit")
+@click.option("--chat-id", required=True, help="Teams chat id.")
+@click.option("--message-id", required=True, help="Chat message id.")
+@click.option("--text", required=True, help="Replacement message text.")
+@click.option("--yes", is_flag=True, help="Confirm edit (required).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def chat_edit_cmd(
+    ctx: click.Context,
+    chat_id: str,
+    message_id: str,
+    text: str,
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Edit a chat message body in place."""
+    as_json = _as_json(ctx, as_json_flag)
+    _require_yes(yes=yes, as_json=as_json)
+    try:
+        payload = asyncio.run(chat_edit(chat_id=chat_id, message_id=message_id, text=text))
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_edit_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
 
 
 @chat.command("find")
@@ -592,6 +683,55 @@ def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool
         emit_lines(format_last_human(payload))
     if payload.get("chat") is None:
         raise SystemExit(EXIT_NOT_FOUND)
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@chat.command("send")
+@click.option(
+    "--with",
+    "with_name",
+    default=None,
+    help="Display-name match (exclusive with --chat-id).",
+)
+@click.option(
+    "--chat-id",
+    "chat_id",
+    default=None,
+    help="Explicit chat id (exclusive with --with).",
+)
+@click.option("--text", required=True, help="Message text to send.")
+@click.option("--yes", is_flag=True, help="Confirm send (required).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def chat_send_cmd(
+    ctx: click.Context,
+    with_name: str | None,
+    chat_id: str | None,
+    text: str,
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Send a text message to a matched or explicit chat."""
+    as_json = _as_json(ctx, as_json_flag)
+    _require_yes(yes=yes, as_json=as_json)
+    try:
+        payload = asyncio.run(chat_send(with_name=with_name, chat_id=chat_id, text=text))
+    except LookupError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_send_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 
@@ -817,6 +957,77 @@ def mail_update_draft_cmd(
         emit_json(payload)
     else:
         emit_lines(format_draft_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@main.group()
+def meeting() -> None:
+    """Online meeting skills."""
+
+
+@meeting.command("get")
+@click.option("--event-id", required=True, help="Calendar event id.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def meeting_get_cmd(ctx: click.Context, event_id: str, as_json_flag: bool) -> None:
+    """Show online-meeting details for a calendar event."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(meeting_get(event_id=event_id))
+    except LookupError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_meeting_get_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@meeting.command("transcription")
+@click.option("--event-id", required=True, help="Calendar event id.")
+@click.option("--enable", is_flag=True, help="Set allowTranscription=true.")
+@click.option("--yes", is_flag=True, help="Confirm enable (required with --enable).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def meeting_transcription_cmd(
+    ctx: click.Context,
+    event_id: str,
+    enable: bool,
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Show or enable transcription on an event's online meeting."""
+    as_json = _as_json(ctx, as_json_flag)
+    if enable:
+        _require_yes(yes=yes, as_json=as_json)
+    try:
+        payload = asyncio.run(meeting_transcription(event_id=event_id, enable=enable))
+    except LookupError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_transcription_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 

@@ -31,10 +31,18 @@ covers the job.
    - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` replaces the whole To list and refuses multi-To drafts)
    - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
    - `blumkin mail send-draft --id '<draft-id>' --yes`
+   - `blumkin chat send --with "Name" --text "…" --yes` (or `--chat-id` if ambiguous)
+   - `blumkin chat edit --chat-id … --message-id … --text "…" --yes`
+   - `blumkin chat delete --chat-id … --message-id … --yes`
+   - `blumkin meeting get --event-id '<id>'` (organizer-only online meetings)
+   - `blumkin meeting transcription --event-id '<id>'` (show flags)
+   - `blumkin meeting transcription --event-id '<id>' --enable --yes`
 5. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).
 6. On auth failure (exit `3` / `auth_required`): tell the user to run
    `blumkin auth login` on this machine, then retry.
 7. Writes that email or invite others require `--yes`.
+8. Chat write + meeting transcription need `Chat.ReadWrite` /
+   `OnlineMeetings.ReadWrite` consented (re-login after Identity grant).
 
 ## Config
 

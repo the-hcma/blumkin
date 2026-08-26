@@ -341,7 +341,7 @@ def test_chat_find_mixed_all_skip_errors_raise_generic(monkeypatch) -> None:
     )
     try:
         asyncio.run(chat_find(with_name="daniel"))
-        raise AssertionError("expected generic RuntimeError")
+        raise AssertionError("expected RuntimeError")
     except RuntimeError as exc:
         assert "all 2 chats" in str(exc)
         assert getattr(exc, "response_status_code", None) is None

@@ -60,6 +60,83 @@ def test_mail_send_draft_without_yes_exits_usage() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
+def test_chat_send_without_yes_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat", "send", "--with", "Ada", "--text", "hi"])
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_chat_send_ambiguous_exits_usage(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ValueError("ambiguous chat match for 'dan' (2 chats); pass --chat-id")
+
+    monkeypatch.setattr("blumkin.cli.chat_send", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["chat", "send", "--with", "dan", "--text", "hi", "--yes", "--json"],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
+def test_chat_edit_without_yes_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["chat", "edit", "--chat-id", "c1", "--message-id", "m1", "--text", "x"],
+    )
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_chat_delete_without_yes_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat", "delete", "--chat-id", "c1", "--message-id", "m1"])
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_meeting_transcription_enable_without_yes_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["meeting", "transcription", "--event-id", "evt-1", "--enable"])
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_chat_send_wires_options_and_emits_json(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _ok(**kwargs):
+        seen.update(kwargs)
+        return {
+            "chat": {"id": "chat-1", "topic": "T"},
+            "message": {"id": "msg-1", "body_text": kwargs["text"]},
+            "partial": False,
+            "query": kwargs["with_name"],
+            "skipped": 0,
+        }
+
+    monkeypatch.setattr("blumkin.cli.chat_send", _ok)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["chat", "send", "--with", "Ada", "--text", "hello", "--yes", "--json"],
+    )
+    assert result.exit_code == 0
+    assert seen["with_name"] == "Ada"
+    assert seen["text"] == "hello"
+    assert '"id": "msg-1"' in (result.output or "") or '"id":"msg-1"' in (result.output or "")
+
+
+def test_meeting_get_not_found_exits(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise LookupError("event is not a Teams online meeting: evt-1")
+
+    monkeypatch.setattr("blumkin.cli.meeting_get", _boom)
+    runner = CliRunner()
+    result = runner.invoke(main, ["meeting", "get", "--event-id", "evt-1", "--json"])
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
 def test_mail_delete_draft_without_yes_succeeds(monkeypatch) -> None:
     async def _delete(*, draft_id: str):
         return {"deleted": draft_id}

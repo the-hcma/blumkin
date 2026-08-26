@@ -128,12 +128,39 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="chat.delete",
+        cli=["blumkin", "chat", "delete"],
+        summary="Soft-delete a chat message",
+        mutates=True,
+        notifies_others=True,
+        scopes=["Chat.ReadWrite"],
+        args=[
+            {"name": "--chat-id", "required": True, "type": "string"},
+            {"name": "--message-id", "required": True, "type": "string"},
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
+        id="chat.edit",
+        cli=["blumkin", "chat", "edit"],
+        summary="Edit a chat message body in place",
+        mutates=True,
+        notifies_others=True,
+        scopes=["Chat.ReadWrite"],
+        args=[
+            {"name": "--chat-id", "required": True, "type": "string"},
+            {"name": "--message-id", "required": True, "type": "string"},
+            {"name": "--text", "required": True, "type": "string"},
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
         id="chat.find",
         cli=["blumkin", "chat", "find"],
         summary="Find Teams chats whose members match a display name",
         mutates=False,
         notifies_others=False,
-        scopes=["Chat.Read"],
+        scopes=["Chat.ReadWrite"],
         args=[{"name": "--with", "required": True, "type": "string"}],
     ),
     SkillSpec(
@@ -142,10 +169,34 @@ SKILLS: list[SkillSpec] = [
         summary="Show the last N messages from a chat matched by display name",
         mutates=False,
         notifies_others=False,
-        scopes=["Chat.Read"],
+        scopes=["Chat.ReadWrite"],
         args=[
             {"name": "--with", "required": True, "type": "string"},
             {"name": "--n", "required": False, "type": "int"},
+        ],
+    ),
+    SkillSpec(
+        id="chat.send",
+        cli=["blumkin", "chat", "send"],
+        summary="Send a text message to a chat (exactly one of --with or --chat-id)",
+        mutates=True,
+        notifies_others=True,
+        scopes=["Chat.ReadWrite"],
+        args=[
+            {
+                "name": "--chat-id",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --with or --chat-id",
+            },
+            {"name": "--text", "required": True, "type": "string"},
+            {
+                "name": "--with",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --with or --chat-id; refuses if multiple matches",
+            },
+            {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
     SkillSpec(
@@ -228,6 +279,36 @@ SKILLS: list[SkillSpec] = [
             {"name": "--body", "required": False, "type": "string"},
             {"name": "--body-file", "required": False, "type": "path"},
             {"name": "--body-type", "required": False, "type": "enum", "values": ["text", "html"]},
+        ],
+    ),
+    SkillSpec(
+        id="meeting.get",
+        cli=["blumkin", "meeting", "get"],
+        summary=(
+            "Show online-meeting details for a calendar event you organize "
+            "(attendee-only meetings are not in /me/onlineMeetings)"
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Calendars.ReadWrite", "OnlineMeetings.ReadWrite"],
+        args=[{"name": "--event-id", "required": True, "type": "string"}],
+    ),
+    SkillSpec(
+        id="meeting.transcription",
+        cli=["blumkin", "meeting", "transcription"],
+        summary=("Show or enable allowTranscription on an online meeting you organize"),
+        mutates=True,
+        notifies_others=False,
+        scopes=["Calendars.ReadWrite", "OnlineMeetings.ReadWrite"],
+        args=[
+            {"name": "--event-id", "required": True, "type": "string"},
+            {"name": "--enable", "required": False, "type": "flag"},
+            {
+                "name": "--yes",
+                "required": False,
+                "type": "flag",
+                "note": "required with --enable",
+            },
         ],
     ),
     SkillSpec(
