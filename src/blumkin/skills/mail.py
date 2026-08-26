@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import base64
 import html as html_lib
 import re
 from pathlib import Path
 from typing import Any, Literal
 
+from kiota_abstractions.method import Method
+from kiota_abstractions.request_information import RequestInformation
+from kiota_abstractions.serialization.parsable_factory import ParsableFactory
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.email_address import EmailAddress
+from msgraph.generated.models.file_attachment import FileAttachment
 from msgraph.generated.models.item_body import ItemBody
 from msgraph.generated.models.message import Message
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.recipient import Recipient
+from msgraph.generated.users.item.messages.item.attachments.attachments_request_builder import (
+    AttachmentsRequestBuilder,
+)
 from msgraph.generated.users.item.messages.messages_request_builder import (
     MessagesRequestBuilder,
 )
@@ -23,12 +32,55 @@ from blumkin.output import sanitize_terminal
 MailBodyType = Literal["html", "text"]
 
 
+class MailAttachmentNotFoundError(Exception):
+    """Attachment id missing on the message (not_found)."""
+
+
+class MailAttachmentSkippedError(Exception):
+    """Attachment type is not downloadable in v1 (usage)."""
+
+
 class MailBodyFileError(Exception):
     """--body-file could not be read (usage, not auth)."""
 
 
 class MailDraftNotFoundError(Exception):
     """Draft id missing or not a draft (not_found)."""
+
+
+class MailMessageNotFoundError(Exception):
+    """Message id missing (not_found)."""
+
+
+def format_attachments_download_human(payload: dict[str, Any]) -> list[str]:
+    lines = [
+        f"Saved {len(payload.get('saved', []))} attachment(s) for {payload.get('message_id')!r}"
+    ]
+    for item in payload.get("saved") or []:
+        lines.append(f"  • {item.get('name')!r} → {item.get('saved_path')}")
+    for item in payload.get("skipped") or []:
+        lines.append(f"  • skipped {item.get('name')!r}: {item.get('reason')}")
+    return lines
+
+
+def format_attachments_human(payload: dict[str, Any]) -> list[str]:
+    attachments = payload.get("attachments") or []
+    lines = [f"Attachments on {payload.get('message_id')!r}: {len(attachments)}"]
+    if not attachments:
+        lines.append("  (none)")
+        return lines
+    for item in attachments:
+        if item.get("skipped"):
+            lines.append(
+                f"  • {item.get('name') or item.get('id')!r} "
+                f"[{item.get('attachment_type')}] skipped: {item.get('skip_reason')}"
+            )
+        else:
+            lines.append(
+                f"  • {item.get('name')!r} ({item.get('size')} bytes, {item.get('content_type')}) "
+                f"id={item.get('id')}"
+            )
+    return lines
 
 
 def format_delete_draft_human(payload: dict[str, Any]) -> list[str]:
@@ -60,6 +112,115 @@ def format_inbox_human(payload: dict[str, Any]) -> list[str]:
 
 def format_send_draft_human(payload: dict[str, Any]) -> list[str]:
     return [f"Sent draft {payload.get('sent')!r}"]
+
+
+async def mail_attachments_list(
+    *,
+    message_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    if not message_id.strip():
+        raise ValueError("--id is required")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    mid = message_id.strip()
+    await _require_message(client, mid)
+    query = AttachmentsRequestBuilder.AttachmentsRequestBuilderGetQueryParameters(
+        select=["id", "name", "size", "contentType", "isInline"],
+    )
+    page = await client.me.messages.by_message_id(mid).attachments.get(request_config(query))
+    raw = [] if page is None else (page.value or [])
+    return {"attachments": [_attachment_to_dict(att) for att in raw], "message_id": mid}
+
+
+async def mail_attachments_download(
+    *,
+    message_id: str,
+    out: str,
+    attachment_id: str | None = None,
+    download_all: bool = False,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    if not message_id.strip():
+        raise ValueError("--message-id is required")
+    if not out.strip():
+        raise ValueError("--out is required")
+    if download_all == bool(attachment_id and attachment_id.strip()):
+        raise ValueError("provide exactly one of --attachment-id or --all")
+    if not download_all and not (attachment_id and attachment_id.strip()):
+        raise ValueError("provide exactly one of --attachment-id or --all")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    mid = message_id.strip()
+    await _require_message(client, mid)
+    listed = await mail_attachments_list(message_id=mid, config=cfg)
+    attachments = listed["attachments"]
+    if download_all:
+        out_path = Path(out)
+        out_path.mkdir(parents=True, exist_ok=True)
+        if not out_path.is_dir():
+            raise ValueError("--out must be a directory when using --all")
+        targets = [a for a in attachments if not a.get("skipped")]
+    else:
+        out_path = Path(out)
+        aid = attachment_id.strip() if attachment_id else ""
+        match = next((a for a in attachments if a.get("id") == aid), None)
+        if match is None:
+            raise MailAttachmentNotFoundError(f"attachment not found: {aid}")
+        if match.get("skipped"):
+            raise MailAttachmentSkippedError(
+                match.get("skip_reason") or "unsupported attachment type"
+            )
+        targets = [match]
+        if out_path.exists() and out_path.is_dir():
+            filename = _sanitize_attachment_filename(match.get("name") or aid)
+            out_path = out_path / filename
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    saved: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    used_names: set[str] = set()
+    for meta in attachments if download_all else targets:
+        if meta.get("skipped"):
+            skipped.append(
+                {
+                    "id": meta.get("id"),
+                    "name": meta.get("name"),
+                    "reason": meta.get("skip_reason"),
+                }
+            )
+            continue
+        aid = str(meta["id"])
+        attachment = (
+            await client.me.messages.by_message_id(mid).attachments.by_attachment_id(aid).get()
+        )
+        if attachment is None:
+            raise MailAttachmentNotFoundError(f"attachment not found: {aid}")
+        if _attachment_is_skipped(attachment):
+            reason = _skip_reason(attachment)
+            skipped.append({"id": aid, "name": meta.get("name"), "reason": reason})
+            if not download_all:
+                raise MailAttachmentSkippedError(reason)
+            continue
+        content = await _fetch_attachment_bytes(client, mid, aid, attachment)
+        if download_all:
+            filename = _unique_filename(
+                _sanitize_attachment_filename(meta.get("name") or aid),
+                used_names,
+            )
+            dest = out_path / filename
+        else:
+            dest = out_path
+        dest.write_bytes(content)
+        saved.append(
+            {
+                "attachment_id": aid,
+                "content_type": meta.get("content_type"),
+                "name": meta.get("name"),
+                "saved_path": str(dest.resolve()),
+                "size": len(content),
+            }
+        )
+    return {"message_id": mid, "saved": saved, "skipped": skipped}
 
 
 async def mail_delete_draft(
@@ -261,6 +422,57 @@ def _html_to_text(raw: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+async def _fetch_attachment_bytes(
+    client: Any, message_id: str, attachment_id: str, attachment: Any
+) -> bytes:
+    raw = getattr(attachment, "content_bytes", None)
+    if raw:
+        if isinstance(raw, bytes):
+            return raw
+        if isinstance(raw, str):
+            return base64.b64decode(raw)
+    request_info = RequestInformation(
+        Method.GET,
+        "https://graph.microsoft.com/v1.0/me/messages/{message%2Did}/attachments/{attachment%2Did}/$value",
+        {
+            "attachment%2Did": attachment_id,
+            "message%2Did": message_id,
+        },
+    )
+    error_mapping: dict[str, ParsableFactory] = {"XXX": ODataError}
+    result = await client.request_adapter.send_primitive_async(
+        request_info, "binary", error_mapping
+    )
+    if result is None:
+        raise RuntimeError(f"Graph returned empty attachment content: {attachment_id}")
+    return bytes(result)
+
+
+def _attachment_is_skipped(attachment: Any) -> bool:
+    if isinstance(attachment, FileAttachment):
+        return False
+    odata_type = (getattr(attachment, "odata_type", None) or "").casefold()
+    if odata_type in {"", "#microsoft.graph.fileattachment"}:
+        return False
+    return True
+
+
+def _attachment_to_dict(attachment: Any) -> dict[str, Any]:
+    skipped = _attachment_is_skipped(attachment)
+    payload: dict[str, Any] = {
+        "attachment_type": attachment.odata_type,
+        "content_type": attachment.content_type,
+        "id": attachment.id,
+        "is_inline": bool(attachment.is_inline),
+        "name": attachment.name,
+        "size": attachment.size,
+        "skipped": skipped,
+    }
+    if skipped:
+        payload["skip_reason"] = _skip_reason(attachment)
+    return payload
+
+
 def _message_to_dict(msg: Any) -> dict[str, Any]:
     from_name = None
     from_email = None
@@ -301,3 +513,34 @@ def _primary_to_address(msg: Any) -> str | None:
         if address:
             return str(address)
     return None
+
+
+async def _require_message(client: Any, message_id: str) -> None:
+    existing = await client.me.messages.by_message_id(message_id).get()
+    if existing is None or not existing.id:
+        raise MailMessageNotFoundError(f"message not found: {message_id}")
+
+
+def _sanitize_attachment_filename(name: str) -> str:
+    cleaned = re.sub(r"[^\w.\- ()]", "_", name.strip()) or "attachment"
+    return cleaned.replace("/", "_").replace("\\", "_")
+
+
+def _skip_reason(attachment: Any) -> str:
+    odata_type = getattr(attachment, "odata_type", None) or "attachment"
+    return f"{odata_type} not supported in v1"
+
+
+def _unique_filename(name: str, used: set[str]) -> str:
+    if name not in used:
+        used.add(name)
+        return name
+    stem = Path(name).stem or "attachment"
+    suffix = Path(name).suffix
+    index = 2
+    while True:
+        candidate = f"{stem}_{index}{suffix}"
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+        index += 1
