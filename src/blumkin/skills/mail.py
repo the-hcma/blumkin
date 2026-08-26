@@ -160,11 +160,9 @@ def resolve_mail_body(
     label = _parse_body_type(body_type)
     graph_type = BodyType.Html if label == "html" else BodyType.Text
     if has_file:
-        path = Path(str(body_file))
-        try:
-            content = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise ValueError(f"cannot read --body-file {path}: {exc}") from exc
+        # Propagate OSError (do not wrap as ValueError): CLI auth sniff matches
+        # "client_id" in ValueError messages, and paths may contain that substring.
+        content = Path(str(body_file)).read_text(encoding="utf-8")
     else:
         content = str(body)
     return content, label, graph_type

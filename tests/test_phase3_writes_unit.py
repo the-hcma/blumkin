@@ -310,6 +310,18 @@ def test_resolve_mail_body_mutual_exclusion() -> None:
         resolve_mail_body(body="x", body_type="markdown")
 
 
+def test_resolve_mail_body_oserror_propagates(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "client_id.txt"
+    path.write_text("x", encoding="utf-8")
+
+    def _boom(self, *args, **kwargs):  # noqa: ANN001
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(type(path), "read_text", _boom)
+    with pytest.raises(OSError):
+        resolve_mail_body(body_file=str(path))
+
+
 def test_write_formatters_human() -> None:
     assert any("evt-1" in line for line in format_accept_human({"accepted": ["evt-1"], "count": 1}))
     assert any("evt-9" in line for line in format_cancel_human({"cancelled": "evt-9"}))

@@ -58,6 +58,77 @@ def test_mail_send_draft_without_yes_exits_usage() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
+def test_mail_delete_draft_without_yes_succeeds(monkeypatch) -> None:
+    async def _delete(*, draft_id: str):
+        return {"deleted": draft_id}
+
+    monkeypatch.setattr("blumkin.cli.mail_delete_draft", _delete)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "delete-draft", "--id", "draft-1", "--json"])
+    assert result.exit_code == 0
+    assert '"deleted"' in (result.output or "")
+    assert "draft-1" in (result.output or "")
+
+
+def test_mail_draft_body_file_oserror_exits_usage_not_auth(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "client_id.txt"
+    path.write_text("x", encoding="utf-8")
+
+    async def _boom(**_kwargs):
+        raise OSError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr("blumkin.cli.mail_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "draft",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "x",
+            "--body-file",
+            str(path),
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert result.exit_code != EXIT_AUTH
+    assert "auth_required" not in (result.output or "")
+
+
+def test_mail_draft_both_body_sources_exits_usage(tmp_path) -> None:
+    path = tmp_path / "body.txt"
+    path.write_text("from file", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "draft",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "x",
+            "--body",
+            "inline",
+            "--body-file",
+            str(path),
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_draft_missing_body_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "draft", "--to", "a@b.com", "--subject", "x"],
+    )
+    assert result.exit_code == EXIT_USAGE
+
+
 def test_calendar_today_invalid_tz_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--tz", "Not/ARealZone", "calendar", "today"])

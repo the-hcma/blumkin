@@ -671,6 +671,13 @@ def mail_draft_cmd(
                 body_type=body_type,
             )
         )
+    except OSError as exc:
+        emit_error(
+            error="usage_error",
+            message=f"cannot read --body-file: {exc}",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE) from exc
     except ValueError as exc:
         msg = str(exc)
         if "client_id" in msg or "Missing" in msg:
