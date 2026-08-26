@@ -196,8 +196,10 @@ def test_mail_update_draft_body_file_error_exits_usage(tmp_path, monkeypatch) ->
     assert "usage_error" in (result.output or "")
 
 
-def test_mail_update_draft_wires_options_and_emits_json(monkeypatch) -> None:
+def test_mail_update_draft_wires_options_and_emits_json(tmp_path, monkeypatch) -> None:
     seen: dict[str, object] = {}
+    path = tmp_path / "upd.html"
+    path.write_text("<p>Hi</p>", encoding="utf-8")
 
     async def _ok(**kwargs):
         seen.update(kwargs)
@@ -223,8 +225,8 @@ def test_mail_update_draft_wires_options_and_emits_json(monkeypatch) -> None:
             "Subj",
             "--to",
             "b@c.com",
-            "--body",
-            "<p>Hi</p>",
+            "--body-file",
+            str(path),
             "--body-type",
             "html",
             "--json",
@@ -234,7 +236,8 @@ def test_mail_update_draft_wires_options_and_emits_json(monkeypatch) -> None:
     assert seen["draft_id"] == "draft-9"
     assert seen["subject"] == "Subj"
     assert seen["to"] == "b@c.com"
-    assert seen["body"] == "<p>Hi</p>"
+    assert seen["body"] is None
+    assert seen["body_file"] == str(path)
     assert seen["body_type"] == "html"
     assert '"id": "draft-9"' in (result.output or "") or '"id":"draft-9"' in (result.output or "")
 
