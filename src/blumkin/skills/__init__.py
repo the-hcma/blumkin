@@ -178,7 +178,10 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="chat.send",
         cli=["blumkin", "chat", "send"],
-        summary="Send a text message to a chat (requires wo1162425_scopes; exactly one of --with or --chat-id)",
+        summary=(
+            "Send a text message to a chat (requires wo1162425_scopes; "
+            "exactly one of --with or --chat-id)"
+        ),
         mutates=True,
         notifies_others=True,
         scopes=["Chat.ReadWrite"],
@@ -296,7 +299,10 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="meeting.transcription",
         cli=["blumkin", "meeting", "transcription"],
-        summary=("Show or enable allowTranscription on an online meeting (requires wo1162425_scopes)"),
+        summary=(
+            "Show or enable allowTranscription on an online meeting "
+            "(requires wo1162425_scopes)"
+        ),
         mutates=True,
         notifies_others=False,
         scopes=["Calendars.ReadWrite", "OnlineMeetings.ReadWrite"],
