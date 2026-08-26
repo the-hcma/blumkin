@@ -29,6 +29,13 @@ def test_wo1162425_scopes_from_toml(tmp_path: Path, monkeypatch) -> None:
     assert load_config().wo1162425_scopes is True
 
 
+def test_wo1162425_scopes_from_toml_int(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
+    (tmp_path / "config.toml").write_text('client_id = "abc"\nwo1162425_scopes = 1\n')
+    assert load_config().wo1162425_scopes is True
+
+
 def test_env_overrides_toml_wo1162425_scopes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("BLUMKIN_WO1162425_SCOPES", "0")

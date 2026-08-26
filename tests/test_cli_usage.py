@@ -70,7 +70,8 @@ def test_mail_send_draft_without_yes_exits_usage() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
-def test_chat_send_without_yes_exits_usage() -> None:
+def test_chat_send_without_yes_exits_usage(monkeypatch) -> None:
+    _patch_wo1162425_enabled(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, ["chat", "send", "--with", "Ada", "--text", "hi"])
     assert result.exit_code == EXIT_USAGE
@@ -92,7 +93,8 @@ def test_chat_send_ambiguous_exits_usage(monkeypatch) -> None:
     assert "usage_error" in (result.output or "")
 
 
-def test_chat_edit_without_yes_exits_usage() -> None:
+def test_chat_edit_without_yes_exits_usage(monkeypatch) -> None:
+    _patch_wo1162425_enabled(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -101,19 +103,24 @@ def test_chat_edit_without_yes_exits_usage() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
-def test_chat_delete_without_yes_exits_usage() -> None:
+def test_chat_delete_without_yes_exits_usage(monkeypatch) -> None:
+    _patch_wo1162425_enabled(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, ["chat", "delete", "--chat-id", "c1", "--message-id", "m1"])
     assert result.exit_code == EXIT_USAGE
 
 
-def test_meeting_transcription_enable_without_yes_exits_usage() -> None:
+def test_meeting_transcription_enable_without_yes_exits_usage(monkeypatch) -> None:
+    _patch_wo1162425_enabled(monkeypatch)
     runner = CliRunner()
     result = runner.invoke(main, ["meeting", "transcription", "--event-id", "evt-1", "--enable"])
     assert result.exit_code == EXIT_USAGE
 
 
-def test_wo1162425_scopes_disabled_blocks_chat_send() -> None:
+def test_wo1162425_scopes_disabled_blocks_chat_send(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
+    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
     runner = CliRunner()
     result = runner.invoke(
         main,

@@ -11,6 +11,7 @@ def test_load_config_from_toml(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_CLIENT_ID", raising=False)
     monkeypatch.delenv("BLUMKIN_TENANT_ID", raising=False)
+    monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
     (tmp_path / "config.toml").write_text(
         'client_id = "abc-123"\ntenant_id = "contoso.com"\ndefault_tz = "UTC"\n'
     )

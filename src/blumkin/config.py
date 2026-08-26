@@ -73,6 +73,8 @@ def load_config() -> BlumkinConfig:
 def _coerce_bool(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value != 0
     if isinstance(value, str):
         lowered = value.strip().lower()
         if lowered in {"1", "true", "yes", "on"}:
