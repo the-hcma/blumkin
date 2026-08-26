@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -522,6 +523,105 @@ def test_mail_attachments_download_all_avoids_directory_name_collision(
     assert (out_dir / "report.docx").is_dir()
     assert (out_dir / "report_2.docx").read_bytes() == b"new"
     assert payload["saved"][0]["saved_path"] == str((out_dir / "report_2.docx").resolve())
+
+
+def test_mail_attachments_download_all_dedups_same_named_attachments_in_batch(
+    tmp_path, monkeypatch
+) -> None:
+    file_att1 = _file_attachment(attachment_id="att-1", name="report.docx", content=b"A")
+    file_att2 = _file_attachment(attachment_id="att-2", name="report.docx", content=b"B")
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=_message_stub())
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[file_att1, file_att2])
+    )
+    attachments_by_id = {"att-1": file_att1, "att-2": file_att2}
+
+    def _by_attachment_id(aid: str) -> MagicMock:
+        stub = MagicMock()
+        stub.get = AsyncMock(return_value=attachments_by_id[aid])
+        return stub
+
+    client.me.messages.by_message_id.return_value.attachments.by_attachment_id.side_effect = (
+        _by_attachment_id
+    )
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    out_dir = tmp_path / "downloads"
+    payload = asyncio.run(
+        mail_attachments_download(
+            message_id="msg-1",
+            download_all=True,
+            out=str(out_dir),
+        )
+    )
+    assert (out_dir / "report.docx").read_bytes() == b"A"
+    assert (out_dir / "report_2.docx").read_bytes() == b"B"
+    assert len(payload["saved"]) == 2
+
+
+def test_mail_attachments_download_all_case_insensitive_dedup(tmp_path, monkeypatch) -> None:
+    file_att = _file_attachment(name="Report.DOCX", content=b"new")
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=_message_stub())
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[file_att])
+    )
+    client.me.messages.by_message_id.return_value.attachments.by_attachment_id.return_value.get = (
+        AsyncMock(return_value=file_att)
+    )
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    out_dir = tmp_path / "downloads"
+    out_dir.mkdir()
+    (out_dir / "report.docx").write_bytes(b"old")
+    payload = asyncio.run(
+        mail_attachments_download(
+            message_id="msg-1",
+            download_all=True,
+            out=str(out_dir),
+        )
+    )
+    assert (out_dir / "report.docx").read_bytes() == b"old"
+    saved_path = Path(payload["saved"][0]["saved_path"])
+    assert saved_path.read_bytes() == b"new"
+    assert saved_path.name.casefold() == "report_2.docx"
+
+
+def test_mail_attachments_download_sanitizes_path_traversal_name(tmp_path, monkeypatch) -> None:
+    file_att = _file_attachment(name="../../evil.txt", content=b"safe")
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=_message_stub())
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[file_att])
+    )
+    client.me.messages.by_message_id.return_value.attachments.by_attachment_id.return_value.get = (
+        AsyncMock(return_value=file_att)
+    )
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    out_dir = tmp_path / "downloads"
+    out_dir.mkdir()
+    payload = asyncio.run(
+        mail_attachments_download(
+            message_id="msg-1",
+            attachment_id="att-1",
+            out=str(out_dir),
+        )
+    )
+    saved = out_dir / ".._.._evil.txt"
+    assert saved.is_file()
+    assert saved.read_bytes() == b"safe"
+    assert payload["saved"][0]["saved_path"] == str(saved.resolve())
 
 
 def test_sanitize_attachment_filename_rejects_dot_names() -> None:

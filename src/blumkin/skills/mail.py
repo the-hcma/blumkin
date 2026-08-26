@@ -578,7 +578,8 @@ def _skip_reason(attachment: Any) -> str:
 
 
 def _unique_filename(name: str, used: set[str]) -> str:
-    if name not in used:
+    folded_used = {entry.casefold() for entry in used}
+    if name.casefold() not in folded_used:
         used.add(name)
         return name
     stem = Path(name).stem or "attachment"
@@ -586,7 +587,7 @@ def _unique_filename(name: str, used: set[str]) -> str:
     index = 2
     while True:
         candidate = f"{stem}_{index}{suffix}"
-        if candidate not in used:
+        if candidate.casefold() not in folded_used:
             used.add(candidate)
             return candidate
         index += 1
