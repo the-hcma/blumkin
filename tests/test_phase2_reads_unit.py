@@ -239,12 +239,10 @@ def test_chat_find_all_member_failures_raise(monkeypatch) -> None:
         assert "all 1 chats" in str(exc)
 
 
-def test_chat_find_auth_error_propagates(monkeypatch) -> None:
-    chat = SimpleNamespace(id="chat-1", topic="Standup", chat_type="oneOnOne")
+def test_chat_find_all_forbidden_reraises_403(monkeypatch) -> None:
+    bad = SimpleNamespace(id="chat-bad", topic="Broken", chat_type="group")
     client = MagicMock()
-    client.me.chats.get = AsyncMock(
-        return_value=SimpleNamespace(value=[chat], odata_next_link=None)
-    )
+    client.me.chats.get = AsyncMock(return_value=SimpleNamespace(value=[bad], odata_next_link=None))
     err = RuntimeError("forbidden")
     err.response_status_code = 403  # type: ignore[attr-defined]
     client.me.chats.by_chat_id.return_value.members.get = AsyncMock(side_effect=err)
@@ -255,9 +253,132 @@ def test_chat_find_auth_error_propagates(monkeypatch) -> None:
     )
     try:
         asyncio.run(chat_find(with_name="daniel"))
-        raise AssertionError("expected auth-class error")
+        raise AssertionError("expected 403")
     except RuntimeError as exc:
         assert getattr(exc, "response_status_code", None) == 403
+
+
+def test_chat_find_auth_error_aborts_with_partial_match(monkeypatch) -> None:
+    bad = SimpleNamespace(id="chat-bad", topic="Broken", chat_type="group")
+    good = SimpleNamespace(id="chat-good", topic="Hit", chat_type="oneOnOne")
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(
+        return_value=SimpleNamespace(value=[bad, good], odata_next_link=None)
+    )
+
+    def by_chat_id(chat_id: str):
+        stub = MagicMock()
+        if chat_id == "chat-bad":
+            err = RuntimeError("unauthorized")
+            err.response_status_code = 401  # type: ignore[attr-defined]
+            stub.members.get = AsyncMock(side_effect=err)
+        else:
+            stub.members.get = AsyncMock(
+                return_value=SimpleNamespace(
+                    value=[SimpleNamespace(display_name="Daniel Erickson")],
+                    odata_next_link=None,
+                )
+            )
+        return stub
+
+    client.me.chats.by_chat_id.side_effect = by_chat_id
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    try:
+        asyncio.run(chat_find(with_name="daniel"))
+        raise AssertionError("expected auth-class error")
+    except RuntimeError as exc:
+        assert getattr(exc, "response_status_code", None) == 401
+
+
+def test_chat_find_auth_error_propagates(monkeypatch) -> None:
+    chat = SimpleNamespace(id="chat-1", topic="Standup", chat_type="oneOnOne")
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(
+        return_value=SimpleNamespace(value=[chat], odata_next_link=None)
+    )
+    err = RuntimeError("unauthorized")
+    err.response_status_code = 401  # type: ignore[attr-defined]
+    client.me.chats.by_chat_id.return_value.members.get = AsyncMock(side_effect=err)
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    try:
+        asyncio.run(chat_find(with_name="daniel"))
+        raise AssertionError("expected auth-class error")
+    except RuntimeError as exc:
+        assert getattr(exc, "response_status_code", None) == 401
+
+
+def test_chat_find_mixed_all_skip_errors_raise_generic(monkeypatch) -> None:
+    forbidden = SimpleNamespace(id="chat-forbidden", topic="Meeting", chat_type="meeting")
+    throttled = SimpleNamespace(id="chat-throttled", topic="Broken", chat_type="group")
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(
+        return_value=SimpleNamespace(value=[forbidden, throttled], odata_next_link=None)
+    )
+
+    def by_chat_id(chat_id: str):
+        stub = MagicMock()
+        if chat_id == "chat-forbidden":
+            err = RuntimeError("forbidden")
+            err.response_status_code = 403  # type: ignore[attr-defined]
+            stub.members.get = AsyncMock(side_effect=err)
+        else:
+            stub.members.get = AsyncMock(side_effect=RuntimeError("429 throttled"))
+        return stub
+
+    client.me.chats.by_chat_id.side_effect = by_chat_id
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    try:
+        asyncio.run(chat_find(with_name="daniel"))
+        raise AssertionError("expected generic RuntimeError")
+    except RuntimeError as exc:
+        assert "all 2 chats" in str(exc)
+        assert getattr(exc, "response_status_code", None) is None
+
+
+def test_chat_find_skips_forbidden_member_fetch(monkeypatch) -> None:
+    bad = SimpleNamespace(id="chat-bad", topic="Meeting", chat_type="meeting")
+    good = SimpleNamespace(id="chat-good", topic="Hit", chat_type="oneOnOne")
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(
+        return_value=SimpleNamespace(value=[bad, good], odata_next_link=None)
+    )
+
+    def by_chat_id(chat_id: str):
+        stub = MagicMock()
+        if chat_id == "chat-bad":
+            err = RuntimeError("forbidden")
+            err.response_status_code = 403  # type: ignore[attr-defined]
+            stub.members.get = AsyncMock(side_effect=err)
+        else:
+            stub.members.get = AsyncMock(
+                return_value=SimpleNamespace(
+                    value=[SimpleNamespace(display_name="Daniel Erickson")],
+                    odata_next_link=None,
+                )
+            )
+        return stub
+
+    client.me.chats.by_chat_id.side_effect = by_chat_id
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    found = asyncio.run(chat_find(with_name="daniel"))
+    assert [c["id"] for c in found["items"]] == ["chat-good"]
+    assert found["skipped"] == 1
 
 
 def test_chat_last_follows_message_next_link(monkeypatch) -> None:

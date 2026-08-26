@@ -36,6 +36,7 @@ async def chat_find(
         lambda url: client.me.chats.with_url(url).get(),
     )
     sem = asyncio.Semaphore(_MEMBER_FETCH_CONCURRENCY)
+    skip_errors: list[BaseException] = []
 
     async def _match(chat: Any) -> Any:
         chat_id = chat.id
@@ -49,9 +50,10 @@ async def chat_find(
                     lambda url: client.me.chats.by_chat_id(chat_id).members.with_url(url).get(),
                 )
             except Exception as exc:
-                if _is_auth_class_error(exc):
+                if _is_reauth_error(exc):
                     raise
-                # Skip chats Graph refuses (throttle, lost access); keep searching.
+                skip_errors.append(exc)
+                # Skip chats Graph refuses (403 ACL, throttle, lost access); keep searching.
                 return _SKIPPED
         member_names = [
             str(name) for member in members if (name := getattr(member, "display_name", None))
@@ -70,6 +72,10 @@ async def chat_find(
     attempted = sum(1 for chat in chats if chat.id)
     matches = [item for item in matched if item is not None and item is not _SKIPPED]
     if attempted and skipped == attempted and not matches:
+        if skip_errors and all(
+            getattr(exc, "response_status_code", None) == 403 for exc in skip_errors
+        ):
+            raise skip_errors[-1]
         raise RuntimeError(f"Graph member fetch failed for all {skipped} chats")
     matches.sort(key=_chat_sort_key)
     return {
@@ -201,9 +207,9 @@ def _html_to_text(raw: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _is_auth_class_error(exc: BaseException) -> bool:
-    """True for HTTP 401/403 so CLI maps to EXIT_AUTH / EXIT_MISSING_SCOPE."""
-    return getattr(exc, "response_status_code", None) in {401, 403}
+def _is_reauth_error(exc: BaseException) -> bool:
+    """True for HTTP 401 (expired token); re-raise so CLI maps to EXIT_AUTH."""
+    return getattr(exc, "response_status_code", None) == 401
 
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:
