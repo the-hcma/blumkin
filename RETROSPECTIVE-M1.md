@@ -14,7 +14,7 @@ Context: [PR #10](https://github.com/the-hcma/blumkin/pull/10) delivered the fir
 
 ## What hurt
 
-- **Vortex / agents repeatedly flagged `except A, B:` as a SyntaxError.** On Python 3.14 + Ruff `target-version = "py314"`, bare multi-except is valid and `ruff format` may strip parentheses. Cost several review cycles (documented in `AGENTS.md`).
+- **Vortex / agents repeatedly flagged `except A, B:` as a SyntaxError.** On Python 3.14 + Ruff `target-version = "py314"`, unparenthesized multi-except is valid and `ruff format` may strip parentheses. Cost several review cycles (documented in `AGENTS.md`).
 - **Bugbot disabled** for the repo → skip noise + quota fallback churn (decision below).
 - **CodeRabbit quota / rate-limit stubs** blocked `complete_ready` even when threads were clear; Copilot request reliability was uneven on later stacks.
 - **Every push re-triggered Vortex**, extending the loop after fixes.
@@ -26,7 +26,7 @@ Context: [PR #10](https://github.com/the-hcma/blumkin/pull/10) delivered the fir
 
 | Action | Status |
 |--------|--------|
-| Document py314 + Ruff bare-`except` for agents/reviewers | Done ([#15](https://github.com/the-hcma/blumkin/issues/15) / [#23](https://github.com/the-hcma/blumkin/pull/23)) |
+| Document py314 + Ruff unparenthesized multi-except for agents/reviewers | Done ([#15](https://github.com/the-hcma/blumkin/issues/15) / [#23](https://github.com/the-hcma/blumkin/pull/23)) |
 | Refresh README / PLAN Phase 1 checkboxes | Done (#15 / #23) |
 | Confirm cold-path install (`uv tool install` → `blumkin` on `PATH`) | Done ([#16](https://github.com/the-hcma/blumkin/issues/16) / #23) |
 | Require **Python lint & format checks** + **Pytest (hermetic)** on protection / MQ | Done ([#21](https://github.com/the-hcma/blumkin/issues/21) / #23) |
@@ -55,15 +55,16 @@ See `AGENTS.md` (agent review) for the operator note.
 
 ## Identity / Phase 4 posture (forward)
 
-Phases 2–3 mail/calendar/chat-read writes are shipped. Phase 4 chat write +
+Phases 2–3 mail/calendar writes and chat reads are shipped. Phase 4 chat write +
 meeting transcription stay gated on delegated add-on scopes.
 
 **Assumption:** the private-lab Identity / Remedy follow-up will grant the
 requested delegated add-ons (details stay in the private lab — not this repo).
 
 - [ ] **TODO (validate):** after grant — add **new** scopes to the Entra client,
-  delete `~/.config/blumkin/` token cache + auth record, run `blumkin auth login`,
-  confirm consent includes at least `Chat.ReadWrite` and
+  delete the token cache + auth record under the effective config dir
+  (`BLUMKIN_CONFIG_DIR` if set, else `~/.config/blumkin/`), run
+  `blumkin auth login`, confirm consent includes at least `Chat.ReadWrite` and
   `OnlineMeetings.ReadWrite`, then smoke `chat` write + meeting transcription
   in the lab before implementing Blumkin skills.
 

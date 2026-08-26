@@ -509,7 +509,7 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 
 ### Phase 4 — Post–Identity follow-up
 **Assumption:** private-lab Identity / Remedy follow-up will grant delegated add-ons (see `HANDOFF.md`).  
-- [ ] **TODO (validate):** after grant — update Entra client scopes, wipe `~/.config/blumkin/` token cache + auth record, re-login, confirm consent includes `Chat.ReadWrite` + `OnlineMeetings.ReadWrite` (and any other add-ons we enable)  
+- [ ] **TODO (validate):** after grant — update Entra client scopes, wipe token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR` if set, else `~/.config/blumkin/`), re-login, confirm consent includes `Chat.ReadWrite` + `OnlineMeetings.ReadWrite` (and any other add-ons we enable)  
 - [ ] Implement `chat.send|edit|delete`, `meeting.get|transcription` only after that validation  
  
 
