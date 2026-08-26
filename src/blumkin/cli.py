@@ -40,6 +40,12 @@ from blumkin.skills.calendar_writes import (
     format_create_human,
 )
 from blumkin.skills.chat import (
+    ChatAttachmentNotFoundError,
+    ChatAttachmentScopeError,
+    ChatAttachmentSkippedError,
+    ChatMessageNotFoundError,
+    chat_attachments_download,
+    chat_attachments_list,
     chat_delete,
     chat_edit,
     chat_find,
@@ -49,6 +55,12 @@ from blumkin.skills.chat import (
     format_find_human,
     format_last_human,
     format_send_human,
+)
+from blumkin.skills.chat import (
+    format_attachments_download_human as format_chat_attachments_download_human,
+)
+from blumkin.skills.chat import (
+    format_attachments_human as format_chat_attachments_human,
 )
 from blumkin.skills.chat import (
     format_delete_human as format_chat_delete_human,
@@ -100,6 +112,26 @@ def _graph_http_status(exc: BaseException) -> int | None:
             if isinstance(value, int):
                 return value
     return None
+
+
+def _raise_chat_attachment_error(exc: BaseException, *, as_json: bool) -> NoReturn:
+    if isinstance(exc, ChatAttachmentScopeError):
+        emit_error(error="missing_scope", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_MISSING_SCOPE) from exc
+    if isinstance(exc, ChatAttachmentNotFoundError | ChatMessageNotFoundError | LookupError):
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    if isinstance(exc, ChatAttachmentSkippedError):
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    if isinstance(exc, ValueError):
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    _raise_graph_http_error(exc, as_json=as_json)
 
 
 def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
@@ -592,6 +624,87 @@ def calendar_create_cmd(
 @main.group()
 def chat() -> None:
     """Teams chat skills."""
+
+
+@chat.group("attachments", invoke_without_command=True)
+@click.option("--chat-id", default=None, help="Chat id (exactly one of --chat-id or --with).")
+@click.option("--with", "with_name", default=None, help="Display-name substring.")
+@click.option("--message-id", default=None, help="Message id (exactly one of this or --latest).")
+@click.option("--latest", is_flag=True, help="Use the newest message that has attachments.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def chat_attachments_cmd(
+    ctx: click.Context,
+    chat_id: str | None,
+    with_name: str | None,
+    message_id: str | None,
+    latest: bool,
+    as_json_flag: bool,
+) -> None:
+    """List attachments on a chat message (default when no subcommand)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            chat_attachments_list(
+                chat_id=chat_id,
+                latest=latest,
+                message_id=message_id,
+                with_name=with_name,
+            )
+        )
+    except Exception as exc:
+        _raise_chat_attachment_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_chat_attachments_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@chat_attachments_cmd.command("download")
+@click.option("--chat-id", default=None, help="Chat id (exactly one of --chat-id or --with).")
+@click.option("--with", "with_name", default=None, help="Display-name substring.")
+@click.option("--message-id", default=None, help="Message id (exactly one of this or --latest).")
+@click.option("--latest", is_flag=True, help="Use the newest message that has attachments.")
+@click.option("--attachment-id", default=None, help="Attachment id (omit with --all).")
+@click.option("--all", "download_all", is_flag=True, help="Download every downloadable file.")
+@click.option("--out", required=True, type=click.Path(), help="Output file or directory.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def chat_attachments_download_cmd(
+    ctx: click.Context,
+    chat_id: str | None,
+    with_name: str | None,
+    message_id: str | None,
+    latest: bool,
+    attachment_id: str | None,
+    download_all: bool,
+    out: str,
+    as_json_flag: bool,
+) -> None:
+    """Download one or all file attachments from a chat message."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            chat_attachments_download(
+                attachment_id=attachment_id,
+                chat_id=chat_id,
+                download_all=download_all,
+                latest=latest,
+                message_id=message_id,
+                out=out,
+                with_name=with_name,
+            )
+        )
+    except Exception as exc:
+        _raise_chat_attachment_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_chat_attachments_download_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
 
 
 @chat.command("delete")

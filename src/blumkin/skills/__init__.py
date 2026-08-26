@@ -130,6 +130,99 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="chat.attachments",
+        cli=["blumkin", "chat", "attachments"],
+        summary=(
+            "List attachments on a chat message (exactly one of --chat-id or --with, "
+            "and exactly one of --message-id or --latest)"
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Chat.Read"],
+        args=[
+            {
+                "name": "--chat-id",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --chat-id or --with",
+            },
+            {
+                "name": "--latest",
+                "required": False,
+                "type": "flag",
+                "note": "exactly one of --message-id or --latest; picks newest message "
+                "carrying attachments",
+            },
+            {
+                "name": "--message-id",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --message-id or --latest",
+            },
+            {
+                "name": "--with",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --chat-id or --with; refuses if multiple matches",
+            },
+        ],
+    ),
+    SkillSpec(
+        id="chat.attachments.download",
+        cli=["blumkin", "chat", "attachments", "download"],
+        summary=(
+            "Download Teams chat files to disk (exactly one of --attachment-id or --all; "
+            "needs a delegated Files.* scope because chat files live in SharePoint/OneDrive)"
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Chat.Read", "Files.Read"],
+        args=[
+            {
+                "name": "--all",
+                "required": False,
+                "type": "flag",
+                "note": "exactly one of --attachment-id or --all; --out must be a directory",
+            },
+            {
+                "name": "--attachment-id",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --attachment-id or --all",
+            },
+            {
+                "name": "--chat-id",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --chat-id or --with",
+            },
+            {
+                "name": "--latest",
+                "required": False,
+                "type": "flag",
+                "note": "exactly one of --message-id or --latest",
+            },
+            {
+                "name": "--message-id",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --message-id or --latest",
+            },
+            {
+                "name": "--out",
+                "required": True,
+                "type": "path",
+                "note": "file or directory; must be a directory with --all",
+            },
+            {
+                "name": "--with",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --chat-id or --with",
+            },
+        ],
+    ),
+    SkillSpec(
         id="chat.delete",
         cli=["blumkin", "chat", "delete"],
         summary="Soft-delete a chat message (requires wo1162425_scopes)",

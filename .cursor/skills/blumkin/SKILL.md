@@ -25,6 +25,10 @@ covers the job.
      `blumkin mail attachments download --message-id '<message-id>' --attachment-id '<id>' --out ./file.docx`
    - Chat: `blumkin chat find --with "Name" --json`,
      `blumkin chat last --with "Name" --n 3 --json`
+     `blumkin chat attachments --chat-id '<chat-id>' --message-id '<message-id>' --json`
+     `blumkin chat attachments --with "Name" --latest --json` (newest message carrying files)
+     `blumkin chat attachments download --chat-id '<chat-id>' --message-id '<message-id>' --attachment-id '<id>' --out ./file.docx`
+     `blumkin chat attachments download --with "Name" --latest --all --out ./downloads/`
 4. Writes (require `--yes` when they notify others):
    - `blumkin calendar accept --event-id '<id>' --yes`
    - `blumkin calendar create --subject … --with email --start … --yes`
@@ -45,6 +49,11 @@ covers the job.
 7. Writes that email or invite others require `--yes`.
 8. Chat write + meeting transcription need `Chat.ReadWrite` /
    `OnlineMeetings.ReadWrite` consented (re-login after Identity grant).
+9. Teams chat files live in SharePoint/OneDrive, so
+   `blumkin chat attachments download` needs a delegated `Files.Read` (or
+   `Files.ReadWrite`) scope. Without it, listing still works and download exits
+   `4` / `missing_scope` with the share URL — hand that URL to the user to open
+   in a browser instead of retrying.
 
 ## Config
 

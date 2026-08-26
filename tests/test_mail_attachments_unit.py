@@ -625,7 +625,7 @@ def test_mail_attachments_download_sanitizes_path_traversal_name(tmp_path, monke
 
 
 def test_sanitize_attachment_filename_rejects_dot_names() -> None:
-    from blumkin.skills.mail import _sanitize_attachment_filename
+    from blumkin.attachments import sanitize_attachment_filename
 
-    assert _sanitize_attachment_filename("..") == "attachment"
-    assert _sanitize_attachment_filename(".") == "attachment"
+    assert sanitize_attachment_filename("..") == "attachment"
+    assert sanitize_attachment_filename(".") == "attachment"

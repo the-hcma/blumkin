@@ -10,7 +10,19 @@ from kiota_abstractions.api_error import APIError
 
 from blumkin.cli import main
 from blumkin.config import load_config
-from blumkin.exit_codes import EXIT_AUTH, EXIT_NOT_FOUND, EXIT_OTHER, EXIT_USAGE
+from blumkin.exit_codes import (
+    EXIT_AUTH,
+    EXIT_MISSING_SCOPE,
+    EXIT_NOT_FOUND,
+    EXIT_OTHER,
+    EXIT_SUCCESS,
+    EXIT_USAGE,
+)
+from blumkin.skills.chat import (
+    ChatAttachmentScopeError,
+    ChatAttachmentSkippedError,
+    ChatMessageNotFoundError,
+)
 from blumkin.skills.mail import (
     MailAttachmentNotFoundError,
     MailAttachmentSkippedError,
@@ -224,6 +236,118 @@ def test_wo1162425_scopes_disabled_blocks_chat_send(tmp_path: Path, monkeypatch)
     )
     assert result.exit_code == EXIT_USAGE
     assert "WO1162425 add-on scopes are disabled" in (result.output or "")
+
+
+def test_chat_attachments_download_missing_scope_exits_missing_scope(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ChatAttachmentScopeError("needs Files.Read — open https://example.invalid/f.docx")
+
+    monkeypatch.setattr("blumkin.cli.chat_attachments_download", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "chat",
+            "attachments",
+            "download",
+            "--chat-id",
+            "chat-1",
+            "--message-id",
+            "msg-1",
+            "--attachment-id",
+            "att-1",
+            "--out",
+            "out.docx",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_MISSING_SCOPE
+    assert "missing_scope" in (result.output or "")
+
+
+def test_chat_attachments_download_skipped_exits_usage(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ChatAttachmentSkippedError("adaptive card attachment carries no file content")
+
+    monkeypatch.setattr("blumkin.cli.chat_attachments_download", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "chat",
+            "attachments",
+            "download",
+            "--chat-id",
+            "chat-1",
+            "--message-id",
+            "msg-1",
+            "--attachment-id",
+            "att-card",
+            "--out",
+            "out.json",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
+def test_chat_attachments_download_wires_options_and_emits_json(tmp_path, monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _fake(**kwargs):
+        seen.update(kwargs)
+        return {
+            "chat": None,
+            "chat_id": "chat-1",
+            "message_id": "msg-1",
+            "saved": [],
+            "skipped": [],
+        }
+
+    monkeypatch.setattr("blumkin.cli.chat_attachments_download", _fake)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "chat",
+            "attachments",
+            "download",
+            "--with",
+            "Ada",
+            "--latest",
+            "--all",
+            "--out",
+            str(tmp_path / "downloads"),
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["download_all"] is True
+    assert seen["latest"] is True
+    assert seen["with_name"] == "Ada"
+    assert seen["out"] == str(tmp_path / "downloads")
+
+
+def test_chat_attachments_list_message_not_found_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ChatMessageNotFoundError("chat message not found: missing")
+
+    monkeypatch.setattr("blumkin.cli.chat_attachments_list", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["chat", "attachments", "--chat-id", "chat-1", "--message-id", "missing", "--json"],
+    )
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_chat_attachments_list_missing_message_selector_exits_usage() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat", "attachments", "--chat-id", "chat-1", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
 
 
 def test_chat_send_wires_options_and_emits_json(monkeypatch) -> None:
