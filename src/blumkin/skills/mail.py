@@ -156,10 +156,7 @@ async def mail_attachments_download(
     listed = await mail_attachments_list(message_id=mid, config=cfg)
     attachments = listed["attachments"]
     if download_all:
-        out_path = Path(out)
-        out_path.mkdir(parents=True, exist_ok=True)
-        if not out_path.is_dir():
-            raise ValueError("--out must be a directory when using --all")
+        out_path = _prepare_download_out_directory(out)
         targets = [a for a in attachments if not a.get("skipped")]
     else:
         out_path = Path(out)
@@ -174,11 +171,11 @@ async def mail_attachments_download(
         targets = [match]
         if out_path.exists() and out_path.is_dir():
             filename = _sanitize_attachment_filename(match.get("name") or aid)
-            out_path = out_path / filename
+            out_path = _resolve_attachment_dest(out_path, filename)
         out_path.parent.mkdir(parents=True, exist_ok=True)
     saved: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    used_names: set[str] = set()
+    used_names = _existing_filenames(out_path) if download_all else set()
     for meta in attachments if download_all else targets:
         if meta.get("skipped"):
             skipped.append(
@@ -422,32 +419,6 @@ def _html_to_text(raw: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-async def _fetch_attachment_bytes(
-    client: Any, message_id: str, attachment_id: str, attachment: Any
-) -> bytes:
-    raw = getattr(attachment, "content_bytes", None)
-    if raw:
-        if isinstance(raw, bytes):
-            return raw
-        if isinstance(raw, str):
-            return base64.b64decode(raw)
-    request_info = RequestInformation(
-        Method.GET,
-        "https://graph.microsoft.com/v1.0/me/messages/{message%2Did}/attachments/{attachment%2Did}/$value",
-        {
-            "attachment%2Did": attachment_id,
-            "message%2Did": message_id,
-        },
-    )
-    error_mapping: dict[str, ParsableFactory] = {"XXX": ODataError}
-    result = await client.request_adapter.send_primitive_async(
-        request_info, "binary", error_mapping
-    )
-    if result is None:
-        raise RuntimeError(f"Graph returned empty attachment content: {attachment_id}")
-    return bytes(result)
-
-
 def _attachment_is_skipped(attachment: Any) -> bool:
     if isinstance(attachment, FileAttachment):
         return False
@@ -471,6 +442,30 @@ def _attachment_to_dict(attachment: Any) -> dict[str, Any]:
     if skipped:
         payload["skip_reason"] = _skip_reason(attachment)
     return payload
+
+
+async def _fetch_attachment_bytes(
+    client: Any, message_id: str, attachment_id: str, attachment: Any
+) -> bytes:
+    raw = getattr(attachment, "content_bytes", None)
+    if raw:
+        if isinstance(raw, bytes):
+            return raw
+        if isinstance(raw, str):
+            return base64.b64decode(raw)
+    request_info = RequestInformation(
+        Method.GET,
+        "https://graph.microsoft.com/v1.0/me/messages/{message%2Did}/attachments/{attachment%2Did}/$value",
+        {
+            "attachment%2Did": attachment_id,
+            "message%2Did": message_id,
+        },
+    )
+    error_mapping: dict[str, ParsableFactory] = {"4XX": ODataError, "5XX": ODataError}
+    result = await client.request_adapter.send_primitive_async(request_info, "bytes", error_mapping)
+    if result is None:
+        raise RuntimeError(f"Graph returned empty attachment content: {attachment_id}")
+    return bytes(result)
 
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:
@@ -521,9 +516,33 @@ async def _require_message(client: Any, message_id: str) -> None:
         raise MailMessageNotFoundError(f"message not found: {message_id}")
 
 
+def _existing_filenames(directory: Path) -> set[str]:
+    return {path.name for path in directory.iterdir() if path.is_file()}
+
+
+def _prepare_download_out_directory(out: str) -> Path:
+    out_path = Path(out)
+    if out_path.exists() and out_path.is_file():
+        raise ValueError("--out must be a directory when using --all")
+    out_path.mkdir(parents=True, exist_ok=True)
+    if not out_path.is_dir():
+        raise ValueError("--out must be a directory when using --all")
+    return out_path
+
+
+def _resolve_attachment_dest(out_dir: Path, filename: str) -> Path:
+    dest = (out_dir / filename).resolve()
+    if not dest.is_relative_to(out_dir.resolve()):
+        raise ValueError(f"invalid attachment filename: {filename}")
+    return dest
+
+
 def _sanitize_attachment_filename(name: str) -> str:
     cleaned = re.sub(r"[^\w.\- ()]", "_", name.strip()) or "attachment"
-    return cleaned.replace("/", "_").replace("\\", "_")
+    cleaned = cleaned.replace("/", "_").replace("\\", "_")
+    if cleaned in {".", ".."} or cleaned.strip(".") == "":
+        return "attachment"
+    return cleaned
 
 
 def _skip_reason(attachment: Any) -> str:

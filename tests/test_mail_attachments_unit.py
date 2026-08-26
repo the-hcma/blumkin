@@ -139,6 +139,9 @@ def test_mail_attachments_download_value_fallback(tmp_path, monkeypatch) -> None
     assert out.read_bytes() == b"from-value"
     assert payload["saved"][0]["size"] == len(b"from-value")
     client.request_adapter.send_primitive_async.assert_awaited_once()
+    call_args = client.request_adapter.send_primitive_async.await_args
+    assert call_args is not None
+    assert call_args.args[1] == "bytes"
 
 
 def test_mail_attachments_download_all_skips_item_attachment(tmp_path, monkeypatch) -> None:
@@ -212,3 +215,64 @@ def test_mail_attachments_download_rejects_skipped_type(monkeypatch) -> None:
                 out="out.bin",
             )
         )
+
+
+def test_mail_attachments_download_all_rejects_existing_file_out(tmp_path, monkeypatch) -> None:
+    file_att = _file_attachment()
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=_message_stub())
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[file_att])
+    )
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    existing = tmp_path / "report.docx"
+    existing.write_bytes(b"old")
+    with pytest.raises(ValueError, match="directory"):
+        asyncio.run(
+            mail_attachments_download(
+                message_id="msg-1",
+                download_all=True,
+                out=str(existing),
+            )
+        )
+
+
+def test_mail_attachments_download_all_avoids_overwriting_existing(tmp_path, monkeypatch) -> None:
+    file_att = _file_attachment(name="report.docx", content=b"new")
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=_message_stub())
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[file_att])
+    )
+    client.me.messages.by_message_id.return_value.attachments.by_attachment_id.return_value.get = (
+        AsyncMock(return_value=file_att)
+    )
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    out_dir = tmp_path / "downloads"
+    out_dir.mkdir()
+    (out_dir / "report.docx").write_bytes(b"old")
+    payload = asyncio.run(
+        mail_attachments_download(
+            message_id="msg-1",
+            download_all=True,
+            out=str(out_dir),
+        )
+    )
+    assert (out_dir / "report.docx").read_bytes() == b"old"
+    assert (out_dir / "report_2.docx").read_bytes() == b"new"
+    assert payload["saved"][0]["saved_path"] == str((out_dir / "report_2.docx").resolve())
+
+
+def test_sanitize_attachment_filename_rejects_dot_names() -> None:
+    from blumkin.skills.mail import _sanitize_attachment_filename
+
+    assert _sanitize_attachment_filename("..") == "attachment"
+    assert _sanitize_attachment_filename(".") == "attachment"
