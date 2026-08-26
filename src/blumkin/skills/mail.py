@@ -6,6 +6,11 @@ import html as html_lib
 import re
 from typing import Any
 
+from msgraph.generated.models.body_type import BodyType
+from msgraph.generated.models.email_address import EmailAddress
+from msgraph.generated.models.item_body import ItemBody
+from msgraph.generated.models.message import Message
+from msgraph.generated.models.recipient import Recipient
 from msgraph.generated.users.item.messages.messages_request_builder import (
     MessagesRequestBuilder,
 )
@@ -45,6 +50,60 @@ async def mail_inbox(
     return {"items": [_message_to_dict(msg) for msg in items], "top": top}
 
 
+async def mail_draft(
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    if not to.strip():
+        raise ValueError("--to is required")
+    if not subject.strip():
+        raise ValueError("--subject is required")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    message = Message(
+        body=ItemBody(content_type=BodyType.Text, content=body),
+        subject=subject.strip(),
+        to_recipients=[
+            Recipient(email_address=EmailAddress(address=to.strip())),
+        ],
+    )
+    created = await client.me.messages.post(message)
+    if created is None or not created.id:
+        raise RuntimeError("Graph returned no draft message")
+    return {
+        "draft": {
+            "id": created.id,
+            "subject": created.subject,
+            "to": to.strip(),
+        }
+    }
+
+
+async def mail_send_draft(
+    *,
+    draft_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    if not draft_id.strip():
+        raise ValueError("--id is required")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    await client.me.messages.by_message_id(draft_id.strip()).send.post()
+    return {"sent": draft_id.strip()}
+
+
+def format_draft_human(payload: dict[str, Any]) -> list[str]:
+    draft = payload.get("draft") or {}
+    to_addr = sanitize_terminal(str(draft.get("to") or ""))
+    return [
+        f"Draft saved: {draft.get('subject')!r} → {to_addr}",
+        f"  id={draft.get('id')}",
+    ]
+
+
 def format_inbox_human(payload: dict[str, Any]) -> list[str]:
     lines = [f"Inbox (top {payload['top']}): {len(payload['items'])} message(s)"]
     if not payload["items"]:
@@ -56,6 +115,10 @@ def format_inbox_human(payload: dict[str, Any]) -> list[str]:
         subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
         lines.append(f"  • {item.get('received')}{unread} — {who}: {subject}")
     return lines
+
+
+def format_send_draft_human(payload: dict[str, Any]) -> list[str]:
+    return [f"Sent draft {payload.get('sent')!r}"]
 
 
 def _html_to_text(raw: str) -> str:
