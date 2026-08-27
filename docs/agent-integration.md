@@ -64,8 +64,12 @@ Prefer the symlink unless you need the skill to outlive the clone; a copy goes
 stale silently as commands are added. Verify with `ls ~/.cursor/skills/blumkin/`
 and by asking a session in an unrelated repo what's on your calendar.
 
-A personal skill and this repo's project skill are the same file. When both are
-present in a session, they say the same thing, so precedence does not matter.
+Both skills come from the same source file, so in a session inside this repo
+they normally say the same thing and precedence does not matter. That holds
+exactly as long as they agree — a symlink keeps them identical, while a copy can
+drift behind the project skill without any visible sign. If a session in this
+repo behaves differently from one outside it, suspect a stale copy first and
+refresh it by re-running the `cp -R` above.
 
 ---
 
