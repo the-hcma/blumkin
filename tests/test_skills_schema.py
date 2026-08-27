@@ -188,6 +188,8 @@ def test_notifying_skills_require_explicit_consent() -> None:
         consent = [a for a in skill["args"] if a["name"] == "--yes"]
         assert consent, f"{skill['id']}: notifies others with no --yes"
         assert consent[0]["required"], f"{skill['id']}: --yes is optional"
+        # A value-taking --yes would let any string satisfy consent.
+        assert consent[0]["type"] == "flag", f"{skill['id']}: --yes is not a flag"
 
 
 def test_skill_objects_match_the_documented_shape() -> None:
