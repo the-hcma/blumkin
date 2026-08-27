@@ -70,7 +70,7 @@ def sanitize_attachment_filename(name: str) -> str:
     cleaned = cleaned.rstrip(". ")
     if not cleaned or cleaned in {".", ".."} or cleaned.strip(".") == "":
         return "attachment"
-    if Path(cleaned).stem.upper() in _WINDOWS_RESERVED_NAMES:
+    if cleaned.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
         # CON, NUL, COM1… are devices on Windows: writing there silently discards
         # bytes or raises, with or without an extension.
         return f"attachment_{cleaned}"

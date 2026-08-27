@@ -646,3 +646,6 @@ def test_sanitize_attachment_filename_defuses_windows_device_names() -> None:
     assert sanitize_attachment_filename("con.txt") == "attachment_con.txt"
     assert sanitize_attachment_filename("COM1.docx") == "attachment_COM1.docx"
     assert sanitize_attachment_filename("console.txt") == "console.txt"
+    # Windows takes the segment before the FIRST dot as the device name.
+    assert sanitize_attachment_filename("NUL.tar.gz") == "attachment_NUL.tar.gz"
+    assert sanitize_attachment_filename("COM1.a.b") == "attachment_COM1.a.b"
