@@ -61,6 +61,10 @@ from blumkin.output import sanitize_terminal
 MailBodyType = Literal["html", "text"]
 
 
+class MailAttachError(Exception):
+    """--attach path could not be used (usage, not auth)."""
+
+
 class MailAttachmentNotFoundError(Exception):
     """Attachment id missing on the message (not_found)."""
 
@@ -1312,27 +1316,27 @@ def _read_attachment(path: str) -> tuple[str, bytes]:
     """Read one ``--attach`` file into (name, bytes), rejecting what Graph would reject."""
     source = Path(path)
     if source.is_dir():
-        raise ValueError(f"--attach must name a file, not a directory: {path}")
+        raise MailAttachError(f"--attach must name a file, not a directory: {path}")
     try:
         size = source.stat().st_size
     except FileNotFoundError as exc:
-        raise ValueError(f"--attach file not found: {path}") from exc
+        raise MailAttachError(f"--attach file not found: {path}") from exc
     except OSError as exc:
-        raise ValueError(f"--attach file could not be read: {path}: {exc}") from exc
+        raise MailAttachError(f"--attach file could not be read: {path}: {exc}") from exc
     if size >= _MAX_ATTACHMENT_BYTES:
-        raise ValueError(
+        raise MailAttachError(
             f"--attach file is too large for a single request "
             f"({size} bytes >= {_MAX_ATTACHMENT_BYTES}): {path}"
         )
     try:
         raw = source.read_bytes()
     except FileNotFoundError as exc:
-        raise ValueError(f"--attach file not found: {path}") from exc
+        raise MailAttachError(f"--attach file not found: {path}") from exc
     except OSError as exc:
-        raise ValueError(f"--attach file could not be read: {path}: {exc}") from exc
+        raise MailAttachError(f"--attach file could not be read: {path}: {exc}") from exc
     # The file may have grown between the size check and the read.
     if len(raw) >= _MAX_ATTACHMENT_BYTES:
-        raise ValueError(
+        raise MailAttachError(
             f"--attach file is too large for a single request "
             f"({len(raw)} bytes >= {_MAX_ATTACHMENT_BYTES}): {path}"
         )

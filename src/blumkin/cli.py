@@ -67,6 +67,7 @@ from blumkin.skills.chat import (
 )
 from blumkin.skills.mail import (
     WELL_KNOWN_MAIL_FOLDERS,
+    MailAttachError,
     MailAttachmentNotFoundError,
     MailAttachmentSkippedError,
     MailBodyFileError,
@@ -1268,6 +1269,9 @@ def mail_draft_cmd(
                 body_type=body_type,
             )
         )
+    except MailAttachError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except MailBodyFileError as exc:
         emit_error(
             error="usage_error",
@@ -1467,6 +1471,9 @@ def mail_update_draft_cmd(
                 body_type=body_type,
             )
         )
+    except MailAttachError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except MailBodyFileError as exc:
         emit_error(
             error="usage_error",

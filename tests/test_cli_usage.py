@@ -26,6 +26,7 @@ from blumkin.skills.chat import (
     ChatMessageNotFoundError,
 )
 from blumkin.skills.mail import (
+    MailAttachError,
     MailAttachmentNotFoundError,
     MailAttachmentSkippedError,
     MailBodyFileError,
@@ -1002,7 +1003,7 @@ def test_mail_update_draft_accepts_attach_without_other_fields(tmp_path, monkeyp
 
 def test_mail_draft_missing_attachment_exits_usage(tmp_path, monkeypatch) -> None:
     async def _boom(**_kwargs):
-        raise ValueError(f"--attach file not found: {tmp_path / 'nope.txt'}")
+        raise MailAttachError(f"--attach file not found: {tmp_path / 'Missing' / 'notes.txt'}")
 
     monkeypatch.setattr("blumkin.cli.mail_draft", _boom)
     runner = CliRunner()
@@ -1018,12 +1019,13 @@ def test_mail_draft_missing_attachment_exits_usage(tmp_path, monkeypatch) -> Non
             "--body",
             "hi",
             "--attach",
-            str(tmp_path / "nope.txt"),
+            str(tmp_path / "Missing" / "notes.txt"),
             "--json",
         ],
     )
     assert result.exit_code == EXIT_USAGE
     assert "usage_error" in (result.output or "")
+    assert "auth_required" not in (result.output or "")
 
 
 def test_mail_update_draft_not_a_draft_exits_not_found(monkeypatch) -> None:

@@ -11,6 +11,7 @@ from msgraph.generated.models.body_type import BodyType
 
 from blumkin.skills.mail import (
     _MAX_ATTACHMENT_BYTES,
+    MailAttachError,
     format_draft_human,
     mail_draft,
     mail_update_draft,
@@ -77,13 +78,13 @@ def test_mail_draft_sanitizes_the_attachment_name(tmp_path, monkeypatch) -> None
 
 def test_mail_draft_rejects_a_directory(tmp_path, monkeypatch) -> None:
     _client(monkeypatch)
-    with pytest.raises(ValueError, match="not a directory"):
+    with pytest.raises(MailAttachError, match="not a directory"):
         asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", attach=[str(tmp_path)]))
 
 
 def test_mail_draft_rejects_a_missing_file(tmp_path, monkeypatch) -> None:
     client = _client(monkeypatch)
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(MailAttachError, match="not found"):
         asyncio.run(
             mail_draft(
                 to="a@b.com",
@@ -100,7 +101,7 @@ def test_mail_draft_rejects_an_oversized_file(tmp_path, monkeypatch) -> None:
     source = tmp_path / "big.bin"
     source.write_bytes(b"x" * _MAX_ATTACHMENT_BYTES)
     client = _client(monkeypatch)
-    with pytest.raises(ValueError, match="too large"):
+    with pytest.raises(MailAttachError, match="too large"):
         asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", attach=[str(source)]))
     client.me.messages.post.assert_not_awaited()
 
@@ -120,7 +121,7 @@ def test_mail_draft_rejects_an_oversized_file_before_reading(tmp_path, monkeypat
 
     monkeypatch.setattr(type(source), "read_bytes", _boom)
     client = _client(monkeypatch)
-    with pytest.raises(ValueError, match="too large"):
+    with pytest.raises(MailAttachError, match="too large"):
         asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", attach=[str(source)]))
     client.me.messages.post.assert_not_awaited()
 
