@@ -10,6 +10,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"AUX", "CON", "NUL", "PRN"}
+    | {f"COM{digit}" for digit in range(1, 10)}
+    | {f"LPT{digit}" for digit in range(1, 10)}
+)
+
 
 def existing_entry_names(directory: Path) -> set[str]:
     """Names of every entry in ``directory`` (files and directories)."""
@@ -59,8 +65,15 @@ def resolve_single_download_dest(out: str, filename: str) -> Path:
 def sanitize_attachment_filename(name: str) -> str:
     cleaned = re.sub(r"[^\w.\- ()]", "_", name.strip()) or "attachment"
     cleaned = cleaned.replace("/", "_").replace("\\", "_")
-    if cleaned in {".", ".."} or cleaned.strip(".") == "":
+    # Windows drops trailing dots and spaces, which would let "a.txt." collide with
+    # an existing "a.txt" behind unique_filename's back.
+    cleaned = cleaned.rstrip(". ")
+    if not cleaned or cleaned in {".", ".."} or cleaned.strip(".") == "":
         return "attachment"
+    if Path(cleaned).stem.upper() in _WINDOWS_RESERVED_NAMES:
+        # CON, NUL, COM1… are devices on Windows: writing there silently discards
+        # bytes or raises, with or without an extension.
+        return f"attachment_{cleaned}"
     return cleaned
 
 

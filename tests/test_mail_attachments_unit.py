@@ -629,3 +629,20 @@ def test_sanitize_attachment_filename_rejects_dot_names() -> None:
 
     assert sanitize_attachment_filename("..") == "attachment"
     assert sanitize_attachment_filename(".") == "attachment"
+
+
+def test_sanitize_attachment_filename_strips_trailing_dots_and_spaces() -> None:
+    from blumkin.attachments import sanitize_attachment_filename
+
+    # Windows silently drops these, which would collide with an existing "a.txt".
+    assert sanitize_attachment_filename("a.txt.") == "a.txt"
+    assert sanitize_attachment_filename("a.txt ") == "a.txt"
+
+
+def test_sanitize_attachment_filename_defuses_windows_device_names() -> None:
+    from blumkin.attachments import sanitize_attachment_filename
+
+    assert sanitize_attachment_filename("NUL") == "attachment_NUL"
+    assert sanitize_attachment_filename("con.txt") == "attachment_con.txt"
+    assert sanitize_attachment_filename("COM1.docx") == "attachment_COM1.docx"
+    assert sanitize_attachment_filename("console.txt") == "console.txt"

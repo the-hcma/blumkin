@@ -17,6 +17,9 @@ from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.chat_message import ChatMessage
 from msgraph.generated.models.item_body import ItemBody
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+from msgraph.generated.users.item.chats.item.messages.item.chat_message_item_request_builder import (  # noqa: E501
+    ChatMessageItemRequestBuilder,
+)
 from msgraph.generated.users.item.chats.item.messages.messages_request_builder import (
     MessagesRequestBuilder,
 )
@@ -82,6 +85,12 @@ async def chat_attachments_download(
     attachments = listed["attachments"]
     if download_all:
         targets = [item for item in attachments if item["downloadable"]]
+        if not targets:
+            # Exiting 0 with an empty directory would look like a successful download.
+            raise ChatAttachmentNotFoundError(
+                f"no downloadable file attachments on message {listed['message_id']!r} "
+                f"({len(attachments)} attachment(s) present, none are chat files)"
+            )
         out_path = prepare_download_directory(out)
     else:
         match = next((item for item in attachments if item["id"] == aid), None)
@@ -314,8 +323,7 @@ async def chat_last(
     selected: list[dict[str, Any]] = []
     while page is not None and len(selected) < n:
         for msg in page.value or []:
-            msg_type = getattr(msg, "message_type", None)
-            if msg_type is not None and str(msg_type) != "message":
+            if not _is_ordinary_message(msg):
                 continue
             selected.append(_message_to_dict(msg))
             if len(selected) >= n:
@@ -566,6 +574,18 @@ def _html_to_text(raw: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _is_ordinary_message(msg: Any) -> bool:
+    """True for user messages, excluding system events.
+
+    ``messageType`` deserializes to ``ChatMessageType``, whose ``str()`` is
+    ``"ChatMessageType.Message"`` — compare the enum value, not its repr.
+    """
+    msg_type = getattr(msg, "message_type", None)
+    if msg_type is None:
+        return True
+    return str(getattr(msg_type, "value", msg_type)) == "message"
+
+
 def _is_reauth_error(exc: BaseException) -> bool:
     """True for HTTP 401 (expired token); re-raise so CLI maps to EXIT_AUTH."""
     return getattr(exc, "response_status_code", None) == 401
@@ -574,14 +594,14 @@ def _is_reauth_error(exc: BaseException) -> bool:
 async def _latest_message_with_attachments(client: Any, chat_id: str) -> Any:
     """Newest ordinary message in the chat that carries at least one attachment."""
     query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+        expand=["attachments"],
         orderby=["createdDateTime desc"],
         top=_LATEST_SCAN_PAGE_SIZE,
     )
     page = await client.me.chats.by_chat_id(chat_id).messages.get(request_config(query))
     while page is not None:
         for msg in page.value or []:
-            msg_type = getattr(msg, "message_type", None)
-            if msg_type is not None and str(msg_type) != "message":
+            if not _is_ordinary_message(msg):
                 continue
             if getattr(msg, "attachments", None):
                 return msg
@@ -631,8 +651,13 @@ def _name_matches(needle: str, display_name: str) -> bool:
 
 
 async def _require_chat_message(client: Any, chat_id: str, message_id: str) -> Any:
+    query = ChatMessageItemRequestBuilder.ChatMessageItemRequestBuilderGetQueryParameters(
+        expand=["attachments"],
+    )
     message = (
-        await client.me.chats.by_chat_id(chat_id).messages.by_chat_message_id(message_id).get()
+        await client.me.chats.by_chat_id(chat_id)
+        .messages.by_chat_message_id(message_id)
+        .get(request_config(query))
     )
     if message is None or not message.id:
         raise ChatMessageNotFoundError(f"chat message not found: {message_id}")
@@ -693,14 +718,19 @@ def _sharing_token(content_url: str) -> str:
 
 
 def _skip_reason(content_type: str, content_url: str | None) -> str | None:
-    """Why an attachment cannot be downloaded, or ``None`` when it is a fetchable file."""
+    """Why an attachment cannot be downloaded, or ``None`` when it is a fetchable file.
+
+    ``content_type`` is sender-controlled and reaches stderr through
+    ``ChatAttachmentSkippedError``, so it is sanitized before being embedded.
+    """
     folded = content_type.casefold()
     if folded.startswith(_CARD_CONTENT_TYPE_PREFIX):
         return "adaptive card attachment carries no file content"
     if folded in _MESSAGE_REFERENCE_TYPES:
         return "message reference attachment carries no file content"
+    safe_type = sanitize_terminal(content_type)
     if not content_url:
-        return f"{content_type or 'attachment'} has no content URL to download from"
+        return f"{safe_type or 'attachment'} has no content URL to download from"
     if folded and folded != _REFERENCE_CONTENT_TYPE:
-        return f"{content_type} is not a downloadable chat file in v1"
+        return f"{safe_type} is not a downloadable chat file in v1"
     return None

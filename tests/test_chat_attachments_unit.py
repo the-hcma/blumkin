@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from msgraph.generated.models.chat_message_type import ChatMessageType
 
 from blumkin.skills.chat import (
     ChatAttachmentNotFoundError,
@@ -255,6 +256,69 @@ def test_chat_attachments_download_uses_shares_url(monkeypatch, tmp_path) -> Non
     assert requested == [_CONTENT_URL]
     assert out_file.read_bytes() == b"chat-file-bytes"
     assert payload["saved"][0]["size"] == len(b"chat-file-bytes")
+
+
+def test_chat_attachments_download_all_without_downloadable_targets_is_not_found(
+    monkeypatch, tmp_path
+) -> None:
+    client = MagicMock()
+    client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value.get = (
+        AsyncMock(return_value=_message_stub([_card_attachment()]))
+    )
+    _configure(monkeypatch, client, scopes=["Chat.Read", "Files.Read"])
+    out_dir = tmp_path / "downloads"
+    with pytest.raises(ChatAttachmentNotFoundError, match="no downloadable file attachments"):
+        asyncio.run(
+            chat_attachments_download(
+                chat_id="chat-1",
+                download_all=True,
+                message_id="msg-1",
+                out=str(out_dir),
+            )
+        )
+
+
+def test_chat_attachments_latest_matches_real_message_type_enum(monkeypatch) -> None:
+    # str(ChatMessageType.Message) is "ChatMessageType.Message", not "message".
+    with_files = _message_stub([_reference_attachment()], message_id="msg-2")
+    with_files.message_type = ChatMessageType.Message
+    system = _message_stub([_reference_attachment()], message_id="msg-sys")
+    system.message_type = ChatMessageType.SystemEventMessage
+    page = SimpleNamespace(odata_next_link=None, value=[system, with_files])
+    client = MagicMock()
+    client.me.chats.by_chat_id.return_value.messages.get = AsyncMock(return_value=page)
+    _configure(monkeypatch, client)
+    payload = asyncio.run(chat_attachments_list(chat_id="chat-1", latest=True))
+    assert payload["message_id"] == "msg-2"
+
+
+def test_chat_attachments_requests_expand_attachments(monkeypatch) -> None:
+    client = MagicMock()
+    get_mock = AsyncMock(return_value=_message_stub([_reference_attachment()]))
+    client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value.get = get_mock
+    _configure(monkeypatch, client)
+    asyncio.run(chat_attachments_list(chat_id="chat-1", message_id="msg-1"))
+    await_args = get_mock.await_args
+    assert await_args is not None
+    assert await_args.args[0].query_parameters.expand == ["attachments"]
+
+
+def test_chat_attachments_skip_reason_sanitizes_content_type(monkeypatch) -> None:
+    hostile = SimpleNamespace(
+        content_type="text/plain\x1b[2Kspoofed",
+        content_url=_CONTENT_URL,
+        id="att-evil",
+        name="notes.txt",
+    )
+    client = MagicMock()
+    client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value.get = (
+        AsyncMock(return_value=_message_stub([hostile]))
+    )
+    _configure(monkeypatch, client)
+    payload = asyncio.run(chat_attachments_list(chat_id="chat-1", message_id="msg-1"))
+    reason = payload["attachments"][0]["skip_reason"]
+    assert reason is not None
+    assert "\x1b" not in reason
 
 
 def test_chat_attachments_latest_scans_for_attachments(monkeypatch) -> None:
