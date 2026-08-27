@@ -139,6 +139,8 @@ def format_folders_human(payload: dict[str, Any]) -> list[str]:
         path = sanitize_terminal(str(item.get("path") or ""))
         lines.append(f"  • {path} — {item.get('total')} message(s), {item.get('unread')} unread")
         lines.append(f"      id={item.get('id')}")
+    if payload.get("truncated"):
+        lines.append(f"  (truncated: {_folder_limits_note(payload.get('limits'))})")
     return lines
 
 
@@ -163,7 +165,7 @@ def format_list_human(payload: dict[str, Any]) -> list[str]:
     if not items:
         lines.append("  (none)")
         return lines
-    outbound = orderby in {"created", "sent"}
+    outbound = bool(payload.get("outbound"))
     for item in items:
         stamp = item.get(orderby) or item.get("received") or item.get("created") or "(no date)"
         unread = "" if item.get("is_read") else " [unread]"
@@ -352,8 +354,14 @@ async def mail_folders(*, config: BlumkinConfig | None = None) -> dict[str, Any]
     cfg = config or load_config()
     client = create_graph_client(cfg)
     folders: list[dict[str, Any]] = []
-    await _collect_mail_folders(client, client.me.mail_folders, folders=folders, prefix="", depth=0)
-    return {"folders": folders}
+    truncated = await _collect_mail_folders(
+        client, client.me.mail_folders, folders=folders, prefix="", depth=0
+    )
+    return {
+        "folders": folders,
+        "limits": {"max_depth": _MAX_FOLDER_DEPTH, "max_folders": _MAX_FOLDERS},
+        "truncated": truncated,
+    }
 
 
 async def mail_inbox(
@@ -391,9 +399,11 @@ async def mail_list(
         # free-form labels: a real folder of that display name wins over the alias.
         if label is None or well_known is not None or not _is_folder_lookup_failure(exc):
             raise
-        target, well_known = await _resolve_folder_fallback(client, label)
+        target, well_known, truncated = await _resolve_folder_fallback(client, label)
         if target is None:
-            raise MailFolderNotFoundError(_folder_not_found_message(label)) from exc
+            raise MailFolderNotFoundError(
+                _folder_not_found_message(label, truncated=truncated)
+            ) from exc
         sort = requested_sort or _default_orderby(well_known)
         page = await _get_messages(client, target, top=top, sort=sort)
     items = [] if page is None else (page.value or [])
@@ -401,6 +411,7 @@ async def mail_list(
         "folder": target,
         "items": [_message_to_dict(msg) for msg in items],
         "orderby": sort,
+        "outbound": well_known in _OUTBOUND_FOLDERS,
         "top": top,
     }
 
@@ -535,6 +546,7 @@ _FOLDER_DEFAULT_ORDERBY = {
     "outbox": "created",
     "sentitems": "sent",
 }
+_OUTBOUND_FOLDERS = frozenset(_FOLDER_DEFAULT_ORDERBY)
 # Everyday spellings, applied only after a real folder of that name fails to match.
 _MAIL_FOLDER_ALIASES = {
     "deleted": "deleteditems",
@@ -585,9 +597,11 @@ async def _collect_mail_folders(
     folders: list[dict[str, Any]],
     prefix: str,
     depth: int,
-) -> None:
+) -> bool:
+    """Append folders under ``builder``; returns True when a cap cut the walk short."""
     if depth > _MAX_FOLDER_DEPTH or len(folders) >= _MAX_FOLDERS:
-        return
+        return True
+    truncated = False
     query = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters(
         top=_FOLDER_PAGE_SIZE,
         select=["childFolderCount", "displayName", "id", "totalItemCount", "unreadItemCount"],
@@ -596,7 +610,7 @@ async def _collect_mail_folders(
     while page is not None:
         for folder in page.value or []:
             if len(folders) >= _MAX_FOLDERS:
-                return
+                return True
             name = str(getattr(folder, "display_name", None) or "")
             path = f"{prefix}/{name}" if prefix else name
             folder_id = getattr(folder, "id", None)
@@ -612,7 +626,7 @@ async def _collect_mail_folders(
                 }
             )
             if child_count and folder_id:
-                await _collect_mail_folders(
+                truncated |= await _collect_mail_folders(
                     client,
                     client.me.mail_folders.by_mail_folder_id(str(folder_id)).child_folders,
                     folders=folders,
@@ -621,8 +635,9 @@ async def _collect_mail_folders(
                 )
         link = getattr(page, "odata_next_link", None)
         if not link:
-            return
+            return truncated
         page = await builder.with_url(str(link)).get()
+    return truncated
 
 
 async def _fetch_attachment_bytes(
@@ -671,12 +686,26 @@ def _folder_match_key(label: str) -> str:
     return re.sub(r"[\s_-]+", "", label.casefold())
 
 
-def _folder_not_found_message(folder: str) -> str:
+def _folder_limits_note(limits: Any) -> str:
+    values = limits if isinstance(limits, dict) else {}
+    max_folders = values.get("max_folders", _MAX_FOLDERS)
+    max_depth = values.get("max_depth", _MAX_FOLDER_DEPTH)
+    return f"listing stops after {max_folders} folders or depth {max_depth}"
+
+
+def _folder_not_found_message(folder: str, *, truncated: bool = False) -> str:
     known = ", ".join(WELL_KNOWN_MAIL_FOLDERS)
-    return (
+    message = (
         f"mail folder not found: {sanitize_terminal(folder)!r} "
         f"(well-known names: {known}; run 'blumkin mail folders' to list folder ids)"
     )
+    if truncated:
+        # Without this the guidance is a dead end: the same caps hide the folder there too.
+        message += (
+            f". The folder listing was truncated ({_folder_limits_note(None)}), "
+            "so this name may sit beyond it"
+        )
+    return message
 
 
 async def _get_messages(client: Any, folder: str | None, *, top: int, sort: str) -> Any:
@@ -766,7 +795,7 @@ def _primary_to_address(msg: Any) -> str | None:
     return None
 
 
-async def _resolve_folder_fallback(client: Any, label: str) -> tuple[str | None, str | None]:
+async def _resolve_folder_fallback(client: Any, label: str) -> tuple[str | None, str | None, bool]:
     """Resolve a --folder label Graph rejected as an id, returning (target, well-known).
 
     A real folder with that display name wins over the alias table, so a mailbox that
@@ -775,7 +804,9 @@ async def _resolve_folder_fallback(client: Any, label: str) -> tuple[str | None,
     """
     key = _folder_match_key(label)
     folders: list[dict[str, Any]] = []
-    await _collect_mail_folders(client, client.me.mail_folders, folders=folders, prefix="", depth=0)
+    truncated = await _collect_mail_folders(
+        client, client.me.mail_folders, folders=folders, prefix="", depth=0
+    )
     matches = [
         item
         for item in folders
@@ -789,11 +820,11 @@ async def _resolve_folder_fallback(client: Any, label: str) -> tuple[str | None,
     if len(matches) > 1:
         raise MailFolderNotFoundError(_ambiguous_folder_message(label, matches))
     if matches:
-        return str(matches[0]["id"]), None
+        return str(matches[0]["id"]), None, truncated
     alias = _MAIL_FOLDER_ALIASES.get(key)
     if alias is not None:
-        return alias, alias
-    return None, None
+        return alias, alias, truncated
+    return None, None, truncated
 
 
 def _validate_orderby(raw: str) -> str:

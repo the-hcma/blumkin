@@ -16,6 +16,7 @@ from blumkin.skills.mail import (
     _default_orderby,
     _validate_orderby,
     _well_known_folder,
+    format_folders_human,
     format_list_human,
     mail_folders,
     mail_inbox,
@@ -37,6 +38,61 @@ def test_mail_folders_walks_nested_folders(monkeypatch) -> None:
     assert payload["folders"][1]["id"] == "receipts-id"
     assert payload["folders"][0]["unread"] == 2
     client.me.mail_folders.by_mail_folder_id.assert_called_once_with("inbox-id")
+
+
+def test_mail_folders_reports_a_folder_count_cap(monkeypatch) -> None:
+    """A partial tree must say so: the omitted ids cannot be discovered otherwise."""
+    client = _client(monkeypatch)
+    monkeypatch.setattr("blumkin.skills.mail._MAX_FOLDERS", 2)
+    client.me.mail_folders.get = AsyncMock(
+        return_value=_page([_folder(f"F{n}", f"id-{n}") for n in range(5)])
+    )
+
+    payload = asyncio.run(mail_folders())
+
+    assert payload["truncated"] is True
+    assert len(payload["folders"]) == 2
+    assert "truncated" in format_folders_human(payload)[-1]
+
+
+def test_mail_folders_reports_a_depth_cap(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    monkeypatch.setattr("blumkin.skills.mail._MAX_FOLDER_DEPTH", 0)
+    client.me.mail_folders.get = AsyncMock(
+        return_value=_page([_folder("Inbox", "inbox-id", child_folder_count=1)])
+    )
+    child = client.me.mail_folders.by_mail_folder_id.return_value.child_folders
+    child.get = AsyncMock(return_value=_page([_folder("Deep", "deep-id")]))
+
+    payload = asyncio.run(mail_folders())
+
+    assert payload["truncated"] is True
+    assert [item["name"] for item in payload["folders"]] == ["Inbox"]
+
+
+def test_mail_folders_reports_no_truncation_for_a_complete_tree(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    client.me.mail_folders.get = AsyncMock(return_value=_page([_folder("Inbox", "inbox-id")]))
+
+    payload = asyncio.run(mail_folders())
+
+    assert payload["truncated"] is False
+    assert payload["limits"] == {"max_depth": 6, "max_folders": 500}
+    assert "truncated" not in " ".join(format_folders_human(payload))
+
+
+def test_mail_list_not_found_mentions_a_truncated_listing(monkeypatch) -> None:
+    """Otherwise the 'run mail folders' hint points at a command with the same caps."""
+    client = _client(monkeypatch)
+    monkeypatch.setattr("blumkin.skills.mail._MAX_FOLDERS", 1)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(side_effect=_odata_error(404, "ErrorItemNotFound"))
+    client.me.mail_folders.get = AsyncMock(
+        return_value=_page([_folder("Inbox", "inbox-id"), _folder("Deep", "deep-id")])
+    )
+
+    with pytest.raises(MailFolderNotFoundError, match="truncated"):
+        asyncio.run(mail_list(folder="Deep"))
 
 
 def test_mail_folders_follows_pagination(monkeypatch) -> None:
@@ -272,11 +328,48 @@ def test_format_list_human_shows_recipients_for_sent_mail() -> None:
             }
         ],
         "orderby": "sent",
+        "outbound": True,
         "top": 10,
     }
     lines = format_list_human(payload)
     assert "sentitems (top 10, by sent): 1 message(s)" in lines[0]
     assert "to peer@example.com: Re: Sync" in lines[1]
+
+
+def test_format_list_human_direction_follows_the_folder_not_the_sort() -> None:
+    """--folder inbox --orderby created is still inbound mail."""
+    inbound = {
+        "folder": "inbox",
+        "items": [
+            {
+                "created": "2026-08-27T09:00Z",
+                "from_name": "Peer",
+                "is_read": True,
+                "subject": "Sync",
+                "to_email": None,
+            }
+        ],
+        "orderby": "created",
+        "outbound": False,
+        "top": 10,
+    }
+    assert "Peer: Sync" in format_list_human(inbound)[1]
+
+    outbound = {
+        "folder": "sentitems",
+        "items": [
+            {
+                "is_read": True,
+                "received": "2026-08-27T10:00Z",
+                "subject": "Re: Sync",
+                "to_email": "peer@example.com",
+            }
+        ],
+        "orderby": "received",
+        "outbound": True,
+        "top": 10,
+    }
+    assert "to peer@example.com: Re: Sync" in format_list_human(outbound)[1]
 
 
 def test_format_list_human_handles_an_empty_folder() -> None:
