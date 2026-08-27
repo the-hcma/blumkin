@@ -98,11 +98,86 @@ def test_mail_draft_rejects_a_missing_file(tmp_path, monkeypatch) -> None:
 
 def test_mail_draft_rejects_an_oversized_file(tmp_path, monkeypatch) -> None:
     source = tmp_path / "big.bin"
-    source.write_bytes(b"x" * (_MAX_ATTACHMENT_BYTES + 1))
+    source.write_bytes(b"x" * _MAX_ATTACHMENT_BYTES)
     client = _client(monkeypatch)
     with pytest.raises(ValueError, match="too large"):
         asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", attach=[str(source)]))
     client.me.messages.post.assert_not_awaited()
+
+
+def test_mail_draft_rejects_an_oversized_file_before_reading(tmp_path, monkeypatch) -> None:
+    """A multi-GB file must not be buffered into RAM just to refuse it."""
+    source = tmp_path / "huge.bin"
+    source.write_bytes(b"tiny")  # real bytes are irrelevant; size comes from the stub.
+
+    def _huge_stat(_self):  # noqa: ANN001
+        return SimpleNamespace(st_size=_MAX_ATTACHMENT_BYTES)
+
+    monkeypatch.setattr(type(source), "stat", _huge_stat)
+
+    def _boom(_self):  # noqa: ANN001
+        raise AssertionError("read_bytes must not run for an oversized file")
+
+    monkeypatch.setattr(type(source), "read_bytes", _boom)
+    client = _client(monkeypatch)
+    with pytest.raises(ValueError, match="too large"):
+        asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", attach=[str(source)]))
+    client.me.messages.post.assert_not_awaited()
+
+
+def test_mail_draft_deletes_the_draft_when_an_upload_fails(tmp_path, monkeypatch) -> None:
+    first = tmp_path / "first.txt"
+    first.write_bytes(b"one")
+    second = tmp_path / "second.txt"
+    second.write_bytes(b"two")
+    client = _client(monkeypatch)
+    posts = client.me.messages.by_message_id.return_value.attachments.post
+    posts.side_effect = [
+        SimpleNamespace(id="att-first.txt", name="first.txt", size=3),
+        RuntimeError("Graph said no"),
+    ]
+    client.me.messages.by_message_id.return_value.delete = AsyncMock(return_value=None)
+    attachments = client.me.messages.by_message_id.return_value.attachments
+    attachments.by_attachment_id.return_value.delete = AsyncMock(return_value=None)
+
+    with pytest.raises(RuntimeError, match="Graph said no"):
+        asyncio.run(
+            mail_draft(
+                to="a@b.com",
+                subject="Hi",
+                body="Hello",
+                attach=[str(first), str(second)],
+            )
+        )
+
+    # The first attachment was rolled back, then the half-built draft was deleted.
+    attachments.by_attachment_id.assert_called_with("att-first.txt")
+    client.me.messages.by_message_id.return_value.delete.assert_awaited_once()
+
+
+def test_mail_update_draft_rolls_back_attachments_when_a_later_upload_fails(
+    tmp_path, monkeypatch
+) -> None:
+    first = tmp_path / "first.txt"
+    first.write_bytes(b"one")
+    second = tmp_path / "second.txt"
+    second.write_bytes(b"two")
+    client = _draft_client(monkeypatch)
+    posts = client.me.messages.by_message_id.return_value.attachments.post
+    posts.side_effect = [
+        SimpleNamespace(id="att-first.txt", name="first.txt", size=3),
+        RuntimeError("Graph said no"),
+    ]
+    delete = AsyncMock(return_value=None)
+    attachments = client.me.messages.by_message_id.return_value.attachments
+    attachments.by_attachment_id.return_value.delete = delete
+
+    with pytest.raises(RuntimeError, match="Graph said no"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(first), str(second)]))
+
+    delete.assert_awaited_once()
+    # The pre-existing draft stays — only the attachment uploaded in this call is undone.
+    client.me.messages.by_message_id.return_value.delete.assert_not_called()
 
 
 def test_mail_update_draft_accepts_attach_alone(tmp_path, monkeypatch) -> None:

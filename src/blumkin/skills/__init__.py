@@ -367,7 +367,7 @@ SKILLS: list[SkillSpec] = [
                 "name": "--attach",
                 "required": False,
                 "type": "path",
-                "note": "repeatable; each file must be under ~2.2 MB",
+                "note": "repeatable; each file must be under 2 MB",
             },
             {
                 "name": "--body",

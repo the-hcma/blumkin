@@ -412,9 +412,18 @@ async def mail_draft(
     created = await client.me.messages.post(message)
     if created is None or not created.id:
         raise RuntimeError("Graph returned no draft message")
+    try:
+        attachments = await _upload_attachments(client, created.id, pending)
+    except Exception:
+        # A half-attached draft is worse than no draft: delete it so a retry is a no-op.
+        try:
+            await client.me.messages.by_message_id(created.id).delete()
+        except Exception:
+            pass
+        raise
     return {
         "draft": {
-            "attachments": await _upload_attachments(client, created.id, pending),
+            "attachments": attachments,
             "body_type": body_type_label,
             "id": created.id,
             "subject": created.subject,
@@ -809,8 +818,9 @@ _ID_LOOKUP_ERROR_CODES = frozenset(
 )
 # Graph accepts an attachment inline on the attachments collection only up to 3 MB of
 # request body; past that it wants an upload session, which this CLI does not implement.
-# Base64 inflates by 4/3, so the file itself has to stay comfortably under the limit.
-_MAX_ATTACHMENT_BYTES = 3_000_000 * 3 // 4
+# Base64 inflates by 4/3, and the JSON wrapper around contentBytes eats more, so keep
+# the file itself well under the limit rather than sitting on the exact boundary.
+_MAX_ATTACHMENT_BYTES = 2_000_000
 # Guardrails for the recursive folder walk: mailboxes with deep or huge folder trees
 # should return a useful listing rather than fan out into hundreds of Graph calls.
 _MAX_FOLDERS = 500
@@ -1304,15 +1314,27 @@ def _read_attachment(path: str) -> tuple[str, bytes]:
     if source.is_dir():
         raise ValueError(f"--attach must name a file, not a directory: {path}")
     try:
+        size = source.stat().st_size
+    except FileNotFoundError as exc:
+        raise ValueError(f"--attach file not found: {path}") from exc
+    except OSError as exc:
+        raise ValueError(f"--attach file could not be read: {path}: {exc}") from exc
+    if size >= _MAX_ATTACHMENT_BYTES:
+        raise ValueError(
+            f"--attach file is too large for a single request "
+            f"({size} bytes >= {_MAX_ATTACHMENT_BYTES}): {path}"
+        )
+    try:
         raw = source.read_bytes()
     except FileNotFoundError as exc:
         raise ValueError(f"--attach file not found: {path}") from exc
     except OSError as exc:
         raise ValueError(f"--attach file could not be read: {path}: {exc}") from exc
-    if len(raw) > _MAX_ATTACHMENT_BYTES:
+    # The file may have grown between the size check and the read.
+    if len(raw) >= _MAX_ATTACHMENT_BYTES:
         raise ValueError(
             f"--attach file is too large for a single request "
-            f"({len(raw)} bytes > {_MAX_ATTACHMENT_BYTES}): {path}"
+            f"({len(raw)} bytes >= {_MAX_ATTACHMENT_BYTES}): {path}"
         )
     return sanitize_attachment_filename(source.name), raw
 
@@ -1424,26 +1446,43 @@ async def _scan_messages(
 async def _upload_attachments(
     client: Any, message_id: str, pending: Sequence[tuple[str, bytes]]
 ) -> list[dict[str, Any]]:
-    """Attach already-read files to a draft, one Graph call each, in the order given."""
+    """Attach already-read files to a draft, one Graph call each, in the order given.
+
+    On any failure, already-uploaded attachments from this call are deleted so a retry
+    does not silently duplicate them. Callers that created the draft for this upload
+    should still delete the draft itself.
+    """
     if not pending:
         return []
     builder = client.me.messages.by_message_id(message_id).attachments
     uploaded: list[dict[str, Any]] = []
-    for name, raw in pending:
-        created = await builder.post(
-            FileAttachment(
-                odata_type="#microsoft.graph.fileAttachment",
-                content_bytes=raw,
-                name=name,
+    try:
+        for name, raw in pending:
+            created = await builder.post(
+                FileAttachment(
+                    odata_type="#microsoft.graph.fileAttachment",
+                    content_bytes=raw,
+                    name=name,
+                )
             )
-        )
-        uploaded.append(
-            {
-                "id": getattr(created, "id", None),
-                "name": getattr(created, "name", None) or name,
-                "size": getattr(created, "size", None) if created is not None else None,
-            }
-        )
+            uploaded.append(
+                {
+                    "id": getattr(created, "id", None),
+                    "name": getattr(created, "name", None) or name,
+                    "size": getattr(created, "size", None) if created is not None else None,
+                }
+            )
+    except Exception:
+        for item in uploaded:
+            aid = item.get("id")
+            if not aid:
+                continue
+            try:
+                await builder.by_attachment_id(aid).delete()
+            except Exception:
+                # Best-effort cleanup; the original upload error is what the caller sees.
+                pass
+        raise
     return uploaded
 
 
