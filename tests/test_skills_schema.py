@@ -66,6 +66,16 @@ def test_cli_emits_the_documented_envelope() -> None:
     assert payload["skills"]
 
 
+def test_cli_invocation_follows_the_skill_id() -> None:
+    """The documented rule: the command is the id, split on dots, after "blumkin".
+
+    Pinning the relationship rather than 30 literal argv lists means a renamed
+    subcommand fails even for skills added later.
+    """
+    for skill in skills_catalog()["skills"]:
+        assert skill["cli"] == ["blumkin", *skill["id"].split(".")], skill["id"]
+
+
 def test_config_opt_ins_do_not_share_an_exit_code() -> None:
     """The docs distinguish them because the CLI does; keep that honest.
 
@@ -150,16 +160,18 @@ def test_every_skill_is_classified_for_reaching_other_people() -> None:
 
     A skill losing the flag escapes the rule; a new skill that does reach people but
     ships with the flag unset never enters it. Requiring an explicit entry here means
-    neither can happen without someone deciding.
+    neither can happen without someone deciding. ``mutates`` rides along because
+    agents use the pair to judge whether an action is safe to run unattended.
     """
-    actual = {s["id"]: s["notifies_others"] for s in skills_catalog()["skills"]}
-    unclassified = set(actual) - set(_NOTIFIES_OTHERS)
+    actual = {s["id"]: (s["mutates"], s["notifies_others"]) for s in skills_catalog()["skills"]}
+    unclassified = set(actual) - set(_CONSENT)
     assert not unclassified, (
-        f"classify these in _NOTIFIES_OTHERS — does the skill reach anyone else? {unclassified}"
+        f"classify these in _CONSENT — does the skill change anything or reach "
+        f"anyone else? {unclassified}"
     )
-    dropped = set(_NOTIFIES_OTHERS) - set(actual)
+    dropped = set(_CONSENT) - set(actual)
     assert not dropped, f"released ids removed or renamed: {dropped}"
-    assert actual == _NOTIFIES_OTHERS
+    assert actual == _CONSENT
 
 
 def test_exit_codes_are_stable() -> None:
@@ -194,9 +206,7 @@ def test_skills_are_sorted_by_id() -> None:
     assert ids == sorted(ids)
     assert len(ids) == len(set(ids))
     # v1 permits new skills, but an existing id may not be renamed or removed.
-    assert _NOTIFIES_OTHERS.keys() <= set(ids), (
-        f"missing released ids: {_NOTIFIES_OTHERS.keys() - set(ids)}"
-    )
+    assert _CONSENT.keys() <= set(ids), f"missing released ids: {_CONSENT.keys() - set(ids)}"
 
 
 _ARG_REQUIRED_KEYS = {"name", "required", "type"}
@@ -256,41 +266,41 @@ _ERROR_VALUES = {"auth_required", "graph_error", "missing_scope", "not_found", "
 _ID_RE = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*")
 
 
-# Every skill, classified by whether it reaches another person. This is exhaustive on
+# Every skill mapped to its consent metadata, (mutates, notifies_others). Exhaustive on
 # purpose: a new skill fails the suite until someone records the decision here, so the
-# most safety-critical field in the contract cannot be set by default or by accident.
-# (An internal review gate, not a contract limit — v1 still permits adding skills.)
-_NOTIFIES_OTHERS = {
-    "auth.login": False,
-    "auth.logout": False,
-    "auth.status": False,
-    "calendar.accept": True,
-    "calendar.cancel": True,
-    "calendar.create": True,
-    "calendar.freebusy": False,
-    "calendar.today": False,
-    "calendar.view": False,
-    "chat.attachments": False,
-    "chat.attachments.download": False,
-    "chat.delete": True,
-    "chat.edit": True,
-    "chat.find": False,
-    "chat.last": False,
-    "chat.send": True,
-    "doctor": False,
-    "mail.attachments": False,
-    "mail.attachments.download": False,
-    "mail.delete-draft": False,
-    "mail.draft": False,
-    "mail.folders": False,
-    "mail.inbox": False,
-    "mail.list": False,
-    "mail.send-draft": True,
-    "mail.update-draft": False,
-    "meeting.get": False,
-    "meeting.transcription": False,
-    "skills.describe": False,
-    "skills.list": False,
+# fields agents use to decide whether an action is safe cannot be set by default or by
+# accident. (A review gate, not a contract limit — v1 still permits adding skills.)
+_CONSENT = {
+    "auth.login": (True, False),
+    "auth.logout": (True, False),
+    "auth.status": (False, False),
+    "calendar.accept": (True, True),
+    "calendar.cancel": (True, True),
+    "calendar.create": (True, True),
+    "calendar.freebusy": (False, False),
+    "calendar.today": (False, False),
+    "calendar.view": (False, False),
+    "chat.attachments": (False, False),
+    "chat.attachments.download": (False, False),
+    "chat.delete": (True, True),
+    "chat.edit": (True, True),
+    "chat.find": (False, False),
+    "chat.last": (False, False),
+    "chat.send": (True, True),
+    "doctor": (False, False),
+    "mail.attachments": (False, False),
+    "mail.attachments.download": (False, False),
+    "mail.delete-draft": (True, False),
+    "mail.draft": (True, False),
+    "mail.folders": (False, False),
+    "mail.inbox": (False, False),
+    "mail.list": (False, False),
+    "mail.send-draft": (True, True),
+    "mail.update-draft": (True, False),
+    "meeting.get": (False, False),
+    "meeting.transcription": (True, False),
+    "skills.describe": (False, False),
+    "skills.list": (False, False),
 }
 
 

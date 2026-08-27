@@ -255,17 +255,39 @@ Two caveats worth wiring in up front:
 
 ### Compatibility
 
-Within schema version 1: fields may be **added**, and skills may be added or have
-their `summary` reworded. Existing field names, their types, `id` values, and
-exit-code meanings will not change. A breaking change bumps `version`.
+Within schema version 1, these hold for a skill that already exists:
 
-Parse defensively — ignore unknown fields rather than failing on them.
+| Value | Promise |
+|-------|---------|
+| `id` | Never renamed or removed |
+| `cli` | Always `blumkin` followed by the `id` split on dots — so the invocation is derivable, and a renamed subcommand is a breaking change |
+| `mutates`, `notifies_others` | Never change. These are consent metadata; a cached `false` must stay true |
+| `args` — names and types | Existing ones never change. New **optional** arguments may appear |
+| `args` — `values` on an enum | Existing values are never removed or renamed. New ones may be added |
+| exit codes and `error` values | Meanings never change |
+| `summary` | **May be reworded** — never match on it |
+| `scopes` | **May change** when Graph requirements do — re-read rather than caching |
 
-The shape is pinned by `tests/test_skills_schema.py`, covering the success
-envelope, the error envelope and the stream it goes to, and the exit codes — so
-a drift is a test failure rather than a surprise in someone's agent session. The
-tests assert the documented fields are **present**, not that no others are, which
-is what "fields may be added" has to mean if it is to be true.
+Whole skills may be added. Fields may be added to any object. A change that
+breaks the promises above bumps `version`.
+
+Two consequences worth designing for:
+
+- **Ignore unknown fields** rather than failing on them, so an addition does not
+  break you.
+- **Match arguments by name, not position.** `args` is ordered for reading, and
+  an added optional argument can shift positions.
+
+Every promise in that table is pinned by `tests/test_skills_schema.py` — the two
+envelopes and the stream each goes to, the exit codes and error values, the
+invocation rule, released ids, consent metadata, and enum values — so a drift is
+a test failure rather than a surprise in someone's agent session. The tests
+assert the documented fields are **present**, not that no others are, which is
+what "fields may be added" has to mean if it is to be true.
+
+Argument names and types are pinned in full for the skills quoted in this guide,
+and checked for shape everywhere else, which is why `args` promises stability per
+argument rather than a frozen list.
 
 ---
 
