@@ -40,6 +40,20 @@ def resolve_attachment_dest(out_dir: Path, filename: str) -> Path:
     return dest
 
 
+def resolve_single_download_dest(out: str, filename: str) -> Path:
+    """Destination for a one-attachment download, where ``--out`` may name a file or a directory."""
+    out_path = Path(out)
+    if not out_is_directory_intent(out, out_path):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        return out_path
+    if not out_path.exists():
+        out_path.mkdir(parents=True, exist_ok=True)
+    if not out_path.is_dir():
+        raise ValueError("--out must be a directory")
+    unique = unique_filename(sanitize_attachment_filename(filename), existing_entry_names(out_path))
+    return resolve_attachment_dest(out_path, unique)
+
+
 def sanitize_attachment_filename(name: str) -> str:
     cleaned = re.sub(r"[^\w.\- ()]", "_", name.strip()) or "attachment"
     cleaned = cleaned.replace("/", "_").replace("\\", "_")

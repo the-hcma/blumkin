@@ -165,6 +165,30 @@ def test_chat_attachments_download_missing_files_scope(monkeypatch, tmp_path) ->
     assert _CONTENT_URL in str(excinfo.value)
 
 
+def test_chat_attachments_download_directory_intent_over_file_is_usage_error(
+    monkeypatch, tmp_path
+) -> None:
+    client = MagicMock()
+    client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value.get = (
+        AsyncMock(return_value=_message_stub([_reference_attachment()]))
+    )
+    _configure(monkeypatch, client, scopes=["Chat.Read", "Files.Read"])
+    _stub_download(monkeypatch)
+    existing_file = tmp_path / "report.docx"
+    existing_file.write_bytes(b"existing")
+    # Trailing slash asks for a directory, but the path is a regular file.
+    with pytest.raises(ValueError, match="--out must be a directory"):
+        asyncio.run(
+            chat_attachments_download(
+                attachment_id="att-1",
+                chat_id="chat-1",
+                message_id="msg-1",
+                out=f"{existing_file}/",
+            )
+        )
+    assert existing_file.read_bytes() == b"existing"
+
+
 def test_chat_attachments_download_rejects_both_selectors(tmp_path) -> None:
     with pytest.raises(ValueError, match="exactly one of --attachment-id or --all"):
         asyncio.run(

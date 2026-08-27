@@ -28,9 +28,9 @@ from msgraph.generated.users.item.messages.messages_request_builder import (
 
 from blumkin.attachments import (
     existing_entry_names,
-    out_is_directory_intent,
     prepare_download_directory,
     resolve_attachment_dest,
+    resolve_single_download_dest,
     sanitize_attachment_filename,
     unique_filename,
 )
@@ -179,7 +179,6 @@ async def mail_attachments_download(
         out_path = prepare_download_directory(out)
         targets = [a for a in attachments if not a.get("skipped")]
     else:
-        out_path = Path(out)
         aid = attachment_id.strip() if attachment_id else ""
         match = next((a for a in attachments if a.get("id") == aid), None)
         if match is None:
@@ -189,16 +188,7 @@ async def mail_attachments_download(
                 match.get("skip_reason") or "unsupported attachment type"
             )
         targets = [match]
-        filename = sanitize_attachment_filename(match.get("name") or aid)
-        if out_is_directory_intent(out, out_path):
-            if not out_path.exists():
-                out_path.mkdir(parents=True, exist_ok=True)
-            if not out_path.is_dir():
-                raise ValueError("--out must be a directory")
-            unique = unique_filename(filename, existing_entry_names(out_path))
-            out_path = resolve_attachment_dest(out_path, unique)
-        else:
-            out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path = resolve_single_download_dest(out, match.get("name") or aid)
     saved: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     used_names = existing_entry_names(out_path) if download_all else set()

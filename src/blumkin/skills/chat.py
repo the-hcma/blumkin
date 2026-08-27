@@ -7,7 +7,6 @@ import base64
 import html as html_lib
 import re
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -24,9 +23,9 @@ from msgraph.generated.users.item.chats.item.messages.messages_request_builder i
 
 from blumkin.attachments import (
     existing_entry_names,
-    out_is_directory_intent,
     prepare_download_directory,
     resolve_attachment_dest,
+    resolve_single_download_dest,
     sanitize_attachment_filename,
     unique_filename,
 )
@@ -99,16 +98,7 @@ async def chat_attachments_download(
         if not match["downloadable"]:
             raise ChatAttachmentSkippedError(match["skip_reason"] or "attachment is not a file")
         targets = [match]
-        out_path = Path(out)
-        if out_is_directory_intent(out, out_path):
-            out_path.mkdir(parents=True, exist_ok=True)
-            unique = unique_filename(
-                sanitize_attachment_filename(match["name"] or str(match["id"])),
-                existing_entry_names(out_path),
-            )
-            out_path = resolve_attachment_dest(out_path, unique)
-        else:
-            out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path = resolve_single_download_dest(out, match["name"] or str(match["id"]))
     client = create_graph_client(cfg)
     saved: list[dict[str, Any]] = []
     skipped = [
