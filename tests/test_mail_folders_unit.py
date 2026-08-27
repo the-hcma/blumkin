@@ -116,7 +116,7 @@ def test_mail_inbox_keeps_its_payload_shape(monkeypatch) -> None:
 
     payload = asyncio.run(mail_inbox(top=5))
 
-    assert set(payload) == {"items", "top"}
+    assert set(payload) == {"filters", "items", "orderby", "top"}
     assert payload["top"] == 5
     client.me.mail_folders.by_mail_folder_id.assert_not_called()
 

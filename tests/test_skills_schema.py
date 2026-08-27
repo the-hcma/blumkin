@@ -260,7 +260,14 @@ _ARG_SIGNATURES = {
     "mail.list": [
         ("--folder", False, "string"),
         ("--orderby", False, "enum"),
+        ("--from", False, "string"),
+        ("--subject", False, "string"),
+        ("--search", False, "string"),
+        ("--since", False, "datetime"),
+        ("--until", False, "datetime"),
+        ("--unread", False, "flag"),
         ("--top", False, "int"),
+        ("--tz", False, "iana_tz"),
     ],
     "skills.describe": [("skill-id", True, "string")],
 }

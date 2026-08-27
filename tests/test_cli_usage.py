@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 from kiota_abstractions.api_error import APIError
@@ -574,8 +576,82 @@ def test_mail_list_wires_options_and_emits_json(monkeypatch) -> None:
         ["mail", "list", "--folder", "sent", "--orderby", "sent", "--top", "5", "--json"],
     )
     assert result.exit_code == EXIT_SUCCESS
-    assert seen == {"folder": "sent", "orderby": "sent", "top": 5}
+    assert seen == {
+        "folder": "sent",
+        "orderby": "sent",
+        "search": None,
+        "sender": None,
+        "since": None,
+        "subject": None,
+        "top": 5,
+        "unread": False,
+        "until": None,
+    }
     assert '"sentitems"' in (result.output or "")
+
+
+def test_mail_list_wires_filters_and_parses_dates(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _list(**kwargs):
+        seen.update(kwargs)
+        return {"filters": {}, "folder": None, "items": [], "orderby": "received", "top": 10}
+
+    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "list",
+            "--from",
+            "Rebecca",
+            "--subject",
+            "budget",
+            "--since",
+            "2026-08-01",
+            "--until",
+            "2026-08-08",
+            "--unread",
+            "--tz",
+            "UTC",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["sender"] == "Rebecca"
+    assert seen["subject"] == "budget"
+    assert seen["unread"] is True
+    assert seen["since"] == datetime(2026, 8, 1, tzinfo=ZoneInfo("UTC"))
+    assert seen["until"] == datetime(2026, 8, 8, tzinfo=ZoneInfo("UTC"))
+
+
+def test_mail_list_search_conflict_exits_usage(monkeypatch) -> None:
+    async def _list(**_kwargs):
+        raise ValueError("--search cannot be combined with --from")
+
+    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["mail", "list", "--search", "budget", "--from", "Rebecca", "--json"]
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
+def test_mail_inbox_wires_filters(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _inbox(**kwargs):
+        seen.update(kwargs)
+        return {"filters": {}, "items": [], "orderby": None, "top": 10}
+
+    monkeypatch.setattr("blumkin.cli.mail_inbox", _inbox)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "inbox", "--search", "budget", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["search"] == "budget"
+    assert seen["sender"] is None
 
 
 def test_mail_delete_draft_without_yes_succeeds(monkeypatch) -> None:

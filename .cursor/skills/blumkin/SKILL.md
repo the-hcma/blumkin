@@ -26,6 +26,20 @@ covers the job.
      folder's display name; Sent Items orders by `sentDateTime` and Drafts/Outbox by
      `createdDateTime`, since `receivedDateTime` is null there — `--orderby
      created|received|sent` overrides)
+     Filters on both `mail inbox` and `mail list`: `--from` (sender name or address
+     substring), `--subject`, `--unread`, `--since` / `--until` (half-open
+     `[since, until)`, in `--tz` or the config default, bounding whichever date field
+     the listing sorts by). Prefer these over fetching a large `--top` and filtering
+     client-side.
+     `--from` / `--subject` are matched **locally** over a newest-first scan, because
+     Graph rejects a substring filter combined with a sort. The scan stops at 500
+     messages; when it does, the payload carries `"complete": false` with `"scanned"`,
+     and the human output says so. Treat an empty result as "not in the recent N",
+     not "does not exist".
+     `--search '<term>'` is Graph's `$search`, runs server-side across the whole
+     mailbox, and **cannot** be combined with those filters or `--orderby` — Graph
+     rejects both combinations, so matches come back ranked by relevance with
+     `"orderby": null`.
      `blumkin mail get --id '<message-id>' --json` (one message in full: participants,
      timestamps, attachments, and body — use this instead of listing and filtering
      client-side; `--body-type html` keeps the markup, default `text`)
