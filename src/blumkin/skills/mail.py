@@ -786,14 +786,6 @@ def _default_orderby(well_known: str | None) -> str:
     return _FOLDER_DEFAULT_ORDERBY.get(well_known or "", "received")
 
 
-def _format_participant(person: dict[str, Any]) -> str:
-    name = sanitize_terminal(str(person.get("name") or ""))
-    email = sanitize_terminal(str(person.get("email") or ""))
-    if name and email:
-        return f"{name} <{email}>"
-    return name or email
-
-
 def _folder_match_key(label: str) -> str:
     return re.sub(r"[\s_-]+", "", label.casefold())
 
@@ -818,6 +810,14 @@ def _folder_not_found_message(folder: str, *, truncated: bool = False) -> str:
             "so this name may sit beyond it"
         )
     return message
+
+
+def _format_participant(person: dict[str, Any]) -> str:
+    name = sanitize_terminal(str(person.get("name") or ""))
+    email = sanitize_terminal(str(person.get("email") or ""))
+    if name and email:
+        return f"{name} <{email}>"
+    return name or email
 
 
 async def _get_messages(client: Any, folder: str | None, *, top: int, sort: str) -> Any:
@@ -936,13 +936,6 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
     }
 
 
-def _parse_body_type(raw: str) -> MailBodyType:
-    label = raw.strip().lower()
-    if label not in {"html", "text"}:
-        raise ValueError("--body-type must be 'text' or 'html'")
-    return label  # type: ignore[return-value]
-
-
 def _participants(recipients: Any) -> list[dict[str, Any]]:
     people: list[dict[str, Any]] = []
     for recipient in recipients or []:
@@ -954,6 +947,13 @@ def _participants(recipients: Any) -> list[dict[str, Any]]:
         if address or name:
             people.append({"email": address, "name": name})
     return people
+
+
+def _parse_body_type(raw: str) -> MailBodyType:
+    label = raw.strip().lower()
+    if label not in {"html", "text"}:
+        raise ValueError("--body-type must be 'text' or 'html'")
+    return label  # type: ignore[return-value]
 
 
 def _primary_to_address(msg: Any) -> str | None:

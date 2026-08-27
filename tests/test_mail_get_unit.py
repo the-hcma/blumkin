@@ -19,6 +19,40 @@ from blumkin.skills.mail import (
 )
 
 
+def test_format_get_human_leads_with_the_subject_then_the_body() -> None:
+    lines = format_get_human(
+        {
+            "message": {
+                "attachments": [{"id": "att-1", "name": "report.pdf", "size": 1024}],
+                "body": "first line\nsecond line",
+                "cc": [],
+                "from_email": "rebecca@example.com",
+                "from_name": "Rebecca Doe",
+                "is_read": False,
+                "received": "2026-08-27T09:00Z",
+                "subject": "Quarterly sync",
+                "to": [{"email": "me@example.com", "name": "Me"}],
+            }
+        }
+    )
+
+    assert lines[0] == "Quarterly sync"
+    assert "  from: Rebecca Doe <rebecca@example.com>" in lines
+    assert "  to: Me <me@example.com>" in lines
+    assert "  flags: unread" in lines
+    assert any("report.pdf" in line for line in lines)
+    assert lines[-2:] == ["first line", "second line"]
+
+
+def test_format_get_human_survives_a_bare_message() -> None:
+    lines = format_get_human({"message": {}})
+
+    assert lines[0] == "(no subject)"
+    assert "  from: (unknown sender)" in lines
+    assert "  date: (no date)" in lines
+    assert lines[-1] == "(no body)"
+
+
 def test_mail_get_asks_graph_to_convert_the_body(monkeypatch) -> None:
     """Outlook's own text rendering beats stripping tags out of HTML locally."""
     client = _client(monkeypatch)
@@ -58,16 +92,36 @@ def test_mail_get_labels_a_text_body_as_text_even_when_html_was_asked_for(monkey
     assert payload["message"]["body_type"] == "text"
 
 
-def test_mail_get_returns_html_untouched_when_asked(monkeypatch) -> None:
+def test_mail_get_lets_query_errors_stay_graph_errors(monkeypatch) -> None:
     client = _client(monkeypatch)
     item = client.me.messages.by_message_id.return_value
-    item.get = AsyncMock(return_value=_message(body="<p>Hi</p>", body_type=BodyType.Html))
+    item.get = AsyncMock(side_effect=_odata_error(400, "invalidRequest"))
 
-    payload = asyncio.run(mail_get(message_id="msg-1", body_type="html"))
+    with pytest.raises(ODataError):
+        asyncio.run(mail_get(message_id="msg-1"))
 
-    assert payload["message"]["body"] == "<p>Hi</p>"
-    assert payload["message"]["body_type"] == "html"
-    assert _headers(item.get).get("prefer") == {'outlook.body-content-type="html"'}
+
+def test_mail_get_rejects_an_empty_id() -> None:
+    with pytest.raises(ValueError, match="--id"):
+        asyncio.run(mail_get(message_id="   "))
+
+
+def test_mail_get_reports_a_malformed_id_as_not_found(monkeypatch) -> None:
+    """Graph answers a bad id with 400, which would otherwise surface as a graph error."""
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.get = AsyncMock(side_effect=_odata_error(400, "ErrorInvalidIdMalformed"))
+
+    with pytest.raises(MailMessageNotFoundError, match="not-a-real-id"):
+        asyncio.run(mail_get(message_id="not-a-real-id"))
+
+
+def test_mail_get_reports_a_missing_message_as_not_found(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=None)
+
+    with pytest.raises(MailMessageNotFoundError, match="msg-gone"):
+        asyncio.run(mail_get(message_id="msg-gone"))
 
 
 def test_mail_get_reports_participants_and_timestamps(monkeypatch) -> None:
@@ -85,6 +139,18 @@ def test_mail_get_reports_participants_and_timestamps(monkeypatch) -> None:
     assert message["conversation_id"] == "conv-1"
     assert message["is_read"] is True
     assert message["is_draft"] is False
+
+
+def test_mail_get_returns_html_untouched_when_asked(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.get = AsyncMock(return_value=_message(body="<p>Hi</p>", body_type=BodyType.Html))
+
+    payload = asyncio.run(mail_get(message_id="msg-1", body_type="html"))
+
+    assert payload["message"]["body"] == "<p>Hi</p>"
+    assert payload["message"]["body_type"] == "html"
+    assert _headers(item.get).get("prefer") == {'outlook.body-content-type="html"'}
 
 
 def test_mail_get_skips_the_attachment_call_without_attachments(monkeypatch) -> None:
@@ -110,72 +176,6 @@ def test_mail_get_summarizes_attachments(monkeypatch) -> None:
 
     assert [item["name"] for item in attachments] == ["report.pdf"]
     assert attachments[0]["size"] == 1024
-
-
-def test_mail_get_rejects_an_empty_id() -> None:
-    with pytest.raises(ValueError, match="--id"):
-        asyncio.run(mail_get(message_id="   "))
-
-
-def test_mail_get_reports_a_malformed_id_as_not_found(monkeypatch) -> None:
-    """Graph answers a bad id with 400, which would otherwise surface as a graph error."""
-    client = _client(monkeypatch)
-    item = client.me.messages.by_message_id.return_value
-    item.get = AsyncMock(side_effect=_odata_error(400, "ErrorInvalidIdMalformed"))
-
-    with pytest.raises(MailMessageNotFoundError, match="not-a-real-id"):
-        asyncio.run(mail_get(message_id="not-a-real-id"))
-
-
-def test_mail_get_lets_query_errors_stay_graph_errors(monkeypatch) -> None:
-    client = _client(monkeypatch)
-    item = client.me.messages.by_message_id.return_value
-    item.get = AsyncMock(side_effect=_odata_error(400, "invalidRequest"))
-
-    with pytest.raises(ODataError):
-        asyncio.run(mail_get(message_id="msg-1"))
-
-
-def test_mail_get_reports_a_missing_message_as_not_found(monkeypatch) -> None:
-    client = _client(monkeypatch)
-    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=None)
-
-    with pytest.raises(MailMessageNotFoundError, match="msg-gone"):
-        asyncio.run(mail_get(message_id="msg-gone"))
-
-
-def test_format_get_human_leads_with_the_subject_then_the_body() -> None:
-    lines = format_get_human(
-        {
-            "message": {
-                "attachments": [{"id": "att-1", "name": "report.pdf", "size": 1024}],
-                "body": "first line\nsecond line",
-                "cc": [],
-                "from_email": "rebecca@example.com",
-                "from_name": "Rebecca Doe",
-                "is_read": False,
-                "received": "2026-08-27T09:00Z",
-                "subject": "Quarterly sync",
-                "to": [{"email": "me@example.com", "name": "Me"}],
-            }
-        }
-    )
-
-    assert lines[0] == "Quarterly sync"
-    assert "  from: Rebecca Doe <rebecca@example.com>" in lines
-    assert "  to: Me <me@example.com>" in lines
-    assert "  flags: unread" in lines
-    assert any("report.pdf" in line for line in lines)
-    assert lines[-2:] == ["first line", "second line"]
-
-
-def test_format_get_human_survives_a_bare_message() -> None:
-    lines = format_get_human({"message": {}})
-
-    assert lines[0] == "(no subject)"
-    assert "  from: (unknown sender)" in lines
-    assert "  date: (no date)" in lines
-    assert lines[-1] == "(no body)"
 
 
 def _attachment() -> SimpleNamespace:
