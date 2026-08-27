@@ -19,6 +19,9 @@ from msgraph.generated.models.item_body import ItemBody
 from msgraph.generated.models.message import Message
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.recipient import Recipient
+from msgraph.generated.users.item.mail_folders.item.child_folders.child_folders_request_builder import (  # noqa: E501
+    ChildFoldersRequestBuilder,
+)
 from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import (
     MailFoldersRequestBuilder,
 )
@@ -602,7 +605,14 @@ async def _collect_mail_folders(
     if depth > _MAX_FOLDER_DEPTH or len(folders) >= _MAX_FOLDERS:
         return True
     truncated = False
-    query = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters(
+    # Child folders are fetched through their own builder, whose query parameters are a
+    # distinct (identically shaped) class; reusing the parent's would be a type mismatch.
+    query_type = (
+        MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters
+        if depth == 0
+        else ChildFoldersRequestBuilder.ChildFoldersRequestBuilderGetQueryParameters
+    )
+    query = query_type(
         top=_FOLDER_PAGE_SIZE,
         select=["childFolderCount", "displayName", "id", "totalItemCount", "unreadItemCount"],
     )

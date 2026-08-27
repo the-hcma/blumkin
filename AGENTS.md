@@ -75,6 +75,9 @@ Always implement in `.worktrees/<stack-name>-wt`.
   `~/.config/blumkin/` configured, also run
   `BLUMKIN_LIVE=1 uv run pytest -m live` (includes silent refresh after
   forced access-token expiry). See `.cursor/rules/local-live-graph-tests.mdc`.
+- **Never verify with a skill that notifies others** — no invites, sends, or
+  chats to test something. Verify with reads, or with a draft you delete. See
+  `.cursor/rules/no-third-party-side-effects.mdc`.
 
 ---
 

@@ -1,0 +1,61 @@
+---
+description: Never let local verification reach other people (no invites, mail, or chats)
+alwaysApply: true
+---
+
+# Local verification must not reach other people
+
+blumkin acts as the operator against their real mailbox, calendar, and Teams. A
+verification run is not a sandbox: anything it sends is indistinguishable from the
+operator doing it by hand, lands in someone else's inbox or calendar, and cannot be
+recalled.
+
+**Never invoke a skill that notifies others in order to test, verify, demo, or
+reproduce something.** Do it only when the operator asks for that specific action
+in the current conversation, on the real recipients they named.
+
+## The trip-wire
+
+`blumkin skills list --json` marks every skill with `notifies_others`. Treat
+`notifies_others: true` as off-limits for verification. Today that means:
+
+- `calendar.create` — invites attendees
+- `calendar.accept` — sends a response to the organizer
+- `calendar.cancel` — sends cancellations to every attendee
+- `chat.send` — messages a person
+- `mail.send-draft` — sends mail
+
+Absence of the flag is not a blank cheque: `mail.draft`, `mail.update-draft`, and
+`mail.delete-draft` are safe because they stay in the operator's own mailbox, and
+that is the actual test — *does this reach anyone else?*
+
+## Verify with reads instead
+
+Reads cover most behavior, cost nothing, and reach no one:
+
+```bash
+blumkin calendar today --json
+blumkin calendar view --from YYYY-MM-DD --to YYYY-MM-DD --json
+blumkin mail list --folder sentitems --top 5 --json
+blumkin mail folders --json
+blumkin chat find --with "Name" --json
+blumkin chat last --with "Name" --n 3 --json
+```
+
+To exercise a write path, prefer one that is self-contained and reversible:
+create a draft, inspect it, delete it. Never promote that to a send.
+
+For anything genuinely unreachable without notifying someone, verify with mocked
+unit tests and say plainly that the live path was not exercised. An honest gap
+beats a real invitation.
+
+## If a notifying action is explicitly requested
+
+Confirm the recipients and the exact payload before running it, pass `--yes`
+knowingly rather than reflexively, and never widen the recipient list to make a
+test more convincing.
+
+## Free/busy and other people's data
+
+`calendar.freebusy` reads other people's availability. It notifies no one, so it
+is fine — but do not spray it across colleagues to generate test fixtures.
