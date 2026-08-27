@@ -59,6 +59,11 @@ _ARG_TYPES = {
     "path",
     "string",
 }
+_ENUM_VALUES = {
+    ("mail.draft", "--body-type"): ["text", "html"],
+    ("mail.list", "--orderby"): ["created", "received", "sent"],
+    ("mail.update-draft", "--body-type"): ["text", "html"],
+}
 _ENVELOPE_KEYS = {"cli", "skills", "version"}
 _ERROR_KEYS = {"error", "message", "ok"}
 _ERROR_VALUES = {"auth_required", "graph_error", "missing_scope", "not_found", "usage_error"}
@@ -198,12 +203,17 @@ def test_documented_sample_matches_real_output() -> None:
 
 
 def test_enum_args_publish_their_values() -> None:
-    for skill in skills_catalog()["skills"]:
-        for arg in skill["args"]:
-            if arg["type"] == "enum":
-                values = arg.get("values")
-                assert values, f"{skill['id']} {arg['name']}: enum without values"
-                assert all(isinstance(v, str) for v in values)
+    """Agents pass these strings verbatim, so a removed value breaks real commands."""
+    published = {
+        (skill["id"], arg["name"]): arg.get("values")
+        for skill in skills_catalog()["skills"]
+        for arg in skill["args"]
+        if arg["type"] == "enum"
+    }
+    for key, values in published.items():
+        assert values, f"{key}: enum without values"
+        assert all(isinstance(v, str) for v in values)
+    assert published == _ENUM_VALUES
 
 
 def test_exit_codes_are_stable() -> None:
