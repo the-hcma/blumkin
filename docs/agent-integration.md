@@ -167,25 +167,46 @@ shape, without the envelope.
 
 ### Exit codes
 
-| Code | Name | Meaning |
-|------|------|---------|
-| 0 | success | |
-| 1 | other | Unexpected failure |
-| 2 | usage | Bad arguments — fix the command, do not retry as-is |
-| 3 | auth_required | Run `blumkin auth login` on this machine |
-| 4 | missing_scope | Tenant grant or config opt-in missing — do not retry |
-| 5 | not_found | The named thing does not exist |
+Branch on the **exit code first** — it is the only signal present on every
+failure path.
+
+| Code | `error` value | Meaning |
+|------|---------------|---------|
+| 0 | — | Success |
+| 1 | `graph_error` | Unexpected failure, usually from Graph |
+| 2 | `usage_error`, or none | Bad arguments — fix the command, do not retry as-is |
+| 3 | `auth_required` | Run `blumkin auth login` on this machine |
+| 4 | `missing_scope` | Tenant grant or config opt-in missing — do not retry |
+| 5 | `not_found` | The named thing does not exist |
 
 ### Error envelope
 
-Failures with `--json` print one object to stdout:
+Failures with `--json` print one object to **stderr**, leaving stdout empty:
 
-```json
-{"ok": false, "error": "not_found", "message": "mail folder not found: 'nope' (…)"}
+```console
+$ blumkin skills describe nope --json
+{"error": "not_found", "message": "Unknown skill: nope", "ok": false}
 ```
 
-`error` matches the exit-code name above and is the stable field to branch on;
-`message` is for humans and will change.
+Capture the two streams separately. An agent that parses only stdout sees an
+empty string on every failure and learns nothing about what went wrong.
+
+| Field | Meaning |
+|-------|---------|
+| `ok` | Always `false` in this envelope |
+| `error` | Stable value to branch on — see the exit-code table |
+| `message` | For humans; wording will change, so do not match on it |
+| `hint` | Optional next step, present only when the CLI has one to offer |
+
+Two caveats worth wiring in up front:
+
+- **`error` values are not the exit-code names.** They are `graph_error` and
+  `usage_error`, not `other` and `usage`. Match the left column of the table
+  above rather than the prose name of the code.
+- **Argument errors may arrive with no envelope.** Bad or missing options are
+  rejected by the argument parser before blumkin runs, so exit 2 can carry plain
+  usage text on stderr instead of JSON. Treat a missing envelope on exit 2 as a
+  malformed command, not as a transient failure to retry.
 
 ### Compatibility
 
@@ -195,8 +216,11 @@ exit-code meanings will not change. A breaking change bumps `version`.
 
 Parse defensively — ignore unknown fields rather than failing on them.
 
-The shape is pinned by `tests/test_skills_schema.py`, so a drift is a test
-failure rather than a surprise in someone's agent session.
+The shape is pinned by `tests/test_skills_schema.py`, covering the success
+envelope, the error envelope and the stream it goes to, and the exit codes — so
+a drift is a test failure rather than a surprise in someone's agent session. The
+tests assert the documented fields are **present**, not that no others are, which
+is what "fields may be added" has to mean if it is to be true.
 
 ---
 

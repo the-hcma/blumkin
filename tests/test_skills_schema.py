@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from click.testing import CliRunner
 
+from blumkin import cli
 from blumkin.cli import main
 from blumkin.exit_codes import (
     EXIT_AUTH,
@@ -37,6 +39,8 @@ _ARG_TYPES = {
     "string",
 }
 _ENVELOPE_KEYS = {"cli", "skills", "version"}
+_ERROR_KEYS = {"error", "message", "ok"}
+_ERROR_VALUES = {"auth_required", "graph_error", "missing_scope", "not_found", "usage_error"}
 _ID_RE = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*")
 _SKILL_KEYS = {"args", "cli", "id", "mutates", "notifies_others", "scopes", "summary"}
 
@@ -59,8 +63,9 @@ def test_cli_emits_the_documented_envelope() -> None:
     """The docs quote CLI output, not the in-process catalog."""
     result = CliRunner().invoke(main, ["skills", "list", "--json"])
     assert result.exit_code == EXIT_SUCCESS
-    payload = json.loads(result.output)
-    assert set(payload) == _ENVELOPE_KEYS
+    payload = json.loads(result.stdout)
+    # Superset, not equality: the contract permits adding fields within version 1.
+    assert _ENVELOPE_KEYS <= set(payload)
     assert payload["cli"] == "blumkin"
     assert payload["version"] == 1
     assert payload["skills"]
@@ -69,7 +74,34 @@ def test_cli_emits_the_documented_envelope() -> None:
 def test_describe_returns_a_bare_skill_object() -> None:
     result = CliRunner().invoke(main, ["skills", "describe", "calendar.today", "--json"])
     assert result.exit_code == EXIT_SUCCESS
-    assert set(json.loads(result.output)) == _SKILL_KEYS
+    assert _SKILL_KEYS <= set(json.loads(result.stdout))
+
+
+def test_error_envelope_goes_to_stderr_with_the_documented_fields() -> None:
+    """Agents that parse only stdout see nothing on failure, so pin the stream."""
+    result = CliRunner().invoke(main, ["skills", "describe", "nope", "--json"])
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert result.stdout == ""
+    payload = json.loads(result.stderr)
+    assert _ERROR_KEYS <= set(payload)
+    assert set(payload) <= _ERROR_KEYS | {"hint"}
+    assert payload["ok"] is False
+    assert payload["error"] == "not_found"
+    assert isinstance(payload["message"], str) and payload["message"]
+
+
+def test_argument_errors_exit_usage_without_an_envelope() -> None:
+    """Documented caveat: the parser rejects these before any envelope is emitted."""
+    result = CliRunner().invoke(main, ["mail", "list", "--top", "notanint", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    assert result.stderr.lstrip().startswith("Usage:")
+
+
+def test_error_values_are_the_documented_ones() -> None:
+    """Note these are not the exit-code names: exit 1 is graph_error, exit 2 usage_error."""
+    source = (Path(cli.__file__)).read_text(encoding="utf-8")
+    emitted = set(re.findall(r'emit_error\(\s*error="([a-z_]+)"', source))
+    assert emitted == _ERROR_VALUES
 
 
 def test_enum_args_publish_their_values() -> None:
