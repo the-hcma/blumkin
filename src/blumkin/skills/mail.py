@@ -439,14 +439,14 @@ async def mail_forward(
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     """Create a forward draft, letting Graph carry over the original and its attachments."""
+    mid = message_id.strip()
+    if not mid:
+        raise ValueError("--id is required")
     if not to.strip():
         raise ValueError("--to is required")
     comment = _resolve_comment(body=body, body_file=body_file, body_type=body_type)
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    mid = message_id.strip()
-    if not mid:
-        raise ValueError("--id is required")
     request = CreateForwardPostRequestBody(
         comment=comment,
         to_recipients=[Recipient(email_address=EmailAddress(address=to.strip()))],
@@ -656,12 +656,12 @@ async def mail_reply(
     recipient's client. Graph's createReply puts the draft in the original conversation
     and inherits the recipients and subject.
     """
-    comment = _resolve_comment(body=body, body_file=body_file, body_type=body_type)
-    cfg = config or load_config()
-    client = create_graph_client(cfg)
     mid = message_id.strip()
     if not mid:
         raise ValueError("--id is required")
+    comment = _resolve_comment(body=body, body_file=body_file, body_type=body_type)
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
     item = client.me.messages.by_message_id(mid)
     if reply_all:
         created = await _create_draft_from(
