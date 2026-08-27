@@ -35,7 +35,8 @@ covers the job.
      Graph rejects a substring filter combined with a sort. The scan stops at 500
      messages; when it does, the payload carries `"complete": false` with `"scanned"`,
      and the human output says so. Treat an empty result as "not in the recent N",
-     not "does not exist".
+     not "does not exist". On `--search` or a plain/filter-only listing,
+     `"scanned"` / `"complete"` stay null — those fields only describe the local scan.
      `--search '<term>'` is Graph's `$search`, runs server-side across the whole
      mailbox, and **cannot** be combined with those filters or `--orderby` — Graph
      rejects both combinations, so matches come back ranked by relevance with

@@ -144,7 +144,23 @@ def test_mail_list_does_not_scan_without_a_text_filter(monkeypatch) -> None:
 
     assert _query(client.me.messages.get).top == 5
     assert payload["filters"]["matched_locally"] is False
-    assert payload["filters"]["complete"] is True
+    assert payload["filters"]["complete"] is None
+    assert payload["filters"]["scanned"] is None
+
+
+def test_mail_list_search_does_not_claim_a_complete_scan(monkeypatch) -> None:
+    """`--search` returns one relevance page; that is not an exhaustive match set."""
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(
+        return_value=_page([_msg("Sam Lee", "budget"), _msg("Sam Lee", "budget again")])
+    )
+
+    payload = asyncio.run(mail_list(search="budget", top=2))
+
+    assert len(payload["items"]) == 2
+    assert payload["filters"]["matched_locally"] is False
+    assert payload["filters"]["complete"] is None
+    assert payload["filters"]["scanned"] is None
 
 
 def test_mail_list_bounds_dates_half_open(monkeypatch) -> None:
@@ -268,6 +284,30 @@ def test_mail_inbox_passes_filters_through(monkeypatch) -> None:
 
     assert _query(client.me.messages.get).filter == "isRead eq false"
     assert payload["filters"]["from"] == "Rebecca"
+
+
+def test_format_list_human_discloses_a_truncated_local_scan() -> None:
+    """Silence would read as 'no more mail from them', which is a different claim."""
+    lines = format_list_human(
+        {
+            "filters": {
+                "complete": False,
+                "from": "Rebecca",
+                "matched_locally": True,
+                "scanned": 500,
+            },
+            "folder": "inbox",
+            "items": [],
+            "orderby": "received",
+            "top": 10,
+        }
+    )
+
+    assert lines[1] == "  filters: from='Rebecca'"
+    assert lines[2] == (
+        "  (stopped after scanning 500 messages; "
+        "narrow with --since, or use --search to reach the whole mailbox)"
+    )
 
 
 def test_format_list_human_reports_relevance_order_for_a_search() -> None:

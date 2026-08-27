@@ -521,7 +521,9 @@ async def mail_list(
     target = well_known or label
     sort = requested_sort or _default_orderby(well_known)
 
-    async def _fetch(folder_target: str | None, sort_label: str) -> tuple[list[Any], int, bool]:
+    async def _fetch(
+        folder_target: str | None, sort_label: str
+    ) -> tuple[list[Any], int | None, bool | None]:
         # Graph rejects $search alongside $filter or $orderBy, so a search is a
         # relevance-ranked query on its own rather than one more clause.
         if term is not None:
@@ -529,7 +531,10 @@ async def mail_list(
                 client, folder_target, top=top, sort=None, criteria=None, search=term
             )
             found = [] if page is None else (page.value or [])
-            return list(found), len(found), True
+            # We asked for `top` and got one page. That is not a scan of the match set,
+            # so leave scanned/complete null — a consumer must not read
+            # `complete: true, scanned: 3` as "an exhaustive search found three".
+            return list(found), None, None
         criteria = _build_filter(
             field=_ORDERBY_FIELDS[sort_label],
             since=since,
@@ -1188,20 +1193,22 @@ async def _scan_messages(
     criteria: str | None,
     sender: str | None,
     subject: str | None,
-) -> tuple[list[Any], int, bool]:
+) -> tuple[list[Any], int | None, bool | None]:
     """Return up to ``top`` matches, how many messages were read, and whether that was all.
 
-    Without ``--from`` / ``--subject`` this is a single ordered page. With them it walks
-    the ordered results applying the substring match locally, because Graph will not sort
-    a query containing ``contains``. Newest-first order is what makes that tractable: the
-    wanted message is usually near the front, and the scan stops at ``_MAX_SCANNED``
+    Without ``--from`` / ``--subject`` this is a single ordered page, and ``scanned`` /
+    ``complete`` stay null: we did not walk the rest of the mailbox, so claiming
+    completeness would lie. With them it walks the ordered results applying the
+    substring match locally, because Graph will not sort a query containing
+    ``contains``. Newest-first order is what makes that tractable: the wanted
+    message is usually near the front, and the scan stops at ``_MAX_SCANNED``
     rather than reading an entire mailbox.
     """
     wants_text = bool(sender or subject)
     if not wants_text:
         page = await _get_messages(client, folder, top=top, sort=sort, criteria=criteria)
         found = [] if page is None else (page.value or [])
-        return list(found), len(found), True
+        return list(found), None, None
     matches: list[Any] = []
     scanned = 0
     page = await _get_messages(client, folder, top=_SCAN_PAGE_SIZE, sort=sort, criteria=criteria)
