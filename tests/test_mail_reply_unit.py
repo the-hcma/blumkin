@@ -84,6 +84,7 @@ def test_mail_forward_sends_the_comment_and_recipient(monkeypatch) -> None:
     assert request.comment == "FYI"
     assert request.to_recipients[0].email_address.address == "sam@example.com"
     assert payload["draft"]["kind"] == "forward"
+    assert payload["draft"]["body_type"] == "html"
     assert payload["draft"]["source_message_id"] == "msg-1"
 
 
@@ -122,8 +123,22 @@ def test_mail_reply_creates_a_draft_through_graph(monkeypatch) -> None:
     assert draft["conversation_id"] == "conv-1"
     assert draft["id"] == "draft-1"
     assert draft["kind"] == "reply"
+    assert draft["body_type"] == "html"
     assert draft["subject"] == "RE: Quarterly sync"
     assert draft["to"] == "rebecca@example.com"
+
+
+def test_mail_reply_reports_text_when_graph_returns_no_html_body(monkeypatch) -> None:
+    """createReply usually quotes as HTML; pin the fallback when Graph sends something else."""
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(content="plain", content_type=BodyType.Text)
+    item.create_reply.post = AsyncMock(return_value=draft)
+
+    payload = asyncio.run(mail_reply(message_id="msg-1", body="Thanks"))
+
+    assert payload["draft"]["body_type"] == "text"
 
 
 def test_mail_reply_fails_loudly_when_graph_returns_no_draft(monkeypatch) -> None:

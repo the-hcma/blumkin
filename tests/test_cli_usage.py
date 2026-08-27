@@ -808,6 +808,33 @@ def test_mail_forward_message_not_found_exits_not_found(monkeypatch) -> None:
     assert "not_found" in (result.output or "")
 
 
+def test_mail_forward_body_file_error_exits_usage(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_text("x", encoding="utf-8")
+
+    async def _boom(**_kwargs):
+        raise MailBodyFileError(f"cannot read --body-file {path}: boom")
+
+    monkeypatch.setattr("blumkin.cli.mail_forward", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "forward",
+            "--id",
+            "msg-1",
+            "--to",
+            "sam@example.com",
+            "--body-file",
+            str(path),
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
 def test_mail_delete_draft_without_yes_succeeds(monkeypatch) -> None:
     async def _delete(*, draft_id: str):
         return {"deleted": draft_id}
