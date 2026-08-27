@@ -20,66 +20,6 @@ from blumkin.skills.chat import (
     format_attachments_human,
 )
 
-_CONTENT_URL = "https://contoso.sharepoint.com/sites/team/Shared%20Documents/report.docx"
-
-
-def _card_attachment(*, attachment_id: str = "att-card") -> SimpleNamespace:
-    return SimpleNamespace(
-        content_type="application/vnd.microsoft.card.adaptive",
-        content_url=None,
-        id=attachment_id,
-        name=None,
-    )
-
-
-def _configure(monkeypatch, client, *, scopes: list[str] | None = None) -> None:
-    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.chat.load_config",
-        lambda: SimpleNamespace(client_id="x", default_tz="UTC"),
-    )
-    monkeypatch.setattr(
-        "blumkin.skills.chat.effective_scopes",
-        lambda _cfg: scopes if scopes is not None else ["Chat.Read"],
-    )
-
-
-def _message_stub(attachments: list[SimpleNamespace], *, message_id: str = "msg-1"):
-    return SimpleNamespace(
-        attachments=attachments,
-        body=SimpleNamespace(content="see attached", content_type=None),
-        created_date_time="2026-08-26T12:00:00Z",
-        from_=None,
-        id=message_id,
-        message_type="message",
-    )
-
-
-def _reference_attachment(
-    *,
-    attachment_id: str = "att-1",
-    content_url: str = _CONTENT_URL,
-    name: str | None = "report.docx",
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        content_type="reference",
-        content_url=content_url,
-        id=attachment_id,
-        name=name,
-    )
-
-
-def _stub_download(monkeypatch, content: bytes = b"chat-file-bytes") -> list[str]:
-    """Record the sharing URLs the shares-API fetch was asked for."""
-    requested: list[str] = []
-
-    async def _fake_fetch(_client, content_url: str) -> bytes:
-        requested.append(content_url)
-        return content
-
-    monkeypatch.setattr("blumkin.skills.chat._fetch_shared_item_bytes", _fake_fetch)
-    return requested
-
 
 def test_chat_attachments_download_all_writes_files(monkeypatch, tmp_path) -> None:
     message = _message_stub(
@@ -146,6 +86,32 @@ def test_chat_attachments_download_card_is_usage_error(monkeypatch, tmp_path) ->
         )
 
 
+def test_chat_attachments_download_graph_403_keeps_share_url(monkeypatch, tmp_path) -> None:
+    client = MagicMock()
+    client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value.get = (
+        AsyncMock(return_value=_message_stub([_reference_attachment()]))
+    )
+    _configure(monkeypatch, client, scopes=["Chat.Read", "Files.Read"])
+
+    class _Denied(Exception):
+        response_status_code = 403
+
+    async def _boom(_client, _url):
+        raise _Denied("access denied")
+
+    monkeypatch.setattr("blumkin.skills.chat._fetch_shared_item_bytes", _boom)
+    with pytest.raises(ChatAttachmentScopeError) as excinfo:
+        asyncio.run(
+            chat_attachments_download(
+                attachment_id="att-1",
+                chat_id="chat-1",
+                message_id="msg-1",
+                out=str(tmp_path / "out.docx"),
+            )
+        )
+    assert _CONTENT_URL in str(excinfo.value)
+
+
 def test_chat_attachments_download_missing_files_scope(monkeypatch, tmp_path) -> None:
     client = MagicMock()
     client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value.get = (
@@ -163,6 +129,28 @@ def test_chat_attachments_download_missing_files_scope(monkeypatch, tmp_path) ->
         )
     # The share URL must be in the error so the operator can fall back to a browser.
     assert _CONTENT_URL in str(excinfo.value)
+    assert "files_scopes" in str(excinfo.value)
+
+
+def test_chat_attachments_download_sanitizes_control_chars_in_share_url(
+    monkeypatch, tmp_path
+) -> None:
+    hostile = "https://contoso.sharepoint.com/x\x1b[2Kspoofed"
+    client = MagicMock()
+    client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value.get = (
+        AsyncMock(return_value=_message_stub([_reference_attachment(content_url=hostile)]))
+    )
+    _configure(monkeypatch, client, scopes=["Chat.Read"])
+    with pytest.raises(ChatAttachmentScopeError) as excinfo:
+        asyncio.run(
+            chat_attachments_download(
+                attachment_id="att-1",
+                chat_id="chat-1",
+                message_id="msg-1",
+                out=str(tmp_path / "out.docx"),
+            )
+        )
+    assert "\x1b" not in str(excinfo.value)
 
 
 def test_chat_attachments_download_directory_intent_over_file_is_usage_error(
@@ -187,6 +175,27 @@ def test_chat_attachments_download_directory_intent_over_file_is_usage_error(
             )
         )
     assert existing_file.read_bytes() == b"existing"
+
+
+def test_chat_attachments_download_refuses_existing_out_file(monkeypatch, tmp_path) -> None:
+    client = MagicMock()
+    client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value.get = (
+        AsyncMock(return_value=_message_stub([_reference_attachment()]))
+    )
+    _configure(monkeypatch, client, scopes=["Chat.Read", "Files.Read"])
+    _stub_download(monkeypatch)
+    existing = tmp_path / "out.docx"
+    existing.write_bytes(b"existing")
+    with pytest.raises(ValueError, match="refusing to overwrite"):
+        asyncio.run(
+            chat_attachments_download(
+                attachment_id="att-1",
+                chat_id="chat-1",
+                message_id="msg-1",
+                out=str(existing),
+            )
+        )
+    assert existing.read_bytes() == b"existing"
 
 
 def test_chat_attachments_download_rejects_both_selectors(tmp_path) -> None:
@@ -356,3 +365,64 @@ def test_sharing_token_matches_graph_encoding() -> None:
     assert "=" not in token
     padded = token[2:] + "=" * (-len(token[2:]) % 4)
     assert base64.urlsafe_b64decode(padded).decode() == _CONTENT_URL
+
+
+_CONTENT_URL = "https://contoso.sharepoint.com/sites/team/Shared%20Documents/report.docx"
+
+
+def _card_attachment(*, attachment_id: str = "att-card") -> SimpleNamespace:
+    return SimpleNamespace(
+        content_type="application/vnd.microsoft.card.adaptive",
+        content_url=None,
+        id=attachment_id,
+        name=None,
+    )
+
+
+def _configure(monkeypatch, client, *, scopes: list[str] | None = None) -> None:
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(client_id="x", default_tz="UTC"),
+    )
+    monkeypatch.setattr(
+        "blumkin.skills.chat.effective_scopes",
+        lambda _cfg: scopes if scopes is not None else ["Chat.Read"],
+    )
+
+
+def _message_stub(attachments: list[SimpleNamespace], *, message_id: str = "msg-1"):
+    return SimpleNamespace(
+        attachments=attachments,
+        body=SimpleNamespace(content="see attached", content_type=None),
+        created_date_time="2026-08-26T12:00:00Z",
+        from_=None,
+        id=message_id,
+        message_type="message",
+    )
+
+
+def _reference_attachment(
+    *,
+    attachment_id: str = "att-1",
+    content_url: str = _CONTENT_URL,
+    name: str | None = "report.docx",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        content_type="reference",
+        content_url=content_url,
+        id=attachment_id,
+        name=name,
+    )
+
+
+def _stub_download(monkeypatch, content: bytes = b"chat-file-bytes") -> list[str]:
+    """Record the sharing URLs the shares-API fetch was asked for."""
+    requested: list[str] = []
+
+    async def _fake_fetch(_client, content_url: str) -> bytes:
+        requested.append(content_url)
+        return content
+
+    monkeypatch.setattr("blumkin.skills.chat._fetch_shared_item_bytes", _fake_fetch)
+    return requested

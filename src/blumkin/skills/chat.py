@@ -38,14 +38,6 @@ from blumkin.output import sanitize_terminal
 # rather than the chat message itself — that needs a delegated Files.* scope.
 FILES_SCOPE_PREFIX = "Files."
 
-_CARD_CONTENT_TYPE_PREFIX = "application/vnd.microsoft.card."
-_LATEST_SCAN_PAGE_SIZE = 50
-_MEMBER_FETCH_CONCURRENCY = 8
-_MESSAGE_REFERENCE_TYPES = frozenset({"forwardedmessagereference", "messagereference"})
-_REFERENCE_CONTENT_TYPE = "reference"
-_SKIPPED = object()
-_TAG_RE = re.compile(r"<[^>]+>")
-
 
 class ChatAttachmentNotFoundError(Exception):
     """Attachment id missing on the chat message (not_found)."""
@@ -115,7 +107,14 @@ async def chat_attachments_download(
     for meta in targets:
         content_url = str(meta["content_url"])
         _require_files_scope(cfg, content_url)
-        content = await _fetch_shared_item_bytes(client, content_url)
+        try:
+            content = await _fetch_shared_item_bytes(client, content_url)
+        except Exception as exc:
+            # A 403 here means the share itself is denied (needs Files.ReadWrite, or an
+            # ACL block). Re-raise with the URL so the operator can open it in a browser.
+            if getattr(exc, "response_status_code", None) != 403:
+                raise
+            raise _files_access_denied(content_url, detail=str(exc)) from exc
         if download_all:
             filename = unique_filename(
                 sanitize_attachment_filename(meta["name"] or str(meta["id"])),
@@ -468,6 +467,15 @@ def format_send_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+_CARD_CONTENT_TYPE_PREFIX = "application/vnd.microsoft.card."
+_LATEST_SCAN_PAGE_SIZE = 50
+_MEMBER_FETCH_CONCURRENCY = 8
+_MESSAGE_REFERENCE_TYPES = frozenset({"forwardedmessagereference", "messagereference"})
+_REFERENCE_CONTENT_TYPE = "reference"
+_SKIPPED = object()
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
 def _attachment_source(content_url: str | None) -> str | None:
     if not content_url:
         return None
@@ -542,6 +550,14 @@ async def _fetch_shared_item_bytes(client: Any, content_url: str) -> bytes:
     if result is None:
         raise RuntimeError(f"Graph returned empty content for chat file: {content_url}")
     return bytes(result)
+
+
+def _files_access_denied(content_url: str, *, detail: str) -> ChatAttachmentScopeError:
+    return ChatAttachmentScopeError(
+        "Graph denied access to this Teams chat file (403). It may need "
+        "Files.ReadWrite or a share grant. Open it in a browser instead: "
+        f"{sanitize_terminal(content_url)} ({sanitize_terminal(detail)})"
+    )
 
 
 def _html_to_text(raw: str) -> str:
@@ -627,9 +643,11 @@ def _require_files_scope(config: BlumkinConfig, content_url: str) -> None:
     if any(scope.startswith(FILES_SCOPE_PREFIX) for scope in effective_scopes(config)):
         return
     raise ChatAttachmentScopeError(
-        "downloading Teams chat files needs a delegated Files.Read (or Files.ReadWrite) "
-        "scope, which this sign-in does not hold. Open the file in a browser instead: "
-        f"{content_url}"
+        "downloading Teams chat files needs a delegated Files.Read scope, which this "
+        "sign-in does not hold. Set files_scopes = true in config.toml (or "
+        "BLUMKIN_FILES_SCOPES=1) once the tenant grants it, then wipe the token cache "
+        "and re-login. Until then, open the file in a browser: "
+        f"{sanitize_terminal(content_url)}"
     )
 
 

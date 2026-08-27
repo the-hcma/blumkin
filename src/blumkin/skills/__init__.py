@@ -172,7 +172,7 @@ SKILLS: list[SkillSpec] = [
         cli=["blumkin", "chat", "attachments", "download"],
         summary=(
             "Download Teams chat files to disk (exactly one of --attachment-id or --all; "
-            "needs a delegated Files.* scope because chat files live in SharePoint/OneDrive)"
+            "requires files_scopes because chat files live in SharePoint/OneDrive)"
         ),
         mutates=False,
         notifies_others=False,

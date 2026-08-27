@@ -44,6 +44,8 @@ def resolve_single_download_dest(out: str, filename: str) -> Path:
     """Destination for a one-attachment download, where ``--out`` may name a file or a directory."""
     out_path = Path(out)
     if not out_is_directory_intent(out, out_path):
+        if out_path.exists():
+            raise ValueError(f"--out already exists, refusing to overwrite: {out}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         return out_path
     if not out_path.exists():

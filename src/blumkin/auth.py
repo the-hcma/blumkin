@@ -25,6 +25,13 @@ BASE_SCOPES = [
     "User.Read",
 ]
 
+# Teams chat files live in SharePoint/OneDrive, so `chat attachments download` needs a
+# Files scope. Off until the tenant grants it and the user re-consents (files_scopes /
+# BLUMKIN_FILES_SCOPES), because requesting an ungranted scope breaks silent refresh.
+FILES_SCOPES = [
+    "Files.Read",
+]
+
 WO1162425_SCOPES = [
     "Chat.ReadWrite",
     "OnlineMeetings.ReadWrite",
@@ -74,9 +81,12 @@ def create_credential(config: BlumkinConfig | None = None) -> InteractiveBrowser
 def effective_scopes(config: BlumkinConfig | None = None) -> list[str]:
     """Return MSAL scopes for the current config (Phase 4 add-ons optional)."""
     cfg = config or load_config()
+    scopes = list(BASE_SCOPES)
+    if cfg.files_scopes:
+        scopes.extend(FILES_SCOPES)
     if cfg.wo1162425_scopes:
-        return [*BASE_SCOPES, *WO1162425_SCOPES]
-    return list(BASE_SCOPES)
+        scopes.extend(WO1162425_SCOPES)
+    return scopes
 
 
 def logout(config: BlumkinConfig | None = None) -> None:
@@ -119,6 +129,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "client_id_configured": bool(cfg.client_id),
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),
+        "files_scopes": cfg.files_scopes,
         "wo1162425_scopes": cfg.wo1162425_scopes,
         "refresh_token_present": access.get("refresh_token_present", False),
         "requested_scopes": effective_scopes(cfg),
