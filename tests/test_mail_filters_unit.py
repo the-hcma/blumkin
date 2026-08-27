@@ -81,6 +81,31 @@ def test_mail_list_stops_scanning_at_the_cap(monkeypatch) -> None:
     client.me.messages.with_url.assert_not_called()
 
 
+def test_mail_list_keeps_matches_when_the_scan_hits_the_cap(monkeypatch) -> None:
+    """Truncation must not drop matches already found in the scanned window."""
+    client = _client(monkeypatch)
+    monkeypatch.setattr("blumkin.skills.mail._MAX_SCANNED", 3)
+    client.me.messages.get = AsyncMock(
+        return_value=_page(
+            [
+                _msg("Rebecca Doe", "one"),
+                _msg("Sam Lee", "two"),
+                _msg("Rebecca Doe", "three"),
+                _msg("Sam Lee", "four"),
+                _msg("Sam Lee", "five"),
+            ],
+            next_link="https://graph/next",
+        )
+    )
+
+    payload = asyncio.run(mail_list(sender="Rebecca", top=10))
+
+    assert [item["subject"] for item in payload["items"]] == ["one", "three"]
+    assert payload["filters"]["scanned"] == 5
+    assert payload["filters"]["complete"] is False
+    client.me.messages.with_url.assert_not_called()
+
+
 def test_mail_list_calls_a_scan_complete_when_it_reaches_the_end_at_the_cap(monkeypatch) -> None:
     """Hitting the cap on the final page still read everything, so it is not truncated."""
     client = _client(monkeypatch)
