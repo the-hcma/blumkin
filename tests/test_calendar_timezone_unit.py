@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
-from blumkin.skills.calendar import _graph_dt_to_iso, _resolve_tz
+from blumkin.skills.calendar import _WINDOWS_TZ_ALIASES, _graph_dt_to_iso, _resolve_tz
 from blumkin.skills.calendar_writes import calendar_create
 
 _NY = ZoneInfo("America/New_York")
@@ -57,14 +58,14 @@ def test_graph_dt_to_iso_honors_windows_time_zone() -> None:
     assert _graph_dt_to_iso(value, _NY) == "2026-08-28T14:30:00-04:00"
 
 
-def test_graph_dt_to_iso_keeps_utc_when_time_zone_absent() -> None:
-    # calendarView relies on the Prefer header and omits timeZone — must stay UTC.
-    value = _dtz("2026-08-28T14:30:00", None)
+def test_graph_dt_to_iso_keeps_utc_for_unknown_time_zone() -> None:
+    value = _dtz("2026-08-28T14:30:00", "Not/ARealZone")
     assert _graph_dt_to_iso(value, _NY) == "2026-08-28T10:30:00-04:00"
 
 
-def test_graph_dt_to_iso_keeps_utc_for_unknown_time_zone() -> None:
-    value = _dtz("2026-08-28T14:30:00", "Not/ARealZone")
+def test_graph_dt_to_iso_keeps_utc_when_time_zone_absent() -> None:
+    # calendarView relies on the Prefer header and omits timeZone — must stay UTC.
+    value = _dtz("2026-08-28T14:30:00", None)
     assert _graph_dt_to_iso(value, _NY) == "2026-08-28T10:30:00-04:00"
 
 
@@ -89,6 +90,23 @@ def test_resolve_tz_accepts_iana_windows_and_utc_spellings() -> None:
     assert _resolve_tz("GMT Standard Time") == ZoneInfo("Europe/London")
     assert _resolve_tz("UTC") == ZoneInfo("UTC")
     assert _resolve_tz("tzone://Microsoft/Utc") == ZoneInfo("UTC")
+
+
+def test_resolve_tz_covers_the_whole_graph_windows_zone_set() -> None:
+    """Every Graph-supported Windows label must map, or the event lands on a wrong instant."""
+    for label, expected in _WINDOWS_TZ_ALIASES.items():
+        resolved = _resolve_tz(label)
+        assert resolved is not None, label
+        # Compare offsets rather than keys: aliases like UTC/Etc/UTC name one zone.
+        for probe in (datetime(2026, 1, 15, 12), datetime(2026, 7, 15, 12)):
+            assert probe.replace(tzinfo=resolved).utcoffset() == (
+                probe.replace(tzinfo=ZoneInfo(expected)).utcoffset()
+            ), label
+    # Fixed-offset zones and dateline-side labels were the gap in the curated map.
+    assert _resolve_tz("Dateline Standard Time") == ZoneInfo("Etc/GMT+12")
+    assert _resolve_tz("UTC-11") == ZoneInfo("Etc/GMT+11")
+    assert _resolve_tz("Aleutian Standard Time") == ZoneInfo("America/Adak")
+    assert _resolve_tz("Line Islands Standard Time") == ZoneInfo("Pacific/Kiritimati")
 
 
 def test_resolve_tz_is_case_insensitive_for_windows_names() -> None:
