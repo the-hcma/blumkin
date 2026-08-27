@@ -30,7 +30,7 @@ def test_format_reply_human_names_the_original() -> None:
                 "kind": "reply",
                 "source_message_id": "msg-1",
                 "subject": "RE: Quarterly sync",
-                "to": ["rebecca@example.com"],
+                "to": "rebecca@example.com",
             }
         }
     )
@@ -42,12 +42,30 @@ def test_format_reply_human_names_the_original() -> None:
 
 def test_format_reply_human_says_forwarding_for_a_forward() -> None:
     lines = format_reply_human(
-        {"draft": {"kind": "forward", "source_message_id": "msg-1", "to": []}}
+        {"draft": {"kind": "forward", "source_message_id": "msg-1", "to": ""}}
     )
 
     assert lines[0].startswith("forward draft saved:")
     assert "(no recipient)" in lines[0]
     assert lines[2] == "  forwarding msg-1"
+
+
+def test_mail_reply_joins_multiple_to_addresses(monkeypatch) -> None:
+    """draft.to is a string like mail.draft — reply-all must not switch it to a list."""
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.to_recipients = [
+        SimpleNamespace(
+            email_address=SimpleNamespace(address="rebecca@example.com", name="Rebecca")
+        ),
+        SimpleNamespace(email_address=SimpleNamespace(address="sam@example.com", name="Sam")),
+    ]
+    item.create_reply_all.post = AsyncMock(return_value=draft)
+
+    payload = asyncio.run(mail_reply(message_id="msg-1", reply_all=True, body="ack"))
+
+    assert payload["draft"]["to"] == "rebecca@example.com, sam@example.com"
 
 
 def test_mail_forward_requires_a_recipient() -> None:
@@ -105,7 +123,7 @@ def test_mail_reply_creates_a_draft_through_graph(monkeypatch) -> None:
     assert draft["id"] == "draft-1"
     assert draft["kind"] == "reply"
     assert draft["subject"] == "RE: Quarterly sync"
-    assert draft["to"] == ["rebecca@example.com"]
+    assert draft["to"] == "rebecca@example.com"
 
 
 def test_mail_reply_fails_loudly_when_graph_returns_no_draft(monkeypatch) -> None:

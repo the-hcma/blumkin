@@ -245,7 +245,7 @@ def format_list_human(payload: dict[str, Any]) -> list[str]:
 
 def format_reply_human(payload: dict[str, Any]) -> list[str]:
     draft = payload.get("draft") or {}
-    recipients = ", ".join(sanitize_terminal(str(addr)) for addr in draft.get("to") or [])
+    recipients = sanitize_terminal(str(draft.get("to") or ""))
     return [
         f"{draft.get('kind')} draft saved: {draft.get('subject')!r} "
         f"→ {recipients or '(no recipient)'} ({draft.get('body_type')})",
@@ -1017,6 +1017,13 @@ def _draft_summary(created: Any, *, source: str, kind: str) -> dict[str, Any]:
     body_type = "text"
     if created.body is not None and created.body.content_type == BodyType.Html:
         body_type = "html"
+    # Same shape as mail.draft / mail.update-draft: a single string, not a list. Reply-all
+    # may inherit several recipients, so join them rather than dropping all but the first.
+    to_addrs = [
+        person["email"]
+        for person in _participants(getattr(created, "to_recipients", None))
+        if person.get("email")
+    ]
     return {
         "body_type": body_type,
         "conversation_id": getattr(created, "conversation_id", None),
@@ -1024,9 +1031,7 @@ def _draft_summary(created: Any, *, source: str, kind: str) -> dict[str, Any]:
         "kind": kind,
         "source_message_id": source,
         "subject": created.subject,
-        "to": [
-            person["email"] for person in _participants(getattr(created, "to_recipients", None))
-        ],
+        "to": ", ".join(to_addrs),
     }
 
 
