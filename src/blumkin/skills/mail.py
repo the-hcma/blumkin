@@ -6,6 +6,7 @@ import base64
 import binascii
 import html as html_lib
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -139,10 +140,14 @@ def format_draft_human(payload: dict[str, Any]) -> list[str]:
     draft = payload.get("draft") or {}
     to_addr = sanitize_terminal(str(draft.get("to") or ""))
     body_type = draft.get("body_type") or "text"
-    return [
+    lines = [
         f"Draft saved: {draft.get('subject')!r} → {to_addr} ({body_type})",
         f"  id={draft.get('id')}",
     ]
+    for item in draft.get("attachments") or []:
+        name = sanitize_terminal(str(item.get("name") or ""))
+        lines.append(f"  attached: {name!r} ({item.get('size')} bytes) id={item.get('id')}")
+    return lines
 
 
 def format_folders_human(payload: dict[str, Any]) -> list[str]:
@@ -380,6 +385,7 @@ async def mail_draft(
     *,
     to: str,
     subject: str,
+    attach: Sequence[str] = (),
     body: str | None = None,
     body_file: str | None = None,
     body_type: str = "text",
@@ -389,6 +395,8 @@ async def mail_draft(
         raise ValueError("--to is required")
     if not subject.strip():
         raise ValueError("--subject is required")
+    # Read the files before touching Graph: a bad path should not leave a half-built draft.
+    pending = [_read_attachment(path) for path in attach]
     content, body_type_label, graph_body_type = resolve_mail_body(
         body=body, body_file=body_file, body_type=body_type
     )
@@ -406,6 +414,7 @@ async def mail_draft(
         raise RuntimeError("Graph returned no draft message")
     return {
         "draft": {
+            "attachments": await _upload_attachments(client, created.id, pending),
             "body_type": body_type_label,
             "id": created.id,
             "subject": created.subject,
@@ -691,6 +700,7 @@ async def mail_send_draft(
 async def mail_update_draft(
     *,
     draft_id: str,
+    attach: Sequence[str] = (),
     subject: str | None = None,
     body: str | None = None,
     body_file: str | None = None,
@@ -701,8 +711,9 @@ async def mail_update_draft(
     if not draft_id.strip():
         raise ValueError("--id is required")
     has_body = body is not None or body_file is not None
-    if subject is None and not has_body and to is None:
-        raise ValueError("provide at least one of --subject, --body/--body-file, or --to")
+    if subject is None and not has_body and to is None and not attach:
+        raise ValueError("provide at least one of --subject, --body/--body-file, --to, or --attach")
+    pending = [_read_attachment(path) for path in attach]
     content: str | None = None
     body_type_label: MailBodyType | None = None
     graph_body_type: BodyType | None = None
@@ -736,10 +747,14 @@ async def mail_update_draft(
         patch.to_recipients = [
             Recipient(email_address=EmailAddress(address=to.strip())),
         ]
-    updated = await client.me.messages.by_message_id(mid).patch(patch)
-    if updated is None:
-        # Empty 2xx body — re-fetch so JSON/human output reflects post-PATCH state.
-        updated = await client.me.messages.by_message_id(mid).get()
+    if subject is None and content is None and to is None:
+        # --attach on its own: an empty PATCH would be a pointless round trip.
+        updated = existing
+    else:
+        updated = await client.me.messages.by_message_id(mid).patch(patch)
+        if updated is None:
+            # Empty 2xx body — re-fetch so JSON/human output reflects post-PATCH state.
+            updated = await client.me.messages.by_message_id(mid).get()
     if updated is None:
         raise RuntimeError(f"Graph returned no message after update-draft: {mid}")
     to_out = to.strip() if to is not None and to.strip() else _primary_to_address(updated)
@@ -748,6 +763,7 @@ async def mail_update_draft(
         body_out = "html" if updated.body.content_type == BodyType.Html else "text"
     return {
         "draft": {
+            "attachments": await _upload_attachments(client, updated.id or mid, pending),
             "body_type": body_out or "text",
             "id": updated.id or mid,
             "subject": updated.subject if updated.subject is not None else existing.subject,
@@ -791,6 +807,10 @@ _ID_LOOKUP_ERROR_CODES = frozenset(
         "resourcenotfound",
     }
 )
+# Graph accepts an attachment inline on the attachments collection only up to 3 MB of
+# request body; past that it wants an upload session, which this CLI does not implement.
+# Base64 inflates by 4/3, so the file itself has to stay comfortably under the limit.
+_MAX_ATTACHMENT_BYTES = 3_000_000 * 3 // 4
 # Guardrails for the recursive folder walk: mailboxes with deep or huge folder trees
 # should return a useful listing rather than fan out into hundreds of Graph calls.
 _MAX_FOLDERS = 500
@@ -1278,6 +1298,25 @@ def _primary_to_address(msg: Any) -> str | None:
     return None
 
 
+def _read_attachment(path: str) -> tuple[str, bytes]:
+    """Read one ``--attach`` file into (name, bytes), rejecting what Graph would reject."""
+    source = Path(path)
+    if source.is_dir():
+        raise ValueError(f"--attach must name a file, not a directory: {path}")
+    try:
+        raw = source.read_bytes()
+    except FileNotFoundError as exc:
+        raise ValueError(f"--attach file not found: {path}") from exc
+    except OSError as exc:
+        raise ValueError(f"--attach file could not be read: {path}: {exc}") from exc
+    if len(raw) > _MAX_ATTACHMENT_BYTES:
+        raise ValueError(
+            f"--attach file is too large for a single request "
+            f"({len(raw)} bytes > {_MAX_ATTACHMENT_BYTES}): {path}"
+        )
+    return sanitize_attachment_filename(source.name), raw
+
+
 def _resolve_comment(*, body: str | None, body_file: str | None, body_type: str) -> str:
     """Resolve the reply/forward text, which is optional: an empty draft is editable.
 
@@ -1380,6 +1419,32 @@ async def _scan_messages(
             return matches, scanned, False
         page = await builder.with_url(str(link)).get()
     return matches, scanned, True
+
+
+async def _upload_attachments(
+    client: Any, message_id: str, pending: Sequence[tuple[str, bytes]]
+) -> list[dict[str, Any]]:
+    """Attach already-read files to a draft, one Graph call each, in the order given."""
+    if not pending:
+        return []
+    builder = client.me.messages.by_message_id(message_id).attachments
+    uploaded: list[dict[str, Any]] = []
+    for name, raw in pending:
+        created = await builder.post(
+            FileAttachment(
+                odata_type="#microsoft.graph.fileAttachment",
+                content_bytes=raw,
+                name=name,
+            )
+        )
+        uploaded.append(
+            {
+                "id": getattr(created, "id", None),
+                "name": getattr(created, "name", None) or name,
+                "size": getattr(created, "size", None) if created is not None else None,
+            }
+        )
+    return uploaded
 
 
 def _validate_orderby(raw: str) -> str:

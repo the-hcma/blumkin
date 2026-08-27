@@ -930,6 +930,102 @@ def test_mail_draft_missing_body_exits_usage() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
+def test_mail_draft_passes_repeated_attachments_through(tmp_path, monkeypatch) -> None:
+    seen: dict[str, object] = {}
+    first = tmp_path / "a.txt"
+    first.write_text("a", encoding="utf-8")
+    second = tmp_path / "b.txt"
+    second.write_text("b", encoding="utf-8")
+
+    async def _ok(**kwargs):
+        seen.update(kwargs)
+        return {
+            "draft": {
+                "attachments": [],
+                "body_type": "text",
+                "id": "d",
+                "subject": "x",
+                "to": "a@b.com",
+            }
+        }
+
+    monkeypatch.setattr("blumkin.cli.mail_draft", _ok)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "draft",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "x",
+            "--body",
+            "hi",
+            "--attach",
+            str(first),
+            "--attach",
+            str(second),
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["attach"] == (str(first), str(second))
+
+
+def test_mail_update_draft_accepts_attach_without_other_fields(tmp_path, monkeypatch) -> None:
+    seen: dict[str, object] = {}
+    source = tmp_path / "a.txt"
+    source.write_text("a", encoding="utf-8")
+
+    async def _ok(**kwargs):
+        seen.update(kwargs)
+        return {
+            "draft": {
+                "attachments": [],
+                "body_type": "text",
+                "id": "d",
+                "subject": "x",
+                "to": "a@b.com",
+            }
+        }
+
+    monkeypatch.setattr("blumkin.cli.mail_update_draft", _ok)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "update-draft", "--id", "d", "--attach", str(source), "--json"],
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["attach"] == (str(source),)
+
+
+def test_mail_draft_missing_attachment_exits_usage(tmp_path, monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ValueError(f"--attach file not found: {tmp_path / 'nope.txt'}")
+
+    monkeypatch.setattr("blumkin.cli.mail_draft", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "draft",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "x",
+            "--body",
+            "hi",
+            "--attach",
+            str(tmp_path / "nope.txt"),
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
 def test_mail_update_draft_not_a_draft_exits_not_found(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise MailDraftNotFoundError("message is not a draft: msg-1")

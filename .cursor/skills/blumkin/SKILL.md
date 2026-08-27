@@ -58,6 +58,10 @@ covers the job.
    - `blumkin calendar create --subject … --with email --start … --yes`
    - `blumkin calendar cancel --event-id '<id>' --yes`
    - `blumkin mail draft --to … --subject … --body …` (draft only; `--body-type html` / `--body-file` optional)
+     Add files with `--attach <path>`, repeated once per file. Each file goes up in a
+     single request, so keep them under 2 MB; larger ones are refused (exit 2) rather
+     than silently truncated. A bad path fails before the draft is created. If any
+     upload fails after the draft exists, the draft is deleted so a retry is a no-op.
   - `blumkin mail reply --id '<message-id>' --body …` (`--all` for reply-all). Use this
     rather than a fresh draft with `RE:` prepended: Graph puts the draft in the original
     conversation and inherits the recipients, so it threads in the recipient's client.
@@ -68,6 +72,8 @@ covers the job.
   - `blumkin mail forward --id '<message-id>' --to … --body …` (draft only; same
     update-draft warning as reply — pass `--body` on create when you can)
    - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` replaces the whole To list and refuses multi-To drafts; `--body` replaces the whole body)
+     `--attach <path>` works here too and *adds* to whatever the draft already carries —
+     it never replaces. It is also valid on its own, without any other field.
    - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
    - `blumkin mail send-draft --id '<draft-id>' --yes`
    - `blumkin chat send --with "Name" --text "…" --yes` (or `--chat-id` if ambiguous)

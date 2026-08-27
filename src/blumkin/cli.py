@@ -1221,6 +1221,12 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
 @mail.command("draft")
 @click.option("--to", required=True, help="Recipient email.")
 @click.option("--subject", required=True)
+@click.option(
+    "--attach",
+    multiple=True,
+    type=click.Path(dir_okay=False, path_type=str),
+    help="Attach a file (repeat for several).",
+)
 @click.option("--body", default=None, help="Message body (mutually exclusive with --body-file).")
 @click.option(
     "--body-file",
@@ -1243,6 +1249,7 @@ def mail_draft_cmd(
     ctx: click.Context,
     to: str,
     subject: str,
+    attach: tuple[str, ...],
     body: str | None,
     body_file: str | None,
     body_type: str,
@@ -1255,6 +1262,7 @@ def mail_draft_cmd(
             mail_draft(
                 to=to,
                 subject=subject,
+                attach=attach,
                 body=body,
                 body_file=body_file,
                 body_type=body_type,
@@ -1404,6 +1412,12 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
 
 @mail.command("update-draft")
 @click.option("--id", "draft_id", required=True, help="Draft message id.")
+@click.option(
+    "--attach",
+    multiple=True,
+    type=click.Path(dir_okay=False, path_type=str),
+    help="Attach a file to the draft (repeat for several).",
+)
 @click.option("--subject", default=None, help="New subject (omit to leave unchanged).")
 @click.option(
     "--to",
@@ -1431,6 +1445,7 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
 def mail_update_draft_cmd(
     ctx: click.Context,
     draft_id: str,
+    attach: tuple[str, ...],
     subject: str | None,
     to: str | None,
     body: str | None,
@@ -1444,6 +1459,7 @@ def mail_update_draft_cmd(
         payload = asyncio.run(
             mail_update_draft(
                 draft_id=draft_id,
+                attach=attach,
                 subject=subject,
                 to=to,
                 body=body,
