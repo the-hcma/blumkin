@@ -72,7 +72,7 @@ def test_env_overrides_toml_wo1162425_scopes(tmp_path: Path, monkeypatch) -> Non
 def _cfg(*, wo1162425_scopes: bool, files_scopes: bool = False) -> BlumkinConfig:
     return BlumkinConfig(
         client_id="abc",
-        config_dir=Path("/tmp/blumkin-test"),
+        config_dir=Path("unused"),
         default_tz="UTC",
         files_scopes=files_scopes,
         tenant_id="brk.tech",
