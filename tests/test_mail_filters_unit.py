@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -106,6 +107,29 @@ def test_mail_list_does_not_match_across_the_address_and_name_boundary(monkeypat
     assert payload["items"] == []
 
 
+def test_mail_list_sender_filter_skips_messages_with_no_from(monkeypatch) -> None:
+    """Drafts and some system mail have no sender; --from must fail closed, not invent one."""
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(
+        return_value=_page(
+            [
+                _msg(None, "draft body", from_=None),
+                _msg("Rebecca Doe", "draft body"),
+            ]
+        )
+    )
+
+    by_sender = asyncio.run(mail_list(sender="Rebecca"))
+    assert [item["from_name"] for item in by_sender["items"]] == ["Rebecca Doe"]
+
+    # Subject still matches a no-from message; the silence is about sender, not everything.
+    by_subject = asyncio.run(mail_list(subject="draft"))
+    assert {item["id"] for item in by_subject["items"]} == {
+        "msg-None-draft body",
+        "msg-Rebecca Doe-draft body",
+    }
+
+
 def test_mail_list_stops_scanning_once_top_matches_are_found(monkeypatch) -> None:
     client = _client(monkeypatch)
     client.me.messages.get = AsyncMock(
@@ -198,6 +222,10 @@ def test_mail_list_converts_naive_and_offset_bounds_to_utc(monkeypatch) -> None:
     asyncio.run(mail_list(since=datetime(2026, 8, 1, 12, 30)))
 
     assert _query(client.me.messages.get).filter == "receivedDateTime ge 2026-08-01T12:30:00Z"
+
+    # Real CLI bounds are always tz-aware (parse_local_datetime); pin that branch too.
+    asyncio.run(mail_list(since=datetime(2026, 8, 1, 12, 30, tzinfo=ZoneInfo("America/New_York"))))
+    assert _query(client.me.messages.get).filter == "receivedDateTime ge 2026-08-01T16:30:00Z"
 
 
 def test_mail_list_sends_no_filter_when_nothing_was_asked_for(monkeypatch) -> None:
@@ -358,12 +386,21 @@ def _client(monkeypatch) -> MagicMock:
     return client
 
 
-def _msg(name: str, subject: str, *, address: str = "someone@example.com") -> SimpleNamespace:
+def _msg(
+    name: str | None,
+    subject: str,
+    *,
+    address: str = "someone@example.com",
+    from_: Any = ...,
+) -> SimpleNamespace:
+    sender = from_
+    if sender is ...:
+        sender = SimpleNamespace(email_address=SimpleNamespace(address=address, name=name))
     return SimpleNamespace(
         body=None,
         body_preview=subject,
         created_date_time=None,
-        from_=SimpleNamespace(email_address=SimpleNamespace(address=address, name=name)),
+        from_=sender,
         has_attachments=False,
         id=f"msg-{name}-{subject}",
         is_read=True,
