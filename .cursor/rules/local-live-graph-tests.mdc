@@ -8,6 +8,9 @@ alwaysApply: false
 
 CI runs **mocked** unit tests only (`pytest -m 'not live'`). Silent refresh and real Graph reads are validated **on this machine**.
 
+Live means **real**: never verify with a skill that notifies others (no invites,
+sends, or chats). See `.cursor/rules/no-third-party-side-effects.mdc`.
+
 When changing auth, Graph client, calendar/mail/chat skills, or live/auth tests:
 
 1. Unit (same as CI):
