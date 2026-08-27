@@ -33,6 +33,8 @@ blumkin calendar today --json
 
 `uv tool install` puts `blumkin` on your tool bin dir (often `~/.local/bin`). Ensure that directory is on `PATH`.
 
+To use blumkin from agent sessions in **other** repos (Cursor personal skill, or Copilot CLI instructions), see [`docs/agent-integration.md`](./docs/agent-integration.md).
+
 ## Config (`~/.config/blumkin/`)
 
 Create `~/.config/blumkin/config.toml` (mode `0600`):
@@ -68,6 +70,7 @@ Live tests need `~/.config/blumkin/` by default (override with `BLUMKIN_CONFIG_D
 - [`HANDOFF.md`](./HANDOFF.md) — session handoff  
 - [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
 - [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md) — M1 ship retrospective (#11)  
+- [`docs/agent-integration.md`](./docs/agent-integration.md) — using blumkin from Cursor / Copilot CLI, and the frozen `skills list --json` contract  
 - [`.cursor/skills/blumkin/SKILL.md`](./.cursor/skills/blumkin/SKILL.md) — Cursor agent skill  
 
 ## License

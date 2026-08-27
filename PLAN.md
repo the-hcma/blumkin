@@ -385,10 +385,10 @@ Auth stays **on the machine** where the Copilot CLI runs (same token cache as Cu
 
 | Deliverable | Phase |
 |-------------|--------|
-| Stable `blumkin skills list --json` + exit codes | 1–2 |
-| `.cursor/skills/blumkin/SKILL.md` (project) | 5 |
-| Optional install notes: personal skill symlink / copy to `~/.cursor/skills/` | 5 |
-| Copilot instructions snippet in `docs/agent-integration.md` | 5 |
+| Stable `blumkin skills list --json` + exit codes | 1–2 ✅ |
+| `.cursor/skills/blumkin/SKILL.md` (project) | 5 ✅ |
+| Optional install notes: personal skill symlink / copy to `~/.cursor/skills/` | 5 ✅ |
+| Copilot instructions snippet in `docs/agent-integration.md` | 5 ✅ |
 | MCP adapter (optional, shells to CLI only) | later if needed |
 
 ### 6.5 Anti-patterns
@@ -515,9 +515,9 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 - [ ] **TODO (validate live):** after grant — update Entra client scopes, wipe token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), re-login, confirm consent includes `Chat.ReadWrite` + `OnlineMeetings.ReadWrite`, then smoke chat write + meeting transcription against Graph  
 
 ### Phase 5 — Agent DX (Cursor Agent CLI + Copilot CLI)
-- Freeze `skills list --json` schema  
+- [x] Freeze `skills list --json` schema — [`docs/agent-integration.md`](./docs/agent-integration.md), pinned by `tests/test_skills_schema.py`  
 - [x] Ship `.cursor/skills/blumkin/SKILL.md` (shell-first; see §6)  
-- Document personal `~/.cursor/skills/blumkin/` install + Copilot CLI custom-instructions snippet  
+- [x] Document personal `~/.cursor/skills/blumkin/` install + Copilot CLI custom-instructions snippet — [`docs/agent-integration.md`](./docs/agent-integration.md)  
 - **No MCP in v1**; optional thin MCP wrapper later if a host needs it  
 
 ---
