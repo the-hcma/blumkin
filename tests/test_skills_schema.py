@@ -61,54 +61,42 @@ _ENVELOPE_KEYS = {"cli", "skills", "version"}
 _ERROR_KEYS = {"error", "message", "ok"}
 _ERROR_VALUES = {"auth_required", "graph_error", "missing_scope", "not_found", "usage_error"}
 _ID_RE = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*")
-# Ids released under v1. New skills may be added; these may not be renamed or dropped.
-_KNOWN_IDS = frozenset(
-    {
-        "auth.login",
-        "auth.logout",
-        "auth.status",
-        "calendar.accept",
-        "calendar.cancel",
-        "calendar.create",
-        "calendar.freebusy",
-        "calendar.today",
-        "calendar.view",
-        "chat.attachments",
-        "chat.attachments.download",
-        "chat.delete",
-        "chat.edit",
-        "chat.find",
-        "chat.last",
-        "chat.send",
-        "doctor",
-        "mail.attachments",
-        "mail.attachments.download",
-        "mail.delete-draft",
-        "mail.draft",
-        "mail.folders",
-        "mail.inbox",
-        "mail.list",
-        "mail.send-draft",
-        "mail.update-draft",
-        "meeting.get",
-        "meeting.transcription",
-        "skills.describe",
-        "skills.list",
-    }
-)
-# Skills known to reach other people. A skill may join this set; none may leave it
-# silently, since .cursor/rules/no-third-party-side-effects.mdc keys on the flag.
-_NOTIFYING_IDS = frozenset(
-    {
-        "calendar.accept",
-        "calendar.cancel",
-        "calendar.create",
-        "chat.delete",
-        "chat.edit",
-        "chat.send",
-        "mail.send-draft",
-    }
-)
+# Every skill, classified by whether it reaches another person. This is exhaustive on
+# purpose: a new skill fails the suite until someone records the decision here, so the
+# most safety-critical field in the contract cannot be set by default or by accident.
+# (An internal review gate, not a contract limit — v1 still permits adding skills.)
+_NOTIFIES_OTHERS = {
+    "auth.login": False,
+    "auth.logout": False,
+    "auth.status": False,
+    "calendar.accept": True,
+    "calendar.cancel": True,
+    "calendar.create": True,
+    "calendar.freebusy": False,
+    "calendar.today": False,
+    "calendar.view": False,
+    "chat.attachments": False,
+    "chat.attachments.download": False,
+    "chat.delete": True,
+    "chat.edit": True,
+    "chat.find": False,
+    "chat.last": False,
+    "chat.send": True,
+    "doctor": False,
+    "mail.attachments": False,
+    "mail.attachments.download": False,
+    "mail.delete-draft": False,
+    "mail.draft": False,
+    "mail.folders": False,
+    "mail.inbox": False,
+    "mail.list": False,
+    "mail.send-draft": True,
+    "mail.update-draft": False,
+    "meeting.get": False,
+    "meeting.transcription": False,
+    "skills.describe": False,
+    "skills.list": False,
+}
 _SKILL_KEYS = {"args", "cli", "id", "mutates", "notifies_others", "scopes", "summary"}
 
 
@@ -213,10 +201,21 @@ def test_arg_signatures_are_pinned_for_documented_skills() -> None:
         assert actual == expected, skill_id
 
 
-def test_no_skill_silently_stops_notifying() -> None:
-    """A flag flipped to False would exempt a skill from the safety rule unnoticed."""
-    notifying = {s["id"] for s in skills_catalog()["skills"] if s["notifies_others"]}
-    assert _NOTIFYING_IDS <= notifying, f"no longer notifying: {_NOTIFYING_IDS - notifying}"
+def test_every_skill_is_classified_for_reaching_other_people() -> None:
+    """Guard both directions, since either one silently defeats the safety rule.
+
+    A skill losing the flag escapes the rule; a new skill that does reach people but
+    ships with the flag unset never enters it. Requiring an explicit entry here means
+    neither can happen without someone deciding.
+    """
+    actual = {s["id"]: s["notifies_others"] for s in skills_catalog()["skills"]}
+    unclassified = set(actual) - set(_NOTIFIES_OTHERS)
+    assert not unclassified, (
+        f"classify these in _NOTIFIES_OTHERS — does the skill reach anyone else? {unclassified}"
+    )
+    dropped = set(_NOTIFIES_OTHERS) - set(actual)
+    assert not dropped, f"released ids removed or renamed: {dropped}"
+    assert actual == _NOTIFIES_OTHERS
 
 
 def test_notifying_skills_require_explicit_consent() -> None:
@@ -246,7 +245,9 @@ def test_skills_are_sorted_by_id() -> None:
     assert ids == sorted(ids)
     assert len(ids) == len(set(ids))
     # v1 permits new skills, but an existing id may not be renamed or removed.
-    assert _KNOWN_IDS <= set(ids), f"missing released ids: {_KNOWN_IDS - set(ids)}"
+    assert _NOTIFIES_OTHERS.keys() <= set(ids), (
+        f"missing released ids: {_NOTIFIES_OTHERS.keys() - set(ids)}"
+    )
 
 
 def _emitted_error_values() -> set[str]:

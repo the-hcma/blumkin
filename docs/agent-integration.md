@@ -185,8 +185,10 @@ args rather than assuming every name is a flag.
 `notifies_others` is the field to key safety decisions on — it is the same flag
 [`.cursor/rules/no-third-party-side-effects.mdc`](../.cursor/rules/no-third-party-side-effects.mdc)
 uses to decide what must never run as a test. Every skill carrying it also
-declares a required `--yes`, which the schema test enforces, so a notifying
-command can never become reachable by accident.
+declares a required `--yes`, which the schema tests enforce. Those tests also
+require each skill to be classified explicitly, so the flag cannot be left unset
+on a new command or quietly dropped from an existing one without someone
+deciding that it does not reach anyone.
 
 `blumkin skills describe <id> --json` returns a single skill object with the same
 shape, without the envelope.
