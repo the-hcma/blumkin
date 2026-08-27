@@ -379,6 +379,15 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="mail.folders",
+        cli=["blumkin", "mail", "folders"],
+        summary="List mail folders with their ids and message counts",
+        mutates=False,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[],
+    ),
+    SkillSpec(
         id="mail.inbox",
         cli=["blumkin", "mail", "inbox"],
         summary="List recent inbox messages",
@@ -386,6 +395,32 @@ SKILLS: list[SkillSpec] = [
         notifies_others=False,
         scopes=["Mail.ReadWrite"],
         args=[{"name": "--top", "required": False, "type": "int"}],
+    ),
+    SkillSpec(
+        id="mail.list",
+        cli=["blumkin", "mail", "list"],
+        summary=(
+            "List recent messages from a mail folder "
+            "(well-known name such as sentitems/archive, or a folder id)"
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[
+            {
+                "name": "--folder",
+                "required": False,
+                "type": "string",
+                "note": "well-known name or folder id; omit for the whole mailbox",
+            },
+            {
+                "name": "--orderby",
+                "required": False,
+                "type": "enum",
+                "values": ["received", "sent"],
+            },
+            {"name": "--top", "required": False, "type": "int"},
+        ],
     ),
     SkillSpec(
         id="mail.send-draft",

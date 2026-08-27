@@ -66,22 +66,28 @@ from blumkin.skills.chat import (
     format_delete_human as format_chat_delete_human,
 )
 from blumkin.skills.mail import (
+    WELL_KNOWN_MAIL_FOLDERS,
     MailAttachmentNotFoundError,
     MailAttachmentSkippedError,
     MailBodyFileError,
     MailDraftNotFoundError,
+    MailFolderNotFoundError,
     MailMessageNotFoundError,
     format_attachments_download_human,
     format_attachments_human,
     format_delete_draft_human,
     format_draft_human,
+    format_folders_human,
     format_inbox_human,
+    format_list_human,
     format_send_draft_human,
     mail_attachments_download,
     mail_attachments_list,
     mail_delete_draft,
     mail_draft,
+    mail_folders,
     mail_inbox,
+    mail_list,
     mail_send_draft,
     mail_update_draft,
 )
@@ -147,6 +153,15 @@ def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
         raise SystemExit(EXIT_NOT_FOUND) from exc
     emit_error(error="graph_error", message=str(exc), as_json=as_json)
     raise SystemExit(EXIT_OTHER) from exc
+
+
+def _raise_mail_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
+    msg = str(exc)
+    if "client_id" in msg or "Missing" in msg:
+        emit_error(error="auth_required", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_AUTH) from exc
+    emit_error(error="usage_error", message=msg, as_json=as_json)
+    raise SystemExit(EXIT_USAGE) from exc
 
 
 def _tz_name(ctx: click.Context, tz_flag: str | None) -> str | None:
@@ -897,18 +912,72 @@ def mail_inbox_cmd(ctx: click.Context, top: int, as_json_flag: bool) -> None:
     try:
         payload = asyncio.run(mail_inbox(top=top))
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_mail_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
         emit_json(payload)
     else:
         emit_lines(format_inbox_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("folders")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_folders_cmd(ctx: click.Context, as_json_flag: bool) -> None:
+    """List mail folders with their ids and message counts."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(mail_folders())
+    except ValueError as exc:
+        _raise_mail_value_error(exc, as_json=as_json)
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_folders_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("list")
+@click.option(
+    "--folder",
+    default=None,
+    help=f"Well-known name ({', '.join(WELL_KNOWN_MAIL_FOLDERS)}) or a folder id.",
+)
+@click.option(
+    "--orderby",
+    default=None,
+    type=click.Choice(["received", "sent"]),
+    help="Sort field; defaults to sent for sent-style folders, received otherwise.",
+)
+@click.option("--top", default=10, show_default=True, type=int)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_list_cmd(
+    ctx: click.Context,
+    folder: str | None,
+    orderby: str | None,
+    top: int,
+    as_json_flag: bool,
+) -> None:
+    """List recent messages from a mail folder."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(mail_list(top=top, folder=folder, orderby=orderby))
+    except MailFolderNotFoundError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        _raise_mail_value_error(exc, as_json=as_json)
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_list_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 

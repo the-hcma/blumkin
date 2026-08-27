@@ -19,6 +19,9 @@ from msgraph.generated.models.item_body import ItemBody
 from msgraph.generated.models.message import Message
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.recipient import Recipient
+from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import (
+    MailFoldersRequestBuilder,
+)
 from msgraph.generated.users.item.messages.item.attachments.attachments_request_builder import (
     AttachmentsRequestBuilder,
 )
@@ -53,12 +56,27 @@ class MailBodyFileError(Exception):
     """--body-file could not be read (usage, not auth)."""
 
 
+class MailFolderNotFoundError(Exception):
+    """--folder did not resolve to a mail folder (not_found)."""
+
+
 class MailDraftNotFoundError(Exception):
     """Draft id missing or not a draft (not_found)."""
 
 
 class MailMessageNotFoundError(Exception):
     """Message id missing (not_found)."""
+
+
+WELL_KNOWN_MAIL_FOLDERS = (
+    "archive",
+    "deleteditems",
+    "drafts",
+    "inbox",
+    "junkemail",
+    "outbox",
+    "sentitems",
+)
 
 
 def format_attachments_download_human(payload: dict[str, Any]) -> list[str]:
@@ -111,6 +129,19 @@ def format_draft_human(payload: dict[str, Any]) -> list[str]:
     ]
 
 
+def format_folders_human(payload: dict[str, Any]) -> list[str]:
+    folders = payload.get("folders") or []
+    lines = [f"Mail folders: {len(folders)}"]
+    if not folders:
+        lines.append("  (none)")
+        return lines
+    for item in folders:
+        path = sanitize_terminal(str(item.get("path") or ""))
+        lines.append(f"  • {path} — {item.get('total')} message(s), {item.get('unread')} unread")
+        lines.append(f"      id={item.get('id')}")
+    return lines
+
+
 def format_inbox_human(payload: dict[str, Any]) -> list[str]:
     lines = [f"Inbox (top {payload['top']}): {len(payload['items'])} message(s)"]
     if not payload["items"]:
@@ -121,6 +152,29 @@ def format_inbox_human(payload: dict[str, Any]) -> list[str]:
         who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
         subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
         lines.append(f"  • {item.get('received')}{unread} — {who}: {subject}")
+    return lines
+
+
+def format_list_human(payload: dict[str, Any]) -> list[str]:
+    items = payload["items"]
+    folder = sanitize_terminal(str(payload.get("folder") or "all mail"))
+    orderby = payload.get("orderby") or "received"
+    lines = [f"{folder} (top {payload['top']}, by {orderby}): {len(items)} message(s)"]
+    if not items:
+        lines.append("  (none)")
+        return lines
+    for item in items:
+        stamp = item.get("sent") if orderby == "sent" else item.get("received")
+        unread = "" if item.get("is_read") else " [unread]"
+        if orderby == "sent":
+            who = sanitize_terminal(str(item.get("to_email") or "(no recipient)"))
+            who = f"to {who}"
+        else:
+            who = sanitize_terminal(
+                str(item.get("from_name") or item.get("from_email") or "(unknown)")
+            )
+        subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
+        lines.append(f"  • {stamp}{unread} — {who}: {subject}")
     return lines
 
 
@@ -293,32 +347,72 @@ async def mail_draft(
     }
 
 
+async def mail_folders(*, config: BlumkinConfig | None = None) -> dict[str, Any]:
+    """List mail folders (including nested ones) so custom folders are addressable."""
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    folders: list[dict[str, Any]] = []
+    await _collect_mail_folders(client, client.me.mail_folders, folders=folders, prefix="", depth=0)
+    return {"folders": folders}
+
+
 async def mail_inbox(
     *,
     top: int = 10,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
+    payload = await mail_list(top=top, config=config)
+    return {"items": payload["items"], "top": payload["top"]}
+
+
+async def mail_list(
+    *,
+    top: int = 10,
+    folder: str | None = None,
+    orderby: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """List messages from a well-known folder, a folder id, or the whole mailbox."""
     if top < 1:
         raise ValueError("--top must be >= 1")
+    target = _resolve_mail_folder(folder)
+    sort = _resolve_orderby(orderby, target)
     cfg = config or load_config()
     client = create_graph_client(cfg)
     query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
         top=top,
-        orderby=["receivedDateTime desc"],
+        orderby=[f"{_ORDERBY_FIELDS[sort]} desc"],
         select=[
             "id",
             "subject",
             "from",
+            "toRecipients",
             "receivedDateTime",
+            "sentDateTime",
             "isRead",
             "hasAttachments",
             "bodyPreview",
             "body",
         ],
     )
-    page = await client.me.messages.get(request_config(query))
+    builder = (
+        client.me.messages
+        if target is None
+        else client.me.mail_folders.by_mail_folder_id(target).messages
+    )
+    try:
+        page = await builder.get(request_config(query))
+    except ODataError as exc:
+        if target is not None and _is_folder_lookup_failure(exc):
+            raise MailFolderNotFoundError(_folder_not_found_message(target)) from exc
+        raise
     items = [] if page is None else (page.value or [])
-    return {"items": [_message_to_dict(msg) for msg in items], "top": top}
+    return {
+        "folder": target,
+        "items": [_message_to_dict(msg) for msg in items],
+        "orderby": sort,
+        "top": top,
+    }
 
 
 async def mail_send_draft(
@@ -426,6 +520,22 @@ def resolve_mail_body(
     return content, label, graph_type
 
 
+_FOLDER_PAGE_SIZE = 100
+# Guardrails for the recursive folder walk: mailboxes with deep or huge folder trees
+# should return a useful listing rather than fan out into hundreds of Graph calls.
+_MAX_FOLDERS = 500
+_MAX_FOLDER_DEPTH = 6
+# Sent-style folders have a null receivedDateTime, which collapses the default ordering.
+_SENT_ORDER_FOLDERS = frozenset({"drafts", "outbox", "sentitems"})
+_ORDERBY_FIELDS = {"received": "receivedDateTime", "sent": "sentDateTime"}
+_MAIL_FOLDER_ALIASES = {
+    "deleted": "deleteditems",
+    "draft": "drafts",
+    "junk": "junkemail",
+    "sent": "sentitems",
+    "spam": "junkemail",
+    "trash": "deleteditems",
+}
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -460,6 +570,53 @@ def _attachment_to_dict(attachment: Any) -> dict[str, Any]:
     return payload
 
 
+async def _collect_mail_folders(
+    client: Any,
+    builder: Any,
+    *,
+    folders: list[dict[str, Any]],
+    prefix: str,
+    depth: int,
+) -> None:
+    if depth > _MAX_FOLDER_DEPTH or len(folders) >= _MAX_FOLDERS:
+        return
+    query = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters(
+        top=_FOLDER_PAGE_SIZE,
+        select=["childFolderCount", "displayName", "id", "totalItemCount", "unreadItemCount"],
+    )
+    page = await builder.get(request_config(query))
+    while page is not None:
+        for folder in page.value or []:
+            if len(folders) >= _MAX_FOLDERS:
+                return
+            name = str(getattr(folder, "display_name", None) or "")
+            path = f"{prefix}/{name}" if prefix else name
+            folder_id = getattr(folder, "id", None)
+            child_count = getattr(folder, "child_folder_count", None) or 0
+            folders.append(
+                {
+                    "child_count": int(child_count),
+                    "id": folder_id,
+                    "name": name,
+                    "path": path,
+                    "total": getattr(folder, "total_item_count", None),
+                    "unread": getattr(folder, "unread_item_count", None),
+                }
+            )
+            if child_count and folder_id:
+                await _collect_mail_folders(
+                    client,
+                    client.me.mail_folders.by_mail_folder_id(str(folder_id)).child_folders,
+                    folders=folders,
+                    prefix=path,
+                    depth=depth + 1,
+                )
+        link = getattr(page, "odata_next_link", None)
+        if not link:
+            return
+        page = await builder.with_url(str(link)).get()
+
+
 async def _fetch_attachment_bytes(
     client: Any, message_id: str, attachment_id: str, attachment: Any
 ) -> bytes:
@@ -487,6 +644,25 @@ async def _fetch_attachment_bytes(
     return bytes(result)
 
 
+def _folder_not_found_message(folder: str) -> str:
+    known = ", ".join(WELL_KNOWN_MAIL_FOLDERS)
+    return (
+        f"mail folder not found: {sanitize_terminal(folder)!r} "
+        f"(well-known names: {known}; run 'blumkin mail folders' to list folder ids)"
+    )
+
+
+def _is_folder_lookup_failure(exc: ODataError) -> bool:
+    """True when Graph rejected the folder segment rather than the query itself."""
+    status = getattr(exc, "response_status_code", None)
+    code = str(getattr(getattr(exc, "error", None), "code", "") or "").casefold()
+    return status in {400, 404} or code in {
+        "errorinvalididmalformed",
+        "erroritemnotfound",
+        "resourcenotfound",
+    }
+
+
 def _message_to_dict(msg: Any) -> dict[str, Any]:
     from_name = None
     from_email = None
@@ -508,7 +684,9 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
         "id": msg.id,
         "is_read": bool(msg.is_read),
         "received": str(msg.received_date_time) if msg.received_date_time else None,
+        "sent": str(sent) if (sent := getattr(msg, "sent_date_time", None)) else None,
         "subject": msg.subject,
+        "to_email": _primary_to_address(msg),
     }
 
 
@@ -527,6 +705,31 @@ def _primary_to_address(msg: Any) -> str | None:
         if address:
             return str(address)
     return None
+
+
+def _resolve_mail_folder(raw: str | None) -> str | None:
+    """Map --folder to a Graph well-known name, or pass it through as a folder id."""
+    if raw is None:
+        return None
+    label = raw.strip()
+    if not label:
+        raise ValueError("--folder cannot be empty")
+    key = re.sub(r"[\s_-]+", "", label.casefold())
+    alias = _MAIL_FOLDER_ALIASES.get(key)
+    if alias is not None:
+        return alias
+    if key in WELL_KNOWN_MAIL_FOLDERS:
+        return key
+    return label
+
+
+def _resolve_orderby(raw: str | None, folder: str | None) -> str:
+    if raw is not None:
+        label = raw.strip().casefold()
+        if label not in _ORDERBY_FIELDS:
+            raise ValueError("--orderby must be 'received' or 'sent'")
+        return label
+    return "sent" if folder in _SENT_ORDER_FOLDERS else "received"
 
 
 async def _require_message(client: Any, message_id: str) -> None:
