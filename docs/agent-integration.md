@@ -99,7 +99,11 @@ client id or call Graph directly when a blumkin skill covers the job.
 - Writes that notify other people require `--yes`. Never add `--yes` to satisfy a
   failed command — only when the user asked for that action.
 - Exit 3 (`auth_required`): tell the user to run `blumkin auth login` on this
-  machine, then retry. Do not attempt to authenticate any other way.
+  machine, then retry. Do not attempt to authenticate any other way. Exception:
+  `blumkin doctor` exits 3 for a missing `client_id` too — read its `problems`
+  array before advising.
+- On any non-zero exit, if stderr is empty the explanation is on stdout
+  (`doctor`, `chat last`). Never report "no output".
 - Exit 4 (`missing_scope`): a scope is unavailable — usually a tenant grant, but
   sometimes a local opt-in. Report the message; do not retry.
 - Exit 2 (`usage_error`): usually a malformed command, but sometimes a config
@@ -226,7 +230,7 @@ telling the user what to do.
 
 ### Error envelope
 
-Failures with `--json` print one object to **stderr**, leaving stdout empty:
+Most failures with `--json` print one object to **stderr**, leaving stdout empty:
 
 ```console
 $ blumkin skills describe nope --json
@@ -234,7 +238,7 @@ $ blumkin skills describe nope --json
 ```
 
 Capture the two streams separately. An agent that parses only stdout sees an
-empty string on every failure and learns nothing about what went wrong.
+empty string on these failures and learns nothing about what went wrong.
 
 | Field | Meaning |
 |-------|---------|
@@ -243,7 +247,24 @@ empty string on every failure and learns nothing about what went wrong.
 | `message` | For humans; wording will change, so do not match on it |
 | `hint` | Optional next step, present only when the CLI has one to offer |
 
-Two caveats worth wiring in up front:
+#### Diagnostic commands report failure on stdout instead
+
+Two commands exit non-zero with their normal JSON payload on **stdout** and
+nothing on stderr, because the payload *is* the diagnosis:
+
+| Command | Exit | What stdout carries |
+|---------|------|---------------------|
+| `blumkin doctor --json` | 3 | `ok: false` and a `problems` array naming what is wrong |
+| `blumkin chat last --json` | 5 | `chat: null` plus `query`, `partial`, and `skipped`, showing how far the search got |
+
+So the rule is: **on a non-zero exit, if stderr is empty, parse stdout.** Do not
+report "no output" — the explanation is there, in the stream you did not read.
+
+`doctor` matters most here. Exit 3 normally means run `blumkin auth login`, but
+`doctor` also exits 3 when `client_id` is missing from `config.toml`, which no
+amount of logging in will fix. Read `problems` before advising the user.
+
+Three caveats worth wiring in up front:
 
 - **`error` values are not the exit-code names.** They are `graph_error` and
   `usage_error`, not `other` and `usage`. Match the left column of the table
@@ -252,6 +273,8 @@ Two caveats worth wiring in up front:
   rejected by the argument parser before blumkin runs, so exit 2 can carry plain
   usage text on stderr instead of JSON. Treat a missing envelope on exit 2 as a
   malformed command, not as a transient failure to retry.
+- **An empty stderr does not mean success.** Check the exit code first, then
+  fall back to stdout, as above.
 
 ### Compatibility
 

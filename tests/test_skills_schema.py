@@ -98,6 +98,33 @@ def test_describe_returns_a_bare_skill_object() -> None:
     assert _SKILL_KEYS <= set(json.loads(result.stdout))
 
 
+def test_diagnostic_commands_report_failure_on_stdout(tmp_path, monkeypatch) -> None:
+    """The guide tells agents to fall back to stdout, so pin the commands that need it.
+
+    doctor and chat last exit non-zero with their payload on stdout and an empty
+    stderr, which is the opposite of the envelope contract everything else follows.
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    runner = CliRunner()
+
+    doctor = runner.invoke(main, ["doctor", "--json"])
+    assert doctor.exit_code == EXIT_AUTH
+    assert doctor.stderr == ""
+    problems = json.loads(doctor.stdout)
+    assert problems["ok"] is False
+    # Exit 3 here is a missing client_id, which "run blumkin auth login" would not fix.
+    assert any("client_id" in problem for problem in problems["problems"])
+
+    async def _no_match(**_kwargs: object) -> dict[str, object]:
+        return {"chat": None, "items": [], "partial": True, "query": "nobody", "skipped": 4}
+
+    monkeypatch.setattr("blumkin.cli.chat_last", _no_match)
+    chat = runner.invoke(main, ["chat", "last", "--with", "nobody", "--json"])
+    assert chat.exit_code == EXIT_NOT_FOUND
+    assert chat.stderr == ""
+    assert json.loads(chat.stdout)["chat"] is None
+
+
 def test_documented_sample_matches_real_output() -> None:
     """The guide quotes real output, so keep it from drifting away from the catalog."""
     doc = Path(__file__).resolve().parents[1] / "docs" / "agent-integration.md"
