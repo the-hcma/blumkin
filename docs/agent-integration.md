@@ -96,8 +96,11 @@ client id or call Graph directly when a blumkin skill covers the job.
   failed command — only when the user asked for that action.
 - Exit 3 (`auth_required`): tell the user to run `blumkin auth login` on this
   machine, then retry. Do not attempt to authenticate any other way.
-- Exit 4 (`missing_scope`): a tenant grant or opt-in config is missing. Report the
+- Exit 4 (`missing_scope`): the tenant has not granted a scope. Report the
   message; do not retry.
+- Exit 2 (`usage_error`): usually a malformed command, but it is also how a
+  disabled config opt-in is reported. Read the message before calling it bad
+  arguments.
 ```
 
 Keep it short. It competes with everything else in the context window, and the
@@ -112,23 +115,46 @@ rely on; anything not listed may change.
 
 ### `blumkin skills list --json`
 
+Real output, with `skills` cut to one entry — the full list carries every skill:
+
 ```json
 {
   "cli": "blumkin",
-  "version": 1,
   "skills": [
     {
+      "args": [
+        {
+          "name": "--date",
+          "required": false,
+          "type": "date"
+        },
+        {
+          "name": "--tz",
+          "required": false,
+          "type": "iana_tz"
+        }
+      ],
+      "cli": [
+        "blumkin",
+        "calendar",
+        "today"
+      ],
       "id": "calendar.today",
-      "cli": ["blumkin", "calendar", "today"],
-      "summary": "List today's events in local time",
       "mutates": false,
       "notifies_others": false,
-      "scopes": ["Calendars.ReadWrite"],
-      "args": [{"name": "--tz", "required": false, "type": "iana_tz"}]
+      "scopes": [
+        "Calendars.ReadWrite"
+      ],
+      "summary": "List the signed-in user's events for today"
     }
-  ]
+  ],
+  "version": 1
 }
 ```
+
+`test_documented_sample_matches_real_output` parses this block out of the file
+and compares it against the live catalog, so it cannot quietly drift from what
+the CLI actually prints.
 
 | Field | Meaning |
 |-------|---------|
@@ -174,10 +200,18 @@ failure path.
 |------|---------------|---------|
 | 0 | — | Success |
 | 1 | `graph_error` | Unexpected failure, usually from Graph |
-| 2 | `usage_error`, or none | Bad arguments — fix the command, do not retry as-is |
+| 2 | `usage_error`, or none | Bad arguments, **or a config opt-in that is switched off** |
 | 3 | `auth_required` | Run `blumkin auth login` on this machine |
-| 4 | `missing_scope` | Tenant grant or config opt-in missing — do not retry |
+| 4 | `missing_scope` | The tenant has not granted a scope — do not retry |
 | 5 | `not_found` | The named thing does not exist |
+
+Exit 2 covers two different situations, and conflating them misleads the user.
+A malformed command needs fixing; a disabled opt-in (`wo1162425_scopes`,
+`files_scopes`) is a config change the operator must make, and the `message`
+says which. Read the message before reporting "bad arguments".
+
+Exit 4 is narrower than it sounds: it means Graph refused a scope the tenant has
+not granted, so no local change will help.
 
 ### Error envelope
 

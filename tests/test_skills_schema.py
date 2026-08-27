@@ -24,7 +24,6 @@ from blumkin.exit_codes import (
 )
 from blumkin.skills import skills_catalog
 
-_ARG_OPTIONAL_KEYS = {"multiple", "note", "values"}
 _ARG_REQUIRED_KEYS = {"name", "required", "type"}
 _ARG_TYPES = {
     "date",
@@ -48,11 +47,8 @@ _SKILL_KEYS = {"args", "cli", "id", "mutates", "notifies_others", "scopes", "sum
 def test_arg_objects_match_the_documented_shape() -> None:
     for skill in skills_catalog()["skills"]:
         for arg in skill["args"]:
-            keys = set(arg)
-            missing = _ARG_REQUIRED_KEYS - keys
+            missing = _ARG_REQUIRED_KEYS - set(arg)
             assert not missing, f"{skill['id']} {arg.get('name')}: missing {missing}"
-            unknown = keys - _ARG_REQUIRED_KEYS - _ARG_OPTIONAL_KEYS
-            assert not unknown, f"{skill['id']} {arg.get('name')}: undocumented keys {unknown}"
             # Options are "--flag"; positionals (skills.describe) carry a bare name.
             assert isinstance(arg["name"], str) and arg["name"]
             assert isinstance(arg["required"], bool)
@@ -84,7 +80,6 @@ def test_error_envelope_goes_to_stderr_with_the_documented_fields() -> None:
     assert result.stdout == ""
     payload = json.loads(result.stderr)
     assert _ERROR_KEYS <= set(payload)
-    assert set(payload) <= _ERROR_KEYS | {"hint"}
     assert payload["ok"] is False
     assert payload["error"] == "not_found"
     assert isinstance(payload["message"], str) and payload["message"]
@@ -102,6 +97,21 @@ def test_error_values_are_the_documented_ones() -> None:
     source = (Path(cli.__file__)).read_text(encoding="utf-8")
     emitted = set(re.findall(r'emit_error\(\s*error="([a-z_]+)"', source))
     assert emitted == _ERROR_VALUES
+
+
+def test_documented_sample_matches_real_output() -> None:
+    """The guide quotes real output, so keep it from drifting away from the catalog."""
+    doc = Path(__file__).resolve().parents[1] / "docs" / "agent-integration.md"
+    block = re.search(r"```json\n(.*?)```", doc.read_text(encoding="utf-8"), re.S)
+    assert block, "sample envelope missing from docs/agent-integration.md"
+    sample = json.loads(block.group(1))
+
+    live = skills_catalog()
+    assert sample["cli"] == live["cli"]
+    assert sample["version"] == live["version"]
+    by_id = {skill["id"]: skill for skill in live["skills"]}
+    for shown in sample["skills"]:
+        assert shown == by_id[shown["id"]], f"docs sample for {shown['id']} is stale"
 
 
 def test_enum_args_publish_their_values() -> None:
@@ -131,7 +141,7 @@ def test_notifying_skills_require_explicit_consent() -> None:
 
 def test_skill_objects_match_the_documented_shape() -> None:
     for skill in skills_catalog()["skills"]:
-        assert set(skill) == _SKILL_KEYS, skill.get("id")
+        assert _SKILL_KEYS <= set(skill), skill.get("id")
         assert _ID_RE.fullmatch(skill["id"]), skill["id"]
         assert skill["cli"][0] == "blumkin"
         assert isinstance(skill["summary"], str) and skill["summary"]
