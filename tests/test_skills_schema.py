@@ -76,12 +76,16 @@ def test_cli_invocation_follows_the_skill_id() -> None:
         assert skill["cli"] == ["blumkin", *skill["id"].split(".")], skill["id"]
 
 
-def test_config_opt_ins_do_not_share_an_exit_code() -> None:
+def test_config_opt_ins_do_not_share_an_exit_code(tmp_path, monkeypatch) -> None:
     """The docs distinguish them because the CLI does; keep that honest.
 
     wo1162425_scopes is refused up front as a usage error, while files_scopes
-    surfaces as a missing scope from the download path.
+    surfaces as a missing scope from the download path. Point at an empty config
+    dir and clear the env override, which wins over it, so the assertion holds
+    regardless of the operator's own opt-ins.
     """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
     scope_error = ChatAttachmentScopeError("needs Files.Read")
     with pytest.raises(SystemExit) as files_off:
         _raise_chat_attachment_error(scope_error, as_json=True)
