@@ -13,8 +13,9 @@ from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.skills.mail import (
     MailFolderNotFoundError,
-    _resolve_mail_folder,
-    _resolve_orderby,
+    _default_orderby,
+    _validate_orderby,
+    _well_known_folder,
     format_list_human,
     mail_folders,
     mail_inbox,
@@ -107,12 +108,84 @@ def test_mail_list_sent_folder_orders_by_sent_date(monkeypatch) -> None:
         return_value=_page([_message(received=None, sent="2026-08-27T10:00Z")])
     )
 
-    payload = asyncio.run(mail_list(folder="sent"))
+    payload = asyncio.run(mail_list(folder="sentitems"))
 
     assert payload["folder"] == "sentitems"
     assert payload["orderby"] == "sent"
     assert payload["items"][0]["sent"] == "2026-08-27T10:00Z"
     assert _query(messages.get).orderby == ["sentDateTime desc"]
+
+
+def test_mail_list_drafts_order_by_created_date(monkeypatch) -> None:
+    """Drafts were never sent, so sentDateTime is null on every row."""
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(
+        return_value=_page([_message(created="2026-08-27T08:00Z", received=None)])
+    )
+
+    payload = asyncio.run(mail_list(folder="drafts"))
+
+    assert payload["orderby"] == "created"
+    assert payload["items"][0]["created"] == "2026-08-27T08:00Z"
+    assert _query(messages.get).orderby == ["createdDateTime desc"]
+
+
+def test_mail_list_outbox_orders_by_created_date(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(return_value=_page([]))
+
+    payload = asyncio.run(mail_list(folder="outbox"))
+
+    assert payload["orderby"] == "created"
+    assert _query(messages.get).orderby == ["createdDateTime desc"]
+
+
+def test_mail_list_prefers_a_real_folder_over_the_alias(monkeypatch) -> None:
+    """A mailbox keeping both 'Sent Items' and a custom 'Sent' must reach its own folder."""
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(
+        side_effect=[_odata_error(404, "ErrorItemNotFound"), _page([_message()])]
+    )
+    client.me.mail_folders.get = AsyncMock(return_value=_page([_folder("Sent", "custom-sent-id")]))
+
+    payload = asyncio.run(mail_list(folder="Sent"))
+
+    assert payload["folder"] == "custom-sent-id"
+    assert payload["orderby"] == "received"
+    assert client.me.mail_folders.by_mail_folder_id.call_args_list[-1].args == ("custom-sent-id",)
+
+
+def test_mail_list_falls_back_to_the_alias_without_a_real_folder(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(side_effect=[_odata_error(404, "ErrorItemNotFound"), _page([])])
+    client.me.mail_folders.get = AsyncMock(return_value=_page([_folder("Inbox", "inbox-id")]))
+
+    payload = asyncio.run(mail_list(folder="trash"))
+
+    assert payload["folder"] == "deleteditems"
+
+
+def test_mail_list_reports_ambiguous_folder_names(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(side_effect=_odata_error(404, "ErrorItemNotFound"))
+    client.me.mail_folders.get = AsyncMock(
+        return_value=_page(
+            [
+                _folder("Receipts", "receipts-a", child_folder_count=1),
+                _folder("Other", "other-id"),
+            ]
+        )
+    )
+    child = client.me.mail_folders.by_mail_folder_id.return_value.child_folders
+    child.get = AsyncMock(return_value=_page([_folder("Receipts", "receipts-b")]))
+
+    with pytest.raises(MailFolderNotFoundError, match="ambiguous"):
+        asyncio.run(mail_list(folder="Receipts"))
 
 
 def test_mail_list_explicit_orderby_overrides_the_folder_default(monkeypatch) -> None:
@@ -146,6 +219,7 @@ def test_mail_list_maps_unknown_folder_to_a_clear_error(monkeypatch) -> None:
     client = _client(monkeypatch)
     messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
     messages.get = AsyncMock(side_effect=_odata_error(404, "ErrorItemNotFound"))
+    client.me.mail_folders.get = AsyncMock(return_value=_page([_folder("Inbox", "inbox-id")]))
 
     with pytest.raises(MailFolderNotFoundError) as excinfo:
         asyncio.run(mail_list(folder="notafolder"))
@@ -164,6 +238,26 @@ def test_mail_list_reraises_unrelated_graph_errors(monkeypatch) -> None:
 
     with pytest.raises(ODataError):
         asyncio.run(mail_list(folder="archive"))
+
+
+def test_mail_list_does_not_blame_the_folder_for_query_errors(monkeypatch) -> None:
+    """A --top above Graph's cap is a 400, but the folder is fine."""
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(side_effect=_odata_error(400, "invalidRequest"))
+
+    with pytest.raises(ODataError):
+        asyncio.run(mail_list(folder="inbox", top=1001))
+
+
+def test_mail_list_treats_malformed_ids_as_folder_failures(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(side_effect=_odata_error(400, "ErrorInvalidIdMalformed"))
+    client.me.mail_folders.get = AsyncMock(return_value=_page([]))
+
+    with pytest.raises(MailFolderNotFoundError):
+        asyncio.run(mail_list(folder="AAMkAD-bogus"))
 
 
 def test_format_list_human_shows_recipients_for_sent_mail() -> None:
@@ -190,26 +284,31 @@ def test_format_list_human_handles_an_empty_folder() -> None:
     assert format_list_human(payload)[-1] == "  (none)"
 
 
-def test_resolve_mail_folder_accepts_aliases_and_spellings() -> None:
-    assert _resolve_mail_folder("sent") == "sentitems"
-    assert _resolve_mail_folder("Sent Items") == "sentitems"
-    assert _resolve_mail_folder("deleted-items") == "deleteditems"
-    assert _resolve_mail_folder("trash") == "deleteditems"
-    assert _resolve_mail_folder("JunkEmail") == "junkemail"
-    assert _resolve_mail_folder("  inbox  ") == "inbox"
-    assert _resolve_mail_folder(None) is None
+def test_default_orderby_per_folder() -> None:
+    assert _default_orderby(None) == "received"
+    assert _default_orderby("inbox") == "received"
+    assert _default_orderby("archive") == "received"
+    assert _default_orderby("sentitems") == "sent"
+    assert _default_orderby("drafts") == "created"
+    assert _default_orderby("outbox") == "created"
 
 
-def test_resolve_mail_folder_passes_ids_through_untouched() -> None:
-    assert _resolve_mail_folder("AAMkAD00112233==") == "AAMkAD00112233=="
+def test_validate_orderby_normalizes_and_rejects() -> None:
+    assert _validate_orderby("SENT") == "sent"
+    assert _validate_orderby(" created ") == "created"
+    with pytest.raises(ValueError, match="--orderby"):
+        _validate_orderby("alphabetical")
 
 
-def test_resolve_orderby_defaults_per_folder() -> None:
-    assert _resolve_orderby(None, None) == "received"
-    assert _resolve_orderby(None, "inbox") == "received"
-    assert _resolve_orderby(None, "sentitems") == "sent"
-    assert _resolve_orderby(None, "drafts") == "sent"
-    assert _resolve_orderby("SENT", "inbox") == "sent"
+def test_well_known_folder_matches_graph_names_only() -> None:
+    assert _well_known_folder("Sent Items") == "sentitems"
+    assert _well_known_folder("deleted-items") == "deleteditems"
+    assert _well_known_folder("  inbox  ") == "inbox"
+    assert _well_known_folder("JunkEmail") == "junkemail"
+    # Aliases and ids are not well-known names: they go through folder resolution.
+    assert _well_known_folder("sent") is None
+    assert _well_known_folder("trash") is None
+    assert _well_known_folder("AAMkAD00112233==") is None
 
 
 def _client(monkeypatch) -> MagicMock:
@@ -232,10 +331,16 @@ def _folder(name: str, folder_id: str, *, child_folder_count: int = 0) -> Simple
     )
 
 
-def _message(*, received: str | None = "2026-08-27T09:00Z", sent: str | None = None) -> Any:
+def _message(
+    *,
+    created: str | None = None,
+    received: str | None = "2026-08-27T09:00Z",
+    sent: str | None = None,
+) -> Any:
     return SimpleNamespace(
         body=None,
         body_preview="hi",
+        created_date_time=created,
         from_=None,
         has_attachments=False,
         id="msg-1",

@@ -163,12 +163,12 @@ def format_list_human(payload: dict[str, Any]) -> list[str]:
     if not items:
         lines.append("  (none)")
         return lines
+    outbound = orderby in {"created", "sent"}
     for item in items:
-        stamp = item.get("sent") if orderby == "sent" else item.get("received")
+        stamp = item.get(orderby) or item.get("received") or item.get("created") or "(no date)"
         unread = "" if item.get("is_read") else " [unread]"
-        if orderby == "sent":
-            who = sanitize_terminal(str(item.get("to_email") or "(no recipient)"))
-            who = f"to {who}"
+        if outbound:
+            who = "to " + sanitize_terminal(str(item.get("to_email") or "(no recipient)"))
         else:
             who = sanitize_terminal(
                 str(item.get("from_name") or item.get("from_email") or "(unknown)")
@@ -375,37 +375,27 @@ async def mail_list(
     """List messages from a well-known folder, a folder id, or the whole mailbox."""
     if top < 1:
         raise ValueError("--top must be >= 1")
-    target = _resolve_mail_folder(folder)
-    sort = _resolve_orderby(orderby, target)
+    label = None if folder is None else folder.strip()
+    if folder is not None and not label:
+        raise ValueError("--folder cannot be empty")
+    requested_sort = None if orderby is None else _validate_orderby(orderby)
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
-        top=top,
-        orderby=[f"{_ORDERBY_FIELDS[sort]} desc"],
-        select=[
-            "id",
-            "subject",
-            "from",
-            "toRecipients",
-            "receivedDateTime",
-            "sentDateTime",
-            "isRead",
-            "hasAttachments",
-            "bodyPreview",
-            "body",
-        ],
-    )
-    builder = (
-        client.me.messages
-        if target is None
-        else client.me.mail_folders.by_mail_folder_id(target).messages
-    )
+    well_known = None if label is None else _well_known_folder(label)
+    target = well_known or label
+    sort = requested_sort or _default_orderby(well_known)
     try:
-        page = await builder.get(request_config(query))
+        page = await _get_messages(client, target, top=top, sort=sort)
     except ODataError as exc:
-        if target is not None and _is_folder_lookup_failure(exc):
-            raise MailFolderNotFoundError(_folder_not_found_message(target)) from exc
-        raise
+        # An exact well-known name cannot be a stale id, so only fall back for
+        # free-form labels: a real folder of that display name wins over the alias.
+        if label is None or well_known is not None or not _is_folder_lookup_failure(exc):
+            raise
+        target, well_known = await _resolve_folder_fallback(client, label)
+        if target is None:
+            raise MailFolderNotFoundError(_folder_not_found_message(label)) from exc
+        sort = requested_sort or _default_orderby(well_known)
+        page = await _get_messages(client, target, top=top, sort=sort)
     items = [] if page is None else (page.value or [])
     return {
         "folder": target,
@@ -520,14 +510,32 @@ def resolve_mail_body(
     return content, label, graph_type
 
 
+_FOLDER_LOOKUP_ERROR_CODES = frozenset(
+    {
+        "errorfoldernotfound",
+        "errorinvalididmalformed",
+        "erroritemnotfound",
+        "resourcenotfound",
+    }
+)
 _FOLDER_PAGE_SIZE = 100
 # Guardrails for the recursive folder walk: mailboxes with deep or huge folder trees
 # should return a useful listing rather than fan out into hundreds of Graph calls.
 _MAX_FOLDERS = 500
 _MAX_FOLDER_DEPTH = 6
-# Sent-style folders have a null receivedDateTime, which collapses the default ordering.
-_SENT_ORDER_FOLDERS = frozenset({"drafts", "outbox", "sentitems"})
-_ORDERBY_FIELDS = {"received": "receivedDateTime", "sent": "sentDateTime"}
+_ORDERBY_FIELDS = {
+    "created": "createdDateTime",
+    "received": "receivedDateTime",
+    "sent": "sentDateTime",
+}
+# Outbound folders have a null receivedDateTime, which collapses the default ordering.
+# Drafts and Outbox have never been sent either, so they order by creation instead.
+_FOLDER_DEFAULT_ORDERBY = {
+    "drafts": "created",
+    "outbox": "created",
+    "sentitems": "sent",
+}
+# Everyday spellings, applied only after a real folder of that name fails to match.
 _MAIL_FOLDER_ALIASES = {
     "deleted": "deleteditems",
     "draft": "drafts",
@@ -644,6 +652,25 @@ async def _fetch_attachment_bytes(
     return bytes(result)
 
 
+def _ambiguous_folder_message(label: str, matches: list[dict[str, Any]]) -> str:
+    listed = "; ".join(
+        f"{sanitize_terminal(str(item.get('path') or ''))} (id={item.get('id')})"
+        for item in matches
+    )
+    return (
+        f"mail folder name is ambiguous: {sanitize_terminal(label)!r} matches {listed}. "
+        "Pass the folder id instead."
+    )
+
+
+def _default_orderby(well_known: str | None) -> str:
+    return _FOLDER_DEFAULT_ORDERBY.get(well_known or "", "received")
+
+
+def _folder_match_key(label: str) -> str:
+    return re.sub(r"[\s_-]+", "", label.casefold())
+
+
 def _folder_not_found_message(folder: str) -> str:
     known = ", ".join(WELL_KNOWN_MAIL_FOLDERS)
     return (
@@ -652,15 +679,44 @@ def _folder_not_found_message(folder: str) -> str:
     )
 
 
+async def _get_messages(client: Any, folder: str | None, *, top: int, sort: str) -> Any:
+    query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+        top=top,
+        orderby=[f"{_ORDERBY_FIELDS[sort]} desc"],
+        select=[
+            "id",
+            "subject",
+            "from",
+            "toRecipients",
+            "createdDateTime",
+            "receivedDateTime",
+            "sentDateTime",
+            "isRead",
+            "hasAttachments",
+            "bodyPreview",
+            "body",
+        ],
+    )
+    builder = (
+        client.me.messages
+        if folder is None
+        else client.me.mail_folders.by_mail_folder_id(folder).messages
+    )
+    return await builder.get(request_config(query))
+
+
 def _is_folder_lookup_failure(exc: ODataError) -> bool:
-    """True when Graph rejected the folder segment rather than the query itself."""
+    """True when Graph rejected the folder segment rather than the query itself.
+
+    A bare 400 is not enough: Graph also returns it for query-level problems such as
+    a --top above its cap, and reporting those as a missing folder sends the operator
+    after the wrong thing. Only id-shaped complaints count.
+    """
     status = getattr(exc, "response_status_code", None)
     code = str(getattr(getattr(exc, "error", None), "code", "") or "").casefold()
-    return status in {400, 404} or code in {
-        "errorinvalididmalformed",
-        "erroritemnotfound",
-        "resourcenotfound",
-    }
+    if code in _FOLDER_LOOKUP_ERROR_CODES:
+        return True
+    return status == 404
 
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:
@@ -674,8 +730,11 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
     if msg.body and msg.body.content:
         body_html = msg.body.content
         body_text = _html_to_text(body_html)
+    created = getattr(msg, "created_date_time", None)
+    sent = getattr(msg, "sent_date_time", None)
     return {
         "body_html": body_html,
+        "created": str(created) if created else None,
         "body_preview": msg.body_preview,
         "body_text": body_text,
         "from_email": from_email,
@@ -684,7 +743,7 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
         "id": msg.id,
         "is_read": bool(msg.is_read),
         "received": str(msg.received_date_time) if msg.received_date_time else None,
-        "sent": str(sent) if (sent := getattr(msg, "sent_date_time", None)) else None,
+        "sent": str(sent) if sent else None,
         "subject": msg.subject,
         "to_email": _primary_to_address(msg),
     }
@@ -707,29 +766,47 @@ def _primary_to_address(msg: Any) -> str | None:
     return None
 
 
-def _resolve_mail_folder(raw: str | None) -> str | None:
-    """Map --folder to a Graph well-known name, or pass it through as a folder id."""
-    if raw is None:
-        return None
-    label = raw.strip()
-    if not label:
-        raise ValueError("--folder cannot be empty")
-    key = re.sub(r"[\s_-]+", "", label.casefold())
+async def _resolve_folder_fallback(client: Any, label: str) -> tuple[str | None, str | None]:
+    """Resolve a --folder label Graph rejected as an id, returning (target, well-known).
+
+    A real folder with that display name wins over the alias table, so a mailbox that
+    kept both "Sent Items" and a custom "Sent" after an IMAP migration can still reach
+    its own folder by name instead of being silently redirected.
+    """
+    key = _folder_match_key(label)
+    folders: list[dict[str, Any]] = []
+    await _collect_mail_folders(client, client.me.mail_folders, folders=folders, prefix="", depth=0)
+    matches = [
+        item
+        for item in folders
+        if item.get("id")
+        and key
+        in {
+            _folder_match_key(str(item.get("name") or "")),
+            _folder_match_key(str(item.get("path") or "")),
+        }
+    ]
+    if len(matches) > 1:
+        raise MailFolderNotFoundError(_ambiguous_folder_message(label, matches))
+    if matches:
+        return str(matches[0]["id"]), None
     alias = _MAIL_FOLDER_ALIASES.get(key)
     if alias is not None:
-        return alias
-    if key in WELL_KNOWN_MAIL_FOLDERS:
-        return key
+        return alias, alias
+    return None, None
+
+
+def _validate_orderby(raw: str) -> str:
+    label = raw.strip().casefold()
+    if label not in _ORDERBY_FIELDS:
+        allowed = ", ".join(f"'{name}'" for name in sorted(_ORDERBY_FIELDS))
+        raise ValueError(f"--orderby must be one of {allowed}")
     return label
 
 
-def _resolve_orderby(raw: str | None, folder: str | None) -> str:
-    if raw is not None:
-        label = raw.strip().casefold()
-        if label not in _ORDERBY_FIELDS:
-            raise ValueError("--orderby must be 'received' or 'sent'")
-        return label
-    return "sent" if folder in _SENT_ORDER_FOLDERS else "received"
+def _well_known_folder(label: str) -> str | None:
+    key = _folder_match_key(label)
+    return key if key in WELL_KNOWN_MAIL_FOLDERS else None
 
 
 async def _require_message(client: Any, message_id: str) -> None:

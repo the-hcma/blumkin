@@ -950,8 +950,11 @@ def mail_folders_cmd(ctx: click.Context, as_json_flag: bool) -> None:
 @click.option(
     "--orderby",
     default=None,
-    type=click.Choice(["received", "sent"]),
-    help="Sort field; defaults to sent for sent-style folders, received otherwise.",
+    type=click.Choice(["created", "received", "sent"]),
+    help=(
+        "Sort field; defaults to sent for Sent Items, created for Drafts/Outbox, "
+        "received otherwise."
+    ),
 )
 @click.option("--top", default=10, show_default=True, type=int)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")

@@ -417,7 +417,7 @@ SKILLS: list[SkillSpec] = [
                 "name": "--orderby",
                 "required": False,
                 "type": "enum",
-                "values": ["received", "sent"],
+                "values": ["created", "received", "sent"],
             },
             {"name": "--top", "required": False, "type": "int"},
         ],
