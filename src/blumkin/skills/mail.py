@@ -701,10 +701,10 @@ _ID_LOOKUP_ERROR_CODES = frozenset(
 # should return a useful listing rather than fan out into hundreds of Graph calls.
 _MAX_FOLDERS = 500
 _MAX_FOLDER_DEPTH = 6
-# Cap on the local text scan. Graph returns roughly 100 messages per request, so this
-# bounds a miss to a handful of round-trips: deep enough for the recent mail people ask
-# about, shallow enough that a wrong guess does not hang for a minute. --search reaches
-# the whole mailbox server-side when this is not far enough.
+# Cap on the local text scan, applied at page boundaries. Graph returns roughly 100
+# messages per request, so this bounds a miss to a handful of round-trips: deep enough
+# for the recent mail people ask about, shallow enough that a wrong guess does not hang
+# for a minute. --search reaches the whole mailbox server-side when this is not enough.
 _MAX_SCANNED = 500
 _ORDERBY_FIELDS = {
     "created": "createdDateTime",
@@ -1025,10 +1025,11 @@ def _matches_text(msg: Any, *, sender: str | None, subject: str | None) -> bool:
             return False
     if sender:
         email = getattr(getattr(msg, "from_", None), "email_address", None)
-        haystack = " ".join(
-            str(getattr(email, attr, "") or "") for attr in ("address", "name")
-        ).casefold()
-        if sender.casefold() not in haystack:
+        needle = sender.casefold()
+        # Checked per field: joining them would let a query straddle the boundary and
+        # match text that appears in neither the address nor the name.
+        fields = (str(getattr(email, attr, "") or "").casefold() for attr in ("address", "name"))
+        if not any(needle in field for field in fields):
             return False
     return True
 
@@ -1216,11 +1217,12 @@ async def _scan_messages(
                 matches.append(msg)
                 if len(matches) >= top:
                     return matches, scanned, True
-            if scanned >= _MAX_SCANNED:
-                return matches, scanned, False
         link = getattr(page, "odata_next_link", None)
         if not link:
+            # Reaching the end is complete even at the cap: nothing was left unread.
             return matches, scanned, True
+        if scanned >= _MAX_SCANNED:
+            return matches, scanned, False
         page = await builder.with_url(str(link)).get()
     return matches, scanned, True
 

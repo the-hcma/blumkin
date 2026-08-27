@@ -626,6 +626,36 @@ def test_mail_list_wires_filters_and_parses_dates(monkeypatch) -> None:
     assert seen["until"] == datetime(2026, 8, 8, tzinfo=ZoneInfo("UTC"))
 
 
+def test_mail_list_rejects_an_unknown_timezone(monkeypatch) -> None:
+    """A flag typo is a usage error; blaming Graph would send the operator elsewhere."""
+
+    async def _list(**_kwargs):
+        raise AssertionError("should not reach Graph")
+
+    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["mail", "list", "--since", "2026-08-01", "--tz", "Not/AZone", "--json"]
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
+def test_mail_list_without_bounds_ignores_the_timezone(monkeypatch) -> None:
+    """A plain listing has no date to localize, so it must not fail over --tz."""
+    seen: dict[str, object] = {}
+
+    async def _list(**kwargs):
+        seen.update(kwargs)
+        return {"filters": {}, "folder": None, "items": [], "orderby": "received", "top": 10}
+
+    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "list", "--tz", "Not/AZone", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["since"] is None
+
+
 def test_mail_list_search_conflict_exits_usage(monkeypatch) -> None:
     async def _list(**_kwargs):
         raise ValueError("--search cannot be combined with --from")

@@ -67,14 +67,43 @@ def test_mail_list_stops_scanning_at_the_cap(monkeypatch) -> None:
     client = _client(monkeypatch)
     monkeypatch.setattr("blumkin.skills.mail._MAX_SCANNED", 3)
     client.me.messages.get = AsyncMock(
-        return_value=_page([_msg("Sam Lee", "lunch") for _ in range(5)])
+        return_value=_page(
+            [_msg("Sam Lee", "lunch") for _ in range(5)], next_link="https://graph/next"
+        )
     )
 
     payload = asyncio.run(mail_list(sender="Rebecca"))
 
     assert payload["items"] == []
-    assert payload["filters"]["scanned"] == 3
+    assert payload["filters"]["scanned"] == 5
     assert payload["filters"]["complete"] is False
+    client.me.messages.with_url.assert_not_called()
+
+
+def test_mail_list_calls_a_scan_complete_when_it_reaches_the_end_at_the_cap(monkeypatch) -> None:
+    """Hitting the cap on the final page still read everything, so it is not truncated."""
+    client = _client(monkeypatch)
+    monkeypatch.setattr("blumkin.skills.mail._MAX_SCANNED", 5)
+    client.me.messages.get = AsyncMock(
+        return_value=_page([_msg("Sam Lee", "lunch") for _ in range(5)])
+    )
+
+    payload = asyncio.run(mail_list(sender="Rebecca"))
+
+    assert payload["filters"]["scanned"] == 5
+    assert payload["filters"]["complete"] is True
+
+
+def test_mail_list_does_not_match_across_the_address_and_name_boundary(monkeypatch) -> None:
+    """Joining the fields would match text present in neither of them."""
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(
+        return_value=_page([_msg("Bob", "budget", address="alice@example.com")])
+    )
+
+    payload = asyncio.run(mail_list(sender="m b"))
+
+    assert payload["items"] == []
 
 
 def test_mail_list_stops_scanning_once_top_matches_are_found(monkeypatch) -> None:

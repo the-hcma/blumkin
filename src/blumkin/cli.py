@@ -167,6 +167,9 @@ def _mail_time_bounds(
     until: str | None,
 ) -> tuple[datetime | None, datetime | None]:
     """Parse --since/--until in the operator's timezone, as `calendar view` does."""
+    if since is None and until is None:
+        # Resolving a zone nobody asked about would reject a plain listing over --tz.
+        return (None, None)
     tz = ZoneInfo(_tz_name(ctx, tz_flag) or load_config().default_tz)
     return (
         None if since is None else parse_local_datetime(since, tz),
@@ -959,6 +962,9 @@ def mail_inbox_cmd(
                 until=until_dt,
             )
         )
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except ValueError as exc:
         _raise_mail_value_error(exc, as_json=as_json)
     except Exception as exc:
@@ -1080,6 +1086,9 @@ def mail_list_cmd(
                 until=until_dt,
             )
         )
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except MailFolderNotFoundError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
