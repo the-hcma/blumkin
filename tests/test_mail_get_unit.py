@@ -46,6 +46,18 @@ def test_mail_get_converts_locally_when_graph_ignores_the_preference(monkeypatch
     assert payload["message"]["body_type"] == "text"
 
 
+def test_mail_get_labels_a_text_body_as_text_even_when_html_was_asked_for(monkeypatch) -> None:
+    """The label must follow the body: claiming HTML over plain text misleads a parser."""
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.get = AsyncMock(return_value=_message(body="plain words", body_type=BodyType.Text))
+
+    payload = asyncio.run(mail_get(message_id="msg-1", body_type="html"))
+
+    assert payload["message"]["body"] == "plain words"
+    assert payload["message"]["body_type"] == "text"
+
+
 def test_mail_get_returns_html_untouched_when_asked(monkeypatch) -> None:
     client = _client(monkeypatch)
     item = client.me.messages.by_message_id.return_value
