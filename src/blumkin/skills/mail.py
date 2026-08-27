@@ -167,9 +167,11 @@ def format_get_human(payload: dict[str, Any]) -> list[str]:
             lines.append(f"  {label}: {', '.join(shown)}")
     stamp = msg.get("received") or msg.get("sent") or msg.get("created")
     lines.append(f"  date: {stamp or '(no date)'}")
+    # `is False` rather than `not`: an absent read state is unknown, and rendering that
+    # as "unread" would state something about the message that was never reported.
     flags = [
         name
-        for name, on in (("unread", not msg.get("is_read")), ("draft", msg.get("is_draft")))
+        for name, on in (("unread", msg.get("is_read") is False), ("draft", msg.get("is_draft")))
         if on
     ]
     if flags:

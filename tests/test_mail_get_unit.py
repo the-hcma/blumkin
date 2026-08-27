@@ -44,13 +44,23 @@ def test_format_get_human_leads_with_the_subject_then_the_body() -> None:
     assert lines[-2:] == ["first line", "second line"]
 
 
+def test_format_get_human_flags_an_unread_draft() -> None:
+    lines = format_get_human({"message": {"is_draft": True, "is_read": False, "subject": "WIP"}})
+
+    assert "  flags: unread, draft" in lines
+
+
 def test_format_get_human_survives_a_bare_message() -> None:
+    """An absent read state is unknown, so it must not be reported as unread."""
     lines = format_get_human({"message": {}})
 
-    assert lines[0] == "(no subject)"
-    assert "  from: (unknown sender)" in lines
-    assert "  date: (no date)" in lines
-    assert lines[-1] == "(no body)"
+    assert lines == [
+        "(no subject)",
+        "  from: (unknown sender)",
+        "  date: (no date)",
+        "",
+        "(no body)",
+    ]
 
 
 def test_mail_get_asks_graph_to_convert_the_body(monkeypatch) -> None:
