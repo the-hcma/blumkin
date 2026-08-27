@@ -26,6 +26,9 @@ covers the job.
      folder's display name; Sent Items orders by `sentDateTime` and Drafts/Outbox by
      `createdDateTime`, since `receivedDateTime` is null there — `--orderby
      created|received|sent` overrides)
+     `blumkin mail get --id '<message-id>' --json` (one message in full: participants,
+     timestamps, attachments, and body — use this instead of listing and filtering
+     client-side; `--body-type html` keeps the markup, default `text`)
      `blumkin mail folders --json` (folder ids and counts, for custom folders)
      `blumkin mail attachments --id '<message-id>' --json`
      `blumkin mail attachments download --message-id '<message-id>' --attachment-id '<id>' --out ./file.docx`

@@ -28,6 +28,9 @@ from msgraph.generated.users.item.mail_folders.mail_folders_request_builder impo
 from msgraph.generated.users.item.messages.item.attachments.attachments_request_builder import (
     AttachmentsRequestBuilder,
 )
+from msgraph.generated.users.item.messages.item.message_item_request_builder import (
+    MessageItemRequestBuilder,
+)
 from msgraph.generated.users.item.messages.messages_request_builder import (
     MessagesRequestBuilder,
 )
@@ -147,6 +150,39 @@ def format_folders_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def format_get_human(payload: dict[str, Any]) -> list[str]:
+    msg = payload.get("message") or {}
+    sender = (
+        _format_participant({"email": msg.get("from_email"), "name": msg.get("from_name")})
+        or "(unknown sender)"
+    )
+    lines = [
+        sanitize_terminal(str(msg.get("subject") or "(no subject)")),
+        f"  from: {sender}",
+    ]
+    for label, key in (("to", "to"), ("cc", "cc")):
+        people = [_format_participant(person) for person in msg.get(key) or []]
+        shown = [person for person in people if person]
+        if shown:
+            lines.append(f"  {label}: {', '.join(shown)}")
+    stamp = msg.get("received") or msg.get("sent") or msg.get("created")
+    lines.append(f"  date: {stamp or '(no date)'}")
+    flags = [
+        name
+        for name, on in (("unread", not msg.get("is_read")), ("draft", msg.get("is_draft")))
+        if on
+    ]
+    if flags:
+        lines.append(f"  flags: {', '.join(flags)}")
+    for item in msg.get("attachments") or []:
+        name = sanitize_terminal(str(item.get("name") or item.get("id") or ""))
+        lines.append(f"  attachment: {name!r} ({item.get('size')} bytes) id={item.get('id')}")
+    lines.append("")
+    body = str(msg.get("body") or "").splitlines() or ["(no body)"]
+    lines.extend(sanitize_terminal(line) for line in body)
+    return lines
+
+
 def format_inbox_human(payload: dict[str, Any]) -> list[str]:
     lines = [f"Inbox (top {payload['top']}): {len(payload['items'])} message(s)"]
     if not payload["items"]:
@@ -198,18 +234,7 @@ async def mail_attachments_list(
     client = create_graph_client(cfg)
     mid = message_id.strip()
     await _require_message(client, mid)
-    query = AttachmentsRequestBuilder.AttachmentsRequestBuilderGetQueryParameters(
-        select=["id", "name", "size", "contentType", "isInline"],
-    )
-    page = await client.me.messages.by_message_id(mid).attachments.get(request_config(query))
-    raw: list[Any] = []
-    while page is not None:
-        raw.extend(page.value or [])
-        link = getattr(page, "odata_next_link", None)
-        if not link:
-            break
-        page = await client.me.messages.by_message_id(mid).attachments.with_url(link).get()
-    return {"attachments": [_attachment_to_dict(att) for att in raw], "message_id": mid}
+    return {"attachments": await _collect_attachments(client, mid), "message_id": mid}
 
 
 async def mail_attachments_download(
@@ -367,6 +392,57 @@ async def mail_folders(*, config: BlumkinConfig | None = None) -> dict[str, Any]
     }
 
 
+async def mail_get(
+    *,
+    message_id: str,
+    body_type: str = "text",
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Read one message in full — participants, timestamps, attachments, and body."""
+    if not message_id.strip():
+        raise ValueError("--id is required")
+    wanted = _parse_body_type(body_type)
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    mid = message_id.strip()
+    query = MessageItemRequestBuilder.MessageItemRequestBuilderGetQueryParameters(
+        select=[
+            "body",
+            "bodyPreview",
+            "ccRecipients",
+            "conversationId",
+            "createdDateTime",
+            "from",
+            "hasAttachments",
+            "id",
+            "internetMessageId",
+            "isDraft",
+            "isRead",
+            "receivedDateTime",
+            "sentDateTime",
+            "subject",
+            "toRecipients",
+            "webLink",
+        ],
+    )
+    # Graph converts the body for us when asked, which beats stripping tags locally.
+    headers = {"Prefer": f'outlook.body-content-type="{wanted}"'}
+    try:
+        msg = await client.me.messages.by_message_id(mid).get(
+            request_config(query, headers=headers)
+        )
+    except ODataError as exc:
+        if not _is_id_lookup_failure(exc):
+            raise
+        raise MailMessageNotFoundError(f"message not found: {mid}") from exc
+    if msg is None or not msg.id:
+        raise MailMessageNotFoundError(f"message not found: {mid}")
+    detail = _message_detail(msg, wanted=wanted)
+    if detail["has_attachments"]:
+        detail["attachments"] = await _collect_attachments(client, mid)
+    return {"message": detail}
+
+
 async def mail_inbox(
     *,
     top: int = 10,
@@ -400,7 +476,7 @@ async def mail_list(
     except ODataError as exc:
         # An exact well-known name cannot be a stale id, so only fall back for
         # free-form labels: a real folder of that display name wins over the alias.
-        if label is None or well_known is not None or not _is_folder_lookup_failure(exc):
+        if label is None or well_known is not None or not _is_id_lookup_failure(exc):
             raise
         target, well_known, truncated = await _resolve_folder_fallback(client, label)
         if target is None:
@@ -524,7 +600,10 @@ def resolve_mail_body(
     return content, label, graph_type
 
 
-_FOLDER_LOOKUP_ERROR_CODES = frozenset(
+_FOLDER_PAGE_SIZE = 100
+# Graph's id-shaped complaints, shared by the folder and message lookups: both mean
+# "that id does not name anything" rather than "your query was wrong".
+_ID_LOOKUP_ERROR_CODES = frozenset(
     {
         "errorfoldernotfound",
         "errorinvalididmalformed",
@@ -532,7 +611,6 @@ _FOLDER_LOOKUP_ERROR_CODES = frozenset(
         "resourcenotfound",
     }
 )
-_FOLDER_PAGE_SIZE = 100
 # Guardrails for the recursive folder walk: mailboxes with deep or huge folder trees
 # should return a useful listing rather than fan out into hundreds of Graph calls.
 _MAX_FOLDERS = 500
@@ -591,6 +669,22 @@ def _attachment_to_dict(attachment: Any) -> dict[str, Any]:
     if skipped:
         payload["skip_reason"] = _skip_reason(attachment)
     return payload
+
+
+async def _collect_attachments(client: Any, message_id: str) -> list[dict[str, Any]]:
+    query = AttachmentsRequestBuilder.AttachmentsRequestBuilderGetQueryParameters(
+        select=["id", "name", "size", "contentType", "isInline"],
+    )
+    builder = client.me.messages.by_message_id(message_id).attachments
+    page = await builder.get(request_config(query))
+    raw: list[Any] = []
+    while page is not None:
+        raw.extend(page.value or [])
+        link = getattr(page, "odata_next_link", None)
+        if not link:
+            break
+        page = await builder.with_url(link).get()
+    return [_attachment_to_dict(att) for att in raw]
 
 
 async def _collect_mail_folders(
@@ -692,6 +786,14 @@ def _default_orderby(well_known: str | None) -> str:
     return _FOLDER_DEFAULT_ORDERBY.get(well_known or "", "received")
 
 
+def _format_participant(person: dict[str, Any]) -> str:
+    name = sanitize_terminal(str(person.get("name") or ""))
+    email = sanitize_terminal(str(person.get("email") or ""))
+    if name and email:
+        return f"{name} <{email}>"
+    return name or email
+
+
 def _folder_match_key(label: str) -> str:
     return re.sub(r"[\s_-]+", "", label.casefold())
 
@@ -744,18 +846,64 @@ async def _get_messages(client: Any, folder: str | None, *, top: int, sort: str)
     return await builder.get(request_config(query))
 
 
-def _is_folder_lookup_failure(exc: ODataError) -> bool:
-    """True when Graph rejected the folder segment rather than the query itself.
+def _is_id_lookup_failure(exc: ODataError) -> bool:
+    """True when Graph rejected an id in the path rather than the query itself.
 
     A bare 400 is not enough: Graph also returns it for query-level problems such as
-    a --top above its cap, and reporting those as a missing folder sends the operator
-    after the wrong thing. Only id-shaped complaints count.
+    a --top above its cap, and reporting those as a missing folder or message sends
+    the operator after the wrong thing. Only id-shaped complaints count.
     """
     status = getattr(exc, "response_status_code", None)
     code = str(getattr(getattr(exc, "error", None), "code", "") or "").casefold()
-    if code in _FOLDER_LOOKUP_ERROR_CODES:
+    if code in _ID_LOOKUP_ERROR_CODES:
         return True
     return status == 404
+
+
+def _message_detail(msg: Any, *, wanted: MailBodyType) -> dict[str, Any]:
+    """Shape one message for ``mail get``, honouring the requested body type.
+
+    Graph normally converts the body via the ``Prefer`` header, but the response says
+    what it actually sent, so trust that and convert locally only when the two differ.
+    """
+    body = None
+    body_type: MailBodyType = wanted
+    if msg.body is not None and msg.body.content:
+        body = str(msg.body.content)
+        returned: MailBodyType = "html" if msg.body.content_type == BodyType.Html else "text"
+        if returned == "html" and wanted == "text":
+            body = _html_to_text(body)
+        else:
+            body_type = returned
+    from_email = None
+    from_name = None
+    if msg.from_ and msg.from_.email_address:
+        from_email = msg.from_.email_address.address
+        from_name = msg.from_.email_address.name
+    created = getattr(msg, "created_date_time", None)
+    sent = getattr(msg, "sent_date_time", None)
+    received = getattr(msg, "received_date_time", None)
+    return {
+        "attachments": [],
+        "body": body,
+        "body_preview": msg.body_preview,
+        "body_type": body_type,
+        "cc": _participants(getattr(msg, "cc_recipients", None)),
+        "conversation_id": getattr(msg, "conversation_id", None),
+        "created": str(created) if created else None,
+        "from_email": from_email,
+        "from_name": from_name,
+        "has_attachments": bool(msg.has_attachments),
+        "id": msg.id,
+        "internet_message_id": getattr(msg, "internet_message_id", None),
+        "is_draft": bool(getattr(msg, "is_draft", False)),
+        "is_read": bool(msg.is_read),
+        "received": str(received) if received else None,
+        "sent": str(sent) if sent else None,
+        "subject": msg.subject,
+        "to": _participants(getattr(msg, "to_recipients", None)),
+        "web_link": getattr(msg, "web_link", None),
+    }
 
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:
@@ -793,6 +941,19 @@ def _parse_body_type(raw: str) -> MailBodyType:
     if label not in {"html", "text"}:
         raise ValueError("--body-type must be 'text' or 'html'")
     return label  # type: ignore[return-value]
+
+
+def _participants(recipients: Any) -> list[dict[str, Any]]:
+    people: list[dict[str, Any]] = []
+    for recipient in recipients or []:
+        email = getattr(recipient, "email_address", None)
+        if email is None:
+            continue
+        address = getattr(email, "address", None)
+        name = getattr(email, "name", None)
+        if address or name:
+            people.append({"email": address, "name": name})
+    return people
 
 
 def _primary_to_address(msg: Any) -> str | None:
