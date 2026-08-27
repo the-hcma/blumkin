@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
 from msgraph.generated.users.item.calendar.calendar_view.calendar_view_request_builder import (
@@ -171,6 +171,152 @@ def parse_local_datetime(raw: str, tz: ZoneInfo) -> datetime:
     return dt.astimezone(tz)
 
 
+# Windows zone names, which Graph returns for mailbox defaults alongside IANA names.
+# Generated from the CLDR windowsZones.xml default (territory="001") mappings; keys are
+# casefolded. Unlisted names fall back to UTC rather than raising.
+_WINDOWS_TZ_ALIASES = {
+    "afghanistan standard time": "Asia/Kabul",
+    "alaskan standard time": "America/Anchorage",
+    "aleutian standard time": "America/Adak",
+    "altai standard time": "Asia/Barnaul",
+    "arab standard time": "Asia/Riyadh",
+    "arabian standard time": "Asia/Dubai",
+    "arabic standard time": "Asia/Baghdad",
+    "argentina standard time": "America/Buenos_Aires",
+    "astrakhan standard time": "Europe/Astrakhan",
+    "atlantic standard time": "America/Halifax",
+    "aus central standard time": "Australia/Darwin",
+    "aus central w. standard time": "Australia/Eucla",
+    "aus eastern standard time": "Australia/Sydney",
+    "azerbaijan standard time": "Asia/Baku",
+    "azores standard time": "Atlantic/Azores",
+    "bahia standard time": "America/Bahia",
+    "bangladesh standard time": "Asia/Dhaka",
+    "belarus standard time": "Europe/Minsk",
+    "bougainville standard time": "Pacific/Bougainville",
+    "canada central standard time": "America/Regina",
+    "cape verde standard time": "Atlantic/Cape_Verde",
+    "caucasus standard time": "Asia/Yerevan",
+    "cen. australia standard time": "Australia/Adelaide",
+    "central america standard time": "America/Guatemala",
+    "central asia standard time": "Asia/Bishkek",
+    "central brazilian standard time": "America/Cuiaba",
+    "central europe standard time": "Europe/Budapest",
+    "central european standard time": "Europe/Warsaw",
+    "central pacific standard time": "Pacific/Guadalcanal",
+    "central standard time": "America/Chicago",
+    "central standard time (mexico)": "America/Mexico_City",
+    "chatham islands standard time": "Pacific/Chatham",
+    "china standard time": "Asia/Shanghai",
+    "cuba standard time": "America/Havana",
+    "dateline standard time": "Etc/GMT+12",
+    "e. africa standard time": "Africa/Nairobi",
+    "e. australia standard time": "Australia/Brisbane",
+    "e. europe standard time": "Europe/Chisinau",
+    "e. south america standard time": "America/Sao_Paulo",
+    "easter island standard time": "Pacific/Easter",
+    "eastern standard time": "America/New_York",
+    "eastern standard time (mexico)": "America/Cancun",
+    "egypt standard time": "Africa/Cairo",
+    "ekaterinburg standard time": "Asia/Yekaterinburg",
+    "fiji standard time": "Pacific/Fiji",
+    "fle standard time": "Europe/Kiev",
+    "georgian standard time": "Asia/Tbilisi",
+    "gmt standard time": "Europe/London",
+    "greenland standard time": "America/Godthab",
+    "greenwich standard time": "Atlantic/Reykjavik",
+    "gtb standard time": "Europe/Bucharest",
+    "haiti standard time": "America/Port-au-Prince",
+    "hawaiian standard time": "Pacific/Honolulu",
+    "india standard time": "Asia/Calcutta",
+    "iran standard time": "Asia/Tehran",
+    "israel standard time": "Asia/Jerusalem",
+    "jordan standard time": "Asia/Amman",
+    "kaliningrad standard time": "Europe/Kaliningrad",
+    "korea standard time": "Asia/Seoul",
+    "libya standard time": "Africa/Tripoli",
+    "line islands standard time": "Pacific/Kiritimati",
+    "lord howe standard time": "Australia/Lord_Howe",
+    "magadan standard time": "Asia/Magadan",
+    "magallanes standard time": "America/Punta_Arenas",
+    "marquesas standard time": "Pacific/Marquesas",
+    "mauritius standard time": "Indian/Mauritius",
+    "middle east standard time": "Asia/Beirut",
+    "montevideo standard time": "America/Montevideo",
+    "morocco standard time": "Africa/Casablanca",
+    "mountain standard time": "America/Denver",
+    "mountain standard time (mexico)": "America/Mazatlan",
+    "myanmar standard time": "Asia/Rangoon",
+    "n. central asia standard time": "Asia/Novosibirsk",
+    "namibia standard time": "Africa/Windhoek",
+    "nepal standard time": "Asia/Katmandu",
+    "new zealand standard time": "Pacific/Auckland",
+    "newfoundland standard time": "America/St_Johns",
+    "norfolk standard time": "Pacific/Norfolk",
+    "north asia east standard time": "Asia/Irkutsk",
+    "north asia standard time": "Asia/Krasnoyarsk",
+    "north korea standard time": "Asia/Pyongyang",
+    "omsk standard time": "Asia/Omsk",
+    "pacific sa standard time": "America/Santiago",
+    "pacific standard time": "America/Los_Angeles",
+    "pacific standard time (mexico)": "America/Tijuana",
+    "pakistan standard time": "Asia/Karachi",
+    "paraguay standard time": "America/Asuncion",
+    "qyzylorda standard time": "Asia/Qyzylorda",
+    "romance standard time": "Europe/Paris",
+    "russia time zone 10": "Asia/Srednekolymsk",
+    "russia time zone 11": "Asia/Kamchatka",
+    "russia time zone 3": "Europe/Samara",
+    "russian standard time": "Europe/Moscow",
+    "sa eastern standard time": "America/Cayenne",
+    "sa pacific standard time": "America/Bogota",
+    "sa western standard time": "America/La_Paz",
+    "saint pierre standard time": "America/Miquelon",
+    "sakhalin standard time": "Asia/Sakhalin",
+    "samoa standard time": "Pacific/Apia",
+    "sao tome standard time": "Africa/Sao_Tome",
+    "saratov standard time": "Europe/Saratov",
+    "se asia standard time": "Asia/Bangkok",
+    "singapore standard time": "Asia/Singapore",
+    "south africa standard time": "Africa/Johannesburg",
+    "south sudan standard time": "Africa/Juba",
+    "sri lanka standard time": "Asia/Colombo",
+    "sudan standard time": "Africa/Khartoum",
+    "syria standard time": "Asia/Damascus",
+    "taipei standard time": "Asia/Taipei",
+    "tasmania standard time": "Australia/Hobart",
+    "tocantins standard time": "America/Araguaina",
+    "tokyo standard time": "Asia/Tokyo",
+    "tomsk standard time": "Asia/Tomsk",
+    "tonga standard time": "Pacific/Tongatapu",
+    "transbaikal standard time": "Asia/Chita",
+    "turkey standard time": "Europe/Istanbul",
+    "turks and caicos standard time": "America/Grand_Turk",
+    "ulaanbaatar standard time": "Asia/Ulaanbaatar",
+    "us eastern standard time": "America/Indianapolis",
+    "us mountain standard time": "America/Phoenix",
+    "utc": "Etc/UTC",
+    "utc+12": "Etc/GMT-12",
+    "utc+13": "Etc/GMT-13",
+    "utc-02": "Etc/GMT+2",
+    "utc-08": "Etc/GMT+8",
+    "utc-09": "Etc/GMT+9",
+    "utc-11": "Etc/GMT+11",
+    "venezuela standard time": "America/Caracas",
+    "vladivostok standard time": "Asia/Vladivostok",
+    "volgograd standard time": "Europe/Volgograd",
+    "w. australia standard time": "Australia/Perth",
+    "w. central africa standard time": "Africa/Lagos",
+    "w. europe standard time": "Europe/Berlin",
+    "w. mongolia standard time": "Asia/Hovd",
+    "west asia standard time": "Asia/Tashkent",
+    "west bank standard time": "Asia/Hebron",
+    "west pacific standard time": "Pacific/Port_Moresby",
+    "yakutsk standard time": "Asia/Yakutsk",
+    "yukon standard time": "America/Whitehorse",
+}
+
+
 def _busy_slot_to_dict(item: Any, display_tz: ZoneInfo) -> dict[str, Any]:
     status = None
     if getattr(item, "status", None) is not None:
@@ -218,14 +364,41 @@ def _graph_dt_to_iso(value: Any, display_tz: ZoneInfo) -> str | None:
     if value is None or not getattr(value, "date_time", None):
         return None
     raw = str(value.date_time)
-    # Graph calendarView often returns UTC-naive or with Z; normalize for display.
     if raw.endswith("Z"):
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     else:
         dt = datetime.fromisoformat(raw)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+            # calendarView sends a Prefer: outlook.timezone header and omits timeZone,
+            # so UTC is right there. POST /me/events has no such header: it echoes a
+            # naive dateTime alongside the zone the event was created in, and reading
+            # that as UTC shifts the reported time by the local offset (issue #46).
+            source_tz = _resolve_tz(getattr(value, "time_zone", None))
+            dt = dt.replace(tzinfo=source_tz or ZoneInfo("UTC"))
     return dt.astimezone(display_tz).isoformat()
+
+
+def _resolve_tz(name: Any) -> ZoneInfo | None:
+    """Best-effort ``ZoneInfo`` from a Graph ``timeZone`` label (IANA or Windows name).
+
+    Returns ``None`` for absent or unrecognized zones so callers can fall back to UTC
+    rather than failing a read on an unmapped label.
+    """
+    if name is None:
+        return None
+    label = str(name).strip()
+    if not label:
+        return None
+    if label.casefold() in {"tzone://microsoft/utc", "utc"}:
+        return ZoneInfo("UTC")
+    for candidate in (label, _WINDOWS_TZ_ALIASES.get(label.casefold())):
+        if not candidate:
+            continue
+        try:
+            return ZoneInfo(candidate)
+        except ValueError, ZoneInfoNotFoundError:
+            continue
+    return None
 
 
 def _schedule_to_dict(entry: Any, display_tz: ZoneInfo) -> dict[str, Any]:
