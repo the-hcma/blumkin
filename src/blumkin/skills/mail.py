@@ -744,6 +744,9 @@ async def mail_update_draft(
         raise MailDraftNotFoundError(f"message not found: {mid}")
     if not existing.is_draft:
         raise MailDraftNotFoundError(f"message is not a draft: {mid}")
+    # Upload before PATCH so a failed --attach batch cannot leave subject/body/to changed
+    # while the CLI exits with an error (mail draft deletes the whole draft instead).
+    uploaded = await _upload_attachments(client, mid, pending)
     patch = Message()
     if subject is not None:
         if not subject.strip():
@@ -776,7 +779,7 @@ async def mail_update_draft(
         body_out = "html" if updated.body.content_type == BodyType.Html else "text"
     return {
         "draft": {
-            "attachments": await _upload_attachments(client, updated.id or mid, pending),
+            "attachments": uploaded,
             "body_type": body_out or "text",
             "id": updated.id or mid,
             "subject": updated.subject if updated.subject is not None else existing.subject,
@@ -1315,12 +1318,16 @@ def _primary_to_address(msg: Any) -> str | None:
 def _read_attachment(path: str) -> tuple[str, bytes]:
     """Read one ``--attach`` file into (name, bytes), rejecting what Graph would reject."""
     source = Path(path)
-    if source.is_dir():
-        raise MailAttachError(f"--attach must name a file, not a directory: {path}")
+    # is_file() is False for directories, devices, and FIFOs — those would hang or OOM on
+    # read_bytes (/dev/zero, an unwritten pipe) even when st_size looks small.
+    if not source.is_file():
+        if source.is_dir():
+            raise MailAttachError(f"--attach must name a file, not a directory: {path}")
+        if not source.exists():
+            raise MailAttachError(f"--attach file not found: {path}")
+        raise MailAttachError(f"--attach must name a regular file: {path}")
     try:
         size = source.stat().st_size
-    except FileNotFoundError as exc:
-        raise MailAttachError(f"--attach file not found: {path}") from exc
     except OSError as exc:
         raise MailAttachError(f"--attach file could not be read: {path}: {exc}") from exc
     if size >= _MAX_ATTACHMENT_BYTES:
@@ -1330,8 +1337,6 @@ def _read_attachment(path: str) -> tuple[str, bytes]:
         )
     try:
         raw = source.read_bytes()
-    except FileNotFoundError as exc:
-        raise MailAttachError(f"--attach file not found: {path}") from exc
     except OSError as exc:
         raise MailAttachError(f"--attach file could not be read: {path}: {exc}") from exc
     # The file may have grown between the size check and the read.

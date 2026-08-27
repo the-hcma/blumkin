@@ -174,9 +174,17 @@ def test_mail_update_draft_rolls_back_attachments_when_a_later_upload_fails(
     attachments.by_attachment_id.return_value.delete = delete
 
     with pytest.raises(RuntimeError, match="Graph said no"):
-        asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(first), str(second)]))
+        asyncio.run(
+            mail_update_draft(
+                draft_id="draft-1",
+                subject="New",
+                attach=[str(first), str(second)],
+            )
+        )
 
     delete.assert_awaited_once()
+    # Upload runs before PATCH, so a failed batch leaves subject/body/to untouched.
+    client.me.messages.by_message_id.return_value.patch.assert_not_awaited()
     # The pre-existing draft stays — only the attachment uploaded in this call is undone.
     client.me.messages.by_message_id.return_value.delete.assert_not_called()
 
@@ -196,12 +204,40 @@ def test_mail_update_draft_attaches_alongside_a_patch(tmp_path, monkeypatch) -> 
     source = tmp_path / "note.txt"
     source.write_bytes(b"hi")
     client = _draft_client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    order: list[str] = []
+    original_post = item.attachments.post
+    original_patch = item.patch
+
+    async def _post(att):
+        order.append("upload")
+        return await original_post(att)
+
+    async def _patch(msg):
+        order.append("patch")
+        return await original_patch(msg)
+
+    item.attachments.post = AsyncMock(side_effect=_post)
+    item.patch = AsyncMock(side_effect=_patch)
     payload = asyncio.run(
         mail_update_draft(draft_id="draft-1", subject="New", attach=[str(source)])
     )
     assert payload["draft"]["subject"] == "New"
     assert [item["name"] for item in payload["draft"]["attachments"]] == ["note.txt"]
-    client.me.messages.by_message_id.return_value.patch.assert_awaited_once()
+    # Attachments land before the field PATCH so a failed upload cannot leave a half-edit.
+    assert order == ["upload", "patch"]
+
+
+def test_mail_draft_rejects_a_non_regular_file(tmp_path, monkeypatch) -> None:
+    """Devices and FIFOs report st_size 0 and would hang or OOM on read_bytes."""
+    source = tmp_path / "pipe-or-device"
+    source.write_bytes(b"x")
+    monkeypatch.setattr(type(source), "is_file", lambda _self: False)
+    monkeypatch.setattr(type(source), "is_dir", lambda _self: False)
+    monkeypatch.setattr(type(source), "exists", lambda _self: True)
+    _client(monkeypatch)
+    with pytest.raises(MailAttachError, match="regular file"):
+        asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", attach=[str(source)]))
 
 
 def test_mail_update_draft_still_requires_a_field() -> None:
