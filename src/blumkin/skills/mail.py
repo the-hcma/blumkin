@@ -29,6 +29,15 @@ from msgraph.generated.users.item.mail_folders.mail_folders_request_builder impo
 from msgraph.generated.users.item.messages.item.attachments.attachments_request_builder import (
     AttachmentsRequestBuilder,
 )
+from msgraph.generated.users.item.messages.item.create_forward.create_forward_post_request_body import (  # noqa: E501
+    CreateForwardPostRequestBody,
+)
+from msgraph.generated.users.item.messages.item.create_reply.create_reply_post_request_body import (
+    CreateReplyPostRequestBody,
+)
+from msgraph.generated.users.item.messages.item.create_reply_all.create_reply_all_post_request_body import (  # noqa: E501
+    CreateReplyAllPostRequestBody,
+)
 from msgraph.generated.users.item.messages.item.message_item_request_builder import (
     MessageItemRequestBuilder,
 )
@@ -234,6 +243,19 @@ def format_list_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def format_reply_human(payload: dict[str, Any]) -> list[str]:
+    draft = payload.get("draft") or {}
+    recipients = ", ".join(sanitize_terminal(str(addr)) for addr in draft.get("to") or [])
+    return [
+        f"{draft.get('kind')} draft saved: {draft.get('subject')!r} "
+        f"→ {recipients or '(no recipient)'} ({draft.get('body_type')})",
+        f"  id={draft.get('id')}",
+        f"  in reply to {draft.get('source_message_id')}"
+        if draft.get("kind") != "forward"
+        else f"  forwarding {draft.get('source_message_id')}",
+    ]
+
+
 def format_send_draft_human(payload: dict[str, Any]) -> list[str]:
     return [f"Sent draft {payload.get('sent')!r}"]
 
@@ -405,6 +427,34 @@ async def mail_folders(*, config: BlumkinConfig | None = None) -> dict[str, Any]
         "limits": {"max_depth": _MAX_FOLDER_DEPTH, "max_folders": _MAX_FOLDERS},
         "truncated": truncated,
     }
+
+
+async def mail_forward(
+    *,
+    message_id: str,
+    to: str,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_type: str = "text",
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Create a forward draft, letting Graph carry over the original and its attachments."""
+    if not to.strip():
+        raise ValueError("--to is required")
+    comment = _resolve_comment(body=body, body_file=body_file, body_type=body_type)
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    mid = message_id.strip()
+    if not mid:
+        raise ValueError("--id is required")
+    request = CreateForwardPostRequestBody(
+        comment=comment,
+        to_recipients=[Recipient(email_address=EmailAddress(address=to.strip()))],
+    )
+    created = await _create_draft_from(
+        client.me.messages.by_message_id(mid).create_forward, request, message_id=mid
+    )
+    return {"draft": _draft_summary(created, source=mid, kind="forward")}
 
 
 async def mail_get(
@@ -587,6 +637,42 @@ async def mail_list(
         "outbound": well_known in _OUTBOUND_FOLDERS,
         "top": top,
     }
+
+
+async def mail_reply(
+    *,
+    message_id: str,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_type: str = "text",
+    reply_all: bool = False,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Create a reply draft through Graph so it threads with the original.
+
+    Composing a fresh draft with "RE:" prepended looks the same in the sender's outbox
+    but is not a reply: it carries no conversation, and Exchange has nothing from which
+    to write In-Reply-To and References on send, so it opens a new thread in the
+    recipient's client. Graph's createReply puts the draft in the original conversation
+    and inherits the recipients and subject.
+    """
+    comment = _resolve_comment(body=body, body_file=body_file, body_type=body_type)
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    mid = message_id.strip()
+    if not mid:
+        raise ValueError("--id is required")
+    item = client.me.messages.by_message_id(mid)
+    if reply_all:
+        created = await _create_draft_from(
+            item.create_reply_all, CreateReplyAllPostRequestBody(comment=comment), message_id=mid
+        )
+    else:
+        created = await _create_draft_from(
+            item.create_reply, CreateReplyPostRequestBody(comment=comment), message_id=mid
+        )
+    kind = "reply-all" if reply_all else "reply"
+    return {"draft": _draft_summary(created, source=mid, kind=kind)}
 
 
 async def mail_send_draft(
@@ -872,6 +958,19 @@ async def _collect_mail_folders(
     return truncated
 
 
+async def _create_draft_from(builder: Any, request: Any, *, message_id: str) -> Any:
+    """POST a create-reply/forward action, mapping a rejected id to not-found."""
+    try:
+        created = await builder.post(request)
+    except ODataError as exc:
+        if not _is_id_lookup_failure(exc):
+            raise
+        raise MailMessageNotFoundError(f"message not found: {message_id}") from exc
+    if created is None or not getattr(created, "id", None):
+        raise RuntimeError(f"Graph returned no draft for message: {message_id}")
+    return created
+
+
 async def _fetch_attachment_bytes(
     client: Any, message_id: str, attachment_id: str, attachment: Any
 ) -> bytes:
@@ -912,6 +1011,23 @@ def _ambiguous_folder_message(label: str, matches: list[dict[str, Any]]) -> str:
 
 def _default_orderby(well_known: str | None) -> str:
     return _FOLDER_DEFAULT_ORDERBY.get(well_known or "", "received")
+
+
+def _draft_summary(created: Any, *, source: str, kind: str) -> dict[str, Any]:
+    body_type = "text"
+    if created.body is not None and created.body.content_type == BodyType.Html:
+        body_type = "html"
+    return {
+        "body_type": body_type,
+        "conversation_id": getattr(created, "conversation_id", None),
+        "id": created.id,
+        "kind": kind,
+        "source_message_id": source,
+        "subject": created.subject,
+        "to": [
+            person["email"] for person in _participants(getattr(created, "to_recipients", None))
+        ],
+    }
 
 
 def _filter_notes(payload: dict[str, Any]) -> list[str]:
@@ -1155,6 +1271,21 @@ def _primary_to_address(msg: Any) -> str | None:
         if address:
             return str(address)
     return None
+
+
+def _resolve_comment(*, body: str | None, body_file: str | None, body_type: str) -> str:
+    """Resolve the reply/forward text, which is optional: an empty draft is editable.
+
+    Graph takes this as a ``comment`` rather than a body so the quoted original survives;
+    replacing the body would produce a message that threads but reads like a fresh one.
+    """
+    if body is None and body_file is None:
+        _parse_body_type(body_type)
+        return ""
+    content, _label, _graph_type = resolve_mail_body(
+        body=body, body_file=body_file, body_type=body_type
+    )
+    return content
 
 
 async def _resolve_folder_fallback(client: Any, label: str) -> tuple[str | None, str | None, bool]:

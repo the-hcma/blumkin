@@ -58,6 +58,12 @@ covers the job.
    - `blumkin calendar create --subject … --with email --start … --yes`
    - `blumkin calendar cancel --event-id '<id>' --yes`
    - `blumkin mail draft --to … --subject … --body …` (draft only; `--body-type html` / `--body-file` optional)
+  - `blumkin mail reply --id '<message-id>' --body …` (`--all` for reply-all). Use this
+    rather than a fresh draft with `RE:` prepended: Graph puts the draft in the original
+    conversation and inherits the recipients, so it threads in the recipient's client.
+    Draft only — send with `mail send-draft --yes`. The draft body is HTML because it
+    contains the quoted original, whatever `--body-type` you pass for your own text.
+  - `blumkin mail forward --id '<message-id>' --to … --body …` (draft only)
    - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` replaces the whole To list and refuses multi-To drafts)
    - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
    - `blumkin mail send-draft --id '<draft-id>' --yes`
