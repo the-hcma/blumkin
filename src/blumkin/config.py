@@ -17,6 +17,7 @@ class BlumkinConfig:
     client_id: str
     config_dir: Path
     default_tz: str
+    files_scopes: bool
     tenant_id: str
     wo1162425_scopes: bool
 
@@ -65,6 +66,7 @@ def load_config() -> BlumkinConfig:
         client_id=client_id,
         config_dir=directory,
         default_tz=default_tz,
+        files_scopes=_files_scopes_enabled(file_data),
         tenant_id=tenant_id,
         wo1162425_scopes=_wo1162425_scopes_enabled(file_data),
     )
@@ -93,6 +95,17 @@ def _env_bool(name: str) -> bool | None:
     if raw in {"0", "false", "no", "off"}:
         return False
     return None
+
+
+def _files_scopes_enabled(file_data: dict[str, Any]) -> bool:
+    env = _env_bool("BLUMKIN_FILES_SCOPES")
+    if env is not None:
+        return env
+    if "files_scopes" in file_data:
+        coerced = _coerce_bool(file_data["files_scopes"])
+        if coerced is not None:
+            return coerced
+    return False
 
 
 def _read_toml(path: Path) -> dict[str, Any]:

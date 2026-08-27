@@ -26,6 +26,14 @@ from msgraph.generated.users.item.messages.messages_request_builder import (
     MessagesRequestBuilder,
 )
 
+from blumkin.attachments import (
+    existing_entry_names,
+    prepare_download_directory,
+    resolve_attachment_dest,
+    resolve_single_download_dest,
+    sanitize_attachment_filename,
+    unique_filename,
+)
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, request_config
 from blumkin.output import sanitize_terminal
@@ -168,10 +176,9 @@ async def mail_attachments_download(
     listed = await mail_attachments_list(message_id=mid, config=cfg)
     attachments = listed["attachments"]
     if download_all:
-        out_path = _prepare_download_out_directory(out)
+        out_path = prepare_download_directory(out)
         targets = [a for a in attachments if not a.get("skipped")]
     else:
-        out_path = Path(out)
         aid = attachment_id.strip() if attachment_id else ""
         match = next((a for a in attachments if a.get("id") == aid), None)
         if match is None:
@@ -181,19 +188,10 @@ async def mail_attachments_download(
                 match.get("skip_reason") or "unsupported attachment type"
             )
         targets = [match]
-        filename = _sanitize_attachment_filename(match.get("name") or aid)
-        if _out_is_directory_intent(out, out_path):
-            if not out_path.exists():
-                out_path.mkdir(parents=True, exist_ok=True)
-            if not out_path.is_dir():
-                raise ValueError("--out must be a directory")
-            unique = _unique_filename(filename, _existing_entry_names(out_path))
-            out_path = _resolve_attachment_dest(out_path, unique)
-        else:
-            out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path = resolve_single_download_dest(out, match.get("name") or aid)
     saved: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    used_names = _existing_entry_names(out_path) if download_all else set()
+    used_names = existing_entry_names(out_path) if download_all else set()
     for meta in attachments if download_all else targets:
         if meta.get("skipped"):
             skipped.append(
@@ -218,11 +216,11 @@ async def mail_attachments_download(
             continue
         content = await _fetch_attachment_bytes(client, mid, aid, attachment)
         if download_all:
-            filename = _unique_filename(
-                _sanitize_attachment_filename(meta.get("name") or aid),
+            filename = unique_filename(
+                sanitize_attachment_filename(meta.get("name") or aid),
                 used_names,
             )
-            dest = _resolve_attachment_dest(out_path, filename)
+            dest = resolve_attachment_dest(out_path, filename)
         else:
             dest = out_path
         dest.write_bytes(content)
@@ -537,57 +535,6 @@ async def _require_message(client: Any, message_id: str) -> None:
         raise MailMessageNotFoundError(f"message not found: {message_id}")
 
 
-def _existing_entry_names(directory: Path) -> set[str]:
-    return {path.name for path in directory.iterdir()}
-
-
-def _out_is_directory_intent(out: str, out_path: Path) -> bool:
-    if out.rstrip().endswith(("/", "\\")):
-        return True
-    return out_path.exists() and out_path.is_dir()
-
-
-def _prepare_download_out_directory(out: str) -> Path:
-    out_path = Path(out)
-    if out_path.exists() and out_path.is_file():
-        raise ValueError("--out must be a directory when using --all")
-    out_path.mkdir(parents=True, exist_ok=True)
-    if not out_path.is_dir():
-        raise ValueError("--out must be a directory when using --all")
-    return out_path
-
-
-def _resolve_attachment_dest(out_dir: Path, filename: str) -> Path:
-    dest = (out_dir / filename).resolve()
-    if not dest.is_relative_to(out_dir.resolve()):
-        raise ValueError(f"invalid attachment filename: {filename}")
-    return dest
-
-
-def _sanitize_attachment_filename(name: str) -> str:
-    cleaned = re.sub(r"[^\w.\- ()]", "_", name.strip()) or "attachment"
-    cleaned = cleaned.replace("/", "_").replace("\\", "_")
-    if cleaned in {".", ".."} or cleaned.strip(".") == "":
-        return "attachment"
-    return cleaned
-
-
 def _skip_reason(attachment: Any) -> str:
     odata_type = getattr(attachment, "odata_type", None) or "attachment"
     return f"{odata_type} not supported in v1"
-
-
-def _unique_filename(name: str, used: set[str]) -> str:
-    folded_used = {entry.casefold() for entry in used}
-    if name.casefold() not in folded_used:
-        used.add(name)
-        return name
-    stem = Path(name).stem or "attachment"
-    suffix = Path(name).suffix
-    index = 2
-    while True:
-        candidate = f"{stem}_{index}{suffix}"
-        if candidate.casefold() not in folded_used:
-            used.add(candidate)
-            return candidate
-        index += 1
