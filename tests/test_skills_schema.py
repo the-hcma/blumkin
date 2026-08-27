@@ -25,6 +25,25 @@ from blumkin.exit_codes import (
 from blumkin.skills import skills_catalog
 
 _ARG_REQUIRED_KEYS = {"name", "required", "type"}
+# Full (name, required, type) sequences for the skills the guide makes claims about:
+# a positional name, command-line rather than sorted order, and published enum values.
+_ARG_SIGNATURES = {
+    "calendar.create": [
+        ("--subject", True, "string"),
+        ("--with", True, "email"),
+        ("--start", True, "datetime"),
+        ("--duration", False, "duration"),
+        ("--teams", False, "flag"),
+        ("--tz", False, "iana_tz"),
+        ("--yes", True, "flag"),
+    ],
+    "mail.list": [
+        ("--folder", False, "string"),
+        ("--orderby", False, "enum"),
+        ("--top", False, "int"),
+    ],
+    "skills.describe": [("skill-id", True, "string")],
+}
 _ARG_TYPES = {
     "date",
     "datetime",
@@ -41,6 +60,54 @@ _ENVELOPE_KEYS = {"cli", "skills", "version"}
 _ERROR_KEYS = {"error", "message", "ok"}
 _ERROR_VALUES = {"auth_required", "graph_error", "missing_scope", "not_found", "usage_error"}
 _ID_RE = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*")
+# Ids released under v1. New skills may be added; these may not be renamed or dropped.
+_KNOWN_IDS = frozenset(
+    {
+        "auth.login",
+        "auth.logout",
+        "auth.status",
+        "calendar.accept",
+        "calendar.cancel",
+        "calendar.create",
+        "calendar.freebusy",
+        "calendar.today",
+        "calendar.view",
+        "chat.attachments",
+        "chat.attachments.download",
+        "chat.delete",
+        "chat.edit",
+        "chat.find",
+        "chat.last",
+        "chat.send",
+        "doctor",
+        "mail.attachments",
+        "mail.attachments.download",
+        "mail.delete-draft",
+        "mail.draft",
+        "mail.folders",
+        "mail.inbox",
+        "mail.list",
+        "mail.send-draft",
+        "mail.update-draft",
+        "meeting.get",
+        "meeting.transcription",
+        "skills.describe",
+        "skills.list",
+    }
+)
+# Skills known to reach other people. A skill may join this set; none may leave it
+# silently, since .cursor/rules/no-third-party-side-effects.mdc keys on the flag.
+_NOTIFYING_IDS = frozenset(
+    {
+        "calendar.accept",
+        "calendar.cancel",
+        "calendar.create",
+        "chat.delete",
+        "chat.edit",
+        "chat.send",
+        "mail.send-draft",
+    }
+)
 _SKILL_KEYS = {"args", "cli", "id", "mutates", "notifies_others", "scopes", "summary"}
 
 
@@ -128,6 +195,20 @@ def test_exit_codes_are_stable() -> None:
     assert (EXIT_AUTH, EXIT_MISSING_SCOPE, EXIT_NOT_FOUND) == (3, 4, 5)
 
 
+def test_arg_signatures_are_pinned_for_documented_skills() -> None:
+    """Shape checks alone would let a reorder or a renamed positional through."""
+    by_id = {skill["id"]: skill for skill in skills_catalog()["skills"]}
+    for skill_id, expected in _ARG_SIGNATURES.items():
+        actual = [(a["name"], a["required"], a["type"]) for a in by_id[skill_id]["args"]]
+        assert actual == expected, skill_id
+
+
+def test_no_skill_silently_stops_notifying() -> None:
+    """A flag flipped to False would exempt a skill from the safety rule unnoticed."""
+    notifying = {s["id"] for s in skills_catalog()["skills"] if s["notifies_others"]}
+    assert _NOTIFYING_IDS <= notifying, f"no longer notifying: {_NOTIFYING_IDS - notifying}"
+
+
 def test_notifying_skills_require_explicit_consent() -> None:
     """Anything that reaches another person must be gated behind --yes."""
     for skill in skills_catalog()["skills"]:
@@ -154,3 +235,5 @@ def test_skills_are_sorted_by_id() -> None:
     ids = [skill["id"] for skill in skills_catalog()["skills"]]
     assert ids == sorted(ids)
     assert len(ids) == len(set(ids))
+    # v1 permits new skills, but an existing id may not be renamed or removed.
+    assert _KNOWN_IDS <= set(ids), f"missing released ids: {_KNOWN_IDS - set(ids)}"
