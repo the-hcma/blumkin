@@ -17,13 +17,23 @@ in the current conversation, on the real recipients they named.
 ## The trip-wire
 
 `blumkin skills list --json` marks every skill with `notifies_others`. Treat
-`notifies_others: true` as off-limits for verification. Today that means:
+`notifies_others: true` as off-limits for verification. **The flag is
+authoritative** — the list below is a snapshot, so re-read the catalog rather
+than trusting it to stay complete. At the time of writing:
 
-- `calendar.create` — invites attendees
 - `calendar.accept` — sends a response to the organizer
 - `calendar.cancel` — sends cancellations to every attendee
+- `calendar.create` — invites attendees
+- `chat.delete` — every participant sees the message vanish
+- `chat.edit` — rewrites a message other people already read
 - `chat.send` — messages a person
 - `mail.send-draft` — sends mail
+
+To check the current set without trusting this list:
+
+```bash
+blumkin skills list --json | jq -r '.skills[] | select(.notifies_others) | .id'
+```
 
 Absence of the flag is not a blank cheque: `mail.draft`, `mail.update-draft`, and
 `mail.delete-draft` are safe because they stay in the operator's own mailbox, and
