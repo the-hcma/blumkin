@@ -11,10 +11,11 @@ import json
 import re
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 import blumkin
-from blumkin.cli import main
+from blumkin.cli import _raise_chat_attachment_error, _require_wo1162425_scopes, main
 from blumkin.exit_codes import (
     EXIT_AUTH,
     EXIT_MISSING_SCOPE,
@@ -24,6 +25,7 @@ from blumkin.exit_codes import (
     EXIT_USAGE,
 )
 from blumkin.skills import skills_catalog
+from blumkin.skills.chat import ChatAttachmentScopeError
 
 _ARG_REQUIRED_KEYS = {"name", "required", "type"}
 # Full (name, required, type) sequences for the skills the guide makes claims about:
@@ -151,6 +153,22 @@ def test_argument_errors_exit_usage_without_an_envelope() -> None:
 def test_error_values_are_the_documented_ones() -> None:
     """Note these are not the exit-code names: exit 1 is graph_error, exit 2 usage_error."""
     assert _emitted_error_values() == _ERROR_VALUES
+
+
+def test_config_opt_ins_do_not_share_an_exit_code() -> None:
+    """The docs distinguish them because the CLI does; keep that honest.
+
+    wo1162425_scopes is refused up front as a usage error, while files_scopes
+    surfaces as a missing scope from the download path.
+    """
+    scope_error = ChatAttachmentScopeError("needs Files.Read")
+    with pytest.raises(SystemExit) as files_off:
+        _raise_chat_attachment_error(scope_error, as_json=True)
+    assert files_off.value.code == EXIT_MISSING_SCOPE
+
+    with pytest.raises(SystemExit) as addon_off:
+        _require_wo1162425_scopes(as_json=True)
+    assert addon_off.value.code == EXIT_USAGE
 
 
 def test_error_values_reach_the_cli_verbatim() -> None:

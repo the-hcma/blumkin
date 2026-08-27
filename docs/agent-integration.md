@@ -96,11 +96,10 @@ client id or call Graph directly when a blumkin skill covers the job.
   failed command — only when the user asked for that action.
 - Exit 3 (`auth_required`): tell the user to run `blumkin auth login` on this
   machine, then retry. Do not attempt to authenticate any other way.
-- Exit 4 (`missing_scope`): the tenant has not granted a scope. Report the
-  message; do not retry.
-- Exit 2 (`usage_error`): usually a malformed command, but it is also how a
-  disabled config opt-in is reported. Read the message before calling it bad
-  arguments.
+- Exit 4 (`missing_scope`): a scope is unavailable — usually a tenant grant, but
+  sometimes a local opt-in. Report the message; do not retry.
+- Exit 2 (`usage_error`): usually a malformed command, but sometimes a config
+  opt-in that is off. Read the message before calling it bad arguments.
 ```
 
 Keep it short. It competes with everything else in the context window, and the
@@ -202,18 +201,24 @@ failure path.
 |------|---------------|---------|
 | 0 | — | Success |
 | 1 | `graph_error` | Unexpected failure, usually from Graph |
-| 2 | `usage_error`, or none | Bad arguments, **or a config opt-in that is switched off** |
+| 2 | `usage_error`, or none | Bad arguments, **or `wo1162425_scopes` switched off** |
 | 3 | `auth_required` | Run `blumkin auth login` on this machine |
-| 4 | `missing_scope` | The tenant has not granted a scope — do not retry |
+| 4 | `missing_scope` | A scope is unavailable — the tenant has not granted it, or `files_scopes` is off |
 | 5 | `not_found` | The named thing does not exist |
 
-Exit 2 covers two different situations, and conflating them misleads the user.
-A malformed command needs fixing; a disabled opt-in (`wo1162425_scopes`,
-`files_scopes`) is a config change the operator must make, and the `message`
-says which. Read the message before reporting "bad arguments".
+The two config opt-ins do **not** share an exit code, so do not treat "opt-in is
+off" as a single condition:
 
-Exit 4 is narrower than it sounds: it means Graph refused a scope the tenant has
-not granted, so no local change will help.
+- `wo1162425_scopes` off — chat write, meeting commands, and `calendar create
+  --teams` exit **2** with `usage_error`.
+- `files_scopes` off — `chat attachments download` exits **4** with
+  `missing_scope` and the share URL in the message. Listing still works.
+
+The practical consequence is that neither code means one thing on its own. Exit
+2 is usually a malformed command but sometimes a config change the operator must
+make; exit 4 is usually a tenant grant you cannot fix locally but sometimes that
+one local flag. In both cases the `message` says which, so read it before
+telling the user what to do.
 
 ### Error envelope
 
