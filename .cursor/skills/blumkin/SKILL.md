@@ -21,6 +21,12 @@ covers the job.
      `blumkin calendar view --from YYYY-MM-DD --to YYYY-MM-DD --json`
      (half-open `[from,to)`), `blumkin calendar freebusy --with email --start … --end … --json`
    - Mail: `blumkin mail inbox --top 10 --json`
+     `blumkin mail list --folder sentitems --top 20 --json` (also `archive`,
+     `deleteditems`, `drafts`, `junkemail`, `outbox`, a folder id, or a custom
+     folder's display name; Sent Items orders by `sentDateTime` and Drafts/Outbox by
+     `createdDateTime`, since `receivedDateTime` is null there — `--orderby
+     created|received|sent` overrides)
+     `blumkin mail folders --json` (folder ids and counts, for custom folders)
      `blumkin mail attachments --id '<message-id>' --json`
      `blumkin mail attachments download --message-id '<message-id>' --attachment-id '<id>' --out ./file.docx`
    - Chat: `blumkin chat find --with "Name" --json`,

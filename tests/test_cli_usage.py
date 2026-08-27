@@ -28,6 +28,7 @@ from blumkin.skills.mail import (
     MailAttachmentSkippedError,
     MailBodyFileError,
     MailDraftNotFoundError,
+    MailFolderNotFoundError,
     MailMessageNotFoundError,
 )
 
@@ -497,6 +498,52 @@ def test_mail_attachments_list_not_found_exits_not_found(monkeypatch) -> None:
     result = runner.invoke(main, ["mail", "attachments", "--id", "missing", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
     assert "not_found" in (result.output or "")
+
+
+def test_mail_folders_emits_json(monkeypatch) -> None:
+    async def _folders(**_kwargs):
+        return {"folders": [{"id": "inbox-id", "name": "Inbox", "path": "Inbox", "total": 3}]}
+
+    monkeypatch.setattr("blumkin.cli.mail_folders", _folders)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "folders", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert '"inbox-id"' in (result.output or "")
+
+
+def test_mail_list_folder_not_found_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise MailFolderNotFoundError("mail folder not found: 'nope'")
+
+    monkeypatch.setattr("blumkin.cli.mail_list", _boom)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "list", "--folder", "nope", "--json"])
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_mail_list_rejects_an_unknown_orderby() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "list", "--orderby", "alphabetical"])
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_list_wires_options_and_emits_json(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _list(**kwargs):
+        seen.update(kwargs)
+        return {"folder": "sentitems", "items": [], "orderby": "sent", "top": 5}
+
+    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "list", "--folder", "sent", "--orderby", "sent", "--top", "5", "--json"],
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen == {"folder": "sent", "orderby": "sent", "top": 5}
+    assert '"sentitems"' in (result.output or "")
 
 
 def test_mail_delete_draft_without_yes_succeeds(monkeypatch) -> None:
