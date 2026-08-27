@@ -6,13 +6,14 @@ control. Adding a field is fine; renaming or removing one is a version bump.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
 
 from click.testing import CliRunner
 
-from blumkin import cli
+import blumkin
 from blumkin.cli import main
 from blumkin.exit_codes import (
     EXIT_AUTH,
@@ -161,9 +162,18 @@ def test_argument_errors_exit_usage_without_an_envelope() -> None:
 
 def test_error_values_are_the_documented_ones() -> None:
     """Note these are not the exit-code names: exit 1 is graph_error, exit 2 usage_error."""
-    source = (Path(cli.__file__)).read_text(encoding="utf-8")
-    emitted = set(re.findall(r'emit_error\(\s*error="([a-z_]+)"', source))
-    assert emitted == _ERROR_VALUES
+    assert _emitted_error_values() == _ERROR_VALUES
+
+
+def test_error_values_reach_the_cli_verbatim() -> None:
+    """Scanning source proves what is written; only running it proves what is emitted."""
+    runner = CliRunner()
+    for argv, expected in (
+        (["skills", "describe", "nope", "--json"], "not_found"),
+        (["calendar", "today", "--tz", "Not/AZone", "--json"], "usage_error"),
+    ):
+        result = runner.invoke(main, argv)
+        assert json.loads(result.stderr)["error"] == expected, argv
 
 
 def test_documented_sample_matches_real_output() -> None:
@@ -237,3 +247,31 @@ def test_skills_are_sorted_by_id() -> None:
     assert len(ids) == len(set(ids))
     # v1 permits new skills, but an existing id may not be renamed or removed.
     assert _KNOWN_IDS <= set(ids), f"missing released ids: {_KNOWN_IDS - set(ids)}"
+
+
+def _emitted_error_values() -> set[str]:
+    """Collect every ``error=`` literal passed to ``emit_error`` across the package.
+
+    Walking the AST rather than matching source text means keyword order and call
+    formatting cannot hide a value, and a non-literal argument fails loudly instead
+    of dropping out of the scan.
+    """
+    values: set[str] = set()
+    for path in sorted(Path(blumkin.__file__).parent.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name != "emit_error":
+                continue
+            keyword = next((kw for kw in node.keywords if kw.arg == "error"), None)
+            where = f"{path.name}:{node.lineno}"
+            assert keyword is not None, f"{where}: emit_error without an error= keyword"
+            literal = keyword.value
+            assert isinstance(literal, ast.Constant) and isinstance(literal.value, str), (
+                f"{where}: error= is not a string literal, so the documented set cannot be verified"
+            )
+            values.add(literal.value)
+    return values
