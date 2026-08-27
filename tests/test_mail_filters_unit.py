@@ -28,6 +28,7 @@ def test_mail_list_matches_a_sender_locally_because_graph_will_not_sort_it(monke
     payload = asyncio.run(mail_list(sender="rebecca"))
 
     assert _query(client.me.messages.get).filter is None
+    assert _query(client.me.messages.get).orderby == ["receivedDateTime desc"]
     assert [item["from_name"] for item in payload["items"]] == ["Rebecca Doe"]
     assert payload["filters"]["matched_locally"] is True
 
