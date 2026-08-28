@@ -38,6 +38,20 @@ def test_person_to_dict_picks_highest_scored_email() -> None:
     assert mapped["company"] == "Example Org"
 
 
+def test_person_to_dict_falls_back_to_upn_when_no_scored_emails() -> None:
+    person = SimpleNamespace(
+        company_name=None,
+        display_name="Ada Example",
+        job_title=None,
+        scored_email_addresses=[],
+        user_principal_name="ada@example.com",
+    )
+    mapped = _person_to_dict(person)
+    assert mapped["email"] == "ada@example.com"
+    assert mapped["emails"] == ["ada@example.com"]
+    assert mapped["user_principal_name"] == "ada@example.com"
+
+
 def test_format_resolve_human_lists_candidates() -> None:
     lines = format_resolve_human(
         {
@@ -198,6 +212,98 @@ def test_people_resolve_name_and_email_searches_by_email(monkeypatch) -> None:
     await_args = client.me.people.get.await_args
     assert await_args is not None
     assert await_args.args[0].query_parameters.search == '"john.smith@acme.com"'
+
+
+def test_people_resolve_name_filter_keeps_one_of_two_email_hits(monkeypatch) -> None:
+    """Combined flags: name substring must actually narrow email-matching candidates."""
+    people = [
+        SimpleNamespace(
+            company_name=None,
+            display_name="John Smith",
+            job_title=None,
+            scored_email_addresses=[
+                SimpleNamespace(address="john.smith@acme.com", relevance_score=9.0),
+            ],
+            user_principal_name="john.smith@acme.com",
+        ),
+        SimpleNamespace(
+            company_name=None,
+            display_name="Other Contact",
+            job_title=None,
+            scored_email_addresses=[
+                SimpleNamespace(address="other@acme.com", relevance_score=9.0),
+                SimpleNamespace(address="john.smith@acme.com", relevance_score=1.0),
+            ],
+            user_principal_name="other@acme.com",
+        ),
+    ]
+    client = MagicMock()
+    client.me.people.get = AsyncMock(return_value=SimpleNamespace(value=people))
+    monkeypatch.setattr("blumkin.skills.people.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.people.load_config",
+        lambda: SimpleNamespace(client_id="x"),
+    )
+    payload = asyncio.run(people_resolve(name="John Smith", email="john.smith@acme.com"))
+    assert payload["ambiguous"] is False
+    assert payload["person"]["display_name"] == "John Smith"
+    assert payload["person"]["email"] == "john.smith@acme.com"
+
+
+def test_people_resolve_name_filter_can_clear_all_email_hits(monkeypatch) -> None:
+    people = [
+        SimpleNamespace(
+            company_name=None,
+            display_name="Jane Doe",
+            job_title=None,
+            scored_email_addresses=[
+                SimpleNamespace(address="john.smith@acme.com", relevance_score=9.0),
+            ],
+            user_principal_name="jane@acme.com",
+        ),
+        SimpleNamespace(
+            company_name=None,
+            display_name="Other Contact",
+            job_title=None,
+            scored_email_addresses=[
+                SimpleNamespace(address="other@acme.com", relevance_score=9.0),
+                SimpleNamespace(address="john.smith@acme.com", relevance_score=1.0),
+            ],
+            user_principal_name="other@acme.com",
+        ),
+    ]
+    client = MagicMock()
+    client.me.people.get = AsyncMock(return_value=SimpleNamespace(value=people))
+    monkeypatch.setattr("blumkin.skills.people.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.people.load_config",
+        lambda: SimpleNamespace(client_id="x"),
+    )
+    with pytest.raises(LookupError, match="no people match"):
+        asyncio.run(people_resolve(name="John Smith", email="john.smith@acme.com"))
+
+
+def test_people_resolve_upn_only_person_resolves(monkeypatch) -> None:
+    """Empty scoredEmailAddresses + @-bearing UPN must still resolve via fallback."""
+    people = [
+        SimpleNamespace(
+            company_name=None,
+            display_name="Ada Example",
+            job_title=None,
+            scored_email_addresses=[],
+            user_principal_name="ada@example.com",
+        ),
+    ]
+    client = MagicMock()
+    client.me.people.get = AsyncMock(return_value=SimpleNamespace(value=people))
+    monkeypatch.setattr("blumkin.skills.people.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.people.load_config",
+        lambda: SimpleNamespace(client_id="x"),
+    )
+    payload = asyncio.run(people_resolve(name="Ada"))
+    assert payload["ambiguous"] is False
+    assert payload["person"]["email"] == "ada@example.com"
 
 
 def test_dedupe_matches_keeps_no_email_and_casefolds() -> None:
