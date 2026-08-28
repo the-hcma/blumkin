@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from blumkin.skills.calendar import (
+    _status_is_busy,
     calendar_suggest,
     find_mutual_free_slots,
     format_suggest_human,
@@ -212,3 +213,67 @@ def test_calendar_suggest_fails_closed_on_schedule_error(monkeypatch) -> None:
                 duration=timedelta(minutes=30),
             )
         )
+
+
+def test_calendar_suggest_treats_unknown_as_busy(monkeypatch) -> None:
+    schedule = SimpleNamespace(
+        availability_view="000",
+        schedule_id="a@example.com",
+        schedule_items=[
+            SimpleNamespace(
+                start=SimpleNamespace(
+                    date_time="2026-08-28T14:00:00",
+                    time_zone="America/New_York",
+                ),
+                end=SimpleNamespace(
+                    date_time="2026-08-28T15:00:00",
+                    time_zone="America/New_York",
+                ),
+                status="unknown",
+            )
+        ],
+        working_hours=None,
+    )
+    client = MagicMock()
+    client.me.calendar.get_schedule.post = AsyncMock(return_value=SimpleNamespace(value=[schedule]))
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(client_id="x", default_tz="America/New_York"),
+    )
+    start = datetime(2026, 8, 28, 9, 0, tzinfo=_TZ)
+    end = datetime(2026, 8, 28, 17, 0, tzinfo=_TZ)
+    payload = asyncio.run(
+        calendar_suggest(
+            with_emails=["a@example.com"],
+            start=start,
+            end=end,
+            duration=timedelta(hours=1),
+            step=timedelta(hours=1),
+            limit=20,
+        )
+    )
+    starts = {s["start"] for s in payload["slots"]}
+    assert datetime(2026, 8, 28, 14, 0, tzinfo=_TZ).isoformat() not in starts
+
+
+@pytest.mark.parametrize(
+    ("status", "treat_tentative_busy", "expected_busy"),
+    [
+        ("free", True, False),
+        ("FreeBusyStatus.free", True, False),
+        ("tentative", True, True),
+        ("tentative", False, False),
+        ("busy", True, True),
+        ("oof", True, True),
+        ("workingElsewhere", True, True),
+        ("unknown", True, True),
+        (None, True, True),
+        ("", True, True),
+        ("mystery", True, True),
+    ],
+)
+def test_status_is_busy_fail_closed(
+    status: object, treat_tentative_busy: bool, expected_busy: bool
+) -> None:
+    assert _status_is_busy(status, treat_tentative_busy=treat_tentative_busy) is expected_busy

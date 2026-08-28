@@ -677,12 +677,14 @@ def _schedule_to_dict(entry: Any, display_tz: ZoneInfo) -> dict[str, Any]:
 
 
 def _status_is_busy(status: Any, *, treat_tentative_busy: bool) -> bool:
+    """Treat only explicit free (and optional tentative) as free; fail closed otherwise."""
     label = str(status or "").split(".")[-1].casefold()
-    if label in {"busy", "oof", "workingelsewhere"}:
-        return True
+    if label == "free":
+        return False
     if label == "tentative":
         return treat_tentative_busy
-    return False
+    # busy / oof / workingElsewhere / unknown / missing / anything else → busy
+    return True
 
 
 def _to_graph_dtz(value: datetime) -> DateTimeTimeZone:
