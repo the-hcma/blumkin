@@ -221,14 +221,17 @@ def _save_bound_token_cache_at_exit() -> None:
 
 
 def _write_secret_text(path: Path, text: str) -> None:
-    """Write sensitive text at mode 0600, tightening perms even if the file already exists.
+    """Write sensitive text, tightening Unix modes when the file already exists.
 
-    ``O_CREAT`` mode is ignored when the path already exists, so a leftover
-    world-readable cache would keep leaking tokens on every rewrite without an
-    explicit mode tighten. ``O_NOFOLLOW`` (when available) refuses a symlink
-    swap at the path. ``os.fchmod`` is Unix-only; Windows falls back to
-    ``os.chmod`` after close (ACL semantics differ, but AttributeError must not
-    break login/cache persistence).
+    On POSIX, ``O_CREAT`` mode is ignored when the path already exists, so a
+    leftover world-readable cache would keep leaking tokens on every rewrite
+    without an explicit ``fchmod`` to ``0600``. ``O_NOFOLLOW`` (when available)
+    refuses a symlink swap at the path.
+
+    On Windows, ``os.fchmod`` is unavailable and ``os.chmod`` only toggles the
+    read-only bit (ACLs govern access). The post-close ``chmod`` there avoids
+    ``AttributeError`` so login/cache persistence still works; it does not
+    claim a Unix ``0600`` guarantee.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     nofollow = getattr(os, "O_NOFOLLOW", 0)

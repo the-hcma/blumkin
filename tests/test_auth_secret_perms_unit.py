@@ -11,7 +11,20 @@ import pytest
 
 from blumkin import auth
 
+_POSIX_MODE_TESTS = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Unix permission bits are not meaningful on Windows ACLs",
+)
 
+
+def test_write_secret_text_round_trips(tmp_path: Path) -> None:
+    """Every platform must persist without raising (Windows has no fchmod)."""
+    target = tmp_path / "msal_token_cache.json"
+    auth._write_secret_text(target, '{"RefreshToken":{}}')
+    assert target.read_text(encoding="utf-8") == '{"RefreshToken":{}}'
+
+
+@_POSIX_MODE_TESTS
 def test_write_secret_text_creates_0600(tmp_path: Path) -> None:
     target = tmp_path / "msal_token_cache.json"
     auth._write_secret_text(target, '{"RefreshToken":{}}')
@@ -19,6 +32,7 @@ def test_write_secret_text_creates_0600(tmp_path: Path) -> None:
     assert mode == 0o600
 
 
+@_POSIX_MODE_TESTS
 def test_write_secret_text_tightens_existing_world_readable(tmp_path: Path) -> None:
     target = tmp_path / "msal_token_cache.json"
     target.write_text("stale", encoding="utf-8")
@@ -44,6 +58,7 @@ def test_write_secret_text_refuses_symlink(tmp_path: Path) -> None:
     assert real.read_text(encoding="utf-8") == "keep"
 
 
+@_POSIX_MODE_TESTS
 def test_ensure_secret_dir_tightens_existing_mode(tmp_path: Path) -> None:
     directory = tmp_path / "blumkin"
     directory.mkdir(mode=0o755)
