@@ -27,6 +27,11 @@ covers the job.
      (roughly 09:00-17:00 local) unless the user overrides. Do **not** rewrite `--start` /
      `--end` into the attendee's zone — organizer intent stays explicit; convert mentally
      when proposing slots.
+     Freebusy returns **busy blocks**, not suggested starts. To propose mutual free time,
+     intersect the busy intervals yourself (or with a small local script), clip to the
+     organizer `--tz` / `default_tz` and each attendee's `working_hours` when present,
+     and treat `tentative` as busy unless the user says otherwise. Do **not** use freebusy
+     as a people directory (guessing SMTP addresses via `--with`).
    - Mail: `blumkin mail inbox --top 10 --json`
      `blumkin mail list --folder sentitems --top 20 --json` (also `archive`,
      `deleteditems`, `drafts`, `junkemail`, `outbox`, a folder id, or a custom
@@ -83,8 +88,12 @@ covers the job.
     contains the quoted original, whatever `--body-type` you pass for your own text.
     Prefer including `--body` here: an empty reply draft filled later with
     `mail update-draft --body` *replaces* that HTML and drops the quoted original.
+    To add CC/BCC (or change To) after create, use `mail update-draft --id … --cc …`
+    (repeatable / comma-separated, same as draft). Reply/forward do not take `--cc`
+    themselves yet.
   - `blumkin mail forward --id '<message-id>' --to … --body …` (draft only; same
-    update-draft warning as reply — pass `--body` on create when you can)
+    update-draft warning as reply — pass `--body` on create when you can; add `--cc`
+    via `mail update-draft` when needed)
   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` / `--cc` /
     `--bcc` each replace that whole list when provided; `--body` replaces the whole body)
     `--attach <path>` works here too and *adds* to whatever the draft already carries —
@@ -99,7 +108,11 @@ covers the job.
   - `blumkin meeting transcription --event-id '<id>' --enable --yes`
 5. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).
 6. On auth failure (exit `3` / `auth_required`): tell the user to run
-   `blumkin auth login` on this machine, then retry.
+   `blumkin auth login` on this machine, then retry. Do **not** treat every
+   non-zero auth-adjacent exit as login: exit `1` / `secret_write_failed` means
+   the token cache or auth record could not be written (often a symlink at
+   `~/.config/blumkin/` or those files) — fix the path, do not re-login in a
+   loop.
 7. Writes that email or invite others require `--yes`.
 8. Chat write + meeting transcription need `Chat.ReadWrite` /
    `OnlineMeetings.ReadWrite` consented (re-login after Identity grant).
@@ -107,7 +120,8 @@ covers the job.
    `blumkin chat attachments download` needs a delegated `Files.Read` scope,
    gated behind `files_scopes` (off by default). Without it, listing still works
    and download exits `4` / `missing_scope` with the share URL — hand that URL to
-   the user to open in a browser instead of retrying.
+   the user to open in a browser instead of retrying. Do **not** spin up a second
+   Graph client in the agent session to paper over that.
 
 ## Authoring style (mail + chat bodies)
 
@@ -118,11 +132,17 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
   short sentences over a dash at all.
 - Same rule for `--body-type html`: do not emit `&mdash;` / `&ndash;` (or the
   literal Unicode dashes) in markup you write on the user's behalf.
+- Do **not** invent a mail signature block (colored name, title, affiliation HTML).
+  If the user wants a signature, ask them to put it in the body or wait for
+  config-backed signatures — do not invent branding markup per draft.
 
 ## Config
 
 - Default: `~/.config/blumkin/` (`config.toml`, token cache, auth record).
 - Override with `BLUMKIN_CONFIG_DIR`. Never invent or commit secrets.
+- Keep that directory a real local folder (not a symlink into a shared tree). Token
+  cache and auth-record writes refuse symlinked secret paths and report
+  `secret_write_failed` (exit `1`) instead of looping on `auth login`.
 - **WO1162425 add-on scopes (off by default):** `wo1162425_scopes = true` in
   `config.toml` or `BLUMKIN_WO1162425_SCOPES=1` after Remedy WO1162425 grants
   `Chat.ReadWrite` + `OnlineMeetings.ReadWrite`. Then delete token cache + auth
