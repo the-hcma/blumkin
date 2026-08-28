@@ -421,6 +421,27 @@ def test_format_list_human_discloses_a_truncated_local_scan() -> None:
     )
 
 
+def test_format_list_human_stays_quiet_when_top_filled_early() -> None:
+    """complete=None means --top was filled, not that the scan hit the 500 cap."""
+    lines = format_list_human(
+        {
+            "filters": {
+                "complete": None,
+                "from": "Rebecca",
+                "matched_locally": True,
+                "scanned": 5,
+            },
+            "folder": "inbox",
+            "items": [],
+            "orderby": "received",
+            "top": 5,
+        }
+    )
+
+    assert lines[1] == "  filters: from='Rebecca'"
+    assert all("stopped after scanning" not in line for line in lines)
+
+
 def test_format_inbox_human_discloses_filters_and_a_truncated_scan() -> None:
     lines = format_inbox_human(
         {
