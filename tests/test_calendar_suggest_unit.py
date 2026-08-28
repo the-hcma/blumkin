@@ -283,9 +283,7 @@ def test_calendar_suggest_unions_busy_across_multiple_with(monkeypatch) -> None:
         error=None,
     )
     client = MagicMock()
-    client.me.calendar.get_schedule.post = AsyncMock(
-        return_value=SimpleNamespace(value=[a, b])
-    )
+    client.me.calendar.get_schedule.post = AsyncMock(return_value=SimpleNamespace(value=[a, b]))
     monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.calendar.load_config",
