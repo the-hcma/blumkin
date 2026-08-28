@@ -168,6 +168,12 @@ def format_folders_human(payload: dict[str, Any]) -> list[str]:
         path = sanitize_terminal(str(item.get("path") or ""))
         lines.append(f"  • {path} — {item.get('total')} message(s), {item.get('unread')} unread")
         lines.append(f"      id={item.get('id')}")
+    if payload.get("counts_may_lag"):
+        # Graph's folder totals lag; treating 0 as "empty" has already bitten operators.
+        lines.append(
+            "  (counts may lag Graph; for existence use mail list --folder drafts "
+            "or mail get --id, not these totals)"
+        )
     if payload.get("truncated"):
         lines.append(f"  (truncated: {_folder_limits_note(payload.get('limits'))})")
     return lines
@@ -448,7 +454,12 @@ async def mail_draft(
 
 
 async def mail_folders(*, config: BlumkinConfig | None = None) -> dict[str, Any]:
-    """List mail folders (including nested ones) so custom folders are addressable."""
+    """List mail folders (including nested ones) so custom folders are addressable.
+
+    ``total`` / ``unread`` come from Graph's ``totalItemCount`` / ``unreadItemCount``,
+    which can lag the real mailbox (drafts especially). Treat them as hints; prove
+    existence with ``mail list`` / ``mail get``, not a zero count.
+    """
     cfg = config or load_config()
     client = create_graph_client(cfg)
     folders: list[dict[str, Any]] = []
@@ -456,6 +467,7 @@ async def mail_folders(*, config: BlumkinConfig | None = None) -> dict[str, Any]
         client, client.me.mail_folders, folders=folders, prefix="", depth=0
     )
     return {
+        "counts_may_lag": True,
         "folders": folders,
         "limits": {"max_depth": _MAX_FOLDER_DEPTH, "max_folders": _MAX_FOLDERS},
         "truncated": truncated,

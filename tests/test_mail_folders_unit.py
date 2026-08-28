@@ -37,6 +37,7 @@ def test_mail_folders_walks_nested_folders(monkeypatch) -> None:
     assert [item["path"] for item in payload["folders"]] == ["Inbox", "Inbox/Receipts"]
     assert payload["folders"][1]["id"] == "receipts-id"
     assert payload["folders"][0]["unread"] == 2
+    assert payload["counts_may_lag"] is True
     client.me.mail_folders.by_mail_folder_id.assert_called_once_with("inbox-id")
 
 
@@ -77,8 +78,21 @@ def test_mail_folders_reports_no_truncation_for_a_complete_tree(monkeypatch) -> 
     payload = asyncio.run(mail_folders())
 
     assert payload["truncated"] is False
+    assert payload["counts_may_lag"] is True
     assert payload["limits"] == {"max_depth": 6, "max_folders": 500}
-    assert "truncated" not in " ".join(format_folders_human(payload))
+
+
+def test_format_folders_human_discloses_lagging_counts() -> None:
+    lines = format_folders_human(
+        {
+            "counts_may_lag": True,
+            "folders": [{"id": "d", "path": "Drafts", "total": 0, "unread": 0}],
+            "truncated": False,
+        }
+    )
+
+    assert any("counts may lag" in line for line in lines)
+    assert any("mail get --id" in line for line in lines)
 
 
 def test_mail_list_not_found_mentions_a_truncated_listing(monkeypatch) -> None:
