@@ -359,6 +359,19 @@ def _event_to_dict(ev: Any, display_tz: ZoneInfo) -> dict[str, Any]:
     }
 
 
+def _format_time_of_day(value: Any) -> str | None:
+    """Normalize Graph TimeOfDay (``datetime.time`` or ``HH:mm:ss…`` string) to ``HH:MM``."""
+    if value is None:
+        return None
+    if hasattr(value, "strftime"):
+        return value.strftime("%H:%M")
+    text = str(value).strip()
+    if not text:
+        return None
+    # Edm.TimeOfDay often arrives as "09:00:00.0000000"
+    return text[:5]
+
+
 def _freebusy_schedule_label(item: dict[str, Any]) -> str:
     """Human label: ``email (IANA, working HH:MM-HH:MM)`` when hours are known."""
     schedule = item.get("schedule") or "(unknown)"
@@ -448,14 +461,16 @@ def _working_hours_to_dict(hours: Any) -> dict[str, Any] | None:
         return None
     days_raw = getattr(hours, "days_of_week", None) or []
     days = sorted({str(day).split(".")[-1].lower() for day in days_raw if day is not None})
-    start = getattr(hours, "start_time", None)
-    end = getattr(hours, "end_time", None)
+    start_s = _format_time_of_day(getattr(hours, "start_time", None))
+    end_s = _format_time_of_day(getattr(hours, "end_time", None))
     tz_obj = getattr(hours, "time_zone", None)
     tz_label = getattr(tz_obj, "name", None) if tz_obj is not None else None
+    if isinstance(tz_label, str):
+        tz_label = tz_label.strip() or None
+    else:
+        tz_label = None
     resolved = _resolve_tz(tz_label)
-    timezone = resolved.key if resolved is not None else (str(tz_label).strip() or None)
-    start_s = start.strftime("%H:%M") if start is not None else None
-    end_s = end.strftime("%H:%M") if end is not None else None
+    timezone = resolved.key if resolved is not None else tz_label
     if not days and start_s is None and end_s is None and timezone is None:
         return None
     return {
