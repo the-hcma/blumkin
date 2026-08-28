@@ -85,7 +85,9 @@ def test_people_resolve_unique_match(monkeypatch) -> None:
     assert payload["ambiguous"] is False
     assert payload["person"]["email"] == "ada@example.com"
     assert len(payload["matches"]) == 1
-    query = client.me.people.get.await_args.args[0].query_parameters
+    await_args = client.me.people.get.await_args
+    assert await_args is not None
+    query = await_args.args[0].query_parameters
     assert query.search == '"Ada Example"'
 
 
