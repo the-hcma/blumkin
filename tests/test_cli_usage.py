@@ -974,6 +974,51 @@ def test_mail_draft_passes_repeated_attachments_through(tmp_path, monkeypatch) -
     assert seen["attach"] == (str(first), str(second))
 
 
+def test_mail_draft_wires_repeatable_recipients(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _ok(**kwargs):
+        seen.update(kwargs)
+        return {
+            "draft": {
+                "attachments": [],
+                "bcc": "secret@example.com",
+                "body_type": "text",
+                "cc": "sam@example.com",
+                "id": "d",
+                "subject": "x",
+                "to": "a@b.com, c@d.com",
+            }
+        }
+
+    monkeypatch.setattr("blumkin.cli.mail_draft", _ok)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "draft",
+            "--to",
+            "a@b.com",
+            "--to",
+            "c@d.com",
+            "--cc",
+            "sam@example.com",
+            "--bcc",
+            "secret@example.com",
+            "--subject",
+            "x",
+            "--body",
+            "hi",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["to"] == ("a@b.com", "c@d.com")
+    assert seen["cc"] == ("sam@example.com",)
+    assert seen["bcc"] == ("secret@example.com",)
+
+
 def test_mail_update_draft_accepts_attach_without_other_fields(tmp_path, monkeypatch) -> None:
     seen: dict[str, object] = {}
     source = tmp_path / "a.txt"
@@ -1115,6 +1160,33 @@ def test_mail_update_draft_wires_options_and_emits_json(tmp_path, monkeypatch) -
     assert seen["body_file"] == str(path)
     assert seen["body_type"] == "html"
     assert '"id": "draft-9"' in (result.output or "") or '"id":"draft-9"' in (result.output or "")
+
+
+def test_mail_update_draft_wires_partial_cc_omits_to(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _ok(**kwargs):
+        seen.update(kwargs)
+        return {
+            "draft": {
+                "body_type": "text",
+                "cc": "c@d.com",
+                "id": kwargs["draft_id"],
+                "subject": "kept",
+                "to": "a@b.com",
+            }
+        }
+
+    monkeypatch.setattr("blumkin.cli.mail_update_draft", _ok)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "update-draft", "--id", "draft-9", "--cc", "c@d.com", "--json"],
+    )
+    assert result.exit_code == 0
+    assert seen["to"] is None
+    assert seen["cc"] == ("c@d.com",)
+    assert seen["bcc"] is None
 
 
 def test_mail_update_draft_runtime_error_exits_other(monkeypatch) -> None:
