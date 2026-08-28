@@ -6,7 +6,7 @@ import base64
 import binascii
 import html as html_lib
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -288,7 +288,7 @@ def format_list_human(payload: dict[str, Any]) -> list[str]:
 def format_reply_human(payload: dict[str, Any]) -> list[str]:
     draft = payload.get("draft") or {}
     recipients = sanitize_terminal(str(draft.get("to") or ""))
-    return [
+    lines = [
         f"{draft.get('kind')} draft saved: {draft.get('subject')!r} "
         f"→ {recipients or '(no recipient)'} ({draft.get('body_type')})",
         f"  id={draft.get('id')}",
@@ -296,6 +296,11 @@ def format_reply_human(payload: dict[str, Any]) -> list[str]:
         if draft.get("kind") != "forward"
         else f"  forwarding {draft.get('source_message_id')}",
     ]
+    for label in ("cc", "bcc"):
+        value = draft.get(label)
+        if value:
+            lines.append(f"  {label}: {sanitize_terminal(str(value))}")
+    return lines
 
 
 def format_send_draft_human(payload: dict[str, Any]) -> list[str]:
@@ -508,6 +513,8 @@ async def mail_forward(
     body: str | None = None,
     body_file: str | None = None,
     body_type: str = "text",
+    bcc: str | Sequence[str] | None = None,
+    cc: str | Sequence[str] | None = None,
     config: BlumkinConfig | None = None,
     no_signature: bool = False,
 ) -> dict[str, Any]:
@@ -517,6 +524,8 @@ async def mail_forward(
         raise ValueError("--id is required")
     if not to.strip():
         raise ValueError("--to is required")
+    cc_addrs = _parse_addresses(cc, flag="--cc", required=False)
+    bcc_addrs = _parse_addresses(bcc, flag="--bcc", required=False)
     cfg = config or load_config()
     comment = _resolve_comment(
         body=body,
@@ -533,6 +542,7 @@ async def mail_forward(
     created = await _create_draft_from(
         client.me.messages.by_message_id(mid).create_forward, request, message_id=mid
     )
+    created = await _patch_compose_recipients(client, created, cc=cc_addrs, bcc=bcc_addrs)
     return {"draft": _draft_summary(created, source=mid, kind="forward")}
 
 
@@ -724,6 +734,8 @@ async def mail_reply(
     body: str | None = None,
     body_file: str | None = None,
     body_type: str = "text",
+    bcc: str | Sequence[str] | None = None,
+    cc: str | Sequence[str] | None = None,
     reply_all: bool = False,
     config: BlumkinConfig | None = None,
     no_signature: bool = False,
@@ -735,10 +747,15 @@ async def mail_reply(
     to write In-Reply-To and References on send, so it opens a new thread in the
     recipient's client. Graph's createReply puts the draft in the original conversation
     and inherits the recipients and subject.
+
+    Optional ``--cc`` / ``--bcc`` are merged into Graph-inherited recipients (add, not
+    replace). Use ``mail update-draft`` when a list must be replaced wholesale.
     """
     mid = message_id.strip()
     if not mid:
         raise ValueError("--id is required")
+    cc_addrs = _parse_addresses(cc, flag="--cc", required=False)
+    bcc_addrs = _parse_addresses(bcc, flag="--bcc", required=False)
     cfg = config or load_config()
     comment = _resolve_comment(
         body=body,
@@ -757,6 +774,7 @@ async def mail_reply(
         created = await _create_draft_from(
             item.create_reply, CreateReplyPostRequestBody(comment=comment), message_id=mid
         )
+    created = await _patch_compose_recipients(client, created, cc=cc_addrs, bcc=bcc_addrs)
     kind = "reply-all" if reply_all else "reply"
     return {"draft": _draft_summary(created, source=mid, kind=kind)}
 
@@ -1170,8 +1188,20 @@ def _draft_summary(created: Any, *, source: str, kind: str) -> dict[str, Any]:
         for person in _participants(getattr(created, "to_recipients", None))
         if person.get("email")
     ]
+    cc_addrs = [
+        person["email"]
+        for person in _participants(getattr(created, "cc_recipients", None))
+        if person.get("email")
+    ]
+    bcc_addrs = [
+        person["email"]
+        for person in _participants(getattr(created, "bcc_recipients", None))
+        if person.get("email")
+    ]
     return {
+        "bcc": ", ".join(bcc_addrs) or None,
         "body_type": body_type,
+        "cc": ", ".join(cc_addrs) or None,
         "conversation_id": getattr(created, "conversation_id", None),
         "id": created.id,
         "kind": kind,
@@ -1398,6 +1428,19 @@ def _join_addresses(addresses: Sequence[str]) -> str:
     return ", ".join(addresses)
 
 
+def _merge_addresses(existing: Sequence[str], added: Sequence[str]) -> list[str]:
+    """Union addresses case-insensitively, preserving first-seen order."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for addr in (*existing, *added):
+        key = addr.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(addr)
+    return merged
+
+
 def _parse_addresses(
     value: str | Sequence[str] | None,
     *,
@@ -1452,6 +1495,69 @@ def _participants(recipients: Any) -> list[dict[str, Any]]:
     return people
 
 
+async def _patch_compose_recipients(
+    client: Any,
+    draft: Any,
+    *,
+    bcc: list[str] | None,
+    cc: list[str] | None,
+) -> Any:
+    """Merge optional create-time CC/BCC into a reply/forward draft (add, not replace).
+
+    Always returns a live draft (re-fetched when needed) so summary fields reflect
+    Graph-inherited recipients even when ``--cc`` / ``--bcc`` were omitted.
+    """
+    mid = getattr(draft, "id", None)
+    if not mid:
+        raise RuntimeError("Graph returned a draft without an id after create")
+    # createReply/createForward responses often omit recipient collections; re-fetch so
+    # the merge base (and the no-flag summary) use the live draft.
+    live = await client.me.messages.by_message_id(mid).get()
+    if live is None or not getattr(live, "id", None):
+        raise RuntimeError(f"Graph returned no draft after create: {mid}")
+    if cc is None and bcc is None:
+        return live
+    patch = Message()
+    if cc is not None:
+        people = _participants(getattr(live, "cc_recipients", None))
+        existing = [str(person["email"]) for person in people if person.get("email")]
+        names = {
+            str(person["email"]).casefold(): (str(person["name"]) if person.get("name") else None)
+            for person in people
+            if person.get("email")
+        }
+        patch.cc_recipients = _recipient_models(
+            _merge_addresses(existing, cc), names_by_address=names
+        )
+    if bcc is not None:
+        people = _participants(getattr(live, "bcc_recipients", None))
+        existing = [str(person["email"]) for person in people if person.get("email")]
+        names = {
+            str(person["email"]).casefold(): (str(person["name"]) if person.get("name") else None)
+            for person in people
+            if person.get("email")
+        }
+        patch.bcc_recipients = _recipient_models(
+            _merge_addresses(existing, bcc), names_by_address=names
+        )
+    try:
+        updated = await client.me.messages.by_message_id(mid).patch(patch)
+    except Exception:
+        # Half-built reply/forward draft is worse than none: delete so a retry is a no-op.
+        # Only wipe on PATCH failure — an empty 2xx body means the merge already landed.
+        try:
+            await client.me.messages.by_message_id(mid).delete()
+        except Exception:
+            pass
+        raise
+    if updated is None:
+        # Empty 2xx body — re-fetch so JSON/human output reflects post-PATCH state.
+        updated = await client.me.messages.by_message_id(mid).get()
+    if updated is None:
+        raise RuntimeError(f"Graph returned no message after recipient patch: {mid}")
+    return updated
+
+
 def _primary_to_address(msg: Any) -> str | None:
     recipients = getattr(msg, "to_recipients", None) or []
     for recipient in recipients:
@@ -1472,8 +1578,19 @@ def _recipient_field(provided: list[str] | None, graph_recipients: Any) -> str |
     return _join_addresses(addresses) or None
 
 
-def _recipient_models(addresses: Sequence[str]) -> list[Recipient]:
-    return [Recipient(email_address=EmailAddress(address=addr)) for addr in addresses]
+def _recipient_models(
+    addresses: Sequence[str],
+    *,
+    names_by_address: Mapping[str, str | None] | None = None,
+) -> list[Recipient]:
+    """Build Graph recipients; optional ``names_by_address`` keys are casefolded."""
+    models: list[Recipient] = []
+    for addr in addresses:
+        name = None
+        if names_by_address is not None:
+            name = names_by_address.get(addr.casefold())
+        models.append(Recipient(email_address=EmailAddress(address=addr, name=name)))
+    return models
 
 
 def _read_attachment(path: str) -> tuple[str, bytes]:

@@ -89,13 +89,12 @@ covers the job.
     contains the quoted original, whatever `--body-type` you pass for your own text.
     Prefer including `--body` here: an empty reply draft filled later with
     `mail update-draft --body` *replaces* that HTML and drops the quoted original.
-    To set or replace CC/BCC (or change To) after create, use `mail update-draft`
-    with `--cc`, `--bcc`, or `--to` respectively. Each provided option replaces that
-    entire list, so include existing recipients that must remain. Reply/forward do not
-    take recipient options directly yet.
+    Prefer `--cc` / `--bcc` on create when adding people (merged into Graph-inherited
+    recipients). Use `mail update-draft --cc` / `--bcc` / `--to` only when you must
+    *replace* an entire list — include every address that should remain.
   - `blumkin mail forward --id '<message-id>' --to … --body …` (draft only; same
-    update-draft warning as reply — pass `--body` on create when you can; set `--cc` /
-    `--bcc` via `mail update-draft` when needed, with full list replacement semantics)
+    body/`update-draft` warning as reply — pass `--body` on create when you can;
+    `--cc` / `--bcc` on create merge; `update-draft` replaces wholesale)
   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` / `--cc` /
     `--bcc` each replace that whole list when provided; `--body` replaces the whole body)
     `--attach <path>` works here too and *adds* to whatever the draft already carries —
