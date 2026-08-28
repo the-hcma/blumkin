@@ -93,7 +93,10 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="calendar.freebusy",
         cli=["blumkin", "calendar", "freebusy"],
-        summary="Get free/busy for one or more email addresses",
+        summary=(
+            "Get free/busy for one or more email addresses (includes attendee "
+            "timezone / working hours when Graph returns them)"
+        ),
         mutates=False,
         notifies_others=False,
         scopes=["Calendars.ReadWrite"],

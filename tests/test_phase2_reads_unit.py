@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from blumkin.skills.calendar import (
     calendar_freebusy,
     calendar_view,
+    format_freebusy_human,
     format_view_human,
     parse_local_datetime,
 )
@@ -59,6 +60,12 @@ def test_calendar_view_mocked(monkeypatch) -> None:
 
 
 def test_calendar_freebusy_mocked(monkeypatch) -> None:
+    hours = SimpleNamespace(
+        days_of_week=["monday", "tuesday", "wednesday", "thursday", "friday"],
+        start_time=time(9, 0),
+        end_time=time(17, 0),
+        time_zone=SimpleNamespace(name="Central Standard Time"),
+    )
     entry = SimpleNamespace(
         schedule_id="peer@example.com",
         availability_view="000",
@@ -69,6 +76,7 @@ def test_calendar_freebusy_mocked(monkeypatch) -> None:
                 end=SimpleNamespace(date_time="2026-08-27T21:30:00Z"),
             )
         ],
+        working_hours=hours,
     )
     client = MagicMock()
     client.me.calendar.get_schedule.post = AsyncMock(return_value=SimpleNamespace(value=[entry]))
@@ -85,8 +93,42 @@ def test_calendar_freebusy_mocked(monkeypatch) -> None:
             end=datetime(2026, 8, 27, 17, 30, tzinfo=tz),
         )
     )
-    assert payload["items"][0]["schedule"] == "peer@example.com"
-    assert payload["items"][0]["busy"][0]["status"] == "busy"
+    item = payload["items"][0]
+    assert item["schedule"] == "peer@example.com"
+    assert item["busy"][0]["status"] == "busy"
+    assert item["timezone"] == "America/Chicago"
+    assert item["working_hours"]["start"] == "09:00"
+    assert item["working_hours"]["end"] == "17:00"
+    assert item["working_hours"]["timezone"] == "America/Chicago"
+    assert "friday" in item["working_hours"]["days_of_week"]
+    human = format_freebusy_human(payload)
+    assert any("America/Chicago" in line and "working 09:00-17:00" in line for line in human)
+
+
+def test_calendar_freebusy_omits_missing_working_hours(monkeypatch) -> None:
+    entry = SimpleNamespace(
+        schedule_id="peer@example.com",
+        availability_view="0",
+        schedule_items=[],
+        working_hours=None,
+    )
+    client = MagicMock()
+    client.me.calendar.get_schedule.post = AsyncMock(return_value=SimpleNamespace(value=[entry]))
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    tz = ZoneInfo("UTC")
+    payload = asyncio.run(
+        calendar_freebusy(
+            with_emails=["peer@example.com"],
+            start=datetime(2026, 8, 27, 17, 0, tzinfo=tz),
+            end=datetime(2026, 8, 27, 18, 0, tzinfo=tz),
+        )
+    )
+    assert payload["items"][0]["working_hours"] is None
+    assert payload["items"][0]["timezone"] is None
 
 
 def test_mail_inbox_mocked(monkeypatch) -> None:
