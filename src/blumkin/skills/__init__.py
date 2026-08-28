@@ -361,7 +361,24 @@ SKILLS: list[SkillSpec] = [
         notifies_others=False,
         scopes=["Mail.ReadWrite"],
         args=[
-            {"name": "--to", "required": True, "type": "email"},
+            {
+                "name": "--to",
+                "required": True,
+                "type": "email",
+                "note": "repeatable or comma-separated",
+            },
+            {
+                "name": "--cc",
+                "required": False,
+                "type": "email",
+                "note": "repeatable or comma-separated",
+            },
+            {
+                "name": "--bcc",
+                "required": False,
+                "type": "email",
+                "note": "repeatable or comma-separated",
+            },
             {"name": "--subject", "required": True, "type": "string"},
             {
                 "name": "--attach",
@@ -543,7 +560,24 @@ SKILLS: list[SkillSpec] = [
                 "note": "repeatable; adds to the draft's existing attachments",
             },
             {"name": "--subject", "required": False, "type": "string"},
-            {"name": "--to", "required": False, "type": "email", "note": "replaces entire To list"},
+            {
+                "name": "--to",
+                "required": False,
+                "type": "email",
+                "note": "replaces entire To list; repeatable or comma-separated",
+            },
+            {
+                "name": "--cc",
+                "required": False,
+                "type": "email",
+                "note": "replaces entire CC list; repeatable or comma-separated",
+            },
+            {
+                "name": "--bcc",
+                "required": False,
+                "type": "email",
+                "note": "replaces entire BCC list; repeatable or comma-separated",
+            },
             {"name": "--body", "required": False, "type": "string"},
             {"name": "--body-file", "required": False, "type": "path"},
             {"name": "--body-type", "required": False, "type": "enum", "values": ["text", "html"]},

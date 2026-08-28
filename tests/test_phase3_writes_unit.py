@@ -602,7 +602,7 @@ def test_mail_update_draft_to_only(monkeypatch) -> None:
     assert posted.to_recipients[0].email_address.address == "c@d.com"
 
 
-def test_mail_update_draft_rejects_to_when_multiple_recipients(monkeypatch) -> None:
+def test_mail_update_draft_replaces_to_when_multiple_recipients(monkeypatch) -> None:
     existing = SimpleNamespace(
         id="draft-1",
         is_draft=True,
@@ -612,16 +612,33 @@ def test_mail_update_draft_rejects_to_when_multiple_recipients(monkeypatch) -> N
             SimpleNamespace(email_address=SimpleNamespace(address="a@b.com")),
             SimpleNamespace(email_address=SimpleNamespace(address="c@d.com")),
         ],
+        cc_recipients=[],
+        bcc_recipients=[],
+    )
+    patched = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=None,
+        to_recipients=[SimpleNamespace(email_address=SimpleNamespace(address="e@f.com"))],
+        cc_recipients=[],
+        bcc_recipients=[],
     )
     client = MagicMock()
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
         lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
     )
-    with pytest.raises(ValueError, match="multiple To recipients"):
-        asyncio.run(mail_update_draft(draft_id="draft-1", to="e@f.com"))
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", to="e@f.com"))
+    assert payload["draft"]["to"] == "e@f.com"
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
+    assert len(posted.to_recipients) == 1
+    assert posted.to_recipients[0].email_address.address == "e@f.com"
 
 
 def test_mail_update_draft_rejects_non_draft(monkeypatch) -> None:
