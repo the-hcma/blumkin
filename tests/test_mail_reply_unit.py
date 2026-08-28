@@ -260,6 +260,8 @@ def test_mail_reply_merges_cc_onto_inherited_recipients(monkeypatch) -> None:
     patch_msg = _posted(item.patch)
     addresses = [r.email_address.address for r in patch_msg.cc_recipients]
     assert addresses == ["already@example.com", "new@example.com"]
+    # Preserved recipients keep display names; newly added ones have none.
+    assert [r.email_address.name for r in patch_msg.cc_recipients] == ["Already", None]
     assert payload["draft"]["cc"] == "already@example.com, new@example.com"
     item.get.assert_awaited()
     item.patch.assert_awaited_once()

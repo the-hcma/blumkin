@@ -6,7 +6,7 @@ import base64
 import binascii
 import html as html_lib
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -1515,19 +1515,27 @@ async def _patch_compose_recipients(
         raise RuntimeError(f"Graph returned no draft after create: {mid}")
     patch = Message()
     if cc is not None:
-        existing = [
-            str(person["email"])
-            for person in _participants(getattr(live, "cc_recipients", None))
+        people = _participants(getattr(live, "cc_recipients", None))
+        existing = [str(person["email"]) for person in people if person.get("email")]
+        names = {
+            str(person["email"]).casefold(): (str(person["name"]) if person.get("name") else None)
+            for person in people
             if person.get("email")
-        ]
-        patch.cc_recipients = _recipient_models(_merge_addresses(existing, cc))
+        }
+        patch.cc_recipients = _recipient_models(
+            _merge_addresses(existing, cc), names_by_address=names
+        )
     if bcc is not None:
-        existing = [
-            str(person["email"])
-            for person in _participants(getattr(live, "bcc_recipients", None))
+        people = _participants(getattr(live, "bcc_recipients", None))
+        existing = [str(person["email"]) for person in people if person.get("email")]
+        names = {
+            str(person["email"]).casefold(): (str(person["name"]) if person.get("name") else None)
+            for person in people
             if person.get("email")
-        ]
-        patch.bcc_recipients = _recipient_models(_merge_addresses(existing, bcc))
+        }
+        patch.bcc_recipients = _recipient_models(
+            _merge_addresses(existing, bcc), names_by_address=names
+        )
     try:
         updated = await client.me.messages.by_message_id(mid).patch(patch)
     except Exception:
@@ -1566,8 +1574,19 @@ def _recipient_field(provided: list[str] | None, graph_recipients: Any) -> str |
     return _join_addresses(addresses) or None
 
 
-def _recipient_models(addresses: Sequence[str]) -> list[Recipient]:
-    return [Recipient(email_address=EmailAddress(address=addr)) for addr in addresses]
+def _recipient_models(
+    addresses: Sequence[str],
+    *,
+    names_by_address: Mapping[str, str | None] | None = None,
+) -> list[Recipient]:
+    """Build Graph recipients; optional ``names_by_address`` keys are casefolded."""
+    models: list[Recipient] = []
+    for addr in addresses:
+        name = None
+        if names_by_address is not None:
+            name = names_by_address.get(addr.casefold())
+        models.append(Recipient(email_address=EmailAddress(address=addr, name=name)))
+    return models
 
 
 def _read_attachment(path: str) -> tuple[str, bytes]:
