@@ -32,6 +32,11 @@ FILES_SCOPES = [
     "Files.Read",
 ]
 
+
+class SecretWriteError(OSError):
+    """Failed to persist the MSAL cache or auth record (symlink, perms, etc.)."""
+
+
 WO1162425_SCOPES = [
     "Chat.ReadWrite",
     "OnlineMeetings.ReadWrite",
@@ -66,11 +71,14 @@ def create_credential(config: BlumkinConfig | None = None) -> InteractiveBrowser
     if record:
         try:
             credential.get_token(*scopes)
-            save_token_cache(cfg)
-            return credential
         except Exception:
             # Stale auth record / missing refresh token — force interactive login.
+            # Do not wrap save_token_cache here: its OSError (e.g. O_NOFOLLOW) must
+            # surface, and get_token transport OSErrors must still fall through.
             pass
+        else:
+            save_token_cache(cfg)
+            return credential
 
     record = credential.authenticate(scopes=scopes)
     _save_auth_record(cfg, record)
@@ -114,7 +122,7 @@ def save_token_cache(config: BlumkinConfig | None = None) -> None:
     if _cache_bound_path != str(cfg.token_cache_path):
         return
     if _token_cache.has_state_changed:
-        cfg.config_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        _ensure_secret_dir(cfg.config_dir)
         _write_secret_text(cfg.token_cache_path, _token_cache.serialize())
 
 
@@ -191,6 +199,21 @@ def _ensure_cache(cfg: BlumkinConfig) -> None:
         _atexit_registered = True
 
 
+def _ensure_secret_dir(directory: Path) -> None:
+    """Create ``directory`` at 0700; best-effort tighten if it already existed looser.
+
+    Mode-setting is optional: SMB/FUSE mounts may reject ``chmod``. A symlinked
+    config dir is refused (same class of attack as a symlinked secret file).
+    """
+    if directory.is_symlink():
+        raise SecretWriteError(f"cannot use symlinked config dir {directory}")
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+
+
 def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
     if not cfg.auth_record_path.is_file():
         return None
@@ -201,7 +224,7 @@ def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
 
 
 def _save_auth_record(cfg: BlumkinConfig, record: AuthenticationRecord) -> None:
-    cfg.config_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    _ensure_secret_dir(cfg.config_dir)
     _write_secret_text(cfg.auth_record_path, record.serialize())
 
 
@@ -210,14 +233,55 @@ def _save_bound_token_cache_at_exit() -> None:
     if _cache_bound_path is None or not _token_cache.has_state_changed:
         return
     path = Path(_cache_bound_path)
-    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    _write_secret_text(path, _token_cache.serialize())
+    try:
+        _ensure_secret_dir(path.parent)
+        _write_secret_text(path, _token_cache.serialize())
+    except OSError:
+        # Avoid "Exception ignored" on atexit when the secret path is a symlink
+        # or the filesystem rejects mode/write; process is already exiting.
+        pass
 
 
 def _write_secret_text(path: Path, text: str) -> None:
-    """Write sensitive text with mode 0600 (no world-readable window)."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    """Write sensitive text, tightening Unix modes when the file already exists.
+
+    On POSIX, ``O_CREAT`` mode is ignored when the path already exists, so a
+    leftover world-readable cache would keep leaking tokens on every rewrite
+    without an explicit ``fchmod`` to ``0600``. ``O_NOFOLLOW`` (when available)
+    refuses a symlink swap at the path. Mode-setting is best-effort so
+    chmod-less filesystems still persist the cache after ``O_TRUNC``.
+
+    On Windows, ``os.fchmod`` is unavailable and ``os.chmod`` only toggles the
+    read-only bit (ACLs govern access). The post-close ``chmod`` there avoids
+    ``AttributeError`` so login/cache persistence still works; it does not
+    claim a Unix ``0600`` guarantee.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow:
+        flags |= nofollow
     try:
-        os.write(fd, text.encode())
+        fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        # Symlink at the secret path (ELOOP) or other open failure — never follow.
+        raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
+    try:
+        try:
+            if hasattr(os, "fchmod"):
+                try:
+                    os.fchmod(fd, 0o600)
+                except OSError:
+                    pass
+            os.write(fd, text.encode())
+        except OSError as exc:
+            raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError as exc:
+            raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
+    if not hasattr(os, "fchmod"):
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass

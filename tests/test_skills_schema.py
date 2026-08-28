@@ -303,7 +303,14 @@ _ENVELOPE_KEYS = {"cli", "skills", "version"}
 _ERROR_KEYS = {"error", "message", "ok"}
 
 
-_ERROR_VALUES = {"auth_required", "graph_error", "missing_scope", "not_found", "usage_error"}
+_ERROR_VALUES = {
+    "auth_required",
+    "graph_error",
+    "missing_scope",
+    "not_found",
+    "secret_write_failed",
+    "usage_error",
+}
 
 
 _ID_RE = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*")
