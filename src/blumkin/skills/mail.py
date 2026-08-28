@@ -744,9 +744,8 @@ async def mail_update_draft(
         raise MailDraftNotFoundError(f"message not found: {mid}")
     if not existing.is_draft:
         raise MailDraftNotFoundError(f"message is not a draft: {mid}")
-    # Upload before PATCH so a failed --attach batch cannot leave subject/body/to changed
-    # while the CLI exits with an error (mail draft deletes the whole draft instead).
-    uploaded = await _upload_attachments(client, mid, pending)
+    # Validate field changes before any upload so a usage error cannot leave new
+    # attachments behind (a retry would then silently duplicate them).
     patch = Message()
     if subject is not None:
         if not subject.strip():
@@ -763,15 +762,23 @@ async def mail_update_draft(
         patch.to_recipients = [
             Recipient(email_address=EmailAddress(address=to.strip())),
         ]
+    # Upload before PATCH so a failed --attach batch cannot leave subject/body/to changed
+    # while the CLI exits with an error (mail draft deletes the whole draft instead).
+    uploaded = await _upload_attachments(client, mid, pending)
     if subject is None and content is None and to is None:
         # --attach on its own: an empty PATCH would be a pointless round trip.
         updated = existing
     else:
-        updated = await client.me.messages.by_message_id(mid).patch(patch)
-        if updated is None:
-            # Empty 2xx body — re-fetch so JSON/human output reflects post-PATCH state.
-            updated = await client.me.messages.by_message_id(mid).get()
+        try:
+            updated = await client.me.messages.by_message_id(mid).patch(patch)
+            if updated is None:
+                # Empty 2xx body — re-fetch so JSON/human output reflects post-PATCH state.
+                updated = await client.me.messages.by_message_id(mid).get()
+        except Exception:
+            await _delete_uploaded_attachments(client, mid, uploaded)
+            raise
     if updated is None:
+        await _delete_uploaded_attachments(client, mid, uploaded)
         raise RuntimeError(f"Graph returned no message after update-draft: {mid}")
     to_out = to.strip() if to is not None and to.strip() else _primary_to_address(updated)
     body_out = body_type_label
@@ -1452,6 +1459,23 @@ async def _scan_messages(
     return matches, scanned, True
 
 
+async def _delete_uploaded_attachments(
+    client: Any, message_id: str, uploaded: Sequence[dict[str, Any]]
+) -> None:
+    """Best-effort undo for attachments posted in the current call."""
+    if not uploaded:
+        return
+    builder = client.me.messages.by_message_id(message_id).attachments
+    for item in uploaded:
+        aid = item.get("id")
+        if not aid:
+            continue
+        try:
+            await builder.by_attachment_id(aid).delete()
+        except Exception:
+            pass
+
+
 async def _upload_attachments(
     client: Any, message_id: str, pending: Sequence[tuple[str, bytes]]
 ) -> list[dict[str, Any]]:
@@ -1482,15 +1506,7 @@ async def _upload_attachments(
                 }
             )
     except Exception:
-        for item in uploaded:
-            aid = item.get("id")
-            if not aid:
-                continue
-            try:
-                await builder.by_attachment_id(aid).delete()
-            except Exception:
-                # Best-effort cleanup; the original upload error is what the caller sees.
-                pass
+        await _delete_uploaded_attachments(client, message_id, uploaded)
         raise
     return uploaded
 

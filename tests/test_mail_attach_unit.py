@@ -240,6 +240,47 @@ def test_mail_draft_rejects_a_non_regular_file(tmp_path, monkeypatch) -> None:
         asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", attach=[str(source)]))
 
 
+def test_mail_update_draft_validates_before_uploading(tmp_path, monkeypatch) -> None:
+    """A multi-To refusal must not leave a newly uploaded attachment behind."""
+    source = tmp_path / "note.txt"
+    source.write_bytes(b"hi")
+    client = _draft_client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.get = AsyncMock(
+        return_value=SimpleNamespace(
+            id="draft-1",
+            is_draft=True,
+            subject="Old",
+            body=SimpleNamespace(content_type=BodyType.Text, content="old"),
+            to_recipients=[
+                SimpleNamespace(email_address=SimpleNamespace(address="a@b.com")),
+                SimpleNamespace(email_address=SimpleNamespace(address="c@d.com")),
+            ],
+        )
+    )
+
+    with pytest.raises(ValueError, match="multiple To"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", to="new@x.com", attach=[str(source)]))
+
+    item.attachments.post.assert_not_awaited()
+    item.patch.assert_not_awaited()
+
+
+def test_mail_update_draft_rolls_back_attachments_when_patch_fails(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "note.txt"
+    source.write_bytes(b"hi")
+    client = _draft_client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.patch = AsyncMock(side_effect=RuntimeError("patch failed"))
+    delete = AsyncMock(return_value=None)
+    item.attachments.by_attachment_id.return_value.delete = delete
+
+    with pytest.raises(RuntimeError, match="patch failed"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", subject="New", attach=[str(source)]))
+
+    delete.assert_awaited_once()
+
+
 def test_mail_update_draft_still_requires_a_field() -> None:
     with pytest.raises(ValueError, match="at least one"):
         asyncio.run(mail_update_draft(draft_id="draft-1"))
