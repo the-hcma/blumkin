@@ -92,6 +92,7 @@ async def people_resolve(
             person
             for person in matches
             if needle == (person.get("email") or "").casefold()
+            or needle == (person.get("user_principal_name") or "").casefold()
             or any(needle == addr.casefold() for addr in person.get("emails") or [])
         ]
     if query_name is not None and query_email is not None:

@@ -238,6 +238,51 @@ def test_format_resolve_human_sanitizes_control_chars() -> None:
     assert "\x1b" not in joined
 
 
+def test_people_resolve_email_matches_user_principal_name(monkeypatch) -> None:
+    """Exact email filter must accept UPN when scored addresses differ."""
+    people = [
+        SimpleNamespace(
+            company_name=None,
+            display_name="Ada Example",
+            job_title=None,
+            scored_email_addresses=[
+                SimpleNamespace(address="ada.alt@example.com", relevance_score=9.0),
+            ],
+            user_principal_name="ada@example.com",
+        ),
+    ]
+    client = MagicMock()
+    client.me.people.get = AsyncMock(return_value=SimpleNamespace(value=people))
+    monkeypatch.setattr("blumkin.skills.people.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.people.load_config",
+        lambda: SimpleNamespace(client_id="x"),
+    )
+    payload = asyncio.run(people_resolve(email="ada@example.com"))
+    assert payload["ambiguous"] is False
+    assert payload["person"]["user_principal_name"] == "ada@example.com"
+    assert payload["person"]["email"] == "ada.alt@example.com"
+
+
+def test_people_resolve_top_boundaries() -> None:
+    with pytest.raises(ValueError, match="--top must be >= 1"):
+        asyncio.run(people_resolve(name="Ada", top=0))
+    with pytest.raises(ValueError, match="--top must be <="):
+        asyncio.run(people_resolve(name="Ada", top=51))
+
+
+def test_cli_people_resolve_bad_top_exits_usage(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blumkin.cli.load_config",
+        lambda: SimpleNamespace(wo1162425_scopes=True),
+    )
+    result = CliRunner().invoke(
+        main, ["people", "resolve", "--name", "Ada", "--top", "0", "--json"]
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert '"error": "usage_error"' in result.stderr
+
+
 def test_people_resolve_requires_query() -> None:
     with pytest.raises(ValueError, match="--name"):
         asyncio.run(people_resolve())
