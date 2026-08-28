@@ -10,8 +10,11 @@ from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
 import pytest
+from msgraph.generated.models.o_data_errors.main_error import MainError
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.skills.mail import (
+    format_inbox_human,
     format_list_human,
     mail_inbox,
     mail_list,
@@ -384,6 +387,44 @@ def test_format_list_human_discloses_a_truncated_local_scan() -> None:
     )
 
 
+def test_format_inbox_human_discloses_filters_and_a_truncated_scan() -> None:
+    lines = format_inbox_human(
+        {
+            "filters": {
+                "complete": False,
+                "from": "Rebecca",
+                "matched_locally": True,
+                "scanned": 500,
+            },
+            "items": [],
+            "top": 10,
+        }
+    )
+
+    assert lines[0] == "Inbox (top 10): 0 message(s)"
+    assert lines[1] == "  filters: from='Rebecca'"
+    assert lines[2] == (
+        "  (stopped after scanning 500 messages; "
+        "narrow with --since, or use --search to reach the whole mailbox)"
+    )
+
+
+def test_mail_list_recomputes_date_field_after_alias_fallback(monkeypatch) -> None:
+    """Alias 'draft' → drafts must rebuild --since on createdDateTime, not receivedDateTime."""
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(side_effect=[_odata_error(404, "ErrorItemNotFound"), _page([])])
+    client.me.mail_folders.get = AsyncMock(return_value=_page([]))
+
+    payload = asyncio.run(mail_list(folder="draft", since=datetime(2026, 8, 1, tzinfo=UTC)))
+
+    assert payload["folder"] == "drafts"
+    assert payload["orderby"] == "created"
+    second = messages.get.await_args_list[1].args[0].query_parameters
+    assert second.filter == "createdDateTime ge 2026-08-01T00:00:00Z"
+    assert second.orderby == ["createdDateTime desc"]
+
+
 def test_format_list_human_reports_relevance_order_for_a_search() -> None:
     lines = format_list_human(
         {
@@ -455,6 +496,13 @@ def _msg(
         subject=subject,
         to_recipients=None,
     )
+
+
+def _odata_error(status: int, code: str) -> ODataError:
+    error = ODataError()
+    error.response_status_code = status
+    error.error = MainError(code=code, message=code)
+    return error
 
 
 def _page(value: list[Any], *, next_link: str | None = None) -> SimpleNamespace:
