@@ -44,7 +44,9 @@ covers the job.
      `blumkin mail get --id '<message-id>' --json` (one message in full: participants,
      timestamps, attachments, and body — use this instead of listing and filtering
      client-side; `--body-type html` keeps the markup, default `text`)
-     `blumkin mail folders --json` (folder ids and counts, for custom folders)
+     `blumkin mail folders --json` (folder ids and counts, for custom folders;
+     Graph's totals can lag — do not treat `total: 0` as proof a folder is empty;
+     use `mail list --folder drafts` or `mail get --id` for existence)
      `blumkin mail attachments --id '<message-id>' --json`
      `blumkin mail attachments download --message-id '<message-id>' --attachment-id '<id>' --out ./file.docx`
    - Chat: `blumkin chat find --with "Name" --json`,
@@ -63,6 +65,10 @@ covers the job.
      single request, so keep them under 2 MB; larger ones are refused (exit 2) rather
      than silently truncated. A bad path fails before the draft is created. If any
      upload fails after the draft exists, the draft is deleted so a retry is a no-op.
+     Outlook-safe HTML: prefer simple structure (`<p>`, `<a>`, lists, tables). Inline
+     `style=` and decorative borders are often stripped on send; links and headings
+     usually survive. Blumkin does not sanitize markup — it passes `--body-type html`
+     through unchanged.
   - `blumkin mail reply --id '<message-id>' --body …` (`--all` for reply-all). Use this
     rather than a fresh draft with `RE:` prepended: Graph puts the draft in the original
     conversation and inherits the recipients, so it threads in the recipient's client.

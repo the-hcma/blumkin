@@ -404,7 +404,10 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="mail.folders",
         cli=["blumkin", "mail", "folders"],
-        summary="List mail folders with their ids and message counts",
+        summary=(
+            "List mail folders with their ids and message counts "
+            "(counts come from Graph and may lag; not proof of emptiness)"
+        ),
         mutates=False,
         notifies_others=False,
         scopes=["Mail.ReadWrite"],
