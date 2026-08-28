@@ -364,6 +364,12 @@ SKILLS: list[SkillSpec] = [
             {"name": "--to", "required": True, "type": "email"},
             {"name": "--subject", "required": True, "type": "string"},
             {
+                "name": "--attach",
+                "required": False,
+                "type": "path",
+                "note": "repeatable; each file must be under 2 MB",
+            },
+            {
                 "name": "--body",
                 "required": False,
                 "type": "string",
@@ -530,6 +536,12 @@ SKILLS: list[SkillSpec] = [
         scopes=["Mail.ReadWrite"],
         args=[
             {"name": "--id", "required": True, "type": "string"},
+            {
+                "name": "--attach",
+                "required": False,
+                "type": "path",
+                "note": "repeatable; adds to the draft's existing attachments",
+            },
             {"name": "--subject", "required": False, "type": "string"},
             {"name": "--to", "required": False, "type": "email", "note": "replaces entire To list"},
             {"name": "--body", "required": False, "type": "string"},
