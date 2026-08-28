@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
-from blumkin.skills.mail import append_mail_signature, render_mail_signature
+from blumkin.skills.mail import append_mail_signature, mail_draft, render_mail_signature
 
 
 def test_mail_signature_defaults_disabled(tmp_path: Path, monkeypatch) -> None:
@@ -101,3 +104,38 @@ def test_append_mail_signature_disabled_is_noop(tmp_path: Path, monkeypatch) -> 
     cfg = load_config()
     assert cfg.mail_signature.enabled is False
     assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello"
+
+
+def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
+    draft = SimpleNamespace(id="draft-1", subject="Hi")
+    client = MagicMock()
+    client.me.messages.post = AsyncMock(return_value=draft)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    cfg = BlumkinConfig(
+        client_id="x",
+        config_dir=Path("/tmp"),
+        default_tz="UTC",
+        files_scopes=False,
+        mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
+        tenant_id="t",
+        wo1162425_scopes=False,
+    )
+
+    asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", config=cfg))
+    assert client.me.messages.post.await_args.args[0].body.content == "Hello\n\nAda"
+
+    asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", config=cfg, no_signature=True))
+    assert client.me.messages.post.await_args.args[0].body.content == "Hello"
+
+    asyncio.run(
+        mail_draft(
+            to="a@b.com",
+            subject="Hi",
+            body="<p>Hi</p>",
+            body_type="html",
+            config=cfg,
+        )
+    )
+    html_body = client.me.messages.post.await_args.args[0].body.content
+    assert html_body.startswith("<p>Hi</p><br><br>")
+    assert "Ada" in html_body
