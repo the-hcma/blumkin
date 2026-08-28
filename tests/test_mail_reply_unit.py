@@ -52,6 +52,25 @@ def test_format_reply_human_says_forwarding_for_a_forward() -> None:
     assert lines[2] == "  forwarding msg-1"
 
 
+def test_format_reply_human_lists_cc_and_bcc() -> None:
+    lines = format_reply_human(
+        {
+            "draft": {
+                "bcc": "secret@example.com",
+                "body_type": "html",
+                "cc": "sam@example.com",
+                "id": "draft-1",
+                "kind": "reply",
+                "source_message_id": "msg-1",
+                "subject": "RE: Hi",
+                "to": "a@b.com",
+            }
+        }
+    )
+    assert "  cc: sam@example.com" in lines
+    assert "  bcc: secret@example.com" in lines
+
+
 def test_mail_reply_joins_multiple_to_addresses(monkeypatch) -> None:
     """draft.to is a string like mail.draft — reply-all must not switch it to a list."""
     client = _client(monkeypatch)
@@ -214,13 +233,17 @@ def test_mail_reply_reports_an_unreadable_body_file() -> None:
 def test_mail_reply_merges_cc_onto_inherited_recipients(monkeypatch) -> None:
     client = _client(monkeypatch)
     item = client.me.messages.by_message_id.return_value
-    draft = _draft("RE: Quarterly sync")
-    draft.cc_recipients = [
+    # createReply body often omits recipient collections; live GET supplies the merge base.
+    created = _draft("RE: Quarterly sync")
+    created.cc_recipients = None
+    live = _draft("RE: Quarterly sync")
+    live.cc_recipients = [
         SimpleNamespace(
             email_address=SimpleNamespace(address="already@example.com", name="Already")
         )
     ]
-    item.create_reply.post = AsyncMock(return_value=draft)
+    item.create_reply.post = AsyncMock(return_value=created)
+    item.get = AsyncMock(return_value=live)
     patched = _draft("RE: Quarterly sync")
     patched.cc_recipients = [
         SimpleNamespace(
@@ -238,6 +261,7 @@ def test_mail_reply_merges_cc_onto_inherited_recipients(monkeypatch) -> None:
     addresses = [r.email_address.address for r in patch_msg.cc_recipients]
     assert addresses == ["already@example.com", "new@example.com"]
     assert payload["draft"]["cc"] == "already@example.com, new@example.com"
+    item.get.assert_awaited()
     item.patch.assert_awaited_once()
 
 
@@ -245,17 +269,34 @@ def test_mail_reply_skips_recipient_patch_when_cc_omitted(monkeypatch) -> None:
     client = _client(monkeypatch)
     item = client.me.messages.by_message_id.return_value
     item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+    item.get = AsyncMock()
     item.patch = AsyncMock()
 
     asyncio.run(mail_reply(message_id="msg-1", body="Thanks"))
 
+    item.get.assert_not_called()
     item.patch.assert_not_called()
+
+
+def test_mail_reply_deletes_draft_when_recipient_patch_fails(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+    item.get = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+    item.patch = AsyncMock(side_effect=_odata_error(400, "ErrorInvalidRecipients"))
+    item.delete = AsyncMock(return_value=None)
+
+    with pytest.raises(ODataError):
+        asyncio.run(mail_reply(message_id="msg-1", body="Thanks", cc="bad@example.com"))
+
+    item.delete.assert_awaited_once()
 
 
 def test_mail_forward_patches_bcc(monkeypatch) -> None:
     client = _client(monkeypatch)
     item = client.me.messages.by_message_id.return_value
     item.create_forward.post = AsyncMock(return_value=_draft("FW: Quarterly sync"))
+    item.get = AsyncMock(return_value=_draft("FW: Quarterly sync"))
     patched = _draft("FW: Quarterly sync")
     patched.bcc_recipients = [
         SimpleNamespace(email_address=SimpleNamespace(address="hidden@example.com", name=None))

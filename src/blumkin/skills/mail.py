@@ -1508,25 +1508,42 @@ async def _patch_compose_recipients(
     mid = getattr(draft, "id", None)
     if not mid:
         raise RuntimeError("Graph returned a draft without an id after create")
+    # createReply/createForward responses often omit recipient collections; re-fetch so
+    # the merge base is the live draft, not an empty getattr default.
+    live = await client.me.messages.by_message_id(mid).get()
+    if live is None or not getattr(live, "id", None):
+        raise RuntimeError(f"Graph returned no draft after create: {mid}")
     patch = Message()
     if cc is not None:
         existing = [
             str(person["email"])
-            for person in _participants(getattr(draft, "cc_recipients", None))
+            for person in _participants(getattr(live, "cc_recipients", None))
             if person.get("email")
         ]
         patch.cc_recipients = _recipient_models(_merge_addresses(existing, cc))
     if bcc is not None:
         existing = [
             str(person["email"])
-            for person in _participants(getattr(draft, "bcc_recipients", None))
+            for person in _participants(getattr(live, "bcc_recipients", None))
             if person.get("email")
         ]
         patch.bcc_recipients = _recipient_models(_merge_addresses(existing, bcc))
-    updated = await client.me.messages.by_message_id(mid).patch(patch)
+    try:
+        updated = await client.me.messages.by_message_id(mid).patch(patch)
+        if updated is None:
+            updated = await client.me.messages.by_message_id(mid).get()
+    except Exception:
+        # Half-built reply/forward draft is worse than none: delete so a retry is a no-op.
+        try:
+            await client.me.messages.by_message_id(mid).delete()
+        except Exception:
+            pass
+        raise
     if updated is None:
-        updated = await client.me.messages.by_message_id(mid).get()
-    if updated is None:
+        try:
+            await client.me.messages.by_message_id(mid).delete()
+        except Exception:
+            pass
         raise RuntimeError(f"Graph returned no message after recipient patch: {mid}")
     return updated
 
