@@ -9,6 +9,9 @@ Non-negotiable standards for humans and AI working in this repo.
 **blumkin** is a personal Microsoft 365 / Graph **skills CLI** (delegated “as me”).
 See `README.md` and `PLAN.md`.
 
+When writing mail or Teams chat bodies on the user's behalf (via blumkin skills),
+follow `.cursor/skills/blumkin/SKILL.md` authoring style: hyphens, not em/en dashes.
+
 ---
 
 ## Session startup & cleanup

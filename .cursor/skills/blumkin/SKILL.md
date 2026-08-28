@@ -96,6 +96,16 @@ covers the job.
    and download exits `4` / `missing_scope` with the share URL — hand that URL to
    the user to open in a browser instead of retrying.
 
+## Authoring style (mail + chat bodies)
+
+When composing text for `mail draft`, `mail update-draft`, `mail reply`,
+`mail forward`, or `chat send`:
+
+- Use ASCII hyphens (`-`), not em dashes (`—`) or en dashes (`–`). Prefer two
+  short sentences over a dash at all.
+- Same rule for `--body-type html`: do not emit `&mdash;` / `&ndash;` (or the
+  literal Unicode dashes) in markup you write on the user's behalf.
+
 ## Config
 
 - Default: `~/.config/blumkin/` (`config.toml`, token cache, auth record).
