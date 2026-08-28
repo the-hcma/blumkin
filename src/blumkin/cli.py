@@ -30,9 +30,11 @@ from blumkin.output import emit_error, emit_json, emit_lines
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
     calendar_freebusy,
+    calendar_suggest,
     calendar_today,
     calendar_view,
     format_freebusy_human,
+    format_suggest_human,
     format_today_human,
     format_view_human,
     parse_local_datetime,
@@ -44,6 +46,7 @@ from blumkin.skills.calendar_writes import (
     format_accept_human,
     format_cancel_human,
     format_create_human,
+    parse_duration,
 )
 from blumkin.skills.chat import (
     ChatAttachmentNotFoundError,
@@ -542,6 +545,90 @@ def calendar_freebusy_cmd(
         emit_json(payload)
     else:
         emit_lines(format_freebusy_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@calendar.command("suggest")
+@click.option(
+    "--with", "with_emails", multiple=True, required=True, help="People who must be free."
+)
+@click.option("--start", "start_raw", required=True, help="Local search start datetime.")
+@click.option("--end", "end_raw", required=True, help="Local search end datetime.")
+@click.option(
+    "--duration",
+    default="30m",
+    show_default=True,
+    help="Meeting length (e.g. 45m, 1h).",
+)
+@click.option(
+    "--window",
+    default=None,
+    help="Optional local day clip HH:MM-HH:MM (e.g. 09:00-18:00).",
+)
+@click.option(
+    "--treat-tentative",
+    "treat_tentative",
+    default="busy",
+    show_default=True,
+    type=click.Choice(["busy", "free"], case_sensitive=False),
+    help="Whether tentative blocks count as busy.",
+)
+@click.option(
+    "--limit",
+    default=10,
+    show_default=True,
+    type=int,
+    help="Max number of suggested starts.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
+@click.pass_context
+def calendar_suggest_cmd(
+    ctx: click.Context,
+    with_emails: tuple[str, ...],
+    start_raw: str,
+    end_raw: str,
+    duration: str,
+    window: str | None,
+    treat_tentative: str,
+    limit: int,
+    as_json_flag: bool,
+    tz_flag: str | None,
+) -> None:
+    """Suggest mutual free slots from free/busy (does not create an event)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        cfg = load_config()
+        tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
+        start = parse_local_datetime(start_raw, tz)
+        end = parse_local_datetime(end_raw, tz)
+        payload = asyncio.run(
+            calendar_suggest(
+                with_emails=list(with_emails),
+                start=start,
+                end=end,
+                duration=parse_duration(duration),
+                window=window,
+                treat_tentative=treat_tentative,
+                limit=limit,
+            )
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_suggest_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 

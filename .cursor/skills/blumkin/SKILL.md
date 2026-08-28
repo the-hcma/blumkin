@@ -27,12 +27,13 @@ covers the job.
      (roughly 09:00-17:00 local) unless the user overrides. Do **not** rewrite `--start` /
      `--end` into the attendee's zone — organizer intent stays explicit; convert mentally
      when proposing slots.
-     Freebusy returns **busy blocks**, not suggested starts. Include the organizer's
-     and attendees' busy blocks (pass the organizer email in `--with` too if needed),
-     take the **union** of those intervals, then pick gaps in that complement. Clip to
-     the organizer `--tz` / `default_tz` and each attendee's `working_hours` when
-     present, and treat `tentative` as busy unless the user says otherwise. Do **not**
-     use freebusy as a people directory (guessing SMTP addresses via `--with`).
+     Freebusy returns **busy blocks**, not suggested starts. Prefer
+     `blumkin calendar suggest --with … --start … --end … --duration 45m --json`
+     (optional `--window 09:00-18:00`, `--treat-tentative busy|free`) to get ranked
+     mutual-free starts from the union of busy intervals. Include the organizer in
+     `--with` when they must be free too. Clip with `--window` / organizer `--tz`;
+     do **not** rewrite times into an attendee's zone. Do **not** use freebusy as a
+     people directory (guessing SMTP addresses via `--with`).
    - Mail: `blumkin mail inbox --top 10 --json`
      `blumkin mail list --folder sentitems --top 20 --json` (also `archive`,
      `deleteditems`, `drafts`, `junkemail`, `outbox`, a folder id, or a custom

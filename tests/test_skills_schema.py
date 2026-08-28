@@ -288,11 +288,12 @@ _ARG_TYPES = {
 
 
 _ENUM_VALUES = {
+    ("calendar.suggest", "--treat-tentative"): ["busy", "free"],
     ("mail.draft", "--body-type"): ["text", "html"],
     ("mail.forward", "--body-type"): ["html", "text"],
     ("mail.get", "--body-type"): ["html", "text"],
-    ("mail.reply", "--body-type"): ["html", "text"],
     ("mail.list", "--orderby"): ["created", "received", "sent"],
+    ("mail.reply", "--body-type"): ["html", "text"],
     ("mail.update-draft", "--body-type"): ["text", "html"],
 }
 
@@ -328,6 +329,7 @@ _CONSENT = {
     "calendar.cancel": (True, True),
     "calendar.create": (True, True),
     "calendar.freebusy": (False, False),
+    "calendar.suggest": (False, False),
     "calendar.today": (False, False),
     "calendar.view": (False, False),
     "chat.attachments": (False, False),
