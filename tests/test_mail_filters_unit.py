@@ -384,7 +384,7 @@ def test_mail_inbox_passes_filters_through(monkeypatch) -> None:
 
 
 def test_mail_inbox_forwards_search(monkeypatch) -> None:
-    """mail_inbox gained --search in this PR; dropping the forward would look like a newest-first list."""
+    """Dropping search from mail_inbox would silently fall back to newest-first."""
     client = _client(monkeypatch)
     client.me.messages.get = AsyncMock(return_value=_page([]))
 
