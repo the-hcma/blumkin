@@ -322,17 +322,13 @@ def test_mail_forward_merges_bcc_onto_inherited_recipients(monkeypatch) -> None:
     created.bcc_recipients = None
     live = _draft("FW: Quarterly sync")
     live.bcc_recipients = [
-        SimpleNamespace(
-            email_address=SimpleNamespace(address="hidden@example.com", name="Hidden")
-        )
+        SimpleNamespace(email_address=SimpleNamespace(address="hidden@example.com", name="Hidden"))
     ]
     item.create_forward.post = AsyncMock(return_value=created)
     item.get = AsyncMock(return_value=live)
     patched = _draft("FW: Quarterly sync")
     patched.bcc_recipients = [
-        SimpleNamespace(
-            email_address=SimpleNamespace(address="hidden@example.com", name="Hidden")
-        ),
+        SimpleNamespace(email_address=SimpleNamespace(address="hidden@example.com", name="Hidden")),
         SimpleNamespace(email_address=SimpleNamespace(address="new@example.com", name=None)),
     ]
     item.patch = AsyncMock(return_value=patched)
