@@ -718,6 +718,7 @@ def test_mail_reply_needs_no_yes_because_it_only_drafts(monkeypatch) -> None:
         "body_file": None,
         "body_type": "text",
         "message_id": "msg-1",
+        "no_signature": False,
         "reply_all": True,
     }
 
