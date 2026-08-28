@@ -420,9 +420,7 @@ def _client(monkeypatch, *, signature: bool = False) -> MagicMock:
     client = MagicMock()
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     # Reply/forward always re-fetch the draft for accurate recipient summaries.
-    client.me.messages.by_message_id.return_value.get = AsyncMock(
-        return_value=_draft("RE: live")
-    )
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=_draft("RE: live"))
     if signature:
         cfg = BlumkinConfig(
             client_id="x",
