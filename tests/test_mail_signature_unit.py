@@ -122,10 +122,14 @@ def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
     )
 
     asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", config=cfg))
-    assert client.me.messages.post.await_args.args[0].body.content == "Hello\n\nAda"
+    posted = client.me.messages.post.await_args
+    assert posted is not None
+    assert posted.args[0].body.content == "Hello\n\nAda"
 
     asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", config=cfg, no_signature=True))
-    assert client.me.messages.post.await_args.args[0].body.content == "Hello"
+    posted = client.me.messages.post.await_args
+    assert posted is not None
+    assert posted.args[0].body.content == "Hello"
 
     asyncio.run(
         mail_draft(
@@ -136,6 +140,8 @@ def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
             config=cfg,
         )
     )
-    html_body = client.me.messages.post.await_args.args[0].body.content
+    posted = client.me.messages.post.await_args
+    assert posted is not None
+    html_body = posted.args[0].body.content
     assert html_body.startswith("<p>Hi</p><br><br>")
     assert "Ada" in html_body
