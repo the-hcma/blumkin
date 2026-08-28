@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -185,6 +185,61 @@ def test_find_mutual_free_slots_advances_across_days_for_window() -> None:
     # 16:30 + 45m would end at 17:15 — past window; jump to next day's 09:00.
     assert slots[0]["start"] == datetime(2026, 8, 29, 9, 0, tzinfo=_TZ).isoformat()
     assert all(s["start"].startswith("2026-08-29T") for s in slots[:3])
+
+
+def test_find_mutual_free_slots_jumps_to_window_open_on_first_day() -> None:
+    start = datetime(2026, 8, 28, 0, 0, tzinfo=_TZ)
+    end = datetime(2026, 8, 28, 18, 0, tzinfo=_TZ)
+    window = (datetime(2026, 8, 28, 9, 0).time(), datetime(2026, 8, 28, 18, 0).time())
+    slots = find_mutual_free_slots(
+        busy=[],
+        range_start=start,
+        range_end=end,
+        duration=timedelta(minutes=30),
+        window=window,
+        step=timedelta(minutes=30),
+        limit=3,
+    )
+    assert slots[0]["start"] == datetime(2026, 8, 28, 9, 0, tzinfo=_TZ).isoformat()
+
+
+def test_find_mutual_free_slots_stops_when_next_window_past_range_end() -> None:
+    start = datetime(2026, 8, 28, 20, 0, tzinfo=_TZ)
+    end = datetime(2026, 8, 29, 8, 0, tzinfo=_TZ)
+    window = (datetime(2026, 8, 28, 9, 0).time(), datetime(2026, 8, 28, 18, 0).time())
+    slots = find_mutual_free_slots(
+        busy=[],
+        range_start=start,
+        range_end=end,
+        duration=timedelta(minutes=30),
+        window=window,
+        step=timedelta(minutes=15),
+        limit=10,
+    )
+    assert slots == []
+
+
+def test_find_mutual_free_slots_skips_fall_back_fold_duplicates() -> None:
+    tz = ZoneInfo("America/New_York")
+    start = datetime(2026, 11, 1, 0, 30, tzinfo=tz)
+    end = datetime(2026, 11, 1, 3, 0, tzinfo=tz)
+    slots = find_mutual_free_slots(
+        busy=[],
+        range_start=start,
+        range_end=end,
+        duration=timedelta(minutes=30),
+        window=None,
+        step=timedelta(minutes=30),
+        limit=20,
+    )
+    wall_starts = [datetime.fromisoformat(s["start"]).strftime("%Y-%m-%dT%H:%M") for s in slots]
+    assert len(wall_starts) == len(set(wall_starts))
+    for s in slots:
+        a = datetime.fromisoformat(s["start"])
+        b = datetime.fromisoformat(s["end"])
+        assert b > a
+        assert (b.astimezone(UTC) - a.astimezone(UTC)) == timedelta(minutes=30)
+        assert not (a.date() == b.date() and (b.hour, b.minute) < (a.hour, a.minute))
 
 
 def test_calendar_suggest_fails_closed_on_schedule_error(monkeypatch) -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -173,20 +173,31 @@ def find_mutual_free_slots(
     step: timedelta,
     limit: int,
 ) -> list[dict[str, str]]:
-    """Scan ``[range_start, range_end)`` for ``duration`` gaps outside merged ``busy``."""
+    """Scan ``[range_start, range_end)`` for ``duration`` gaps outside merged ``busy``.
+
+    Duration and step advance in absolute time (UTC) so a fall-back fold does not
+    stretch a 30m meeting across 90m of real time. Ambiguous local starts that would
+    duplicate a wall-clock hour, or produce a local end before local start, are skipped.
+    """
     if range_end <= range_start or duration <= timedelta(0) or limit < 1:
         return []
     merged = _merge_intervals(busy)
     slots: list[dict[str, str]] = []
+    seen_walls: set[tuple[date, int, int, int]] = set()
     cursor = range_start
-    while cursor + duration <= range_end and len(slots) < limit:
-        meeting_end = cursor + duration
+    while _add_absolute(cursor, duration) <= range_end and len(slots) < limit:
+        meeting_end = _add_absolute(cursor, duration)
         if window is not None and not _fits_day_window(cursor, meeting_end, window):
             cursor = _advance_past_window(cursor, window, step, range_end)
             continue
+        wall = _wall_clock_key(cursor)
+        if wall in seen_walls or _wall_end_before_start(cursor, meeting_end):
+            cursor = _add_absolute(cursor, step)
+            continue
         if not _overlaps_any(cursor, meeting_end, merged):
             slots.append({"end": meeting_end.isoformat(), "start": cursor.isoformat()})
-        cursor += step
+            seen_walls.add(wall)
+        cursor = _add_absolute(cursor, step)
     return slots
 
 
@@ -413,6 +424,13 @@ _WINDOWS_TZ_ALIASES = {
     "yakutsk standard time": "Asia/Yakutsk",
     "yukon standard time": "America/Whitehorse",
 }
+
+
+def _add_absolute(dt: datetime, delta: timedelta) -> datetime:
+    """Add ``delta`` in absolute time (UTC), then convert back to ``dt``'s zone."""
+    if dt.tzinfo is None:
+        return dt + delta
+    return (dt.astimezone(UTC) + delta).astimezone(dt.tzinfo)
 
 
 def _advance_past_window(
@@ -696,6 +714,18 @@ def _to_graph_dtz(value: datetime) -> DateTimeTimeZone:
         date_time=value.replace(tzinfo=None).isoformat(timespec="seconds"),
         time_zone=tz_name,
     )
+
+
+def _wall_clock_key(dt: datetime) -> tuple[date, int, int, int]:
+    """Local civil time key (date + h/m/s), ignoring fold/offset."""
+    return (dt.date(), dt.hour, dt.minute, dt.second)
+
+
+def _wall_end_before_start(start: datetime, end: datetime) -> bool:
+    """True when local wall clock goes backwards (fall-back fold artifact)."""
+    if end.date() != start.date():
+        return False
+    return (end.hour, end.minute, end.second) < (start.hour, start.minute, start.second)
 
 
 def _working_hours_to_dict(hours: Any) -> dict[str, Any] | None:
