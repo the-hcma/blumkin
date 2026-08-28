@@ -266,14 +266,20 @@ def _write_secret_text(path: Path, text: str) -> None:
         # Symlink at the secret path (ELOOP) or other open failure — never follow.
         raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
     try:
-        if hasattr(os, "fchmod"):
-            try:
-                os.fchmod(fd, 0o600)
-            except OSError:
-                pass
-        os.write(fd, text.encode())
+        try:
+            if hasattr(os, "fchmod"):
+                try:
+                    os.fchmod(fd, 0o600)
+                except OSError:
+                    pass
+            os.write(fd, text.encode())
+        except OSError as exc:
+            raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError as exc:
+            raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
     if not hasattr(os, "fchmod"):
         try:
             os.chmod(path, 0o600)
