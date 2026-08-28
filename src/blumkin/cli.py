@@ -80,15 +80,18 @@ from blumkin.skills.mail import (
     format_folders_human,
     format_inbox_human,
     format_list_human,
+    format_reply_human,
     format_send_draft_human,
     mail_attachments_download,
     mail_attachments_list,
     mail_delete_draft,
     mail_draft,
     mail_folders,
+    mail_forward,
     mail_get,
     mail_inbox,
     mail_list,
+    mail_reply,
     mail_send_draft,
     mail_update_draft,
 )
@@ -1277,6 +1280,98 @@ def mail_draft_cmd(
         emit_json(payload)
     else:
         emit_lines(format_draft_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("forward")
+@click.option("--id", "message_id", required=True, help="Message id to forward.")
+@click.option("--to", required=True, help="Recipient email.")
+@click.option("--body", default=None, help="Text to add above the forwarded message.")
+@click.option("--body-file", default=None, help="Read the added text from a file.")
+@click.option("--body-type", default="text", show_default=True, type=click.Choice(["html", "text"]))
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_forward_cmd(
+    ctx: click.Context,
+    message_id: str,
+    to: str,
+    body: str | None,
+    body_file: str | None,
+    body_type: str,
+    as_json_flag: bool,
+) -> None:
+    """Create a forward draft (does not send)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            mail_forward(
+                message_id=message_id,
+                to=to,
+                body=body,
+                body_file=body_file,
+                body_type=body_type,
+            )
+        )
+    except MailBodyFileError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except MailMessageNotFoundError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        _raise_mail_value_error(exc, as_json=as_json)
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_reply_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("reply")
+@click.option("--id", "message_id", required=True, help="Message id to reply to.")
+@click.option("--all", "reply_all", is_flag=True, help="Reply to every recipient.")
+@click.option("--body", default=None, help="Reply text; omit for an empty draft.")
+@click.option("--body-file", default=None, help="Read the reply text from a file.")
+@click.option("--body-type", default="text", show_default=True, type=click.Choice(["html", "text"]))
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_reply_cmd(
+    ctx: click.Context,
+    message_id: str,
+    reply_all: bool,
+    body: str | None,
+    body_file: str | None,
+    body_type: str,
+    as_json_flag: bool,
+) -> None:
+    """Create a reply draft that threads correctly (does not send)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            mail_reply(
+                message_id=message_id,
+                body=body,
+                body_file=body_file,
+                body_type=body_type,
+                reply_all=reply_all,
+            )
+        )
+    except MailBodyFileError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except MailMessageNotFoundError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        _raise_mail_value_error(exc, as_json=as_json)
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_reply_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 

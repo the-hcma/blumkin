@@ -388,6 +388,26 @@ SKILLS: list[SkillSpec] = [
         args=[],
     ),
     SkillSpec(
+        id="mail.forward",
+        cli=["blumkin", "mail", "forward"],
+        summary="Create a forward draft carrying the original message (does not send)",
+        mutates=True,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string"},
+            {"name": "--to", "required": True, "type": "email"},
+            {
+                "name": "--body",
+                "required": False,
+                "type": "string",
+                "note": "at most one of --body or --body-file; omit for an empty draft",
+            },
+            {"name": "--body-file", "required": False, "type": "path"},
+            {"name": "--body-type", "required": False, "type": "enum", "values": ["html", "text"]},
+        ],
+    ),
+    SkillSpec(
         id="mail.get",
         cli=["blumkin", "mail", "get"],
         summary="Read one message in full, including its body and attachments",
@@ -464,6 +484,29 @@ SKILLS: list[SkillSpec] = [
             {"name": "--unread", "required": False, "type": "flag"},
             {"name": "--top", "required": False, "type": "int"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+        ],
+    ),
+    SkillSpec(
+        id="mail.reply",
+        cli=["blumkin", "mail", "reply"],
+        summary=(
+            "Create a reply draft through Graph so it threads: recipients, subject, "
+            "and conversation carry over from the original (does not send)"
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string"},
+            {"name": "--all", "required": False, "type": "flag", "note": "reply to everyone"},
+            {
+                "name": "--body",
+                "required": False,
+                "type": "string",
+                "note": "at most one of --body or --body-file; omit for an empty draft",
+            },
+            {"name": "--body-file", "required": False, "type": "path"},
+            {"name": "--body-type", "required": False, "type": "enum", "values": ["html", "text"]},
         ],
     ),
     SkillSpec(

@@ -698,6 +698,143 @@ def test_mail_inbox_wires_filters(monkeypatch) -> None:
     assert seen["sender"] is None
 
 
+def test_mail_reply_needs_no_yes_because_it_only_drafts(monkeypatch) -> None:
+    """The human checkpoint stays at send-draft, as it does for mail draft."""
+    seen: dict[str, object] = {}
+
+    async def _reply(**kwargs):
+        seen.update(kwargs)
+        return {"draft": {"id": "draft-1", "kind": "reply", "source_message_id": "msg-1", "to": []}}
+
+    monkeypatch.setattr("blumkin.cli.mail_reply", _reply)
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["mail", "reply", "--id", "msg-1", "--body", "Thanks", "--all", "--json"]
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen == {
+        "body": "Thanks",
+        "body_file": None,
+        "body_type": "text",
+        "message_id": "msg-1",
+        "reply_all": True,
+    }
+
+
+def test_mail_reply_message_not_found_exits_not_found(monkeypatch) -> None:
+    async def _reply(**_kwargs):
+        raise MailMessageNotFoundError("message not found: 'nope'")
+
+    monkeypatch.setattr("blumkin.cli.mail_reply", _reply)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "reply", "--id", "nope", "--json"])
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_mail_reply_passes_body_file_and_body_type_through(tmp_path, monkeypatch) -> None:
+    """Dropping body_file would silently create an empty-comment draft."""
+    seen: dict[str, object] = {}
+    path = tmp_path / "notes.html"
+    path.write_text("<p>Thanks</p>", encoding="utf-8")
+
+    async def _reply(**kwargs):
+        seen.update(kwargs)
+        return {
+            "draft": {
+                "id": "draft-1",
+                "kind": "reply",
+                "source_message_id": "msg-1",
+                "to": "a@b.com",
+            }
+        }
+
+    monkeypatch.setattr("blumkin.cli.mail_reply", _reply)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "reply",
+            "--id",
+            "msg-1",
+            "--body-file",
+            str(path),
+            "--body-type",
+            "html",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["body"] is None
+    assert seen["body_file"] == str(path)
+    assert seen["body_type"] == "html"
+
+
+def test_mail_forward_wires_options(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _forward(**kwargs):
+        seen.update(kwargs)
+        return {
+            "draft": {
+                "id": "draft-1",
+                "kind": "forward",
+                "source_message_id": "msg-1",
+                "to": "sam@example.com",
+            }
+        }
+
+    monkeypatch.setattr("blumkin.cli.mail_forward", _forward)
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["mail", "forward", "--id", "msg-1", "--to", "sam@example.com", "--json"]
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["to"] == "sam@example.com"
+    assert seen["body"] is None
+
+
+def test_mail_forward_message_not_found_exits_not_found(monkeypatch) -> None:
+    async def _forward(**_kwargs):
+        raise MailMessageNotFoundError("message not found: 'nope'")
+
+    monkeypatch.setattr("blumkin.cli.mail_forward", _forward)
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["mail", "forward", "--id", "nope", "--to", "sam@example.com", "--json"]
+    )
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_mail_forward_body_file_error_exits_usage(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_text("x", encoding="utf-8")
+
+    async def _boom(**_kwargs):
+        raise MailBodyFileError(f"cannot read --body-file {path}: boom")
+
+    monkeypatch.setattr("blumkin.cli.mail_forward", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "forward",
+            "--id",
+            "msg-1",
+            "--to",
+            "sam@example.com",
+            "--body-file",
+            str(path),
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
 def test_mail_delete_draft_without_yes_succeeds(monkeypatch) -> None:
     async def _delete(*, draft_id: str):
         return {"deleted": draft_id}
