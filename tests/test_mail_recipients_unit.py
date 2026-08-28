@@ -45,7 +45,9 @@ def test_mail_draft_accepts_repeatable_and_comma_separated_recipients(monkeypatc
         )
     )
 
-    posted = client.me.messages.post.await_args.args[0]
+    post_await = client.me.messages.post.await_args
+    assert post_await is not None
+    posted = post_await.args[0]
     assert [r.email_address.address for r in posted.to_recipients] == [
         "a@b.com",
         "c@d.com",
@@ -100,7 +102,9 @@ def test_mail_update_draft_replaces_multi_to_and_sets_cc(monkeypatch) -> None:
         )
     )
 
-    posted = client.me.messages.by_message_id.return_value.patch.await_args.args[0]
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
     assert [r.email_address.address for r in posted.to_recipients] == ["e@f.com", "g@h.com"]
     assert [r.email_address.address for r in posted.cc_recipients] == ["sam@example.com"]
     assert posted.bcc_recipients is None
@@ -133,7 +137,9 @@ def test_mail_update_draft_omitted_recipients_leave_lists_unchanged(monkeypatch)
 
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", subject="New"))
 
-    posted = client.me.messages.by_message_id.return_value.patch.await_args.args[0]
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
     assert posted.to_recipients is None
     assert posted.cc_recipients is None
     assert posted.bcc_recipients is None

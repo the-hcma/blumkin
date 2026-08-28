@@ -402,6 +402,8 @@ async def mail_draft(
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     to_addrs = _parse_addresses(to, flag="--to", required=True)
+    if to_addrs is None:
+        raise ValueError("--to is required")
     cc_addrs = _parse_addresses(cc, flag="--cc", required=False) or []
     bcc_addrs = _parse_addresses(bcc, flag="--bcc", required=False) or []
     if not subject.strip():

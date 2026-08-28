@@ -634,7 +634,9 @@ def test_mail_update_draft_replaces_to_when_multiple_recipients(monkeypatch) -> 
     )
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", to="e@f.com"))
     assert payload["draft"]["to"] == "e@f.com"
-    posted = client.me.messages.by_message_id.return_value.patch.await_args.args[0]
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
     assert len(posted.to_recipients) == 1
     assert posted.to_recipients[0].email_address.address == "e@f.com"
 
