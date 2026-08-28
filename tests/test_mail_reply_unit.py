@@ -211,6 +211,67 @@ def test_mail_reply_reports_an_unreadable_body_file() -> None:
         asyncio.run(mail_reply(message_id="msg-1", body_file="/nonexistent/notes.txt"))
 
 
+def test_mail_reply_merges_cc_onto_inherited_recipients(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.cc_recipients = [
+        SimpleNamespace(
+            email_address=SimpleNamespace(address="already@example.com", name="Already")
+        )
+    ]
+    item.create_reply.post = AsyncMock(return_value=draft)
+    patched = _draft("RE: Quarterly sync")
+    patched.cc_recipients = [
+        SimpleNamespace(
+            email_address=SimpleNamespace(address="already@example.com", name="Already")
+        ),
+        SimpleNamespace(email_address=SimpleNamespace(address="new@example.com", name="New")),
+    ]
+    item.patch = AsyncMock(return_value=patched)
+
+    payload = asyncio.run(
+        mail_reply(message_id="msg-1", body="Thanks", cc="new@example.com, ALREADY@example.com")
+    )
+
+    patch_msg = _posted(item.patch)
+    addresses = [r.email_address.address for r in patch_msg.cc_recipients]
+    assert addresses == ["already@example.com", "new@example.com"]
+    assert payload["draft"]["cc"] == "already@example.com, new@example.com"
+    item.patch.assert_awaited_once()
+
+
+def test_mail_reply_skips_recipient_patch_when_cc_omitted(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+    item.patch = AsyncMock()
+
+    asyncio.run(mail_reply(message_id="msg-1", body="Thanks"))
+
+    item.patch.assert_not_called()
+
+
+def test_mail_forward_patches_bcc(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.create_forward.post = AsyncMock(return_value=_draft("FW: Quarterly sync"))
+    patched = _draft("FW: Quarterly sync")
+    patched.bcc_recipients = [
+        SimpleNamespace(email_address=SimpleNamespace(address="hidden@example.com", name=None))
+    ]
+    item.patch = AsyncMock(return_value=patched)
+
+    payload = asyncio.run(
+        mail_forward(message_id="msg-1", to="sam@example.com", body="FYI", bcc="hidden@example.com")
+    )
+
+    assert [r.email_address.address for r in _posted(item.patch).bcc_recipients] == [
+        "hidden@example.com"
+    ]
+    assert payload["draft"]["bcc"] == "hidden@example.com"
+
+
 def test_mail_reply_appends_signature_and_converts_newlines(monkeypatch) -> None:
     client = _client(monkeypatch, signature=True)
     item = client.me.messages.by_message_id.return_value

@@ -433,6 +433,18 @@ SKILLS: list[SkillSpec] = [
             {"name": "--id", "required": True, "type": "string"},
             {"name": "--to", "required": True, "type": "email"},
             {
+                "name": "--cc",
+                "required": False,
+                "type": "email",
+                "note": "adds to Graph-inherited CC; repeatable or comma-separated",
+            },
+            {
+                "name": "--bcc",
+                "required": False,
+                "type": "email",
+                "note": "adds to Graph-inherited BCC; repeatable or comma-separated",
+            },
+            {
                 "name": "--body",
                 "required": False,
                 "type": "string",
@@ -540,6 +552,18 @@ SKILLS: list[SkillSpec] = [
         args=[
             {"name": "--id", "required": True, "type": "string"},
             {"name": "--all", "required": False, "type": "flag", "note": "reply to everyone"},
+            {
+                "name": "--cc",
+                "required": False,
+                "type": "email",
+                "note": "adds to Graph-inherited CC; repeatable or comma-separated",
+            },
+            {
+                "name": "--bcc",
+                "required": False,
+                "type": "email",
+                "note": "adds to Graph-inherited BCC; repeatable or comma-separated",
+            },
             {
                 "name": "--body",
                 "required": False,

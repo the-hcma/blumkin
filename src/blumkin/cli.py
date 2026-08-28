@@ -1345,6 +1345,16 @@ def mail_draft_cmd(
 @mail.command("forward")
 @click.option("--id", "message_id", required=True, help="Message id to forward.")
 @click.option("--to", required=True, help="Recipient email.")
+@click.option(
+    "--cc",
+    multiple=True,
+    help="Add CC recipients (merged with any Graph-inherited CC; repeatable or comma-separated).",
+)
+@click.option(
+    "--bcc",
+    multiple=True,
+    help="Add BCC recipients (merged with any Graph-inherited BCC; repeatable or comma-separated).",
+)
 @click.option("--body", default=None, help="Text to add above the forwarded message.")
 @click.option("--body-file", default=None, help="Read the added text from a file.")
 @click.option("--body-type", default="text", show_default=True, type=click.Choice(["html", "text"]))
@@ -1360,6 +1370,8 @@ def mail_forward_cmd(
     ctx: click.Context,
     message_id: str,
     to: str,
+    cc: tuple[str, ...],
+    bcc: tuple[str, ...],
     body: str | None,
     body_file: str | None,
     body_type: str,
@@ -1376,6 +1388,8 @@ def mail_forward_cmd(
                 body=body,
                 body_file=body_file,
                 body_type=body_type,
+                cc=cc or None,
+                bcc=bcc or None,
                 no_signature=no_signature,
             )
         )
@@ -1399,6 +1413,16 @@ def mail_forward_cmd(
 @mail.command("reply")
 @click.option("--id", "message_id", required=True, help="Message id to reply to.")
 @click.option("--all", "reply_all", is_flag=True, help="Reply to every recipient.")
+@click.option(
+    "--cc",
+    multiple=True,
+    help="Add CC recipients (merged with Graph-inherited CC; repeatable or comma-separated).",
+)
+@click.option(
+    "--bcc",
+    multiple=True,
+    help="Add BCC recipients (merged with Graph-inherited BCC; repeatable or comma-separated).",
+)
 @click.option("--body", default=None, help="Reply text; omit for an empty draft.")
 @click.option("--body-file", default=None, help="Read the reply text from a file.")
 @click.option("--body-type", default="text", show_default=True, type=click.Choice(["html", "text"]))
@@ -1414,6 +1438,8 @@ def mail_reply_cmd(
     ctx: click.Context,
     message_id: str,
     reply_all: bool,
+    cc: tuple[str, ...],
+    bcc: tuple[str, ...],
     body: str | None,
     body_file: str | None,
     body_type: str,
@@ -1430,6 +1456,8 @@ def mail_reply_cmd(
                 body_file=body_file,
                 body_type=body_type,
                 reply_all=reply_all,
+                cc=cc or None,
+                bcc=bcc or None,
                 no_signature=no_signature,
             )
         )
