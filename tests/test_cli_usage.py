@@ -1322,6 +1322,54 @@ def test_mail_update_draft_runtime_error_exits_other(monkeypatch) -> None:
     assert "graph_error" in (result.output or "")
 
 
+def test_calendar_suggest_freebusy_failure_exits_graph_error(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ValueError("freebusy lookup failed for: typo@example.com: Mail tip unavailable")
+
+    monkeypatch.setattr("blumkin.cli.calendar_suggest", _boom)
+    result = CliRunner().invoke(
+        main,
+        [
+            "calendar",
+            "suggest",
+            "--with",
+            "typo@example.com",
+            "--start",
+            "2026-08-28T09:00",
+            "--end",
+            "2026-08-28T17:00",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_OTHER
+    assert "graph_error" in (result.output or "")
+
+
+def test_calendar_suggest_bad_window_exits_usage(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ValueError("--window must look like HH:MM-HH:MM")
+
+    monkeypatch.setattr("blumkin.cli.calendar_suggest", _boom)
+    result = CliRunner().invoke(
+        main,
+        [
+            "calendar",
+            "suggest",
+            "--with",
+            "a@example.com",
+            "--start",
+            "2026-08-28T09:00",
+            "--end",
+            "2026-08-28T17:00",
+            "--window",
+            "nope",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
 def test_calendar_today_invalid_tz_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--tz", "Not/ARealZone", "calendar", "today"])

@@ -108,6 +108,38 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="calendar.suggest",
+        cli=["blumkin", "calendar", "suggest"],
+        summary=(
+            "Suggest mutual free slots for a duration over a range "
+            "(from freebusy; does not create an event)"
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Calendars.ReadWrite"],
+        args=[
+            {"name": "--with", "required": True, "type": "email", "multiple": True},
+            {"name": "--start", "required": True, "type": "datetime"},
+            {"name": "--end", "required": True, "type": "datetime"},
+            {"name": "--duration", "required": False, "type": "duration", "note": "default 30m"},
+            {
+                "name": "--window",
+                "required": False,
+                "type": "string",
+                "note": "optional HH:MM-HH:MM local day clip",
+            },
+            {
+                "name": "--treat-tentative",
+                "required": False,
+                "type": "enum",
+                "values": ["busy", "free"],
+                "note": "default busy",
+            },
+            {"name": "--limit", "required": False, "type": "int", "note": "default 10"},
+            {"name": "--tz", "required": False, "type": "iana_tz"},
+        ],
+    ),
+    SkillSpec(
         id="calendar.today",
         cli=["blumkin", "calendar", "today"],
         summary="List the signed-in user's events for today",

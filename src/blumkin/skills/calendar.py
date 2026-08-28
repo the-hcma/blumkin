@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -49,6 +49,59 @@ async def calendar_freebusy(
         "items": items,
         "start": start.isoformat(),
         "timezone": tz_name,
+    }
+
+
+async def calendar_suggest(
+    *,
+    with_emails: list[str],
+    start: datetime,
+    end: datetime,
+    duration: timedelta,
+    window: str | None = None,
+    treat_tentative: str = "busy",
+    step: timedelta | None = None,
+    limit: int = 10,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Return mutual free starts for ``duration`` over ``[start, end)`` for everyone in ``--with``.
+
+    Builds on ``calendar freebusy`` (union of busy). Does not create an event.
+    """
+    if duration <= timedelta(0):
+        raise ValueError("--duration must be positive")
+    if limit < 1:
+        raise ValueError("--limit must be >= 1")
+    tentative = treat_tentative.strip().lower()
+    if tentative not in {"busy", "free"}:
+        raise ValueError("--treat-tentative must be 'busy' or 'free'")
+    window_bounds = _parse_day_window(window) if window is not None else None
+    step_delta = step if step is not None else min(timedelta(minutes=15), duration)
+    if step_delta <= timedelta(0):
+        raise ValueError("--step must be positive")
+    freebusy = await calendar_freebusy(with_emails=with_emails, start=start, end=end, config=config)
+    _raise_if_schedule_errors(freebusy["items"], requested=with_emails)
+    busy = _collect_busy_intervals(freebusy["items"], treat_tentative_busy=(tentative == "busy"))
+    slots = find_mutual_free_slots(
+        busy=busy,
+        range_start=start,
+        range_end=end,
+        duration=duration,
+        window=window_bounds,
+        step=step_delta,
+        limit=limit,
+    )
+    return {
+        "duration_minutes": int(duration.total_seconds() // 60),
+        "end": end.isoformat(),
+        "limit": limit,
+        "slots": slots,
+        "start": start.isoformat(),
+        "step_minutes": int(step_delta.total_seconds() // 60),
+        "timezone": freebusy["timezone"],
+        "treat_tentative": tentative,
+        "window": window,
+        "with": list(with_emails),
     }
 
 
@@ -110,6 +163,44 @@ async def calendar_view(
     }
 
 
+def find_mutual_free_slots(
+    *,
+    busy: list[tuple[datetime, datetime]],
+    range_start: datetime,
+    range_end: datetime,
+    duration: timedelta,
+    window: tuple[time, time] | None,
+    step: timedelta,
+    limit: int,
+) -> list[dict[str, str]]:
+    """Scan ``[range_start, range_end)`` for ``duration`` gaps outside merged ``busy``.
+
+    Duration and step advance in absolute time (UTC) so a fall-back fold does not
+    stretch a 30m meeting across 90m of real time. Ambiguous local starts that would
+    duplicate a wall-clock hour, or produce a local end before local start, are skipped.
+    """
+    if range_end <= range_start or duration <= timedelta(0) or limit < 1:
+        return []
+    merged = _merge_intervals(busy)
+    slots: list[dict[str, str]] = []
+    seen_walls: set[tuple[date, int, int, int]] = set()
+    cursor = range_start
+    while _add_absolute(cursor, duration) <= range_end and len(slots) < limit:
+        meeting_end = _add_absolute(cursor, duration)
+        if window is not None and not _fits_day_window(cursor, meeting_end, window):
+            cursor = _advance_past_window(cursor, window, step, range_end)
+            continue
+        wall = _wall_clock_key(cursor)
+        if wall in seen_walls or _wall_end_before_start(cursor, meeting_end):
+            cursor = _add_absolute(cursor, step)
+            continue
+        if not _overlaps_any(cursor, meeting_end, merged):
+            slots.append({"end": meeting_end.isoformat(), "start": cursor.isoformat()})
+            seen_walls.add(wall)
+        cursor = _add_absolute(cursor, step)
+    return slots
+
+
 def format_freebusy_human(payload: dict[str, Any]) -> list[str]:
     lines = [f"Free/busy ({payload['start']} → {payload['end']}, {payload['timezone']})"]
     if not payload["items"]:
@@ -120,6 +211,25 @@ def format_freebusy_human(payload: dict[str, Any]) -> list[str]:
         lines.append(f"  • {_freebusy_schedule_label(item)}: view={avail!r}")
         for slot in item.get("busy") or []:
             lines.append(f"      busy {slot['start']} → {slot['end']} ({slot.get('status')})")
+    return lines
+
+
+def format_suggest_human(payload: dict[str, Any]) -> list[str]:
+    duration = payload.get("duration_minutes")
+    window = payload.get("window") or "all day"
+    lines = [
+        f"Suggest {duration}m slots ({payload['start']} → {payload['end']}, "
+        f"{payload['timezone']}, window={window}): {len(payload.get('slots') or [])}"
+    ]
+    people = payload.get("with") or []
+    if people:
+        lines.append(f"  with: {', '.join(str(p) for p in people)}")
+    slots = payload.get("slots") or []
+    if not slots:
+        lines.append("  (none)")
+        return lines
+    for slot in slots:
+        lines.append(f"  • {slot.get('start')} → {slot.get('end')}")
     return lines
 
 
@@ -316,6 +426,31 @@ _WINDOWS_TZ_ALIASES = {
 }
 
 
+def _add_absolute(dt: datetime, delta: timedelta) -> datetime:
+    """Add ``delta`` in absolute time (UTC), then convert back to ``dt``'s zone."""
+    if dt.tzinfo is None:
+        return dt + delta
+    return (dt.astimezone(UTC) + delta).astimezone(dt.tzinfo)
+
+
+def _advance_past_window(
+    cursor: datetime,
+    window: tuple[time, time],
+    _step: timedelta,
+    range_end: datetime,
+) -> datetime:
+    """Move ``cursor`` forward when the candidate cannot fit in today's window."""
+    window_start, _window_end = window
+    day = cursor.date()
+    day_start = datetime.combine(day, window_start, tzinfo=cursor.tzinfo)
+    if cursor < day_start:
+        return day_start
+    tomorrow_open = datetime.combine(day + timedelta(days=1), window_start, tzinfo=cursor.tzinfo)
+    if tomorrow_open < range_end:
+        return tomorrow_open
+    return range_end
+
+
 def _busy_slot_to_dict(item: Any, display_tz: ZoneInfo) -> dict[str, Any]:
     status = None
     if getattr(item, "status", None) is not None:
@@ -325,6 +460,27 @@ def _busy_slot_to_dict(item: Any, display_tz: ZoneInfo) -> dict[str, Any]:
         "start": _graph_dt_to_iso(item.start, display_tz),
         "status": status,
     }
+
+
+def _collect_busy_intervals(
+    items: list[dict[str, Any]],
+    *,
+    treat_tentative_busy: bool,
+) -> list[tuple[datetime, datetime]]:
+    intervals: list[tuple[datetime, datetime]] = []
+    for item in items:
+        for slot in item.get("busy") or []:
+            if not _status_is_busy(slot.get("status"), treat_tentative_busy=treat_tentative_busy):
+                continue
+            start_raw = slot.get("start")
+            end_raw = slot.get("end")
+            if not start_raw or not end_raw:
+                continue
+            start = datetime.fromisoformat(str(start_raw))
+            end = datetime.fromisoformat(str(end_raw))
+            if end > start:
+                intervals.append((start, end))
+    return intervals
 
 
 def _event_to_dict(ev: Any, display_tz: ZoneInfo) -> dict[str, Any]:
@@ -357,6 +513,16 @@ def _event_to_dict(ev: Any, display_tz: ZoneInfo) -> dict[str, Any]:
         "subject": ev.subject,
         "timezone": str(display_tz),
     }
+
+
+def _fits_day_window(start: datetime, end: datetime, window: tuple[time, time]) -> bool:
+    if start.date() != end.date():
+        return False
+    window_start, window_end = window
+    return (
+        start.timetz().replace(tzinfo=None) >= window_start
+        and end.timetz().replace(tzinfo=None) <= window_end
+    )
 
 
 def _format_time_of_day(value: Any) -> str | None:
@@ -404,6 +570,79 @@ def _graph_dt_to_iso(value: Any, display_tz: ZoneInfo) -> str | None:
     return dt.astimezone(display_tz).isoformat()
 
 
+def _merge_intervals(
+    intervals: list[tuple[datetime, datetime]],
+) -> list[tuple[datetime, datetime]]:
+    if not intervals:
+        return []
+    ordered = sorted(intervals, key=lambda pair: pair[0])
+    merged: list[tuple[datetime, datetime]] = [ordered[0]]
+    for start, end in ordered[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _overlaps_any(
+    start: datetime,
+    end: datetime,
+    intervals: list[tuple[datetime, datetime]],
+) -> bool:
+    for busy_start, busy_end in intervals:
+        if start < busy_end and end > busy_start:
+            return True
+    return False
+
+
+def _parse_day_window(raw: str) -> tuple[time, time]:
+    text = raw.strip()
+    if "-" not in text:
+        raise ValueError("--window must look like HH:MM-HH:MM")
+    left, right = text.split("-", 1)
+    start = _parse_clock(left.strip(), flag="--window")
+    end = _parse_clock(right.strip(), flag="--window")
+    if end <= start:
+        raise ValueError("--window end must be after start")
+    return start, end
+
+
+def _parse_clock(raw: str, *, flag: str) -> time:
+    parts = raw.split(":")
+    if len(parts) not in {2, 3}:
+        raise ValueError(f"{flag} times must look like HH:MM")
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+        second = int(parts[2]) if len(parts) == 3 else 0
+    except ValueError as exc:
+        raise ValueError(f"{flag} times must look like HH:MM") from exc
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        raise ValueError(f"{flag} times must look like HH:MM")
+    return time(hour=hour, minute=minute, second=second)
+
+
+def _raise_if_schedule_errors(items: list[dict[str, Any]], *, requested: list[str]) -> None:
+    """Fail closed when getSchedule could not resolve a requested mailbox."""
+    by_schedule = {
+        str(item.get("schedule") or "").casefold(): item for item in items if item.get("schedule")
+    }
+    problems: list[str] = []
+    for email in requested:
+        key = email.casefold()
+        item = by_schedule.get(key)
+        if item is None:
+            problems.append(f"{email}: no schedule returned")
+            continue
+        err = item.get("error")
+        if err:
+            problems.append(f"{email}: {err}")
+    if problems:
+        raise ValueError("freebusy lookup failed for: " + "; ".join(problems))
+
+
 def _resolve_tz(name: Any) -> ZoneInfo | None:
     """Best-effort ``ZoneInfo`` from a Graph ``timeZone`` label (IANA or Windows name).
 
@@ -427,17 +666,43 @@ def _resolve_tz(name: Any) -> ZoneInfo | None:
     return None
 
 
+def _schedule_error_message(entry: Any) -> str | None:
+    err = getattr(entry, "error", None)
+    if err is None:
+        err = getattr(entry, "free_busy_error", None)
+    if err is None:
+        return None
+    message = getattr(err, "message", None)
+    if message:
+        return str(message).strip() or None
+    text = str(err).strip()
+    return text or None
+
+
 def _schedule_to_dict(entry: Any, display_tz: ZoneInfo) -> dict[str, Any]:
     busy_items = entry.schedule_items or []
     hours = _working_hours_to_dict(getattr(entry, "working_hours", None))
     timezone = hours.get("timezone") if hours else None
+    error = _schedule_error_message(entry)
     return {
         "availability_view": entry.availability_view,
         "busy": [_busy_slot_to_dict(item, display_tz) for item in busy_items],
+        "error": error,
         "schedule": entry.schedule_id,
         "timezone": timezone,
         "working_hours": hours,
     }
+
+
+def _status_is_busy(status: Any, *, treat_tentative_busy: bool) -> bool:
+    """Treat only explicit free (and optional tentative) as free; fail closed otherwise."""
+    label = str(status or "").split(".")[-1].casefold()
+    if label == "free":
+        return False
+    if label == "tentative":
+        return treat_tentative_busy
+    # busy / oof / workingElsewhere / unknown / missing / anything else → busy
+    return True
 
 
 def _to_graph_dtz(value: datetime) -> DateTimeTimeZone:
@@ -449,6 +714,18 @@ def _to_graph_dtz(value: datetime) -> DateTimeTimeZone:
         date_time=value.replace(tzinfo=None).isoformat(timespec="seconds"),
         time_zone=tz_name,
     )
+
+
+def _wall_clock_key(dt: datetime) -> tuple[date, int, int, int]:
+    """Local civil time key (date + h/m/s), ignoring fold/offset."""
+    return (dt.date(), dt.hour, dt.minute, dt.second)
+
+
+def _wall_end_before_start(start: datetime, end: datetime) -> bool:
+    """True when local wall clock goes backwards (fall-back fold artifact)."""
+    if end.date() != start.date():
+        return False
+    return (end.hour, end.minute, end.second) < (start.hour, start.minute, start.second)
 
 
 def _working_hours_to_dict(hours: Any) -> dict[str, Any] | None:
