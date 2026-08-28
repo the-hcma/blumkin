@@ -388,6 +388,24 @@ SKILLS: list[SkillSpec] = [
         args=[],
     ),
     SkillSpec(
+        id="mail.get",
+        cli=["blumkin", "mail", "get"],
+        summary="Read one message in full, including its body and attachments",
+        mutates=False,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string"},
+            {
+                "name": "--body-type",
+                "required": False,
+                "type": "enum",
+                "values": ["html", "text"],
+                "note": "body format requested from Graph; defaults to text",
+            },
+        ],
+    ),
+    SkillSpec(
         id="mail.inbox",
         cli=["blumkin", "mail", "inbox"],
         summary="List recent inbox messages",

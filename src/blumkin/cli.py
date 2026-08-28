@@ -86,10 +86,14 @@ from blumkin.skills.mail import (
     mail_delete_draft,
     mail_draft,
     mail_folders,
+    mail_get,
     mail_inbox,
     mail_list,
     mail_send_draft,
     mail_update_draft,
+)
+from blumkin.skills.mail import (
+    format_get_human as format_mail_get_human,
 )
 from blumkin.skills.meeting import (
     format_get_human as format_meeting_get_human,
@@ -938,6 +942,41 @@ def mail_folders_cmd(ctx: click.Context, as_json_flag: bool) -> None:
         emit_json(payload)
     else:
         emit_lines(format_folders_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("get")
+@click.option("--id", "message_id", required=True, help="Message id.")
+@click.option(
+    "--body-type",
+    default="text",
+    show_default=True,
+    type=click.Choice(["html", "text"]),
+    help="Body format to request from Graph.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_get_cmd(
+    ctx: click.Context,
+    message_id: str,
+    body_type: str,
+    as_json_flag: bool,
+) -> None:
+    """Read one message, including its body and attachments."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(mail_get(message_id=message_id, body_type=body_type))
+    except MailMessageNotFoundError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        _raise_mail_value_error(exc, as_json=as_json)
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_mail_get_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 

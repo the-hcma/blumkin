@@ -511,6 +511,38 @@ def test_mail_folders_emits_json(monkeypatch) -> None:
     assert '"inbox-id"' in (result.output or "")
 
 
+def test_mail_get_message_not_found_exits_not_found(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise MailMessageNotFoundError("message not found: 'nope'")
+
+    monkeypatch.setattr("blumkin.cli.mail_get", _boom)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "get", "--id", "nope", "--json"])
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert "not_found" in (result.output or "")
+
+
+def test_mail_get_rejects_an_unknown_body_type() -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "get", "--id", "msg-1", "--body-type", "markdown"])
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_mail_get_wires_options_and_emits_json(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _get(**kwargs):
+        seen.update(kwargs)
+        return {"message": {"id": "msg-1", "subject": "Quarterly sync"}}
+
+    monkeypatch.setattr("blumkin.cli.mail_get", _get)
+    runner = CliRunner()
+    result = runner.invoke(main, ["mail", "get", "--id", "msg-1", "--body-type", "html", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen == {"body_type": "html", "message_id": "msg-1"}
+    assert '"Quarterly sync"' in (result.output or "")
+
+
 def test_mail_list_folder_not_found_exits_not_found(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise MailFolderNotFoundError("mail folder not found: 'nope'")

@@ -282,6 +282,7 @@ _ARG_TYPES = {
 
 _ENUM_VALUES = {
     ("mail.draft", "--body-type"): ["text", "html"],
+    ("mail.get", "--body-type"): ["html", "text"],
     ("mail.list", "--orderby"): ["created", "received", "sent"],
     ("mail.update-draft", "--body-type"): ["text", "html"],
 }
@@ -326,6 +327,7 @@ _CONSENT = {
     "mail.delete-draft": (True, False),
     "mail.draft": (True, False),
     "mail.folders": (False, False),
+    "mail.get": (False, False),
     "mail.inbox": (False, False),
     "mail.list": (False, False),
     "mail.send-draft": (True, True),
