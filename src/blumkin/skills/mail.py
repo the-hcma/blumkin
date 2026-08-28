@@ -1283,13 +1283,17 @@ def _resolve_comment(*, body: str | None, body_file: str | None, body_type: str)
 
     Graph takes this as a ``comment`` rather than a body so the quoted original survives;
     replacing the body would produce a message that threads but reads like a fresh one.
+    The draft body is always HTML (quoted original), so plain ``--body-type text`` must
+    be escaped before Graph embeds it.
     """
     if body is None and body_file is None:
         _parse_body_type(body_type)
         return ""
-    content, _label, _graph_type = resolve_mail_body(
+    content, label, _graph_type = resolve_mail_body(
         body=body, body_file=body_file, body_type=body_type
     )
+    if label == "text":
+        return html_lib.escape(content)
     return content
 
 

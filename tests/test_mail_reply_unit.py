@@ -141,6 +141,27 @@ def test_mail_reply_reports_text_when_graph_returns_no_html_body(monkeypatch) ->
     assert payload["draft"]["body_type"] == "text"
 
 
+def test_mail_reply_escapes_text_comments_for_the_html_draft(monkeypatch) -> None:
+    """createReply embeds the comment in HTML; unescaped <…> would be parsed as markup."""
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+
+    asyncio.run(mail_reply(message_id="msg-1", body="see <5 and 6> for details"))
+
+    assert _posted(item.create_reply.post).comment == "see &lt;5 and 6&gt; for details"
+
+
+def test_mail_reply_leaves_html_comments_unescaped(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    assert _posted(item.create_reply.post).comment == "<p>Thanks</p>"
+
+
 def test_mail_reply_fails_loudly_when_graph_returns_no_draft(monkeypatch) -> None:
     client = _client(monkeypatch)
     item = client.me.messages.by_message_id.return_value
