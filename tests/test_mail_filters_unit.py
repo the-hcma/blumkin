@@ -185,6 +185,26 @@ def test_mail_list_pages_while_scanning(monkeypatch) -> None:
     client.me.messages.with_url.assert_called_once_with("https://graph/next")
 
 
+def test_mail_list_pages_a_folder_scoped_text_scan(monkeypatch) -> None:
+    """--from/--subject on a folder must page that folder's messages, not /me/messages."""
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(
+        return_value=_page([_msg("Sam Lee", "lunch")], next_link="https://graph/folder-next")
+    )
+    messages.with_url.return_value.get = AsyncMock(
+        return_value=_page([_msg("Rebecca Doe", "budget")])
+    )
+
+    payload = asyncio.run(mail_list(folder="drafts", sender="Rebecca"))
+
+    assert [item["from_name"] for item in payload["items"]] == ["Rebecca Doe"]
+    assert payload["filters"]["scanned"] == 2
+    client.me.mail_folders.by_mail_folder_id.assert_called_with("drafts")
+    messages.with_url.assert_called_once_with("https://graph/folder-next")
+    client.me.messages.with_url.assert_not_called()
+
+
 def test_mail_list_does_not_scan_without_a_text_filter(monkeypatch) -> None:
     """A plain listing must stay one request for `--top` messages."""
     client = _client(monkeypatch)
