@@ -208,7 +208,7 @@ failure path.
 | Code | `error` value | Meaning |
 |------|---------------|---------|
 | 0 | — | Success |
-| 1 | `graph_error` | Unexpected failure, usually from Graph |
+| 1 | `graph_error`, `secret_write_failed` | Unexpected Graph failure, or local secret cache/auth-record write failed (e.g. symlink at the path) |
 | 2 | `usage_error`, or none | Bad arguments, **or `wo1162425_scopes` switched off** |
 | 3 | `auth_required` | Run `blumkin auth login` on this machine |
 | 4 | `missing_scope` | A scope is unavailable — the tenant has not granted it, or `files_scopes` is off |
