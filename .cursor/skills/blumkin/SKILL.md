@@ -134,9 +134,8 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
   short sentences over a dash at all.
 - Same rule for `--body-type html`: do not emit `&mdash;` / `&ndash;` (or the
   literal Unicode dashes) in markup you write on the user's behalf.
-- Do **not** invent a mail signature block (colored name, title, affiliation HTML).
-  If the user wants a signature, ask them to put it in the body or wait for
-  config-backed signatures — do not invent branding markup per draft.
+- Prefer the configured mail signature (below) over inventing colored name/title
+  HTML per draft. Use `--no-signature` when the body already includes one.
 
 ## Config
 
@@ -145,6 +144,22 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
 - Keep that directory a real local folder (not a symlink into a shared tree). Token
   cache and auth-record writes refuse symlinked secret paths and report
   `secret_write_failed` (exit `1`) instead of looping on `auth login`.
+- **Mail signature (optional):** in `config.toml`:
+
+  ```toml
+  [mail.signature]
+  enabled = true
+  name = "Ada Example"
+  affiliation = "Example Org"
+  title = "Example Title"
+  name_color = "#003366"
+  title_color = "#5B9BD5"
+  # optional: html_template = "<p>…</p>"  # replaces the default HTML layout
+  ```
+
+  When `enabled = true`, `mail draft`, `mail reply`, and `mail forward` append the
+  rendered signature (HTML or plain text matching `--body-type`). Pass
+  `--no-signature` to skip. Do not invent signature markup in the agent session.
 - **WO1162425 add-on scopes (off by default):** `wo1162425_scopes = true` in
   `config.toml` or `BLUMKIN_WO1162425_SCOPES=1` after Remedy WO1162425 grants
   `Chat.ReadWrite` + `OnlineMeetings.ReadWrite`. Then delete token cache + auth

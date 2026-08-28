@@ -1279,6 +1279,12 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
     type=click.Choice(["text", "html"], case_sensitive=False),
     help="Body content type.",
 )
+@click.option(
+    "--no-signature",
+    "no_signature",
+    is_flag=True,
+    help="Do not append [mail.signature] even when enabled in config.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_draft_cmd(
@@ -1291,6 +1297,7 @@ def mail_draft_cmd(
     body: str | None,
     body_file: str | None,
     body_type: str,
+    no_signature: bool,
     as_json_flag: bool,
 ) -> None:
     """Create a mail draft (does not send)."""
@@ -1306,6 +1313,7 @@ def mail_draft_cmd(
                 body=body,
                 body_file=body_file,
                 body_type=body_type,
+                no_signature=no_signature,
             )
         )
     except MailAttachError as exc:
@@ -1340,6 +1348,12 @@ def mail_draft_cmd(
 @click.option("--body", default=None, help="Text to add above the forwarded message.")
 @click.option("--body-file", default=None, help="Read the added text from a file.")
 @click.option("--body-type", default="text", show_default=True, type=click.Choice(["html", "text"]))
+@click.option(
+    "--no-signature",
+    "no_signature",
+    is_flag=True,
+    help="Do not append [mail.signature] even when enabled in config.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_forward_cmd(
@@ -1349,6 +1363,7 @@ def mail_forward_cmd(
     body: str | None,
     body_file: str | None,
     body_type: str,
+    no_signature: bool,
     as_json_flag: bool,
 ) -> None:
     """Create a forward draft (does not send)."""
@@ -1361,6 +1376,7 @@ def mail_forward_cmd(
                 body=body,
                 body_file=body_file,
                 body_type=body_type,
+                no_signature=no_signature,
             )
         )
     except MailBodyFileError as exc:
@@ -1386,6 +1402,12 @@ def mail_forward_cmd(
 @click.option("--body", default=None, help="Reply text; omit for an empty draft.")
 @click.option("--body-file", default=None, help="Read the reply text from a file.")
 @click.option("--body-type", default="text", show_default=True, type=click.Choice(["html", "text"]))
+@click.option(
+    "--no-signature",
+    "no_signature",
+    is_flag=True,
+    help="Do not append [mail.signature] even when enabled in config.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_reply_cmd(
@@ -1395,6 +1417,7 @@ def mail_reply_cmd(
     body: str | None,
     body_file: str | None,
     body_type: str,
+    no_signature: bool,
     as_json_flag: bool,
 ) -> None:
     """Create a reply draft that threads correctly (does not send)."""
@@ -1407,6 +1430,7 @@ def mail_reply_cmd(
                 body_file=body_file,
                 body_type=body_type,
                 reply_all=reply_all,
+                no_signature=no_signature,
             )
         )
     except MailBodyFileError as exc:
