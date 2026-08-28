@@ -66,15 +66,14 @@ def create_credential(config: BlumkinConfig | None = None) -> InteractiveBrowser
     if record:
         try:
             credential.get_token(*scopes)
-            save_token_cache(cfg)
-            return credential
-        except OSError:
-            # Secret-file write failures (e.g. O_NOFOLLOW symlink) are not stale
-            # credentials — surface them instead of forcing interactive re-login.
-            raise
         except Exception:
             # Stale auth record / missing refresh token — force interactive login.
+            # Do not wrap save_token_cache here: its OSError (e.g. O_NOFOLLOW) must
+            # surface, and get_token transport OSErrors must still fall through.
             pass
+        else:
+            save_token_cache(cfg)
+            return credential
 
     record = credential.authenticate(scopes=scopes)
     _save_auth_record(cfg, record)
@@ -198,13 +197,12 @@ def _ensure_cache(cfg: BlumkinConfig) -> None:
 def _ensure_secret_dir(directory: Path) -> None:
     """Create ``directory`` at 0700; best-effort tighten if it already existed looser.
 
-    Mode-setting is optional: SMB/FUSE mounts may reject ``chmod``, and a
-    symlinked config dir must not be followed into a shared target. Persistence
-    still proceeds when tightening fails.
+    Mode-setting is optional: SMB/FUSE mounts may reject ``chmod``. A symlinked
+    config dir is refused (same class of attack as a symlinked secret file).
     """
-    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     if directory.is_symlink():
-        return
+        raise OSError(f"cannot use symlinked config dir {directory}")
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     try:
         os.chmod(directory, 0o700)
     except OSError:

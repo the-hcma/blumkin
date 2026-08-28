@@ -67,19 +67,15 @@ def test_ensure_secret_dir_tightens_existing_mode(tmp_path: Path) -> None:
     assert mode == 0o700
 
 
-def test_ensure_secret_dir_skips_symlink_chmod(tmp_path: Path, monkeypatch) -> None:
+def test_ensure_secret_dir_refuses_symlink(tmp_path: Path) -> None:
     if sys.platform == "win32":
         pytest.skip("symlink config-dir layout is a POSIX concern")
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "blumkin"
     link.symlink_to(real)
-
-    def boom(_path: Path | str, _mode: int) -> None:
-        raise AssertionError("chmod must not follow a symlinked config dir")
-
-    monkeypatch.setattr(os, "chmod", boom)
-    auth._ensure_secret_dir(link)
+    with pytest.raises(OSError, match="cannot use symlinked config dir"):
+        auth._ensure_secret_dir(link)
 
 
 def test_ensure_secret_dir_survives_chmod_oserror(tmp_path: Path, monkeypatch) -> None:

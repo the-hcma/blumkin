@@ -149,6 +149,9 @@ def _raise_chat_attachment_error(exc: BaseException, *, as_json: bool) -> NoRetu
 
 
 def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
+    if isinstance(exc, OSError):
+        emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
     status = _graph_http_status(exc)
     if status == 401:
         emit_error(error="auth_required", message=str(exc), as_json=as_json)
@@ -250,6 +253,17 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         cfg = load_config()
         create_credential(cfg)
         save_token_cache(cfg)
+    except OSError as exc:
+        emit_error(
+            error="secret_write_failed",
+            message=str(exc),
+            as_json=as_json,
+            hint=(
+                "Remove symlinks at the config dir or token cache/auth record "
+                "paths under ~/.config/blumkin/, then retry."
+            ),
+        )
+        raise SystemExit(EXIT_OTHER) from exc
     except Exception as exc:
         emit_error(
             error="auth_required",
