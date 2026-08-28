@@ -79,12 +79,8 @@ async def calendar_suggest(
     step_delta = step if step is not None else min(timedelta(minutes=15), duration)
     if step_delta <= timedelta(0):
         raise ValueError("--step must be positive")
-    freebusy = await calendar_freebusy(
-        with_emails=with_emails, start=start, end=end, config=config
-    )
-    busy = _collect_busy_intervals(
-        freebusy["items"], treat_tentative_busy=(tentative == "busy")
-    )
+    freebusy = await calendar_freebusy(with_emails=with_emails, start=start, end=end, config=config)
+    busy = _collect_busy_intervals(freebusy["items"], treat_tentative_busy=(tentative == "busy"))
     slots = find_mutual_free_slots(
         busy=busy,
         range_start=start,
@@ -504,9 +500,10 @@ def _fits_day_window(start: datetime, end: datetime, window: tuple[time, time]) 
     if start.date() != end.date():
         return False
     window_start, window_end = window
-    return start.timetz().replace(tzinfo=None) >= window_start and end.timetz().replace(
-        tzinfo=None
-    ) <= window_end
+    return (
+        start.timetz().replace(tzinfo=None) >= window_start
+        and end.timetz().replace(tzinfo=None) <= window_end
+    )
 
 
 def _format_time_of_day(value: Any) -> str | None:
