@@ -116,6 +116,7 @@ from blumkin.skills.meeting import (
     meeting_get,
     meeting_transcription,
 )
+from blumkin.skills.people import format_resolve_human, people_resolve
 
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
@@ -1765,6 +1766,55 @@ def meeting_transcription_cmd(
         emit_json(payload)
     else:
         emit_lines(format_transcription_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@main.group()
+def people() -> None:
+    """People directory skills."""
+
+
+@people.command("resolve")
+@click.option("--name", "name", default=None, help="Display name to search for.")
+@click.option("--email", "email", default=None, help="Exact email / reverse lookup.")
+@click.option(
+    "--top",
+    default=10,
+    show_default=True,
+    type=int,
+    help="Max Graph people results to consider (max 50).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def people_resolve_cmd(
+    ctx: click.Context,
+    name: str | None,
+    email: str | None,
+    top: int,
+    as_json_flag: bool,
+) -> None:
+    """Resolve a person to an SMTP address (fail-closed when ambiguous)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(people_resolve(name=name, email=email, top=top))
+    except LookupError as exc:
+        emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_resolve_human(payload))
+    if payload.get("ambiguous"):
+        raise SystemExit(EXIT_USAGE)
     raise SystemExit(EXIT_SUCCESS)
 
 

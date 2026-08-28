@@ -696,6 +696,32 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="people.resolve",
+        cli=["blumkin", "people", "resolve"],
+        summary=(
+            "Resolve a display name or email via Graph people search "
+            "(fail-closed on zero or multiple matches; requires People.Read)"
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["People.Read"],
+        args=[
+            {
+                "name": "--name",
+                "required": False,
+                "type": "string",
+                "note": "display name search; provide --name and/or --email",
+            },
+            {
+                "name": "--email",
+                "required": False,
+                "type": "email",
+                "note": "exact email filter / reverse lookup; provide --name and/or --email",
+            },
+            {"name": "--top", "required": False, "type": "int", "note": "default 10, max 50"},
+        ],
+    ),
+    SkillSpec(
         id="skills.describe",
         cli=["blumkin", "skills", "describe"],
         summary="Describe one skill by id",

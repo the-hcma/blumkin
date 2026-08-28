@@ -327,7 +327,8 @@ argument rather than a frozen list.
 - Putting client ids or secrets in a skill or instructions file
 - Running a `notifies_others` skill to test something
 - Inventing SMTP addresses from display names, or probing `calendar freebusy`
-  as a people directory
+  as a people directory — use `blumkin people resolve` and ask the user when
+  `ambiguous: true`
 - Inventing colored HTML mail signatures per draft (use `[mail.signature]` /
   `--no-signature` instead)
 - Re-login looping on exit `1` / `secret_write_failed` instead of fixing the

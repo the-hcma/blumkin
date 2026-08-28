@@ -22,6 +22,7 @@ BASE_SCOPES = [
     "Chat.Read",
     "Mail.ReadWrite",
     "Mail.Send",
+    "People.Read",
     "User.Read",
 ]
 

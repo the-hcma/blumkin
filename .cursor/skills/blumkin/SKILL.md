@@ -33,7 +33,16 @@ covers the job.
      mutual-free starts from the union of busy intervals. Include the organizer in
      `--with` when they must be free too. Clip with `--window` / organizer `--tz`;
      do **not** rewrite times into an attendee's zone. Do **not** use freebusy as a
-     people directory (guessing SMTP addresses via `--with`).
+     people directory (guessing SMTP addresses via `--with`). Resolve names first
+     with `blumkin people resolve --name "Display Name" --json` (or `--email`).
+   - People: `blumkin people resolve --name "Display Name" --json`
+     (optional `--email` for reverse / exact filter). Uses Graph `/me/people`
+     (`People.Read` — wipe the token cache and re-run `auth login` after this
+     scope is added). On **exactly one** match, `person.email` is the address to
+     use. On **zero** matches: exit `5` / `not_found`. On **multiple** matches:
+     stdout carries `ambiguous: true` and the candidate list, exit `2` /
+     `usage_error` — **ask the user which person** (or demand an exact email);
+     never pick a winner and never compose/invite until confirmed.
    - Mail: `blumkin mail inbox --top 10 --json`
      `blumkin mail list --folder sentitems --top 20 --json` (also `archive`,
      `deleteditems`, `drafts`, `junkemail`, `outbox`, a folder id, or a custom
