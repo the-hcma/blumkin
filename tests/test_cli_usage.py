@@ -669,6 +669,20 @@ def test_mail_list_search_conflict_exits_usage(monkeypatch) -> None:
     assert "usage_error" in (result.output or "")
 
 
+def test_mail_list_search_since_conflict_exits_usage(monkeypatch) -> None:
+    async def _list(**_kwargs):
+        raise ValueError("--search cannot be combined with --since")
+
+    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["mail", "list", "--search", "budget", "--since", "2026-08-01", "--json"],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "usage_error" in (result.output or "")
+
+
 def test_mail_inbox_wires_filters(monkeypatch) -> None:
     seen: dict[str, object] = {}
 

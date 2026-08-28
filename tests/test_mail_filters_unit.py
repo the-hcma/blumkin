@@ -343,9 +343,19 @@ def test_mail_list_searches_without_a_sort(monkeypatch) -> None:
     assert payload["orderby"] is None
 
 
-def test_mail_list_rejects_search_with_a_filter() -> None:
-    with pytest.raises(ValueError, match=r"--search cannot be combined with --from, --unread"):
-        asyncio.run(mail_list(search="budget", sender="Rebecca", unread=True))
+@pytest.mark.parametrize(
+    ("kwargs", "flag"),
+    [
+        ({"sender": "Rebecca"}, "--from"),
+        ({"since": datetime(2026, 8, 1, tzinfo=UTC)}, "--since"),
+        ({"subject": "budget"}, "--subject"),
+        ({"unread": True}, "--unread"),
+        ({"until": datetime(2026, 8, 8, tzinfo=UTC)}, "--until"),
+    ],
+)
+def test_mail_list_rejects_search_with_each_filter(kwargs: dict[str, Any], flag: str) -> None:
+    with pytest.raises(ValueError, match=rf"--search cannot be combined with {flag}"):
+        asyncio.run(mail_list(search="budget", **kwargs))
 
 
 def test_mail_list_rejects_search_with_an_explicit_orderby() -> None:
