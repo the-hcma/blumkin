@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -12,6 +13,7 @@ from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
+from blumkin.config import BlumkinConfig, MailSignatureConfig
 from blumkin.skills.mail import (
     MailBodyFileError,
     MailMessageNotFoundError,
@@ -209,13 +211,75 @@ def test_mail_reply_reports_an_unreadable_body_file() -> None:
         asyncio.run(mail_reply(message_id="msg-1", body_file="/nonexistent/notes.txt"))
 
 
-def _client(monkeypatch) -> MagicMock:
+def test_mail_reply_appends_signature_and_converts_newlines(monkeypatch) -> None:
+    client = _client(monkeypatch, signature=True)
+    item = client.me.messages.by_message_id.return_value
+    item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+
+    asyncio.run(mail_reply(message_id="msg-1", body="line1\nline2"))
+
+    assert _posted(item.create_reply.post).comment == "line1<br>line2<br><br>Ada"
+
+
+def test_mail_reply_signature_only_empty_body(monkeypatch) -> None:
+    client = _client(monkeypatch, signature=True)
+    item = client.me.messages.by_message_id.return_value
+    item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+
+    asyncio.run(mail_reply(message_id="msg-1"))
+
+    assert _posted(item.create_reply.post).comment == "Ada"
+
+
+def test_mail_reply_no_signature_skips_config(monkeypatch) -> None:
+    client = _client(monkeypatch, signature=True)
+    item = client.me.messages.by_message_id.return_value
+    item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+
+    asyncio.run(mail_reply(message_id="msg-1", body="Thanks", no_signature=True))
+
+    assert _posted(item.create_reply.post).comment == "Thanks"
+
+
+def test_mail_forward_appends_html_signature(monkeypatch) -> None:
+    client = _client(monkeypatch, signature=True)
+    item = client.me.messages.by_message_id.return_value
+    item.create_forward.post = AsyncMock(return_value=_draft("FW: Quarterly sync"))
+
+    asyncio.run(
+        mail_forward(
+            message_id="msg-1",
+            to="sam@example.com",
+            body="<p>FYI</p>",
+            body_type="html",
+        )
+    )
+
+    comment = _posted(item.create_forward.post).comment
+    assert comment.startswith("<p>FYI</p><br><br>")
+    assert "Ada" in comment
+    assert "font-weight:bold" in comment
+
+
+def _client(monkeypatch, *, signature: bool = False) -> MagicMock:
     client = MagicMock()
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(client_id="x", default_tz="UTC"),
-    )
+    if signature:
+        cfg = BlumkinConfig(
+            client_id="x",
+            config_dir=Path("/tmp"),
+            default_tz="UTC",
+            files_scopes=False,
+            mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
+            tenant_id="t",
+            wo1162425_scopes=False,
+        )
+        monkeypatch.setattr("blumkin.skills.mail.load_config", lambda: cfg)
+    else:
+        monkeypatch.setattr(
+            "blumkin.skills.mail.load_config",
+            lambda: SimpleNamespace(client_id="x", default_tz="UTC"),
+        )
     return client
 
 

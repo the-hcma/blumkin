@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from blumkin.config import MailSignatureConfig, load_config
+from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.skills.mail import append_mail_signature, render_mail_signature
 
 
@@ -53,6 +53,7 @@ def test_render_mail_signature_html_escapes() -> None:
     sig = MailSignatureConfig(enabled=True, name="A <B>", title='T "x"', affiliation="Org")
     html = render_mail_signature(sig, body_type="html")
     assert "A &lt;B&gt;" in html
+    # Python 3.14+ html.escape defaults to quote=True (text + attribute-safe).
     assert "T &quot;x&quot;" in html
     assert "Org" in html
 
@@ -62,6 +63,24 @@ def test_render_mail_signature_html_template_overrides() -> None:
         enabled=True, name="Ada", html_template="<p>Custom</p>", title="ignored"
     )
     assert render_mail_signature(sig, body_type="html") == "<p>Custom</p>"
+
+
+def test_append_mail_signature_html_separator_and_empty_body() -> None:
+    cfg = BlumkinConfig(
+        client_id="x",
+        config_dir=Path("/tmp"),
+        default_tz="UTC",
+        files_scopes=False,
+        mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
+        tenant_id="t",
+        wo1162425_scopes=False,
+    )
+    assert append_mail_signature("", body_type="html", config=cfg) == (
+        '<span style="color:#003366;font-weight:bold">Ada</span>'
+    )
+    assert append_mail_signature("<p>Hi</p>", body_type="html", config=cfg) == (
+        '<p>Hi</p><br><br><span style="color:#003366;font-weight:bold">Ada</span>'
+    )
 
 
 def test_append_mail_signature_respects_opt_out(tmp_path: Path, monkeypatch) -> None:
