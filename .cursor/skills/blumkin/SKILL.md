@@ -63,8 +63,11 @@ covers the job.
     conversation and inherits the recipients, so it threads in the recipient's client.
     Draft only — send with `mail send-draft --yes`. The draft body is HTML because it
     contains the quoted original, whatever `--body-type` you pass for your own text.
-  - `blumkin mail forward --id '<message-id>' --to … --body …` (draft only)
-   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` replaces the whole To list and refuses multi-To drafts)
+    Prefer including `--body` here: an empty reply draft filled later with
+    `mail update-draft --body` *replaces* that HTML and drops the quoted original.
+  - `blumkin mail forward --id '<message-id>' --to … --body …` (draft only; same
+    update-draft warning as reply — pass `--body` on create when you can)
+   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` replaces the whole To list and refuses multi-To drafts; `--body` replaces the whole body)
    - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
    - `blumkin mail send-draft --id '<draft-id>' --yes`
    - `blumkin chat send --with "Name" --text "…" --yes` (or `--chat-id` if ambiguous)
