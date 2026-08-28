@@ -148,6 +148,10 @@ def format_draft_human(payload: dict[str, Any]) -> list[str]:
         f"Draft saved: {draft.get('subject')!r} → {to_addr} ({body_type})",
         f"  id={draft.get('id')}",
     ]
+    for label in ("cc", "bcc"):
+        value = draft.get(label)
+        if value:
+            lines.append(f"  {label}: {sanitize_terminal(str(value))}")
     for item in draft.get("attachments") or []:
         name = sanitize_terminal(str(item.get("name") or ""))
         lines.append(f"  attached: {name!r} ({item.get('size')} bytes) id={item.get('id')}")
@@ -387,16 +391,19 @@ async def mail_delete_draft(
 
 async def mail_draft(
     *,
-    to: str,
+    to: str | Sequence[str],
     subject: str,
     attach: Sequence[str] = (),
+    bcc: str | Sequence[str] = (),
     body: str | None = None,
     body_file: str | None = None,
     body_type: str = "text",
+    cc: str | Sequence[str] = (),
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    if not to.strip():
-        raise ValueError("--to is required")
+    to_addrs = _parse_addresses(to, flag="--to", required=True)
+    cc_addrs = _parse_addresses(cc, flag="--cc", required=False) or []
+    bcc_addrs = _parse_addresses(bcc, flag="--bcc", required=False) or []
     if not subject.strip():
         raise ValueError("--subject is required")
     # Read the files before touching Graph: a bad path should not leave a half-built draft.
@@ -407,11 +414,11 @@ async def mail_draft(
     cfg = config or load_config()
     client = create_graph_client(cfg)
     message = Message(
+        bcc_recipients=_recipient_models(bcc_addrs) or None,
         body=ItemBody(content_type=graph_body_type, content=content),
+        cc_recipients=_recipient_models(cc_addrs) or None,
         subject=subject.strip(),
-        to_recipients=[
-            Recipient(email_address=EmailAddress(address=to.strip())),
-        ],
+        to_recipients=_recipient_models(to_addrs),
     )
     created = await client.me.messages.post(message)
     if created is None or not created.id:
@@ -428,10 +435,12 @@ async def mail_draft(
     return {
         "draft": {
             "attachments": attachments,
+            "bcc": _join_addresses(bcc_addrs) or None,
             "body_type": body_type_label,
+            "cc": _join_addresses(cc_addrs) or None,
             "id": created.id,
             "subject": created.subject,
-            "to": to.strip(),
+            "to": _join_addresses(to_addrs),
         }
     }
 
@@ -714,18 +723,32 @@ async def mail_update_draft(
     *,
     draft_id: str,
     attach: Sequence[str] = (),
+    bcc: str | Sequence[str] | None = None,
     subject: str | None = None,
     body: str | None = None,
     body_file: str | None = None,
     body_type: str = "text",
-    to: str | None = None,
+    cc: str | Sequence[str] | None = None,
+    to: str | Sequence[str] | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     if not draft_id.strip():
         raise ValueError("--id is required")
     has_body = body is not None or body_file is not None
-    if subject is None and not has_body and to is None and not attach:
-        raise ValueError("provide at least one of --subject, --body/--body-file, --to, or --attach")
+    to_addrs = _parse_addresses(to, flag="--to", required=False)
+    cc_addrs = _parse_addresses(cc, flag="--cc", required=False)
+    bcc_addrs = _parse_addresses(bcc, flag="--bcc", required=False)
+    if (
+        subject is None
+        and not has_body
+        and to_addrs is None
+        and cc_addrs is None
+        and bcc_addrs is None
+        and not attach
+    ):
+        raise ValueError(
+            "provide at least one of --subject, --body/--body-file, --to, --cc, --bcc, or --attach"
+        )
     pending = [_read_attachment(path) for path in attach]
     content: str | None = None
     body_type_label: MailBodyType | None = None
@@ -753,19 +776,17 @@ async def mail_update_draft(
         patch.subject = subject.strip()
     if content is not None and graph_body_type is not None:
         patch.body = ItemBody(content_type=graph_body_type, content=content)
-    if to is not None:
-        if not to.strip():
-            raise ValueError("--to must be non-empty when provided")
-        existing_tos = list(existing.to_recipients or [])
-        if len(existing_tos) > 1:
-            raise ValueError("draft has multiple To recipients; --to would replace the entire list")
-        patch.to_recipients = [
-            Recipient(email_address=EmailAddress(address=to.strip())),
-        ]
+    if to_addrs is not None:
+        patch.to_recipients = _recipient_models(to_addrs)
+    if cc_addrs is not None:
+        patch.cc_recipients = _recipient_models(cc_addrs)
+    if bcc_addrs is not None:
+        patch.bcc_recipients = _recipient_models(bcc_addrs)
     # Upload before PATCH so a failed --attach batch cannot leave subject/body/to changed
     # while the CLI exits with an error (mail draft deletes the whole draft instead).
     uploaded = await _upload_attachments(client, mid, pending)
-    if subject is None and content is None and to is None:
+    recipients_patched = to_addrs is not None or cc_addrs is not None or bcc_addrs is not None
+    if subject is None and content is None and not recipients_patched:
         # --attach on its own: an empty PATCH would be a pointless round trip.
         updated = existing
     else:
@@ -780,17 +801,18 @@ async def mail_update_draft(
     if updated is None:
         await _delete_uploaded_attachments(client, mid, uploaded)
         raise RuntimeError(f"Graph returned no message after update-draft: {mid}")
-    to_out = to.strip() if to is not None and to.strip() else _primary_to_address(updated)
     body_out = body_type_label
     if body_out is None and updated.body and updated.body.content_type is not None:
         body_out = "html" if updated.body.content_type == BodyType.Html else "text"
     return {
         "draft": {
             "attachments": uploaded,
+            "bcc": _recipient_field(bcc_addrs, getattr(updated, "bcc_recipients", None)),
             "body_type": body_out or "text",
+            "cc": _recipient_field(cc_addrs, getattr(updated, "cc_recipients", None)),
             "id": updated.id or mid,
             "subject": updated.subject if updated.subject is not None else existing.subject,
-            "to": to_out,
+            "to": _recipient_field(to_addrs, getattr(updated, "to_recipients", None)) or "",
         }
     }
 
@@ -1312,6 +1334,40 @@ def _parse_body_type(raw: str) -> MailBodyType:
     return label  # type: ignore[return-value]
 
 
+def _join_addresses(addresses: Sequence[str]) -> str:
+    return ", ".join(addresses)
+
+
+def _parse_addresses(
+    value: str | Sequence[str] | None,
+    *,
+    flag: str,
+    required: bool,
+) -> list[str] | None:
+    """Split repeatable and/or comma-separated address flags into a clean list.
+
+    ``None`` means the flag was omitted (update-draft: leave unchanged). An empty
+    provided value is a usage error — clearing a list is not supported yet.
+    """
+    if value is None:
+        if required:
+            raise ValueError(f"{flag} is required")
+        return None
+    parts: Sequence[str] = (value,) if isinstance(value, str) else value
+    addresses: list[str] = []
+    for raw in parts:
+        for piece in str(raw).split(","):
+            addr = piece.strip()
+            if addr:
+                addresses.append(addr)
+    if not addresses:
+        if required:
+            raise ValueError(f"{flag} is required")
+        # Empty sequence (draft defaults) means "no recipients", not "omit".
+        return []
+    return addresses
+
+
 def _primary_to_address(msg: Any) -> str | None:
     recipients = getattr(msg, "to_recipients", None) or []
     for recipient in recipients:
@@ -1320,6 +1376,20 @@ def _primary_to_address(msg: Any) -> str | None:
         if address:
             return str(address)
     return None
+
+
+def _recipient_field(provided: list[str] | None, graph_recipients: Any) -> str | None:
+    """Prefer addresses just patched; otherwise join what Graph returned."""
+    if provided is not None:
+        return _join_addresses(provided) or None
+    addresses = [
+        str(person["email"]) for person in _participants(graph_recipients) if person.get("email")
+    ]
+    return _join_addresses(addresses) or None
+
+
+def _recipient_models(addresses: Sequence[str]) -> list[Recipient]:
+    return [Recipient(email_address=EmailAddress(address=addr)) for addr in addresses]
 
 
 def _read_attachment(path: str) -> tuple[str, bytes]:

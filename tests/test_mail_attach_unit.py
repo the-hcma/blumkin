@@ -241,7 +241,7 @@ def test_mail_draft_rejects_a_non_regular_file(tmp_path, monkeypatch) -> None:
 
 
 def test_mail_update_draft_validates_before_uploading(tmp_path, monkeypatch) -> None:
-    """A multi-To refusal must not leave a newly uploaded attachment behind."""
+    """A usage error must not leave a newly uploaded attachment behind."""
     source = tmp_path / "note.txt"
     source.write_bytes(b"hi")
     client = _draft_client(monkeypatch)
@@ -254,13 +254,14 @@ def test_mail_update_draft_validates_before_uploading(tmp_path, monkeypatch) -> 
             body=SimpleNamespace(content_type=BodyType.Text, content="old"),
             to_recipients=[
                 SimpleNamespace(email_address=SimpleNamespace(address="a@b.com")),
-                SimpleNamespace(email_address=SimpleNamespace(address="c@d.com")),
             ],
+            cc_recipients=[],
+            bcc_recipients=[],
         )
     )
 
-    with pytest.raises(ValueError, match="multiple To"):
-        asyncio.run(mail_update_draft(draft_id="draft-1", to="new@x.com", attach=[str(source)]))
+    with pytest.raises(ValueError, match="--subject must be non-empty"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", subject="  ", attach=[str(source)]))
 
     item.attachments.post.assert_not_awaited()
     item.patch.assert_not_awaited()

@@ -58,6 +58,7 @@ covers the job.
    - `blumkin calendar create --subject … --with email --start … --yes`
    - `blumkin calendar cancel --event-id '<id>' --yes`
    - `blumkin mail draft --to … --subject … --body …` (draft only; `--body-type html` / `--body-file` optional)
+     `--to` / `--cc` / `--bcc` are repeatable or comma-separated for multiple recipients.
      Add files with `--attach <path>`, repeated once per file. Each file goes up in a
      single request, so keep them under 2 MB; larger ones are refused (exit 2) rather
      than silently truncated. A bad path fails before the draft is created. If any
@@ -71,7 +72,8 @@ covers the job.
     `mail update-draft --body` *replaces* that HTML and drops the quoted original.
   - `blumkin mail forward --id '<message-id>' --to … --body …` (draft only; same
     update-draft warning as reply — pass `--body` on create when you can)
-   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` replaces the whole To list and refuses multi-To drafts; `--body` replaces the whole body)
+   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` / `--cc` /
+     `--bcc` each replace that whole list when provided; `--body` replaces the whole body)
      `--attach <path>` works here too and *adds* to whatever the draft already carries —
      it never replaces. It is also valid on its own, without any other field.
    - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)

@@ -1220,7 +1220,22 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
 
 
 @mail.command("draft")
-@click.option("--to", required=True, help="Recipient email.")
+@click.option(
+    "--to",
+    multiple=True,
+    required=True,
+    help="Recipient email (repeatable or comma-separated).",
+)
+@click.option(
+    "--cc",
+    multiple=True,
+    help="CC recipient email (repeatable or comma-separated).",
+)
+@click.option(
+    "--bcc",
+    multiple=True,
+    help="BCC recipient email (repeatable or comma-separated).",
+)
 @click.option("--subject", required=True)
 @click.option(
     "--attach",
@@ -1248,7 +1263,9 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
 @click.pass_context
 def mail_draft_cmd(
     ctx: click.Context,
-    to: str,
+    to: tuple[str, ...],
+    cc: tuple[str, ...],
+    bcc: tuple[str, ...],
     subject: str,
     attach: tuple[str, ...],
     body: str | None,
@@ -1262,6 +1279,8 @@ def mail_draft_cmd(
         payload = asyncio.run(
             mail_draft(
                 to=to,
+                cc=cc,
+                bcc=bcc,
                 subject=subject,
                 attach=attach,
                 body=body,
@@ -1425,8 +1444,18 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
 @click.option("--subject", default=None, help="New subject (omit to leave unchanged).")
 @click.option(
     "--to",
-    default=None,
-    help="Replace the entire To list with this single address (omit to leave unchanged).",
+    multiple=True,
+    help="Replace the entire To list (repeatable or comma-separated; omit to leave unchanged).",
+)
+@click.option(
+    "--cc",
+    multiple=True,
+    help="Replace the entire CC list (repeatable or comma-separated; omit to leave unchanged).",
+)
+@click.option(
+    "--bcc",
+    multiple=True,
+    help="Replace the entire BCC list (repeatable or comma-separated; omit to leave unchanged).",
 )
 @click.option("--body", default=None, help="New body (mutually exclusive with --body-file).")
 @click.option(
@@ -1451,7 +1480,9 @@ def mail_update_draft_cmd(
     draft_id: str,
     attach: tuple[str, ...],
     subject: str | None,
-    to: str | None,
+    to: tuple[str, ...],
+    cc: tuple[str, ...],
+    bcc: tuple[str, ...],
     body: str | None,
     body_file: str | None,
     body_type: str,
@@ -1465,7 +1496,9 @@ def mail_update_draft_cmd(
                 draft_id=draft_id,
                 attach=attach,
                 subject=subject,
-                to=to,
+                to=to or None,
+                cc=cc or None,
+                bcc=bcc or None,
                 body=body,
                 body_file=body_file,
                 body_type=body_type,

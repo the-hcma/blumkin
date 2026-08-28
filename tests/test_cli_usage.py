@@ -1108,7 +1108,9 @@ def test_mail_update_draft_wires_options_and_emits_json(tmp_path, monkeypatch) -
     assert result.exit_code == 0
     assert seen["draft_id"] == "draft-9"
     assert seen["subject"] == "Subj"
-    assert seen["to"] == "b@c.com"
+    assert seen["to"] == ("b@c.com",)
+    assert seen["cc"] is None
+    assert seen["bcc"] is None
     assert seen["body"] is None
     assert seen["body_file"] == str(path)
     assert seen["body_type"] == "html"
