@@ -8,6 +8,7 @@ from msgraph.generated.users.item.people.people_request_builder import PeopleReq
 
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, request_config
+from blumkin.output import sanitize_terminal
 
 _DEFAULT_TOP = 10
 _MAX_TOP = 50
@@ -16,7 +17,7 @@ _MAX_TOP = 50
 def format_resolve_human(payload: dict[str, Any]) -> list[str]:
     query = payload.get("query") or {}
     bits = [
-        f"{key}={value!r}"
+        f"{key}={sanitize_terminal(str(value))!r}"
         for key, value in (("name", query.get("name")), ("email", query.get("email")))
         if value
     ]
@@ -30,10 +31,10 @@ def format_resolve_human(payload: dict[str, Any]) -> list[str]:
     else:
         lines = [f"People resolve ({label}): 1 match"]
     for person in matches:
-        email = person.get("email") or "(no email)"
-        name = person.get("display_name") or "(no name)"
-        title = person.get("job_title") or ""
-        company = person.get("company") or ""
+        email = sanitize_terminal(str(person.get("email") or "(no email)"))
+        name = sanitize_terminal(str(person.get("display_name") or "(no name)"))
+        title = sanitize_terminal(str(person.get("job_title") or ""))
+        company = sanitize_terminal(str(person.get("company") or ""))
         detail = ", ".join(part for part in (title, company) if part)
         suffix = f" - {detail}" if detail else ""
         lines.append(f"  • {name} <{email}>{suffix}")
@@ -52,6 +53,10 @@ async def people_resolve(
     Fail-closed: zero matches raise ``LookupError``; more than one match returns
     ``ambiguous: true`` with the full candidate list (no winner). Exactly one match
     sets ``person`` and ``ambiguous: false``.
+
+    When both ``--name`` and ``--email`` are set, Graph searches by email (the more
+    specific key) so top-N truncation cannot hide the address, then optionally
+    filters by display-name substring.
     """
     query_name = (name or "").strip() or None
     query_email = (email or "").strip() or None
@@ -62,7 +67,8 @@ async def people_resolve(
     if top > _MAX_TOP:
         raise ValueError(f"--top must be <= {_MAX_TOP}")
 
-    search = query_name or query_email
+    # Prefer email as the Graph $search key when present (exact id > fuzzy name).
+    search = query_email or query_name
     assert search is not None
     cfg = config or load_config()
     client = create_graph_client(cfg)
@@ -87,6 +93,13 @@ async def people_resolve(
             for person in matches
             if needle == (person.get("email") or "").casefold()
             or any(needle == addr.casefold() for addr in person.get("emails") or [])
+        ]
+    if query_name is not None and query_email is not None:
+        name_needle = query_name.casefold()
+        matches = [
+            person
+            for person in matches
+            if name_needle in (person.get("display_name") or "").casefold()
         ]
     if not matches:
         label = query_name or query_email
