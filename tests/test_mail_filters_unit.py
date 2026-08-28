@@ -265,6 +265,29 @@ def test_mail_list_bounds_dates_on_the_field_it_sorts_by(monkeypatch) -> None:
     assert _query(messages.get).filter == "createdDateTime ge 2026-08-01T00:00:00Z"
 
 
+def test_mail_list_bounds_dates_on_an_explicit_orderby(monkeypatch) -> None:
+    """--since/--until must follow an explicit --orderby, not the folder default field."""
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(return_value=_page([]))
+
+    asyncio.run(
+        mail_list(
+            folder="sentitems",
+            orderby="received",
+            since=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+    )
+
+    query = _query(messages.get)
+    assert query.filter == "receivedDateTime ge 2026-08-01T00:00:00Z"
+    assert query.orderby == ["receivedDateTime desc"]
+
+    client.me.messages.get = AsyncMock(return_value=_page([]))
+    asyncio.run(mail_list(orderby="sent", since=datetime(2026, 8, 1, tzinfo=UTC)))
+    assert _query(client.me.messages.get).filter == "sentDateTime ge 2026-08-01T00:00:00Z"
+
+
 def test_mail_list_converts_naive_and_offset_bounds_to_utc(monkeypatch) -> None:
     client = _client(monkeypatch)
     client.me.messages.get = AsyncMock(return_value=_page([]))
