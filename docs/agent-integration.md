@@ -102,10 +102,14 @@ client id or call Graph directly when a blumkin skill covers the job.
   machine, then retry. Do not attempt to authenticate any other way. Exception:
   `blumkin doctor` exits 3 for a missing `client_id` too — read its `problems`
   array before advising.
+- Exit 1 (`secret_write_failed`): the MSAL cache or auth record could not be
+  written (often a symlink under the config dir). Fix the path; do not loop on
+  `auth login`.
 - On any non-zero exit, if stderr is empty the explanation is on stdout
   (`doctor`, `chat last`). Never report "no output".
 - Exit 4 (`missing_scope`): a scope is unavailable — usually a tenant grant, but
-  sometimes a local opt-in. Report the message; do not retry.
+  sometimes a local opt-in. Report the message; do not retry. For chat file
+  downloads, hand the share URL to the user instead of inventing Graph calls.
 - Exit 2 (`usage_error`): usually a malformed command, but sometimes a config
   opt-in that is off. Read the message before calling it bad arguments.
 ```
@@ -266,9 +270,10 @@ amount of logging in will fix. Read `problems` before advising the user.
 
 Three caveats worth wiring in up front:
 
-- **`error` values are not the exit-code names.** They are `graph_error` and
-  `usage_error`, not `other` and `usage`. Match the left column of the table
-  above rather than the prose name of the code.
+- **`error` values are not the exit-code names.** They are `graph_error`,
+  `usage_error`, and `secret_write_failed` (among others), not `other` and
+  `usage`. Match the `error` values in the table's `error` column. Use the exit
+  code first for routing, then use `error` for stable failure classification.
 - **Argument errors may arrive with no envelope.** Bad or missing options are
   rejected by the argument parser before blumkin runs, so exit 2 can carry plain
   usage text on stderr instead of JSON. Treat a missing envelope on exit 2 as a
@@ -321,3 +326,10 @@ argument rather than a frozen list.
 - Adding `--yes` to make a failing command succeed
 - Putting client ids or secrets in a skill or instructions file
 - Running a `notifies_others` skill to test something
+- Inventing SMTP addresses from display names, or probing `calendar freebusy`
+  as a people directory
+- Inventing colored HTML mail signatures per draft
+- Re-login looping on exit `1` / `secret_write_failed` instead of fixing the
+  config path
+- Opening a second Graph client when `chat attachments download` returns
+  `missing_scope` — give the user the share URL instead
