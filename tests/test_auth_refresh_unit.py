@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from blumkin.auth import create_credential, status_dict
+from blumkin.auth import SecretWriteError, create_credential, status_dict
 
 
 def test_status_reports_expired_access_token(
@@ -137,9 +137,9 @@ def test_create_credential_reraises_oserror_from_save_token_cache(
         patch("blumkin.auth.InteractiveBrowserCredential", return_value=fake_cred),
         patch(
             "blumkin.auth.save_token_cache",
-            side_effect=OSError("cannot write secret file"),
+            side_effect=SecretWriteError("cannot write secret file"),
         ),
-        pytest.raises(OSError, match="cannot write secret file"),
+        pytest.raises(SecretWriteError, match="cannot write secret file"),
     ):
         create_credential()
 

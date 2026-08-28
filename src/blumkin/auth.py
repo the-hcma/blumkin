@@ -32,6 +32,11 @@ FILES_SCOPES = [
     "Files.Read",
 ]
 
+
+class SecretWriteError(OSError):
+    """Failed to persist the MSAL cache or auth record (symlink, perms, etc.)."""
+
+
 WO1162425_SCOPES = [
     "Chat.ReadWrite",
     "OnlineMeetings.ReadWrite",
@@ -201,7 +206,7 @@ def _ensure_secret_dir(directory: Path) -> None:
     config dir is refused (same class of attack as a symlinked secret file).
     """
     if directory.is_symlink():
-        raise OSError(f"cannot use symlinked config dir {directory}")
+        raise SecretWriteError(f"cannot use symlinked config dir {directory}")
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     try:
         os.chmod(directory, 0o700)
@@ -259,7 +264,7 @@ def _write_secret_text(path: Path, text: str) -> None:
         fd = os.open(path, flags, 0o600)
     except OSError as exc:
         # Symlink at the secret path (ELOOP) or other open failure — never follow.
-        raise OSError(f"cannot write secret file {path}: {exc}") from exc
+        raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
     try:
         if hasattr(os, "fchmod"):
             try:

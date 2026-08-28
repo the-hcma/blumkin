@@ -10,7 +10,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import click
 
 from blumkin import __version__
-from blumkin.auth import create_credential, logout, save_token_cache, status_dict
+from blumkin.auth import (
+    SecretWriteError,
+    create_credential,
+    logout,
+    save_token_cache,
+    status_dict,
+)
 from blumkin.config import load_config
 from blumkin.exit_codes import (
     EXIT_AUTH,
@@ -149,7 +155,7 @@ def _raise_chat_attachment_error(exc: BaseException, *, as_json: bool) -> NoRetu
 
 
 def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
-    if isinstance(exc, OSError):
+    if isinstance(exc, SecretWriteError):
         emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_OTHER) from exc
     status = _graph_http_status(exc)
@@ -253,7 +259,7 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         cfg = load_config()
         create_credential(cfg)
         save_token_cache(cfg)
-    except OSError as exc:
+    except SecretWriteError as exc:
         emit_error(
             error="secret_write_failed",
             message=str(exc),

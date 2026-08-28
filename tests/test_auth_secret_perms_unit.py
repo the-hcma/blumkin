@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from blumkin import auth
+from blumkin.auth import SecretWriteError
 
 _POSIX_MODE_TESTS = pytest.mark.skipif(
     sys.platform == "win32",
@@ -53,7 +54,7 @@ def test_write_secret_text_refuses_symlink(tmp_path: Path) -> None:
     real.write_text("keep", encoding="utf-8")
     link = tmp_path / "msal_token_cache.json"
     link.symlink_to(real)
-    with pytest.raises(OSError, match="cannot write secret file"):
+    with pytest.raises(SecretWriteError, match="cannot write secret file"):
         auth._write_secret_text(link, "hijack")
     assert real.read_text(encoding="utf-8") == "keep"
 
@@ -74,7 +75,7 @@ def test_ensure_secret_dir_refuses_symlink(tmp_path: Path) -> None:
     real.mkdir()
     link = tmp_path / "blumkin"
     link.symlink_to(real)
-    with pytest.raises(OSError, match="cannot use symlinked config dir"):
+    with pytest.raises(SecretWriteError, match="cannot use symlinked config dir"):
         auth._ensure_secret_dir(link)
 
 
