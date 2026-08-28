@@ -1316,26 +1316,6 @@ def _odata_datetime(value: datetime | None) -> str | None:
     return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _participants(recipients: Any) -> list[dict[str, Any]]:
-    people: list[dict[str, Any]] = []
-    for recipient in recipients or []:
-        email = getattr(recipient, "email_address", None)
-        if email is None:
-            continue
-        address = getattr(email, "address", None)
-        name = getattr(email, "name", None)
-        if address or name:
-            people.append({"email": address, "name": name})
-    return people
-
-
-def _parse_body_type(raw: str) -> MailBodyType:
-    label = raw.strip().lower()
-    if label not in {"html", "text"}:
-        raise ValueError("--body-type must be 'text' or 'html'")
-    return label  # type: ignore[return-value]
-
-
 def _join_addresses(addresses: Sequence[str]) -> str:
     return ", ".join(addresses)
 
@@ -1365,9 +1345,33 @@ def _parse_addresses(
     if not addresses:
         if required:
             raise ValueError(f"{flag} is required")
-        # Empty sequence (draft defaults) means "no recipients", not "omit".
+        # Bare ``()`` is the draft default for optional --cc/--bcc (no recipients).
+        # An explicitly provided blank / comma-only value is a usage error — clearing
+        # a list on update-draft is not supported.
+        if len(parts) > 0:
+            raise ValueError(f"{flag} must be non-empty when provided")
         return []
     return addresses
+
+
+def _parse_body_type(raw: str) -> MailBodyType:
+    label = raw.strip().lower()
+    if label not in {"html", "text"}:
+        raise ValueError("--body-type must be 'text' or 'html'")
+    return label  # type: ignore[return-value]
+
+
+def _participants(recipients: Any) -> list[dict[str, Any]]:
+    people: list[dict[str, Any]] = []
+    for recipient in recipients or []:
+        email = getattr(recipient, "email_address", None)
+        if email is None:
+            continue
+        address = getattr(email, "address", None)
+        name = getattr(email, "name", None)
+        if address or name:
+            people.append({"email": address, "name": name})
+    return people
 
 
 def _primary_to_address(msg: Any) -> str | None:

@@ -72,18 +72,18 @@ covers the job.
     `mail update-draft --body` *replaces* that HTML and drops the quoted original.
   - `blumkin mail forward --id '<message-id>' --to … --body …` (draft only; same
     update-draft warning as reply — pass `--body` on create when you can)
-   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` / `--cc` /
-     `--bcc` each replace that whole list when provided; `--body` replaces the whole body)
-     `--attach <path>` works here too and *adds* to whatever the draft already carries —
-     it never replaces. It is also valid on its own, without any other field.
-   - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
-   - `blumkin mail send-draft --id '<draft-id>' --yes`
-   - `blumkin chat send --with "Name" --text "…" --yes` (or `--chat-id` if ambiguous)
-   - `blumkin chat edit --chat-id … --message-id … --text "…" --yes`
-   - `blumkin chat delete --chat-id … --message-id … --yes`
-   - `blumkin meeting get --event-id '<id>'` (organizer-only online meetings)
-   - `blumkin meeting transcription --event-id '<id>'` (show flags)
-   - `blumkin meeting transcription --event-id '<id>' --enable --yes`
+  - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` / `--cc` /
+    `--bcc` each replace that whole list when provided; `--body` replaces the whole body)
+    `--attach <path>` works here too and *adds* to whatever the draft already carries —
+    it never replaces. It is also valid on its own, without any other field.
+  - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
+  - `blumkin mail send-draft --id '<draft-id>' --yes`
+  - `blumkin chat send --with "Name" --text "…" --yes` (or `--chat-id` if ambiguous)
+  - `blumkin chat edit --chat-id … --message-id … --text "…" --yes`
+  - `blumkin chat delete --chat-id … --message-id … --yes`
+  - `blumkin meeting get --event-id '<id>'` (organizer-only online meetings)
+  - `blumkin meeting transcription --event-id '<id>'` (show flags)
+  - `blumkin meeting transcription --event-id '<id>' --enable --yes`
 5. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).
 6. On auth failure (exit `3` / `auth_required`): tell the user to run
    `blumkin auth login` on this machine, then retry.
