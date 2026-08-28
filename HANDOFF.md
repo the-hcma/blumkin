@@ -51,17 +51,42 @@ Auth caching: Keychain-only failed under Cursor; **file cache + AuthenticationRe
 
 ## Identity / permissions follow-up (open)
 
-A Remedy follow-up is open for **delegated** add-ons (ticket details stay in the private Graph lab — not this repo).
+Remedy **WO0000001162425** (opened after the initial Entra app WO) is the
+follow-up for **delegated** add-ons. Confirmed in 1:1 with Dan Erickson
+(2026-08-25): after the operator asked to widen permissions beyond the original
+app grant, Dan stated **“WO0000001162425 is open to get this permissions
+updated”** — i.e. the original Identity ask was **augmented** onto that WO with
+the fuller list below. **State (2026-08-28):** those augmented asks are **on the
+ticket but not fully granted yet** (consent still hits admin approval for scopes
+such as `People.Read`). Do not enable `wo1162425_scopes` / expect live
+`people resolve` until Identity finishes the grant.
 
-**Working assumption:** those add-ons will be granted. Phase 4 CLI skills are **implemented with mocked tests**; do not treat live Graph success as proven until the validation TODO below passes.
+**Working assumption:** those add-ons will be granted. Phase 4 CLI skills are
+**implemented with mocked tests**; do not treat live Graph success as proven until
+the validation TODO below passes.
 
-**Already granted / in use:** `Calendars.ReadWrite`, `Chat.Read`, `Mail.ReadWrite`, `Mail.Send`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `User.Read`. Keep those; request add-ons (Blumkin auth `SCOPES` already lists `Chat.ReadWrite` + `OnlineMeetings.ReadWrite` for re-consent):
+**Already granted / in use:** `Calendars.ReadWrite`, `Chat.Read`, `Mail.ReadWrite`,
+`Mail.Send`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `User.Read`. Keep those.
 
-- Teams: `Chat.ReadWrite`, `ChannelMessage.Read.All`, `ChannelMessage.Send`, `OnlineMeetings.ReadWrite`, `OnlineMeetingTranscript.Read.All`, `Presence.Read`
+**Augmented WO1162425 ask (pending fulfillment):**
+
+- Teams: `Chat.ReadWrite`, `ChannelMessage.Read.All`, `ChannelMessage.Send`,
+  `OnlineMeetings.ReadWrite`, `OnlineMeetingTranscript.Read.All`, `Presence.Read`
 - Mailbox: `MailboxSettings.Read`
-- Productivity: `Files.ReadWrite`, `Tasks.ReadWrite`, `Contacts.ReadWrite`, `People.Read`, `Notes.ReadWrite`
+- Productivity: `Files.ReadWrite`, `Tasks.ReadWrite`, `Contacts.ReadWrite`,
+  `People.Read`, `Notes.ReadWrite`
 
-- [ ] **TODO (validate live after grant):** add the **new** scopes to the Entra client, delete token cache + auth record under the effective config dir (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else `~/.config/blumkin/`), `blumkin auth login`, confirm consent includes at least `Chat.ReadWrite` and `OnlineMeetings.ReadWrite`, then smoke `chat send|edit|delete` + `meeting get|transcription` against Graph.
+**Runtime gating today:** `wo1162425_scopes` requests only the scopes Blumkin
+actually uses so far (`Chat.ReadWrite`, `OnlineMeetings.ReadWrite`, `People.Read`).
+`files_scopes` remains a separate opt-in for chat attachment download (`Files.Read`).
+
+- [ ] **TODO (validate live after grant):** add the **new** scopes to the Entra
+  client, delete token cache + auth record under the effective config dir
+  (`BLUMKIN_CONFIG_DIR`, else `$XDG_CONFIG_HOME/blumkin` if set, else
+  `~/.config/blumkin/`), set `wo1162425_scopes = true`, `blumkin auth login`,
+  confirm consent includes at least `Chat.ReadWrite`, `OnlineMeetings.ReadWrite`,
+  and `People.Read`, then smoke `chat send|edit|delete`, `meeting get|transcription`,
+  and `people resolve` against Graph.
 
 **Do not** request app-only permissions, broad shared permissions, or RSC all-messages.
 Keep the delegated `*.All` scopes listed above only when the corresponding flow requires them.

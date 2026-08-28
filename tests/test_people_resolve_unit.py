@@ -180,6 +180,10 @@ def test_people_resolve_requires_query() -> None:
 
 def test_cli_people_resolve_unique_exits_success(monkeypatch) -> None:
     monkeypatch.setattr(
+        "blumkin.cli.load_config",
+        lambda: SimpleNamespace(wo1162425_scopes=True),
+    )
+    monkeypatch.setattr(
         "blumkin.cli.people_resolve",
         AsyncMock(
             return_value={
@@ -196,6 +200,10 @@ def test_cli_people_resolve_unique_exits_success(monkeypatch) -> None:
 
 
 def test_cli_people_resolve_ambiguous_exits_usage(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blumkin.cli.load_config",
+        lambda: SimpleNamespace(wo1162425_scopes=True),
+    )
     monkeypatch.setattr(
         "blumkin.cli.people_resolve",
         AsyncMock(
@@ -216,6 +224,10 @@ def test_cli_people_resolve_ambiguous_exits_usage(monkeypatch) -> None:
 
 
 def test_cli_people_resolve_missing_exits_not_found(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blumkin.cli.load_config",
+        lambda: SimpleNamespace(wo1162425_scopes=True),
+    )
     monkeypatch.setattr(
         "blumkin.cli.people_resolve",
         AsyncMock(side_effect=LookupError("no people match for 'Nobody'")),

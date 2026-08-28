@@ -36,13 +36,15 @@ covers the job.
      people directory (guessing SMTP addresses via `--with`). Resolve names first
      with `blumkin people resolve --name "Display Name" --json` (or `--email`).
    - People: `blumkin people resolve --name "Display Name" --json`
-     (optional `--email` for reverse / exact filter). Uses Graph `/me/people`
-     (`People.Read` — wipe the token cache and re-run `auth login` after this
-     scope is added). On **exactly one** match, `person.email` is the address to
-     use. On **zero** matches: exit `5` / `not_found`. On **multiple** matches:
-     stdout carries `ambiguous: true` and the candidate list, exit `2` /
-     `usage_error` — **ask the user which person** (or demand an exact email);
-     never pick a winner and never compose/invite until confirmed.
+     (optional `--email` for reverse / exact filter). Requires
+     `wo1162425_scopes` + Graph `People.Read` (on the augmented WO1162425 ask;
+     **not granted yet** as of 2026-08 — leave the flag off until Identity
+     finishes, then wipe cache and `auth login`). Uses Graph `/me/people`.
+     On **exactly one** match, `person.email` is the address to use. On **zero**
+     matches: exit `5` / `not_found`. On **multiple** matches: stdout carries
+     `ambiguous: true` and the candidate list, exit `2` / `usage_error` —
+     **ask the user which person** (or demand an exact email); never pick a
+     winner and never compose/invite until confirmed.
    - Mail: `blumkin mail inbox --top 10 --json`
      `blumkin mail list --folder sentitems --top 20 --json` (also `archive`,
      `deleteditems`, `drafts`, `junkemail`, `outbox`, a folder id, or a custom
@@ -170,10 +172,12 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
   rendered signature (HTML or plain text matching `--body-type`). Pass
   `--no-signature` to skip. Do not invent signature markup in the agent session.
 - **WO1162425 add-on scopes (off by default):** `wo1162425_scopes = true` in
-  `config.toml` or `BLUMKIN_WO1162425_SCOPES=1` after Remedy WO1162425 grants
-  `Chat.ReadWrite` + `OnlineMeetings.ReadWrite`. Then delete token cache + auth
-  record and `blumkin auth login`. While off, calendar/mail/chat **read** skills
-  use the base scope set; chat write + meeting commands refuse with `usage_error`.
+  `config.toml` or `BLUMKIN_WO1162425_SCOPES=1` after Remedy WO1162425 grants its
+  add-ons (runtime requests `Chat.ReadWrite`, `OnlineMeetings.ReadWrite`,
+  `People.Read`; full augmented ask list in `HANDOFF.md` — fulfillment may still
+  be pending). Then delete token cache + auth record and `blumkin auth login`.
+  While off, calendar/mail/chat **read** skills use the base scope set; chat
+  write, meeting commands, and `people resolve` refuse with `usage_error`.
 - **Files scope for chat downloads (off by default):** `files_scopes = true` in
   `config.toml` or `BLUMKIN_FILES_SCOPES=1` once the tenant grants `Files.Read`.
   Then delete token cache + auth record and `blumkin auth login`. While off,

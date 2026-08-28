@@ -215,11 +215,12 @@ def _require_wo1162425_scopes(*, as_json: bool) -> None:
         error="usage_error",
         message=(
             "WO1162425 add-on scopes are disabled. Calendar/mail/chat read skills work "
-            "without them; chat write, meeting skills, and calendar create --teams need "
-            "wo1162425_scopes = true "
+            "without them; chat write, meeting skills, calendar create --teams, and "
+            "people resolve need wo1162425_scopes = true "
             "in config.toml (or BLUMKIN_WO1162425_SCOPES=1) after Remedy WO1162425 "
-            "grants Chat.ReadWrite + OnlineMeetings.ReadWrite — then wipe token cache, "
-            "auth record, and re-login."
+            "grants its add-ons (at least Chat.ReadWrite, OnlineMeetings.ReadWrite, "
+            "People.Read — see HANDOFF.md; augmented asks may still be pending) — "
+            "then wipe token cache, auth record, and re-login."
         ),
         as_json=as_json,
     )
@@ -1795,6 +1796,7 @@ def people_resolve_cmd(
 ) -> None:
     """Resolve a person to an SMTP address (fail-closed when ambiguous)."""
     as_json = _as_json(ctx, as_json_flag)
+    _require_wo1162425_scopes(as_json=as_json)
     try:
         payload = asyncio.run(people_resolve(name=name, email=email, top=top))
     except LookupError as exc:

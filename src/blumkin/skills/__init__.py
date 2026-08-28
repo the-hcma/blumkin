@@ -700,7 +700,8 @@ SKILLS: list[SkillSpec] = [
         cli=["blumkin", "people", "resolve"],
         summary=(
             "Resolve a display name or email via Graph people search "
-            "(fail-closed on zero or multiple matches; requires People.Read)"
+            "(fail-closed on zero or multiple matches; requires wo1162425_scopes + "
+            "People.Read)"
         ),
         mutates=False,
         notifies_others=False,

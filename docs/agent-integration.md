@@ -221,8 +221,8 @@ failure path.
 The two config opt-ins do **not** share an exit code, so do not treat "opt-in is
 off" as a single condition:
 
-- `wo1162425_scopes` off — chat write, meeting commands, and `calendar create
-  --teams` exit **2** with `usage_error`.
+- `wo1162425_scopes` off — chat write, meeting commands, `calendar create
+  --teams`, and `people resolve` exit **2** with `usage_error`.
 - `files_scopes` off — `chat attachments download` exits **4** with
   `missing_scope` and the share URL in the message. Listing still works.
 
