@@ -187,7 +187,10 @@ def format_get_human(payload: dict[str, Any]) -> list[str]:
 
 
 def format_inbox_human(payload: dict[str, Any]) -> list[str]:
-    lines = [f"Inbox (top {payload['top']}): {len(payload['items'])} message(s)"]
+    # Mirror format_list_human: a search has no sort, so say so rather than looking newest-first.
+    orderby = payload.get("orderby")
+    order_note = f", by {orderby}" if orderby else ", by relevance"
+    lines = [f"Inbox (top {payload['top']}{order_note}): {len(payload['items'])} message(s)"]
     lines.extend(_filter_notes(payload))
     if not payload["items"]:
         lines.append("  (none)")
@@ -930,7 +933,9 @@ def _filter_notes(payload: dict[str, Any]) -> list[str]:
     if not parts:
         return []
     lines = [f"  filters: {', '.join(parts)}"]
-    if filters.get("matched_locally") and not filters.get("complete"):
+    # Only `complete is False` (hit the scan cap). `None` means we filled `--top`
+    # without walking the rest — that is not the same claim, so stay quiet.
+    if filters.get("matched_locally") and filters.get("complete") is False:
         # Silence here would read as "no more mail from them", which is a different claim.
         lines.append(
             f"  (stopped after scanning {filters.get('scanned')} messages; "
@@ -1202,7 +1207,8 @@ async def _scan_messages(
     substring match locally, because Graph will not sort a query containing
     ``contains``. Newest-first order is what makes that tractable: the wanted
     message is usually near the front, and the scan stops at ``_MAX_SCANNED``
-    rather than reading an entire mailbox.
+    rather than reading an entire mailbox. Filling ``--top`` early also leaves
+    ``complete`` null — that stop is not an exhaustive match set either.
     """
     wants_text = bool(sender or subject)
     if not wants_text:
@@ -1223,7 +1229,9 @@ async def _scan_messages(
             if _matches_text(msg, sender=sender, subject=subject):
                 matches.append(msg)
                 if len(matches) >= top:
-                    return matches, scanned, True
+                    # Filled `--top` without seeing the rest of the mailbox — do not
+                    # claim completeness (same honesty as a `--search` page).
+                    return matches, scanned, None
         link = getattr(page, "odata_next_link", None)
         if not link:
             # Reaching the end is complete even at the cap: nothing was left unread.

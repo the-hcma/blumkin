@@ -169,7 +169,8 @@ def test_mail_list_stops_scanning_once_top_matches_are_found(monkeypatch) -> Non
 
     assert len(payload["items"]) == 2
     assert payload["filters"]["scanned"] == 2
-    assert payload["filters"]["complete"] is True
+    # Early stop at `--top` is not an exhaustive scan of the mailbox.
+    assert payload["filters"]["complete"] is None
 
 
 def test_mail_list_pages_while_scanning(monkeypatch) -> None:
@@ -286,6 +287,25 @@ def test_mail_list_sends_no_filter_when_nothing_was_asked_for(monkeypatch) -> No
     assert _query(client.me.messages.get).filter is None
 
 
+def test_mail_list_searches_a_folder_without_a_sort(monkeypatch) -> None:
+    """Folder-scoped --search must hit that folder's builder with search and no orderby."""
+    client = _client(monkeypatch)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(return_value=_page([_msg("Sam Lee", "budget")]))
+
+    payload = asyncio.run(mail_list(folder="inbox", search="budget", top=7))
+
+    client.me.mail_folders.by_mail_folder_id.assert_called_with("inbox")
+    query = _query(messages.get)
+    assert query.search == '"budget"'
+    assert query.orderby is None
+    assert query.top == 7
+    assert query.filter is None
+    assert payload["orderby"] is None
+    assert payload["filters"]["complete"] is None
+    client.me.messages.get.assert_not_called()
+
+
 def test_mail_list_searches_without_a_sort(monkeypatch) -> None:
     """Graph answers SearchWithOrderBy when both are sent, so a search drops the sort."""
     client = _client(monkeypatch)
@@ -397,16 +417,31 @@ def test_format_inbox_human_discloses_filters_and_a_truncated_scan() -> None:
                 "scanned": 500,
             },
             "items": [],
+            "orderby": "received",
             "top": 10,
         }
     )
 
-    assert lines[0] == "Inbox (top 10): 0 message(s)"
+    assert lines[0] == "Inbox (top 10, by received): 0 message(s)"
     assert lines[1] == "  filters: from='Rebecca'"
     assert lines[2] == (
         "  (stopped after scanning 500 messages; "
         "narrow with --since, or use --search to reach the whole mailbox)"
     )
+
+
+def test_format_inbox_human_reports_relevance_order_for_a_search() -> None:
+    lines = format_inbox_human(
+        {
+            "filters": {"search": "budget"},
+            "items": [],
+            "orderby": None,
+            "top": 10,
+        }
+    )
+
+    assert lines[0] == "Inbox (top 10, by relevance): 0 message(s)"
+    assert lines[1] == "  filters: search='budget'"
 
 
 def test_mail_list_recomputes_date_field_after_alias_fallback(monkeypatch) -> None:
