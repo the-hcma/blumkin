@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,10 @@ def test_write_secret_text_tightens_existing_world_readable(tmp_path: Path) -> N
     assert target.read_text(encoding="utf-8") == "secret-payload"
 
 
+@pytest.mark.skipif(
+    not getattr(os, "O_NOFOLLOW", 0) or sys.platform == "win32",
+    reason="O_NOFOLLOW symlink refusal is POSIX-only",
+)
 def test_write_secret_text_refuses_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.json"
     real.write_text("keep", encoding="utf-8")

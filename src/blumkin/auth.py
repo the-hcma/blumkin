@@ -225,7 +225,10 @@ def _write_secret_text(path: Path, text: str) -> None:
 
     ``O_CREAT`` mode is ignored when the path already exists, so a leftover
     world-readable cache would keep leaking tokens on every rewrite without an
-    explicit ``fchmod``. ``O_NOFOLLOW`` refuses a symlink swap at the path.
+    explicit mode tighten. ``O_NOFOLLOW`` (when available) refuses a symlink
+    swap at the path. ``os.fchmod`` is Unix-only; Windows falls back to
+    ``os.chmod`` after close (ACL semantics differ, but AttributeError must not
+    break login/cache persistence).
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     nofollow = getattr(os, "O_NOFOLLOW", 0)
@@ -237,7 +240,10 @@ def _write_secret_text(path: Path, text: str) -> None:
         # Symlink at the secret path (ELOOP) or other open failure — never follow.
         raise OSError(f"cannot write secret file {path}: {exc}") from exc
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         os.write(fd, text.encode())
     finally:
         os.close(fd)
+    if not hasattr(os, "fchmod"):
+        os.chmod(path, 0o600)
