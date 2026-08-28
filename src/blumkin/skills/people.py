@@ -106,6 +106,9 @@ async def people_resolve(
         label = query_name or query_email
         raise LookupError(f"no people match for {label!r}")
     ambiguous = len(matches) != 1
+    if not ambiguous and not matches[0].get("email"):
+        label = query_name or query_email
+        raise LookupError(f"no email on people match for {label!r}")
     return {
         "ambiguous": ambiguous,
         "matches": matches,
@@ -115,14 +118,21 @@ async def people_resolve(
 
 
 def _dedupe_matches(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep first occurrence per primary email (casefold); drop rows with no email."""
+    """Keep first occurrence per identity key (casefold email, else name/UPN).
+
+    Rows without a primary email are retained so a multi-hit Graph response cannot
+    collapse to a false unique resolve when only one candidate has SMTP.
+    """
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
     for person in people:
         email = person.get("email")
-        if not email:
-            continue
-        key = str(email).casefold()
+        if email:
+            key = f"email:{str(email).casefold()}"
+        else:
+            upn = str(person.get("user_principal_name") or "")
+            name = str(person.get("display_name") or "")
+            key = f"noemail:{upn.casefold()}|{name.casefold()}"
         if key in seen:
             continue
         seen.add(key)

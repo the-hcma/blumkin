@@ -200,22 +200,62 @@ def test_people_resolve_name_and_email_searches_by_email(monkeypatch) -> None:
     assert await_args.args[0].query_parameters.search == '"john.smith@acme.com"'
 
 
-def test_dedupe_matches_drops_no_email_and_casefolds() -> None:
+def test_dedupe_matches_keeps_no_email_and_casefolds() -> None:
     people = [
-        {"display_name": "No Mail", "email": None, "emails": []},
+        {
+            "display_name": "No Mail",
+            "email": None,
+            "emails": [],
+            "user_principal_name": None,
+        },
         {
             "display_name": "Ada",
             "email": "ada@example.com",
             "emails": ["ada@example.com"],
+            "user_principal_name": "ada@example.com",
         },
         {
             "display_name": "Ada Dup",
             "email": "ADA@example.com",
             "emails": ["ADA@example.com"],
+            "user_principal_name": "ADA@example.com",
         },
     ]
     out = _dedupe_matches(people)
-    assert [p["email"] for p in out] == ["ada@example.com"]
+    assert [p.get("email") for p in out] == [None, "ada@example.com"]
+
+
+def test_people_resolve_keeps_ambiguous_when_one_row_lacks_email(monkeypatch) -> None:
+    """A multi-hit must not collapse to unique just because one row has no SMTP."""
+    people = [
+        SimpleNamespace(
+            company_name=None,
+            display_name="Ada Example",
+            job_title=None,
+            scored_email_addresses=[
+                SimpleNamespace(address="ada@example.com", relevance_score=5.0),
+            ],
+            user_principal_name="ada@example.com",
+        ),
+        SimpleNamespace(
+            company_name=None,
+            display_name="Ada Phone Only",
+            job_title=None,
+            scored_email_addresses=[],
+            user_principal_name="ada-phone",
+        ),
+    ]
+    client = MagicMock()
+    client.me.people.get = AsyncMock(return_value=SimpleNamespace(value=people))
+    monkeypatch.setattr("blumkin.skills.people.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.people.load_config",
+        lambda: SimpleNamespace(client_id="x"),
+    )
+    payload = asyncio.run(people_resolve(name="Ada"))
+    assert payload["ambiguous"] is True
+    assert len(payload["matches"]) == 2
+    assert payload["person"] is None
 
 
 def test_format_resolve_human_sanitizes_control_chars() -> None:
