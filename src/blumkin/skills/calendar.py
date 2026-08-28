@@ -116,9 +116,8 @@ def format_freebusy_human(payload: dict[str, Any]) -> list[str]:
         lines.append("  (none)")
         return lines
     for item in payload["items"]:
-        schedule = item.get("schedule") or "(unknown)"
         avail = item.get("availability_view") or ""
-        lines.append(f"  • {schedule}: view={avail!r}")
+        lines.append(f"  • {_freebusy_schedule_label(item)}: view={avail!r}")
         for slot in item.get("busy") or []:
             lines.append(f"      busy {slot['start']} → {slot['end']} ({slot.get('status')})")
     return lines
@@ -360,6 +359,20 @@ def _event_to_dict(ev: Any, display_tz: ZoneInfo) -> dict[str, Any]:
     }
 
 
+def _freebusy_schedule_label(item: dict[str, Any]) -> str:
+    """Human label: ``email (IANA, working HH:MM-HH:MM)`` when hours are known."""
+    schedule = item.get("schedule") or "(unknown)"
+    hours = item.get("working_hours") or {}
+    tz = item.get("timezone") or hours.get("timezone")
+    start = hours.get("start")
+    end = hours.get("end")
+    if tz and start and end:
+        return f"{schedule} ({tz}, working {start}-{end})"
+    if tz:
+        return f"{schedule} ({tz})"
+    return str(schedule)
+
+
 def _graph_dt_to_iso(value: Any, display_tz: ZoneInfo) -> str | None:
     if value is None or not getattr(value, "date_time", None):
         return None
@@ -403,11 +416,14 @@ def _resolve_tz(name: Any) -> ZoneInfo | None:
 
 def _schedule_to_dict(entry: Any, display_tz: ZoneInfo) -> dict[str, Any]:
     busy_items = entry.schedule_items or []
+    hours = _working_hours_to_dict(getattr(entry, "working_hours", None))
+    timezone = hours.get("timezone") if hours else None
     return {
         "availability_view": entry.availability_view,
         "busy": [_busy_slot_to_dict(item, display_tz) for item in busy_items],
         "schedule": entry.schedule_id,
-        "working_hours": None,
+        "timezone": timezone,
+        "working_hours": hours,
     }
 
 
@@ -420,3 +436,31 @@ def _to_graph_dtz(value: datetime) -> DateTimeTimeZone:
         date_time=value.replace(tzinfo=None).isoformat(timespec="seconds"),
         time_zone=tz_name,
     )
+
+
+def _working_hours_to_dict(hours: Any) -> dict[str, Any] | None:
+    """Map Graph ``workingHours`` (from getSchedule) into JSON-friendly fields.
+
+    Timezone prefers a resolved IANA name via ``_resolve_tz``; otherwise the raw
+    Windows / custom label. Missing hours stay ``None`` (not an empty object).
+    """
+    if hours is None:
+        return None
+    days_raw = getattr(hours, "days_of_week", None) or []
+    days = sorted({str(day).split(".")[-1].lower() for day in days_raw if day is not None})
+    start = getattr(hours, "start_time", None)
+    end = getattr(hours, "end_time", None)
+    tz_obj = getattr(hours, "time_zone", None)
+    tz_label = getattr(tz_obj, "name", None) if tz_obj is not None else None
+    resolved = _resolve_tz(tz_label)
+    timezone = resolved.key if resolved is not None else (str(tz_label).strip() or None)
+    start_s = start.strftime("%H:%M") if start is not None else None
+    end_s = end.strftime("%H:%M") if end is not None else None
+    if not days and start_s is None and end_s is None and timezone is None:
+        return None
+    return {
+        "days_of_week": days,
+        "end": end_s,
+        "start": start_s,
+        "timezone": timezone,
+    }

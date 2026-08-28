@@ -20,6 +20,13 @@ covers the job.
    - Calendar: `blumkin calendar today --json`,
      `blumkin calendar view --from YYYY-MM-DD --to YYYY-MM-DD --json`
      (half-open `[from,to)`), `blumkin calendar freebusy --with email --start … --end … --json`
+     Freebusy `--json` items include `timezone` and `working_hours` when Graph returns
+     them (from the attendee's mailbox settings via getSchedule — no extra scope).
+     Before `calendar create` with a cross-zone or external attendee, run freebusy first,
+     read their `timezone` / `working_hours`, and prefer overlap with *their* business day
+     (roughly 09:00-17:00 local) unless the user overrides. Do **not** rewrite `--start` /
+     `--end` into the attendee's zone — organizer intent stays explicit; convert mentally
+     when proposing slots.
    - Mail: `blumkin mail inbox --top 10 --json`
      `blumkin mail list --folder sentitems --top 20 --json` (also `archive`,
      `deleteditems`, `drafts`, `junkemail`, `outbox`, a folder id, or a custom
