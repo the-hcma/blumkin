@@ -52,10 +52,6 @@ Token cache files (written by `blumkin auth login`):
 - `~/.config/blumkin/msal_token_cache.json`
 - `~/.config/blumkin/auth_record.json`
 
-Those paths are written with restrictive Unix modes (`0600` files, `0700` dir) and
-refuse symlinks. A write failure surfaces as exit `1` / `secret_write_failed`
-rather than a misleading auth prompt.
-
 Override config directory with `BLUMKIN_CONFIG_DIR`. Never commit these files.
 
 ## Tests
