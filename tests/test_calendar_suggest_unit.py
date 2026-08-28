@@ -242,6 +242,77 @@ def test_find_mutual_free_slots_skips_fall_back_fold_duplicates() -> None:
         assert not (a.date() == b.date() and (b.hour, b.minute) < (a.hour, a.minute))
 
 
+def test_calendar_suggest_unions_busy_across_multiple_with(monkeypatch) -> None:
+    """Mutual free = free for every --with schedule (union of busy blocks)."""
+    a = SimpleNamespace(
+        availability_view="000",
+        schedule_id="a@example.com",
+        schedule_items=[
+            SimpleNamespace(
+                start=SimpleNamespace(
+                    date_time="2026-08-28T10:00:00",
+                    time_zone="America/New_York",
+                ),
+                end=SimpleNamespace(
+                    date_time="2026-08-28T11:00:00",
+                    time_zone="America/New_York",
+                ),
+                status="busy",
+            )
+        ],
+        working_hours=None,
+        error=None,
+    )
+    b = SimpleNamespace(
+        availability_view="000",
+        schedule_id="b@example.com",
+        schedule_items=[
+            SimpleNamespace(
+                start=SimpleNamespace(
+                    date_time="2026-08-28T14:00:00",
+                    time_zone="America/New_York",
+                ),
+                end=SimpleNamespace(
+                    date_time="2026-08-28T15:00:00",
+                    time_zone="America/New_York",
+                ),
+                status="busy",
+            )
+        ],
+        working_hours=None,
+        error=None,
+    )
+    client = MagicMock()
+    client.me.calendar.get_schedule.post = AsyncMock(
+        return_value=SimpleNamespace(value=[a, b])
+    )
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(client_id="x", default_tz="America/New_York"),
+    )
+    start = datetime(2026, 8, 28, 9, 0, tzinfo=_TZ)
+    end = datetime(2026, 8, 28, 17, 0, tzinfo=_TZ)
+    payload = asyncio.run(
+        calendar_suggest(
+            with_emails=["a@example.com", "b@example.com"],
+            start=start,
+            end=end,
+            duration=timedelta(hours=1),
+            step=timedelta(hours=1),
+            limit=20,
+        )
+    )
+    body_args = client.me.calendar.get_schedule.post.await_args
+    assert body_args is not None
+    body = body_args.args[0]
+    assert list(body.schedules) == ["a@example.com", "b@example.com"]
+    starts = {s["start"] for s in payload["slots"]}
+    assert datetime(2026, 8, 28, 9, 0, tzinfo=_TZ).isoformat() in starts
+    assert datetime(2026, 8, 28, 10, 0, tzinfo=_TZ).isoformat() not in starts
+    assert datetime(2026, 8, 28, 14, 0, tzinfo=_TZ).isoformat() not in starts
+
+
 def test_calendar_suggest_fails_closed_on_schedule_error(monkeypatch) -> None:
     bad = SimpleNamespace(
         availability_view=None,

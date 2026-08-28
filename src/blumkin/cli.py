@@ -618,6 +618,9 @@ def calendar_suggest_cmd(
         if "client_id" in msg or "Missing" in msg:
             emit_error(error="auth_required", message=msg, as_json=as_json)
             raise SystemExit(EXIT_AUTH) from exc
+        if msg.startswith("freebusy lookup failed"):
+            emit_error(error="graph_error", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_OTHER) from exc
         emit_error(error="usage_error", message=msg, as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except ZoneInfoNotFoundError as exc:
