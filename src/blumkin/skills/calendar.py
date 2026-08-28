@@ -80,6 +80,7 @@ async def calendar_suggest(
     if step_delta <= timedelta(0):
         raise ValueError("--step must be positive")
     freebusy = await calendar_freebusy(with_emails=with_emails, start=start, end=end, config=config)
+    _raise_if_schedule_errors(freebusy["items"], requested=with_emails)
     busy = _collect_busy_intervals(freebusy["items"], treat_tentative_busy=(tentative == "busy"))
     slots = find_mutual_free_slots(
         busy=busy,
@@ -605,6 +606,25 @@ def _parse_clock(raw: str, *, flag: str) -> time:
     return time(hour=hour, minute=minute, second=second)
 
 
+def _raise_if_schedule_errors(items: list[dict[str, Any]], *, requested: list[str]) -> None:
+    """Fail closed when getSchedule could not resolve a requested mailbox."""
+    by_schedule = {
+        str(item.get("schedule") or "").casefold(): item for item in items if item.get("schedule")
+    }
+    problems: list[str] = []
+    for email in requested:
+        key = email.casefold()
+        item = by_schedule.get(key)
+        if item is None:
+            problems.append(f"{email}: no schedule returned")
+            continue
+        err = item.get("error")
+        if err:
+            problems.append(f"{email}: {err}")
+    if problems:
+        raise ValueError("freebusy lookup failed for: " + "; ".join(problems))
+
+
 def _resolve_tz(name: Any) -> ZoneInfo | None:
     """Best-effort ``ZoneInfo`` from a Graph ``timeZone`` label (IANA or Windows name).
 
@@ -628,13 +648,28 @@ def _resolve_tz(name: Any) -> ZoneInfo | None:
     return None
 
 
+def _schedule_error_message(entry: Any) -> str | None:
+    err = getattr(entry, "error", None)
+    if err is None:
+        err = getattr(entry, "free_busy_error", None)
+    if err is None:
+        return None
+    message = getattr(err, "message", None)
+    if message:
+        return str(message).strip() or None
+    text = str(err).strip()
+    return text or None
+
+
 def _schedule_to_dict(entry: Any, display_tz: ZoneInfo) -> dict[str, Any]:
     busy_items = entry.schedule_items or []
     hours = _working_hours_to_dict(getattr(entry, "working_hours", None))
     timezone = hours.get("timezone") if hours else None
+    error = _schedule_error_message(entry)
     return {
         "availability_view": entry.availability_view,
         "busy": [_busy_slot_to_dict(item, display_tz) for item in busy_items],
+        "error": error,
         "schedule": entry.schedule_id,
         "timezone": timezone,
         "working_hours": hours,

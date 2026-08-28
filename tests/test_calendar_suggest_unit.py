@@ -166,3 +166,49 @@ def test_calendar_suggest_rejects_bad_window() -> None:
                 window="nope",
             )
         )
+
+
+def test_find_mutual_free_slots_advances_across_days_for_window() -> None:
+    start = datetime(2026, 8, 28, 16, 30, tzinfo=_TZ)
+    end = datetime(2026, 8, 30, 12, 0, tzinfo=_TZ)
+    window = (datetime(2026, 8, 28, 9, 0).time(), datetime(2026, 8, 28, 17, 0).time())
+    slots = find_mutual_free_slots(
+        busy=[],
+        range_start=start,
+        range_end=end,
+        duration=timedelta(minutes=45),
+        window=window,
+        step=timedelta(minutes=15),
+        limit=5,
+    )
+    # 16:30 + 45m would end at 17:15 — past window; jump to next day's 09:00.
+    assert slots[0]["start"] == datetime(2026, 8, 29, 9, 0, tzinfo=_TZ).isoformat()
+    assert all(s["start"].startswith("2026-08-29T") for s in slots[:3])
+
+
+def test_calendar_suggest_fails_closed_on_schedule_error(monkeypatch) -> None:
+    bad = SimpleNamespace(
+        availability_view=None,
+        schedule_id="typo@example.com",
+        schedule_items=[],
+        working_hours=None,
+        error=SimpleNamespace(message="Mail tip unavailable"),
+    )
+    client = MagicMock()
+    client.me.calendar.get_schedule.post = AsyncMock(return_value=SimpleNamespace(value=[bad]))
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(client_id="x", default_tz="America/New_York"),
+    )
+    start = datetime(2026, 8, 28, 9, 0, tzinfo=_TZ)
+    end = datetime(2026, 8, 28, 17, 0, tzinfo=_TZ)
+    with pytest.raises(ValueError, match="freebusy lookup failed"):
+        asyncio.run(
+            calendar_suggest(
+                with_emails=["typo@example.com"],
+                start=start,
+                end=end,
+                duration=timedelta(minutes=30),
+            )
+        )
