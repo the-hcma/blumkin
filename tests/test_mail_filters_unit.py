@@ -383,6 +383,20 @@ def test_mail_inbox_passes_filters_through(monkeypatch) -> None:
     assert payload["filters"]["from"] == "Rebecca"
 
 
+def test_mail_inbox_forwards_search(monkeypatch) -> None:
+    """mail_inbox gained --search in this PR; dropping the forward would look like a newest-first list."""
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(return_value=_page([]))
+
+    payload = asyncio.run(mail_inbox(search="budget"))
+
+    query = _query(client.me.messages.get)
+    assert query.search == '"budget"'
+    assert query.orderby is None
+    assert payload["orderby"] is None
+    assert payload["filters"]["search"] == "budget"
+
+
 def test_format_list_human_discloses_a_truncated_local_scan() -> None:
     """Silence would read as 'no more mail from them', which is a different claim."""
     lines = format_list_human(
