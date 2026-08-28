@@ -54,7 +54,7 @@ from blumkin.attachments import (
     sanitize_attachment_filename,
     unique_filename,
 )
-from blumkin.config import BlumkinConfig, load_config
+from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.graph import create_graph_client, request_config
 from blumkin.output import sanitize_terminal
 
@@ -98,6 +98,29 @@ WELL_KNOWN_MAIL_FOLDERS = (
     "outbox",
     "sentitems",
 )
+
+
+def append_mail_signature(
+    content: str,
+    *,
+    body_type: str,
+    config: BlumkinConfig,
+    no_signature: bool = False,
+) -> str:
+    """Append the configured signature when enabled and not opted out."""
+    signature = getattr(config, "mail_signature", None)
+    if no_signature or signature is None or not signature.enabled:
+        return content
+    rendered = render_mail_signature(signature, body_type=body_type)
+    if not rendered:
+        return content
+    if body_type == "html":
+        if not content.strip():
+            return rendered
+        return f"{content.rstrip()}<br><br>{rendered}"
+    if not content.strip():
+        return rendered
+    return f"{content.rstrip()}\n\n{rendered}"
 
 
 def format_attachments_download_human(payload: dict[str, Any]) -> list[str]:
@@ -406,6 +429,7 @@ async def mail_draft(
     body_type: str = "text",
     cc: str | Sequence[str] = (),
     config: BlumkinConfig | None = None,
+    no_signature: bool = False,
 ) -> dict[str, Any]:
     to_addrs = _parse_addresses(to, flag="--to", required=True)
     if to_addrs is None:
@@ -420,6 +444,9 @@ async def mail_draft(
         body=body, body_file=body_file, body_type=body_type
     )
     cfg = config or load_config()
+    content = append_mail_signature(
+        content, body_type=body_type_label, config=cfg, no_signature=no_signature
+    )
     client = create_graph_client(cfg)
     message = Message(
         bcc_recipients=_recipient_models(bcc_addrs) or None,
@@ -482,6 +509,7 @@ async def mail_forward(
     body_file: str | None = None,
     body_type: str = "text",
     config: BlumkinConfig | None = None,
+    no_signature: bool = False,
 ) -> dict[str, Any]:
     """Create a forward draft, letting Graph carry over the original and its attachments."""
     mid = message_id.strip()
@@ -489,8 +517,14 @@ async def mail_forward(
         raise ValueError("--id is required")
     if not to.strip():
         raise ValueError("--to is required")
-    comment = _resolve_comment(body=body, body_file=body_file, body_type=body_type)
     cfg = config or load_config()
+    comment = _resolve_comment(
+        body=body,
+        body_file=body_file,
+        body_type=body_type,
+        config=cfg,
+        no_signature=no_signature,
+    )
     client = create_graph_client(cfg)
     request = CreateForwardPostRequestBody(
         comment=comment,
@@ -692,6 +726,7 @@ async def mail_reply(
     body_type: str = "text",
     reply_all: bool = False,
     config: BlumkinConfig | None = None,
+    no_signature: bool = False,
 ) -> dict[str, Any]:
     """Create a reply draft through Graph so it threads with the original.
 
@@ -704,8 +739,14 @@ async def mail_reply(
     mid = message_id.strip()
     if not mid:
         raise ValueError("--id is required")
-    comment = _resolve_comment(body=body, body_file=body_file, body_type=body_type)
     cfg = config or load_config()
+    comment = _resolve_comment(
+        body=body,
+        body_file=body_file,
+        body_type=body_type,
+        config=cfg,
+        no_signature=no_signature,
+    )
     client = create_graph_client(cfg)
     item = client.me.messages.by_message_id(mid)
     if reply_all:
@@ -829,6 +870,31 @@ async def mail_update_draft(
             "to": _recipient_field(to_addrs, getattr(updated, "to_recipients", None)) or "",
         }
     }
+
+
+def render_mail_signature(signature: MailSignatureConfig, *, body_type: str) -> str:
+    """Render ``[mail.signature]`` as HTML or plain text (empty when nothing to show)."""
+    label = _parse_body_type(body_type)
+    if label == "html" and signature.html_template:
+        return signature.html_template.strip()
+    name = signature.name.strip()
+    title = signature.title.strip()
+    affiliation = signature.affiliation.strip()
+    if not name and not title and not affiliation:
+        return ""
+    if label == "text":
+        lines = [part for part in (name, title, affiliation) if part]
+        return "\n".join(lines)
+    parts: list[str] = []
+    if name:
+        color = html_lib.escape(signature.name_color, quote=True)
+        parts.append(f'<span style="color:{color};font-weight:bold">{html_lib.escape(name)}</span>')
+    if title:
+        color = html_lib.escape(signature.title_color, quote=True)
+        parts.append(f'<span style="color:{color}">{html_lib.escape(title)}</span>')
+    if affiliation:
+        parts.append(html_lib.escape(affiliation))
+    return "<br>".join(parts)
 
 
 def resolve_mail_body(
@@ -1443,22 +1509,37 @@ def _read_attachment(path: str) -> tuple[str, bytes]:
     return sanitize_attachment_filename(source.name), raw
 
 
-def _resolve_comment(*, body: str | None, body_file: str | None, body_type: str) -> str:
+def _resolve_comment(
+    *,
+    body: str | None,
+    body_file: str | None,
+    body_type: str,
+    config: BlumkinConfig | None = None,
+    no_signature: bool = False,
+) -> str:
     """Resolve the reply/forward text, which is optional: an empty draft is editable.
 
     Graph takes this as a ``comment`` rather than a body so the quoted original survives;
     replacing the body would produce a message that threads but reads like a fresh one.
     The draft body is always HTML (quoted original), so plain ``--body-type text`` must
-    be escaped before Graph embeds it.
+    be escaped before Graph embeds it. Signatures append in the comment's content type,
+    then text comments are escaped for HTML embedding.
     """
+    cfg = config or load_config()
     if body is None and body_file is None:
-        _parse_body_type(body_type)
-        return ""
+        label = _parse_body_type(body_type)
+        content = append_mail_signature("", body_type=label, config=cfg, no_signature=no_signature)
+        if not content:
+            return ""
+        if label == "text":
+            return html_lib.escape(content).replace("\n", "<br>")
+        return content
     content, label, _graph_type = resolve_mail_body(
         body=body, body_file=body_file, body_type=body_type
     )
+    content = append_mail_signature(content, body_type=label, config=cfg, no_signature=no_signature)
     if label == "text":
-        return html_lib.escape(content)
+        return html_lib.escape(content).replace("\n", "<br>")
     return content
 
 

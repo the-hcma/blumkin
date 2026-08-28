@@ -718,8 +718,72 @@ def test_mail_reply_needs_no_yes_because_it_only_drafts(monkeypatch) -> None:
         "body_file": None,
         "body_type": "text",
         "message_id": "msg-1",
+        "no_signature": False,
         "reply_all": True,
     }
+
+
+def test_mail_compose_commands_wire_no_signature_flag(monkeypatch) -> None:
+    """Click must forward --no-signature; default-False coverage alone would miss a dropped flag."""
+    seen: dict[str, object] = {}
+
+    async def _capture(**kwargs):
+        seen.clear()
+        seen.update(kwargs)
+        return {
+            "draft": {
+                "id": "draft-1",
+                "kind": "reply",
+                "source_message_id": "msg-1",
+                "subject": "x",
+                "to": "a@b.com",
+            }
+        }
+
+    monkeypatch.setattr("blumkin.cli.mail_reply", _capture)
+    monkeypatch.setattr("blumkin.cli.mail_forward", _capture)
+    monkeypatch.setattr("blumkin.cli.mail_draft", _capture)
+    runner = CliRunner()
+
+    reply = runner.invoke(
+        main, ["mail", "reply", "--id", "msg-1", "--body", "Thanks", "--no-signature", "--json"]
+    )
+    assert reply.exit_code == EXIT_SUCCESS
+    assert seen["no_signature"] is True
+
+    forward = runner.invoke(
+        main,
+        [
+            "mail",
+            "forward",
+            "--id",
+            "msg-1",
+            "--to",
+            "sam@example.com",
+            "--no-signature",
+            "--json",
+        ],
+    )
+    assert forward.exit_code == EXIT_SUCCESS
+    assert seen["no_signature"] is True
+
+    draft = runner.invoke(
+        main,
+        [
+            "mail",
+            "draft",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "Hi",
+            "--body",
+            "Hello",
+            "--no-signature",
+            "--json",
+        ],
+    )
+    assert draft.exit_code == EXIT_SUCCESS
+    assert seen["no_signature"] is True
 
 
 def test_mail_reply_message_not_found_exits_not_found(monkeypatch) -> None:

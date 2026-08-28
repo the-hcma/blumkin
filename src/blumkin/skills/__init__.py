@@ -402,6 +402,12 @@ SKILLS: list[SkillSpec] = [
                 "note": "exactly one of --body or --body-file",
             },
             {"name": "--body-type", "required": False, "type": "enum", "values": ["text", "html"]},
+            {
+                "name": "--no-signature",
+                "required": False,
+                "type": "flag",
+                "note": "skip [mail.signature] when enabled in config",
+            },
         ],
     ),
     SkillSpec(
@@ -434,6 +440,12 @@ SKILLS: list[SkillSpec] = [
             },
             {"name": "--body-file", "required": False, "type": "path"},
             {"name": "--body-type", "required": False, "type": "enum", "values": ["html", "text"]},
+            {
+                "name": "--no-signature",
+                "required": False,
+                "type": "flag",
+                "note": "skip [mail.signature] when enabled in config",
+            },
         ],
     ),
     SkillSpec(
@@ -536,6 +548,12 @@ SKILLS: list[SkillSpec] = [
             },
             {"name": "--body-file", "required": False, "type": "path"},
             {"name": "--body-type", "required": False, "type": "enum", "values": ["html", "text"]},
+            {
+                "name": "--no-signature",
+                "required": False,
+                "type": "flag",
+                "note": "skip [mail.signature] when enabled in config",
+            },
         ],
     ),
     SkillSpec(

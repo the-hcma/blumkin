@@ -18,6 +18,7 @@ class BlumkinConfig:
     config_dir: Path
     default_tz: str
     files_scopes: bool
+    mail_signature: MailSignatureConfig
     tenant_id: str
     wo1162425_scopes: bool
 
@@ -32,6 +33,19 @@ class BlumkinConfig:
     @property
     def token_cache_path(self) -> Path:
         return self.config_dir / "msal_token_cache.json"
+
+
+@dataclass(frozen=True, slots=True)
+class MailSignatureConfig:
+    """Optional mail signature rendered into draft/reply/forward bodies."""
+
+    affiliation: str = ""
+    enabled: bool = False
+    html_template: str | None = None
+    name: str = ""
+    name_color: str = "#003366"
+    title: str = ""
+    title_color: str = "#5B9BD5"
 
 
 def config_dir() -> Path:
@@ -67,6 +81,7 @@ def load_config() -> BlumkinConfig:
         config_dir=directory,
         default_tz=default_tz,
         files_scopes=_files_scopes_enabled(file_data),
+        mail_signature=_mail_signature_config(file_data),
         tenant_id=tenant_id,
         wo1162425_scopes=_wo1162425_scopes_enabled(file_data),
     )
@@ -106,6 +121,33 @@ def _files_scopes_enabled(file_data: dict[str, Any]) -> bool:
         if coerced is not None:
             return coerced
     return False
+
+
+def _mail_signature_config(file_data: dict[str, Any]) -> MailSignatureConfig:
+    """Parse optional ``[mail.signature]`` (nested table under ``mail``)."""
+    mail = file_data.get("mail")
+    if not isinstance(mail, dict):
+        return MailSignatureConfig()
+    raw = mail.get("signature")
+    if not isinstance(raw, dict):
+        return MailSignatureConfig()
+    enabled = _coerce_bool(raw.get("enabled"))
+    return MailSignatureConfig(
+        affiliation=str(raw.get("affiliation") or "").strip(),
+        enabled=bool(enabled) if enabled is not None else False,
+        html_template=_optional_str(raw.get("html_template")),
+        name=str(raw.get("name") or "").strip(),
+        name_color=str(raw.get("name_color") or "#003366").strip() or "#003366",
+        title=str(raw.get("title") or "").strip(),
+        title_color=str(raw.get("title_color") or "#5B9BD5").strip() or "#5B9BD5",
+    )
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _read_toml(path: Path) -> dict[str, Any]:

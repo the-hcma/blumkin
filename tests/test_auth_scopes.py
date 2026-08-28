@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from blumkin.auth import BASE_SCOPES, FILES_SCOPES, WO1162425_SCOPES, effective_scopes
-from blumkin.config import BlumkinConfig, load_config
+from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 
 
 def test_effective_scopes_default_excludes_phase4() -> None:
@@ -75,6 +75,7 @@ def _cfg(*, wo1162425_scopes: bool, files_scopes: bool = False) -> BlumkinConfig
         config_dir=Path("unused"),
         default_tz="UTC",
         files_scopes=files_scopes,
+        mail_signature=MailSignatureConfig(),
         tenant_id="brk.tech",
         wo1162425_scopes=wo1162425_scopes,
     )
