@@ -196,6 +196,10 @@ def test_mail_update_draft_accepts_attach_alone(tmp_path, monkeypatch) -> None:
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
     assert [item["name"] for item in payload["draft"]["attachments"]] == ["note.txt"]
     assert payload["draft"]["subject"] == "Old"
+    # Attach-only keeps Graph recipients via `_recipient_field` (no PATCH).
+    assert payload["draft"]["to"] == "a@b.com, c@d.com"
+    assert payload["draft"]["cc"] == "sam@example.com"
+    assert payload["draft"]["bcc"] == "secret@example.com"
     # Nothing else changed, so there is nothing to PATCH.
     client.me.messages.by_message_id.return_value.patch.assert_not_awaited()
 
@@ -310,7 +314,16 @@ def _draft_client(monkeypatch) -> MagicMock:
         is_draft=True,
         subject="Old",
         body=SimpleNamespace(content_type=BodyType.Text, content="old"),
-        to_recipients=[SimpleNamespace(email_address=SimpleNamespace(address="a@b.com"))],
+        bcc_recipients=[
+            SimpleNamespace(email_address=SimpleNamespace(address="secret@example.com")),
+        ],
+        cc_recipients=[
+            SimpleNamespace(email_address=SimpleNamespace(address="sam@example.com")),
+        ],
+        to_recipients=[
+            SimpleNamespace(email_address=SimpleNamespace(address="a@b.com")),
+            SimpleNamespace(email_address=SimpleNamespace(address="c@d.com")),
+        ],
     )
     client = MagicMock()
     item = client.me.messages.by_message_id.return_value
@@ -321,6 +334,8 @@ def _draft_client(monkeypatch) -> MagicMock:
             is_draft=True,
             subject="New",
             body=existing.body,
+            bcc_recipients=existing.bcc_recipients,
+            cc_recipients=existing.cc_recipients,
             to_recipients=existing.to_recipients,
         )
     )
