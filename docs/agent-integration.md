@@ -272,8 +272,8 @@ Three caveats worth wiring in up front:
 
 - **`error` values are not the exit-code names.** They are `graph_error`,
   `usage_error`, and `secret_write_failed` (among others), not `other` and
-  `usage`. Match the left column of the table above rather than the prose name
-  of the code.
+  `usage`. Match the `error` values in the table's `error` column. Use the exit
+  code first for routing, then use `error` for stable failure classification.
 - **Argument errors may arrive with no envelope.** Bad or missing options are
   rejected by the argument parser before blumkin runs, so exit 2 can carry plain
   usage text on stderr instead of JSON. Treat a missing envelope on exit 2 as a

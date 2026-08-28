@@ -27,11 +27,12 @@ covers the job.
      (roughly 09:00-17:00 local) unless the user overrides. Do **not** rewrite `--start` /
      `--end` into the attendee's zone — organizer intent stays explicit; convert mentally
      when proposing slots.
-     Freebusy returns **busy blocks**, not suggested starts. To propose mutual free time,
-     intersect the busy intervals yourself (or with a small local script), clip to the
-     organizer `--tz` / `default_tz` and each attendee's `working_hours` when present,
-     and treat `tentative` as busy unless the user says otherwise. Do **not** use freebusy
-     as a people directory (guessing SMTP addresses via `--with`).
+     Freebusy returns **busy blocks**, not suggested starts. Include the organizer's
+     and attendees' busy blocks (pass the organizer email in `--with` too if needed),
+     take the **union** of those intervals, then pick gaps in that complement. Clip to
+     the organizer `--tz` / `default_tz` and each attendee's `working_hours` when
+     present, and treat `tentative` as busy unless the user says otherwise. Do **not**
+     use freebusy as a people directory (guessing SMTP addresses via `--with`).
    - Mail: `blumkin mail inbox --top 10 --json`
      `blumkin mail list --folder sentitems --top 20 --json` (also `archive`,
      `deleteditems`, `drafts`, `junkemail`, `outbox`, a folder id, or a custom
@@ -88,12 +89,13 @@ covers the job.
     contains the quoted original, whatever `--body-type` you pass for your own text.
     Prefer including `--body` here: an empty reply draft filled later with
     `mail update-draft --body` *replaces* that HTML and drops the quoted original.
-    To add CC/BCC (or change To) after create, use `mail update-draft --id … --cc …`
-    (repeatable / comma-separated, same as draft). Reply/forward do not take `--cc`
-    themselves yet.
+    To set or replace CC/BCC (or change To) after create, use `mail update-draft`
+    with `--cc`, `--bcc`, or `--to` respectively. Each provided option replaces that
+    entire list, so include existing recipients that must remain. Reply/forward do not
+    take recipient options directly yet.
   - `blumkin mail forward --id '<message-id>' --to … --body …` (draft only; same
-    update-draft warning as reply — pass `--body` on create when you can; add `--cc`
-    via `mail update-draft` when needed)
+    update-draft warning as reply — pass `--body` on create when you can; set `--cc` /
+    `--bcc` via `mail update-draft` when needed, with full list replacement semantics)
   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` / `--cc` /
     `--bcc` each replace that whole list when provided; `--body` replaces the whole body)
     `--attach <path>` works here too and *adds* to whatever the draft already carries —
