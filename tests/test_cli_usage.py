@@ -865,6 +865,8 @@ def test_mail_forward_wires_options(monkeypatch) -> None:
             "sam@example.com",
             "--cc",
             "cc@example.com",
+            "--bcc",
+            "bcc@example.com",
             "--json",
         ],
     )
@@ -872,7 +874,45 @@ def test_mail_forward_wires_options(monkeypatch) -> None:
     assert seen["to"] == "sam@example.com"
     assert seen["body"] is None
     assert seen["cc"] == ("cc@example.com",)
-    assert seen["bcc"] is None
+    assert seen["bcc"] == ("bcc@example.com",)
+
+
+def test_mail_reply_wires_cc_and_bcc(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def _reply(**kwargs):
+        seen.update(kwargs)
+        return {
+            "draft": {
+                "id": "draft-1",
+                "kind": "reply",
+                "source_message_id": "msg-1",
+                "to": "rebecca@example.com",
+            }
+        }
+
+    monkeypatch.setattr("blumkin.cli.mail_reply", _reply)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "mail",
+            "reply",
+            "--id",
+            "msg-1",
+            "--body",
+            "Thanks",
+            "--cc",
+            "cc@example.com",
+            "--bcc",
+            "bcc@example.com",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["body"] == "Thanks"
+    assert seen["cc"] == ("cc@example.com",)
+    assert seen["bcc"] == ("bcc@example.com",)
 
 
 def test_mail_forward_message_not_found_exits_not_found(monkeypatch) -> None:

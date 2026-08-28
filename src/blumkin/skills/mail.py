@@ -1502,17 +1502,21 @@ async def _patch_compose_recipients(
     bcc: list[str] | None,
     cc: list[str] | None,
 ) -> Any:
-    """Merge optional create-time CC/BCC into a reply/forward draft (add, not replace)."""
-    if cc is None and bcc is None:
-        return draft
+    """Merge optional create-time CC/BCC into a reply/forward draft (add, not replace).
+
+    Always returns a live draft (re-fetched when needed) so summary fields reflect
+    Graph-inherited recipients even when ``--cc`` / ``--bcc`` were omitted.
+    """
     mid = getattr(draft, "id", None)
     if not mid:
         raise RuntimeError("Graph returned a draft without an id after create")
     # createReply/createForward responses often omit recipient collections; re-fetch so
-    # the merge base is the live draft, not an empty getattr default.
+    # the merge base (and the no-flag summary) use the live draft.
     live = await client.me.messages.by_message_id(mid).get()
     if live is None or not getattr(live, "id", None):
         raise RuntimeError(f"Graph returned no draft after create: {mid}")
+    if cc is None and bcc is None:
+        return live
     patch = Message()
     if cc is not None:
         people = _participants(getattr(live, "cc_recipients", None))
