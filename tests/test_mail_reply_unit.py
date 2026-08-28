@@ -315,25 +315,46 @@ def test_mail_reply_keeps_draft_when_post_patch_refetch_fails(monkeypatch) -> No
     item.delete.assert_not_called()
 
 
-def test_mail_forward_patches_bcc(monkeypatch) -> None:
+def test_mail_forward_merges_bcc_onto_inherited_recipients(monkeypatch) -> None:
     client = _client(monkeypatch)
     item = client.me.messages.by_message_id.return_value
-    item.create_forward.post = AsyncMock(return_value=_draft("FW: Quarterly sync"))
-    item.get = AsyncMock(return_value=_draft("FW: Quarterly sync"))
+    created = _draft("FW: Quarterly sync")
+    created.bcc_recipients = None
+    live = _draft("FW: Quarterly sync")
+    live.bcc_recipients = [
+        SimpleNamespace(
+            email_address=SimpleNamespace(address="hidden@example.com", name="Hidden")
+        )
+    ]
+    item.create_forward.post = AsyncMock(return_value=created)
+    item.get = AsyncMock(return_value=live)
     patched = _draft("FW: Quarterly sync")
     patched.bcc_recipients = [
-        SimpleNamespace(email_address=SimpleNamespace(address="hidden@example.com", name=None))
+        SimpleNamespace(
+            email_address=SimpleNamespace(address="hidden@example.com", name="Hidden")
+        ),
+        SimpleNamespace(email_address=SimpleNamespace(address="new@example.com", name=None)),
     ]
     item.patch = AsyncMock(return_value=patched)
 
     payload = asyncio.run(
-        mail_forward(message_id="msg-1", to="sam@example.com", body="FYI", bcc="hidden@example.com")
+        mail_forward(
+            message_id="msg-1",
+            to="sam@example.com",
+            body="FYI",
+            bcc="new@example.com, HIDDEN@example.com",
+        )
     )
 
-    assert [r.email_address.address for r in _posted(item.patch).bcc_recipients] == [
-        "hidden@example.com"
+    patch_msg = _posted(item.patch)
+    assert [r.email_address.address for r in patch_msg.bcc_recipients] == [
+        "hidden@example.com",
+        "new@example.com",
     ]
-    assert payload["draft"]["bcc"] == "hidden@example.com"
+    assert [r.email_address.name for r in patch_msg.bcc_recipients] == ["Hidden", None]
+    assert payload["draft"]["bcc"] == "hidden@example.com, new@example.com"
+    item.get.assert_awaited()
+    item.patch.assert_awaited_once()
 
 
 def test_mail_reply_appends_signature_and_converts_newlines(monkeypatch) -> None:
