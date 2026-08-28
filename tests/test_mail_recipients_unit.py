@@ -109,6 +109,45 @@ def test_mail_update_draft_rejects_empty_recipient_flags() -> None:
         asyncio.run(mail_update_draft(draft_id="draft-1", bcc=("",)))
 
 
+def test_mail_update_draft_replaces_bcc(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=SimpleNamespace(content_type=BodyType.Text, content="old"),
+        to_recipients=[SimpleNamespace(email_address=SimpleNamespace(address="a@b.com"))],
+        cc_recipients=[],
+        bcc_recipients=[
+            SimpleNamespace(email_address=SimpleNamespace(address="old-bcc@example.com")),
+        ],
+    )
+    patched = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=existing.body,
+        to_recipients=existing.to_recipients,
+        cc_recipients=[],
+        bcc_recipients=[
+            SimpleNamespace(email_address=SimpleNamespace(address="new@example.com")),
+        ],
+    )
+    client = _client(monkeypatch)
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", bcc="new@example.com"))
+
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    posted = patch_await.args[0]
+    assert posted.to_recipients is None
+    assert posted.cc_recipients is None
+    assert [r.email_address.address for r in posted.bcc_recipients] == ["new@example.com"]
+    assert payload["draft"]["bcc"] == "new@example.com"
+    assert payload["draft"]["to"] == "a@b.com"
+
+
 def test_mail_update_draft_replaces_multi_to_and_sets_cc(monkeypatch) -> None:
     existing = SimpleNamespace(
         id="draft-1",
