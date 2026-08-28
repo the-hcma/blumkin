@@ -65,3 +65,43 @@ def test_ensure_secret_dir_tightens_existing_mode(tmp_path: Path) -> None:
     auth._ensure_secret_dir(directory)
     mode = stat.S_IMODE(directory.stat().st_mode)
     assert mode == 0o700
+
+
+def test_ensure_secret_dir_skips_symlink_chmod(tmp_path: Path, monkeypatch) -> None:
+    if sys.platform == "win32":
+        pytest.skip("symlink config-dir layout is a POSIX concern")
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "blumkin"
+    link.symlink_to(real)
+
+    def boom(_path: Path | str, _mode: int) -> None:
+        raise AssertionError("chmod must not follow a symlinked config dir")
+
+    monkeypatch.setattr(os, "chmod", boom)
+    auth._ensure_secret_dir(link)
+
+
+def test_ensure_secret_dir_survives_chmod_oserror(tmp_path: Path, monkeypatch) -> None:
+    directory = tmp_path / "blumkin"
+    directory.mkdir()
+
+    def reject(_path: Path | str, _mode: int) -> None:
+        raise OSError("chmod unsupported")
+
+    monkeypatch.setattr(os, "chmod", reject)
+    auth._ensure_secret_dir(directory)
+    assert directory.is_dir()
+
+
+def test_write_secret_text_survives_fchmod_oserror(tmp_path: Path, monkeypatch) -> None:
+    if not hasattr(os, "fchmod"):
+        pytest.skip("fchmod unavailable")
+    target = tmp_path / "msal_token_cache.json"
+
+    def reject(_fd: int, _mode: int) -> None:
+        raise OSError("fchmod unsupported")
+
+    monkeypatch.setattr(os, "fchmod", reject)
+    auth._write_secret_text(target, "still-saved")
+    assert target.read_text(encoding="utf-8") == "still-saved"

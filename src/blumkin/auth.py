@@ -192,9 +192,19 @@ def _ensure_cache(cfg: BlumkinConfig) -> None:
 
 
 def _ensure_secret_dir(directory: Path) -> None:
-    """Create ``directory`` at 0700 and tighten mode if it already existed looser."""
+    """Create ``directory`` at 0700; best-effort tighten if it already existed looser.
+
+    Mode-setting is optional: SMB/FUSE mounts may reject ``chmod``, and a
+    symlinked config dir must not be followed into a shared target. Persistence
+    still proceeds when tightening fails.
+    """
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-    os.chmod(directory, 0o700)
+    if directory.is_symlink():
+        return
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
 
 
 def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
@@ -226,7 +236,8 @@ def _write_secret_text(path: Path, text: str) -> None:
     On POSIX, ``O_CREAT`` mode is ignored when the path already exists, so a
     leftover world-readable cache would keep leaking tokens on every rewrite
     without an explicit ``fchmod`` to ``0600``. ``O_NOFOLLOW`` (when available)
-    refuses a symlink swap at the path.
+    refuses a symlink swap at the path. Mode-setting is best-effort so
+    chmod-less filesystems still persist the cache after ``O_TRUNC``.
 
     On Windows, ``os.fchmod`` is unavailable and ``os.chmod`` only toggles the
     read-only bit (ACLs govern access). The post-close ``chmod`` there avoids
@@ -244,9 +255,15 @@ def _write_secret_text(path: Path, text: str) -> None:
         raise OSError(f"cannot write secret file {path}: {exc}") from exc
     try:
         if hasattr(os, "fchmod"):
-            os.fchmod(fd, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+            except OSError:
+                pass
         os.write(fd, text.encode())
     finally:
         os.close(fd)
     if not hasattr(os, "fchmod"):
-        os.chmod(path, 0o600)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
