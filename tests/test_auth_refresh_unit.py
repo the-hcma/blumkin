@@ -89,3 +89,31 @@ def test_create_credential_falls_back_to_authenticate_when_get_token_fails(
     fake_cred.authenticate.assert_called_once()
     save_record.assert_called_once()
     assert save_cache.call_count >= 1
+
+
+def test_create_credential_reraises_oserror_from_save_token_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Secret-path write failures must not be treated as a stale auth record."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BLUMKIN_CLIENT_ID", "test-client")
+    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
+    (tmp_path / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "auth_record.json").write_text("record-bytes")
+
+    fake_record = MagicMock(name="AuthenticationRecord")
+    fake_cred = MagicMock(name="InteractiveBrowserCredential")
+
+    with (
+        patch("blumkin.auth.AuthenticationRecord.deserialize", return_value=fake_record),
+        patch("blumkin.auth.InteractiveBrowserCredential", return_value=fake_cred),
+        patch(
+            "blumkin.auth.save_token_cache",
+            side_effect=OSError("cannot write secret file"),
+        ),
+        pytest.raises(OSError, match="cannot write secret file"),
+    ):
+        create_credential()
+
+    fake_cred.get_token.assert_called_once()
+    fake_cred.authenticate.assert_not_called()

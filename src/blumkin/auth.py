@@ -68,6 +68,10 @@ def create_credential(config: BlumkinConfig | None = None) -> InteractiveBrowser
             credential.get_token(*scopes)
             save_token_cache(cfg)
             return credential
+        except OSError:
+            # Secret-file write failures (e.g. O_NOFOLLOW symlink) are not stale
+            # credentials — surface them instead of forcing interactive re-login.
+            raise
         except Exception:
             # Stale auth record / missing refresh token — force interactive login.
             pass
@@ -226,8 +230,13 @@ def _save_bound_token_cache_at_exit() -> None:
     if _cache_bound_path is None or not _token_cache.has_state_changed:
         return
     path = Path(_cache_bound_path)
-    _ensure_secret_dir(path.parent)
-    _write_secret_text(path, _token_cache.serialize())
+    try:
+        _ensure_secret_dir(path.parent)
+        _write_secret_text(path, _token_cache.serialize())
+    except OSError:
+        # Avoid "Exception ignored" on atexit when the secret path is a symlink
+        # or the filesystem rejects mode/write; process is already exiting.
+        pass
 
 
 def _write_secret_text(path: Path, text: str) -> None:
