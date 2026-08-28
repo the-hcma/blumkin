@@ -1530,20 +1530,18 @@ async def _patch_compose_recipients(
         patch.bcc_recipients = _recipient_models(_merge_addresses(existing, bcc))
     try:
         updated = await client.me.messages.by_message_id(mid).patch(patch)
-        if updated is None:
-            updated = await client.me.messages.by_message_id(mid).get()
     except Exception:
         # Half-built reply/forward draft is worse than none: delete so a retry is a no-op.
+        # Only wipe on PATCH failure — an empty 2xx body means the merge already landed.
         try:
             await client.me.messages.by_message_id(mid).delete()
         except Exception:
             pass
         raise
     if updated is None:
-        try:
-            await client.me.messages.by_message_id(mid).delete()
-        except Exception:
-            pass
+        # Empty 2xx body — re-fetch so JSON/human output reflects post-PATCH state.
+        updated = await client.me.messages.by_message_id(mid).get()
+    if updated is None:
         raise RuntimeError(f"Graph returned no message after recipient patch: {mid}")
     return updated
 

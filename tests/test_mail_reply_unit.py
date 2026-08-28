@@ -292,6 +292,27 @@ def test_mail_reply_deletes_draft_when_recipient_patch_fails(monkeypatch) -> Non
     item.delete.assert_awaited_once()
 
 
+def test_mail_reply_keeps_draft_when_post_patch_refetch_fails(monkeypatch) -> None:
+    """PATCH succeeded (empty body); a failing re-fetch must not delete the built draft."""
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+    item.get = AsyncMock(
+        side_effect=[
+            _draft("RE: Quarterly sync"),
+            _odata_error(503, "ErrorServiceUnavailable"),
+        ]
+    )
+    item.patch = AsyncMock(return_value=None)
+    item.delete = AsyncMock(return_value=None)
+
+    with pytest.raises(ODataError):
+        asyncio.run(mail_reply(message_id="msg-1", body="Thanks", cc="new@example.com"))
+
+    item.patch.assert_awaited_once()
+    item.delete.assert_not_called()
+
+
 def test_mail_forward_patches_bcc(monkeypatch) -> None:
     client = _client(monkeypatch)
     item = client.me.messages.by_message_id.return_value
