@@ -159,6 +159,24 @@ def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
     raise SystemExit(EXIT_OTHER) from exc
 
 
+def _mail_time_bounds(
+    ctx: click.Context,
+    tz_flag: str | None,
+    *,
+    since: str | None,
+    until: str | None,
+) -> tuple[datetime | None, datetime | None]:
+    """Parse --since/--until in the operator's timezone, as `calendar view` does."""
+    if since is None and until is None:
+        # Resolving a zone nobody asked about would reject a plain listing over --tz.
+        return (None, None)
+    tz = ZoneInfo(_tz_name(ctx, tz_flag) or load_config().default_tz)
+    return (
+        None if since is None else parse_local_datetime(since, tz),
+        None if until is None else parse_local_datetime(until, tz),
+    )
+
+
 def _raise_mail_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
     msg = str(exc)
     if "client_id" in msg or "Missing" in msg:
@@ -907,14 +925,46 @@ def mail() -> None:
 
 
 @mail.command("inbox")
+@click.option("--from", "sender", default=None, help="Sender name or address substring.")
+@click.option("--subject", default=None, help="Subject substring.")
+@click.option("--search", default=None, help="Graph $search term; cannot be combined with filters.")
+@click.option("--since", default=None, help="Only messages at or after this date/time.")
+@click.option("--until", default=None, help="Only messages strictly before this date/time.")
+@click.option("--unread", is_flag=True, help="Only unread messages.")
 @click.option("--top", default=10, show_default=True, type=int)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
-def mail_inbox_cmd(ctx: click.Context, top: int, as_json_flag: bool) -> None:
+def mail_inbox_cmd(
+    ctx: click.Context,
+    sender: str | None,
+    subject: str | None,
+    search: str | None,
+    since: str | None,
+    until: str | None,
+    unread: bool,
+    top: int,
+    as_json_flag: bool,
+    tz_flag: str | None,
+) -> None:
     """List recent inbox messages."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = asyncio.run(mail_inbox(top=top))
+        since_dt, until_dt = _mail_time_bounds(ctx, tz_flag, since=since, until=until)
+        payload = asyncio.run(
+            mail_inbox(
+                top=top,
+                search=search,
+                sender=sender,
+                subject=subject,
+                since=since_dt,
+                unread=unread,
+                until=until_dt,
+            )
+        )
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except ValueError as exc:
         _raise_mail_value_error(exc, as_json=as_json)
     except Exception as exc:
@@ -995,20 +1045,50 @@ def mail_get_cmd(
         "received otherwise."
     ),
 )
+@click.option("--from", "sender", default=None, help="Sender name or address substring.")
+@click.option("--subject", default=None, help="Subject substring.")
+@click.option("--search", default=None, help="Graph $search term; cannot be combined with filters.")
+@click.option("--since", default=None, help="Only messages at or after this date/time.")
+@click.option("--until", default=None, help="Only messages strictly before this date/time.")
+@click.option("--unread", is_flag=True, help="Only unread messages.")
 @click.option("--top", default=10, show_default=True, type=int)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
 def mail_list_cmd(
     ctx: click.Context,
     folder: str | None,
     orderby: str | None,
+    sender: str | None,
+    subject: str | None,
+    search: str | None,
+    since: str | None,
+    until: str | None,
+    unread: bool,
     top: int,
     as_json_flag: bool,
+    tz_flag: str | None,
 ) -> None:
     """List recent messages from a mail folder."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = asyncio.run(mail_list(top=top, folder=folder, orderby=orderby))
+        since_dt, until_dt = _mail_time_bounds(ctx, tz_flag, since=since, until=until)
+        payload = asyncio.run(
+            mail_list(
+                top=top,
+                folder=folder,
+                orderby=orderby,
+                search=search,
+                sender=sender,
+                subject=subject,
+                since=since_dt,
+                unread=unread,
+                until=until_dt,
+            )
+        )
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except MailFolderNotFoundError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc

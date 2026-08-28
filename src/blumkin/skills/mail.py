@@ -6,6 +6,7 @@ import base64
 import binascii
 import html as html_lib
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -186,7 +187,11 @@ def format_get_human(payload: dict[str, Any]) -> list[str]:
 
 
 def format_inbox_human(payload: dict[str, Any]) -> list[str]:
-    lines = [f"Inbox (top {payload['top']}): {len(payload['items'])} message(s)"]
+    # Mirror format_list_human: a search has no sort, so say so rather than looking newest-first.
+    orderby = payload.get("orderby")
+    order_note = f", by {orderby}" if orderby else ", by relevance"
+    lines = [f"Inbox (top {payload['top']}{order_note}): {len(payload['items'])} message(s)"]
+    lines.extend(_filter_notes(payload))
     if not payload["items"]:
         lines.append("  (none)")
         return lines
@@ -201,14 +206,22 @@ def format_inbox_human(payload: dict[str, Any]) -> list[str]:
 def format_list_human(payload: dict[str, Any]) -> list[str]:
     items = payload["items"]
     folder = sanitize_terminal(str(payload.get("folder") or "all mail"))
-    orderby = payload.get("orderby") or "received"
-    lines = [f"{folder} (top {payload['top']}, by {orderby}): {len(items)} message(s)"]
+    # A search has no sort order to report: Graph ranks those matches by relevance.
+    orderby = payload.get("orderby")
+    order_note = f"by {orderby}" if orderby else "by relevance"
+    lines = [f"{folder} (top {payload['top']}, {order_note}): {len(items)} message(s)"]
+    lines.extend(_filter_notes(payload))
     if not items:
         lines.append("  (none)")
         return lines
     outbound = bool(payload.get("outbound"))
     for item in items:
-        stamp = item.get(orderby) or item.get("received") or item.get("created") or "(no date)"
+        stamp = (
+            item.get(orderby or "received")
+            or item.get("received")
+            or item.get("created")
+            or "(no date)"
+        )
         unread = "" if item.get("is_read") else " [unread]"
         if outbound:
             who = "to " + sanitize_terminal(str(item.get("to_email") or "(no recipient)"))
@@ -448,10 +461,30 @@ async def mail_get(
 async def mail_inbox(
     *,
     top: int = 10,
+    search: str | None = None,
+    sender: str | None = None,
+    since: datetime | None = None,
+    subject: str | None = None,
+    unread: bool = False,
+    until: datetime | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    payload = await mail_list(top=top, config=config)
-    return {"items": payload["items"], "top": payload["top"]}
+    payload = await mail_list(
+        top=top,
+        search=search,
+        sender=sender,
+        since=since,
+        subject=subject,
+        unread=unread,
+        until=until,
+        config=config,
+    )
+    return {
+        "filters": payload["filters"],
+        "items": payload["items"],
+        "orderby": payload["orderby"],
+        "top": payload["top"],
+    }
 
 
 async def mail_list(
@@ -459,6 +492,12 @@ async def mail_list(
     top: int = 10,
     folder: str | None = None,
     orderby: str | None = None,
+    search: str | None = None,
+    sender: str | None = None,
+    since: datetime | None = None,
+    subject: str | None = None,
+    unread: bool = False,
+    until: datetime | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     """List messages from a well-known folder, a folder id, or the whole mailbox."""
@@ -468,13 +507,55 @@ async def mail_list(
     if folder is not None and not label:
         raise ValueError("--folder cannot be empty")
     requested_sort = None if orderby is None else _validate_orderby(orderby)
+    term = _validate_search(
+        search,
+        orderby=requested_sort,
+        sender=sender,
+        since=since,
+        subject=subject,
+        unread=unread,
+        until=until,
+    )
+    if since is not None and until is not None and until <= since:
+        raise ValueError("--until must be after --since")
     cfg = config or load_config()
     client = create_graph_client(cfg)
     well_known = None if label is None else _well_known_folder(label)
     target = well_known or label
     sort = requested_sort or _default_orderby(well_known)
+
+    async def _fetch(
+        folder_target: str | None, sort_label: str
+    ) -> tuple[list[Any], int | None, bool | None]:
+        # Graph rejects $search alongside $filter or $orderBy, so a search is a
+        # relevance-ranked query on its own rather than one more clause.
+        if term is not None:
+            page = await _get_messages(
+                client, folder_target, top=top, sort=None, criteria=None, search=term
+            )
+            found = [] if page is None else (page.value or [])
+            # We asked for `top` and got one page. That is not a scan of the match set,
+            # so leave scanned/complete null — a consumer must not read
+            # `complete: true, scanned: 3` as "an exhaustive search found three".
+            return list(found), None, None
+        criteria = _build_filter(
+            field=_ORDERBY_FIELDS[sort_label],
+            since=since,
+            unread=unread,
+            until=until,
+        )
+        return await _scan_messages(
+            client,
+            folder_target,
+            top=top,
+            sort=sort_label,
+            criteria=criteria,
+            sender=sender,
+            subject=subject,
+        )
+
     try:
-        page = await _get_messages(client, target, top=top, sort=sort)
+        items, scanned, complete = await _fetch(target, sort)
     except ODataError as exc:
         # An exact well-known name cannot be a stale id, so only fall back for
         # free-form labels: a real folder of that display name wins over the alias.
@@ -486,12 +567,23 @@ async def mail_list(
                 _folder_not_found_message(label, truncated=truncated)
             ) from exc
         sort = requested_sort or _default_orderby(well_known)
-        page = await _get_messages(client, target, top=top, sort=sort)
-    items = [] if page is None else (page.value or [])
+        items, scanned, complete = await _fetch(target, sort)
+    matched_locally = term is None and bool(sender or subject)
     return {
+        "filters": {
+            "complete": complete,
+            "from": sender,
+            "matched_locally": matched_locally,
+            "scanned": scanned,
+            "search": term,
+            "since": _odata_datetime(since),
+            "subject": subject,
+            "unread": unread,
+            "until": _odata_datetime(until),
+        },
         "folder": target,
         "items": [_message_to_dict(msg) for msg in items],
-        "orderby": sort,
+        "orderby": None if term else sort,
         "outbound": well_known in _OUTBOUND_FOLDERS,
         "top": top,
     }
@@ -617,6 +709,11 @@ _ID_LOOKUP_ERROR_CODES = frozenset(
 # should return a useful listing rather than fan out into hundreds of Graph calls.
 _MAX_FOLDERS = 500
 _MAX_FOLDER_DEPTH = 6
+# Cap on the local text scan, applied at page boundaries. Graph returns roughly 100
+# messages per request, so this bounds a miss to a handful of round-trips: deep enough
+# for the recent mail people ask about, shallow enough that a wrong guess does not hang
+# for a minute. --search reaches the whole mailbox server-side when this is not enough.
+_MAX_SCANNED = 500
 _ORDERBY_FIELDS = {
     "created": "createdDateTime",
     "received": "receivedDateTime",
@@ -639,6 +736,7 @@ _MAIL_FOLDER_ALIASES = {
     "spam": "junkemail",
     "trash": "deleteditems",
 }
+_SCAN_PAGE_SIZE = 100
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -671,6 +769,34 @@ def _attachment_to_dict(attachment: Any) -> dict[str, Any]:
     if skipped:
         payload["skip_reason"] = _skip_reason(attachment)
     return payload
+
+
+def _build_filter(
+    *,
+    field: str,
+    since: datetime | None,
+    unread: bool,
+    until: datetime | None,
+) -> str | None:
+    """Assemble the ``$filter`` clauses, or None when nothing was asked for.
+
+    Only comparisons live here. Graph rejects a string function such as ``contains``
+    alongside ``$orderby`` with ``InefficientFilter``, whether or not the query is
+    scoped to a folder, so text matching happens in ``_scan_messages`` instead.
+
+    Date bounds apply to ``field`` — the same property the listing is sorted by — so
+    "mail from last week" means the same thing in Drafts, where receivedDateTime is
+    null, as it does in the Inbox.
+    """
+    clauses: list[str] = []
+    if unread:
+        clauses.append("isRead eq false")
+    if since is not None:
+        clauses.append(f"{field} ge {_odata_datetime(since)}")
+    if until is not None:
+        # Half-open [since, until), matching `calendar view`'s date range.
+        clauses.append(f"{field} lt {_odata_datetime(until)}")
+    return " and ".join(clauses) or None
 
 
 async def _collect_attachments(client: Any, message_id: str) -> list[dict[str, Any]]:
@@ -788,6 +914,36 @@ def _default_orderby(well_known: str | None) -> str:
     return _FOLDER_DEFAULT_ORDERBY.get(well_known or "", "received")
 
 
+def _filter_notes(payload: dict[str, Any]) -> list[str]:
+    """One line naming the active filters, so a short result set explains itself."""
+    filters = payload.get("filters") or {}
+    parts = [
+        f"{label}={sanitize_terminal(str(filters.get(key)))!r}"
+        for label, key in (
+            ("search", "search"),
+            ("from", "from"),
+            ("subject", "subject"),
+            ("since", "since"),
+            ("until", "until"),
+        )
+        if filters.get(key)
+    ]
+    if filters.get("unread"):
+        parts.append("unread only")
+    if not parts:
+        return []
+    lines = [f"  filters: {', '.join(parts)}"]
+    # Only `complete is False` (hit the scan cap). `None` means we filled `--top`
+    # without walking the rest — that is not the same claim, so stay quiet.
+    if filters.get("matched_locally") and filters.get("complete") is False:
+        # Silence here would read as "no more mail from them", which is a different claim.
+        lines.append(
+            f"  (stopped after scanning {filters.get('scanned')} messages; "
+            "narrow with --since, or use --search to reach the whole mailbox)"
+        )
+    return lines
+
+
 def _folder_match_key(label: str) -> str:
     return re.sub(r"[\s_-]+", "", label.casefold())
 
@@ -822,10 +978,20 @@ def _format_participant(person: dict[str, Any]) -> str:
     return name or email
 
 
-async def _get_messages(client: Any, folder: str | None, *, top: int, sort: str) -> Any:
+async def _get_messages(
+    client: Any,
+    folder: str | None,
+    *,
+    top: int,
+    sort: str | None,
+    criteria: str | None = None,
+    search: str | None = None,
+) -> Any:
     query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
         top=top,
-        orderby=[f"{_ORDERBY_FIELDS[sort]} desc"],
+        filter=criteria,
+        search=None if search is None else f'"{search}"',
+        orderby=None if sort is None else [f"{_ORDERBY_FIELDS[sort]} desc"],
         select=[
             "id",
             "subject",
@@ -860,6 +1026,22 @@ def _is_id_lookup_failure(exc: ODataError) -> bool:
     if code in _ID_LOOKUP_ERROR_CODES:
         return True
     return status == 404
+
+
+def _matches_text(msg: Any, *, sender: str | None, subject: str | None) -> bool:
+    """Case-insensitive substring match on sender (name or address) and subject."""
+    if subject:
+        if subject.casefold() not in str(getattr(msg, "subject", "") or "").casefold():
+            return False
+    if sender:
+        email = getattr(getattr(msg, "from_", None), "email_address", None)
+        needle = sender.casefold()
+        # Checked per field: joining them would let a query straddle the boundary and
+        # match text that appears in neither the address nor the name.
+        fields = (str(getattr(email, attr, "") or "").casefold() for attr in ("address", "name"))
+        if not any(needle in field for field in fields):
+            return False
+    return True
 
 
 def _message_detail(msg: Any, *, wanted: MailBodyType) -> dict[str, Any]:
@@ -938,6 +1120,13 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
     }
 
 
+def _odata_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    moment = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _participants(recipients: Any) -> list[dict[str, Any]]:
     people: list[dict[str, Any]] = []
     for recipient in recipients or []:
@@ -1000,12 +1189,112 @@ async def _resolve_folder_fallback(client: Any, label: str) -> tuple[str | None,
     return None, None, truncated
 
 
+async def _scan_messages(
+    client: Any,
+    folder: str | None,
+    *,
+    top: int,
+    sort: str,
+    criteria: str | None,
+    sender: str | None,
+    subject: str | None,
+) -> tuple[list[Any], int | None, bool | None]:
+    """Return up to ``top`` matches, how many messages were read, and whether that was all.
+
+    Without ``--from`` / ``--subject`` this is a single ordered page, and ``scanned`` /
+    ``complete`` stay null: we did not walk the rest of the mailbox, so claiming
+    completeness would lie. With them it walks the ordered results applying the
+    substring match locally, because Graph will not sort a query containing
+    ``contains``. Newest-first order is what makes that tractable: the wanted
+    message is usually near the front, and the scan stops at ``_MAX_SCANNED``
+    rather than reading an entire mailbox. Filling ``--top`` early also leaves
+    ``complete`` null — that stop is not an exhaustive match set either.
+    """
+    wants_text = bool(sender or subject)
+    if not wants_text:
+        page = await _get_messages(client, folder, top=top, sort=sort, criteria=criteria)
+        found = [] if page is None else (page.value or [])
+        return list(found), None, None
+    matches: list[Any] = []
+    scanned = 0
+    page = await _get_messages(client, folder, top=_SCAN_PAGE_SIZE, sort=sort, criteria=criteria)
+    builder = (
+        client.me.messages
+        if folder is None
+        else client.me.mail_folders.by_mail_folder_id(folder).messages
+    )
+    while page is not None:
+        for msg in page.value or []:
+            scanned += 1
+            if _matches_text(msg, sender=sender, subject=subject):
+                matches.append(msg)
+                if len(matches) >= top:
+                    # Filled `--top` without seeing the rest of the mailbox — do not
+                    # claim completeness (same honesty as a `--search` page).
+                    return matches, scanned, None
+        link = getattr(page, "odata_next_link", None)
+        if not link:
+            # Reaching the end is complete even at the cap: nothing was left unread.
+            return matches, scanned, True
+        if scanned >= _MAX_SCANNED:
+            return matches, scanned, False
+        page = await builder.with_url(str(link)).get()
+    return matches, scanned, True
+
+
 def _validate_orderby(raw: str) -> str:
     label = raw.strip().casefold()
     if label not in _ORDERBY_FIELDS:
         allowed = ", ".join(f"'{name}'" for name in sorted(_ORDERBY_FIELDS))
         raise ValueError(f"--orderby must be one of {allowed}")
     return label
+
+
+def _validate_search(
+    raw: str | None,
+    *,
+    orderby: str | None,
+    sender: str | None,
+    since: datetime | None,
+    subject: str | None,
+    unread: bool,
+    until: datetime | None,
+) -> str | None:
+    """Check --search against the two combinations Graph refuses to serve.
+
+    Graph answers ``SearchWithFilter`` and ``SearchWithOrderBy`` for these, so catching
+    them here turns an opaque Graph error into a message naming the flag to drop.
+    """
+    if raw is None:
+        return None
+    term = raw.strip()
+    if not term:
+        raise ValueError("--search cannot be empty")
+    if '"' in term:
+        # $search takes a double-quoted KQL string with no escape for an inner quote.
+        raise ValueError("--search cannot contain a double quote")
+    conflicting = [
+        name
+        for name, used in (
+            ("--from", sender is not None),
+            ("--since", since is not None),
+            ("--subject", subject is not None),
+            ("--unread", unread),
+            ("--until", until is not None),
+        )
+        if used
+    ]
+    if conflicting:
+        raise ValueError(
+            f"--search cannot be combined with {', '.join(conflicting)}: Graph rejects "
+            "$search alongside $filter. Search for the term alone, or filter without it"
+        )
+    if orderby is not None:
+        raise ValueError(
+            "--search cannot be combined with --orderby: Graph rejects $search alongside "
+            "$orderBy and returns matches by relevance"
+        )
+    return term
 
 
 def _well_known_folder(label: str) -> str | None:
