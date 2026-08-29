@@ -23,6 +23,7 @@ from blumkin.skills.calendar_writes import (
     format_accept_human,
     format_cancel_human,
     format_create_human,
+    format_update_human,
     parse_duration,
 )
 from blumkin.skills.mail import (
@@ -873,6 +874,17 @@ def test_write_formatters_human() -> None:
     )
     assert any("evt-new" in line for line in create_lines)
     assert any("teams.example" in line for line in create_lines)
+    update_lines = format_update_human(
+        {
+            "event": {
+                "id": "evt-upd",
+                "online_join_url": "https://teams.example/join",
+                "subject": "Sync",
+            }
+        }
+    )
+    assert any("evt-upd" in line for line in update_lines)
+    assert any("teams.example" in line for line in update_lines)
     draft_lines = format_draft_human({"draft": {"id": "draft-1", "subject": "Hi", "to": "a@b.com"}})
     assert any("draft-1" in line for line in draft_lines)
     assert any("a@b.com" in line for line in draft_lines)
