@@ -88,6 +88,8 @@ Always implement in `.worktrees/<stack-name>-wt`.
 
 - Never commit secrets, client secrets, tokens, or `.msal_token_cache.json` /
   `.auth_record.json` / `.env`.
+- Never dump those into agent logs, PR text, or review replies — see
+  `.cursor/rules/no-secret-exposure.mdc` (org template: repository-helpers#566).
 - Blumkin uses **delegated** Graph auth only (public client + interactive
   browser). No app-only mail/calendar permissions in this product.
 
