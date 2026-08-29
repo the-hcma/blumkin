@@ -261,6 +261,112 @@ def test_calendar_update_attaches_teams_mocked(monkeypatch) -> None:
     assert patched.online_meeting_provider is OnlineMeetingProviderType.TeamsForBusiness
 
 
+def test_calendar_update_no_teams_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    from blumkin.skills.calendar_writes import calendar_update
+
+    with pytest.raises(ValueError, match="do not pass --no-teams"):
+        asyncio.run(calendar_update(event_id="evt-1", teams=False, tz_name="America/New_York"))
+
+
+def test_calendar_update_refetch_when_patch_returns_none(monkeypatch) -> None:
+    fetched = SimpleNamespace(
+        id="evt-1",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=SimpleNamespace(join_url="https://teams.example/join"),
+    )
+    client = MagicMock()
+    client.me.events.by_event_id.return_value.patch = AsyncMock(return_value=None)
+    client.me.events.by_event_id.return_value.get = AsyncMock(return_value=fetched)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    from blumkin.skills.calendar_writes import calendar_update
+
+    payload = asyncio.run(calendar_update(event_id="evt-1", tz_name="America/New_York"))
+    assert payload["event"]["online_join_url"] == "https://teams.example/join"
+    client.me.events.by_event_id.return_value.get.assert_awaited_once()
+
+
+def test_calendar_update_refetch_when_join_url_missing(monkeypatch) -> None:
+    patch_body = SimpleNamespace(
+        id="evt-1",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=None,
+    )
+    fetched = SimpleNamespace(
+        id="evt-1",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=SimpleNamespace(join_url="https://teams.example/later"),
+    )
+    client = MagicMock()
+    client.me.events.by_event_id.return_value.patch = AsyncMock(return_value=patch_body)
+    client.me.events.by_event_id.return_value.get = AsyncMock(return_value=fetched)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    from blumkin.skills.calendar_writes import calendar_update
+
+    payload = asyncio.run(calendar_update(event_id="evt-1", tz_name="America/New_York"))
+    assert payload["event"]["online_join_url"] == "https://teams.example/later"
+    client.me.events.by_event_id.return_value.get.assert_awaited_once()
+
+
+def test_calendar_update_raises_when_join_url_never_appears(monkeypatch) -> None:
+    empty = SimpleNamespace(
+        id="evt-1",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=None,
+    )
+    client = MagicMock()
+    client.me.events.by_event_id.return_value.patch = AsyncMock(return_value=empty)
+    client.me.events.by_event_id.return_value.get = AsyncMock(return_value=empty)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    from blumkin.skills.calendar_writes import calendar_update
+
+    with pytest.raises(RuntimeError, match="not provisioned"):
+        asyncio.run(calendar_update(event_id="evt-1", tz_name="America/New_York"))
+
+
 def test_mail_draft_and_send_mocked(monkeypatch) -> None:
     draft = SimpleNamespace(id="draft-1", subject="Hi")
     client = MagicMock()

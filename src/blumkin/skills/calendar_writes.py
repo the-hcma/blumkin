@@ -132,11 +132,17 @@ async def calendar_update(
         online_meeting_provider=OnlineMeetingProviderType.TeamsForBusiness,
     )
     updated = await client.me.events.by_event_id(event_id).patch(patch)
-    if updated is None:
-        # Some Graph paths return 204; re-fetch for join URL.
+    # Graph may return 204 (None), or 200 before onlineMeeting is populated.
+    if updated is None or not _event_join_url(updated):
         updated = await client.me.events.by_event_id(event_id).get()
     if updated is None or not updated.id:
         raise RuntimeError(f"Graph returned no event after update: {event_id}")
+    if not _event_join_url(updated):
+        raise RuntimeError(
+            f"Teams online meeting was not provisioned for event {event_id!r} "
+            "(no onlineMeeting.joinUrl after PATCH); retry or recreate with "
+            "`calendar create --teams`."
+        )
     return {"event": _event_to_dict(updated, tz)}
 
 
@@ -180,6 +186,14 @@ def parse_duration(raw: str) -> timedelta:
     if unit.startswith("h"):
         return timedelta(hours=amount)
     return timedelta(minutes=amount)
+
+
+def _event_join_url(event: Any) -> str | None:
+    meeting = getattr(event, "online_meeting", None)
+    url = getattr(meeting, "join_url", None) if meeting is not None else None
+    if isinstance(url, str) and url.strip():
+        return url.strip()
+    return None
 
 
 def _needs_accept(item: dict[str, Any]) -> bool:
