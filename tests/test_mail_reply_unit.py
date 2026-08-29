@@ -14,6 +14,7 @@ from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.providers.kind import ProviderKind
 from blumkin.skills.mail import (
     MailBodyFileError,
     MailMessageNotFoundError,
@@ -429,6 +430,7 @@ def _client(monkeypatch, *, signature: bool = False) -> MagicMock:
             files_scopes=False,
             graph_timeout_seconds=60.0,
             mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
+            provider=ProviderKind.MICROSOFT,
             tenant_id="t",
             wo1162425_scopes=False,
         )

@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
+
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
-DEFAULT_TENANT_ID = "brk.tech"
-DEFAULT_TZ = "America/New_York"
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +21,7 @@ class BlumkinConfig:
     files_scopes: bool
     graph_timeout_seconds: float
     mail_signature: MailSignatureConfig
+    provider: ProviderKind
     tenant_id: str
     wo1162425_scopes: bool
 
@@ -69,14 +70,10 @@ def load_config() -> BlumkinConfig:
         os.environ.get("BLUMKIN_CLIENT_ID", "").strip() or file_values.get("client_id", "").strip()
     )
     tenant_id = (
-        os.environ.get("BLUMKIN_TENANT_ID", "").strip()
-        or file_values.get("tenant_id", "").strip()
-        or DEFAULT_TENANT_ID
+        os.environ.get("BLUMKIN_TENANT_ID", "").strip() or file_values.get("tenant_id", "").strip()
     )
     default_tz = (
-        os.environ.get("BLUMKIN_TZ", "").strip()
-        or file_values.get("default_tz", "").strip()
-        or DEFAULT_TZ
+        os.environ.get("BLUMKIN_TZ", "").strip() or file_values.get("default_tz", "").strip()
     )
     return BlumkinConfig(
         client_id=client_id,
@@ -85,6 +82,7 @@ def load_config() -> BlumkinConfig:
         files_scopes=_files_scopes_enabled(file_data),
         graph_timeout_seconds=_graph_timeout_seconds(file_data),
         mail_signature=_mail_signature_config(file_data),
+        provider=_provider_kind(file_data),
         tenant_id=tenant_id,
         wo1162425_scopes=_wo1162425_scopes_enabled(file_data),
     )
@@ -174,6 +172,15 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _provider_kind(file_data: dict[str, Any]) -> ProviderKind:
+    if "provider" not in file_data:
+        return ProviderKind.MICROSOFT
+    raw = file_data["provider"]
+    if isinstance(raw, str):
+        return parse_provider_kind(raw)
+    raise ProviderConfigError(f"provider must be a string in config.toml, got {type(raw).__name__}")
 
 
 def _read_toml(path: Path) -> dict[str, Any]:

@@ -11,15 +11,8 @@ import click
 import httpx
 
 from blumkin import __version__
-from blumkin.auth import (
-    SecretWriteError,
-    create_credential,
-    logout,
-    refresh_silent,
-    save_token_cache,
-    status_dict,
-)
-from blumkin.config import load_config
+from blumkin.auth import SecretWriteError
+from blumkin.config import BlumkinConfig, load_config
 from blumkin.exit_codes import (
     EXIT_AUTH,
     EXIT_MISSING_SCOPE,
@@ -29,12 +22,11 @@ from blumkin.exit_codes import (
     EXIT_USAGE,
 )
 from blumkin.output import emit_error, emit_json, emit_lines
+from blumkin.providers import get_provider
+from blumkin.providers.kind import ProviderConfigError
+from blumkin.providers.protocol import WorkspaceProvider
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
-    calendar_freebusy,
-    calendar_suggest,
-    calendar_today,
-    calendar_view,
     format_freebusy_human,
     format_suggest_human,
     format_today_human,
@@ -42,10 +34,6 @@ from blumkin.skills.calendar import (
     parse_local_datetime,
 )
 from blumkin.skills.calendar_writes import (
-    calendar_accept,
-    calendar_cancel,
-    calendar_create,
-    calendar_update,
     format_accept_human,
     format_cancel_human,
     format_create_human,
@@ -57,13 +45,6 @@ from blumkin.skills.chat import (
     ChatAttachmentScopeError,
     ChatAttachmentSkippedError,
     ChatMessageNotFoundError,
-    chat_attachments_download,
-    chat_attachments_list,
-    chat_delete,
-    chat_edit,
-    chat_find,
-    chat_last,
-    chat_send,
     format_edit_human,
     format_find_human,
     format_last_human,
@@ -96,18 +77,6 @@ from blumkin.skills.mail import (
     format_list_human,
     format_reply_human,
     format_send_draft_human,
-    mail_attachments_download,
-    mail_attachments_list,
-    mail_delete_draft,
-    mail_draft,
-    mail_folders,
-    mail_forward,
-    mail_get,
-    mail_inbox,
-    mail_list,
-    mail_reply,
-    mail_send_draft,
-    mail_update_draft,
 )
 from blumkin.skills.mail import (
     format_get_human as format_mail_get_human,
@@ -115,16 +84,21 @@ from blumkin.skills.mail import (
 from blumkin.skills.meeting import (
     format_get_human as format_meeting_get_human,
 )
-from blumkin.skills.meeting import (
-    format_transcription_human,
-    meeting_get,
-    meeting_transcription,
-)
-from blumkin.skills.people import format_resolve_human, people_resolve
+from blumkin.skills.meeting import format_transcription_human
+from blumkin.skills.people import format_resolve_human
 
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
-    return bool(ctx.obj.get("as_json") or as_json_flag)
+    value = bool(ctx.obj.get("as_json") or as_json_flag)
+    ctx.obj["as_json"] = value
+    return value
+
+
+def _cli_as_json() -> bool:
+    ctx = click.get_current_context(silent=True)
+    if ctx is None or not isinstance(ctx.obj, dict):
+        return False
+    return bool(ctx.obj.get("as_json"))
 
 
 def _graph_http_status(exc: BaseException) -> int | None:
@@ -142,6 +116,49 @@ def _graph_http_status(exc: BaseException) -> int | None:
     return None
 
 
+def _load_config() -> BlumkinConfig:
+    try:
+        return load_config()
+    except ProviderConfigError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
+        raise SystemExit(EXIT_USAGE) from exc
+
+
+def _mail_time_bounds(
+    ctx: click.Context,
+    tz_flag: str | None,
+    *,
+    since: str | None,
+    until: str | None,
+) -> tuple[datetime | None, datetime | None]:
+    """Parse --since/--until in the operator's timezone, as `calendar view` does."""
+    if since is None and until is None:
+        # Resolving a zone nobody asked about would reject a plain listing over --tz.
+        return (None, None)
+    tz = ZoneInfo(_tz_name(ctx, tz_flag) or _load_config().default_tz)
+    return (
+        None if since is None else parse_local_datetime(since, tz),
+        None if until is None else parse_local_datetime(until, tz),
+    )
+
+
+def _raise_auth_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
+    if isinstance(exc, ProviderConfigError):
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    msg = str(exc)
+    if (
+        "client_id" in msg
+        or "Missing" in msg
+        or msg.startswith("Authentication required")
+        or msg.startswith("Silent token refresh failed")
+    ):
+        emit_error(error="auth_required", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_AUTH) from exc
+    emit_error(error="usage_error", message=msg, as_json=as_json)
+    raise SystemExit(EXIT_USAGE) from exc
+
+
 def _raise_chat_attachment_error(exc: BaseException, *, as_json: bool) -> NoReturn:
     if isinstance(exc, ChatAttachmentScopeError):
         emit_error(error="missing_scope", message=str(exc), as_json=as_json)
@@ -152,13 +169,11 @@ def _raise_chat_attachment_error(exc: BaseException, *, as_json: bool) -> NoRetu
     if isinstance(exc, ChatAttachmentSkippedError):
         emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
-    if isinstance(exc, ValueError):
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
+    if isinstance(exc, ProviderConfigError):
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
+    if isinstance(exc, ValueError):
+        _raise_auth_value_error(exc, as_json=as_json)
     _raise_graph_http_error(exc, as_json=as_json)
 
 
@@ -192,39 +207,12 @@ def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
     raise SystemExit(EXIT_OTHER) from exc
 
 
-def _mail_time_bounds(
-    ctx: click.Context,
-    tz_flag: str | None,
-    *,
-    since: str | None,
-    until: str | None,
-) -> tuple[datetime | None, datetime | None]:
-    """Parse --since/--until in the operator's timezone, as `calendar view` does."""
-    if since is None and until is None:
-        # Resolving a zone nobody asked about would reject a plain listing over --tz.
-        return (None, None)
-    tz = ZoneInfo(_tz_name(ctx, tz_flag) or load_config().default_tz)
-    return (
-        None if since is None else parse_local_datetime(since, tz),
-        None if until is None else parse_local_datetime(until, tz),
-    )
-
-
 def _raise_mail_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
-    msg = str(exc)
-    if "client_id" in msg or "Missing" in msg:
-        emit_error(error="auth_required", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_AUTH) from exc
-    emit_error(error="usage_error", message=msg, as_json=as_json)
-    raise SystemExit(EXIT_USAGE) from exc
-
-
-def _tz_name(ctx: click.Context, tz_flag: str | None) -> str | None:
-    return tz_flag if tz_flag is not None else ctx.obj.get("tz_name")
+    _raise_auth_value_error(exc, as_json=as_json)
 
 
 def _require_wo1162425_scopes(*, as_json: bool) -> None:
-    cfg = load_config()
+    cfg = _load_config()
     if cfg.wo1162425_scopes:
         return
     emit_error(
@@ -253,6 +241,18 @@ def _require_yes(*, yes: bool, as_json: bool) -> None:
         raise SystemExit(EXIT_USAGE)
 
 
+def _tz_name(ctx: click.Context, tz_flag: str | None) -> str | None:
+    return tz_flag if tz_flag is not None else ctx.obj.get("tz_name")
+
+
+def _workspace(config: BlumkinConfig | None = None) -> WorkspaceProvider:
+    try:
+        return get_provider(config if config is not None else load_config())
+    except ProviderConfigError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
+        raise SystemExit(EXIT_USAGE) from exc
+
+
 @click.group()
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_name", default=None, help="IANA timezone (default from config).")
@@ -277,9 +277,7 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
     """Interactive browser login; write cache + auth record under ~/.config/blumkin."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        cfg = load_config()
-        create_credential(cfg, allow_interactive=True)
-        save_token_cache(cfg)
+        _workspace().auth_login()
     except SecretWriteError as exc:
         emit_error(
             error="secret_write_failed",
@@ -291,6 +289,9 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
             ),
         )
         raise SystemExit(EXIT_OTHER) from exc
+    except ProviderConfigError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
         emit_error(
             error="auth_required",
@@ -300,7 +301,7 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         )
         raise SystemExit(EXIT_AUTH) from exc
     if as_json:
-        emit_json({"ok": True, "status": status_dict()})
+        emit_json({"ok": True, "status": _workspace().auth_status()})
     else:
         emit_lines(["Signed in. Token cache written under ~/.config/blumkin/."])
 
@@ -310,8 +311,9 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
 @click.pass_context
 def auth_logout(ctx: click.Context, as_json_flag: bool) -> None:
     """Delete local token cache and auth record."""
-    logout()
-    if _as_json(ctx, as_json_flag):
+    as_json = _as_json(ctx, as_json_flag)
+    _workspace().auth_logout()
+    if as_json:
         emit_json({"ok": True})
     else:
         emit_lines(["Logged out (cache files removed)."])
@@ -324,10 +326,13 @@ def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
     """Silent token refresh; never opens a browser."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = refresh_silent()
+        payload = _workspace().auth_refresh()
     except SecretWriteError as exc:
         emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_OTHER) from exc
+    except ProviderConfigError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
         emit_error(
             error="auth_required",
@@ -348,8 +353,9 @@ def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
 @click.pass_context
 def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
     """Show config path and whether cache / auth record exist."""
-    payload = status_dict()
-    if _as_json(ctx, as_json_flag):
+    as_json = _as_json(ctx, as_json_flag)
+    payload = _workspace().auth_status()
+    if as_json:
         emit_json(payload)
         return
     lines = [
@@ -447,8 +453,8 @@ def skills_describe(ctx: click.Context, skill_id: str, as_json_flag: bool) -> No
 def doctor(ctx: click.Context, as_json_flag: bool) -> None:
     """Check config, cache, and skill scope notes."""
     as_json = _as_json(ctx, as_json_flag)
-    cfg = load_config()
-    status = status_dict(cfg)
+    cfg = _load_config()
+    status = _workspace(cfg).auth_status()
     problems: list[str] = []
     if not status["client_id_configured"]:
         problems.append("client_id missing in config.toml / BLUMKIN_CLIENT_ID")
@@ -492,10 +498,9 @@ def calendar_today_cmd(
     tz_name = _tz_name(ctx, tz_flag)
     day_value: date | None = day.date() if day is not None else None
     try:
-        payload = asyncio.run(calendar_today(day=day_value, tz_name=tz_name))
+        payload = asyncio.run(_workspace().calendar_today(day=day_value, tz_name=tz_name))
     except ValueError as exc:
-        emit_error(error="auth_required", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_AUTH) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -524,18 +529,13 @@ def calendar_view_cmd(
     """List events in half-open local range [--from, --to)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        cfg = load_config()
+        cfg = _load_config()
         tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
         start = datetime(from_day.year, from_day.month, from_day.day, tzinfo=tz)
         end = datetime(to_day.year, to_day.month, to_day.day, tzinfo=tz)
-        payload = asyncio.run(calendar_view(start=start, end=end))
+        payload = asyncio.run(_workspace().calendar_view(start=start, end=end))
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -566,20 +566,15 @@ def calendar_freebusy_cmd(
     """Get free/busy for one or more people."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        cfg = load_config()
+        cfg = _load_config()
         tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
         start = parse_local_datetime(start_raw, tz)
         end = parse_local_datetime(end_raw, tz)
         payload = asyncio.run(
-            calendar_freebusy(with_emails=list(with_emails), start=start, end=end)
+            _workspace().calendar_freebusy(with_emails=list(with_emails), start=start, end=end)
         )
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -642,12 +637,12 @@ def calendar_suggest_cmd(
     """Suggest mutual free slots from free/busy (does not create an event)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        cfg = load_config()
+        cfg = _load_config()
         tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
         start = parse_local_datetime(start_raw, tz)
         end = parse_local_datetime(end_raw, tz)
         payload = asyncio.run(
-            calendar_suggest(
+            _workspace().calendar_suggest(
                 with_emails=list(with_emails),
                 start=start,
                 end=end,
@@ -659,14 +654,10 @@ def calendar_suggest_cmd(
         )
     except ValueError as exc:
         msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
         if msg.startswith("freebusy lookup failed"):
             emit_error(error="graph_error", message=msg, as_json=as_json)
             raise SystemExit(EXIT_OTHER) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -705,22 +696,17 @@ def calendar_accept_cmd(
     try:
         tz_name = _tz_name(ctx, tz_flag)
         if today_pending:
-            cfg = load_config()
+            cfg = _load_config()
             ZoneInfo(tz_name or cfg.default_tz)
         payload = asyncio.run(
-            calendar_accept(
+            _workspace().calendar_accept(
                 event_id=event_id,
                 today_pending=today_pending,
                 tz_name=tz_name,
             )
         )
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -743,14 +729,9 @@ def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_fl
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
-        payload = asyncio.run(calendar_cancel(event_id=event_id))
+        payload = asyncio.run(_workspace().calendar_cancel(event_id=event_id))
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -794,7 +775,7 @@ def calendar_create_cmd(
     _require_yes(yes=yes, as_json=as_json)
     try:
         payload = asyncio.run(
-            calendar_create(
+            _workspace().calendar_create(
                 subject=subject,
                 with_emails=list(with_emails),
                 start_raw=start_raw,
@@ -804,12 +785,7 @@ def calendar_create_cmd(
             )
         )
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -847,19 +823,14 @@ def calendar_update_cmd(
     _require_yes(yes=yes, as_json=as_json)
     try:
         payload = asyncio.run(
-            calendar_update(
+            _workspace().calendar_update(
                 event_id=event_id,
                 teams=teams,
                 tz_name=_tz_name(ctx, tz_flag),
             )
         )
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -898,7 +869,7 @@ def chat_attachments_cmd(
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
-            chat_attachments_list(
+            _workspace().chat_attachments_list(
                 chat_id=chat_id,
                 latest=latest,
                 message_id=message_id,
@@ -939,7 +910,7 @@ def chat_attachments_download_cmd(
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
-            chat_attachments_download(
+            _workspace().chat_attachments_download(
                 attachment_id=attachment_id,
                 chat_id=chat_id,
                 download_all=download_all,
@@ -976,14 +947,9 @@ def chat_delete_cmd(
     _require_wo1162425_scopes(as_json=as_json)
     _require_yes(yes=yes, as_json=as_json)
     try:
-        payload = asyncio.run(chat_delete(chat_id=chat_id, message_id=message_id))
+        payload = asyncio.run(_workspace().chat_delete(chat_id=chat_id, message_id=message_id))
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1013,14 +979,11 @@ def chat_edit_cmd(
     _require_wo1162425_scopes(as_json=as_json)
     _require_yes(yes=yes, as_json=as_json)
     try:
-        payload = asyncio.run(chat_edit(chat_id=chat_id, message_id=message_id, text=text))
+        payload = asyncio.run(
+            _workspace().chat_edit(chat_id=chat_id, message_id=message_id, text=text)
+        )
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1038,14 +1001,9 @@ def chat_find_cmd(ctx: click.Context, with_name: str, as_json_flag: bool) -> Non
     """Find chats whose members match a display name."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = asyncio.run(chat_find(with_name=with_name))
+        payload = asyncio.run(_workspace().chat_find(with_name=with_name))
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1064,14 +1022,9 @@ def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool
     """Show last N messages from a matched chat."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = asyncio.run(chat_last(with_name=with_name, n=n))
+        payload = asyncio.run(_workspace().chat_last(with_name=with_name, n=n))
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1113,17 +1066,14 @@ def chat_send_cmd(
     _require_wo1162425_scopes(as_json=as_json)
     _require_yes(yes=yes, as_json=as_json)
     try:
-        payload = asyncio.run(chat_send(with_name=with_name, chat_id=chat_id, text=text))
+        payload = asyncio.run(
+            _workspace().chat_send(with_name=with_name, chat_id=chat_id, text=text)
+        )
     except LookupError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1166,7 +1116,7 @@ def mail_inbox_cmd(
     try:
         since_dt, until_dt = _mail_time_bounds(ctx, tz_flag, since=since, until=until)
         payload = asyncio.run(
-            mail_inbox(
+            _workspace().mail_inbox(
                 top=top,
                 search=search,
                 sender=sender,
@@ -1197,7 +1147,7 @@ def mail_folders_cmd(ctx: click.Context, as_json_flag: bool) -> None:
     """List mail folders with their ids and message counts."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = asyncio.run(mail_folders())
+        payload = asyncio.run(_workspace().mail_folders())
     except ValueError as exc:
         _raise_mail_value_error(exc, as_json=as_json)
     except Exception as exc:
@@ -1229,7 +1179,7 @@ def mail_get_cmd(
     """Read one message, including its body and attachments."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = asyncio.run(mail_get(message_id=message_id, body_type=body_type))
+        payload = asyncio.run(_workspace().mail_get(message_id=message_id, body_type=body_type))
     except MailMessageNotFoundError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
@@ -1288,7 +1238,7 @@ def mail_list_cmd(
     try:
         since_dt, until_dt = _mail_time_bounds(ctx, tz_flag, since=since, until=until)
         payload = asyncio.run(
-            mail_list(
+            _workspace().mail_list(
                 top=top,
                 folder=folder,
                 orderby=orderby,
@@ -1330,14 +1280,9 @@ def mail_attachments_cmd(ctx: click.Context, message_id: str | None, as_json_fla
         emit_error(error="usage_error", message="--id is required", as_json=as_json)
         raise SystemExit(EXIT_USAGE)
     try:
-        payload = asyncio.run(mail_attachments_list(message_id=message_id))
+        payload = asyncio.run(_workspace().mail_attachments_list(message_id=message_id))
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except MailMessageNotFoundError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
@@ -1369,7 +1314,7 @@ def mail_attachments_download_cmd(
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
-            mail_attachments_download(
+            _workspace().mail_attachments_download(
                 message_id=message_id,
                 attachment_id=attachment_id,
                 download_all=download_all,
@@ -1377,12 +1322,7 @@ def mail_attachments_download_cmd(
             )
         )
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except MailMessageNotFoundError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
@@ -1409,17 +1349,12 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
     """Delete a draft message (does not notify recipients)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = asyncio.run(mail_delete_draft(draft_id=draft_id))
+        payload = asyncio.run(_workspace().mail_delete_draft(draft_id=draft_id))
     except MailDraftNotFoundError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1494,7 +1429,7 @@ def mail_draft_cmd(
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
-            mail_draft(
+            _workspace().mail_draft(
                 to=to,
                 cc=cc,
                 bcc=bcc,
@@ -1517,12 +1452,7 @@ def mail_draft_cmd(
         )
         raise SystemExit(EXIT_USAGE) from exc
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1572,7 +1502,7 @@ def mail_forward_cmd(
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
-            mail_forward(
+            _workspace().mail_forward(
                 message_id=message_id,
                 to=to,
                 body=body,
@@ -1640,7 +1570,7 @@ def mail_reply_cmd(
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
-            mail_reply(
+            _workspace().mail_reply(
                 message_id=message_id,
                 body=body,
                 body_file=body_file,
@@ -1678,14 +1608,9 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
-        payload = asyncio.run(mail_send_draft(draft_id=draft_id))
+        payload = asyncio.run(_workspace().mail_send_draft(draft_id=draft_id))
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1754,7 +1679,7 @@ def mail_update_draft_cmd(
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
-            mail_update_draft(
+            _workspace().mail_update_draft(
                 draft_id=draft_id,
                 attach=attach,
                 subject=subject,
@@ -1780,12 +1705,7 @@ def mail_update_draft_cmd(
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1809,17 +1729,12 @@ def meeting_get_cmd(ctx: click.Context, event_id: str, as_json_flag: bool) -> No
     as_json = _as_json(ctx, as_json_flag)
     _require_wo1162425_scopes(as_json=as_json)
     try:
-        payload = asyncio.run(meeting_get(event_id=event_id))
+        payload = asyncio.run(_workspace().meeting_get(event_id=event_id))
     except LookupError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1848,17 +1763,12 @@ def meeting_transcription_cmd(
     if enable:
         _require_yes(yes=yes, as_json=as_json)
     try:
-        payload = asyncio.run(meeting_transcription(event_id=event_id, enable=enable))
+        payload = asyncio.run(_workspace().meeting_transcription(event_id=event_id, enable=enable))
     except LookupError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:
@@ -1896,17 +1806,12 @@ def people_resolve_cmd(
     as_json = _as_json(ctx, as_json_flag)
     _require_wo1162425_scopes(as_json=as_json)
     try:
-        payload = asyncio.run(people_resolve(name=name, email=email, top=top))
+        payload = asyncio.run(_workspace().people_resolve(name=name, email=email, top=top))
     except LookupError as exc:
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
     except ValueError as exc:
-        msg = str(exc)
-        if "client_id" in msg or "Missing" in msg:
-            emit_error(error="auth_required", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_AUTH) from exc
-        emit_error(error="usage_error", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
     if as_json:

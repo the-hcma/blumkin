@@ -41,9 +41,12 @@ Create `~/.config/blumkin/config.toml` (mode `0600`):
 
 ```toml
 client_id = "<entra-public-client-id>"
-tenant_id = "brk.tech"
-default_tz = "America/New_York"
+tenant_id = "<your-entra-tenant>"
+default_tz = "<IANA timezone, e.g. America/New_York>"
+provider = "microsoft"
 ```
+
+Set `tenant_id`, `default_tz`, and `provider` in this file (there are no org-specific code defaults). `provider` defaults to `microsoft` when omitted.
 
 Interactive browser auth is public-client only (`client_id` + `tenant_id`). Do not set a client secret for this flow.
 

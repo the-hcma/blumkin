@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
+from blumkin.providers.kind import ProviderKind
 from blumkin.skills.mail import append_mail_signature, mail_draft, render_mail_signature
 
 
@@ -76,6 +77,7 @@ def test_append_mail_signature_html_separator_and_empty_body() -> None:
         files_scopes=False,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
+        provider=ProviderKind.MICROSOFT,
         tenant_id="t",
         wo1162425_scopes=False,
     )
@@ -119,6 +121,7 @@ def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
         files_scopes=False,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
+        provider=ProviderKind.MICROSOFT,
         tenant_id="t",
         wo1162425_scopes=False,
     )
