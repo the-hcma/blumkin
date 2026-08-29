@@ -213,7 +213,7 @@ failure path.
 |------|---------------|---------|
 | 0 | — | Success |
 | 1 | `graph_error`, `secret_write_failed` | Unexpected Graph failure, or local secret cache/auth-record write failed (e.g. symlink at the path) |
-| 2 | `usage_error`, or none | Bad arguments, **or `wo1162425_scopes` switched off** |
+| 2 | `usage_error`, or none | Bad arguments; **`wo1162425_scopes` switched off**; or **`people resolve` ambiguous** (`ambiguous: true` + candidates on **stdout**, no stderr envelope) |
 | 3 | `auth_required` | Run `blumkin auth login` on this machine |
 | 4 | `missing_scope` | A scope is unavailable — the tenant has not granted it, or `files_scopes` is off |
 | 5 | `not_found` | The named thing does not exist |
@@ -221,8 +221,12 @@ failure path.
 The two config opt-ins do **not** share an exit code, so do not treat "opt-in is
 off" as a single condition:
 
-- `wo1162425_scopes` off — chat write, meeting commands, and `calendar create
-  --teams` exit **2** with `usage_error`.
+- `wo1162425_scopes` off — chat write, meeting commands, `calendar create
+  --teams`, and `people resolve` exit **2** with `usage_error`.
+- `people resolve` ambiguous — also exit **2**, but success-shaped **stdout**
+  carries `ambiguous: true` and the candidate list (no stderr `usage_error`
+  envelope). Branch on `ambiguous` / the candidate list before treating exit 2
+  as bad arguments or a missing config flag.
 - `files_scopes` off — `chat attachments download` exits **4** with
   `missing_scope` and the share URL in the message. Listing still works.
 
@@ -327,7 +331,8 @@ argument rather than a frozen list.
 - Putting client ids or secrets in a skill or instructions file
 - Running a `notifies_others` skill to test something
 - Inventing SMTP addresses from display names, or probing `calendar freebusy`
-  as a people directory
+  as a people directory — use `blumkin people resolve` and ask the user when
+  `ambiguous: true`
 - Inventing colored HTML mail signatures per draft (use `[mail.signature]` /
   `--no-signature` instead)
 - Re-login looping on exit `1` / `secret_write_failed` instead of fixing the

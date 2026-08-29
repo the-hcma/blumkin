@@ -242,6 +242,20 @@ def test_wo1162425_scopes_disabled_blocks_chat_send(tmp_path: Path, monkeypatch)
     assert "WO1162425 add-on scopes are disabled" in (result.output or "")
 
 
+def test_wo1162425_scopes_disabled_blocks_people_resolve(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
+    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["people", "resolve", "--name", "Ada", "--json"],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert "WO1162425 add-on scopes are disabled" in (result.output or "")
+    assert "people resolve" in (result.output or "")
+
+
 def test_chat_attachments_download_missing_scope_exits_missing_scope(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise ChatAttachmentScopeError("needs Files.Read — open https://example.invalid/f.docx")

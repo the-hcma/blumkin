@@ -14,6 +14,8 @@ def test_effective_scopes_default_excludes_phase4() -> None:
 
 def test_effective_scopes_enabled_includes_phase4() -> None:
     assert effective_scopes(_cfg(wo1162425_scopes=True)) == [*BASE_SCOPES, *WO1162425_SCOPES]
+    assert "People.Read" in WO1162425_SCOPES
+    assert "People.Read" not in BASE_SCOPES
 
 
 def test_effective_scopes_files_opt_in() -> None:

@@ -354,6 +354,7 @@ _CONSENT = {
     "mail.update-draft": (True, False),
     "meeting.get": (False, False),
     "meeting.transcription": (True, False),
+    "people.resolve": (False, False),
     "skills.describe": (False, False),
     "skills.list": (False, False),
 }

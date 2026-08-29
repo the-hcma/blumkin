@@ -37,9 +37,14 @@ class SecretWriteError(OSError):
     """Failed to persist the MSAL cache or auth record (symlink, perms, etc.)."""
 
 
+# Remedy WO1162425 was augmented beyond the original chat/meetings pair; Identity has
+# not finished granting the new asks. Keep these off until wo1162425_scopes + re-consent.
+# Full ask list (Teams / mailbox / productivity) lives in HANDOFF.md — only scopes we
+# actually request at runtime belong here.
 WO1162425_SCOPES = [
     "Chat.ReadWrite",
     "OnlineMeetings.ReadWrite",
+    "People.Read",
 ]
 
 _token_cache = SerializableTokenCache()
