@@ -23,6 +23,7 @@ from blumkin.exit_codes import (
 )
 from blumkin.output import emit_error, emit_json, emit_lines
 from blumkin.providers import get_provider
+from blumkin.providers.kind import ProviderConfigError
 from blumkin.providers.protocol import WorkspaceProvider
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
@@ -87,12 +88,17 @@ from blumkin.skills.meeting import format_transcription_human
 from blumkin.skills.people import format_resolve_human
 
 
-def _workspace(config: BlumkinConfig | None = None) -> WorkspaceProvider:
-    return get_provider(config if config is not None else load_config())
-
-
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
-    return bool(ctx.obj.get("as_json") or as_json_flag)
+    value = bool(ctx.obj.get("as_json") or as_json_flag)
+    ctx.obj["as_json"] = value
+    return value
+
+
+def _cli_as_json() -> bool:
+    ctx = click.get_current_context(silent=True)
+    if ctx is None or not isinstance(ctx.obj, dict):
+        return False
+    return bool(ctx.obj.get("as_json"))
 
 
 def _graph_http_status(exc: BaseException) -> int | None:
@@ -110,6 +116,40 @@ def _graph_http_status(exc: BaseException) -> int | None:
     return None
 
 
+def _load_config() -> BlumkinConfig:
+    try:
+        return load_config()
+    except ProviderConfigError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
+        raise SystemExit(EXIT_USAGE) from exc
+
+
+def _mail_time_bounds(
+    ctx: click.Context,
+    tz_flag: str | None,
+    *,
+    since: str | None,
+    until: str | None,
+) -> tuple[datetime | None, datetime | None]:
+    """Parse --since/--until in the operator's timezone, as `calendar view` does."""
+    if since is None and until is None:
+        # Resolving a zone nobody asked about would reject a plain listing over --tz.
+        return (None, None)
+    tz = ZoneInfo(_tz_name(ctx, tz_flag) or _load_config().default_tz)
+    return (
+        None if since is None else parse_local_datetime(since, tz),
+        None if until is None else parse_local_datetime(until, tz),
+    )
+
+
+def _raise_auth_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
+    if isinstance(exc, ProviderConfigError):
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    emit_error(error="auth_required", message=str(exc), as_json=as_json)
+    raise SystemExit(EXIT_AUTH) from exc
+
+
 def _raise_chat_attachment_error(exc: BaseException, *, as_json: bool) -> NoReturn:
     if isinstance(exc, ChatAttachmentScopeError):
         emit_error(error="missing_scope", message=str(exc), as_json=as_json)
@@ -118,6 +158,9 @@ def _raise_chat_attachment_error(exc: BaseException, *, as_json: bool) -> NoRetu
         emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
     if isinstance(exc, ChatAttachmentSkippedError):
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    if isinstance(exc, ProviderConfigError):
         emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     if isinstance(exc, ValueError):
@@ -160,25 +203,10 @@ def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
     raise SystemExit(EXIT_OTHER) from exc
 
 
-def _mail_time_bounds(
-    ctx: click.Context,
-    tz_flag: str | None,
-    *,
-    since: str | None,
-    until: str | None,
-) -> tuple[datetime | None, datetime | None]:
-    """Parse --since/--until in the operator's timezone, as `calendar view` does."""
-    if since is None and until is None:
-        # Resolving a zone nobody asked about would reject a plain listing over --tz.
-        return (None, None)
-    tz = ZoneInfo(_tz_name(ctx, tz_flag) or load_config().default_tz)
-    return (
-        None if since is None else parse_local_datetime(since, tz),
-        None if until is None else parse_local_datetime(until, tz),
-    )
-
-
 def _raise_mail_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
+    if isinstance(exc, ProviderConfigError):
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     msg = str(exc)
     if "client_id" in msg or "Missing" in msg:
         emit_error(error="auth_required", message=msg, as_json=as_json)
@@ -187,12 +215,8 @@ def _raise_mail_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
     raise SystemExit(EXIT_USAGE) from exc
 
 
-def _tz_name(ctx: click.Context, tz_flag: str | None) -> str | None:
-    return tz_flag if tz_flag is not None else ctx.obj.get("tz_name")
-
-
 def _require_wo1162425_scopes(*, as_json: bool) -> None:
-    cfg = load_config()
+    cfg = _load_config()
     if cfg.wo1162425_scopes:
         return
     emit_error(
@@ -219,6 +243,18 @@ def _require_yes(*, yes: bool, as_json: bool) -> None:
             as_json=as_json,
         )
         raise SystemExit(EXIT_USAGE)
+
+
+def _tz_name(ctx: click.Context, tz_flag: str | None) -> str | None:
+    return tz_flag if tz_flag is not None else ctx.obj.get("tz_name")
+
+
+def _workspace(config: BlumkinConfig | None = None) -> WorkspaceProvider:
+    try:
+        return get_provider(config if config is not None else load_config())
+    except ProviderConfigError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
+        raise SystemExit(EXIT_USAGE) from exc
 
 
 @click.group()
@@ -257,6 +293,9 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
             ),
         )
         raise SystemExit(EXIT_OTHER) from exc
+    except ProviderConfigError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
         emit_error(
             error="auth_required",
@@ -276,8 +315,9 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
 @click.pass_context
 def auth_logout(ctx: click.Context, as_json_flag: bool) -> None:
     """Delete local token cache and auth record."""
+    as_json = _as_json(ctx, as_json_flag)
     _workspace().auth_logout()
-    if _as_json(ctx, as_json_flag):
+    if as_json:
         emit_json({"ok": True})
     else:
         emit_lines(["Logged out (cache files removed)."])
@@ -294,6 +334,9 @@ def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
     except SecretWriteError as exc:
         emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_OTHER) from exc
+    except ProviderConfigError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except Exception as exc:
         emit_error(
             error="auth_required",
@@ -314,8 +357,9 @@ def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
 @click.pass_context
 def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
     """Show config path and whether cache / auth record exist."""
+    as_json = _as_json(ctx, as_json_flag)
     payload = _workspace().auth_status()
-    if _as_json(ctx, as_json_flag):
+    if as_json:
         emit_json(payload)
         return
     lines = [
@@ -413,8 +457,8 @@ def skills_describe(ctx: click.Context, skill_id: str, as_json_flag: bool) -> No
 def doctor(ctx: click.Context, as_json_flag: bool) -> None:
     """Check config, cache, and skill scope notes."""
     as_json = _as_json(ctx, as_json_flag)
-    cfg = load_config()
-    status = get_provider(cfg).auth_status()
+    cfg = _load_config()
+    status = _workspace(cfg).auth_status()
     problems: list[str] = []
     if not status["client_id_configured"]:
         problems.append("client_id missing in config.toml / BLUMKIN_CLIENT_ID")
@@ -460,8 +504,7 @@ def calendar_today_cmd(
     try:
         payload = asyncio.run(_workspace().calendar_today(day=day_value, tz_name=tz_name))
     except ValueError as exc:
-        emit_error(error="auth_required", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_AUTH) from exc
+        _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
         emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -490,7 +533,7 @@ def calendar_view_cmd(
     """List events in half-open local range [--from, --to)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        cfg = load_config()
+        cfg = _load_config()
         tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
         start = datetime(from_day.year, from_day.month, from_day.day, tzinfo=tz)
         end = datetime(to_day.year, to_day.month, to_day.day, tzinfo=tz)
@@ -532,7 +575,7 @@ def calendar_freebusy_cmd(
     """Get free/busy for one or more people."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        cfg = load_config()
+        cfg = _load_config()
         tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
         start = parse_local_datetime(start_raw, tz)
         end = parse_local_datetime(end_raw, tz)
@@ -608,7 +651,7 @@ def calendar_suggest_cmd(
     """Suggest mutual free slots from free/busy (does not create an event)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        cfg = load_config()
+        cfg = _load_config()
         tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
         start = parse_local_datetime(start_raw, tz)
         end = parse_local_datetime(end_raw, tz)
@@ -671,7 +714,7 @@ def calendar_accept_cmd(
     try:
         tz_name = _tz_name(ctx, tz_flag)
         if today_pending:
-            cfg = load_config()
+            cfg = _load_config()
             ZoneInfo(tz_name or cfg.default_tz)
         payload = asyncio.run(
             _workspace().calendar_accept(

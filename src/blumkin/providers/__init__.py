@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from blumkin.providers.kind import ProviderKind, parse_provider_kind
+from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
 if TYPE_CHECKING:
     from blumkin.config import BlumkinConfig
@@ -20,13 +20,14 @@ def get_provider(config: BlumkinConfig | None = None) -> WorkspaceProvider:
     cfg = config or load_config()
     if cfg.provider is ProviderKind.MICROSOFT:
         return MicrosoftWorkspaceProvider(cfg)
-    raise ValueError(
+    raise ProviderConfigError(
         f"provider {cfg.provider.value!r} is not implemented yet (see GitHub #67 / #84)"
     )
 
 
 __all__ = [
     "MicrosoftWorkspaceProvider",
+    "ProviderConfigError",
     "ProviderKind",
     "WorkspaceProvider",
     "get_provider",

@@ -43,6 +43,22 @@ def _patch_wo1162425_enabled(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.cli.load_config", _load)
 
 
+def test_auth_status_unsupported_provider_exits_usage(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        'client_id = "00000000-0000-0000-0000-000000000001"\n'
+        'provider = "google"\n'
+        'tenant_id = "example.onmicrosoft.com"\n'
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["auth", "status", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    combined = (result.output or "") + (result.stderr or "")
+    assert "usage_error" in combined
+    assert "google" in combined
+    assert "Traceback" not in combined
+
+
 def test_calendar_accept_invalid_tz_exits_usage(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(

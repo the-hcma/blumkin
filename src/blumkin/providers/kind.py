@@ -1,8 +1,12 @@
-"""Provider kind enum and config/env parsing."""
+"""Provider kind enum and config parsing."""
 
 from __future__ import annotations
 
 from enum import StrEnum
+
+
+class ProviderConfigError(ValueError):
+    """Invalid or unimplemented ``provider`` value in config.toml."""
 
 
 class ProviderKind(StrEnum):
@@ -12,16 +16,17 @@ class ProviderKind(StrEnum):
 
 
 def parse_provider_kind(raw: str) -> ProviderKind:
-    """Parse a config/env provider string.
+    """Parse a config.toml ``provider`` string.
 
-    ``google`` is reserved and rejected until a Google adapter lands (#67 / #84).
+    Only ``microsoft`` is accepted today. ``google`` is reserved until an adapter
+    lands (#67 / #84).
     """
     key = raw.strip().lower()
-    if key in {"", "microsoft", "ms", "m365", "graph"}:
+    if key in {"", "microsoft"}:
         return ProviderKind.MICROSOFT
     if key == "google":
-        raise ValueError(
+        raise ProviderConfigError(
             "provider 'google' is not implemented yet (see GitHub #67 / #84); "
             'use provider = "microsoft"'
         )
-    raise ValueError(f"unknown provider {raw!r}; supported: microsoft")
+    raise ProviderConfigError(f"unknown provider {raw!r}; supported: microsoft")

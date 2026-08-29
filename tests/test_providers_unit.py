@@ -10,37 +10,49 @@ import pytest
 
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.providers import get_provider
-from blumkin.providers.kind import ProviderKind, parse_provider_kind
+from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
 
 
-def test_parse_provider_kind_defaults_and_aliases() -> None:
+def test_parse_provider_kind_accepts_microsoft() -> None:
     assert parse_provider_kind("") is ProviderKind.MICROSOFT
     assert parse_provider_kind("Microsoft") is ProviderKind.MICROSOFT
-    assert parse_provider_kind("m365") is ProviderKind.MICROSOFT
+    assert parse_provider_kind("microsoft") is ProviderKind.MICROSOFT
 
 
-def test_parse_provider_kind_rejects_google_and_unknown() -> None:
-    with pytest.raises(ValueError, match="not implemented"):
+def test_parse_provider_kind_rejects_aliases_google_and_unknown() -> None:
+    with pytest.raises(ProviderConfigError, match="unknown provider"):
+        parse_provider_kind("m365")
+    with pytest.raises(ProviderConfigError, match="not implemented"):
         parse_provider_kind("google")
-    with pytest.raises(ValueError, match="unknown provider"):
+    with pytest.raises(ProviderConfigError, match="unknown provider"):
         parse_provider_kind("yahoo")
 
 
-def test_load_config_provider_default_and_env(tmp_path: Path, monkeypatch) -> None:
+def test_load_config_provider_default(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv("BLUMKIN_PROVIDER", raising=False)
     (tmp_path / "config.toml").write_text('client_id = "abc"\n')
     assert load_config().provider is ProviderKind.MICROSOFT
-    monkeypatch.setenv("BLUMKIN_PROVIDER", "microsoft")
+
+
+def test_load_config_provider_ignores_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('client_id = "abc"\nprovider = "microsoft"\n')
+    monkeypatch.setenv("BLUMKIN_PROVIDER", "google")
     assert load_config().provider is ProviderKind.MICROSOFT
 
 
 def test_load_config_provider_toml(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv("BLUMKIN_PROVIDER", raising=False)
     (tmp_path / "config.toml").write_text('client_id = "abc"\nprovider = "microsoft"\n')
     assert load_config().provider is ProviderKind.MICROSOFT
+
+
+def test_load_config_provider_google_raises(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('client_id = "abc"\nprovider = "google"\n')
+    with pytest.raises(ProviderConfigError, match="not implemented"):
+        load_config()
 
 
 def test_get_provider_returns_microsoft() -> None:

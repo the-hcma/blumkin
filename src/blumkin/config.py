@@ -181,9 +181,6 @@ def _optional_str(value: Any) -> str | None:
 
 
 def _provider_kind(file_data: dict[str, Any]) -> ProviderKind:
-    raw_env = os.environ.get("BLUMKIN_PROVIDER", "").strip()
-    if raw_env:
-        return parse_provider_kind(raw_env)
     raw = file_data.get("provider")
     if isinstance(raw, str) and raw.strip():
         return parse_provider_kind(raw)
