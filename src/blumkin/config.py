@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from blumkin.providers.kind import ProviderKind, parse_provider_kind
+
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
 DEFAULT_TENANT_ID = "brk.tech"
 DEFAULT_TZ = "America/New_York"
@@ -21,6 +23,7 @@ class BlumkinConfig:
     files_scopes: bool
     graph_timeout_seconds: float
     mail_signature: MailSignatureConfig
+    provider: ProviderKind
     tenant_id: str
     wo1162425_scopes: bool
 
@@ -85,6 +88,7 @@ def load_config() -> BlumkinConfig:
         files_scopes=_files_scopes_enabled(file_data),
         graph_timeout_seconds=_graph_timeout_seconds(file_data),
         mail_signature=_mail_signature_config(file_data),
+        provider=_provider_kind(file_data),
         tenant_id=tenant_id,
         wo1162425_scopes=_wo1162425_scopes_enabled(file_data),
     )
@@ -174,6 +178,16 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _provider_kind(file_data: dict[str, Any]) -> ProviderKind:
+    raw_env = os.environ.get("BLUMKIN_PROVIDER", "").strip()
+    if raw_env:
+        return parse_provider_kind(raw_env)
+    raw = file_data.get("provider")
+    if isinstance(raw, str) and raw.strip():
+        return parse_provider_kind(raw)
+    return ProviderKind.MICROSOFT
 
 
 def _read_toml(path: Path) -> dict[str, Any]:

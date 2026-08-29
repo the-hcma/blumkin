@@ -106,7 +106,7 @@ def test_mail_attachments_list_emits_json(monkeypatch) -> None:
             "message_id": kwargs["message_id"],
         }
 
-    monkeypatch.setattr("blumkin.cli.mail_attachments_list", _ok)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_attachments_list", _ok)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "attachments", "--id", "msg-1", "--json"])
     assert result.exit_code == 0
@@ -126,10 +126,10 @@ def test_mail_attachments_download_wires_options_and_emits_json(tmp_path, monkey
     seen: dict[str, object] = {}
 
     async def _ok(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {"message_id": kwargs["message_id"], "saved": [{"name": "a.docx"}], "skipped": []}
 
-    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _ok)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_attachments_download", _ok)
     runner = CliRunner()
     out = tmp_path / "saved.docx"
     result = runner.invoke(
@@ -168,7 +168,7 @@ def test_chat_send_ambiguous_exits_usage(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise ValueError("ambiguous chat match for 'dan' (2 chats); pass --chat-id")
 
-    monkeypatch.setattr("blumkin.cli.chat_send", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.chat_send", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -222,7 +222,7 @@ def test_wo1162425_scopes_disabled_allows_calendar_create_teams(
             }
         }
 
-    monkeypatch.setattr("blumkin.cli.calendar_create", _create)
+    monkeypatch.setattr("blumkin.providers.microsoft.calendar_create", _create)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -274,7 +274,7 @@ def test_chat_attachments_download_missing_scope_exits_missing_scope(monkeypatch
     async def _boom(**_kwargs):
         raise ChatAttachmentScopeError("needs Files.Read — open https://example.invalid/f.docx")
 
-    monkeypatch.setattr("blumkin.cli.chat_attachments_download", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.chat_attachments_download", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -301,7 +301,7 @@ def test_chat_attachments_download_skipped_exits_usage(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise ChatAttachmentSkippedError("adaptive card attachment carries no file content")
 
-    monkeypatch.setattr("blumkin.cli.chat_attachments_download", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.chat_attachments_download", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -328,7 +328,7 @@ def test_chat_attachments_download_wires_options_and_emits_json(tmp_path, monkey
     seen: dict[str, object] = {}
 
     async def _fake(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "chat": None,
             "chat_id": "chat-1",
@@ -337,7 +337,7 @@ def test_chat_attachments_download_wires_options_and_emits_json(tmp_path, monkey
             "skipped": [],
         }
 
-    monkeypatch.setattr("blumkin.cli.chat_attachments_download", _fake)
+    monkeypatch.setattr("blumkin.providers.microsoft.chat_attachments_download", _fake)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -365,7 +365,7 @@ def test_chat_attachments_list_message_not_found_exits_not_found(monkeypatch) ->
     async def _boom(**_kwargs):
         raise ChatMessageNotFoundError("chat message not found: missing")
 
-    monkeypatch.setattr("blumkin.cli.chat_attachments_list", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.chat_attachments_list", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -387,7 +387,7 @@ def test_chat_send_wires_options_and_emits_json(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _ok(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "chat": {"id": "chat-1", "topic": "T"},
             "message": {"id": "msg-1", "body_text": kwargs["text"]},
@@ -396,7 +396,7 @@ def test_chat_send_wires_options_and_emits_json(monkeypatch) -> None:
             "skipped": 0,
         }
 
-    monkeypatch.setattr("blumkin.cli.chat_send", _ok)
+    monkeypatch.setattr("blumkin.providers.microsoft.chat_send", _ok)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -414,7 +414,7 @@ def test_meeting_get_not_found_exits(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise LookupError("event is not a Teams online meeting: evt-1")
 
-    monkeypatch.setattr("blumkin.cli.meeting_get", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.meeting_get", _boom)
     runner = CliRunner()
     result = runner.invoke(main, ["meeting", "get", "--event-id", "evt-1", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
@@ -425,7 +425,7 @@ def test_mail_attachments_download_all_existing_file_out_exits_usage(monkeypatch
     async def _boom(**_kwargs):
         raise ValueError("--out must be a directory when using --all")
 
-    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_attachments_download", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -449,7 +449,7 @@ def test_mail_attachments_download_attachment_not_found_exits_not_found(monkeypa
     async def _boom(**_kwargs):
         raise MailAttachmentNotFoundError("attachment not found: missing")
 
-    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_attachments_download", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -474,7 +474,7 @@ def test_mail_attachments_download_skipped_exits_usage(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise MailAttachmentSkippedError("#microsoft.graph.itemAttachment not supported in v1")
 
-    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_attachments_download", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -499,7 +499,7 @@ def test_mail_attachments_download_not_found_exits_not_found(monkeypatch) -> Non
     async def _boom(**_kwargs):
         raise MailMessageNotFoundError("message not found: missing")
 
-    monkeypatch.setattr("blumkin.cli.mail_attachments_download", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_attachments_download", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -524,7 +524,7 @@ def test_mail_attachments_list_not_found_exits_not_found(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise MailMessageNotFoundError("message not found: missing")
 
-    monkeypatch.setattr("blumkin.cli.mail_attachments_list", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_attachments_list", _boom)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "attachments", "--id", "missing", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
@@ -535,7 +535,7 @@ def test_mail_folders_emits_json(monkeypatch) -> None:
     async def _folders(**_kwargs):
         return {"folders": [{"id": "inbox-id", "name": "Inbox", "path": "Inbox", "total": 3}]}
 
-    monkeypatch.setattr("blumkin.cli.mail_folders", _folders)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_folders", _folders)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "folders", "--json"])
     assert result.exit_code == EXIT_SUCCESS
@@ -546,7 +546,7 @@ def test_mail_get_message_not_found_exits_not_found(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise MailMessageNotFoundError("message not found: 'nope'")
 
-    monkeypatch.setattr("blumkin.cli.mail_get", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_get", _boom)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "get", "--id", "nope", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
@@ -563,10 +563,10 @@ def test_mail_get_wires_options_and_emits_json(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _get(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {"message": {"id": "msg-1", "subject": "Quarterly sync"}}
 
-    monkeypatch.setattr("blumkin.cli.mail_get", _get)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_get", _get)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "get", "--id", "msg-1", "--body-type", "html", "--json"])
     assert result.exit_code == EXIT_SUCCESS
@@ -578,7 +578,7 @@ def test_mail_list_folder_not_found_exits_not_found(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise MailFolderNotFoundError("mail folder not found: 'nope'")
 
-    monkeypatch.setattr("blumkin.cli.mail_list", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_list", _boom)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "list", "--folder", "nope", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
@@ -595,10 +595,10 @@ def test_mail_list_wires_options_and_emits_json(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _list(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {"folder": "sentitems", "items": [], "orderby": "sent", "top": 5}
 
-    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_list", _list)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -623,10 +623,10 @@ def test_mail_list_wires_filters_and_parses_dates(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _list(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {"filters": {}, "folder": None, "items": [], "orderby": "received", "top": 10}
 
-    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_list", _list)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -661,7 +661,7 @@ def test_mail_list_rejects_an_unknown_timezone(monkeypatch) -> None:
     async def _list(**_kwargs):
         raise AssertionError("should not reach Graph")
 
-    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_list", _list)
     runner = CliRunner()
     result = runner.invoke(
         main, ["mail", "list", "--since", "2026-08-01", "--tz", "Not/AZone", "--json"]
@@ -675,10 +675,10 @@ def test_mail_list_without_bounds_ignores_the_timezone(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _list(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {"filters": {}, "folder": None, "items": [], "orderby": "received", "top": 10}
 
-    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_list", _list)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "list", "--tz", "Not/AZone", "--json"])
     assert result.exit_code == EXIT_SUCCESS
@@ -689,7 +689,7 @@ def test_mail_list_search_conflict_exits_usage(monkeypatch) -> None:
     async def _list(**_kwargs):
         raise ValueError("--search cannot be combined with --from")
 
-    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_list", _list)
     runner = CliRunner()
     result = runner.invoke(
         main, ["mail", "list", "--search", "budget", "--from", "Rebecca", "--json"]
@@ -702,7 +702,7 @@ def test_mail_list_search_since_conflict_exits_usage(monkeypatch) -> None:
     async def _list(**_kwargs):
         raise ValueError("--search cannot be combined with --since")
 
-    monkeypatch.setattr("blumkin.cli.mail_list", _list)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_list", _list)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -716,10 +716,10 @@ def test_mail_inbox_wires_filters(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _inbox(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {"filters": {}, "items": [], "orderby": None, "top": 10}
 
-    monkeypatch.setattr("blumkin.cli.mail_inbox", _inbox)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_inbox", _inbox)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "inbox", "--search", "budget", "--json"])
     assert result.exit_code == EXIT_SUCCESS
@@ -732,10 +732,10 @@ def test_mail_reply_needs_no_yes_because_it_only_drafts(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _reply(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {"draft": {"id": "draft-1", "kind": "reply", "source_message_id": "msg-1", "to": []}}
 
-    monkeypatch.setattr("blumkin.cli.mail_reply", _reply)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_reply", _reply)
     runner = CliRunner()
     result = runner.invoke(
         main, ["mail", "reply", "--id", "msg-1", "--body", "Thanks", "--all", "--json"]
@@ -759,7 +759,7 @@ def test_mail_compose_commands_wire_no_signature_flag(monkeypatch) -> None:
 
     async def _capture(**kwargs):
         seen.clear()
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "draft": {
                 "id": "draft-1",
@@ -770,9 +770,9 @@ def test_mail_compose_commands_wire_no_signature_flag(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr("blumkin.cli.mail_reply", _capture)
-    monkeypatch.setattr("blumkin.cli.mail_forward", _capture)
-    monkeypatch.setattr("blumkin.cli.mail_draft", _capture)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_reply", _capture)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_forward", _capture)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_draft", _capture)
     runner = CliRunner()
 
     reply = runner.invoke(
@@ -820,7 +820,7 @@ def test_mail_reply_message_not_found_exits_not_found(monkeypatch) -> None:
     async def _reply(**_kwargs):
         raise MailMessageNotFoundError("message not found: 'nope'")
 
-    monkeypatch.setattr("blumkin.cli.mail_reply", _reply)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_reply", _reply)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "reply", "--id", "nope", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
@@ -834,7 +834,7 @@ def test_mail_reply_passes_body_file_and_body_type_through(tmp_path, monkeypatch
     path.write_text("<p>Thanks</p>", encoding="utf-8")
 
     async def _reply(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "draft": {
                 "id": "draft-1",
@@ -844,7 +844,7 @@ def test_mail_reply_passes_body_file_and_body_type_through(tmp_path, monkeypatch
             }
         }
 
-    monkeypatch.setattr("blumkin.cli.mail_reply", _reply)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_reply", _reply)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -870,7 +870,7 @@ def test_mail_forward_wires_options(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _forward(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "draft": {
                 "id": "draft-1",
@@ -880,7 +880,7 @@ def test_mail_forward_wires_options(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr("blumkin.cli.mail_forward", _forward)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_forward", _forward)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -909,7 +909,7 @@ def test_mail_reply_wires_cc_and_bcc(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _reply(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "draft": {
                 "id": "draft-1",
@@ -919,7 +919,7 @@ def test_mail_reply_wires_cc_and_bcc(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr("blumkin.cli.mail_reply", _reply)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_reply", _reply)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -947,7 +947,7 @@ def test_mail_forward_message_not_found_exits_not_found(monkeypatch) -> None:
     async def _forward(**_kwargs):
         raise MailMessageNotFoundError("message not found: 'nope'")
 
-    monkeypatch.setattr("blumkin.cli.mail_forward", _forward)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_forward", _forward)
     runner = CliRunner()
     result = runner.invoke(
         main, ["mail", "forward", "--id", "nope", "--to", "sam@example.com", "--json"]
@@ -963,7 +963,7 @@ def test_mail_forward_body_file_error_exits_usage(tmp_path, monkeypatch) -> None
     async def _boom(**_kwargs):
         raise MailBodyFileError(f"cannot read --body-file {path}: boom")
 
-    monkeypatch.setattr("blumkin.cli.mail_forward", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_forward", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -984,10 +984,10 @@ def test_mail_forward_body_file_error_exits_usage(tmp_path, monkeypatch) -> None
 
 
 def test_mail_delete_draft_without_yes_succeeds(monkeypatch) -> None:
-    async def _delete(*, draft_id: str):
+    async def _delete(*, draft_id: str, config=None):
         return {"deleted": draft_id}
 
-    monkeypatch.setattr("blumkin.cli.mail_delete_draft", _delete)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_delete_draft", _delete)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "delete-draft", "--id", "draft-1", "--json"])
     assert result.exit_code == 0
@@ -999,7 +999,7 @@ def test_mail_delete_draft_not_draft_exits_not_found(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise MailDraftNotFoundError("message is not a draft: msg-1")
 
-    monkeypatch.setattr("blumkin.cli.mail_delete_draft", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_delete_draft", _boom)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "delete-draft", "--id", "msg-1", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
@@ -1010,7 +1010,7 @@ def test_graph_404_via_api_error_exits_not_found(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise APIError("gone", response_status_code=404)
 
-    monkeypatch.setattr("blumkin.cli.mail_delete_draft", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_delete_draft", _boom)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "delete-draft", "--id", "gone", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
@@ -1026,7 +1026,7 @@ def test_mail_draft_body_file_oserror_exits_usage_not_auth(tmp_path, monkeypatch
 
         raise MailBodyFileError(f"cannot read --body-file {path}: Permission denied")
 
-    monkeypatch.setattr("blumkin.cli.mail_draft", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_draft", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1086,7 +1086,7 @@ def test_mail_draft_passes_repeated_attachments_through(tmp_path, monkeypatch) -
     second.write_text("b", encoding="utf-8")
 
     async def _ok(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "draft": {
                 "attachments": [],
@@ -1097,7 +1097,7 @@ def test_mail_draft_passes_repeated_attachments_through(tmp_path, monkeypatch) -
             }
         }
 
-    monkeypatch.setattr("blumkin.cli.mail_draft", _ok)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_draft", _ok)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1125,7 +1125,7 @@ def test_mail_draft_wires_repeatable_recipients(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _ok(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "draft": {
                 "attachments": [],
@@ -1138,7 +1138,7 @@ def test_mail_draft_wires_repeatable_recipients(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr("blumkin.cli.mail_draft", _ok)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_draft", _ok)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1172,7 +1172,7 @@ def test_mail_update_draft_accepts_attach_without_other_fields(tmp_path, monkeyp
     source.write_text("a", encoding="utf-8")
 
     async def _ok(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "draft": {
                 "attachments": [],
@@ -1183,7 +1183,7 @@ def test_mail_update_draft_accepts_attach_without_other_fields(tmp_path, monkeyp
             }
         }
 
-    monkeypatch.setattr("blumkin.cli.mail_update_draft", _ok)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_update_draft", _ok)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1197,7 +1197,7 @@ def test_mail_draft_missing_attachment_exits_usage(tmp_path, monkeypatch) -> Non
     async def _boom(**_kwargs):
         raise MailAttachError(f"--attach file not found: {tmp_path / 'Missing' / 'notes.txt'}")
 
-    monkeypatch.setattr("blumkin.cli.mail_draft", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_draft", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1224,7 +1224,7 @@ def test_mail_update_draft_not_a_draft_exits_not_found(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise MailDraftNotFoundError("message is not a draft: msg-1")
 
-    monkeypatch.setattr("blumkin.cli.mail_update_draft", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_update_draft", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1238,7 +1238,7 @@ def test_mail_update_draft_missing_fields_exits_usage(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise ValueError("provide at least one of --subject, --body/--body-file, or --to")
 
-    monkeypatch.setattr("blumkin.cli.mail_update_draft", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_update_draft", _boom)
     runner = CliRunner()
     result = runner.invoke(main, ["mail", "update-draft", "--id", "draft-1"])
     assert result.exit_code == EXIT_USAGE
@@ -1251,7 +1251,7 @@ def test_mail_update_draft_body_file_error_exits_usage(tmp_path, monkeypatch) ->
     async def _boom(**_kwargs):
         raise MailBodyFileError(f"cannot read --body-file {path}: boom")
 
-    monkeypatch.setattr("blumkin.cli.mail_update_draft", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_update_draft", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1267,7 +1267,7 @@ def test_mail_update_draft_wires_options_and_emits_json(tmp_path, monkeypatch) -
     path.write_text("<p>Hi</p>", encoding="utf-8")
 
     async def _ok(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "draft": {
                 "body_type": kwargs.get("body_type") or "text",
@@ -1277,7 +1277,7 @@ def test_mail_update_draft_wires_options_and_emits_json(tmp_path, monkeypatch) -
             }
         }
 
-    monkeypatch.setattr("blumkin.cli.mail_update_draft", _ok)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_update_draft", _ok)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1313,7 +1313,7 @@ def test_mail_update_draft_wires_partial_cc_omits_to(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
     async def _ok(**kwargs):
-        seen.update(kwargs)
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
             "draft": {
                 "body_type": "text",
@@ -1324,7 +1324,7 @@ def test_mail_update_draft_wires_partial_cc_omits_to(monkeypatch) -> None:
             }
         }
 
-    monkeypatch.setattr("blumkin.cli.mail_update_draft", _ok)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_update_draft", _ok)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1340,7 +1340,7 @@ def test_mail_update_draft_runtime_error_exits_other(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise RuntimeError("Graph returned no message after update-draft: draft-1")
 
-    monkeypatch.setattr("blumkin.cli.mail_update_draft", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_update_draft", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1354,7 +1354,7 @@ def test_calendar_suggest_freebusy_failure_exits_graph_error(monkeypatch) -> Non
     async def _boom(**_kwargs):
         raise ValueError("freebusy lookup failed for: typo@example.com: Mail tip unavailable")
 
-    monkeypatch.setattr("blumkin.cli.calendar_suggest", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.calendar_suggest", _boom)
     result = CliRunner().invoke(
         main,
         [
@@ -1377,7 +1377,7 @@ def test_calendar_suggest_bad_window_exits_usage(monkeypatch) -> None:
     async def _boom(**_kwargs):
         raise ValueError("--window must look like HH:MM-HH:MM")
 
-    monkeypatch.setattr("blumkin.cli.calendar_suggest", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.calendar_suggest", _boom)
     result = CliRunner().invoke(
         main,
         [

@@ -11,6 +11,7 @@ from click.testing import CliRunner
 
 from blumkin.cli import main
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_SUCCESS, EXIT_USAGE
+from blumkin.providers.kind import ProviderKind
 from blumkin.skills.people import (
     _dedupe_matches,
     _person_to_dict,
@@ -420,7 +421,7 @@ def test_people_resolve_top_boundaries() -> None:
 def test_cli_people_resolve_bad_top_exits_usage(monkeypatch) -> None:
     monkeypatch.setattr(
         "blumkin.cli.load_config",
-        lambda: SimpleNamespace(wo1162425_scopes=True),
+        lambda: SimpleNamespace(provider=ProviderKind.MICROSOFT, wo1162425_scopes=True),
     )
     result = CliRunner().invoke(
         main, ["people", "resolve", "--name", "Ada", "--top", "0", "--json"]
@@ -437,10 +438,10 @@ def test_people_resolve_requires_query() -> None:
 def test_cli_people_resolve_unique_exits_success(monkeypatch) -> None:
     monkeypatch.setattr(
         "blumkin.cli.load_config",
-        lambda: SimpleNamespace(wo1162425_scopes=True),
+        lambda: SimpleNamespace(provider=ProviderKind.MICROSOFT, wo1162425_scopes=True),
     )
     monkeypatch.setattr(
-        "blumkin.cli.people_resolve",
+        "blumkin.providers.microsoft.people_resolve",
         AsyncMock(
             return_value={
                 "ambiguous": False,
@@ -458,10 +459,10 @@ def test_cli_people_resolve_unique_exits_success(monkeypatch) -> None:
 def test_cli_people_resolve_ambiguous_exits_usage(monkeypatch) -> None:
     monkeypatch.setattr(
         "blumkin.cli.load_config",
-        lambda: SimpleNamespace(wo1162425_scopes=True),
+        lambda: SimpleNamespace(provider=ProviderKind.MICROSOFT, wo1162425_scopes=True),
     )
     monkeypatch.setattr(
-        "blumkin.cli.people_resolve",
+        "blumkin.providers.microsoft.people_resolve",
         AsyncMock(
             return_value={
                 "ambiguous": True,
@@ -482,10 +483,10 @@ def test_cli_people_resolve_ambiguous_exits_usage(monkeypatch) -> None:
 def test_cli_people_resolve_missing_exits_not_found(monkeypatch) -> None:
     monkeypatch.setattr(
         "blumkin.cli.load_config",
-        lambda: SimpleNamespace(wo1162425_scopes=True),
+        lambda: SimpleNamespace(provider=ProviderKind.MICROSOFT, wo1162425_scopes=True),
     )
     monkeypatch.setattr(
-        "blumkin.cli.people_resolve",
+        "blumkin.providers.microsoft.people_resolve",
         AsyncMock(side_effect=LookupError("no people match for 'Nobody'")),
     )
     result = CliRunner().invoke(main, ["people", "resolve", "--name", "Nobody", "--json"])

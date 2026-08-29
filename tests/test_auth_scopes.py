@@ -6,6 +6,7 @@ from pathlib import Path
 
 from blumkin.auth import BASE_SCOPES, FILES_SCOPES, WO1162425_SCOPES, effective_scopes
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
+from blumkin.providers.kind import ProviderKind
 
 
 def test_effective_scopes_default_excludes_phase4() -> None:
@@ -79,6 +80,7 @@ def _cfg(*, wo1162425_scopes: bool, files_scopes: bool = False) -> BlumkinConfig
         files_scopes=files_scopes,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        provider=ProviderKind.MICROSOFT,
         tenant_id="brk.tech",
         wo1162425_scopes=wo1162425_scopes,
     )

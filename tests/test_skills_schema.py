@@ -122,7 +122,7 @@ def test_diagnostic_commands_report_failure_on_stdout(tmp_path, monkeypatch) -> 
     async def _no_match(**_kwargs: object) -> dict[str, object]:
         return {"chat": None, "items": [], "partial": True, "query": "nobody", "skipped": 4}
 
-    monkeypatch.setattr("blumkin.cli.chat_last", _no_match)
+    monkeypatch.setattr("blumkin.providers.microsoft.chat_last", _no_match)
     chat = runner.invoke(main, ["chat", "last", "--with", "nobody", "--json"])
     assert chat.exit_code == EXIT_NOT_FOUND
     assert chat.stderr == ""
