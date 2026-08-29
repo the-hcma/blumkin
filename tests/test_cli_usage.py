@@ -1418,6 +1418,17 @@ def test_calendar_suggest_bad_window_exits_usage(monkeypatch) -> None:
     assert "usage_error" in (result.output or "")
 
 
+def test_calendar_today_empty_default_tz_exits_usage(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_TZ", raising=False)
+    (tmp_path / "config.toml").write_text('client_id = "00000000-0000-0000-0000-000000000001"\n')
+    result = CliRunner().invoke(main, ["calendar", "today", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    combined = (result.output or "") + (result.stderr or "")
+    assert "usage_error" in combined
+    assert "auth_required" not in combined
+
+
 def test_calendar_today_invalid_tz_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--tz", "Not/ARealZone", "calendar", "today"])
