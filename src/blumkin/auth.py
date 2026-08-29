@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -52,8 +53,17 @@ _atexit_registered = False
 _cache_bound_path: str | None = None
 
 
-def create_credential(config: BlumkinConfig | None = None) -> InteractiveBrowserCredential:
-    """Build a credential that can silently reuse the cached refresh token."""
+def create_credential(
+    config: BlumkinConfig | None = None,
+    *,
+    allow_interactive: bool | None = None,
+) -> InteractiveBrowserCredential:
+    """Build a credential that can silently reuse the cached refresh token.
+
+    When ``allow_interactive`` is false (or auto-detected non-TTY /
+    ``BLUMKIN_NONINTERACTIVE=1``), never call ``authenticate()`` — raise so the
+    CLI can exit ``auth_required`` instead of hanging on a browser prompt.
+    """
     cfg = config or load_config()
     scopes = effective_scopes(cfg)
     if not cfg.client_id:
@@ -61,14 +71,22 @@ def create_credential(config: BlumkinConfig | None = None) -> InteractiveBrowser
             "Missing client_id — set client_id in ~/.config/blumkin/config.toml "
             "or BLUMKIN_CLIENT_ID."
         )
+    interactive = interactive_auth_allowed() if allow_interactive is None else allow_interactive
     _ensure_cache(cfg)
     record = _load_auth_record(cfg)
+    timeout_s = float(cfg.graph_timeout_seconds)
+    connect_s = min(30.0, timeout_s)
     kwargs: dict = {
         "client_id": cfg.client_id,
         "tenant_id": cfg.tenant_id,
         "_cache": _token_cache,
         "_cae_cache": _token_cache,
+        "connection_timeout": connect_s,
+        "read_timeout": timeout_s,
+        "timeout": int(timeout_s) if timeout_s >= 1 else 1,
     }
+    if not interactive:
+        kwargs["disable_automatic_authentication"] = True
     if record:
         kwargs["authentication_record"] = record
 
@@ -77,13 +95,24 @@ def create_credential(config: BlumkinConfig | None = None) -> InteractiveBrowser
         try:
             credential.get_token(*scopes)
         except Exception:
-            # Stale auth record / missing refresh token — force interactive login.
-            # Do not wrap save_token_cache here: its OSError (e.g. O_NOFOLLOW) must
-            # surface, and get_token transport OSErrors must still fall through.
-            pass
+            # Stale auth record / missing refresh token — force interactive login
+            # when a TTY is available. Do not wrap save_token_cache here: its
+            # OSError (e.g. O_NOFOLLOW) must surface, and get_token transport
+            # OSErrors must still fall through when interactive is allowed.
+            if not interactive:
+                raise ValueError(
+                    "Silent token refresh failed. Run `blumkin auth login` on a TTY "
+                    "(or unset BLUMKIN_NONINTERACTIVE), then retry."
+                ) from None
         else:
             save_token_cache(cfg)
             return credential
+
+    if not interactive:
+        raise ValueError(
+            "Authentication required. Run `blumkin auth login` on a TTY "
+            "(agent shells should set BLUMKIN_NONINTERACTIVE=1 and never open a browser)."
+        )
 
     record = credential.authenticate(scopes=scopes)
     _save_auth_record(cfg, record)
@@ -100,6 +129,20 @@ def effective_scopes(config: BlumkinConfig | None = None) -> list[str]:
     if cfg.wo1162425_scopes:
         scopes.extend(WO1162425_SCOPES)
     return scopes
+
+
+def interactive_auth_allowed() -> bool:
+    """False for non-TTY or when ``BLUMKIN_NONINTERACTIVE`` is truthy."""
+    raw = os.environ.get("BLUMKIN_NONINTERACTIVE", "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return False
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def refresh_silent(config: BlumkinConfig | None = None) -> dict[str, Any]:
+    """Force silent ``get_token`` + persist cache; never open a browser."""
+    create_credential(config, allow_interactive=False)
+    return status_dict(config)
 
 
 def logout(config: BlumkinConfig | None = None) -> None:

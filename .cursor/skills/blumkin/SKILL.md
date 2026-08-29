@@ -128,7 +128,12 @@ covers the job.
    non-zero auth-adjacent exit as login: exit `1` / `secret_write_failed` means
    the token cache or auth record could not be written (often a symlink at
    `~/.config/blumkin/` or those files) — fix the path, do not re-login in a
-   loop.
+   loop. Exit `1` / `timeout` means Graph or token HTTP exceeded
+   `graph_timeout_seconds` (default 60; override with `BLUMKIN_GRAPH_TIMEOUT`).
+   Agent shells should set `BLUMKIN_NONINTERACTIVE=1` so Blumkin never opens a
+   browser. If a command hangs: `pkill -f blumkin`, check
+   `blumkin auth status --json` for `access_token_expired`, then
+   `blumkin auth refresh` (or `auth login` on a TTY) before retrying mail/calendar.
 7. Writes that email or invite others require `--yes`.
 8. Chat write + meeting transcription need `Chat.ReadWrite` /
    `OnlineMeetings.ReadWrite` consented (re-login after Identity grant).

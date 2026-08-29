@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
 DEFAULT_TENANT_ID = "brk.tech"
 DEFAULT_TZ = "America/New_York"
 
@@ -18,6 +19,7 @@ class BlumkinConfig:
     config_dir: Path
     default_tz: str
     files_scopes: bool
+    graph_timeout_seconds: float
     mail_signature: MailSignatureConfig
     tenant_id: str
     wo1162425_scopes: bool
@@ -81,6 +83,7 @@ def load_config() -> BlumkinConfig:
         config_dir=directory,
         default_tz=default_tz,
         files_scopes=_files_scopes_enabled(file_data),
+        graph_timeout_seconds=_graph_timeout_seconds(file_data),
         mail_signature=_mail_signature_config(file_data),
         tenant_id=tenant_id,
         wo1162425_scopes=_wo1162425_scopes_enabled(file_data),
@@ -121,6 +124,29 @@ def _files_scopes_enabled(file_data: dict[str, Any]) -> bool:
         if coerced is not None:
             return coerced
     return False
+
+
+def _graph_timeout_seconds(file_data: dict[str, Any]) -> float:
+    raw_env = os.environ.get("BLUMKIN_GRAPH_TIMEOUT", "").strip()
+    if raw_env:
+        try:
+            value = float(raw_env)
+        except ValueError:
+            value = DEFAULT_GRAPH_TIMEOUT_SECONDS
+        else:
+            if value > 0:
+                return value
+    raw = file_data.get("graph_timeout_seconds")
+    if isinstance(raw, int | float) and not isinstance(raw, bool) and float(raw) > 0:
+        return float(raw)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            value = float(raw.strip())
+        except ValueError:
+            return DEFAULT_GRAPH_TIMEOUT_SECONDS
+        if value > 0:
+            return value
+    return DEFAULT_GRAPH_TIMEOUT_SECONDS
 
 
 def _mail_signature_config(file_data: dict[str, Any]) -> MailSignatureConfig:

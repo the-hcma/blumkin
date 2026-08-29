@@ -82,13 +82,39 @@ def test_create_credential_falls_back_to_authenticate_when_get_token_fails(
         patch("blumkin.auth._save_auth_record") as save_record,
         patch("blumkin.auth.save_token_cache") as save_cache,
     ):
-        cred = create_credential()
+        cred = create_credential(allow_interactive=True)
 
     assert cred is fake_cred
     fake_cred.get_token.assert_called_once()
     fake_cred.authenticate.assert_called_once()
     save_record.assert_called_once()
     assert save_cache.call_count >= 1
+
+
+def test_create_credential_noninteractive_skips_authenticate_on_get_token_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BLUMKIN_CLIENT_ID", "test-client")
+    monkeypatch.setenv("BLUMKIN_NONINTERACTIVE", "1")
+    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
+    (tmp_path / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "auth_record.json").write_text("record-bytes")
+
+    fake_record = MagicMock(name="AuthenticationRecord")
+    fake_cred = MagicMock(name="InteractiveBrowserCredential")
+    fake_cred.get_token.side_effect = Exception("AADSTS70011: scope mismatch")
+
+    with (
+        patch("blumkin.auth.AuthenticationRecord.deserialize", return_value=fake_record),
+        patch("blumkin.auth.InteractiveBrowserCredential", return_value=fake_cred) as ctor,
+    ):
+        with pytest.raises(ValueError, match="Silent token refresh failed"):
+            create_credential()
+
+    kwargs = ctor.call_args.kwargs
+    assert kwargs["disable_automatic_authentication"] is True
+    fake_cred.authenticate.assert_not_called()
 
 
 def test_create_credential_falls_back_when_get_token_raises_oserror(
@@ -113,7 +139,7 @@ def test_create_credential_falls_back_when_get_token_raises_oserror(
         patch("blumkin.auth._save_auth_record"),
         patch("blumkin.auth.save_token_cache"),
     ):
-        cred = create_credential()
+        cred = create_credential(allow_interactive=True)
 
     assert cred is fake_cred
     fake_cred.authenticate.assert_called_once()

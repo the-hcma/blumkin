@@ -37,6 +37,15 @@ SKILLS: list[SkillSpec] = [
         args=[],
     ),
     SkillSpec(
+        id="auth.refresh",
+        cli=["blumkin", "auth", "refresh"],
+        summary="Silent token refresh (never opens a browser); persist updated cache",
+        mutates=True,
+        notifies_others=False,
+        scopes=[],
+        args=[],
+    ),
+    SkillSpec(
         id="auth.status",
         cli=["blumkin", "auth", "status"],
         summary="Show whether client id, cache, and auth record are present",
