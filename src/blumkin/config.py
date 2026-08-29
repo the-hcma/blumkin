@@ -11,8 +11,6 @@ from typing import Any
 from blumkin.providers.kind import ProviderKind, parse_provider_kind
 
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
-DEFAULT_TENANT_ID = "brk.tech"
-DEFAULT_TZ = "America/New_York"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,14 +70,10 @@ def load_config() -> BlumkinConfig:
         os.environ.get("BLUMKIN_CLIENT_ID", "").strip() or file_values.get("client_id", "").strip()
     )
     tenant_id = (
-        os.environ.get("BLUMKIN_TENANT_ID", "").strip()
-        or file_values.get("tenant_id", "").strip()
-        or DEFAULT_TENANT_ID
+        os.environ.get("BLUMKIN_TENANT_ID", "").strip() or file_values.get("tenant_id", "").strip()
     )
     default_tz = (
-        os.environ.get("BLUMKIN_TZ", "").strip()
-        or file_values.get("default_tz", "").strip()
-        or DEFAULT_TZ
+        os.environ.get("BLUMKIN_TZ", "").strip() or file_values.get("default_tz", "").strip()
     )
     return BlumkinConfig(
         client_id=client_id,
