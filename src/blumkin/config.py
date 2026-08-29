@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from blumkin.providers.kind import ProviderKind, parse_provider_kind
+from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
 
@@ -175,10 +175,12 @@ def _optional_str(value: Any) -> str | None:
 
 
 def _provider_kind(file_data: dict[str, Any]) -> ProviderKind:
-    raw = file_data.get("provider")
-    if isinstance(raw, str) and raw.strip():
+    if "provider" not in file_data:
+        return ProviderKind.MICROSOFT
+    raw = file_data["provider"]
+    if isinstance(raw, str):
         return parse_provider_kind(raw)
-    return ProviderKind.MICROSOFT
+    raise ProviderConfigError(f"provider must be a string in config.toml, got {type(raw).__name__}")
 
 
 def _read_toml(path: Path) -> dict[str, Any]:

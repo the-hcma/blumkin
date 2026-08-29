@@ -27,6 +27,7 @@ def test_env_overrides_toml(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("BLUMKIN_CLIENT_ID", "from-env")
     monkeypatch.setenv("BLUMKIN_TENANT_ID", "env.tenant")
+    monkeypatch.delenv("BLUMKIN_TZ", raising=False)
     (tmp_path / "config.toml").write_text('client_id = "from-file"\ntenant_id = "file.tenant"\n')
     cfg = load_config()
     assert cfg.client_id == "from-env"
