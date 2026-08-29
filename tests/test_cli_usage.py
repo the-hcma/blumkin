@@ -1382,6 +1382,8 @@ def test_calendar_suggest_freebusy_failure_exits_graph_error(monkeypatch) -> Non
             "2026-08-28T09:00",
             "--end",
             "2026-08-28T17:00",
+            "--tz",
+            "UTC",
             "--json",
         ],
     )
@@ -1407,6 +1409,8 @@ def test_calendar_suggest_bad_window_exits_usage(monkeypatch) -> None:
             "2026-08-28T17:00",
             "--window",
             "nope",
+            "--tz",
+            "UTC",
             "--json",
         ],
     )
