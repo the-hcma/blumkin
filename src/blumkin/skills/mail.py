@@ -1300,7 +1300,6 @@ async def _get_messages(
             "isRead",
             "hasAttachments",
             "bodyPreview",
-            "body",
         ],
     )
     builder = (

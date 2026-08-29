@@ -77,6 +77,7 @@ def _cfg(*, wo1162425_scopes: bool, files_scopes: bool = False) -> BlumkinConfig
         config_dir=Path("unused"),
         default_tz="UTC",
         files_scopes=files_scopes,
+        graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
         tenant_id="brk.tech",
         wo1162425_scopes=wo1162425_scopes,

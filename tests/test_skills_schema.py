@@ -310,6 +310,7 @@ _ERROR_VALUES = {
     "missing_scope",
     "not_found",
     "secret_write_failed",
+    "timeout",
     "usage_error",
 }
 
@@ -324,6 +325,7 @@ _ID_RE = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*")
 _CONSENT = {
     "auth.login": (True, False),
     "auth.logout": (True, False),
+    "auth.refresh": (True, False),
     "auth.status": (False, False),
     "calendar.accept": (True, True),
     "calendar.cancel": (True, True),

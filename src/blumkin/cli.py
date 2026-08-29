@@ -8,12 +8,14 @@ from typing import Any, NoReturn
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import click
+import httpx
 
 from blumkin import __version__
 from blumkin.auth import (
     SecretWriteError,
     create_credential,
     logout,
+    refresh_silent,
     save_token_cache,
     status_dict,
 )
@@ -164,6 +166,18 @@ def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
     if isinstance(exc, SecretWriteError):
         emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_OTHER) from exc
+    if isinstance(exc, httpx.TimeoutException | TimeoutError):
+        emit_error(
+            error="timeout",
+            message=str(exc) or "Graph or token HTTP call timed out",
+            as_json=as_json,
+            hint=(
+                "Raise graph_timeout_seconds / BLUMKIN_GRAPH_TIMEOUT if needed; "
+                "kill stuck blumkin PIDs; run `blumkin auth refresh` if the access "
+                "token is expired."
+            ),
+        )
+        raise SystemExit(EXIT_OTHER) from exc
     status = _graph_http_status(exc)
     if status == 401:
         emit_error(error="auth_required", message=str(exc), as_json=as_json)
@@ -264,7 +278,7 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
     as_json = _as_json(ctx, as_json_flag)
     try:
         cfg = load_config()
-        create_credential(cfg)
+        create_credential(cfg, allow_interactive=True)
         save_token_cache(cfg)
     except SecretWriteError as exc:
         emit_error(
@@ -301,6 +315,32 @@ def auth_logout(ctx: click.Context, as_json_flag: bool) -> None:
         emit_json({"ok": True})
     else:
         emit_lines(["Logged out (cache files removed)."])
+
+
+@auth.command("refresh")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
+    """Silent token refresh; never opens a browser."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = refresh_silent()
+    except SecretWriteError as exc:
+        emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    except Exception as exc:
+        emit_error(
+            error="auth_required",
+            message=str(exc),
+            as_json=as_json,
+            hint="Run `blumkin auth login` on a TTY, then retry.",
+        )
+        raise SystemExit(EXIT_AUTH) from exc
+    if as_json:
+        emit_json({"ok": True, "status": payload})
+    else:
+        expires = payload.get("access_token_expires_at") or "(none)"
+        emit_lines([f"Silent refresh ok. access_token_expires_at: {expires}"])
 
 
 @auth.command("status")
