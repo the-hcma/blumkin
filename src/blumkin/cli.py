@@ -147,7 +147,12 @@ def _raise_auth_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
         emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     msg = str(exc)
-    if "client_id" in msg or "Missing" in msg:
+    if (
+        "client_id" in msg
+        or "Missing" in msg
+        or msg.startswith("Authentication required")
+        or msg.startswith("Silent token refresh failed")
+    ):
         emit_error(error="auth_required", message=msg, as_json=as_json)
         raise SystemExit(EXIT_AUTH) from exc
     emit_error(error="usage_error", message=msg, as_json=as_json)

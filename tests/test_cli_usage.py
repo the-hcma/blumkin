@@ -1418,6 +1418,20 @@ def test_calendar_suggest_bad_window_exits_usage(monkeypatch) -> None:
     assert "usage_error" in (result.output or "")
 
 
+def test_calendar_today_auth_required_value_error_exits_auth(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ValueError(
+            "Authentication required. Run 'blumkin auth login' on a TTY "
+            "(or unset BLUMKIN_NONINTERACTIVE)."
+        )
+
+    monkeypatch.setattr("blumkin.providers.microsoft.calendar_today", _boom)
+    result = CliRunner().invoke(main, ["calendar", "today", "--tz", "UTC", "--json"])
+    assert result.exit_code == EXIT_AUTH
+    combined = (result.output or "") + (result.stderr or "")
+    assert "auth_required" in combined
+
+
 def test_calendar_today_empty_default_tz_exits_usage(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_TZ", raising=False)
