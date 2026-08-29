@@ -276,9 +276,7 @@ def test_calendar_create_raises_when_join_url_never_appears(monkeypatch) -> None
 
 def test_calendar_create_raises_when_post_has_no_id(monkeypatch) -> None:
     client = MagicMock()
-    client.me.events.post = AsyncMock(
-        return_value=SimpleNamespace(id=None, online_meeting=None)
-    )
+    client.me.events.post = AsyncMock(return_value=SimpleNamespace(id=None, online_meeting=None))
     monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.calendar_writes.load_config",
