@@ -274,6 +274,71 @@ def test_calendar_create_raises_when_join_url_never_appears(monkeypatch) -> None
         )
 
 
+def test_calendar_create_raises_when_post_has_no_id(monkeypatch) -> None:
+    client = MagicMock()
+    client.me.events.post = AsyncMock(
+        return_value=SimpleNamespace(id=None, online_meeting=None)
+    )
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    with pytest.raises(RuntimeError, match="no event id from create"):
+        asyncio.run(
+            calendar_create(
+                subject="Sync",
+                with_emails=["peer@example.com"],
+                start_raw="2026-08-26T11:00",
+                duration="30m",
+                tz_name="America/New_York",
+            )
+        )
+
+
+def test_calendar_create_raises_when_post_returns_none(monkeypatch) -> None:
+    client = MagicMock()
+    client.me.events.post = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    with pytest.raises(RuntimeError, match="no event from create"):
+        asyncio.run(
+            calendar_create(
+                subject="Sync",
+                with_emails=["peer@example.com"],
+                start_raw="2026-08-26T11:00",
+                duration="30m",
+                tz_name="America/New_York",
+            )
+        )
+
+
+def test_calendar_create_raises_when_refetch_returns_none(monkeypatch) -> None:
+    client = MagicMock()
+    client.me.events.post = AsyncMock(
+        return_value=SimpleNamespace(id="evt-new", online_meeting=None)
+    )
+    client.me.events.by_event_id.return_value.get = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    with pytest.raises(RuntimeError, match="after create re-fetch"):
+        asyncio.run(
+            calendar_create(
+                subject="Sync",
+                with_emails=["peer@example.com"],
+                start_raw="2026-08-26T11:00",
+                duration="30m",
+                tz_name="America/New_York",
+            )
+        )
+
+
 def test_calendar_create_without_teams_mocked(monkeypatch) -> None:
     created = SimpleNamespace(
         id="evt-new",
@@ -446,6 +511,21 @@ def test_calendar_update_raises_when_join_url_never_appears(monkeypatch) -> None
     from blumkin.skills.calendar_writes import calendar_update
 
     with pytest.raises(RuntimeError, match="not provisioned"):
+        asyncio.run(calendar_update(event_id="evt-1", tz_name="America/New_York"))
+
+
+def test_calendar_update_raises_when_refetch_returns_none(monkeypatch) -> None:
+    client = MagicMock()
+    client.me.events.by_event_id.return_value.patch = AsyncMock(return_value=None)
+    client.me.events.by_event_id.return_value.get = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    from blumkin.skills.calendar_writes import calendar_update
+
+    with pytest.raises(RuntimeError, match="no event after update"):
         asyncio.run(calendar_update(event_id="evt-1", tz_name="America/New_York"))
 
 
