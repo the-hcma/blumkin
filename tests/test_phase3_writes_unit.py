@@ -241,6 +241,39 @@ def test_calendar_create_refetch_when_join_url_missing(monkeypatch) -> None:
     client.me.events.by_event_id.return_value.get.assert_awaited_once()
 
 
+def test_calendar_create_raises_when_join_url_never_appears(monkeypatch) -> None:
+    empty = SimpleNamespace(
+        id="evt-new",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=None,
+    )
+    client = MagicMock()
+    client.me.events.post = AsyncMock(return_value=empty)
+    client.me.events.by_event_id.return_value.get = AsyncMock(return_value=empty)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    with pytest.raises(RuntimeError, match="not provisioned"):
+        asyncio.run(
+            calendar_create(
+                subject="Sync",
+                with_emails=["peer@example.com"],
+                start_raw="2026-08-26T11:00",
+                duration="30m",
+                tz_name="America/New_York",
+            )
+        )
+
+
 def test_calendar_create_without_teams_mocked(monkeypatch) -> None:
     created = SimpleNamespace(
         id="evt-new",
