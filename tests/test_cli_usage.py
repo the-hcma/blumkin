@@ -1459,6 +1459,23 @@ def test_calendar_view_accepts_subcommand_tz() -> None:
     assert "No such option" not in (result.output or "")
 
 
+def test_calendar_view_auth_required_value_error_exits_auth(monkeypatch) -> None:
+    async def _boom(**_kwargs):
+        raise ValueError(
+            "Authentication required. Run 'blumkin auth login' on a TTY "
+            "(or unset BLUMKIN_NONINTERACTIVE)."
+        )
+
+    monkeypatch.setattr("blumkin.providers.microsoft.calendar_view", _boom)
+    result = CliRunner().invoke(
+        main,
+        ["calendar", "view", "--from", "2026-08-25", "--to", "2026-08-26", "--tz", "UTC", "--json"],
+    )
+    assert result.exit_code == EXIT_AUTH
+    combined = (result.output or "") + (result.stderr or "")
+    assert "auth_required" in combined
+
+
 def test_doctor_auth_cache_incomplete_exits_auth(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
