@@ -75,17 +75,23 @@ SKILLS: list[SkillSpec] = [
         id="calendar.create",
         cli=["blumkin", "calendar", "create"],
         summary=(
-            "Create a calendar event; --teams needs wo1162425_scopes + OnlineMeetings.ReadWrite"
+            "Create a calendar event (Teams online meeting by default; "
+            "--no-teams for an offline hold)"
         ),
         mutates=True,
         notifies_others=True,
-        scopes=["Calendars.ReadWrite", "OnlineMeetings.ReadWrite"],
+        scopes=["Calendars.ReadWrite"],
         args=[
             {"name": "--subject", "required": True, "type": "string"},
             {"name": "--with", "required": True, "type": "email", "multiple": True},
             {"name": "--start", "required": True, "type": "datetime"},
             {"name": "--duration", "required": False, "type": "duration"},
-            {"name": "--teams", "required": False, "type": "flag"},
+            {
+                "name": "--no-teams",
+                "required": False,
+                "type": "flag",
+                "note": "skip Teams online meeting (default is Teams)",
+            },
             {"name": "--tz", "required": False, "type": "iana_tz"},
             {"name": "--yes", "required": True, "type": "flag"},
         ],
@@ -149,6 +155,22 @@ SKILLS: list[SkillSpec] = [
         args=[
             {"name": "--date", "required": False, "type": "date"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+        ],
+    ),
+    SkillSpec(
+        id="calendar.update",
+        cli=["blumkin", "calendar", "update"],
+        summary=(
+            "Attach a Teams online meeting to an existing event "
+            "(Calendars.ReadWrite isOnlineMeeting; not OnlineMeetings.ReadWrite)"
+        ),
+        mutates=True,
+        notifies_others=True,
+        scopes=["Calendars.ReadWrite"],
+        args=[
+            {"name": "--event-id", "required": True, "type": "string"},
+            {"name": "--tz", "required": False, "type": "iana_tz"},
+            {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
     SkillSpec(

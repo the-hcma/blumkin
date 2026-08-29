@@ -17,9 +17,6 @@ from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.chat_message import ChatMessage
 from msgraph.generated.models.item_body import ItemBody
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
-from msgraph.generated.users.item.chats.item.messages.item.chat_message_item_request_builder import (  # noqa: E501
-    ChatMessageItemRequestBuilder,
-)
 from msgraph.generated.users.item.chats.item.messages.messages_request_builder import (
     MessagesRequestBuilder,
 )
@@ -592,9 +589,12 @@ def _is_reauth_error(exc: BaseException) -> bool:
 
 
 async def _latest_message_with_attachments(client: Any, chat_id: str) -> Any:
-    """Newest ordinary message in the chat that carries at least one attachment."""
+    """Newest ordinary message in the chat that carries at least one attachment.
+
+    Do not ``$expand=attachments``: Graph treats attachments as a property on
+    ``chatMessage`` (not a navigation property), and expand returns 400.
+    """
     query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
-        expand=["attachments"],
         orderby=["createdDateTime desc"],
         top=_LATEST_SCAN_PAGE_SIZE,
     )
@@ -651,13 +651,9 @@ def _name_matches(needle: str, display_name: str) -> bool:
 
 
 async def _require_chat_message(client: Any, chat_id: str, message_id: str) -> Any:
-    query = ChatMessageItemRequestBuilder.ChatMessageItemRequestBuilderGetQueryParameters(
-        expand=["attachments"],
-    )
+    # Attachments are a property on chatMessage; $expand=attachments is rejected by Graph.
     message = (
-        await client.me.chats.by_chat_id(chat_id)
-        .messages.by_chat_message_id(message_id)
-        .get(request_config(query))
+        await client.me.chats.by_chat_id(chat_id).messages.by_chat_message_id(message_id).get()
     )
     if message is None or not message.id:
         raise ChatMessageNotFoundError(f"chat message not found: {message_id}")

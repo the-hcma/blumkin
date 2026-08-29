@@ -202,12 +202,27 @@ def test_meeting_transcription_enable_without_yes_exits_usage(monkeypatch) -> No
     assert result.exit_code == EXIT_USAGE
 
 
-def test_wo1162425_scopes_disabled_blocks_calendar_create_teams(
+def test_wo1162425_scopes_disabled_allows_calendar_create_teams(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """Teams-on-event uses Calendars.ReadWrite only; WO gate must not block create."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
     (tmp_path / "config.toml").write_text('client_id = "abc"\n')
+
+    async def _create(**kwargs):
+        assert kwargs.get("teams") is True
+        return {
+            "event": {
+                "id": "evt-1",
+                "subject": "Sync",
+                "start": "2026-08-27T10:00:00",
+                "end": "2026-08-27T10:30:00",
+                "online_join_url": "https://teams.example/join",
+            }
+        }
+
+    monkeypatch.setattr("blumkin.cli.calendar_create", _create)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -220,13 +235,12 @@ def test_wo1162425_scopes_disabled_blocks_calendar_create_teams(
             "ada@example.com",
             "--start",
             "2026-08-27T10:00",
-            "--teams",
             "--yes",
             "--json",
         ],
     )
-    assert result.exit_code == EXIT_USAGE
-    assert "WO1162425 add-on scopes are disabled" in (result.output or "")
+    assert result.exit_code == EXIT_SUCCESS
+    assert "evt-1" in (result.stdout or "")
 
 
 def test_wo1162425_scopes_disabled_blocks_chat_send(tmp_path: Path, monkeypatch) -> None:
