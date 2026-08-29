@@ -83,6 +83,9 @@ covers the job.
 4. Writes (require `--yes` when they notify others):
    - `blumkin calendar accept --event-id '<id>' --yes`
    - `blumkin calendar create --subject … --with email --start … --yes`
+     (Teams online meeting by default; pass `--no-teams` for an offline hold)
+   - `blumkin calendar update --event-id '<id>' --yes` (attach Teams to an
+     existing event; uses Calendars.ReadWrite, not OnlineMeetings.ReadWrite)
    - `blumkin calendar cancel --event-id '<id>' --yes`
    - `blumkin mail draft --to … --subject … --body …` (draft only; `--body-type html` / `--body-file` optional)
      `--to` / `--cc` / `--bcc` are repeatable or comma-separated for multiple recipients.
@@ -133,8 +136,9 @@ covers the job.
    `blumkin chat attachments download` needs a delegated `Files.Read` scope,
    gated behind `files_scopes` (off by default). Without it, listing still works
    and download exits `4` / `missing_scope` with the share URL — hand that URL to
-   the user to open in a browser instead of retrying. Do **not** spin up a second
-   Graph client in the agent session to paper over that.
+   the user to open in Teams/browser (or save into a local drop folder) instead of
+   retrying. Do **not** spin up a second Graph client in the agent session to paper
+   over that. Listing must not `$expand=attachments` (Graph 400).
 
 ## Authoring style (mail + chat bodies)
 

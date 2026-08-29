@@ -1,4 +1,4 @@
-"""Calendar write skills (accept, create, cancel)."""
+"""Calendar write skills (accept, create, cancel, update)."""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ async def calendar_create(
     with_emails: list[str],
     start_raw: str,
     duration: str | None = None,
-    teams: bool = False,
+    teams: bool = True,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
@@ -112,6 +112,34 @@ async def calendar_create(
     return {"event": _event_to_dict(created, tz)}
 
 
+async def calendar_update(
+    *,
+    event_id: str,
+    teams: bool = True,
+    tz_name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Attach a Teams online meeting to an existing event (Calendars.ReadWrite only)."""
+    if not event_id.strip():
+        raise ValueError("--event-id is required")
+    if not teams:
+        raise ValueError("calendar update currently only attaches Teams; do not pass --no-teams")
+    cfg = config or load_config()
+    tz = ZoneInfo(tz_name or cfg.default_tz)
+    client = create_graph_client(cfg)
+    patch = Event(
+        is_online_meeting=True,
+        online_meeting_provider=OnlineMeetingProviderType.TeamsForBusiness,
+    )
+    updated = await client.me.events.by_event_id(event_id).patch(patch)
+    if updated is None:
+        # Some Graph paths return 204; re-fetch for join URL.
+        updated = await client.me.events.by_event_id(event_id).get()
+    if updated is None or not updated.id:
+        raise RuntimeError(f"Graph returned no event after update: {event_id}")
+    return {"event": _event_to_dict(updated, tz)}
+
+
 def format_accept_human(payload: dict[str, Any]) -> list[str]:
     ids = payload.get("accepted") or []
     return [f"Accepted {payload.get('count', len(ids))} event(s):"] + [f"  • {eid}" for eid in ids]
@@ -126,6 +154,16 @@ def format_create_human(payload: dict[str, Any]) -> list[str]:
     subject = sanitize_terminal(str(event.get("subject") or "(no subject)"))
     when = f"{event.get('start')} → {event.get('end')}"
     lines = [f"Created: {subject!r} ({when})"]
+    if event.get("online_join_url"):
+        lines.append(f"  join: {sanitize_terminal(str(event['online_join_url']))}")
+    lines.append(f"  id={event.get('id')}")
+    return lines
+
+
+def format_update_human(payload: dict[str, Any]) -> list[str]:
+    event = payload.get("event") or {}
+    subject = sanitize_terminal(str(event.get("subject") or "(no subject)"))
+    lines = [f"Updated: {subject!r}"]
     if event.get("online_join_url"):
         lines.append(f"  join: {sanitize_terminal(str(event['online_join_url']))}")
     lines.append(f"  id={event.get('id')}")

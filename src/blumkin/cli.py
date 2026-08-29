@@ -43,9 +43,11 @@ from blumkin.skills.calendar_writes import (
     calendar_accept,
     calendar_cancel,
     calendar_create,
+    calendar_update,
     format_accept_human,
     format_cancel_human,
     format_create_human,
+    format_update_human,
     parse_duration,
 )
 from blumkin.skills.chat import (
@@ -215,7 +217,7 @@ def _require_wo1162425_scopes(*, as_json: bool) -> None:
         error="usage_error",
         message=(
             "WO1162425 add-on scopes are disabled. Calendar/mail/chat read skills work "
-            "without them; chat write, meeting skills, calendar create --teams, and "
+            "without them; chat write, meeting skills, and "
             "people resolve need wo1162425_scopes = true "
             "in config.toml (or BLUMKIN_WO1162425_SCOPES=1) after Remedy WO1162425 "
             "grants its add-ons (at least Chat.ReadWrite, OnlineMeetings.ReadWrite, "
@@ -723,7 +725,15 @@ def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_fl
 @click.option("--with", "with_emails", multiple=True, required=True, help="Attendee email.")
 @click.option("--start", "start_raw", required=True, help="Local start datetime.")
 @click.option("--duration", default="30m", show_default=True, help="Length (e.g. 30m, 1h).")
-@click.option("--teams", is_flag=True, help="Create as Teams online meeting.")
+@click.option(
+    "--teams/--no-teams",
+    default=True,
+    show_default=True,
+    help=(
+        "Teams online meeting via Calendars.ReadWrite isOnlineMeeting; "
+        "--no-teams for an offline hold."
+    ),
+)
 @click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
@@ -739,11 +749,9 @@ def calendar_create_cmd(
     tz_flag: str | None,
     as_json_flag: bool,
 ) -> None:
-    """Create a calendar event. Requires --yes."""
+    """Create a calendar event (Teams by default). Requires --yes."""
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
-    if teams:
-        _require_wo1162425_scopes(as_json=as_json)
     try:
         payload = asyncio.run(
             calendar_create(
@@ -771,6 +779,56 @@ def calendar_create_cmd(
         emit_json(payload)
     else:
         emit_lines(format_create_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@calendar.command("update")
+@click.option("--event-id", required=True, help="Event id to update.")
+@click.option(
+    "--teams/--no-teams",
+    default=True,
+    show_default=True,
+    help="Attach Teams online meeting (v1 only supports enabling Teams).",
+)
+@click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def calendar_update_cmd(
+    ctx: click.Context,
+    event_id: str,
+    teams: bool,
+    yes: bool,
+    tz_flag: str | None,
+    as_json_flag: bool,
+) -> None:
+    """Attach Teams to an existing calendar event. Requires --yes."""
+    as_json = _as_json(ctx, as_json_flag)
+    _require_yes(yes=yes, as_json=as_json)
+    try:
+        payload = asyncio.run(
+            calendar_update(
+                event_id=event_id,
+                teams=teams,
+                tz_name=_tz_name(ctx, tz_flag),
+            )
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "client_id" in msg or "Missing" in msg:
+            emit_error(error="auth_required", message=msg, as_json=as_json)
+            raise SystemExit(EXIT_AUTH) from exc
+        emit_error(error="usage_error", message=msg, as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except ZoneInfoNotFoundError as exc:
+        emit_error(error="usage_error", message=f"invalid timezone: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_update_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 

@@ -221,8 +221,9 @@ failure path.
 The two config opt-ins do **not** share an exit code, so do not treat "opt-in is
 off" as a single condition:
 
-- `wo1162425_scopes` off — chat write, meeting commands, `calendar create
-  --teams`, and `people resolve` exit **2** with `usage_error`.
+- `wo1162425_scopes` off — chat write, meeting commands, and `people resolve`
+  exit **2** with `usage_error`. (`calendar create` Teams meetings use
+  Calendars.ReadWrite only and do not require this flag.)
 - `people resolve` ambiguous — also exit **2**, but success-shaped **stdout**
   carries `ambiguous: true` and the candidate list (no stderr `usage_error`
   envelope). Branch on `ambiguous` / the candidate list before treating exit 2

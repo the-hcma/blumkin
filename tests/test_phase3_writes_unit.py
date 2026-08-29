@@ -176,7 +176,6 @@ def test_calendar_create_mocked(monkeypatch) -> None:
             with_emails=["peer@example.com"],
             start_raw="2026-08-26T11:00",
             duration="30m",
-            teams=True,
             tz_name="America/New_York",
         )
     )
@@ -228,6 +227,38 @@ def test_calendar_create_without_teams_mocked(monkeypatch) -> None:
     posted = post_await.args[0]
     assert posted.is_online_meeting is None
     assert posted.online_meeting_provider is None
+
+
+def test_calendar_update_attaches_teams_mocked(monkeypatch) -> None:
+    updated = SimpleNamespace(
+        id="evt-1",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=SimpleNamespace(join_url="https://teams.example/join"),
+    )
+    client = MagicMock()
+    client.me.events.by_event_id.return_value.patch = AsyncMock(return_value=updated)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    from blumkin.skills.calendar_writes import calendar_update
+
+    payload = asyncio.run(calendar_update(event_id="evt-1", tz_name="America/New_York"))
+    assert payload["event"]["id"] == "evt-1"
+    assert payload["event"]["online_join_url"] == "https://teams.example/join"
+    patch_await = client.me.events.by_event_id.return_value.patch.await_args
+    assert patch_await is not None
+    patched = patch_await.args[0]
+    assert patched.is_online_meeting is True
+    assert patched.online_meeting_provider is OnlineMeetingProviderType.TeamsForBusiness
 
 
 def test_mail_draft_and_send_mocked(monkeypatch) -> None:
