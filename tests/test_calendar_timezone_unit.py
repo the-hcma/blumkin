@@ -22,7 +22,7 @@ def test_calendar_create_reports_the_submitted_wall_clock(monkeypatch) -> None:
         is_all_day=False,
         is_organizer=True,
         location=None,
-        online_meeting=None,
+        online_meeting=SimpleNamespace(join_url="https://teams.example/join"),
         organizer=None,
         response_status=None,
         start=_dtz("2026-08-28T14:30:00.0000000", "America/New_York"),

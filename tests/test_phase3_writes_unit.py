@@ -161,7 +161,7 @@ def test_calendar_create_mocked(monkeypatch) -> None:
         location=None,
         organizer=None,
         response_status=None,
-        online_meeting=None,
+        online_meeting=SimpleNamespace(join_url="https://teams.example/join"),
     )
     client = MagicMock()
     client.me.events.post = AsyncMock(return_value=created)
@@ -180,6 +180,7 @@ def test_calendar_create_mocked(monkeypatch) -> None:
         )
     )
     assert payload["event"]["id"] == "evt-new"
+    assert payload["event"]["online_join_url"] == "https://teams.example/join"
     await_args = client.me.events.post.await_args
     assert await_args is not None
     posted = await_args.args[0]
@@ -190,6 +191,53 @@ def test_calendar_create_mocked(monkeypatch) -> None:
     start = datetime.fromisoformat(posted.start.date_time)
     end = datetime.fromisoformat(posted.end.date_time)
     assert end - start == timedelta(minutes=30)
+
+
+def test_calendar_create_refetch_when_join_url_missing(monkeypatch) -> None:
+    post_body = SimpleNamespace(
+        id="evt-new",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=None,
+    )
+    fetched = SimpleNamespace(
+        id="evt-new",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=SimpleNamespace(join_url="https://teams.example/later"),
+    )
+    client = MagicMock()
+    client.me.events.post = AsyncMock(return_value=post_body)
+    client.me.events.by_event_id.return_value.get = AsyncMock(return_value=fetched)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    payload = asyncio.run(
+        calendar_create(
+            subject="Sync",
+            with_emails=["peer@example.com"],
+            start_raw="2026-08-26T11:00",
+            duration="30m",
+            tz_name="America/New_York",
+        )
+    )
+    assert payload["event"]["online_join_url"] == "https://teams.example/later"
+    client.me.events.by_event_id.assert_called_once_with("evt-new")
+    client.me.events.by_event_id.return_value.get.assert_awaited_once()
 
 
 def test_calendar_create_without_teams_mocked(monkeypatch) -> None:

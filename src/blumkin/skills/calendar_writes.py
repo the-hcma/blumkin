@@ -109,6 +109,19 @@ async def calendar_create(
     created = await client.me.events.post(event)
     if created is None:
         raise RuntimeError("Graph returned no event from create")
+    if teams and not _event_join_url(created):
+        # Same async provisioning race calendar_update handles after PATCH.
+        if not created.id:
+            raise RuntimeError("Graph returned no event id from create")
+        created = await client.me.events.by_event_id(created.id).get()
+        if created is None or not created.id:
+            raise RuntimeError("Graph returned no event after create re-fetch")
+        if not _event_join_url(created):
+            raise RuntimeError(
+                f"Teams online meeting was not provisioned for event {created.id!r} "
+                "(no onlineMeeting.joinUrl after create); retry or use "
+                "`calendar update` after Graph finishes provisioning."
+            )
     return {"event": _event_to_dict(created, tz)}
 
 
