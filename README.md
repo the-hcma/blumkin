@@ -57,21 +57,29 @@ Microsoft token cache files (written by `blumkin auth login`):
 
 ### Google Workspace (`provider = "google"`)
 
-Google Cloud **Desktop** client JSON from Cloud Console includes a `client_secret`
-that must be set in `config.toml` for the OAuth token exchange (still never commit it):
+**Full walkthrough:** [`docs/google-setup.md`](./docs/google-setup.md)
+(Console project, APIs, consent screen / test users, Desktop client JSON,
+separate config dir, login, smoke, troubleshooting).
+
+Short form — point `config.toml` at your Google Cloud **Desktop** OAuth client
+JSON (the Console download). That file holds `client_id` / `client_secret`; do
+not put the secret in toml or environment variables:
 
 ```toml
-client_id = "....apps.googleusercontent.com"
-client_secret = "<from Desktop client JSON>"
 provider = "google"
 default_tz = "..."
+google_oauth_client_file = "~/path/to/google-oauth-desktop-client.json"
 ```
+
+Optional: set `client_id` in toml as well; when omitted it is read from the JSON.
+Keep the client JSON mode `0600` and outside the repo.
 
 Token file (written by `blumkin auth login`):
 
 - `~/.config/blumkin/google_token.json`
 
-Override config directory with `BLUMKIN_CONFIG_DIR`. Never commit these files.
+Use `BLUMKIN_CONFIG_DIR` only to select a config directory (e.g. a Google-only
+profile). Never commit these files.
 
 ## Tests
 
@@ -90,6 +98,7 @@ Live tests need `~/.config/blumkin/` by default (override with `BLUMKIN_CONFIG_D
 - [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
 - [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md) — M1 ship retrospective (#11)  
 - [`docs/agent-integration.md`](./docs/agent-integration.md) — using blumkin from Cursor / Copilot CLI, and the frozen `skills list --json` contract  
+- [`docs/google-setup.md`](./docs/google-setup.md) — Google Cloud Desktop OAuth + blumkin Google profile  
 - [`.cursor/skills/blumkin/SKILL.md`](./.cursor/skills/blumkin/SKILL.md) — Cursor agent skill  
 
 ## License
