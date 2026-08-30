@@ -251,14 +251,26 @@ def _ensure_secret_dir(directory: Path, *, stop_at: Path) -> None:
     config dir or ``profiles/`` segment is refused — ``mkdir(parents=True)``
     follows intermediate symlinks. The walk stops at ``stop_at`` (the config
     directory) so platform symlinks such as macOS ``/var`` → ``/private/var``
-    do not break TMPDIR / XDG layouts.
+    do not break TMPDIR / XDG layouts. Intermediate dirs from ``stop_at`` through
+    the leaf are tightened to 0700 when the filesystem allows it.
     """
     _refuse_symlinked_path_components(directory, stop_at=stop_at)
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-    try:
-        os.chmod(directory, 0o700)
-    except OSError:
-        pass
+    current = directory
+    chain: list[Path] = []
+    while True:
+        chain.append(current)
+        if current == stop_at:
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    for path in reversed(chain):
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
 
 
 def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:

@@ -82,6 +82,18 @@ def test_profiles_list_json(tmp_path, monkeypatch) -> None:
     assert '"name": "personal"' in (result.output or "")
 
 
+def test_profiles_list_empty_config_dir_reports_count_zero(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    runner = CliRunner()
+    json_result = runner.invoke(main, ["profiles", "list", "--json"])
+    assert json_result.exit_code == EXIT_SUCCESS
+    assert '"count": 0' in (json_result.output or "")
+    human = runner.invoke(main, ["profiles", "list"])
+    assert human.exit_code == EXIT_SUCCESS
+    assert "(no profiles)" in (human.output or "")
+
+
 def test_root_profile_flag_selects_tag(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("BLUMKIN_PROFILE", "work")

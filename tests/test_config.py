@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -244,6 +246,27 @@ def test_missing_config_has_zero_profiles(tmp_path: Path, monkeypatch) -> None:
         load_config()
 
 
+def test_empty_profiles_table_raises(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('client_id = "abc"\n[profiles]\n')
+    with pytest.raises(ProviderConfigError, match="profiles table is empty"):
+        load_config()
+
+
+def test_named_profiles_reject_stray_flat_keys(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        'client_id = "legacy-ms"\n'
+        'tenant_id = "contoso.com"\n'
+        "\n"
+        "[profiles.personal]\n"
+        'provider = "google"\n'
+        'client_id = "gid"\n'
+    )
+    with pytest.raises(ProviderConfigError, match="cannot mix top-level flat keys"):
+        load_config()
+
+
 def test_named_profile_secret_writes_under_profile_dir(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
@@ -285,3 +308,30 @@ def test_named_profile_secret_writes_under_profile_dir(tmp_path: Path, monkeypat
     assert personal.google_token_path == tmp_path / "profiles" / "personal" / "google_token.json"
     assert personal.google_token_path.is_file()
     assert not (tmp_path / "google_token.json").exists()
+
+    auth._token_cache.has_state_changed = True
+    auth._save_bound_token_cache_at_exit()
+    assert work.token_cache_path.is_file()
+    assert stat.S_IMODE(work.profile_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "profiles").stat().st_mode) == 0o700
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+
+
+def test_atexit_named_profile_refuses_symlinked_profiles_dir(tmp_path: Path, monkeypatch) -> None:
+    if sys.platform == "win32":
+        pytest.skip("symlink config-dir layout is a POSIX concern")
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "work"\n[profiles.work]\nclient_id = "ms"\n'
+    )
+    real_profiles = tmp_path / "real-profiles"
+    real_profiles.mkdir()
+    profiles_link = tmp_path / "profiles"
+    profiles_link.symlink_to(real_profiles)
+    work = load_config(profile="work")
+    auth._cache_bound_path = str(work.token_cache_path)
+    auth._token_cache.deserialize("")
+    auth._token_cache.has_state_changed = True
+    auth._save_bound_token_cache_at_exit()
+    assert not work.token_cache_path.exists()
+    assert not (real_profiles / "work" / "msal_token_cache.json").exists()

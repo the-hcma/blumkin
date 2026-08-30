@@ -261,8 +261,23 @@ def _profile_tables(
     file_data: dict[str, Any],
 ) -> tuple[dict[str, dict[str, Any]], str | None, bool]:
     """Return (name → table, default_profile name, legacy_flat)."""
-    raw_profiles = file_data.get("profiles")
-    if isinstance(raw_profiles, dict) and raw_profiles:
+    if "profiles" in file_data:
+        raw_profiles = file_data["profiles"]
+        if not isinstance(raw_profiles, dict):
+            raise ProviderConfigError(
+                f"profiles must be a table in config.toml, got {type(raw_profiles).__name__}"
+            )
+        if not raw_profiles:
+            raise ProviderConfigError(
+                "profiles table is empty; add [profiles.<name>] entries or remove the key"
+            )
+        stray = sorted(key for key in file_data if key not in {"default_profile", "profiles"})
+        if stray:
+            shown = ", ".join(stray)
+            raise ProviderConfigError(
+                "named [profiles.*] layout cannot mix top-level flat keys "
+                f"({shown}); move them under [profiles.<name>] or remove [profiles]"
+            )
         tables: dict[str, dict[str, Any]] = {}
         for name, table in raw_profiles.items():
             if not isinstance(name, str) or not name.strip():
