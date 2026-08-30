@@ -354,7 +354,8 @@ def _message_to_dict(msg: dict[str, Any]) -> dict[str, Any]:
         "created": received,
         "from_email": from_email,
         "from_name": from_name,
-        "has_attachments": _payload_has_attachments(msg.get("payload") or {}),
+        # metadata format has headers only — attachment presence unknown
+        "has_attachments": None,
         "id": msg.get("id"),
         "is_read": "UNREAD" not in label_ids,
         "received": received,

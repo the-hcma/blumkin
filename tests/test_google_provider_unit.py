@@ -243,6 +243,7 @@ def test_mail_inbox_and_get(tmp_path: Path) -> None:
     assert inbox["items"][0]["subject"] == "Hello"
     assert inbox["items"][0]["from_email"] == "ada@example.com"
     assert inbox["items"][0]["is_read"] is False
+    assert inbox["items"][0]["has_attachments"] is None
     assert inbox["items"][0]["received"] == "2024-08-30T13:20:00+00:00"
     assert inbox["items"][0]["created"] == "2024-08-30T13:20:00+00:00"
     assert inbox["items"][0]["sent"] == "2024-08-30T12:00:00+00:00"
