@@ -10,11 +10,11 @@ from datetime import UTC, datetime
 from email.header import decode_header, make_header
 from typing import Any, Literal
 
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google_auth import get_credentials
+from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.mail import MailFolderNotFoundError, MailMessageNotFoundError
 
 MailBodyType = Literal["html", "text"]
@@ -33,7 +33,7 @@ async def mail_get(
     service = _gmail_service(cfg)
     mid = message_id.strip()
     try:
-        raw = service.users().messages().get(userId="me", id=mid, format="full").execute()
+        raw = execute(service.users().messages().get(userId="me", id=mid, format="full"))
     except HttpError as exc:
         if _http_not_found(exc):
             raise MailMessageNotFoundError(f"message not found: {mid}") from exc
@@ -125,18 +125,17 @@ async def mail_list(
         list_kwargs["labelIds"] = label_ids
     if query:
         list_kwargs["q"] = query
-    listing = service.users().messages().list(**list_kwargs).execute()
+    listing = execute(service.users().messages().list(**list_kwargs))
     refs = listing.get("messages") or []
     items: list[dict[str, Any]] = []
     for ref in refs:
         mid = ref.get("id")
         if not mid:
             continue
-        msg = (
+        msg = execute(
             service.users()
             .messages()
             .get(userId="me", id=mid, format="metadata", metadataHeaders=_LIST_HEADERS)
-            .execute()
         )
         items.append(_message_to_dict(msg))
 
@@ -265,7 +264,7 @@ def _gmail_phrase(value: str) -> str:
 
 def _gmail_service(cfg: BlumkinConfig) -> Any:
     creds = get_credentials(cfg, allow_interactive=False)
-    return build("gmail", "v1", credentials=creds, cache_discovery=False)
+    return build_api_service("gmail", "v1", creds=creds, config=cfg)
 
 
 def _header_map(msg: dict[str, Any]) -> dict[str, str]:

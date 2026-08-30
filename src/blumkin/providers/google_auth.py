@@ -8,12 +8,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from blumkin.auth import SecretWriteError, interactive_auth_allowed
 from blumkin.config import BlumkinConfig, google_oauth_installed_client, load_config
+from blumkin.providers.google_http import refresh_request
 from blumkin.providers.kind import ProviderConfigError
 
 GOOGLE_SCOPES = frozenset(
@@ -44,7 +44,7 @@ def get_credentials(
             return creds
         if creds.expired and creds.refresh_token:
             try:
-                creds.refresh(Request())
+                creds.refresh(refresh_request(cfg))
             except Exception:
                 if not interactive:
                     raise ValueError(

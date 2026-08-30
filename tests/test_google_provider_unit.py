@@ -86,7 +86,7 @@ def test_calendar_today_maps_events(tmp_path: Path) -> None:
     }
     with (
         patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
-        patch("blumkin.providers.google.calendar.build", return_value=service),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
     ):
         provider = GoogleWorkspaceProvider(cfg)
         payload = asyncio.run(
@@ -117,7 +117,7 @@ def test_calendar_freebusy_and_suggest(tmp_path: Path) -> None:
     end = datetime(2026, 8, 30, 17, 0, tzinfo=UTC)
     with (
         patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
-        patch("blumkin.providers.google.calendar.build", return_value=service),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
     ):
         provider = GoogleWorkspaceProvider(cfg)
         freebusy = asyncio.run(
@@ -189,7 +189,7 @@ def test_mail_inbox_and_get(tmp_path: Path) -> None:
     service.users.return_value.messages.return_value = messages
     with (
         patch("blumkin.providers.google.mail.get_credentials", return_value=MagicMock()),
-        patch("blumkin.providers.google.mail.build", return_value=service),
+        patch("blumkin.providers.google.mail.build_api_service", return_value=service),
     ):
         provider = GoogleWorkspaceProvider(cfg)
         inbox = asyncio.run(provider.mail_inbox(top=5))
@@ -248,7 +248,7 @@ def test_mail_list_does_not_claim_complete_when_page_truncated(tmp_path: Path) -
     service.users.return_value.messages.return_value = messages
     with (
         patch("blumkin.providers.google.mail.get_credentials", return_value=MagicMock()),
-        patch("blumkin.providers.google.mail.build", return_value=service),
+        patch("blumkin.providers.google.mail.build_api_service", return_value=service),
     ):
         payload = asyncio.run(GoogleWorkspaceProvider(cfg).mail_list(folder="inbox", top=1))
     assert payload["filters"]["complete"] is None

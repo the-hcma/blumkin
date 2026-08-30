@@ -79,7 +79,8 @@ Token file (written by `blumkin auth login`):
 - `~/.config/blumkin/google_token.json`
 
 Use `BLUMKIN_CONFIG_DIR` only to select a config directory (e.g. a Google-only
-profile). Never commit these files.
+profile). Never commit these files. Optional `graph_timeout_seconds` in toml
+also bounds Google HTTP / token-refresh calls (same knob as Microsoft Graph).
 
 ## Tests
 

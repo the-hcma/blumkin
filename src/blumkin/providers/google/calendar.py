@@ -6,10 +6,9 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from googleapiclient.discovery import build
-
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google_auth import get_credentials
+from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.calendar import find_mutual_free_slots
 from blumkin.skills.freebusy_suggest import collect_busy_intervals, raise_if_schedule_errors
 
@@ -34,7 +33,7 @@ async def calendar_freebusy(
         "timeMax": _rfc3339(end),
         "timeMin": _rfc3339(start),
     }
-    response = service.freebusy().query(body=body).execute()
+    response = execute(service.freebusy().query(body=body))
     calendars = response.get("calendars") or {}
     items = [
         _schedule_to_dict(email, calendars.get(email) or {}, display_tz) for email in with_emails
@@ -131,16 +130,14 @@ async def calendar_view(
     cfg = config or load_config()
     display_tz = start.tzinfo if isinstance(start.tzinfo, ZoneInfo) else ZoneInfo("UTC")
     service = _calendar_service(cfg)
-    response = (
-        service.events()
-        .list(
+    response = execute(
+        service.events().list(
             calendarId="primary",
             singleEvents=True,
             orderBy="startTime",
             timeMax=_rfc3339(end),
             timeMin=_rfc3339(start),
         )
-        .execute()
     )
     events = [_event_to_dict(item, display_tz) for item in (response.get("items") or [])]
     return {
@@ -161,7 +158,7 @@ def _busy_slot_to_dict(slot: dict[str, Any], display_tz: ZoneInfo) -> dict[str, 
 
 def _calendar_service(cfg: BlumkinConfig) -> Any:
     creds = get_credentials(cfg, allow_interactive=False)
-    return build("calendar", "v3", credentials=creds, cache_discovery=False)
+    return build_api_service("calendar", "v3", creds=creds, config=cfg)
 
 
 def _event_to_dict(ev: dict[str, Any], display_tz: ZoneInfo) -> dict[str, Any]:
