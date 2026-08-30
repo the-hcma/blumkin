@@ -246,6 +246,16 @@ def test_missing_config_has_zero_profiles(tmp_path: Path, monkeypatch) -> None:
         load_config()
 
 
+def test_default_profile_alone_raises(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    (tmp_path / "config.toml").write_text('default_profile = "work"\n')
+    with pytest.raises(ProviderConfigError, match="default_profile set but no profiles"):
+        load_config()
+    with pytest.raises(ProviderConfigError, match="default_profile set but no profiles"):
+        list_profiles()
+
+
 def test_empty_profiles_table_raises(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text('client_id = "abc"\n[profiles]\n')

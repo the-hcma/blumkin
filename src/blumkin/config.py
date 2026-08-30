@@ -320,6 +320,14 @@ def _profile_tables(
     legacy_table = {
         key: value for key, value in file_data.items() if key not in {"default_profile", "profiles"}
     }
+    if not legacy_table:
+        # default_profile alone must not invent a phantom empty "default" profile.
+        if "default_profile" in file_data:
+            raise ProviderConfigError(
+                "default_profile set but no profiles configured; "
+                "add [profiles.<name>] entries or flat top-level keys"
+            )
+        return {}, None, False
     return {_LEGACY_PROFILE_NAME: legacy_table}, _LEGACY_PROFILE_NAME, True
 
 
