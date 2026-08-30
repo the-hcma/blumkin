@@ -47,7 +47,8 @@ def execute(request: HttpRequest, *, num_retries: int = DEFAULT_HTTP_RETRIES) ->
 
 def refresh_request(config: BlumkinConfig) -> Request:
     """google-auth transport Request with a default per-call timeout."""
-    timeout_s = float(config.graph_timeout_seconds)
+    # google-auth stubs type Request timeout as int (seconds).
+    timeout_s = int(config.graph_timeout_seconds)
 
     class _TimedRequest(Request):
         def __call__(  # type: ignore[override]
@@ -64,7 +65,7 @@ def refresh_request(config: BlumkinConfig) -> Request:
                 method=method,
                 body=body,
                 headers=headers,
-                timeout=timeout_s if timeout is None else timeout,
+                timeout=timeout_s if timeout is None else int(timeout),
                 **kwargs,
             )
 
