@@ -39,7 +39,7 @@ dependencies = [
 dev = [
     "pyright>=1.1.411",
     "pytest>=9.1.1",
-    "ruff>=0.16.3",
+    "ruff>=0.16.4",
 ]
 
 [project.scripts]
@@ -70,5 +70,5 @@ package = true
 dev = [
     "pyright>=1.1.411",
     "pytest>=9.1.1",
-    "ruff>=0.16.3",
+    "ruff>=0.16.4",
 ]
