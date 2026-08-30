@@ -41,7 +41,9 @@ Operators may keep **multiple accounts** in one `config.toml` (for example
 Microsoft work and Google personal). Agents must not guess which mailbox to use.
 
 1. Cold-start: run `blumkin profiles list --json`.
-2. If `count` is `0`, tell the user to configure `~/.config/blumkin/config.toml`.
+2. If `count` is `0`, tell the user to configure
+   `$BLUMKIN_CONFIG_DIR/config.toml` when `BLUMKIN_CONFIG_DIR` is set;
+   otherwise use `~/.config/blumkin/config.toml`.
 3. If `count` is `1`, that profile is fine without `--profile`.
 4. If `count` is greater than `1`, require an explicit choice before any
    calendar/mail/chat command:
@@ -51,7 +53,9 @@ Microsoft work and Google personal). Agents must not guess which mailbox to use.
    - Ask the user which account; cache the answer for the session only.
 5. Fail closed on ambiguity — do not fall back to a silent “default” when more
    than one profile exists and neither `--profile` / `BLUMKIN_PROFILE` nor a
-   valid `default_profile` resolves uniquely.
+   valid `default_profile` resolves uniquely. A selector that matches one
+   profile's name and a *different* profile's tag is ambiguous (`@tag` is
+   tag-only).
 
 Safe discovery keys only (`name`, `provider`, `tags`, `default_tz`,
 `auth_present`, `is_default`, plus envelope `count` / `default_profile`). Never

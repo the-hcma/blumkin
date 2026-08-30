@@ -208,7 +208,7 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
 
 
 def _save_credentials(cfg: BlumkinConfig, creds: Credentials) -> None:
-    _ensure_secret_dir(cfg.profile_dir)
+    _ensure_secret_dir(cfg.profile_dir, stop_at=cfg.config_dir)
     payload = json.loads(creds.to_json())
     secret = _client_secret_from_oauth_file(cfg)
     if secret:

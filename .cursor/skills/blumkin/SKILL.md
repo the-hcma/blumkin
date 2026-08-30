@@ -23,12 +23,16 @@ workarounds.
 1. Confirm the binary exists: `blumkin --version` (if missing, tell the user to
    run `uv tool install -e .` from their blumkin clone and ensure `~/.local/bin`
    is on `PATH`).
-2. Discover account profiles: `blumkin profiles list --json`. If `count` is
-   greater than 1, do **not** guess — pass `--profile <name-or-tag>` on every
-   command, honor a user-chosen tag for this session, or **ask which account**
-   before any mail/calendar/chat read or write. Request tags like `@work` /
-   `@personal` (or wording such as “on Google” / “on Microsoft”) map to profile
-   `tags` in that JSON. `--profile` wins over `BLUMKIN_PROFILE`.
+2. Discover account profiles: `blumkin profiles list --json`.
+   - If `count` is `0`, tell the user to configure the active config directory
+     (`$BLUMKIN_CONFIG_DIR/config.toml` when set, else
+     `~/.config/blumkin/config.toml`) and **stop** before mail, calendar, or
+     chat commands.
+   - If `count` is greater than 1, do **not** guess — pass `--profile <name-or-tag>`
+     on every command, honor a user-chosen tag for this session, or **ask which
+     account** before any mail/calendar/chat read or write. Request tags like
+     `@work` / `@personal` (or wording such as “on Google” / “on Microsoft”) map
+     to profile `tags` in that JSON. `--profile` wins over `BLUMKIN_PROFILE`.
 3. Discover skills: `blumkin skills list --json`.
 4. Reads (prefer `--json`):
    - Calendar: `blumkin calendar today --json`,

@@ -184,6 +184,25 @@ def test_load_config_duplicate_tag_raises(tmp_path: Path, monkeypatch) -> None:
         load_config(profile="shared")
 
 
+def test_load_config_name_vs_other_tag_raises(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    (tmp_path / "config.toml").write_text(
+        "[profiles.work]\n"
+        'client_id = "ms"\n'
+        'provider = "microsoft"\n'
+        "\n"
+        "[profiles.personal]\n"
+        'client_id = "gid"\n'
+        'provider = "google"\n'
+        'tags = ["work"]\n'
+    )
+    with pytest.raises(ProviderConfigError, match="name/tag"):
+        load_config(profile="work")
+    # @-prefix is tag-only: resolves to personal, not the profile named work.
+    assert load_config(profile="@work").profile == "personal"
+
+
 def test_list_profiles_safe_summaries(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     oauth = tmp_path / "desktop-client.json"

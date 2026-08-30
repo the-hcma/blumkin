@@ -63,7 +63,7 @@ def test_write_secret_text_refuses_symlink(tmp_path: Path) -> None:
 def test_ensure_secret_dir_tightens_existing_mode(tmp_path: Path) -> None:
     directory = tmp_path / "blumkin"
     directory.mkdir(mode=0o755)
-    auth._ensure_secret_dir(directory)
+    auth._ensure_secret_dir(directory, stop_at=directory)
     mode = stat.S_IMODE(directory.stat().st_mode)
     assert mode == 0o700
 
@@ -76,7 +76,7 @@ def test_ensure_secret_dir_refuses_symlink(tmp_path: Path) -> None:
     link = tmp_path / "blumkin"
     link.symlink_to(real)
     with pytest.raises(SecretWriteError, match="cannot use symlinked config dir"):
-        auth._ensure_secret_dir(link)
+        auth._ensure_secret_dir(link, stop_at=link)
 
 
 def test_ensure_secret_dir_refuses_symlinked_ancestor(tmp_path: Path) -> None:
@@ -89,8 +89,17 @@ def test_ensure_secret_dir_refuses_symlinked_ancestor(tmp_path: Path) -> None:
     link.symlink_to(real)
     nested = link / "profiles" / "work"
     with pytest.raises(SecretWriteError, match="cannot use symlinked config dir"):
-        auth._ensure_secret_dir(nested)
+        auth._ensure_secret_dir(nested, stop_at=link)
     assert not (real / "profiles").exists()
+
+
+def test_ensure_secret_dir_allows_platform_symlinks_above_config(tmp_path: Path) -> None:
+    """Walk stops at config_dir so macOS /var → /private/var does not refuse writes."""
+    config_dir = tmp_path / "blumkin"
+    profile_dir = config_dir / "profiles" / "work"
+    auth._ensure_secret_dir(profile_dir, stop_at=config_dir)
+    assert profile_dir.is_dir()
+    assert not profile_dir.is_symlink()
 
 
 def test_ensure_secret_dir_survives_chmod_oserror(tmp_path: Path, monkeypatch) -> None:
@@ -101,7 +110,7 @@ def test_ensure_secret_dir_survives_chmod_oserror(tmp_path: Path, monkeypatch) -
         raise OSError("chmod unsupported")
 
     monkeypatch.setattr(os, "chmod", reject)
-    auth._ensure_secret_dir(directory)
+    auth._ensure_secret_dir(directory, stop_at=directory)
     assert directory.is_dir()
 
 

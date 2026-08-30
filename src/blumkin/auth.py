@@ -167,7 +167,7 @@ def save_token_cache(config: BlumkinConfig | None = None) -> None:
     if _cache_bound_path != str(cfg.token_cache_path):
         return
     if _token_cache.has_state_changed:
-        _ensure_secret_dir(cfg.profile_dir)
+        _ensure_secret_dir(cfg.profile_dir, stop_at=cfg.config_dir)
         _write_secret_text(cfg.token_cache_path, _token_cache.serialize())
 
 
@@ -244,15 +244,16 @@ def _ensure_cache(cfg: BlumkinConfig) -> None:
         _atexit_registered = True
 
 
-def _ensure_secret_dir(directory: Path) -> None:
+def _ensure_secret_dir(directory: Path, *, stop_at: Path) -> None:
     """Create ``directory`` at 0700; best-effort tighten if it already existed looser.
 
     Mode-setting is optional: SMB/FUSE mounts may reject ``chmod``. A symlinked
-    config dir (or any ancestor on the path) is refused — ``mkdir(parents=True)``
-    follows intermediate symlinks, so checking only the leaf would miss a
-    symlinked config-dir root or ``profiles/`` for named-profile layouts.
+    config dir or ``profiles/`` segment is refused — ``mkdir(parents=True)``
+    follows intermediate symlinks. The walk stops at ``stop_at`` (the config
+    directory) so platform symlinks such as macOS ``/var`` → ``/private/var``
+    do not break TMPDIR / XDG layouts.
     """
-    _refuse_symlinked_path_components(directory)
+    _refuse_symlinked_path_components(directory, stop_at=stop_at)
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     try:
         os.chmod(directory, 0o700)
@@ -269,12 +270,18 @@ def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
         return None
 
 
-def _refuse_symlinked_path_components(directory: Path) -> None:
-    """Refuse ``directory`` or any ancestor that is a symlink (do not ``resolve``)."""
+def _refuse_symlinked_path_components(directory: Path, *, stop_at: Path) -> None:
+    """Refuse ``directory`` or ancestors down to ``stop_at`` that are symlinks."""
+    if directory != stop_at and stop_at not in directory.parents:
+        if directory.is_symlink():
+            raise SecretWriteError(f"cannot use symlinked config dir {directory}")
+        return
     current = directory
     while True:
         if current.is_symlink():
             raise SecretWriteError(f"cannot use symlinked config dir {current}")
+        if current == stop_at:
+            break
         parent = current.parent
         if parent == current:
             break
@@ -282,7 +289,7 @@ def _refuse_symlinked_path_components(directory: Path) -> None:
 
 
 def _save_auth_record(cfg: BlumkinConfig, record: AuthenticationRecord) -> None:
-    _ensure_secret_dir(cfg.profile_dir)
+    _ensure_secret_dir(cfg.profile_dir, stop_at=cfg.config_dir)
     _write_secret_text(cfg.auth_record_path, record.serialize())
 
 
@@ -292,7 +299,11 @@ def _save_bound_token_cache_at_exit() -> None:
         return
     path = Path(_cache_bound_path)
     try:
-        _ensure_secret_dir(path.parent)
+        profile_dir = path.parent
+        stop_at = (
+            profile_dir.parent.parent if profile_dir.parent.name == "profiles" else profile_dir
+        )
+        _ensure_secret_dir(profile_dir, stop_at=stop_at)
         _write_secret_text(path, _token_cache.serialize())
     except OSError:
         # Avoid "Exception ignored" on atexit when the secret path is a symlink

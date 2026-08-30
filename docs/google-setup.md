@@ -163,12 +163,17 @@ invoke `blumkin …`, not `uv run blumkin`.
 
 ## D. Login and smoke (reads only)
 
-Always select the Google profile (name or tag):
+The following commands assume the **named-profile** layout (for example
+`[profiles.personal]`). For a legacy flat config under `BLUMKIN_CONFIG_DIR`,
+omit `--profile` (implicit profile name `default`).
+
+Always select the Google profile (name or tag) when using named profiles:
 
 ```bash
 blumkin --profile personal auth login
 # or: blumkin --profile @personal …
 # or: export BLUMKIN_PROFILE=personal
+# Legacy flat config: blumkin auth login
 ```
 
 Interactive login needs a real TTY and a browser (do this in Terminal.app, not a
@@ -176,12 +181,14 @@ noninteractive agent shell).
 
 Sign in as the **test user** (or Internal org user) you configured. Allow the
 Calendar / Gmail scopes. On success,
-`~/.config/blumkin/profiles/personal/google_token.json` appears (mode `0600`).
+`~/.config/blumkin/profiles/personal/google_token.json` appears (mode `0600`)
+(legacy flat: `google_token.json` in the config dir root).
 
 Check status (safe keys only):
 
 ```bash
 blumkin --profile personal auth status --json
+# Legacy flat: blumkin auth status --json
 # expect provider=google, token/refresh present, access_token_expired false
 ```
 
@@ -190,6 +197,7 @@ Read smokes:
 ```bash
 BLUMKIN_NONINTERACTIVE=1 blumkin --profile personal calendar today --json
 BLUMKIN_NONINTERACTIVE=1 blumkin --profile personal mail inbox --top 5 --json
+# Legacy flat: omit --profile on the same verbs
 ```
 
 Agent / CI shells should set `BLUMKIN_NONINTERACTIVE=1` so Blumkin never opens a

@@ -314,22 +314,28 @@ def _resolve_by_selector(
     *,
     source: str,
 ) -> str:
-    if selector in tables:
-        return selector
+    tag_only = selector.startswith("@")
     needle = _normalize_selector(selector)
     if not needle:
         raise ProviderConfigError(f"{source} is empty; choose a profile name or tag")
-    name_matches = [name for name in tables if _normalize_selector(name) == needle]
+    if tag_only:
+        name_matches: list[str] = []
+    elif selector in tables:
+        name_matches = [selector]
+    else:
+        name_matches = [name for name in tables if _normalize_selector(name) == needle]
     tag_matches = [
         name
         for name, table in tables.items()
         if any(_normalize_selector(tag) == needle for tag in _tags_from_table(table))
     ]
-    # Prefer an exact (case-sensitive) name already handled; then unique
-    # case-insensitive name; else unique tag.
-    if len(name_matches) == 1 and name_matches[0] not in tag_matches:
-        return name_matches[0]
-    if len(name_matches) == 1 and name_matches[0] in tag_matches:
+    other_tag_matches = [name for name in tag_matches if name not in name_matches]
+    if name_matches and other_tag_matches:
+        collided = ", ".join(sorted({*name_matches, *other_tag_matches}))
+        raise ProviderConfigError(
+            f"{source} {selector!r} matches multiple profiles by name/tag: {collided}"
+        )
+    if len(name_matches) == 1:
         return name_matches[0]
     if len(name_matches) > 1:
         names = ", ".join(sorted(name_matches))
