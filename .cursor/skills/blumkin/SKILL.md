@@ -7,8 +7,16 @@ description: >-
 # Blumkin
 
 Prefer shelling to **`blumkin` on `PATH`** over writing Microsoft Graph / Azure
-SDK code. Do not invent client IDs or call Graph APIs directly when Blumkin
-covers the job.
+SDK code (or Google API client code). Do not invent client IDs or call Graph /
+Workspace APIs directly when Blumkin covers the job.
+
+With `provider = "google"` in config, MVP verbs work for calendar
+(`today` / `view` / `freebusy` / `suggest`) and mail (`inbox` / `list` / `get`)
+plus auth. Point `google_oauth_client_file` at the Desktop client JSON (secret
+stays in that file, not env/toml). Setup walkthrough:
+[`docs/google-setup.md`](../../../docs/google-setup.md). Unsupported verbs (chat,
+people, mail/calendar writes, …) fail closed with a clear error — do not invent
+workarounds.
 
 ## Cold start (agent)
 
@@ -129,7 +137,7 @@ covers the job.
    the token cache or auth record could not be written (often a symlink at
    `~/.config/blumkin/` or those files) — fix the path, do not re-login in a
    loop. Exit `1` / `timeout` means Graph or token HTTP exceeded
-   `graph_timeout_seconds` (default 60; override with `BLUMKIN_GRAPH_TIMEOUT`).
+   `graph_timeout_seconds` in `config.toml` (default 60).
    Agent shells should set `BLUMKIN_NONINTERACTIVE=1` so Blumkin never opens a
    browser. If a command hangs: `pkill -f blumkin`, check
    `blumkin auth status --json` for `access_token_expired`, then
@@ -181,14 +189,14 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
   rendered signature (HTML or plain text matching `--body-type`). Pass
   `--no-signature` to skip. Do not invent signature markup in the agent session.
 - **WO1162425 add-on scopes (off by default):** `wo1162425_scopes = true` in
-  `config.toml` or `BLUMKIN_WO1162425_SCOPES=1` after Remedy WO1162425 grants its
-  add-ons (runtime requests `Chat.ReadWrite`, `OnlineMeetings.ReadWrite`,
-  `People.Read`; full augmented ask list in `HANDOFF.md` — fulfillment may still
-  be pending). Then delete token cache + auth record and `blumkin auth login`.
-  While off, calendar/mail/chat **read** skills use the base scope set; chat
-  write, meeting commands, and `people resolve` refuse with `usage_error`.
+  `config.toml` after Remedy WO1162425 grants its add-ons (runtime requests
+  `Chat.ReadWrite`, `OnlineMeetings.ReadWrite`, `People.Read`; full augmented ask
+  list in `HANDOFF.md` — fulfillment may still be pending). Then delete token
+  cache + auth record and `blumkin auth login`. While off, calendar/mail/chat
+  **read** skills use the base scope set; chat write, meeting commands, and
+  `people resolve` refuse with `usage_error`.
 - **Files scope for chat downloads (off by default):** `files_scopes = true` in
-  `config.toml` or `BLUMKIN_FILES_SCOPES=1` once the tenant grants `Files.Read`.
-  Then delete token cache + auth record and `blumkin auth login`. While off,
-  `chat attachments` listing works but `chat attachments download` exits `4` /
-  `missing_scope` with the share URL.
+  `config.toml` once the tenant grants `Files.Read`. Then delete token cache +
+  auth record and `blumkin auth login`. While off, `chat attachments` listing
+  works but `chat attachments download` exits `4` / `missing_scope` with the
+  share URL.

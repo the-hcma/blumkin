@@ -10,8 +10,16 @@ import pytest
 
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.providers import get_provider
+from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
+
+
+def test_get_provider_returns_google() -> None:
+    cfg = _cfg(provider=ProviderKind.GOOGLE)
+    provider = get_provider(cfg)
+    assert isinstance(provider, GoogleWorkspaceProvider)
+    assert provider.kind is ProviderKind.GOOGLE
 
 
 def test_get_provider_returns_microsoft() -> None:
@@ -27,11 +35,12 @@ def test_load_config_provider_default(tmp_path: Path, monkeypatch) -> None:
     assert load_config().provider is ProviderKind.MICROSOFT
 
 
-def test_load_config_provider_google_raises(tmp_path: Path, monkeypatch) -> None:
+def test_load_config_provider_google(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text('client_id = "abc"\nprovider = "google"\n')
-    with pytest.raises(ProviderConfigError, match="not implemented"):
-        load_config()
+    cfg = load_config()
+    assert cfg.provider is ProviderKind.GOOGLE
+    assert cfg.google_token_path == tmp_path / "google_token.json"
 
 
 def test_load_config_provider_ignores_env(tmp_path: Path, monkeypatch) -> None:
@@ -81,30 +90,34 @@ def test_microsoft_provider_delegates_calendar_today() -> None:
     assert mocked.await_args.kwargs["tz_name"] == "UTC"
 
 
+def test_parse_provider_kind_accepts_google() -> None:
+    assert parse_provider_kind("google") is ProviderKind.GOOGLE
+    assert parse_provider_kind("Google") is ProviderKind.GOOGLE
+
+
 def test_parse_provider_kind_accepts_microsoft() -> None:
     assert parse_provider_kind("") is ProviderKind.MICROSOFT
     assert parse_provider_kind("Microsoft") is ProviderKind.MICROSOFT
     assert parse_provider_kind("microsoft") is ProviderKind.MICROSOFT
 
 
-def test_parse_provider_kind_rejects_aliases_google_and_unknown() -> None:
+def test_parse_provider_kind_rejects_unknown() -> None:
     with pytest.raises(ProviderConfigError, match="unknown provider"):
         parse_provider_kind("m365")
-    with pytest.raises(ProviderConfigError, match="not implemented"):
-        parse_provider_kind("google")
     with pytest.raises(ProviderConfigError, match="unknown provider"):
         parse_provider_kind("yahoo")
 
 
-def _cfg() -> BlumkinConfig:
+def _cfg(*, provider: ProviderKind = ProviderKind.MICROSOFT) -> BlumkinConfig:
     return BlumkinConfig(
         client_id="abc",
         config_dir=Path("unused"),
         default_tz="UTC",
         files_scopes=False,
+        google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
-        provider=ProviderKind.MICROSOFT,
+        provider=provider,
         tenant_id="contoso.com",
         wo1162425_scopes=False,
     )

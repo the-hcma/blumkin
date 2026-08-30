@@ -12,7 +12,6 @@ from blumkin.config import load_config
 
 def test_logout_clears_bound_cache_so_atexit_cannot_rewrite(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("BLUMKIN_CLIENT_ID", "test-client")
     cache_path = tmp_path / "msal_token_cache.json"
     record_path = tmp_path / "auth_record.json"
     cache_path.write_text(json.dumps({"RefreshToken": {"r1": {"secret": "x"}}}))

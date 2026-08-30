@@ -428,6 +428,7 @@ def _client(monkeypatch, *, signature: bool = False) -> MagicMock:
             config_dir=Path("/tmp"),
             default_tz="UTC",
             files_scopes=False,
+            google_oauth_client_file=None,
             graph_timeout_seconds=60.0,
             mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
             provider=ProviderKind.MICROSOFT,

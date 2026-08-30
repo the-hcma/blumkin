@@ -11,11 +11,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from blumkin.skills.calendar import (
-    _status_is_busy,
     calendar_suggest,
     find_mutual_free_slots,
     format_suggest_human,
 )
+from blumkin.skills.freebusy_suggest import _status_is_busy
 
 _TZ = ZoneInfo("America/New_York")
 

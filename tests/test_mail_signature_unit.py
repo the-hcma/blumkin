@@ -14,7 +14,6 @@ from blumkin.skills.mail import append_mail_signature, mail_draft, render_mail_s
 
 def test_mail_signature_defaults_disabled(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv("BLUMKIN_CLIENT_ID", raising=False)
     (tmp_path / "config.toml").write_text('client_id = "abc"\n')
     cfg = load_config()
     assert cfg.mail_signature.enabled is False
@@ -23,7 +22,6 @@ def test_mail_signature_defaults_disabled(tmp_path: Path, monkeypatch) -> None:
 
 def test_mail_signature_parses_nested_table(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv("BLUMKIN_CLIENT_ID", raising=False)
     (tmp_path / "config.toml").write_text(
         "\n".join(
             [
@@ -75,6 +73,7 @@ def test_append_mail_signature_html_separator_and_empty_body() -> None:
         config_dir=Path("/tmp"),
         default_tz="UTC",
         files_scopes=False,
+        google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
         provider=ProviderKind.MICROSOFT,
@@ -119,6 +118,7 @@ def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
         config_dir=Path("/tmp"),
         default_tz="UTC",
         files_scopes=False,
+        google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
         provider=ProviderKind.MICROSOFT,

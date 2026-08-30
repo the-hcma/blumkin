@@ -48,14 +48,39 @@ provider = "microsoft"
 
 Set `tenant_id`, `default_tz`, and `provider` in this file (there are no org-specific code defaults). `provider` defaults to `microsoft` when omitted.
 
-Interactive browser auth is public-client only (`client_id` + `tenant_id`). Do not set a client secret for this flow.
+Interactive browser auth is public-client only (`client_id`; plus `tenant_id` for Microsoft). Do not set a client secret for these flows.
 
-Token cache files (written by `blumkin auth login`):
+Microsoft token cache files (written by `blumkin auth login`):
 
 - `~/.config/blumkin/msal_token_cache.json`
 - `~/.config/blumkin/auth_record.json`
 
-Override config directory with `BLUMKIN_CONFIG_DIR`. Never commit these files.
+### Google Workspace (`provider = "google"`)
+
+**Full walkthrough:** [`docs/google-setup.md`](./docs/google-setup.md)
+(Console project, APIs, consent screen / test users, Desktop client JSON,
+separate config dir, login, smoke, troubleshooting).
+
+Short form — point `config.toml` at your Google Cloud **Desktop** OAuth client
+JSON (the Console download). That file holds `client_id` / `client_secret`; do
+not put the secret in toml or environment variables:
+
+```toml
+provider = "google"
+default_tz = "..."
+google_oauth_client_file = "~/path/to/google-oauth-desktop-client.json"
+```
+
+Optional: set `client_id` in toml as well; when omitted it is read from the JSON.
+Keep the client JSON mode `0600` and outside the repo.
+
+Token file (written by `blumkin auth login`):
+
+- `~/.config/blumkin/google_token.json`
+
+Use `BLUMKIN_CONFIG_DIR` only to select a config directory (e.g. a Google-only
+profile). Never commit these files. Optional `graph_timeout_seconds` in toml
+also bounds Google HTTP / token-refresh calls (same knob as Microsoft Graph).
 
 ## Tests
 
@@ -74,6 +99,7 @@ Live tests need `~/.config/blumkin/` by default (override with `BLUMKIN_CONFIG_D
 - [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
 - [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md) — M1 ship retrospective (#11)  
 - [`docs/agent-integration.md`](./docs/agent-integration.md) — using blumkin from Cursor / Copilot CLI, and the frozen `skills list --json` contract  
+- [`docs/google-setup.md`](./docs/google-setup.md) — Google Cloud Desktop OAuth + blumkin Google profile  
 - [`.cursor/skills/blumkin/SKILL.md`](./.cursor/skills/blumkin/SKILL.md) — Cursor agent skill  
 
 ## License

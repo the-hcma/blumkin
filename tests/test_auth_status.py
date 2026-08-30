@@ -11,7 +11,6 @@ from blumkin.auth import status_dict
 
 def test_status_reads_access_token_expiry(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("BLUMKIN_CLIENT_ID", "test-client")
     expires = int((datetime.now(UTC) + timedelta(hours=1)).timestamp())
     cache = {
         "AccessToken": {

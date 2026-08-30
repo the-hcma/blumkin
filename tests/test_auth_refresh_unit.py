@@ -16,7 +16,6 @@ def test_status_reports_expired_access_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("BLUMKIN_CLIENT_ID", "test-client")
     expired = int((datetime.now(UTC) - timedelta(minutes=5)).timestamp())
     cache = {
         "AccessToken": {"entry1": {"expires_on": str(expired), "target": "User.Read"}},
@@ -37,7 +36,6 @@ def test_create_credential_uses_cached_auth_record(
 ) -> None:
     """Silent path: with AuthenticationRecord + cache, no interactive authenticate()."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("BLUMKIN_CLIENT_ID", "test-client")
     (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
     (tmp_path / "msal_token_cache.json").write_text("{}")
     (tmp_path / "auth_record.json").write_text("record-bytes")
@@ -65,7 +63,6 @@ def test_create_credential_falls_back_to_authenticate_when_get_token_fails(
 ) -> None:
     """Scope/cache miss on get_token must fall through to interactive authenticate()."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("BLUMKIN_CLIENT_ID", "test-client")
     (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
     (tmp_path / "msal_token_cache.json").write_text("{}")
     (tmp_path / "auth_record.json").write_text("record-bytes")
@@ -95,7 +92,6 @@ def test_create_credential_noninteractive_skips_authenticate_on_get_token_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("BLUMKIN_CLIENT_ID", "test-client")
     monkeypatch.setenv("BLUMKIN_NONINTERACTIVE", "1")
     (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
     (tmp_path / "msal_token_cache.json").write_text("{}")
@@ -122,7 +118,6 @@ def test_create_credential_falls_back_when_get_token_raises_oserror(
 ) -> None:
     """Transport OSError from get_token must still fall through to authenticate()."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("BLUMKIN_CLIENT_ID", "test-client")
     (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
     (tmp_path / "msal_token_cache.json").write_text("{}")
     (tmp_path / "auth_record.json").write_text("record-bytes")
@@ -150,7 +145,6 @@ def test_create_credential_reraises_oserror_from_save_token_cache(
 ) -> None:
     """Secret-path write failures must not be treated as a stale auth record."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("BLUMKIN_CLIENT_ID", "test-client")
     (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
     (tmp_path / "msal_token_cache.json").write_text("{}")
     (tmp_path / "auth_record.json").write_text("record-bytes")
