@@ -322,7 +322,7 @@ def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, A
         "body": body,
         "body_preview": msg.get("snippet"),
         "body_type": body_type,
-        "cc": [],
+        "cc": _parse_address_list(headers.get("cc")),
         "conversation_id": msg.get("threadId"),
         "created": received,
         "from_email": from_email,

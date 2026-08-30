@@ -213,6 +213,7 @@ def test_mail_inbox_and_get(tmp_path: Path) -> None:
                 {"name": "From", "value": "Ada Lovelace <ada@example.com>"},
                 {"name": "Subject", "value": "Hello"},
                 {"name": "To", "value": "me@example.com"},
+                {"name": "Cc", "value": "Bob <bob@example.com>"},
                 {"name": "Date", "value": "Fri, 30 Aug 2024 12:00:00 +0000"},
             ]
         },
@@ -252,6 +253,7 @@ def test_mail_inbox_and_get(tmp_path: Path) -> None:
     assert detail["message"]["body"] == "hello world"
     assert detail["message"]["received"] == "2024-08-30T13:20:00+00:00"
     assert detail["message"]["sent"] == "2024-08-30T12:00:00+00:00"
+    assert detail["message"]["cc"] == [{"email": "bob@example.com", "name": "Bob"}]
 
 
 def test_mail_list_rejects_orderby(tmp_path: Path) -> None:
