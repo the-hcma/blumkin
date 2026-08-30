@@ -7,8 +7,13 @@ description: >-
 # Blumkin
 
 Prefer shelling to **`blumkin` on `PATH`** over writing Microsoft Graph / Azure
-SDK code. Do not invent client IDs or call Graph APIs directly when Blumkin
-covers the job.
+SDK code (or Google API client code). Do not invent client IDs or call Graph /
+Workspace APIs directly when Blumkin covers the job.
+
+With `provider = "google"` in config, MVP verbs work for calendar
+(`today` / `view` / `freebusy` / `suggest`) and mail (`inbox` / `list` / `get`)
+plus auth. Unsupported verbs (chat, people, mail/calendar writes, …) fail
+closed with a clear error — do not invent workarounds.
 
 ## Cold start (agent)
 

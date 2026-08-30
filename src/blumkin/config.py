@@ -34,6 +34,10 @@ class BlumkinConfig:
         return self.config_dir / "config.toml"
 
     @property
+    def google_token_path(self) -> Path:
+        return self.config_dir / "google_token.json"
+
+    @property
     def token_cache_path(self) -> Path:
         return self.config_dir / "msal_token_cache.json"
 

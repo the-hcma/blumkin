@@ -12,21 +12,18 @@ class ProviderConfigError(ValueError):
 class ProviderKind(StrEnum):
     """Account / backend family for workspace skills."""
 
+    GOOGLE = "google"
     MICROSOFT = "microsoft"
 
 
 def parse_provider_kind(raw: str) -> ProviderKind:
     """Parse a config.toml ``provider`` string.
 
-    Only ``microsoft`` is accepted today. ``google`` is reserved until an adapter
-    lands (#67 / #84).
+    Accepts ``microsoft`` (default for empty) and ``google``.
     """
     key = raw.strip().lower()
     if key in {"", "microsoft"}:
         return ProviderKind.MICROSOFT
     if key == "google":
-        raise ProviderConfigError(
-            "provider 'google' is not implemented yet (see GitHub #67 / #84); "
-            'use provider = "microsoft"'
-        )
-    raise ProviderConfigError(f"unknown provider {raw!r}; supported: microsoft")
+        return ProviderKind.GOOGLE
+    raise ProviderConfigError(f"unknown provider {raw!r}; supported: google, microsoft")

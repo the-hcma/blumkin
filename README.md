@@ -48,12 +48,26 @@ provider = "microsoft"
 
 Set `tenant_id`, `default_tz`, and `provider` in this file (there are no org-specific code defaults). `provider` defaults to `microsoft` when omitted.
 
-Interactive browser auth is public-client only (`client_id` + `tenant_id`). Do not set a client secret for this flow.
+Interactive browser auth is public-client only (`client_id`; plus `tenant_id` for Microsoft). Do not set a client secret for these flows.
 
-Token cache files (written by `blumkin auth login`):
+Microsoft token cache files (written by `blumkin auth login`):
 
 - `~/.config/blumkin/msal_token_cache.json`
 - `~/.config/blumkin/auth_record.json`
+
+### Google Workspace (`provider = "google"`)
+
+Use a Google Cloud **Desktop** OAuth client id (public; no client secret):
+
+```toml
+client_id = "<google-desktop-client-id>.apps.googleusercontent.com"
+provider = "google"
+default_tz = "<IANA timezone, e.g. America/New_York>"
+```
+
+Token file (written by `blumkin auth login`):
+
+- `~/.config/blumkin/google_token.json`
 
 Override config directory with `BLUMKIN_CONFIG_DIR`. Never commit these files.
 
