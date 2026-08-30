@@ -167,7 +167,7 @@ def save_token_cache(config: BlumkinConfig | None = None) -> None:
     if _cache_bound_path != str(cfg.token_cache_path):
         return
     if _token_cache.has_state_changed:
-        _ensure_secret_dir(cfg.config_dir)
+        _ensure_secret_dir(cfg.profile_dir)
         _write_secret_text(cfg.token_cache_path, _token_cache.serialize())
 
 
@@ -269,7 +269,7 @@ def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
 
 
 def _save_auth_record(cfg: BlumkinConfig, record: AuthenticationRecord) -> None:
-    _ensure_secret_dir(cfg.config_dir)
+    _ensure_secret_dir(cfg.profile_dir)
     _write_secret_text(cfg.auth_record_path, record.serialize())
 
 

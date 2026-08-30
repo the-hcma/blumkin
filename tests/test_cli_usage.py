@@ -37,8 +37,8 @@ from blumkin.skills.mail import (
 
 
 def _patch_wo1162425_enabled(monkeypatch) -> None:
-    def _load():
-        return replace(load_config(), wo1162425_scopes=True)
+    def _load(*, profile: str | None = None):
+        return replace(load_config(profile=profile), wo1162425_scopes=True)
 
     monkeypatch.setattr("blumkin.cli.load_config", _load)
 
@@ -55,6 +55,55 @@ def test_auth_status_google_provider_ok(tmp_path, monkeypatch) -> None:
     assert result.exit_code == EXIT_SUCCESS
     assert '"provider": "google"' in (result.output or "")
     assert "Traceback" not in (result.output or "") + (result.stderr or "")
+
+
+def test_profiles_list_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "work"\n'
+        "\n"
+        "[profiles.personal]\n"
+        'provider = "google"\n'
+        'client_id = "g"\n'
+        'tags = ["@personal", "google"]\n'
+        "\n"
+        "[profiles.work]\n"
+        'provider = "microsoft"\n'
+        'client_id = "m"\n'
+        'tags = ["@work", "microsoft"]\n'
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["profiles", "list", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert '"count": 2' in (result.output or "")
+    assert '"default_profile": "work"' in (result.output or "")
+    assert '"name": "work"' in (result.output or "")
+    assert '"name": "personal"' in (result.output or "")
+
+
+def test_root_profile_flag_selects_tag(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BLUMKIN_PROFILE", "work")
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "work"\n'
+        "\n"
+        "[profiles.personal]\n"
+        'provider = "google"\n'
+        'client_id = "fake-google-desktop-client.apps.googleusercontent.com"\n'
+        'default_tz = "UTC"\n'
+        'tags = ["@personal", "google"]\n'
+        "\n"
+        "[profiles.work]\n"
+        'provider = "microsoft"\n'
+        'client_id = "00000000-0000-0000-0000-000000000001"\n'
+        'tenant_id = "example.onmicrosoft.com"\n'
+        'tags = ["@work"]\n'
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["--profile", "@personal", "auth", "status", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert '"provider": "google"' in (result.output or "")
 
 
 def test_calendar_accept_invalid_tz_exits_usage(tmp_path, monkeypatch) -> None:

@@ -69,8 +69,11 @@ def _cfg(*, wo1162425_scopes: bool, files_scopes: bool = False) -> BlumkinConfig
         files_scopes=files_scopes,
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
+        legacy_flat=True,
         mail_signature=MailSignatureConfig(),
+        profile="default",
         provider=ProviderKind.MICROSOFT,
+        tags=(),
         tenant_id="brk.tech",
         wo1162425_scopes=wo1162425_scopes,
     )

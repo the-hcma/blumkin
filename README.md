@@ -37,50 +37,68 @@ To use blumkin from agent sessions in **other** repos (Cursor personal skill, or
 
 ## Config (`~/.config/blumkin/`)
 
-Create `~/.config/blumkin/config.toml` (mode `0600`):
+Create `~/.config/blumkin/config.toml` (mode `0600`). Prefer **named profiles**
+in one file (see `blumkin profiles list --json` and `--profile`):
 
 ```toml
+default_profile = "work"
+
+[profiles.work]
 client_id = "<entra-public-client-id>"
 tenant_id = "<your-entra-tenant>"
 default_tz = "<IANA timezone, e.g. America/New_York>"
 provider = "microsoft"
+tags = ["@work", "work", "microsoft", "m365"]
+
+[profiles.personal]
+provider = "google"
+default_tz = "<IANA timezone>"
+google_oauth_client_file = "~/path/to/google-oauth-desktop-client.json"
+tags = ["@personal", "personal", "google", "gmail"]
 ```
 
-Set `tenant_id`, `default_tz`, and `provider` in this file (there are no org-specific code defaults). `provider` defaults to `microsoft` when omitted.
+Legacy flat keys (no `[profiles.*]`) still load as one implicit profile named
+`default`, with token files in the config dir root.
 
-Interactive browser auth is public-client only (`client_id`; plus `tenant_id` for Microsoft). Do not set a client secret for these flows.
+Set `tenant_id`, `default_tz`, and `provider` in the profile table (there are no
+org-specific code defaults). `provider` defaults to `microsoft` when omitted.
 
-Microsoft token cache files (written by `blumkin auth login`):
+Interactive browser auth is public-client only (`client_id`; plus `tenant_id` for
+Microsoft). Do not set a client secret for these flows.
 
-- `~/.config/blumkin/msal_token_cache.json`
-- `~/.config/blumkin/auth_record.json`
+Microsoft token cache files (under `profiles/<name>/`, or config dir root for
+legacy):
+
+- `msal_token_cache.json`
+- `auth_record.json`
 
 ### Google Workspace (`provider = "google"`)
 
 **Full walkthrough:** [`docs/google-setup.md`](./docs/google-setup.md)
 (Console project, APIs, consent screen / test users, Desktop client JSON,
-separate config dir, login, smoke, troubleshooting).
+named profile, login, smoke, troubleshooting).
 
-Short form — point `config.toml` at your Google Cloud **Desktop** OAuth client
+Short form — point the profile at your Google Cloud **Desktop** OAuth client
 JSON (the Console download). That file holds `client_id` / `client_secret`; do
 not put the secret in toml or environment variables:
 
 ```toml
+[profiles.personal]
 provider = "google"
 default_tz = "..."
 google_oauth_client_file = "~/path/to/google-oauth-desktop-client.json"
+tags = ["@personal", "personal", "google", "gmail"]
 ```
 
 Optional: set `client_id` in toml as well; when omitted it is read from the JSON.
 Keep the client JSON mode `0600` and outside the repo.
 
-Token file (written by `blumkin auth login`):
+Token file (written by `blumkin auth login`): `profiles/<name>/google_token.json`.
 
-- `~/.config/blumkin/google_token.json`
-
-Use `BLUMKIN_CONFIG_DIR` only to select a config directory (e.g. a Google-only
-profile). Never commit these files. Optional `graph_timeout_seconds` in toml
-also bounds Google HTTP / token-refresh calls (same knob as Microsoft Graph).
+Select a profile with `--profile` / `BLUMKIN_PROFILE` (name or unique tag). Use
+`BLUMKIN_CONFIG_DIR` only to select a config **directory**. Never commit these
+files. Optional `graph_timeout_seconds` in toml also bounds Google HTTP /
+token-refresh calls (same knob as Microsoft Graph).
 
 ## Tests
 

@@ -23,8 +23,14 @@ workarounds.
 1. Confirm the binary exists: `blumkin --version` (if missing, tell the user to
    run `uv tool install -e .` from their blumkin clone and ensure `~/.local/bin`
    is on `PATH`).
-2. Discover skills: `blumkin skills list --json`.
-3. Reads (prefer `--json`):
+2. Discover account profiles: `blumkin profiles list --json`. If `count` is
+   greater than 1, do **not** guess — pass `--profile <name-or-tag>` on every
+   command, honor a user-chosen tag for this session, or **ask which account**
+   before any mail/calendar/chat read or write. Request tags like `@work` /
+   `@personal` (or wording such as “on Google” / “on Microsoft”) map to profile
+   `tags` in that JSON. `--profile` wins over `BLUMKIN_PROFILE`.
+3. Discover skills: `blumkin skills list --json`.
+4. Reads (prefer `--json`):
    - Calendar: `blumkin calendar today --json`,
      `blumkin calendar view --from YYYY-MM-DD --to YYYY-MM-DD --json`
      (half-open `[from,to)`), `blumkin calendar freebusy --with email --start … --end … --json`
@@ -88,7 +94,7 @@ workarounds.
      `blumkin chat attachments --with "Name" --latest --json` (newest message carrying files)
      `blumkin chat attachments download --chat-id '<chat-id>' --message-id '<message-id>' --attachment-id '<id>' --out ./file.docx`
      `blumkin chat attachments download --with "Name" --latest --all --out ./downloads/`
-4. Writes (require `--yes` when they notify others):
+5. Writes (require `--yes` when they notify others):
    - `blumkin calendar accept --event-id '<id>' --yes`
    - `blumkin calendar create --subject … --with email --start … --yes`
      (Teams online meeting by default; pass `--no-teams` for an offline hold)
@@ -130,8 +136,8 @@ workarounds.
   - `blumkin meeting get --event-id '<id>'` (organizer-only online meetings)
   - `blumkin meeting transcription --event-id '<id>'` (show flags)
   - `blumkin meeting transcription --event-id '<id>' --enable --yes`
-5. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).
-6. On auth failure (exit `3` / `auth_required`): tell the user to run
+6. TZ: `blumkin --tz AREA …` or per calendar command `--tz AREA` (omit for config default).
+7. On auth failure (exit `3` / `auth_required`): tell the user to run
    `blumkin auth login` on this machine, then retry. Do **not** treat every
    non-zero auth-adjacent exit as login: exit `1` / `secret_write_failed` means
    the token cache or auth record could not be written (often a symlink at
@@ -142,10 +148,10 @@ workarounds.
    browser. If a command hangs: `pkill -f blumkin`, check
    `blumkin auth status --json` for `access_token_expired`, then
    `blumkin auth refresh` (or `auth login` on a TTY) before retrying mail/calendar.
-7. Writes that email or invite others require `--yes`.
-8. Chat write + meeting transcription need `Chat.ReadWrite` /
+8. Writes that email or invite others require `--yes`.
+9. Chat write + meeting transcription need `Chat.ReadWrite` /
    `OnlineMeetings.ReadWrite` consented (re-login after Identity grant).
-9. Teams chat files live in SharePoint/OneDrive, so
+10. Teams chat files live in SharePoint/OneDrive, so
    `blumkin chat attachments download` needs a delegated `Files.Read` scope,
    gated behind `files_scopes` (off by default). Without it, listing still works
    and download exits `4` / `missing_scope` with the share URL — hand that URL to
@@ -167,15 +173,21 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
 
 ## Config
 
-- Default: `~/.config/blumkin/` (`config.toml`, token cache, auth record).
-- Override with `BLUMKIN_CONFIG_DIR`. Never invent or commit secrets.
+- Default: `~/.config/blumkin/config.toml`. Named profiles live under
+  `[profiles.<name>]`; token files under `profiles/<name>/`. Legacy flat toml
+  (no `[profiles.*]`) is one implicit profile `default` with tokens in the
+  config dir root.
+- Select with `--profile <name-or-tag>` or `BLUMKIN_PROFILE` (non-secret). 
+  `BLUMKIN_CONFIG_DIR` still selects the config **directory** only. Never invent
+  or commit secrets; no credential env overrides.
 - Keep that directory a real local folder (not a symlink into a shared tree). Token
   cache and auth-record writes refuse symlinked secret paths and report
   `secret_write_failed` (exit `1`) instead of looping on `auth login`.
-- **Mail signature (optional):** in `config.toml`:
+- **Mail signature (optional):** under the profile, e.g. `[profiles.work.mail.signature]`
+  (legacy: `[mail.signature]`):
 
   ```toml
-  [mail.signature]
+  [profiles.work.mail.signature]
   enabled = true
   name = "Ada Example"
   affiliation = "Example Org"

@@ -116,8 +116,11 @@ def _cfg(*, provider: ProviderKind = ProviderKind.MICROSOFT) -> BlumkinConfig:
         files_scopes=False,
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
+        legacy_flat=True,
         mail_signature=MailSignatureConfig(),
+        profile="default",
         provider=provider,
+        tags=(),
         tenant_id="contoso.com",
         wo1162425_scopes=False,
     )
