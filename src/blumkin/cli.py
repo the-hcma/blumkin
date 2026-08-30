@@ -187,7 +187,7 @@ def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
             message=str(exc) or "Graph or token HTTP call timed out",
             as_json=as_json,
             hint=(
-                "Raise graph_timeout_seconds / BLUMKIN_GRAPH_TIMEOUT if needed; "
+                "Raise graph_timeout_seconds in config.toml if needed; "
                 "kill stuck blumkin PIDs; run `blumkin auth refresh` if the access "
                 "token is expired."
             ),
@@ -221,7 +221,7 @@ def _require_wo1162425_scopes(*, as_json: bool) -> None:
             "WO1162425 add-on scopes are disabled. Calendar/mail/chat read skills work "
             "without them; chat write, meeting skills, and "
             "people resolve need wo1162425_scopes = true "
-            "in config.toml (or BLUMKIN_WO1162425_SCOPES=1) after Remedy WO1162425 "
+            "in config.toml after Remedy WO1162425 "
             "grants its add-ons (at least Chat.ReadWrite, OnlineMeetings.ReadWrite, "
             "People.Read — see HANDOFF.md; augmented asks may still be pending) — "
             "then wipe token cache, auth record, and re-login."
@@ -457,7 +457,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
     status = _workspace(cfg).auth_status()
     problems: list[str] = []
     if not status["client_id_configured"]:
-        problems.append("client_id missing in config.toml / BLUMKIN_CLIENT_ID")
+        problems.append("client_id missing in config.toml")
     if not status["token_cache"] or not status["auth_record"]:
         problems.append("auth cache incomplete — run: blumkin auth login")
     payload = {

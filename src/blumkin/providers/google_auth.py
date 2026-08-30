@@ -13,7 +13,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from blumkin.auth import SecretWriteError, interactive_auth_allowed
-from blumkin.config import BlumkinConfig, load_config
+from blumkin.config import BlumkinConfig, google_oauth_installed_client, load_config
+from blumkin.providers.kind import ProviderConfigError
 
 GOOGLE_SCOPES = frozenset(
     {
@@ -31,10 +32,10 @@ def get_credentials(
 ) -> Credentials:
     """Load or obtain Google OAuth credentials; refresh silently when possible."""
     cfg = config or load_config()
-    if not cfg.client_id:
+    if not cfg.client_id and cfg.google_oauth_client_file is None:
         raise ValueError(
-            "Missing client_id — set client_id in ~/.config/blumkin/config.toml "
-            "or BLUMKIN_CLIENT_ID."
+            "Missing Google OAuth client — set google_oauth_client_file (path to "
+            "Desktop client JSON) or client_id in config.toml."
         )
     interactive = interactive_auth_allowed() if allow_interactive is None else allow_interactive
     creds = _load_credentials(cfg)
@@ -103,7 +104,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
         "access_token_expired": access.get("expired"),
         "auth_record": cfg.google_token_path.is_file(),
-        "client_id_configured": bool(cfg.client_id),
+        "client_id_configured": bool(cfg.client_id) or cfg.google_oauth_client_file is not None,
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),
         "provider": "google",
@@ -142,17 +143,46 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
 
 
 def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
-    # Google Cloud "Desktop" OAuth clients still ship a client_secret in the
-    # download JSON; the token endpoint rejects the exchange when it is omitted.
-    return {
-        "installed": {
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "client_id": cfg.client_id,
-            "client_secret": cfg.client_secret,
-            "redirect_uris": ["http://localhost"],
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }
-    }
+    """Build InstalledAppFlow client config from the Desktop download JSON.
+
+    Google Cloud Desktop clients ship a ``client_secret`` in that file; the
+    token endpoint rejects the exchange when it is omitted. Secrets stay in the
+    referenced JSON (mode 0600), never in env or ``config.toml``.
+    """
+    path = cfg.google_oauth_client_file
+    if path is None:
+        raise ProviderConfigError(
+            "google_oauth_client_file is required for Google auth "
+            "(path to Cloud Console Desktop client JSON)."
+        )
+    if not path.is_file():
+        raise ProviderConfigError(f"google_oauth_client_file not found: {path}")
+    installed = dict(google_oauth_installed_client(path))
+    client_id = installed.get("client_id")
+    if not isinstance(client_id, str) or not client_id.strip():
+        raise ProviderConfigError(f"google_oauth_client_file {path} missing client_id")
+    secret = installed.get("client_secret")
+    if not isinstance(secret, str) or not secret.strip():
+        raise ProviderConfigError(
+            f"google_oauth_client_file {path} missing client_secret "
+            "(required for Desktop token exchange)."
+        )
+    installed.setdefault("auth_uri", "https://accounts.google.com/o/oauth2/auth")
+    installed.setdefault("redirect_uris", ["http://localhost"])
+    installed.setdefault("token_uri", "https://oauth2.googleapis.com/token")
+    return {"installed": installed}
+
+
+def _client_secret_from_oauth_file(cfg: BlumkinConfig) -> str:
+    path = cfg.google_oauth_client_file
+    if path is None or not path.is_file():
+        return ""
+    try:
+        installed = google_oauth_installed_client(path)
+    except ProviderConfigError:
+        return ""
+    raw = installed.get("client_secret")
+    return raw.strip() if isinstance(raw, str) else ""
 
 
 def _ensure_secret_dir(directory: Path) -> None:
@@ -175,9 +205,12 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
         return None
     if not isinstance(data, dict):
         return None
-    # google-auth requires the key; prefer config secret when the token file omitted it.
+    # google-auth requires client_secret on refresh; fill from Desktop JSON if needed.
     info = dict(data)
-    info.setdefault("client_secret", cfg.client_secret)
+    if not str(info.get("client_secret") or "").strip():
+        secret = _client_secret_from_oauth_file(cfg)
+        if secret:
+            info["client_secret"] = secret
     try:
         return Credentials.from_authorized_user_info(info, scopes=sorted(GOOGLE_SCOPES))
     except Exception:
@@ -187,8 +220,9 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
 def _save_credentials(cfg: BlumkinConfig, creds: Credentials) -> None:
     _ensure_secret_dir(cfg.config_dir)
     payload = json.loads(creds.to_json())
-    if cfg.client_secret:
-        payload["client_secret"] = cfg.client_secret
+    secret = _client_secret_from_oauth_file(cfg)
+    if secret:
+        payload["client_secret"] = secret
     else:
         payload.setdefault("client_secret", "")
     _write_secret_text(cfg.google_token_path, json.dumps(payload))

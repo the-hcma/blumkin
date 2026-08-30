@@ -665,8 +665,8 @@ def _require_files_scope(config: BlumkinConfig, content_url: str) -> None:
         return
     raise ChatAttachmentScopeError(
         "downloading Teams chat files needs a delegated Files.Read scope, which this "
-        "sign-in does not hold. Set files_scopes = true in config.toml (or "
-        "BLUMKIN_FILES_SCOPES=1) once the tenant grants it, then wipe the token cache "
+        "sign-in does not hold. Set files_scopes = true in config.toml "
+        "once the tenant grants it, then wipe the token cache "
         "and re-login. Until then, open the file in a browser: "
         f"{sanitize_terminal(content_url)}"
     )

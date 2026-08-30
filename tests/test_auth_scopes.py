@@ -26,59 +26,48 @@ def test_effective_scopes_files_opt_in() -> None:
     ]
 
 
-def test_files_scopes_from_env(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("BLUMKIN_FILES_SCOPES", "1")
-    assert load_config().files_scopes is True
-
-
 def test_files_scopes_from_toml(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv("BLUMKIN_FILES_SCOPES", raising=False)
     (tmp_path / "config.toml").write_text('client_id = "abc"\nfiles_scopes = true\n')
     assert load_config().files_scopes is True
 
 
 def test_files_scopes_off_by_default(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv("BLUMKIN_FILES_SCOPES", raising=False)
     assert load_config().files_scopes is False
-
-
-def test_wo1162425_scopes_from_env(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setenv("BLUMKIN_WO1162425_SCOPES", "1")
-    assert load_config().wo1162425_scopes is True
 
 
 def test_wo1162425_scopes_from_toml(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
     (tmp_path / "config.toml").write_text('client_id = "abc"\nwo1162425_scopes = true\n')
     assert load_config().wo1162425_scopes is True
 
 
 def test_wo1162425_scopes_from_toml_int(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
     (tmp_path / "config.toml").write_text('client_id = "abc"\nwo1162425_scopes = 1\n')
     assert load_config().wo1162425_scopes is True
 
 
-def test_env_overrides_toml_wo1162425_scopes(tmp_path: Path, monkeypatch) -> None:
+def test_scope_env_vars_do_not_override_toml(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BLUMKIN_FILES_SCOPES", "1")
     monkeypatch.setenv("BLUMKIN_WO1162425_SCOPES", "0")
-    (tmp_path / "config.toml").write_text('client_id = "abc"\nwo1162425_scopes = true\n')
-    assert load_config().wo1162425_scopes is False
+    (tmp_path / "config.toml").write_text(
+        'client_id = "abc"\nfiles_scopes = false\nwo1162425_scopes = true\n'
+    )
+    cfg = load_config()
+    assert cfg.files_scopes is False
+    assert cfg.wo1162425_scopes is True
 
 
 def _cfg(*, wo1162425_scopes: bool, files_scopes: bool = False) -> BlumkinConfig:
     return BlumkinConfig(
         client_id="abc",
-        client_secret="",
         config_dir=Path("unused"),
         default_tz="UTC",
         files_scopes=files_scopes,
+        google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
         provider=ProviderKind.MICROSOFT,

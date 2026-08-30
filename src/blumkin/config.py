@@ -1,7 +1,8 @@
-"""Load Blumkin config from ~/.config/blumkin (and env overrides)."""
+"""Load Blumkin config from ~/.config/blumkin/config.toml."""
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from dataclasses import dataclass
@@ -16,10 +17,10 @@ DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
 @dataclass(frozen=True, slots=True)
 class BlumkinConfig:
     client_id: str
-    client_secret: str
     config_dir: Path
     default_tz: str
     files_scopes: bool
+    google_oauth_client_file: Path | None
     graph_timeout_seconds: float
     mail_signature: MailSignatureConfig
     provider: ProviderKind
@@ -57,6 +58,7 @@ class MailSignatureConfig:
 
 
 def config_dir() -> Path:
+    """Resolve the config directory (``BLUMKIN_CONFIG_DIR`` selects which dir)."""
     override = os.environ.get("BLUMKIN_CONFIG_DIR", "").strip()
     if override:
         return Path(override).expanduser()
@@ -66,36 +68,56 @@ def config_dir() -> Path:
     return Path.home() / ".config" / "blumkin"
 
 
+def google_oauth_installed_client(path: Path) -> dict[str, Any]:
+    """Return the ``installed`` (or ``web``) object from a Desktop client JSON."""
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ProviderConfigError(f"cannot read google_oauth_client_file {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ProviderConfigError(f"google_oauth_client_file {path} must be a JSON object")
+    for key in ("installed", "web"):
+        section = data.get(key)
+        if isinstance(section, dict):
+            return section
+    raise ProviderConfigError(
+        f"google_oauth_client_file {path} missing installed/web client object"
+    )
+
+
 def load_config() -> BlumkinConfig:
-    """Return config; env vars override config.toml keys."""
+    """Return config from ``config.toml`` only (no credential env overrides).
+
+    ``BLUMKIN_CONFIG_DIR`` / ``XDG_CONFIG_HOME`` select which directory is used.
+    Google Desktop OAuth client id/secret come from ``google_oauth_client_file``
+    (path in toml to the Cloud Console download JSON), not from env or toml
+    plaintext secrets.
+    """
     directory = config_dir()
     file_data = _read_toml(directory / "config.toml")
     file_values = {key: value for key, value in file_data.items() if isinstance(value, str)}
-    client_id = (
-        os.environ.get("BLUMKIN_CLIENT_ID", "").strip() or file_values.get("client_id", "").strip()
-    )
-    client_secret = (
-        os.environ.get("BLUMKIN_CLIENT_SECRET", "").strip()
-        or file_values.get("client_secret", "").strip()
-    )
-    tenant_id = (
-        os.environ.get("BLUMKIN_TENANT_ID", "").strip() or file_values.get("tenant_id", "").strip()
-    )
-    default_tz = (
-        os.environ.get("BLUMKIN_TZ", "").strip() or file_values.get("default_tz", "").strip()
-    )
+    google_oauth_client_file = _google_oauth_client_file(file_data)
+    client_id = file_values.get("client_id", "").strip()
+    if not client_id and google_oauth_client_file is not None:
+        client_id = _client_id_from_google_oauth_file(google_oauth_client_file)
     return BlumkinConfig(
         client_id=client_id,
-        client_secret=client_secret,
         config_dir=directory,
-        default_tz=default_tz,
+        default_tz=file_values.get("default_tz", "").strip(),
         files_scopes=_files_scopes_enabled(file_data),
+        google_oauth_client_file=google_oauth_client_file,
         graph_timeout_seconds=_graph_timeout_seconds(file_data),
         mail_signature=_mail_signature_config(file_data),
         provider=_provider_kind(file_data),
-        tenant_id=tenant_id,
+        tenant_id=file_values.get("tenant_id", "").strip(),
         wo1162425_scopes=_wo1162425_scopes_enabled(file_data),
     )
+
+
+def _client_id_from_google_oauth_file(path: Path) -> str:
+    installed = google_oauth_installed_client(path)
+    raw = installed.get("client_id")
+    return raw.strip() if isinstance(raw, str) else ""
 
 
 def _coerce_bool(value: Any) -> bool | None:
@@ -112,21 +134,7 @@ def _coerce_bool(value: Any) -> bool | None:
     return None
 
 
-def _env_bool(name: str) -> bool | None:
-    raw = os.environ.get(name, "").strip().lower()
-    if not raw:
-        return None
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    return None
-
-
 def _files_scopes_enabled(file_data: dict[str, Any]) -> bool:
-    env = _env_bool("BLUMKIN_FILES_SCOPES")
-    if env is not None:
-        return env
     if "files_scopes" in file_data:
         coerced = _coerce_bool(file_data["files_scopes"])
         if coerced is not None:
@@ -134,16 +142,14 @@ def _files_scopes_enabled(file_data: dict[str, Any]) -> bool:
     return False
 
 
+def _google_oauth_client_file(file_data: dict[str, Any]) -> Path | None:
+    raw = file_data.get("google_oauth_client_file")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return Path(raw.strip()).expanduser()
+
+
 def _graph_timeout_seconds(file_data: dict[str, Any]) -> float:
-    raw_env = os.environ.get("BLUMKIN_GRAPH_TIMEOUT", "").strip()
-    if raw_env:
-        try:
-            value = float(raw_env)
-        except ValueError:
-            value = DEFAULT_GRAPH_TIMEOUT_SECONDS
-        else:
-            if value > 0:
-                return value
     raw = file_data.get("graph_timeout_seconds")
     if isinstance(raw, int | float) and not isinstance(raw, bool) and float(raw) > 0:
         return float(raw)
@@ -200,9 +206,6 @@ def _read_toml(path: Path) -> dict[str, Any]:
 
 
 def _wo1162425_scopes_enabled(file_data: dict[str, Any]) -> bool:
-    env = _env_bool("BLUMKIN_WO1162425_SCOPES")
-    if env is not None:
-        return env
     if "wo1162425_scopes" in file_data:
         coerced = _coerce_bool(file_data["wo1162425_scopes"])
         if coerced is not None:

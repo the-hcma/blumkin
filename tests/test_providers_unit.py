@@ -111,10 +111,10 @@ def test_parse_provider_kind_rejects_unknown() -> None:
 def _cfg(*, provider: ProviderKind = ProviderKind.MICROSOFT) -> BlumkinConfig:
     return BlumkinConfig(
         client_id="abc",
-        client_secret="",
         config_dir=Path("unused"),
         default_tz="UTC",
         files_scopes=False,
+        google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
         provider=provider,

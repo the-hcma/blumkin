@@ -59,8 +59,8 @@ def test_logout_deletes_token(tmp_path: Path) -> None:
     assert not path.exists()
 
 
-def test_people_resolve_unsupported() -> None:
-    provider = GoogleWorkspaceProvider(_cfg(Path("unused")))
+def test_people_resolve_unsupported(tmp_path: Path) -> None:
+    provider = GoogleWorkspaceProvider(_cfg(tmp_path))
     with pytest.raises(ValueError, match="not supported for provider=google"):
         asyncio.run(provider.people_resolve(name="Ada"))
 
@@ -289,14 +289,19 @@ def test_build_gmail_query_quotes_multiword_subject_and_sender() -> None:
     assert q == 'from:"Ada Lovelace <ada@example.com>" subject:"Release notes"'
 
 
-def test_client_config_includes_client_secret(tmp_path: Path) -> None:
+def test_client_config_reads_desktop_oauth_file(tmp_path: Path) -> None:
     from blumkin.providers import google_auth
 
-    cfg = _cfg(tmp_path)
+    oauth = tmp_path / "desktop-client.json"
+    oauth.write_text(
+        '{"installed": {'
+        '"client_id": "fake-google-desktop-client.apps.googleusercontent.com", '
+        '"client_secret": "fake-google-client-secret"}}'
+    )
+    cfg = _cfg(tmp_path, oauth_file=oauth)
     installed = google_auth._client_config(cfg)["installed"]
     assert installed["client_secret"] == "fake-google-client-secret"
-    assert installed["client_secret"] == cfg.client_secret
-    assert installed["client_id"] == cfg.client_id
+    assert installed["client_id"] == "fake-google-desktop-client.apps.googleusercontent.com"
 
 
 def test_get_credentials_requires_auth_noninteractive(tmp_path: Path, monkeypatch) -> None:
@@ -308,13 +313,22 @@ def test_get_credentials_requires_auth_noninteractive(tmp_path: Path, monkeypatc
         google_auth.get_credentials(cfg, allow_interactive=False)
 
 
-def _cfg(config_dir: Path) -> BlumkinConfig:
+def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
+    path = oauth_file
+    if path is None:
+        path = config_dir / "desktop-client.json"
+        if not path.is_file():
+            path.write_text(
+                '{"installed": {'
+                '"client_id": "fake-google-desktop-client.apps.googleusercontent.com", '
+                '"client_secret": "fake-google-client-secret"}}'
+            )
     return BlumkinConfig(
         client_id="fake-google-desktop-client.apps.googleusercontent.com",
-        client_secret="fake-google-client-secret",
         config_dir=config_dir,
         default_tz="UTC",
         files_scopes=False,
+        google_oauth_client_file=path,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
         provider=ProviderKind.GOOGLE,

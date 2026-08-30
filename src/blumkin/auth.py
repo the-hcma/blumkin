@@ -16,8 +16,8 @@ from msal import SerializableTokenCache
 from blumkin.config import BlumkinConfig, load_config
 
 # Request exact granted scope names for MSAL silent refresh (e.g. Calendars.ReadWrite
-# not .Read). Phase 4 add-ons stay off until config/env enables them and Entra grant
-# + re-consent land (see wo1162425_scopes / BLUMKIN_WO1162425_SCOPES).
+# not .Read). Phase 4 add-ons stay off until config enables them and Entra grant
+# + re-consent land (see wo1162425_scopes in config.toml).
 BASE_SCOPES = [
     "Calendars.ReadWrite",
     "Chat.Read",
@@ -27,8 +27,8 @@ BASE_SCOPES = [
 ]
 
 # Teams chat files live in SharePoint/OneDrive, so `chat attachments download` needs a
-# Files scope. Off until the tenant grants it and the user re-consents (files_scopes /
-# BLUMKIN_FILES_SCOPES), because requesting an ungranted scope breaks silent refresh.
+# Files scope. Off until the tenant grants it and the user re-consents
+# (files_scopes in config.toml), because requesting an ungranted scope breaks silent refresh.
 FILES_SCOPES = [
     "Files.Read",
 ]
@@ -67,10 +67,7 @@ def create_credential(
     cfg = config or load_config()
     scopes = effective_scopes(cfg)
     if not cfg.client_id:
-        raise ValueError(
-            "Missing client_id — set client_id in ~/.config/blumkin/config.toml "
-            "or BLUMKIN_CLIENT_ID."
-        )
+        raise ValueError("Missing client_id — set client_id in ~/.config/blumkin/config.toml.")
     interactive = interactive_auth_allowed() if allow_interactive is None else allow_interactive
     _ensure_cache(cfg)
     record = _load_auth_record(cfg)

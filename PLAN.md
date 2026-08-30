@@ -105,9 +105,9 @@ blumkin auth logout         # delete cache files
 
 | Source | Keys |
 |--------|------|
-| Env | `BLUMKIN_CLIENT_ID`, `BLUMKIN_TENANT_ID` (default `brk.tech`) |
-| File | `~/.config/blumkin/config.toml` or `./.blumkin.toml` (gitignored locally) |
-| Cache | `~/.config/blumkin/msal_token_cache.json`, `auth_record.json` (XDG); optional project override |
+| File | `~/.config/blumkin/config.toml` (`client_id`, `tenant_id`, `default_tz`, `provider`, …) |
+| Google | `google_oauth_client_file` → Desktop client JSON (id + secret; not env/toml plaintext) |
+| Cache | `~/.config/blumkin/msal_token_cache.json`, `auth_record.json` (XDG); optional `BLUMKIN_CONFIG_DIR` |
 
 Reuse proven pattern: `InteractiveBrowserCredential` + `SerializableTokenCache` + `AuthenticationRecord` (both caches required for silent auth).
 
