@@ -312,7 +312,8 @@ def _label_ids_for_folder(well_known: str | None) -> list[str] | None:
 def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, Any]:
     headers = _header_map(msg)
     from_name, from_email = _parse_from(headers.get("from"))
-    body, body_type = _body_from_payload(msg.get("payload") or {}, wanted=wanted)
+    payload = msg.get("payload") or {}
+    body, body_type = _body_from_payload(payload, wanted=wanted)
     label_ids = set(msg.get("labelIds") or [])
     received = _ms_to_iso(msg.get("internalDate"))
     sent = _parse_date_header(headers.get("date")) or received
@@ -326,7 +327,7 @@ def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, A
         "created": received,
         "from_email": from_email,
         "from_name": from_name,
-        "has_attachments": False,
+        "has_attachments": _payload_has_attachments(payload),
         "id": msg.get("id"),
         "internet_message_id": headers.get("message-id"),
         "is_draft": "DRAFT" in label_ids,
@@ -353,7 +354,7 @@ def _message_to_dict(msg: dict[str, Any]) -> dict[str, Any]:
         "created": received,
         "from_email": from_email,
         "from_name": from_name,
-        "has_attachments": False,
+        "has_attachments": _payload_has_attachments(msg.get("payload") or {}),
         "id": msg.get("id"),
         "is_read": "UNREAD" not in label_ids,
         "received": received,
@@ -408,3 +409,15 @@ def _parse_from(raw: str | None) -> tuple[str | None, str | None]:
         return None, None
     name, addr = email.utils.parseaddr(raw)
     return (name or None), (addr or None)
+
+
+def _payload_has_attachments(payload: dict[str, Any]) -> bool:
+    """True when any MIME part looks like a file attachment (not body text)."""
+    filename = str(payload.get("filename") or "").strip()
+    body = payload.get("body") or {}
+    if filename or body.get("attachmentId"):
+        return True
+    for part in payload.get("parts") or []:
+        if isinstance(part, dict) and _payload_has_attachments(part):
+            return True
+    return False

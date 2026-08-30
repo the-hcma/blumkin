@@ -156,6 +156,50 @@ def test_calendar_suggest_rejects_treat_tentative_free(tmp_path: Path) -> None:
         )
 
 
+def test_mail_get_reports_has_attachments_from_parts(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    full = {
+        "id": "m2",
+        "snippet": "see attached",
+        "threadId": "t2",
+        "labelIds": ["INBOX"],
+        "internalDate": "1725024000000",
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [
+                {"name": "From", "value": "Ada <ada@example.com>"},
+                {"name": "Subject", "value": "Files"},
+                {"name": "To", "value": "me@example.com"},
+                {"name": "Date", "value": "Fri, 30 Aug 2024 12:00:00 +0000"},
+            ],
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "filename": "",
+                    "body": {"data": "c2VlIGF0dGFjaGVk"},
+                },
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "report.pdf",
+                    "body": {"attachmentId": "ATT123", "size": 12},
+                },
+            ],
+        },
+    }
+    messages = MagicMock()
+    messages.get.return_value.execute.return_value = full
+    service = MagicMock()
+    service.users.return_value.messages.return_value = messages
+    with (
+        patch("blumkin.providers.google.mail.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.mail.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        detail = asyncio.run(provider.mail_get(message_id="m2", body_type="text"))
+    assert detail["message"]["has_attachments"] is True
+    assert detail["message"]["attachments"] == []
+
+
 def test_mail_inbox_and_get(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     list_body = {"messages": [{"id": "m1"}]}
@@ -311,6 +355,41 @@ def test_get_credentials_requires_auth_noninteractive(tmp_path: Path, monkeypatc
     cfg = _cfg(tmp_path)
     with pytest.raises(ValueError, match="Authentication required"):
         google_auth.get_credentials(cfg, allow_interactive=False)
+
+
+def test_load_credentials_prefers_oauth_file_client_secret(tmp_path: Path) -> None:
+    from blumkin.providers import google_auth
+
+    oauth = tmp_path / "desktop-client.json"
+    oauth.write_text(
+        '{"installed": {'
+        '"client_id": "fake-google-desktop-client.apps.googleusercontent.com", '
+        '"client_secret": "rotated-desktop-secret"}}'
+    )
+    cfg = _cfg(tmp_path, oauth_file=oauth)
+    cfg.google_token_path.write_text(
+        "{"
+        '"client_id": "fake-google-desktop-client.apps.googleusercontent.com", '
+        '"client_secret": "stale-token-secret", '
+        '"refresh_token": "fake-refresh", '
+        '"token": "fake-access", '
+        '"token_uri": "https://oauth2.googleapis.com/token", '
+        '"scopes": []'
+        "}"
+    )
+    captured: dict = {}
+
+    def _capture(info, scopes=None):
+        captured.clear()
+        captured.update(info)
+        creds = MagicMock()
+        creds.valid = True
+        return creds
+
+    with patch.object(google_auth.Credentials, "from_authorized_user_info", side_effect=_capture):
+        creds = google_auth._load_credentials(cfg)
+    assert creds is not None
+    assert captured["client_secret"] == "rotated-desktop-secret"
 
 
 def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:

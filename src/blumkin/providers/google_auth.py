@@ -205,12 +205,12 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
         return None
     if not isinstance(data, dict):
         return None
-    # google-auth requires client_secret on refresh; fill from Desktop JSON if needed.
+    # Prefer Desktop JSON client_secret when present so rotated secrets win over
+    # a stale value persisted in google_token.json; fall back to the token file.
     info = dict(data)
-    if not str(info.get("client_secret") or "").strip():
-        secret = _client_secret_from_oauth_file(cfg)
-        if secret:
-            info["client_secret"] = secret
+    secret = _client_secret_from_oauth_file(cfg)
+    if secret:
+        info["client_secret"] = secret
     try:
         return Credentials.from_authorized_user_info(info, scopes=sorted(GOOGLE_SCOPES))
     except Exception:
