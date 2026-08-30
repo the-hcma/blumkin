@@ -198,9 +198,16 @@ def test_mail_inbox_and_get(tmp_path: Path) -> None:
     assert inbox["items"][0]["subject"] == "Hello"
     assert inbox["items"][0]["from_email"] == "ada@example.com"
     assert inbox["items"][0]["is_read"] is False
+    assert inbox["items"][0]["received"] == "2024-08-30T13:20:00+00:00"
+    assert inbox["items"][0]["created"] == "2024-08-30T13:20:00+00:00"
+    assert inbox["items"][0]["sent"] == "2024-08-30T12:00:00+00:00"
+    assert inbox["filters"]["complete"] is True
+    assert inbox["filters"]["scanned"] == 1
     assert inbox["orderby"] is None
     assert detail["message"]["id"] == "m1"
     assert detail["message"]["body"] == "hello world"
+    assert detail["message"]["received"] == "2024-08-30T13:20:00+00:00"
+    assert detail["message"]["sent"] == "2024-08-30T12:00:00+00:00"
 
 
 def test_mail_list_rejects_orderby(tmp_path: Path) -> None:
@@ -208,6 +215,55 @@ def test_mail_list_rejects_orderby(tmp_path: Path) -> None:
     provider = GoogleWorkspaceProvider(cfg)
     with pytest.raises(ValueError, match="--orderby is not supported"):
         asyncio.run(provider.mail_list(folder="inbox", orderby="sent", top=5))
+
+
+def test_mail_list_rejects_top_above_gmail_limit(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    provider = GoogleWorkspaceProvider(cfg)
+    with pytest.raises(ValueError, match="--top must be <= 500"):
+        asyncio.run(provider.mail_list(folder="inbox", top=501))
+
+
+def test_mail_list_does_not_claim_complete_when_page_truncated(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    list_body = {"messages": [{"id": "m1"}], "nextPageToken": "page2"}
+    meta = {
+        "id": "m1",
+        "snippet": "hello",
+        "labelIds": ["INBOX"],
+        "internalDate": "1725024000000",
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "Ada <ada@example.com>"},
+                {"name": "Subject", "value": "Hello"},
+                {"name": "To", "value": "me@example.com"},
+                {"name": "Date", "value": "Fri, 30 Aug 2024 11:00:00 +0000"},
+            ]
+        },
+    }
+    messages = MagicMock()
+    messages.list.return_value.execute.return_value = list_body
+    messages.get.return_value.execute.return_value = meta
+    service = MagicMock()
+    service.users.return_value.messages.return_value = messages
+    with (
+        patch("blumkin.providers.google.mail.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.mail.build", return_value=service),
+    ):
+        payload = asyncio.run(GoogleWorkspaceProvider(cfg).mail_list(folder="inbox", top=1))
+    assert payload["filters"]["complete"] is None
+    assert payload["filters"]["scanned"] is None
+    assert payload["items"][0]["received"] == "2024-08-30T13:20:00+00:00"
+    assert payload["items"][0]["sent"] == "2024-08-30T11:00:00+00:00"
+
+
+def test_client_config_includes_client_secret(tmp_path: Path) -> None:
+    from blumkin.providers import google_auth
+
+    cfg = _cfg(tmp_path)
+    installed = google_auth._client_config(cfg)["installed"]
+    assert installed["client_secret"] == ""
+    assert installed["client_id"] == cfg.client_id
 
 
 def test_get_credentials_requires_auth_noninteractive(tmp_path: Path, monkeypatch) -> None:

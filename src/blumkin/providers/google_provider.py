@@ -19,10 +19,6 @@ class GoogleWorkspaceProvider:
     def __init__(self, config: BlumkinConfig) -> None:
         self._config = config
 
-    @property
-    def kind(self) -> ProviderKind:
-        return ProviderKind.GOOGLE
-
     def auth_login(self) -> None:
         google_auth.login(self._config)
 
@@ -165,6 +161,10 @@ class GoogleWorkspaceProvider:
         chat_id: str | None = None,
     ) -> dict[str, Any]:
         return self._unsupported("chat send")
+
+    @property
+    def kind(self) -> ProviderKind:
+        return ProviderKind.GOOGLE
 
     async def mail_attachments_download(
         self,

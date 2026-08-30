@@ -145,6 +145,8 @@ def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
         "installed": {
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "client_id": cfg.client_id,
+            # Desktop / PKCE clients often have no secret; fetch_token still reads the key.
+            "client_secret": "",
             "redirect_uris": ["http://localhost"],
             "token_uri": "https://oauth2.googleapis.com/token",
         }

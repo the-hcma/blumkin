@@ -86,6 +86,8 @@ async def mail_list(
 ) -> dict[str, Any]:
     if top < 1:
         raise ValueError("--top must be >= 1")
+    if top > 500:
+        raise ValueError("--top must be <= 500 (Gmail maxResults limit)")
     label = None if folder is None else folder.strip()
     if folder is not None and not label:
         raise ValueError("--folder cannot be empty")
@@ -138,12 +140,15 @@ async def mail_list(
         )
         items.append(_message_to_dict(msg))
 
+    # Single capped page: nextPageToken means the match set continues — do not claim
+    # exhaustiveness (mirrors Microsoft null semantics for a truncated top page).
+    truncated = bool(listing.get("nextPageToken"))
     return {
         "filters": {
-            "complete": True,
+            "complete": None if truncated else True,
             "from": sender,
             "matched_locally": False,
-            "scanned": len(items),
+            "scanned": None if truncated else len(items),
             "search": search,
             "since": _iso_z(since),
             "subject": subject,
@@ -304,7 +309,8 @@ def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, A
     from_name, from_email = _parse_from(headers.get("from"))
     body, body_type = _body_from_payload(msg.get("payload") or {}, wanted=wanted)
     label_ids = set(msg.get("labelIds") or [])
-    received = _parse_date_header(headers.get("date")) or _ms_to_iso(msg.get("internalDate"))
+    received = _ms_to_iso(msg.get("internalDate"))
+    sent = _parse_date_header(headers.get("date")) or received
     return {
         "attachments": [],
         "body": body,
@@ -321,7 +327,7 @@ def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, A
         "is_draft": "DRAFT" in label_ids,
         "is_read": "UNREAD" not in label_ids,
         "received": received,
-        "sent": received,
+        "sent": sent,
         "subject": _decode_header_value(headers.get("subject")),
         "to": _parse_address_list(headers.get("to")),
         "web_link": None,
@@ -332,7 +338,8 @@ def _message_to_dict(msg: dict[str, Any]) -> dict[str, Any]:
     headers = _header_map(msg)
     from_name, from_email = _parse_from(headers.get("from"))
     label_ids = set(msg.get("labelIds") or [])
-    received = _parse_date_header(headers.get("date")) or _ms_to_iso(msg.get("internalDate"))
+    received = _ms_to_iso(msg.get("internalDate"))
+    sent = _parse_date_header(headers.get("date")) or received
     to_addrs = _parse_address_list(headers.get("to"))
     return {
         "body_html": None,
@@ -345,7 +352,7 @@ def _message_to_dict(msg: dict[str, Any]) -> dict[str, Any]:
         "id": msg.get("id"),
         "is_read": "UNREAD" not in label_ids,
         "received": received,
-        "sent": received,
+        "sent": sent,
         "subject": _decode_header_value(headers.get("subject")),
         "to_email": to_addrs[0]["email"] if to_addrs else None,
     }
