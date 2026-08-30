@@ -279,6 +279,7 @@ def _profile_tables(
                 f"({shown}); move them under [profiles.<name>] or remove [profiles]"
             )
         tables: dict[str, dict[str, Any]] = {}
+        seen_lower: dict[str, str] = {}
         for name, table in raw_profiles.items():
             if not isinstance(name, str) or not name.strip():
                 raise ProviderConfigError("profile names must be non-empty strings")
@@ -288,10 +289,18 @@ def _profile_tables(
                     f"profile name {cleaned!r} must be a single path segment "
                     "(no slashes, '.', or '..')"
                 )
+            folded = cleaned.casefold()
+            prior = seen_lower.get(folded)
+            if prior is not None:
+                raise ProviderConfigError(
+                    f"profile names {prior!r} and {cleaned!r} collide on "
+                    "case-insensitive filesystems; rename one"
+                )
             if not isinstance(table, dict):
                 raise ProviderConfigError(
                     f"profiles.{cleaned} must be a table in config.toml, got {type(table).__name__}"
                 )
+            seen_lower[folded] = cleaned
             tables[cleaned] = table
         default_raw = file_data.get("default_profile")
         default_name: str | None = None

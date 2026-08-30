@@ -276,6 +276,15 @@ def test_profile_name_rejects_path_separators(tmp_path: Path, monkeypatch) -> No
         load_config()
 
 
+def test_profile_names_reject_case_collision(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.Work]\nclient_id = "a"\n\n[profiles.work]\nclient_id = "b"\n'
+    )
+    with pytest.raises(ProviderConfigError, match="case-insensitive"):
+        load_config()
+
+
 def test_named_profile_secret_writes_under_profile_dir(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
