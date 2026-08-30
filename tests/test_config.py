@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from blumkin import auth
 from blumkin.config import list_profiles, load_config
+from blumkin.providers import google_auth
 from blumkin.providers.kind import ProviderConfigError
 
 
@@ -213,3 +215,54 @@ def test_list_profiles_safe_summaries(tmp_path: Path, monkeypatch) -> None:
     dumped = json.dumps(summaries)
     assert "not-a-secret" not in dumped
     assert "ms-client" not in dumped
+
+
+def test_missing_config_has_zero_profiles(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    assert list_profiles() == []
+    with pytest.raises(ProviderConfigError, match="no profiles configured"):
+        load_config()
+
+
+def test_named_profile_secret_writes_under_profile_dir(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    oauth = tmp_path / "desktop-client.json"
+    oauth.write_text(
+        '{"installed": {"client_id": "gid.apps.googleusercontent.com", '
+        '"client_secret": "not-a-secret"}}'
+    )
+    _write_multi_profile(tmp_path, oauth)
+
+    work = load_config(profile="work")
+    auth._cache_bound_path = str(work.token_cache_path)
+    auth._token_cache.deserialize("")
+    auth._token_cache.has_state_changed = True
+    auth.save_token_cache(work)
+    assert work.token_cache_path.is_file()
+    assert work.token_cache_path == tmp_path / "profiles" / "work" / "msal_token_cache.json"
+    assert not (tmp_path / "msal_token_cache.json").exists()
+
+    class _Record:
+        def serialize(self) -> str:
+            return '{"homeAccountId":"test"}'
+
+    auth._save_auth_record(work, _Record())  # type: ignore[arg-type]
+    assert work.auth_record_path == tmp_path / "profiles" / "work" / "auth_record.json"
+    assert work.auth_record_path.is_file()
+    assert not (tmp_path / "auth_record.json").exists()
+
+    personal = load_config(profile="personal")
+
+    class _Creds:
+        def to_json(self) -> str:
+            return (
+                '{"token": "t", "refresh_token": "r", '
+                '"token_uri": "https://oauth2.googleapis.com/token", "client_id": "gid"}'
+            )
+
+    google_auth._save_credentials(personal, _Creds())  # type: ignore[arg-type]
+    assert personal.google_token_path == tmp_path / "profiles" / "personal" / "google_token.json"
+    assert personal.google_token_path.is_file()
+    assert not (tmp_path / "google_token.json").exists()

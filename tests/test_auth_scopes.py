@@ -34,6 +34,7 @@ def test_files_scopes_from_toml(tmp_path: Path, monkeypatch) -> None:
 
 def test_files_scopes_off_by_default(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
     assert load_config().files_scopes is False
 
 

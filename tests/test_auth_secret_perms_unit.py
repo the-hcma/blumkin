@@ -79,6 +79,20 @@ def test_ensure_secret_dir_refuses_symlink(tmp_path: Path) -> None:
         auth._ensure_secret_dir(link)
 
 
+def test_ensure_secret_dir_refuses_symlinked_ancestor(tmp_path: Path) -> None:
+    """Named-profile paths must refuse a symlinked config-dir or profiles/ parent."""
+    if sys.platform == "win32":
+        pytest.skip("symlink config-dir layout is a POSIX concern")
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "blumkin"
+    link.symlink_to(real)
+    nested = link / "profiles" / "work"
+    with pytest.raises(SecretWriteError, match="cannot use symlinked config dir"):
+        auth._ensure_secret_dir(nested)
+    assert not (real / "profiles").exists()
+
+
 def test_ensure_secret_dir_survives_chmod_oserror(tmp_path: Path, monkeypatch) -> None:
     directory = tmp_path / "blumkin"
     directory.mkdir()

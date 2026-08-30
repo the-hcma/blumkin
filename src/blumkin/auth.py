@@ -248,10 +248,11 @@ def _ensure_secret_dir(directory: Path) -> None:
     """Create ``directory`` at 0700; best-effort tighten if it already existed looser.
 
     Mode-setting is optional: SMB/FUSE mounts may reject ``chmod``. A symlinked
-    config dir is refused (same class of attack as a symlinked secret file).
+    config dir (or any ancestor on the path) is refused — ``mkdir(parents=True)``
+    follows intermediate symlinks, so checking only the leaf would miss a
+    symlinked config-dir root or ``profiles/`` for named-profile layouts.
     """
-    if directory.is_symlink():
-        raise SecretWriteError(f"cannot use symlinked config dir {directory}")
+    _refuse_symlinked_path_components(directory)
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     try:
         os.chmod(directory, 0o700)
@@ -266,6 +267,18 @@ def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
         return AuthenticationRecord.deserialize(cfg.auth_record_path.read_text())
     except Exception:
         return None
+
+
+def _refuse_symlinked_path_components(directory: Path) -> None:
+    """Refuse ``directory`` or any ancestor that is a symlink (do not ``resolve``)."""
+    current = directory
+    while True:
+        if current.is_symlink():
+            raise SecretWriteError(f"cannot use symlinked config dir {current}")
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
 
 
 def _save_auth_record(cfg: BlumkinConfig, record: AuthenticationRecord) -> None:

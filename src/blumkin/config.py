@@ -282,6 +282,10 @@ def _profile_tables(
             )
         return tables, default_name, False
 
+    # Missing / empty config.toml: no profiles (do not invent a phantom "default").
+    if not file_data:
+        return {}, None, False
+
     # Legacy: flat top-level keys → one implicit profile named "default".
     legacy_table = {
         key: value for key, value in file_data.items() if key not in {"default_profile", "profiles"}

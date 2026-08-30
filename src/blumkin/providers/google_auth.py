@@ -11,7 +11,7 @@ from typing import Any
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-from blumkin.auth import SecretWriteError, interactive_auth_allowed
+from blumkin.auth import SecretWriteError, _ensure_secret_dir, interactive_auth_allowed
 from blumkin.config import BlumkinConfig, google_oauth_installed_client, load_config
 from blumkin.providers.google_http import refresh_request
 from blumkin.providers.kind import ProviderConfigError
@@ -183,16 +183,6 @@ def _client_secret_from_oauth_file(cfg: BlumkinConfig) -> str:
         return ""
     raw = installed.get("client_secret")
     return raw.strip() if isinstance(raw, str) else ""
-
-
-def _ensure_secret_dir(directory: Path) -> None:
-    if directory.is_symlink():
-        raise SecretWriteError(f"cannot use symlinked config dir {directory}")
-    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-    try:
-        os.chmod(directory, 0o700)
-    except OSError:
-        pass
 
 
 def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
