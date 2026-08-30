@@ -91,8 +91,14 @@ async def mail_list(
         raise ValueError("--folder cannot be empty")
     if since is not None and until is not None and until <= since:
         raise ValueError("--until must be after --since")
-    if orderby is not None and orderby.strip().lower() not in {"created", "received", "sent"}:
-        raise ValueError("--orderby must be created, received, or sent")
+    if orderby is not None:
+        key = orderby.strip().lower()
+        if key not in {"created", "received", "sent"}:
+            raise ValueError("--orderby must be created, received, or sent")
+        raise ValueError(
+            "--orderby is not supported for provider=google yet "
+            "(Gmail messages.list returns recency/relevance order only)"
+        )
     cfg = config or load_config()
     service = _gmail_service(cfg)
     well_known = None if label is None else label.casefold()
@@ -132,9 +138,6 @@ async def mail_list(
         )
         items.append(_message_to_dict(msg))
 
-    sort_key = (orderby or "received").strip().lower() if orderby else "received"
-    if well_known in {"sentitems", "drafts", "outbox"} and orderby is None:
-        sort_key = "sent" if well_known == "sentitems" else "created"
     return {
         "filters": {
             "complete": True,
@@ -149,7 +152,7 @@ async def mail_list(
         },
         "folder": well_known or label,
         "items": items,
-        "orderby": None if search else sort_key,
+        "orderby": None,
         "outbound": well_known in _OUTBOUND_FOLDERS,
         "top": top,
     }

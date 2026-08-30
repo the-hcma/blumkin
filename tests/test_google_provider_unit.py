@@ -135,7 +135,25 @@ def test_calendar_freebusy_and_suggest(tmp_path: Path) -> None:
     assert freebusy["items"][0]["schedule"] == "ada@example.com"
     assert freebusy["items"][0]["busy"][0]["status"] == "busy"
     assert suggest["slots"]
+    assert suggest["treat_tentative"] == "busy"
     assert suggest["with"] == ["ada@example.com"]
+
+
+def test_calendar_suggest_rejects_treat_tentative_free(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = datetime(2026, 8, 30, 17, 0, tzinfo=UTC)
+    provider = GoogleWorkspaceProvider(cfg)
+    with pytest.raises(ValueError, match="treat-tentative free"):
+        asyncio.run(
+            provider.calendar_suggest(
+                with_emails=["ada@example.com"],
+                start=start,
+                end=end,
+                duration=timedelta(minutes=30),
+                treat_tentative="free",
+            )
+        )
 
 
 def test_mail_inbox_and_get(tmp_path: Path) -> None:
@@ -180,8 +198,16 @@ def test_mail_inbox_and_get(tmp_path: Path) -> None:
     assert inbox["items"][0]["subject"] == "Hello"
     assert inbox["items"][0]["from_email"] == "ada@example.com"
     assert inbox["items"][0]["is_read"] is False
+    assert inbox["orderby"] is None
     assert detail["message"]["id"] == "m1"
     assert detail["message"]["body"] == "hello world"
+
+
+def test_mail_list_rejects_orderby(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    provider = GoogleWorkspaceProvider(cfg)
+    with pytest.raises(ValueError, match="--orderby is not supported"):
+        asyncio.run(provider.mail_list(folder="inbox", orderby="sent", top=5))
 
 
 def test_get_credentials_requires_auth_noninteractive(tmp_path: Path, monkeypatch) -> None:

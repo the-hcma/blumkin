@@ -66,13 +66,18 @@ async def calendar_suggest(
     tentative = treat_tentative.strip().lower()
     if tentative not in {"busy", "free"}:
         raise ValueError("--treat-tentative must be 'busy' or 'free'")
+    if tentative == "free":
+        raise ValueError(
+            "--treat-tentative free is not supported for provider=google yet "
+            "(Calendar freebusy only returns busy intervals; use the default busy)"
+        )
     window_bounds = _parse_day_window(window) if window is not None else None
     step_delta = step if step is not None else min(timedelta(minutes=15), duration)
     if step_delta <= timedelta(0):
         raise ValueError("--step must be positive")
     freebusy = await calendar_freebusy(with_emails=with_emails, start=start, end=end, config=config)
     raise_if_schedule_errors(freebusy["items"], requested=with_emails)
-    busy = collect_busy_intervals(freebusy["items"], treat_tentative_busy=(tentative == "busy"))
+    busy = collect_busy_intervals(freebusy["items"], treat_tentative_busy=True)
     slots = find_mutual_free_slots(
         busy=busy,
         range_start=start,
