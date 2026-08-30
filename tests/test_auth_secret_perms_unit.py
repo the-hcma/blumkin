@@ -102,6 +102,15 @@ def test_ensure_secret_dir_allows_platform_symlinks_above_config(tmp_path: Path)
     assert not profile_dir.is_symlink()
 
 
+def test_ensure_secret_dir_rejects_path_outside_stop_at(tmp_path: Path) -> None:
+    config_dir = tmp_path / "blumkin"
+    config_dir.mkdir()
+    outside = tmp_path / "elsewhere" / "work"
+    with pytest.raises(SecretWriteError, match="outside config dir"):
+        auth._ensure_secret_dir(outside, stop_at=config_dir)
+    assert not outside.exists()
+
+
 def test_ensure_secret_dir_survives_chmod_oserror(tmp_path: Path, monkeypatch) -> None:
     directory = tmp_path / "blumkin"
     directory.mkdir()

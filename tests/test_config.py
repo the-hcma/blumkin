@@ -267,6 +267,15 @@ def test_named_profiles_reject_stray_flat_keys(tmp_path: Path, monkeypatch) -> N
         load_config()
 
 
+def test_profile_name_rejects_path_separators(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "evil"\n[profiles."../../x"]\nclient_id = "ms"\n'
+    )
+    with pytest.raises(ProviderConfigError, match="single path segment"):
+        load_config()
+
+
 def test_named_profile_secret_writes_under_profile_dir(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)

@@ -282,11 +282,17 @@ def _profile_tables(
         for name, table in raw_profiles.items():
             if not isinstance(name, str) or not name.strip():
                 raise ProviderConfigError("profile names must be non-empty strings")
+            cleaned = name.strip()
+            if cleaned in {".", ".."} or any(sep in cleaned for sep in ("/", "\\")):
+                raise ProviderConfigError(
+                    f"profile name {cleaned!r} must be a single path segment "
+                    "(no slashes, '.', or '..')"
+                )
             if not isinstance(table, dict):
                 raise ProviderConfigError(
-                    f"profiles.{name} must be a table in config.toml, got {type(table).__name__}"
+                    f"profiles.{cleaned} must be a table in config.toml, got {type(table).__name__}"
                 )
-            tables[name.strip()] = table
+            tables[cleaned] = table
         default_raw = file_data.get("default_profile")
         default_name: str | None = None
         if isinstance(default_raw, str) and default_raw.strip():

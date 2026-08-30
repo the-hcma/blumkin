@@ -258,6 +258,8 @@ def _ensure_secret_dir(directory: Path, *, stop_at: Path) -> None:
     do not break TMPDIR / XDG layouts. Intermediate dirs from ``stop_at`` through
     the leaf are tightened to 0700 when the filesystem allows it.
     """
+    if directory != stop_at and stop_at not in directory.parents:
+        raise SecretWriteError(f"secret dir {directory} is outside config dir {stop_at}")
     _refuse_symlinked_path_components(directory, stop_at=stop_at)
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     current = directory
@@ -287,11 +289,10 @@ def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
 
 
 def _refuse_symlinked_path_components(directory: Path, *, stop_at: Path) -> None:
-    """Refuse ``directory`` or ancestors down to ``stop_at`` that are symlinks."""
-    if directory != stop_at and stop_at not in directory.parents:
-        if directory.is_symlink():
-            raise SecretWriteError(f"cannot use symlinked config dir {directory}")
-        return
+    """Refuse ``directory`` or ancestors down to ``stop_at`` that are symlinks.
+
+    Caller must ensure ``stop_at`` is ``directory`` or an ancestor.
+    """
     current = directory
     while True:
         if current.is_symlink():
