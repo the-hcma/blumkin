@@ -257,6 +257,38 @@ def test_mail_list_does_not_claim_complete_when_page_truncated(tmp_path: Path) -
     assert payload["items"][0]["sent"] == "2024-08-30T11:00:00+00:00"
 
 
+def test_auth_status_sets_auth_record_when_token_present(tmp_path: Path) -> None:
+    from blumkin.providers import google_auth
+
+    cfg = _cfg(tmp_path)
+    status = google_auth.status_dict(cfg)
+    assert status["token_cache"] is False
+    assert status["auth_record"] is False
+    cfg.google_token_path.write_text(
+        "{"
+        '"token": "x", "refresh_token": "y", "token_uri": "https://oauth2.googleapis.com/token", '
+        '"client_id": "c", "client_secret": "", "scopes": []'
+        "}"
+    )
+    status = google_auth.status_dict(cfg)
+    assert status["token_cache"] is True
+    assert status["auth_record"] is True
+
+
+def test_build_gmail_query_quotes_multiword_subject_and_sender() -> None:
+    from blumkin.providers.google.mail import _build_gmail_query
+
+    q = _build_gmail_query(
+        search=None,
+        sender="Ada Lovelace <ada@example.com>",
+        since=None,
+        subject="Release notes",
+        unread=False,
+        until=None,
+    )
+    assert q == 'from:"Ada Lovelace <ada@example.com>" subject:"Release notes"'
+
+
 def test_client_config_includes_client_secret(tmp_path: Path) -> None:
     from blumkin.providers import google_auth
 

@@ -210,9 +210,9 @@ def _build_gmail_query(
     if search:
         parts.append(search.strip())
     if sender:
-        parts.append(f"from:{sender.strip()}")
+        parts.append(f"from:{_gmail_phrase(sender.strip())}")
     if subject:
-        parts.append(f"subject:{subject.strip()}")
+        parts.append(f"subject:{_gmail_phrase(subject.strip())}")
     if unread:
         parts.append("is:unread")
     if since is not None:
@@ -255,6 +255,12 @@ def _decode_header_value(raw: str | None) -> str | None:
         return str(make_header(decode_header(text)))
     except Exception:
         return text
+
+
+def _gmail_phrase(value: str) -> str:
+    """Quote a Gmail operator value so multi-word phrases stay atomic."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def _gmail_service(cfg: BlumkinConfig) -> Any:

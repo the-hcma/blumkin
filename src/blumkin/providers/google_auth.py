@@ -102,7 +102,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
         "access_token_expired": access.get("expired"),
-        "auth_record": False,
+        "auth_record": cfg.google_token_path.is_file(),
         "client_id_configured": bool(cfg.client_id),
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),
@@ -110,6 +110,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "refresh_token_present": access.get("refresh_token_present", False),
         "requested_scopes": sorted(GOOGLE_SCOPES),
         "tenant_id": "",
+        # Google stores the OAuth session in one token JSON (no separate MSAL auth record).
         "token_cache": cfg.google_token_path.is_file(),
     }
 
