@@ -294,7 +294,8 @@ def test_client_config_includes_client_secret(tmp_path: Path) -> None:
 
     cfg = _cfg(tmp_path)
     installed = google_auth._client_config(cfg)["installed"]
-    assert installed["client_secret"] == ""
+    assert installed["client_secret"] == "fake-google-client-secret"
+    assert installed["client_secret"] == cfg.client_secret
     assert installed["client_id"] == cfg.client_id
 
 
@@ -310,6 +311,7 @@ def test_get_credentials_requires_auth_noninteractive(tmp_path: Path, monkeypatc
 def _cfg(config_dir: Path) -> BlumkinConfig:
     return BlumkinConfig(
         client_id="fake-google-desktop-client.apps.googleusercontent.com",
+        client_secret="fake-google-client-secret",
         config_dir=config_dir,
         default_tz="UTC",
         files_scopes=False,

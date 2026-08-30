@@ -57,12 +57,14 @@ Microsoft token cache files (written by `blumkin auth login`):
 
 ### Google Workspace (`provider = "google"`)
 
-Use a Google Cloud **Desktop** OAuth client id (public; no client secret):
+Google Cloud **Desktop** client JSON from Cloud Console includes a `client_secret`
+that must be set in `config.toml` for the OAuth token exchange (still never commit it):
 
 ```toml
-client_id = "<google-desktop-client-id>.apps.googleusercontent.com"
+client_id = "....apps.googleusercontent.com"
+client_secret = "<from Desktop client JSON>"
 provider = "google"
-default_tz = "<IANA timezone, e.g. America/New_York>"
+default_tz = "..."
 ```
 
 Token file (written by `blumkin auth login`):

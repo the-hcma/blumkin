@@ -142,12 +142,13 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
 
 
 def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
+    # Google Cloud "Desktop" OAuth clients still ship a client_secret in the
+    # download JSON; the token endpoint rejects the exchange when it is omitted.
     return {
         "installed": {
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "client_id": cfg.client_id,
-            # Desktop / PKCE clients often have no secret; fetch_token still reads the key.
-            "client_secret": "",
+            "client_secret": cfg.client_secret,
             "redirect_uris": ["http://localhost"],
             "token_uri": "https://oauth2.googleapis.com/token",
         }
@@ -174,9 +175,9 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
         return None
     if not isinstance(data, dict):
         return None
-    # Desktop / PKCE clients often omit client_secret; google-auth still requires the key.
+    # google-auth requires the key; prefer config secret when the token file omitted it.
     info = dict(data)
-    info.setdefault("client_secret", "")
+    info.setdefault("client_secret", cfg.client_secret)
     try:
         return Credentials.from_authorized_user_info(info, scopes=sorted(GOOGLE_SCOPES))
     except Exception:
@@ -186,7 +187,10 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
 def _save_credentials(cfg: BlumkinConfig, creds: Credentials) -> None:
     _ensure_secret_dir(cfg.config_dir)
     payload = json.loads(creds.to_json())
-    payload.setdefault("client_secret", "")
+    if cfg.client_secret:
+        payload["client_secret"] = cfg.client_secret
+    else:
+        payload.setdefault("client_secret", "")
     _write_secret_text(cfg.google_token_path, json.dumps(payload))
 
 

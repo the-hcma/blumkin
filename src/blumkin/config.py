@@ -16,6 +16,7 @@ DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
 @dataclass(frozen=True, slots=True)
 class BlumkinConfig:
     client_id: str
+    client_secret: str
     config_dir: Path
     default_tz: str
     files_scopes: bool
@@ -73,6 +74,10 @@ def load_config() -> BlumkinConfig:
     client_id = (
         os.environ.get("BLUMKIN_CLIENT_ID", "").strip() or file_values.get("client_id", "").strip()
     )
+    client_secret = (
+        os.environ.get("BLUMKIN_CLIENT_SECRET", "").strip()
+        or file_values.get("client_secret", "").strip()
+    )
     tenant_id = (
         os.environ.get("BLUMKIN_TENANT_ID", "").strip() or file_values.get("tenant_id", "").strip()
     )
@@ -81,6 +86,7 @@ def load_config() -> BlumkinConfig:
     )
     return BlumkinConfig(
         client_id=client_id,
+        client_secret=client_secret,
         config_dir=directory,
         default_tz=default_tz,
         files_scopes=_files_scopes_enabled(file_data),

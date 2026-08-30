@@ -425,6 +425,7 @@ def _client(monkeypatch, *, signature: bool = False) -> MagicMock:
     if signature:
         cfg = BlumkinConfig(
             client_id="x",
+            client_secret="",
             config_dir=Path("/tmp"),
             default_tz="UTC",
             files_scopes=False,

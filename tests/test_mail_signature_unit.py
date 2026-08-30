@@ -72,6 +72,7 @@ def test_render_mail_signature_html_template_overrides() -> None:
 def test_append_mail_signature_html_separator_and_empty_body() -> None:
     cfg = BlumkinConfig(
         client_id="x",
+        client_secret="",
         config_dir=Path("/tmp"),
         default_tz="UTC",
         files_scopes=False,
@@ -116,6 +117,7 @@ def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     cfg = BlumkinConfig(
         client_id="x",
+        client_secret="",
         config_dir=Path("/tmp"),
         default_tz="UTC",
         files_scopes=False,
