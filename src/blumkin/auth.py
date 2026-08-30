@@ -51,6 +51,7 @@ WO1162425_SCOPES = [
 _token_cache = SerializableTokenCache()
 _atexit_registered = False
 _cache_bound_path: str | None = None
+_cache_bound_stop_at: Path | None = None
 
 
 def create_credential(
@@ -143,7 +144,7 @@ def refresh_silent(config: BlumkinConfig | None = None) -> dict[str, Any]:
 
 
 def logout(config: BlumkinConfig | None = None) -> None:
-    global _cache_bound_path
+    global _cache_bound_path, _cache_bound_stop_at
     cfg = config or load_config()
     for path in (cfg.token_cache_path, cfg.auth_record_path):
         if path.is_file():
@@ -152,13 +153,15 @@ def logout(config: BlumkinConfig | None = None) -> None:
     _token_cache.deserialize("")
     if _cache_bound_path == str(cfg.token_cache_path):
         _cache_bound_path = None
+        _cache_bound_stop_at = None
 
 
 def reload_token_cache_from_disk(config: BlumkinConfig | None = None) -> None:
     """Force re-read MSAL cache from disk (e.g. after a test mutates the file)."""
-    global _cache_bound_path
+    global _cache_bound_path, _cache_bound_stop_at
     cfg = config or load_config()
     _cache_bound_path = None
+    _cache_bound_stop_at = None
     _ensure_cache(cfg)
 
 
@@ -230,7 +233,7 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
 
 
 def _ensure_cache(cfg: BlumkinConfig) -> None:
-    global _atexit_registered, _cache_bound_path
+    global _atexit_registered, _cache_bound_path, _cache_bound_stop_at
     path = str(cfg.token_cache_path)
     if _cache_bound_path == path:
         return
@@ -238,6 +241,7 @@ def _ensure_cache(cfg: BlumkinConfig) -> None:
     if cfg.token_cache_path.is_file():
         _token_cache.deserialize(cfg.token_cache_path.read_text())
     _cache_bound_path = path
+    _cache_bound_stop_at = cfg.config_dir
     # Register once: save only the currently bound path (never stale dirs).
     if not _atexit_registered:
         atexit.register(_save_bound_token_cache_at_exit)
@@ -307,15 +311,15 @@ def _save_auth_record(cfg: BlumkinConfig, record: AuthenticationRecord) -> None:
 
 def _save_bound_token_cache_at_exit() -> None:
     """Persist the in-memory MSAL cache to the currently bound path only."""
-    if _cache_bound_path is None or not _token_cache.has_state_changed:
+    if (
+        _cache_bound_path is None
+        or _cache_bound_stop_at is None
+        or not _token_cache.has_state_changed
+    ):
         return
     path = Path(_cache_bound_path)
     try:
-        profile_dir = path.parent
-        stop_at = (
-            profile_dir.parent.parent if profile_dir.parent.name == "profiles" else profile_dir
-        )
-        _ensure_secret_dir(profile_dir, stop_at=stop_at)
+        _ensure_secret_dir(path.parent, stop_at=_cache_bound_stop_at)
         _write_secret_text(path, _token_cache.serialize())
     except OSError:
         # Avoid "Exception ignored" on atexit when the secret path is a symlink

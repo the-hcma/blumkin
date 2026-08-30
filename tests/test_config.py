@@ -279,6 +279,7 @@ def test_named_profile_secret_writes_under_profile_dir(tmp_path: Path, monkeypat
 
     work = load_config(profile="work")
     auth._cache_bound_path = str(work.token_cache_path)
+    auth._cache_bound_stop_at = work.config_dir
     auth._token_cache.deserialize("")
     auth._token_cache.has_state_changed = True
     auth.save_token_cache(work)
@@ -309,6 +310,7 @@ def test_named_profile_secret_writes_under_profile_dir(tmp_path: Path, monkeypat
     assert personal.google_token_path.is_file()
     assert not (tmp_path / "google_token.json").exists()
 
+    work.token_cache_path.unlink()
     auth._token_cache.has_state_changed = True
     auth._save_bound_token_cache_at_exit()
     assert work.token_cache_path.is_file()
@@ -330,6 +332,7 @@ def test_atexit_named_profile_refuses_symlinked_profiles_dir(tmp_path: Path, mon
     profiles_link.symlink_to(real_profiles)
     work = load_config(profile="work")
     auth._cache_bound_path = str(work.token_cache_path)
+    auth._cache_bound_stop_at = work.config_dir
     auth._token_cache.deserialize("")
     auth._token_cache.has_state_changed = True
     auth._save_bound_token_cache_at_exit()
