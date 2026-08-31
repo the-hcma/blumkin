@@ -133,3 +133,16 @@ def test_documented_datetime_examples_parse(path: list[str]) -> None:
     tz = ZoneInfo("UTC")
     for value in values:
         parse_local_datetime(value, tz)  # raises ValueError if the format is wrong
+
+
+@pytest.mark.parametrize("path", SUBCOMMAND_PATHS + [[]], ids=lambda p: " ".join(p) or "root")
+def test_example_command_lines_are_shell_safe(path: list[str]) -> None:
+    """Copy-pasteable `blumkin ...` example lines must not carry <angle-bracket>
+    placeholders (POSIX shells read them as redirection) or unbalanced quotes."""
+    out = CliRunner().invoke(main, [*path, "--help"]).output
+    for raw in out.splitlines():
+        line = raw.strip().rstrip("\\").strip()
+        if not line.startswith("blumkin "):
+            continue
+        assert "<" not in line and ">" not in line, f"angle-bracket placeholder: {line!r}"
+        assert line.count('"') % 2 == 0, f"unbalanced quote: {line!r}"

@@ -97,7 +97,7 @@ Example:
   blumkin calendar cancel --event-id AAMk... --yes
 
 Sends a cancellation to every attendee (requires `--yes`). Only the organizer can
-cancel; use `calendar accept --event-id ... --yes` with a decline flow otherwise.
+cancel an event; an attendee who wants out declines it in their calendar client.
 """
 
 CALENDAR_CREATE_EPILOG = """
@@ -199,8 +199,8 @@ CALENDAR_VIEW_EPILOG = """
 Examples:
 
 \b
-  # This week (Mon..Sun), Sunday excluded by the half-open range
-  blumkin calendar view --from 2026-09-01 --to 2026-09-08 --json
+  # A Mon..Sun week (2026-08-31 is a Monday; the following Monday is excluded)
+  blumkin calendar view --from 2026-08-31 --to 2026-09-07 --json
 \b
   # A single day
   blumkin calendar view --from 2026-09-01 --to 2026-09-02
@@ -387,7 +387,7 @@ Common workflows:
 \b
   # Draft a reply that threads correctly, then send it
   blumkin mail reply --id AAMk... --body "Works for me - see you then."
-  blumkin mail send-draft --id <draft-id> --yes
+  blumkin mail send-draft --id AAMk... --yes
 
 All drafting verbs stay in your mailbox until `mail send-draft --yes`. `--from` /
 `--subject` filter locally over a newest-first scan (max 500); `--search` is
@@ -402,7 +402,7 @@ Example:
 
 Lists folder ids and message counts, including custom folders. Graph's totals can
 lag - do not treat `total: 0` as proof a folder is empty; confirm with
-`mail list --folder <name>`.
+`mail list --folder NAME`.
 """
 
 MAIL_FORWARD_EPILOG = """
@@ -483,7 +483,7 @@ MAIL_SEND_DRAFT_EPILOG = """
 Example:
 
 \b
-  blumkin mail send-draft --id <draft-id> --yes
+  blumkin mail send-draft --id AAMk... --yes
 
 Sends an existing draft (from `mail draft` / `mail reply` / `mail forward`).
 Requires `--yes` - this is the step that actually delivers mail.
@@ -494,10 +494,10 @@ Examples:
 
 \b
   # Add an attachment to an existing draft (adds, never replaces)
-  blumkin mail update-draft --id <draft-id> --attach ./addendum.pdf
+  blumkin mail update-draft --id AAMk... --attach ./addendum.pdf
 \b
   # Replace the whole recipient list and subject
-  blumkin mail update-draft --id <draft-id> --to sam@example.com \\
+  blumkin mail update-draft --id AAMk... --to sam@example.com \\
     --to dana@example.com --subject "Revised: Q3 deck"
 
 No `--yes` (stays in your mailbox). `--to` / `--cc` / `--bcc` and `--body` each
@@ -527,7 +527,7 @@ Notes:
   - Add --json to any command for machine-readable output (best for agents).
   - Writes that notify someone (invites, sends, chats) require --yes.
   - Times use the profile default_tz unless you pass --tz AREA (IANA name).
-  - Multiple profiles: pass --profile <name-or-tag> or set BLUMKIN_PROFILE.
+  - Multiple profiles: pass --profile NAME (a profile name or tag) or set BLUMKIN_PROFILE.
   - Config + token cache: $BLUMKIN_CONFIG_DIR, else ~/.config/blumkin/.
   - Exit codes: 0 ok, 2 usage, 3 auth_required, 4 missing_scope, 5 not_found.
 
