@@ -461,7 +461,8 @@ def profiles_list(ctx: click.Context, as_json_flag: bool) -> None:
     """List configured profiles: name, provider, timezone, tags, and default.
 
     Prefer --json in agent sessions. `count: 0` means config.toml has no
-    profiles; `count > 1` means you must pick one before mail/calendar/chat.
+    profiles. With more than one profile and no --profile / BLUMKIN_PROFILE /
+    default_profile to pick one, mail/calendar/chat commands error out.
     """
     as_json = _as_json(ctx, as_json_flag)
     try:
