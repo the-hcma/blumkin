@@ -1,16 +1,67 @@
-"""Google Calendar read skills (skill-shaped payloads)."""
+"""Google Calendar skills (reads plus ``create``), skill-shaped payloads."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google_auth import get_credentials
 from blumkin.providers.google_http import build_api_service, execute
-from blumkin.skills.calendar import find_mutual_free_slots
+from blumkin.skills.calendar import find_mutual_free_slots, parse_local_datetime
+from blumkin.skills.calendar_writes import (
+    _DEFAULT_DURATION,
+    parse_duration,
+    reminder_minutes_before_start,
+)
 from blumkin.skills.freebusy_suggest import collect_busy_intervals, raise_if_schedule_errors
+
+
+async def calendar_create(
+    *,
+    subject: str,
+    with_emails: list[str],
+    start_raw: str,
+    duration: str | None = None,
+    remind_email: str | None = None,
+    tz_name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    if not subject.strip():
+        raise ValueError("--subject is required")
+    cfg = config or load_config()
+    tz = ZoneInfo(tz_name or cfg.default_tz)
+    tz_key = tz.key if isinstance(tz, ZoneInfo) else str(tz)
+    start = parse_local_datetime(start_raw, tz)
+    # Add the duration in absolute time so an event spanning a DST transition keeps
+    # its real length (wall-clock arithmetic would over- or under-count by an hour).
+    end = (start.astimezone(UTC) + parse_duration(duration or _DEFAULT_DURATION)).astimezone(tz)
+    body: dict[str, Any] = {
+        "summary": subject.strip(),
+        "start": {"dateTime": start.isoformat(timespec="seconds"), "timeZone": tz_key},
+        "end": {"dateTime": end.isoformat(timespec="seconds"), "timeZone": tz_key},
+    }
+    if with_emails:
+        body["attendees"] = [{"email": email} for email in with_emails]
+    if remind_email is not None:
+        body["reminders"] = {
+            "useDefault": False,
+            "overrides": [
+                {"method": "email", "minutes": reminder_minutes_before_start(remind_email)}
+            ],
+        }
+    service = _calendar_service(cfg)
+    created = execute(
+        service.events().insert(
+            calendarId="primary",
+            body=body,
+            sendUpdates="all" if with_emails else "none",
+        ),
+        # events.insert is a non-idempotent POST; a blind retry could double-book.
+        num_retries=0,
+    )
+    return {"event": _event_to_dict(created, tz)}
 
 
 async def calendar_freebusy(

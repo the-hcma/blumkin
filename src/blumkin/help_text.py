@@ -116,10 +116,16 @@ Examples:
   # Offline hold on your own calendar, no Teams link
   blumkin calendar create --subject "Focus block" --with me@example.com \\
     --start "2026-09-02T13:00" --duration 2h --no-teams --yes
+\b
+  # Solo hold with a reminder a day ahead (email on Google, popup on Outlook)
+  blumkin calendar create --subject "Review renewal" \\
+    --start "2026-09-28T10:00" --remind-email 1d --no-teams --yes
 
-Invites every `--with` address, so `--yes` is required. For a cross-timezone or
-external attendee, run `calendar freebusy` or `calendar suggest` first and pick a
-slot inside their working hours. `--start` stays in the organizer timezone.
+Invites every `--with` address, so `--yes` is required (still required with no
+attendees). `--remind-email` adds an email reminder on Google and an Outlook
+popup reminder on Microsoft. For a cross-timezone or external attendee, run
+`calendar freebusy` or `calendar suggest` first and pick a slot inside their
+working hours. `--start` stays in the organizer timezone.
 """
 
 CALENDAR_EPILOG = """

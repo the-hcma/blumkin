@@ -10,13 +10,14 @@ Prefer shelling to **`blumkin` on `PATH`** over writing Microsoft Graph / Azure
 SDK code (or Google API client code). Do not invent client IDs or call Graph /
 Workspace APIs directly when Blumkin covers the job.
 
-With `provider = "google"` in config, MVP verbs work for calendar
-(`today` / `view` / `freebusy` / `suggest`) and mail (`inbox` / `list` / `get`)
-plus auth. Point `google_oauth_client_file` at the Desktop client JSON (secret
-stays in that file, not env/toml). Setup walkthrough:
+With `provider = "google"` in config, supported verbs are calendar
+(`today` / `view` / `freebusy` / `suggest` / `create`) and mail
+(`inbox` / `list` / `get`) plus auth. Point `google_oauth_client_file` at the
+Desktop client JSON (secret stays in that file, not env/toml). Setup walkthrough:
 [`docs/google-setup.md`](../../../docs/google-setup.md). Unsupported verbs (chat,
-people, mail/calendar writes, …) fail closed with a clear error — do not invent
-workarounds.
+people, mail writes, calendar `update` / `cancel` / `accept`, …) fail closed with
+a clear error — do not invent workarounds. On Google, `calendar create` ignores
+`--teams` (no Meet link yet) and `--remind-email` adds a real email reminder.
 
 ## Cold start (agent)
 
@@ -104,8 +105,11 @@ workarounds.
      `blumkin chat attachments download --with "Name" --latest --all --out ./downloads/`
 5. Writes (require `--yes` when they notify others):
    - `blumkin calendar accept --event-id '<id>' --yes`
-   - `blumkin calendar create --subject … --with email --start … --yes`
-     (Teams online meeting by default; pass `--no-teams` for an offline hold)
+   - `blumkin calendar create --subject … --start … --yes`
+     (Teams online meeting by default; pass `--no-teams` for an offline hold.
+     `--with email` is optional - omit it for a solo hold that notifies nobody;
+     `--yes` is still required. `--remind-email 30m|1h|1d|1w` adds a reminder:
+     a real email on Google, an Outlook popup on Microsoft.)
    - `blumkin calendar update --event-id '<id>' --yes` (attach Teams to an
      existing event; uses Calendars.ReadWrite, not OnlineMeetings.ReadWrite)
    - `blumkin calendar cancel --event-id '<id>' --yes`

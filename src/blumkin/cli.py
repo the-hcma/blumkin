@@ -151,7 +151,12 @@ def _emit_error(
 
 
 def _graph_http_status(exc: BaseException) -> int | None:
-    """Best-effort HTTP status from kiota/msgraph exceptions."""
+    """Best-effort HTTP status from kiota/msgraph or googleapiclient exceptions.
+
+    ``status_code`` covers both kiota ``APIError`` and
+    ``googleapiclient.errors.HttpError`` (an int property since v2.40); the
+    ``response`` fallbacks catch older/other shapes.
+    """
     for attr in ("response_status_code", "status_code"):
         value = getattr(exc, attr, None)
         if isinstance(value, int):
@@ -1038,8 +1043,7 @@ def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_fl
     "--with",
     "with_emails",
     multiple=True,
-    required=True,
-    help="Attendee email; repeat once per attendee.",
+    help="Attendee email; repeat once per attendee. Omit for a solo hold.",
 )
 @click.option(
     "--start",
@@ -1051,7 +1055,17 @@ def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_fl
     "--duration",
     default="30m",
     show_default=True,
-    help="Length as a short duration, e.g. 30m, 45m, 1h, 1h30m.",
+    help="Length as a short duration, e.g. 30m, 45m, 1h, 1d, 1w.",
+)
+@click.option(
+    "--remind-email",
+    "remind_email",
+    default=None,
+    help=(
+        "Add a reminder this long before start, e.g. 30m, 1h, 1d, 1w. Google: an "
+        "email reminder. Microsoft: an Outlook popup reminder (Outlook events have "
+        "no per-event email reminder)."
+    ),
 )
 @click.option(
     "--teams/--no-teams",
@@ -1072,6 +1086,7 @@ def calendar_create_cmd(
     with_emails: tuple[str, ...],
     start_raw: str,
     duration: str,
+    remind_email: str | None,
     teams: bool,
     yes: bool,
     tz_flag: str | None,
@@ -1092,6 +1107,7 @@ def calendar_create_cmd(
                 with_emails=list(with_emails),
                 start_raw=start_raw,
                 duration=duration,
+                remind_email=remind_email,
                 teams=teams,
                 tz_name=_tz_name(ctx, tz_flag),
             )

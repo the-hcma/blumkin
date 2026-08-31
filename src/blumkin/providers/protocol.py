@@ -44,6 +44,7 @@ class WorkspaceProvider(Protocol):
         with_emails: list[str],
         start_raw: str,
         duration: str | None = None,
+        remind_email: str | None = None,
         teams: bool = True,
         tz_name: str | None = None,
     ) -> dict[str, Any]: ...
