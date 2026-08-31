@@ -1464,7 +1464,10 @@ def mail() -> None:
 @click.option(
     "--search",
     default=None,
-    help="Graph $search term (whole mailbox); cannot combine with --from/--subject/--since.",
+    help=(
+        "Graph $search term (whole mailbox); excludes --from / --subject / --since / "
+        "--importance / --has-attachments."
+    ),
 )
 @click.option("--since", default=None, help="Only messages at or after this local date/time.")
 @click.option("--until", default=None, help="Only messages strictly before this local date/time.")
@@ -1628,7 +1631,10 @@ def mail_get_cmd(
 @click.option(
     "--search",
     default=None,
-    help="Graph $search term (whole mailbox); cannot combine with --from/--subject/--since.",
+    help=(
+        "Graph $search term (whole mailbox); excludes --from / --subject / --since / "
+        "--importance / --has-attachments."
+    ),
 )
 @click.option("--since", default=None, help="Only messages at or after this local date/time.")
 @click.option("--until", default=None, help="Only messages strictly before this local date/time.")

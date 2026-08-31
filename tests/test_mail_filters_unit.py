@@ -481,6 +481,35 @@ def test_mail_inbox_forwards_search(monkeypatch) -> None:
     assert payload["filters"]["search"] == "budget"
 
 
+def test_mail_inbox_forwards_importance_and_attachments(monkeypatch) -> None:
+    """Dropping either in the inbox re-pack would silently unfilter the listing."""
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(return_value=_page([]))
+
+    payload = asyncio.run(mail_inbox(importance="high", has_attachments=True))
+
+    assert (
+        _query(client.me.messages.get).filter == "hasAttachments eq true and importance eq 'high'"
+    )
+    assert payload["filters"]["importance"] == "high"
+    assert payload["filters"]["has_attachments"] is True
+
+
+def test_filter_notes_surface_importance_and_attachments() -> None:
+    lines = format_list_human(
+        {
+            "filters": {"importance": "high", "has_attachments": True},
+            "folder": "inbox",
+            "items": [],
+            "orderby": "received",
+            "top": 10,
+        }
+    )
+    joined = "\n".join(lines)
+    assert "importance='high'" in joined
+    assert "with attachments" in joined
+
+
 def test_format_list_human_discloses_a_truncated_local_scan() -> None:
     """Silence would read as 'no more mail from them', which is a different claim."""
     lines = format_list_human(

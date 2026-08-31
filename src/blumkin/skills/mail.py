@@ -1243,6 +1243,7 @@ def _filter_notes(payload: dict[str, Any]) -> list[str]:
             ("search", "search"),
             ("from", "from"),
             ("subject", "subject"),
+            ("importance", "importance"),
             ("since", "since"),
             ("until", "until"),
         )
@@ -1250,6 +1251,8 @@ def _filter_notes(payload: dict[str, Any]) -> list[str]:
     ]
     if filters.get("unread"):
         parts.append("unread only")
+    if filters.get("has_attachments"):
+        parts.append("with attachments")
     if not parts:
         return []
     lines = [f"  filters: {', '.join(parts)}"]
