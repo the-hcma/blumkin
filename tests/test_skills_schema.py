@@ -368,11 +368,12 @@ _SKILL_KEYS = {"args", "cli", "id", "mutates", "notifies_others", "scopes", "sum
 
 
 def _emitted_error_values() -> set[str]:
-    """Collect every ``error=`` literal passed to ``emit_error`` across the package.
+    """Collect every ``error=`` literal passed to ``emit_error`` / ``_emit_error``.
 
     Walking the AST rather than matching source text means keyword order and call
     formatting cannot hide a value, and a non-literal argument fails loudly instead
-    of dropping out of the scan.
+    of dropping out of the scan. The one call whose ``error=`` is a bare name is the
+    ``_emit_error`` wrapper forwarding to ``emit_error`` (cli.py) - it is skipped.
     """
     values: set[str] = set()
     for path in sorted(Path(blumkin.__file__).parent.rglob("*.py")):
@@ -382,12 +383,14 @@ def _emitted_error_values() -> set[str]:
                 continue
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-            if name != "emit_error":
+            if name not in {"emit_error", "_emit_error"}:
                 continue
             keyword = next((kw for kw in node.keywords if kw.arg == "error"), None)
             where = f"{path.name}:{node.lineno}"
-            assert keyword is not None, f"{where}: emit_error without an error= keyword"
+            assert keyword is not None, f"{where}: {name} without an error= keyword"
             literal = keyword.value
+            if isinstance(literal, ast.Name) and path.name == "cli.py":
+                continue  # the _emit_error wrapper forwarding its own `error` param
             assert isinstance(literal, ast.Constant) and isinstance(literal.value, str), (
                 f"{where}: error= is not a string literal, so the documented set cannot be verified"
             )
