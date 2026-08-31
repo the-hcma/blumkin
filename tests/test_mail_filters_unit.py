@@ -80,6 +80,22 @@ def test_mail_list_filters_importance_and_attachments_server_side(monkeypatch) -
     assert query.orderby == ["receivedDateTime desc"]
 
 
+def test_mail_list_keeps_server_filters_on_the_local_scan_path(monkeypatch) -> None:
+    """--from routes through _scan_messages; the new $filter clauses must survive there."""
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(
+        return_value=_page([_msg("Rebecca Doe", "budget"), _msg("Sam Lee", "budget")])
+    )
+
+    payload = asyncio.run(mail_list(sender="Rebecca", has_attachments=True))
+
+    query = _query(client.me.messages.get)
+    assert query.filter == "hasAttachments eq true"
+    assert query.orderby == ["receivedDateTime desc"]
+    assert payload["filters"]["matched_locally"] is True
+    assert [item["from_name"] for item in payload["items"]] == ["Rebecca Doe"]
+
+
 def test_mail_list_importance_is_case_insensitive(monkeypatch) -> None:
     client = _client(monkeypatch)
     client.me.messages.get = AsyncMock(return_value=_page([]))
