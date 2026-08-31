@@ -144,6 +144,51 @@ def test_calendar_freebusy_and_suggest(tmp_path: Path) -> None:
     assert suggest["with"] == ["ada@example.com"]
 
 
+def test_calendar_create_cli_wires_remind_email(tmp_path: Path) -> None:
+    """Exercise the Click option -> calendar_create_cmd -> provider pass-through.
+
+    A valid --remind-email reaches the event body; an invalid one exits usage (2)
+    via reminder_minutes_before_start.
+    """
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.events.return_value.insert.return_value.execute.return_value = {
+        "id": "evt-cli",
+        "summary": "Renewal",
+        "start": {"dateTime": "2026-09-28T10:00:00-04:00"},
+        "end": {"dateTime": "2026-09-28T10:30:00-04:00"},
+        "organizer": {"email": "me@example.com", "self": True},
+    }
+    provider = GoogleWorkspaceProvider(cfg)
+    argv = [
+        "calendar",
+        "create",
+        "--subject",
+        "Renewal",
+        "--start",
+        "2026-09-28T10:00",
+        "--tz",
+        "America/New_York",
+        "--yes",
+        "--json",
+    ]
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+        patch("blumkin.cli._workspace", return_value=provider),
+    ):
+        ok = CliRunner().invoke(main, [*argv, "--remind-email", "1h"])
+        bad = CliRunner().invoke(main, [*argv, "--remind-email", "0m"])
+    assert ok.exit_code == 0
+    body = service.events.return_value.insert.call_args.kwargs["body"]
+    assert body["reminders"] == {
+        "useDefault": False,
+        "overrides": [{"method": "email", "minutes": 60}],
+    }
+    assert bad.exit_code == 2
+    assert json.loads(bad.stderr)["error"] == "usage_error"
+
+
 def test_calendar_create_google_403_maps_to_missing_scope(tmp_path: Path) -> None:
     """A token minted before the calendar.events scope 403s; the CLI must exit 4.
 
