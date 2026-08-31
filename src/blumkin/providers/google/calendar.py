@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -34,7 +34,9 @@ async def calendar_create(
     tz = ZoneInfo(tz_name or cfg.default_tz)
     tz_key = tz.key if isinstance(tz, ZoneInfo) else str(tz)
     start = parse_local_datetime(start_raw, tz)
-    end = start + parse_duration(duration or _DEFAULT_DURATION)
+    # Add the duration in absolute time so an event spanning a DST transition keeps
+    # its real length (wall-clock arithmetic would over- or under-count by an hour).
+    end = (start.astimezone(UTC) + parse_duration(duration or _DEFAULT_DURATION)).astimezone(tz)
     body: dict[str, Any] = {
         "summary": subject.strip(),
         "start": {"dateTime": start.isoformat(timespec="seconds"), "timeZone": tz_key},

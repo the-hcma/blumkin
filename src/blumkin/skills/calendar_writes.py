@@ -29,10 +29,10 @@ from blumkin.skills.calendar import (
     parse_local_datetime,
 )
 
+_DEFAULT_DURATION = "30m"
 _DURATION_RE = re.compile(
     r"^(\d+)\s*(m|min|mins|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)$", re.I
 )
-_DEFAULT_DURATION = "30m"
 # Google caps a reminder lead time at four weeks; keep both providers to that bound.
 _MAX_REMINDER_MINUTES = 40320
 

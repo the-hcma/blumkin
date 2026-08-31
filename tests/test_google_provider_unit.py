@@ -144,8 +144,44 @@ def test_calendar_freebusy_and_suggest(tmp_path: Path) -> None:
     assert suggest["with"] == ["ada@example.com"]
 
 
-def test_google_scopes_include_calendar_write() -> None:
-    assert "https://www.googleapis.com/auth/calendar.events" in GOOGLE_SCOPES
+def test_calendar_create_google_403_maps_to_missing_scope(tmp_path: Path) -> None:
+    """A token minted before the calendar.events scope 403s; the CLI must exit 4.
+
+    Google raises googleapiclient.errors.HttpError, whose status the CLI reads via
+    HttpError.status_code -> _graph_http_status -> missing_scope.
+    """
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    resp = httplib2.Response({"status": 403})
+    service.events.return_value.insert.return_value.execute.side_effect = HttpError(
+        resp,
+        b'{"error":{"message":"Request had insufficient authentication scopes.",'
+        b'"status":"PERMISSION_DENIED"}}',
+        uri="https://www.googleapis.com/calendar/v3/calendars/primary/events",
+    )
+    provider = GoogleWorkspaceProvider(cfg)
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+        patch("blumkin.cli._workspace", return_value=provider),
+    ):
+        result = CliRunner().invoke(
+            main,
+            [
+                "calendar",
+                "create",
+                "--subject",
+                "Solo hold",
+                "--start",
+                "2026-09-28T10:00",
+                "--tz",
+                "America/New_York",
+                "--yes",
+                "--json",
+            ],
+        )
+    assert result.exit_code == EXIT_MISSING_SCOPE
+    assert json.loads(result.stderr)["error"] == "missing_scope"
 
 
 def test_calendar_create_inserts_solo_event_with_email_reminder(tmp_path: Path) -> None:
@@ -190,6 +226,37 @@ def test_calendar_create_inserts_solo_event_with_email_reminder(tmp_path: Path) 
     }
 
 
+def test_calendar_create_keeps_length_across_dst_fallback(tmp_path: Path) -> None:
+    """A one-hour event starting inside the Nov 2026 fall-back stays one real hour."""
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.events.return_value.insert.return_value.execute.return_value = {
+        "id": "evt-dst",
+        "summary": "Overlap",
+        "start": {"dateTime": "2026-11-01T01:30:00-04:00"},
+        "end": {"dateTime": "2026-11-01T01:30:00-05:00"},
+        "organizer": {"email": "me@example.com", "self": True},
+    }
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        asyncio.run(
+            provider.calendar_create(
+                subject="Overlap",
+                with_emails=[],
+                start_raw="2026-11-01T01:30",
+                duration="1h",
+                tz_name="America/New_York",
+            )
+        )
+    body = service.events.return_value.insert.call_args.kwargs["body"]
+    # 01:30 EDT + 1h == 01:30 EST (one elapsed hour), not 02:30 wall time.
+    assert body["start"]["dateTime"] == "2026-11-01T01:30:00-04:00"
+    assert body["end"]["dateTime"] == "2026-11-01T01:30:00-05:00"
+
+
 def test_calendar_create_with_attendees_sends_updates(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     service = MagicMock()
@@ -219,46 +286,6 @@ def test_calendar_create_with_attendees_sends_updates(tmp_path: Path) -> None:
     assert "reminders" not in kwargs["body"]
 
 
-def test_calendar_create_google_403_maps_to_missing_scope(tmp_path: Path) -> None:
-    """A token minted before the calendar.events scope 403s; the CLI must exit 4.
-
-    Google raises googleapiclient.errors.HttpError, whose status the CLI reads via
-    HttpError.status_code -> _graph_http_status -> missing_scope.
-    """
-    cfg = _cfg(tmp_path)
-    service = MagicMock()
-    resp = httplib2.Response({"status": 403})
-    service.events.return_value.insert.return_value.execute.side_effect = HttpError(
-        resp,
-        b'{"error":{"message":"Request had insufficient authentication scopes.",'
-        b'"status":"PERMISSION_DENIED"}}',
-        uri="https://www.googleapis.com/calendar/v3/calendars/primary/events",
-    )
-    provider = GoogleWorkspaceProvider(cfg)
-    with (
-        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
-        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
-        patch("blumkin.cli._workspace", return_value=provider),
-    ):
-        result = CliRunner().invoke(
-            main,
-            [
-                "calendar",
-                "create",
-                "--subject",
-                "Solo hold",
-                "--start",
-                "2026-09-28T10:00",
-                "--tz",
-                "America/New_York",
-                "--yes",
-                "--json",
-            ],
-        )
-    assert result.exit_code == EXIT_MISSING_SCOPE
-    assert json.loads(result.stderr)["error"] == "missing_scope"
-
-
 def test_calendar_suggest_rejects_treat_tentative_free(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
@@ -274,6 +301,10 @@ def test_calendar_suggest_rejects_treat_tentative_free(tmp_path: Path) -> None:
                 treat_tentative="free",
             )
         )
+
+
+def test_google_scopes_include_calendar_write() -> None:
+    assert "https://www.googleapis.com/auth/calendar.events" in GOOGLE_SCOPES
 
 
 def test_mail_get_reports_has_attachments_from_parts(tmp_path: Path) -> None:

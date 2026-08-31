@@ -101,8 +101,11 @@ a clear error — do not invent workarounds. On Google, `calendar create` ignore
      `blumkin chat attachments download --with "Name" --latest --all --out ./downloads/`
 5. Writes (require `--yes` when they notify others):
    - `blumkin calendar accept --event-id '<id>' --yes`
-   - `blumkin calendar create --subject … --with email --start … --yes`
-     (Teams online meeting by default; pass `--no-teams` for an offline hold)
+   - `blumkin calendar create --subject … --start … --yes`
+     (Teams online meeting by default; pass `--no-teams` for an offline hold.
+     `--with email` is optional - omit it for a solo hold that notifies nobody;
+     `--yes` is still required. `--remind-email 30m|1h|1d|1w` adds a reminder:
+     a real email on Google, an Outlook popup on Microsoft.)
    - `blumkin calendar update --event-id '<id>' --yes` (attach Teams to an
      existing event; uses Calendars.ReadWrite, not OnlineMeetings.ReadWrite)
    - `blumkin calendar cancel --event-id '<id>' --yes`

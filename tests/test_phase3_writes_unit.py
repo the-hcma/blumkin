@@ -349,6 +349,78 @@ def test_calendar_create_raises_when_refetch_returns_none(monkeypatch) -> None:
         )
 
 
+def test_calendar_create_remind_email_sets_outlook_popup(monkeypatch) -> None:
+    created = SimpleNamespace(
+        id="evt-new",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=None,
+    )
+    client = MagicMock()
+    client.me.events.post = AsyncMock(return_value=created)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    asyncio.run(
+        calendar_create(
+            subject="Sync",
+            with_emails=["peer@example.com"],
+            start_raw="2026-08-26T11:00",
+            remind_email="1h",
+            teams=False,
+            tz_name="America/New_York",
+        )
+    )
+    post_await = client.me.events.post.await_args
+    assert post_await is not None
+    posted = post_await.args[0]
+    assert posted.is_reminder_on is True
+    assert posted.reminder_minutes_before_start == 60
+
+
+def test_calendar_create_without_attendees_mocked(monkeypatch) -> None:
+    created = SimpleNamespace(
+        id="evt-new",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=None,
+    )
+    client = MagicMock()
+    client.me.events.post = AsyncMock(return_value=created)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    asyncio.run(
+        calendar_create(
+            subject="Sync",
+            with_emails=[],
+            start_raw="2026-08-26T11:00",
+            teams=False,
+            tz_name="America/New_York",
+        )
+    )
+    post_await = client.me.events.post.await_args
+    assert post_await is not None
+    posted = post_await.args[0]
+    assert posted.attendees is None
+
+
 def test_calendar_create_without_teams_mocked(monkeypatch) -> None:
     created = SimpleNamespace(
         id="evt-new",
@@ -384,69 +456,6 @@ def test_calendar_create_without_teams_mocked(monkeypatch) -> None:
     posted = post_await.args[0]
     assert posted.is_online_meeting is None
     assert posted.online_meeting_provider is None
-
-
-def _mock_created_event() -> SimpleNamespace:
-    return SimpleNamespace(
-        id="evt-new",
-        subject="Sync",
-        start=None,
-        end=None,
-        is_all_day=False,
-        is_organizer=True,
-        location=None,
-        organizer=None,
-        response_status=None,
-        online_meeting=None,
-    )
-
-
-def test_calendar_create_remind_email_sets_outlook_popup(monkeypatch) -> None:
-    client = MagicMock()
-    client.me.events.post = AsyncMock(return_value=_mock_created_event())
-    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.calendar_writes.load_config",
-        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
-    )
-    asyncio.run(
-        calendar_create(
-            subject="Sync",
-            with_emails=["peer@example.com"],
-            start_raw="2026-08-26T11:00",
-            remind_email="1h",
-            teams=False,
-            tz_name="America/New_York",
-        )
-    )
-    post_await = client.me.events.post.await_args
-    assert post_await is not None
-    posted = post_await.args[0]
-    assert posted.is_reminder_on is True
-    assert posted.reminder_minutes_before_start == 60
-
-
-def test_calendar_create_without_attendees_mocked(monkeypatch) -> None:
-    client = MagicMock()
-    client.me.events.post = AsyncMock(return_value=_mock_created_event())
-    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.calendar_writes.load_config",
-        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
-    )
-    asyncio.run(
-        calendar_create(
-            subject="Sync",
-            with_emails=[],
-            start_raw="2026-08-26T11:00",
-            teams=False,
-            tz_name="America/New_York",
-        )
-    )
-    post_await = client.me.events.post.await_args
-    assert post_await is not None
-    posted = post_await.args[0]
-    assert posted.attendees is None
 
 
 def test_calendar_update_attaches_teams_mocked(monkeypatch) -> None:

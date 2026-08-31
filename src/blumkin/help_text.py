@@ -117,7 +117,7 @@ Examples:
   blumkin calendar create --subject "Focus block" --with me@example.com \\
     --start "2026-09-02T13:00" --duration 2h --no-teams --yes
 \b
-  # Solo reminder to yourself with an email nudge a day ahead
+  # Solo hold with a reminder a day ahead (email on Google, popup on Outlook)
   blumkin calendar create --subject "Review renewal" \\
     --start "2026-09-28T10:00" --remind-email 1d --no-teams --yes
 
