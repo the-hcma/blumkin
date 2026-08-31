@@ -12,7 +12,7 @@ import httpx
 
 from blumkin import __version__
 from blumkin.auth import SecretWriteError
-from blumkin.config import BlumkinConfig, load_config
+from blumkin.config import BlumkinConfig, list_profiles, load_config
 from blumkin.exit_codes import (
     EXIT_AUTH,
     EXIT_MISSING_SCOPE,
@@ -117,8 +117,14 @@ def _graph_http_status(exc: BaseException) -> int | None:
 
 
 def _load_config() -> BlumkinConfig:
+    ctx = click.get_current_context(silent=True)
+    profile: str | None = None
+    if ctx is not None and isinstance(ctx.obj, dict):
+        raw = ctx.obj.get("profile")
+        if isinstance(raw, str) and raw.strip():
+            profile = raw.strip()
     try:
-        return load_config()
+        return load_config(profile=profile)
     except ProviderConfigError as exc:
         emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
         raise SystemExit(EXIT_USAGE) from exc
@@ -247,21 +253,32 @@ def _tz_name(ctx: click.Context, tz_flag: str | None) -> str | None:
 
 def _workspace(config: BlumkinConfig | None = None) -> WorkspaceProvider:
     try:
-        return get_provider(config if config is not None else load_config())
+        return get_provider(config if config is not None else _load_config())
     except ProviderConfigError as exc:
         emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
         raise SystemExit(EXIT_USAGE) from exc
 
 
 @click.group()
+@click.option(
+    "--profile",
+    default=None,
+    help="Profile name or unique tag (@work, google, …).",
+)
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_name", default=None, help="IANA timezone (default from config).")
 @click.version_option(version=__version__, prog_name="blumkin")
 @click.pass_context
-def main(ctx: click.Context, as_json: bool, tz_name: str | None) -> None:
+def main(
+    ctx: click.Context,
+    as_json: bool,
+    profile: str | None,
+    tz_name: str | None,
+) -> None:
     """Personal Microsoft 365 / Graph skills CLI (delegated as me)."""
     ctx.ensure_object(dict)
     ctx.obj["as_json"] = as_json
+    ctx.obj["profile"] = profile
     ctx.obj["tz_name"] = tz_name
 
 
@@ -388,6 +405,48 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
             "note: access tokens are short-lived; a refresh token renews them without a browser"
         )
     emit_lines(lines)
+
+
+@main.group()
+def profiles() -> None:
+    """List and inspect configured account profiles."""
+
+
+@profiles.command("list")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def profiles_list(ctx: click.Context, as_json_flag: bool) -> None:
+    """List configured profiles (prefer --json for agents)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        profiles_payload = list_profiles()
+    except ProviderConfigError as exc:
+        emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    default_profile = next(
+        (item["name"] for item in profiles_payload if item.get("is_default")),
+        None,
+    )
+    payload = {
+        "count": len(profiles_payload),
+        "default_profile": default_profile,
+        "profiles": profiles_payload,
+    }
+    if as_json:
+        emit_json(payload)
+        return
+    if not profiles_payload:
+        emit_lines(["(no profiles)"])
+        return
+    for item in profiles_payload:
+        tags = ", ".join(item["tags"]) if item["tags"] else "(none)"
+        marker = " (default)" if item["is_default"] else ""
+        emit_lines(
+            [
+                f"{item['name']}{marker}: provider={item['provider']} "
+                f"tz={item['default_tz'] or '(unset)'} tags={tags}"
+            ]
+        )
 
 
 @main.group()

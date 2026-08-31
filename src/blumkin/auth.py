@@ -51,6 +51,7 @@ WO1162425_SCOPES = [
 _token_cache = SerializableTokenCache()
 _atexit_registered = False
 _cache_bound_path: str | None = None
+_cache_bound_stop_at: Path | None = None
 
 
 def create_credential(
@@ -143,7 +144,7 @@ def refresh_silent(config: BlumkinConfig | None = None) -> dict[str, Any]:
 
 
 def logout(config: BlumkinConfig | None = None) -> None:
-    global _cache_bound_path
+    global _cache_bound_path, _cache_bound_stop_at
     cfg = config or load_config()
     for path in (cfg.token_cache_path, cfg.auth_record_path):
         if path.is_file():
@@ -152,13 +153,15 @@ def logout(config: BlumkinConfig | None = None) -> None:
     _token_cache.deserialize("")
     if _cache_bound_path == str(cfg.token_cache_path):
         _cache_bound_path = None
+        _cache_bound_stop_at = None
 
 
 def reload_token_cache_from_disk(config: BlumkinConfig | None = None) -> None:
     """Force re-read MSAL cache from disk (e.g. after a test mutates the file)."""
-    global _cache_bound_path
+    global _cache_bound_path, _cache_bound_stop_at
     cfg = config or load_config()
     _cache_bound_path = None
+    _cache_bound_stop_at = None
     _ensure_cache(cfg)
 
 
@@ -167,7 +170,7 @@ def save_token_cache(config: BlumkinConfig | None = None) -> None:
     if _cache_bound_path != str(cfg.token_cache_path):
         return
     if _token_cache.has_state_changed:
-        _ensure_secret_dir(cfg.config_dir)
+        _ensure_secret_dir(cfg.profile_dir, stop_at=cfg.config_dir)
         _write_secret_text(cfg.token_cache_path, _token_cache.serialize())
 
 
@@ -230,7 +233,7 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
 
 
 def _ensure_cache(cfg: BlumkinConfig) -> None:
-    global _atexit_registered, _cache_bound_path
+    global _atexit_registered, _cache_bound_path, _cache_bound_stop_at
     path = str(cfg.token_cache_path)
     if _cache_bound_path == path:
         return
@@ -238,25 +241,42 @@ def _ensure_cache(cfg: BlumkinConfig) -> None:
     if cfg.token_cache_path.is_file():
         _token_cache.deserialize(cfg.token_cache_path.read_text())
     _cache_bound_path = path
+    _cache_bound_stop_at = cfg.config_dir
     # Register once: save only the currently bound path (never stale dirs).
     if not _atexit_registered:
         atexit.register(_save_bound_token_cache_at_exit)
         _atexit_registered = True
 
 
-def _ensure_secret_dir(directory: Path) -> None:
+def _ensure_secret_dir(directory: Path, *, stop_at: Path) -> None:
     """Create ``directory`` at 0700; best-effort tighten if it already existed looser.
 
     Mode-setting is optional: SMB/FUSE mounts may reject ``chmod``. A symlinked
-    config dir is refused (same class of attack as a symlinked secret file).
+    config dir or ``profiles/`` segment is refused — ``mkdir(parents=True)``
+    follows intermediate symlinks. The walk stops at ``stop_at`` (the config
+    directory) so platform symlinks such as macOS ``/var`` → ``/private/var``
+    do not break TMPDIR / XDG layouts. Intermediate dirs from ``stop_at`` through
+    the leaf are tightened to 0700 when the filesystem allows it.
     """
-    if directory.is_symlink():
-        raise SecretWriteError(f"cannot use symlinked config dir {directory}")
+    if directory != stop_at and stop_at not in directory.parents:
+        raise SecretWriteError(f"secret dir {directory} is outside config dir {stop_at}")
+    _refuse_symlinked_path_components(directory, stop_at=stop_at)
     directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-    try:
-        os.chmod(directory, 0o700)
-    except OSError:
-        pass
+    current = directory
+    chain: list[Path] = []
+    while True:
+        chain.append(current)
+        if current == stop_at:
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    for path in reversed(chain):
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
 
 
 def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
@@ -268,18 +288,39 @@ def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
         return None
 
 
+def _refuse_symlinked_path_components(directory: Path, *, stop_at: Path) -> None:
+    """Refuse ``directory`` or ancestors down to ``stop_at`` that are symlinks.
+
+    Caller must ensure ``stop_at`` is ``directory`` or an ancestor.
+    """
+    current = directory
+    while True:
+        if current.is_symlink():
+            raise SecretWriteError(f"cannot use symlinked config dir {current}")
+        if current == stop_at:
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+
 def _save_auth_record(cfg: BlumkinConfig, record: AuthenticationRecord) -> None:
-    _ensure_secret_dir(cfg.config_dir)
+    _ensure_secret_dir(cfg.profile_dir, stop_at=cfg.config_dir)
     _write_secret_text(cfg.auth_record_path, record.serialize())
 
 
 def _save_bound_token_cache_at_exit() -> None:
     """Persist the in-memory MSAL cache to the currently bound path only."""
-    if _cache_bound_path is None or not _token_cache.has_state_changed:
+    if (
+        _cache_bound_path is None
+        or _cache_bound_stop_at is None
+        or not _token_cache.has_state_changed
+    ):
         return
     path = Path(_cache_bound_path)
     try:
-        _ensure_secret_dir(path.parent)
+        _ensure_secret_dir(path.parent, stop_at=_cache_bound_stop_at)
         _write_secret_text(path, _token_cache.serialize())
     except OSError:
         # Avoid "Exception ignored" on atexit when the secret path is a symlink

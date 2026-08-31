@@ -4,9 +4,9 @@ End-to-end guide to create the Google Cloud pieces Blumkin needs, wire a
 local config profile, and smoke-test calendar/mail reads. Keep secrets out of
 git, chat, and environment variables.
 
-Microsoft Graph stays on the default `~/.config/blumkin/` profile. Use a
-**separate** config directory (for example `~/.config/blumkin-google/`) when you
-also keep an Entra login on the same machine.
+Prefer a **named profile** (for example `personal`) in the same
+`~/.config/blumkin/config.toml` as Microsoft work. Legacy separate directories via
+`BLUMKIN_CONFIG_DIR` (for example `~/.config/blumkin-google/`) still work.
 
 ---
 
@@ -15,12 +15,13 @@ also keep an Entra login on the same machine.
 | Piece | Where it lives | Notes |
 |-------|----------------|--------|
 | Desktop OAuth client JSON | Path of your choosing (mode `0600`, outside any repo) | Cloud Console download; includes `client_id` **and** `client_secret` |
-| Config | `config.toml` under the chosen config dir | `provider = "google"` + `google_oauth_client_file = "…"` |
-| User token | `google_token.json` in that same config dir | Written by `blumkin auth login` |
+| Config | `[profiles.<name>]` in `~/.config/blumkin/config.toml` | `provider = "google"` + `google_oauth_client_file = "…"` |
+| User token | `~/.config/blumkin/profiles/<name>/google_token.json` | Written by `blumkin auth login` |
 
 Credentials and settings come from **config.toml** and the Desktop client JSON.
 Do **not** put `client_id` / `client_secret` / tenant-style overrides in env vars.
 `BLUMKIN_CONFIG_DIR` only selects which config directory to use.
+`BLUMKIN_PROFILE` / `--profile` select the profile **name or tag** (non-secret).
 
 MVP verbs with `provider = "google"`: auth, calendar `today` / `view` /
 `freebusy` / `suggest`, mail `inbox` / `list` / `get`. Other skills fail closed
@@ -108,29 +109,39 @@ Never commit this file. Never paste its contents into chat, issues, or PRs.
 
 ## B. Blumkin config profile
 
-Keep Microsoft on `~/.config/blumkin/`. For Google:
-
-```bash
-mkdir -p ~/.config/blumkin-google
-chmod 700 ~/.config/blumkin-google
-```
-
-Create `~/.config/blumkin-google/config.toml` (mode `0600`):
+Add a Google profile alongside Microsoft in `~/.config/blumkin/config.toml`
+(mode `0600`):
 
 ```toml
+default_profile = "work"
+
+[profiles.work]
+provider = "microsoft"
+client_id = "<entra-public-client-id>"
+tenant_id = "<your-entra-tenant>"
+default_tz = "America/New_York"
+tags = ["@work", "work", "microsoft", "m365"]
+
+[profiles.personal]
 provider = "google"
 default_tz = "America/New_York"
 google_oauth_client_file = "/absolute/or/~/path/to/google-oauth-desktop-client.json"
+tags = ["@personal", "personal", "google", "gmail"]
 ```
 
 - Path only — **no** `client_secret` in toml.
-- `client_id` is optional in toml; when omitted, Blumkin reads it from the JSON.
+- `client_id` is optional in the Google profile; when omitted, Blumkin reads it
+  from the JSON.
+- Token files land under `~/.config/blumkin/profiles/personal/`.
 - Inspect keys without dumping secrets:
 
 ```bash
-rg -n '^[a-z_]+' ~/.config/blumkin-google/config.toml \
+rg -n '^[a-z_]+|\[|tags' ~/.config/blumkin/config.toml \
   | sed -E 's/(client_id|client_secret|google_oauth_client_file|.*token.*)\s*=.*/\1 = "(redacted)"/I'
 ```
+
+**Legacy:** a separate directory (`export BLUMKIN_CONFIG_DIR=~/.config/blumkin-google`
+with a flat `config.toml`) still works if you have not migrated yet.
 
 ---
 
@@ -142,6 +153,7 @@ From a clone (or the PR worktree while developing):
 uv sync --group dev
 uv tool install -e .
 blumkin --version
+blumkin profiles list --json
 ```
 
 Ensure the tool bin dir (often `~/.local/bin`) is on `PATH`. Agents and humans
@@ -151,44 +163,50 @@ invoke `blumkin …`, not `uv run blumkin`.
 
 ## D. Login and smoke (reads only)
 
-Always select the Google profile:
+The following commands assume the **named-profile** layout (for example
+`[profiles.personal]`). For a legacy flat config under `BLUMKIN_CONFIG_DIR`,
+omit `--profile` (implicit profile name `default`).
+
+Always select the Google profile (name or tag) when using named profiles:
 
 ```bash
-export BLUMKIN_CONFIG_DIR=~/.config/blumkin-google
+blumkin --profile personal auth login
+# or: blumkin --profile @personal …
+# or: export BLUMKIN_PROFILE=personal
+# Legacy flat config: blumkin auth login
 ```
 
 Interactive login needs a real TTY and a browser (do this in Terminal.app, not a
-noninteractive agent shell):
-
-```bash
-blumkin auth login
-```
+noninteractive agent shell).
 
 Sign in as the **test user** (or Internal org user) you configured. Allow the
-Calendar / Gmail scopes. On success, `~/.config/blumkin-google/google_token.json`
-appears (mode `0600`).
+Calendar / Gmail scopes. On success,
+`~/.config/blumkin/profiles/personal/google_token.json` appears (mode `0600`)
+(legacy flat: `google_token.json` in the config dir root).
 
 Check status (safe keys only):
 
 ```bash
-blumkin auth status --json
+blumkin --profile personal auth status --json
+# Legacy flat: blumkin auth status --json
 # expect provider=google, token/refresh present, access_token_expired false
 ```
 
 Read smokes:
 
 ```bash
-BLUMKIN_NONINTERACTIVE=1 blumkin calendar today --json
-BLUMKIN_NONINTERACTIVE=1 blumkin mail inbox --top 5 --json
+BLUMKIN_NONINTERACTIVE=1 blumkin --profile personal calendar today --json
+BLUMKIN_NONINTERACTIVE=1 blumkin --profile personal mail inbox --top 5 --json
+# Legacy flat: omit --profile on the same verbs
 ```
 
 Agent / CI shells should set `BLUMKIN_NONINTERACTIVE=1` so Blumkin never opens a
 browser; they rely on a prior interactive login on that machine.
 
-Logout (deletes the Google token file for this config dir only):
+Logout (deletes the Google token file for this profile only):
 
 ```bash
-blumkin auth logout
+blumkin --profile personal auth logout
 ```
 
 ---
@@ -199,9 +217,9 @@ blumkin auth logout
 |---------|--------------|-----|
 | Access blocked / app not verified / only test users | External app in **Testing**; account not listed | Add the exact sign-in account under Test users; retry login |
 | `(invalid_request) client_secret is missing` | Auth not reading Desktop JSON (or empty secret) | Set `google_oauth_client_file` to the Console download; confirm JSON has `installed.client_secret` |
-| `auth_required` / exit 3 on calendar/mail | No token yet, or refresh expired | Run `blumkin auth login` on a TTY with `BLUMKIN_CONFIG_DIR` set |
+| `auth_required` / exit 3 on calendar/mail | No token yet, or refresh expired | Run `blumkin --profile personal auth login` on a TTY |
 | Calendar/mail HTTP 403 after login | API not enabled, or wrong GCP project | Enable Calendar + Gmail APIs on the **same** project as the OAuth client |
-| Wrong mailbox / calendar | Pointing at Microsoft config dir | Export `BLUMKIN_CONFIG_DIR=~/.config/blumkin-google` (or your Google profile) |
+| Wrong mailbox / calendar | Wrong profile selected | Pass `--profile personal` / `@personal`, or check `blumkin profiles list --json` |
 | Silent refresh dies after ~a week | Testing-mode refresh token policy | Re-login; consider Internal or production if appropriate |
 | Agent opens a browser / hangs | Interactive auth in a non-TTY | Set `BLUMKIN_NONINTERACTIVE=1`; login once yourself first |
 
@@ -212,7 +230,7 @@ blumkin auth logout
 - [ ] Desktop client JSON mode `0600`, outside any git repo
 - [ ] `config.toml` mode `0600`; directory mode `700`
 - [ ] No `client_secret` in toml, env, chat, or commits
-- [ ] Separate config dirs when Microsoft and Google coexist
+- [ ] Named profiles (or legacy separate dirs) when Microsoft and Google coexist
 - [ ] Never commit `google_token.json`, MSAL caches, or `.env`
 - [ ] Prefer allowlisted status keys over dumping config/token files
 
