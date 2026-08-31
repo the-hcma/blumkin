@@ -34,18 +34,15 @@ def _json_err(args: list[str]) -> dict:
     raise AssertionError(f"no JSON error line in output:\n{combined}")
 
 
-def test_default_hints_cover_every_documented_error_slug() -> None:
-    # The error slugs the CLI can emit (see tests/test_skills_schema.py).
-    documented = {
-        "auth_required",
-        "graph_error",
-        "missing_scope",
-        "not_found",
-        "secret_write_failed",
-        "timeout",
-        "usage_error",
-    }
-    assert documented <= set(_DEFAULT_HINTS)
+def test_every_emitted_error_slug_has_a_fallback_hint() -> None:
+    """Derive the slug set from the AST scan, not a hand-copied list, so a new
+    slug added to cli.py without a _DEFAULT_HINTS entry fails here."""
+    from test_skills_schema import _emitted_error_values
+
+    assert _emitted_error_values() <= set(_DEFAULT_HINTS)
+
+
+def test_default_hints_are_well_formed() -> None:
     for hint in _DEFAULT_HINTS.values():
         assert hint and hint[0].isupper() and hint.rstrip().endswith((".", ")"))
         assert "—" not in hint and "–" not in hint  # ASCII hyphens only
