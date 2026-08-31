@@ -35,6 +35,19 @@ blumkin calendar today --json
 
 To use blumkin from agent sessions in **other** repos (Cursor personal skill, or Copilot CLI instructions), see [`docs/agent-integration.md`](./docs/agent-integration.md).
 
+### Discovering commands
+
+Every group and leaf command has `--help` with a description and worked
+examples:
+
+```bash
+blumkin --help                     # top-level map, common workflows, exit codes
+blumkin calendar --help            # a group's commands + typical flows
+blumkin calendar create --help     # one command: args, notes, example invocations
+```
+
+`blumkin skills list --json` is the machine-readable catalog for agents.
+
 ## Config (`~/.config/blumkin/`)
 
 Create `~/.config/blumkin/config.toml` (mode `0600`). Prefer **named profiles**

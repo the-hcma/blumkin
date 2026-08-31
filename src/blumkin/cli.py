@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import click
 import httpx
 
-from blumkin import __version__
+from blumkin import __version__, help_text
 from blumkin.auth import SecretWriteError
 from blumkin.config import BlumkinConfig, list_profiles, load_config
 from blumkin.exit_codes import (
@@ -259,14 +259,24 @@ def _workspace(config: BlumkinConfig | None = None) -> WorkspaceProvider:
         raise SystemExit(EXIT_USAGE) from exc
 
 
-@click.group()
+@click.group(epilog=help_text.MAIN_EPILOG)
 @click.option(
     "--profile",
     default=None,
-    help="Profile name or unique tag (@work, google, …).",
+    help="Profile name or unique tag (@work, google, …) to act as.",
 )
-@click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON on stdout.")
-@click.option("--tz", "tz_name", default=None, help="IANA timezone (default from config).")
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit machine-readable JSON on stdout (recommended for agents).",
+)
+@click.option(
+    "--tz",
+    "tz_name",
+    default=None,
+    help="IANA timezone for date/time in and out (e.g. America/New_York); default from config.",
+)
 @click.version_option(version=__version__, prog_name="blumkin")
 @click.pass_context
 def main(
@@ -275,23 +285,41 @@ def main(
     profile: str | None,
     tz_name: str | None,
 ) -> None:
-    """Personal Microsoft 365 / Graph skills CLI (delegated as me)."""
+    """Personal Microsoft 365 / Google Workspace skills CLI, acting as you.
+
+    blumkin turns calendar, mail, Teams chat, and free/busy flows into small
+    commands a coding agent (or a human) can run over the shell, using delegated
+    OAuth - it acts as the signed-in user, never as an app.
+
+    Reads work with the base scope set. Writes that notify someone (calendar
+    invites, mail sends, chat messages) always require --yes. Run
+    `blumkin auth login` once per machine, then `blumkin doctor` to check setup.
+    """
     ctx.ensure_object(dict)
     ctx.obj["as_json"] = as_json
     ctx.obj["profile"] = profile
     ctx.obj["tz_name"] = tz_name
 
 
-@main.group()
+@main.group(epilog=help_text.AUTH_EPILOG)
 def auth() -> None:
-    """Sign in, status, and logout."""
+    """Sign in, check token status, refresh, and sign out.
+
+    Delegated public-client OAuth only. The token cache and auth record are
+    written under the active config dir and must never be committed.
+    """
 
 
-@auth.command("login")
+@auth.command("login", epilog=help_text.AUTH_LOGIN_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
-    """Interactive browser login; write cache + auth record under ~/.config/blumkin."""
+    """Sign in via the system browser and cache the tokens on this machine.
+
+    Run once per machine, or again after `auth logout` or a scope change. Writes
+    the token cache and auth record under the active config dir. Use
+    `auth refresh` in non-interactive shells.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         _workspace().auth_login()
@@ -323,11 +351,14 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines(["Signed in. Token cache written under ~/.config/blumkin/."])
 
 
-@auth.command("logout")
+@auth.command("logout", epilog=help_text.AUTH_LOGOUT_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def auth_logout(ctx: click.Context, as_json_flag: bool) -> None:
-    """Delete local token cache and auth record."""
+    """Delete this machine's token cache and auth record.
+
+    The next Graph call needs a fresh `auth login`.
+    """
     as_json = _as_json(ctx, as_json_flag)
     _workspace().auth_logout()
     if as_json:
@@ -336,11 +367,15 @@ def auth_logout(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines(["Logged out (cache files removed)."])
 
 
-@auth.command("refresh")
+@auth.command("refresh", epilog=help_text.AUTH_REFRESH_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
-    """Silent token refresh; never opens a browser."""
+    """Mint a new access token from the cached refresh token (no browser).
+
+    The agent-safe way to recover from an expired access token. Exit 3
+    (auth_required) means the refresh token is gone - run `auth login` on a TTY.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = _workspace().auth_refresh()
@@ -365,11 +400,14 @@ def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"Silent refresh ok. access_token_expires_at: {expires}"])
 
 
-@auth.command("status")
+@auth.command("status", epilog=help_text.AUTH_STATUS_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
-    """Show config path and whether cache / auth record exist."""
+    """Show the config path, client-id state, and token-cache expiry.
+
+    Read this before assuming a hang is a login problem.
+    """
     as_json = _as_json(ctx, as_json_flag)
     payload = _workspace().auth_status()
     if as_json:
@@ -407,16 +445,24 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
     emit_lines(lines)
 
 
-@main.group()
+@main.group(epilog=help_text.PROFILES_EPILOG)
 def profiles() -> None:
-    """List and inspect configured account profiles."""
+    """List and inspect the account profiles in config.toml.
+
+    Each profile is one account (Microsoft or Google). Select one on any command
+    with `--profile <name-or-tag>` or the BLUMKIN_PROFILE env var.
+    """
 
 
-@profiles.command("list")
+@profiles.command("list", epilog=help_text.PROFILES_LIST_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def profiles_list(ctx: click.Context, as_json_flag: bool) -> None:
-    """List configured profiles (prefer --json for agents)."""
+    """List configured profiles: name, provider, timezone, tags, and default.
+
+    Prefer --json in agent sessions. `count: 0` means config.toml has no
+    profiles; `count > 1` means you must pick one before mail/calendar/chat.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         profiles_payload = list_profiles()
@@ -449,16 +495,20 @@ def profiles_list(ctx: click.Context, as_json_flag: bool) -> None:
         )
 
 
-@main.group()
+@main.group(epilog=help_text.SKILLS_EPILOG)
 def skills() -> None:
-    """Agent skill discovery."""
+    """Discover what blumkin can do, as a machine-readable catalog.
+
+    Each skill entry carries a `notifies_others` flag - treat `true` as
+    off-limits for verification runs.
+    """
 
 
-@skills.command("list")
+@skills.command("list", epilog=help_text.SKILLS_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def skills_list(ctx: click.Context, as_json_flag: bool) -> None:
-    """List skills (prefer --json for agents)."""
+    """List every skill id and one-line summary (prefer --json for agents)."""
     catalog = skills_catalog()
     if _as_json(ctx, as_json_flag):
         emit_json(catalog)
@@ -467,12 +517,15 @@ def skills_list(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"{skill['id']}: {skill['summary']}"])
 
 
-@skills.command("describe")
+@skills.command("describe", epilog=help_text.SKILLS_DESCRIBE_EPILOG)
 @click.argument("skill_id")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def skills_describe(ctx: click.Context, skill_id: str, as_json_flag: bool) -> None:
-    """Describe one skill by id."""
+    """Describe one skill: CLI form, args, scopes, and mutate/notify flags.
+
+    SKILL_ID is an id from `blumkin skills list` (e.g. calendar.create).
+    """
     as_json = _as_json(ctx, as_json_flag)
     skill = describe_skill(skill_id)
     if skill is None:
@@ -506,11 +559,15 @@ def skills_describe(ctx: click.Context, skill_id: str, as_json_flag: bool) -> No
         )
 
 
-@main.command()
+@main.command(epilog=help_text.DOCTOR_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def doctor(ctx: click.Context, as_json_flag: bool) -> None:
-    """Check config, cache, and skill scope notes."""
+    """Check config, token cache, and which scope set is active.
+
+    Exit 3 (auth_required) lists the problems to fix - usually run
+    `blumkin auth login`.
+    """
     as_json = _as_json(ctx, as_json_flag)
     cfg = _load_config()
     status = _workspace(cfg).auth_status()
@@ -539,20 +596,35 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         raise SystemExit(EXIT_AUTH)
 
 
-@main.group()
+@main.group(epilog=help_text.CALENDAR_EPILOG)
 def calendar() -> None:
-    """Calendar skills."""
+    """Read your calendar and schedule, and create or respond to events.
+
+    Times are local to the organizer (profile `default_tz`, or `--tz AREA`).
+    Date ranges are half-open: `--to` is the first day NOT included. Anything
+    that emails attendees requires --yes.
+    """
 
 
-@calendar.command("today")
-@click.option("--date", "day", type=click.DateTime(formats=["%Y-%m-%d"]), default=None)
+@calendar.command("today", epilog=help_text.CALENDAR_TODAY_EPILOG)
+@click.option(
+    "--date",
+    "day",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Local day to list as YYYY-MM-DD (default: today).",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
 def calendar_today_cmd(
     ctx: click.Context, day: Any, as_json_flag: bool, tz_flag: str | None
 ) -> None:
-    """List events for today (or --date YYYY-MM-DD)."""
+    """List events for the local day (today, or --date YYYY-MM-DD).
+
+    Graph returns UTC; blumkin converts to --tz or the config default. Use
+    --json to get event ids for accept / cancel / update.
+    """
     as_json = _as_json(ctx, as_json_flag)
     tz_name = _tz_name(ctx, tz_flag)
     day_value: date | None = day.date() if day is not None else None
@@ -572,9 +644,21 @@ def calendar_today_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@calendar.command("view")
-@click.option("--from", "from_day", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
-@click.option("--to", "to_day", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@calendar.command("view", epilog=help_text.CALENDAR_VIEW_EPILOG)
+@click.option(
+    "--from",
+    "from_day",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="First local day to include (YYYY-MM-DD).",
+)
+@click.option(
+    "--to",
+    "to_day",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="First local day to EXCLUDE (YYYY-MM-DD); range is half-open.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
@@ -585,7 +669,11 @@ def calendar_view_cmd(
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
-    """List events in half-open local range [--from, --to)."""
+    """List events across a local date range [--from, --to).
+
+    The range is half-open: `--to` is the first day NOT shown, so
+    `--from 2026-09-01 --to 2026-09-08` covers exactly that week.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         cfg = _load_config()
@@ -607,10 +695,26 @@ def calendar_view_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@calendar.command("freebusy")
-@click.option("--with", "with_emails", multiple=True, required=True, help="Email to query.")
-@click.option("--start", "start_raw", required=True, help="Local start datetime.")
-@click.option("--end", "end_raw", required=True, help="Local end datetime.")
+@calendar.command("freebusy", epilog=help_text.CALENDAR_FREEBUSY_EPILOG)
+@click.option(
+    "--with",
+    "with_emails",
+    multiple=True,
+    required=True,
+    help="Email to query; repeat for several people.",
+)
+@click.option(
+    "--start",
+    "start_raw",
+    required=True,
+    help='Local window start, "YYYY-MM-DD HH:MM".',
+)
+@click.option(
+    "--end",
+    "end_raw",
+    required=True,
+    help='Local window end, "YYYY-MM-DD HH:MM".',
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
@@ -622,7 +726,12 @@ def calendar_freebusy_cmd(
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
-    """Get free/busy for one or more people."""
+    """Show busy intervals for one or more people over a window.
+
+    Returns busy blocks (plus each person's timezone / working hours when Graph
+    exposes them), not free slots. For ranked mutual-free start times, use
+    `calendar suggest`. Do not use this to guess someone's address.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         cfg = _load_config()
@@ -646,12 +755,26 @@ def calendar_freebusy_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@calendar.command("suggest")
+@calendar.command("suggest", epilog=help_text.CALENDAR_SUGGEST_EPILOG)
 @click.option(
-    "--with", "with_emails", multiple=True, required=True, help="People who must be free."
+    "--with",
+    "with_emails",
+    multiple=True,
+    required=True,
+    help="People who must be free; repeat once per person (include yourself if needed).",
 )
-@click.option("--start", "start_raw", required=True, help="Local search start datetime.")
-@click.option("--end", "end_raw", required=True, help="Local search end datetime.")
+@click.option(
+    "--start",
+    "start_raw",
+    required=True,
+    help='Earliest local start to consider, "YYYY-MM-DD HH:MM".',
+)
+@click.option(
+    "--end",
+    "end_raw",
+    required=True,
+    help='Latest local end to consider, "YYYY-MM-DD HH:MM".',
+)
 @click.option(
     "--duration",
     default="30m",
@@ -693,7 +816,11 @@ def calendar_suggest_cmd(
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
-    """Suggest mutual free slots from free/busy (does not create an event)."""
+    """Rank mutual-free start times from everyone's free/busy.
+
+    Suggests starts only - it never creates an event. Feed a chosen start into
+    `calendar create`. Clip to a working-day window with `--window HH:MM-HH:MM`.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         cfg = _load_config()
@@ -729,7 +856,7 @@ def calendar_suggest_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@calendar.command("accept")
+@calendar.command("accept", epilog=help_text.CALENDAR_ACCEPT_EPILOG)
 @click.option("--event-id", "event_id", default=None, help="Single event id to accept.")
 @click.option(
     "--today-pending",
@@ -749,7 +876,11 @@ def calendar_accept_cmd(
     tz_flag: str | None,
     as_json_flag: bool,
 ) -> None:
-    """Accept calendar invitation(s). Requires --yes."""
+    """Accept one invitation (--event-id) or all pending ones for today.
+
+    Sends a response to each organizer, so --yes is required. Event ids come
+    from `blumkin calendar today --json`.
+    """
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
@@ -778,13 +909,13 @@ def calendar_accept_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@calendar.command("cancel")
-@click.option("--event-id", "event_id", required=True)
+@calendar.command("cancel", epilog=help_text.CALENDAR_CANCEL_EPILOG)
+@click.option("--event-id", "event_id", required=True, help="Event id to cancel (organizer only).")
 @click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_flag: bool) -> None:
-    """Cancel a calendar event. Requires --yes."""
+    """Cancel an event you organize and notify every attendee. Requires --yes."""
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
@@ -800,11 +931,27 @@ def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_fl
     raise SystemExit(EXIT_SUCCESS)
 
 
-@calendar.command("create")
-@click.option("--subject", required=True)
-@click.option("--with", "with_emails", multiple=True, required=True, help="Attendee email.")
-@click.option("--start", "start_raw", required=True, help="Local start datetime.")
-@click.option("--duration", default="30m", show_default=True, help="Length (e.g. 30m, 1h).")
+@calendar.command("create", epilog=help_text.CALENDAR_CREATE_EPILOG)
+@click.option("--subject", required=True, help="Event title.")
+@click.option(
+    "--with",
+    "with_emails",
+    multiple=True,
+    required=True,
+    help="Attendee email; repeat once per attendee.",
+)
+@click.option(
+    "--start",
+    "start_raw",
+    required=True,
+    help='Local start, "YYYY-MM-DD HH:MM" in the organizer timezone.',
+)
+@click.option(
+    "--duration",
+    default="30m",
+    show_default=True,
+    help="Length as a short duration, e.g. 30m, 45m, 1h, 1h30m.",
+)
 @click.option(
     "--teams/--no-teams",
     default=True,
@@ -829,7 +976,12 @@ def calendar_create_cmd(
     tz_flag: str | None,
     as_json_flag: bool,
 ) -> None:
-    """Create a calendar event (Teams by default). Requires --yes."""
+    """Create an event and invite the --with attendees. Requires --yes.
+
+    A Teams online meeting is added by default; pass --no-teams for an offline
+    hold. --start stays in the organizer timezone. For a cross-zone or external
+    attendee, check `calendar freebusy` / `calendar suggest` first.
+    """
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
@@ -857,8 +1009,8 @@ def calendar_create_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@calendar.command("update")
-@click.option("--event-id", required=True, help="Event id to update.")
+@calendar.command("update", epilog=help_text.CALENDAR_UPDATE_EPILOG)
+@click.option("--event-id", required=True, help="Event id to attach a Teams meeting to.")
 @click.option(
     "--teams/--no-teams",
     default=True,
@@ -877,7 +1029,11 @@ def calendar_update_cmd(
     tz_flag: str | None,
     as_json_flag: bool,
 ) -> None:
-    """Attach Teams to an existing calendar event. Requires --yes."""
+    """Attach a Teams online meeting to an existing event. Requires --yes.
+
+    v1 only adds Teams; it cannot remove it. Uses Calendars.ReadWrite (not
+    OnlineMeetings.ReadWrite). Attendees are notified.
+    """
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
@@ -902,12 +1058,17 @@ def calendar_update_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@main.group()
+@main.group(epilog=help_text.CHAT_EPILOG)
 def chat() -> None:
-    """Teams chat skills."""
+    """Read Teams 1:1 chats, and send, edit, or delete your messages.
+
+    Reads (find / last / attachments) work with the base scope set. Writes
+    (send / edit / delete) need `wo1162425_scopes = true` and always require
+    --yes. When a display name is ambiguous, pass --chat-id from `chat find`.
+    """
 
 
-@chat.group("attachments", invoke_without_command=True)
+@chat.group("attachments", invoke_without_command=True, epilog=help_text.CHAT_ATTACHMENTS_EPILOG)
 @click.option("--chat-id", default=None, help="Chat id (exactly one of --chat-id or --with).")
 @click.option("--with", "with_name", default=None, help="Display-name substring.")
 @click.option("--message-id", default=None, help="Message id (exactly one of this or --latest).")
@@ -922,7 +1083,11 @@ def chat_attachments_cmd(
     latest: bool,
     as_json_flag: bool,
 ) -> None:
-    """List attachments on a chat message (default when no subcommand)."""
+    """List file attachments on a chat message (the default action here).
+
+    Pass exactly one of --chat-id / --with, and one of --message-id / --latest.
+    Use the `download` subcommand to fetch bytes.
+    """
     if ctx.invoked_subcommand is not None:
         return
     as_json = _as_json(ctx, as_json_flag)
@@ -944,7 +1109,7 @@ def chat_attachments_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@chat_attachments_cmd.command("download")
+@chat_attachments_cmd.command("download", epilog=help_text.CHAT_ATTACHMENTS_DOWNLOAD_EPILOG)
 @click.option("--chat-id", default=None, help="Chat id (exactly one of --chat-id or --with).")
 @click.option("--with", "with_name", default=None, help="Display-name substring.")
 @click.option("--message-id", default=None, help="Message id (exactly one of this or --latest).")
@@ -965,7 +1130,12 @@ def chat_attachments_download_cmd(
     out: str,
     as_json_flag: bool,
 ) -> None:
-    """Download one or all file attachments from a chat message."""
+    """Download one (--attachment-id) or all (--all) files from a chat message.
+
+    Needs the `files_scopes` opt-in. Without it, download exits 4
+    (missing_scope) with a share URL to open in Teams. --out is a file path for
+    one attachment, or a directory with --all.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
@@ -988,9 +1158,9 @@ def chat_attachments_download_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@chat.command("delete")
-@click.option("--chat-id", required=True, help="Teams chat id.")
-@click.option("--message-id", required=True, help="Chat message id.")
+@chat.command("delete", epilog=help_text.CHAT_DELETE_EPILOG)
+@click.option("--chat-id", required=True, help="Teams chat id (from `chat find`).")
+@click.option("--message-id", required=True, help="Chat message id to delete (yours).")
 @click.option("--yes", is_flag=True, help="Confirm soft-delete (required).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -1001,7 +1171,11 @@ def chat_delete_cmd(
     yes: bool,
     as_json_flag: bool,
 ) -> None:
-    """Soft-delete a chat message."""
+    """Soft-delete one of your chat messages. Requires --yes.
+
+    Every participant sees the message disappear. Needs
+    `wo1162425_scopes = true` (Chat.ReadWrite).
+    """
     as_json = _as_json(ctx, as_json_flag)
     _require_wo1162425_scopes(as_json=as_json)
     _require_yes(yes=yes, as_json=as_json)
@@ -1018,10 +1192,10 @@ def chat_delete_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@chat.command("edit")
-@click.option("--chat-id", required=True, help="Teams chat id.")
-@click.option("--message-id", required=True, help="Chat message id.")
-@click.option("--text", required=True, help="Replacement message text.")
+@chat.command("edit", epilog=help_text.CHAT_EDIT_EPILOG)
+@click.option("--chat-id", required=True, help="Teams chat id (from `chat find`).")
+@click.option("--message-id", required=True, help="Chat message id to edit (yours).")
+@click.option("--text", required=True, help="Replacement body; use ASCII hyphens, not em dashes.")
 @click.option("--yes", is_flag=True, help="Confirm edit (required).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -1033,7 +1207,11 @@ def chat_edit_cmd(
     yes: bool,
     as_json_flag: bool,
 ) -> None:
-    """Edit a chat message body in place."""
+    """Replace one of your chat message bodies in place. Requires --yes.
+
+    Other people have already read the message. Needs
+    `wo1162425_scopes = true` (Chat.ReadWrite).
+    """
     as_json = _as_json(ctx, as_json_flag)
     _require_wo1162425_scopes(as_json=as_json)
     _require_yes(yes=yes, as_json=as_json)
@@ -1052,12 +1230,15 @@ def chat_edit_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@chat.command("find")
-@click.option("--with", "with_name", required=True, help="Display-name substring.")
+@chat.command("find", epilog=help_text.CHAT_FIND_EPILOG)
+@click.option("--with", "with_name", required=True, help="Display-name substring to match members.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def chat_find_cmd(ctx: click.Context, with_name: str, as_json_flag: bool) -> None:
-    """Find chats whose members match a display name."""
+    """List chats whose members match a display-name substring.
+
+    Use it to get a --chat-id when a name matches more than one chat.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(_workspace().chat_find(with_name=with_name))
@@ -1072,13 +1253,16 @@ def chat_find_cmd(ctx: click.Context, with_name: str, as_json_flag: bool) -> Non
     raise SystemExit(EXIT_SUCCESS)
 
 
-@chat.command("last")
-@click.option("--with", "with_name", required=True, help="Display-name substring.")
-@click.option("--n", "n", default=3, show_default=True, type=int)
+@chat.command("last", epilog=help_text.CHAT_LAST_EPILOG)
+@click.option("--with", "with_name", required=True, help="Display-name substring to match a chat.")
+@click.option("--n", "n", default=3, show_default=True, type=int, help="How many messages to show.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool) -> None:
-    """Show last N messages from a matched chat."""
+    """Show the last N messages from the chat matching --with.
+
+    Exit 5 (not_found) means no chat matched.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(_workspace().chat_last(with_name=with_name, n=n))
@@ -1095,20 +1279,20 @@ def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool
     raise SystemExit(EXIT_SUCCESS)
 
 
-@chat.command("send")
+@chat.command("send", epilog=help_text.CHAT_SEND_EPILOG)
 @click.option(
     "--with",
     "with_name",
     default=None,
-    help="Display-name match (exclusive with --chat-id).",
+    help="Display-name match for the recipient (exclusive with --chat-id).",
 )
 @click.option(
     "--chat-id",
     "chat_id",
     default=None,
-    help="Explicit chat id (exclusive with --with).",
+    help="Explicit chat id from `chat find` (exclusive with --with).",
 )
-@click.option("--text", required=True, help="Message text to send.")
+@click.option("--text", required=True, help="Message body; use ASCII hyphens, not em dashes.")
 @click.option("--yes", is_flag=True, help="Confirm send (required).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -1120,7 +1304,11 @@ def chat_send_cmd(
     yes: bool,
     as_json_flag: bool,
 ) -> None:
-    """Send a text message to a matched or explicit chat."""
+    """Send a text message to a chat (by --with name or --chat-id). Requires --yes.
+
+    This messages a real person. Needs `wo1162425_scopes = true`
+    (Chat.ReadWrite). If --with is ambiguous, use --chat-id from `chat find`.
+    """
     as_json = _as_json(ctx, as_json_flag)
     _require_wo1162425_scopes(as_json=as_json)
     _require_yes(yes=yes, as_json=as_json)
@@ -1142,19 +1330,31 @@ def chat_send_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@main.group()
+@main.group(epilog=help_text.MAIL_EPILOG)
 def mail() -> None:
-    """Mail read skills."""
+    """Read mail, and draft replies, forwards, and new messages.
+
+    Every drafting verb stays in your mailbox until `mail send-draft --yes` -
+    that is the only step that delivers mail. `--from` / `--subject` filter
+    locally over a newest-first scan (max 500); `--search` is Graph server-side
+    and cannot be combined with those filters.
+    """
 
 
-@mail.command("inbox")
-@click.option("--from", "sender", default=None, help="Sender name or address substring.")
-@click.option("--subject", default=None, help="Subject substring.")
-@click.option("--search", default=None, help="Graph $search term; cannot be combined with filters.")
-@click.option("--since", default=None, help="Only messages at or after this date/time.")
-@click.option("--until", default=None, help="Only messages strictly before this date/time.")
+@mail.command("inbox", epilog=help_text.MAIL_INBOX_EPILOG)
+@click.option(
+    "--from", "sender", default=None, help="Sender name or address substring (local filter)."
+)
+@click.option("--subject", default=None, help="Subject substring (local filter).")
+@click.option(
+    "--search",
+    default=None,
+    help="Graph $search term (whole mailbox); cannot combine with --from/--subject/--since.",
+)
+@click.option("--since", default=None, help="Only messages at or after this local date/time.")
+@click.option("--until", default=None, help="Only messages strictly before this local date/time.")
 @click.option("--unread", is_flag=True, help="Only unread messages.")
-@click.option("--top", default=10, show_default=True, type=int)
+@click.option("--top", default=10, show_default=True, type=int, help="Max messages to return.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
@@ -1170,7 +1370,12 @@ def mail_inbox_cmd(
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
-    """List recent inbox messages."""
+    """List recent inbox messages, with optional filters or full-text search.
+
+    `--from` / `--subject` match locally over a newest-first scan capped at 500
+    (the payload then reports `complete: false`). `--search` runs on Graph over
+    the whole mailbox and cannot combine with the substring or date filters.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         since_dt, until_dt = _mail_time_bounds(ctx, tz_flag, since=since, until=until)
@@ -1199,11 +1404,15 @@ def mail_inbox_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail.command("folders")
+@mail.command("folders", epilog=help_text.MAIL_FOLDERS_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_folders_cmd(ctx: click.Context, as_json_flag: bool) -> None:
-    """List mail folders with their ids and message counts."""
+    """List mail folders with their ids and message counts.
+
+    Graph's totals can lag - do not treat `total: 0` as proof a folder is
+    empty; confirm with `mail list --folder <name>`.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(_workspace().mail_folders())
@@ -1218,14 +1427,14 @@ def mail_folders_cmd(ctx: click.Context, as_json_flag: bool) -> None:
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail.command("get")
-@click.option("--id", "message_id", required=True, help="Message id.")
+@mail.command("get", epilog=help_text.MAIL_GET_EPILOG)
+@click.option("--id", "message_id", required=True, help="Message id (from a listing).")
 @click.option(
     "--body-type",
     default="text",
     show_default=True,
     type=click.Choice(["html", "text"]),
-    help="Body format to request from Graph.",
+    help="Body format to request from Graph; html keeps the markup.",
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -1235,7 +1444,10 @@ def mail_get_cmd(
     body_type: str,
     as_json_flag: bool,
 ) -> None:
-    """Read one message, including its body and attachments."""
+    """Read one message in full: participants, timestamps, body, attachments.
+
+    Prefer this over listing and filtering client-side once you have the id.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(_workspace().mail_get(message_id=message_id, body_type=body_type))
@@ -1253,11 +1465,14 @@ def mail_get_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail.command("list")
+@mail.command("list", epilog=help_text.MAIL_LIST_EPILOG)
 @click.option(
     "--folder",
     default=None,
-    help=f"Well-known name ({', '.join(WELL_KNOWN_MAIL_FOLDERS)}) or a folder id.",
+    help=(
+        f"Well-known name ({', '.join(WELL_KNOWN_MAIL_FOLDERS)}), a folder id, "
+        "or a custom folder's display name (default: inbox)."
+    ),
 )
 @click.option(
     "--orderby",
@@ -1268,13 +1483,19 @@ def mail_get_cmd(
         "received otherwise."
     ),
 )
-@click.option("--from", "sender", default=None, help="Sender name or address substring.")
-@click.option("--subject", default=None, help="Subject substring.")
-@click.option("--search", default=None, help="Graph $search term; cannot be combined with filters.")
-@click.option("--since", default=None, help="Only messages at or after this date/time.")
-@click.option("--until", default=None, help="Only messages strictly before this date/time.")
+@click.option(
+    "--from", "sender", default=None, help="Sender name or address substring (local filter)."
+)
+@click.option("--subject", default=None, help="Subject substring (local filter).")
+@click.option(
+    "--search",
+    default=None,
+    help="Graph $search term (whole mailbox); cannot combine with --from/--subject/--since.",
+)
+@click.option("--since", default=None, help="Only messages at or after this local date/time.")
+@click.option("--until", default=None, help="Only messages strictly before this local date/time.")
 @click.option("--unread", is_flag=True, help="Only unread messages.")
-@click.option("--top", default=10, show_default=True, type=int)
+@click.option("--top", default=10, show_default=True, type=int, help="Max messages to return.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
@@ -1292,7 +1513,12 @@ def mail_list_cmd(
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
-    """List recent messages from a mail folder."""
+    """List recent messages from any mail folder (well-known name, id, or name).
+
+    Sort order defaults per folder (sent for Sent Items, created for
+    Drafts/Outbox, received otherwise); override with `--orderby`. Same filter
+    rules as `mail inbox`.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         since_dt, until_dt = _mail_time_bounds(ctx, tz_flag, since=since, until=until)
@@ -1326,12 +1552,15 @@ def mail_list_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail.group("attachments", invoke_without_command=True)
-@click.option("--id", "message_id", default=None, help="Message id.")
+@mail.group("attachments", invoke_without_command=True, epilog=help_text.MAIL_ATTACHMENTS_EPILOG)
+@click.option("--id", "message_id", default=None, help="Message id (from a listing).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_attachments_cmd(ctx: click.Context, message_id: str | None, as_json_flag: bool) -> None:
-    """List attachments on a message (default when no subcommand)."""
+    """List attachments (name, size, id) on a message (the default action here).
+
+    Use the `download` subcommand to save them.
+    """
     if ctx.invoked_subcommand is not None:
         return
     as_json = _as_json(ctx, as_json_flag)
@@ -1354,11 +1583,20 @@ def mail_attachments_cmd(ctx: click.Context, message_id: str | None, as_json_fla
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail_attachments_cmd.command("download")
-@click.option("--message-id", required=True, help="Message id.")
-@click.option("--attachment-id", default=None, help="Attachment id (omit with --all).")
+@mail_attachments_cmd.command("download", epilog=help_text.MAIL_ATTACHMENTS_DOWNLOAD_EPILOG)
+@click.option("--message-id", required=True, help="Message id (from a listing).")
+@click.option(
+    "--attachment-id",
+    default=None,
+    help="Attachment id from `mail attachments --id ... --json` (omit with --all).",
+)
 @click.option("--all", "download_all", is_flag=True, help="Download every file attachment.")
-@click.option("--out", required=True, type=click.Path(), help="Output file or directory.")
+@click.option(
+    "--out",
+    required=True,
+    type=click.Path(),
+    help="Output file (single attachment) or directory (with --all).",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_attachments_download_cmd(
@@ -1369,7 +1607,10 @@ def mail_attachments_download_cmd(
     out: str,
     as_json_flag: bool,
 ) -> None:
-    """Download one or all file attachments from a message."""
+    """Download one (--attachment-id) or all (--all) file attachments.
+
+    Get attachment ids from `mail attachments --id ... --json`.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
@@ -1400,12 +1641,15 @@ def mail_attachments_download_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail.command("delete-draft")
+@mail.command("delete-draft", epilog=help_text.MAIL_DELETE_DRAFT_EPILOG)
 @click.option("--id", "draft_id", required=True, help="Draft message id.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool) -> None:
-    """Delete a draft message (does not notify recipients)."""
+    """Permanently delete a draft. No --yes needed - nobody is notified.
+
+    The safe way to clean up a draft you created only to inspect it.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(_workspace().mail_delete_draft(draft_id=draft_id))
@@ -1423,7 +1667,7 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail.command("draft")
+@mail.command("draft", epilog=help_text.MAIL_DRAFT_EPILOG)
 @click.option(
     "--to",
     multiple=True,
@@ -1440,12 +1684,12 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
     multiple=True,
     help="BCC recipient email (repeatable or comma-separated).",
 )
-@click.option("--subject", required=True)
+@click.option("--subject", required=True, help="Message subject.")
 @click.option(
     "--attach",
     multiple=True,
     type=click.Path(dir_okay=False, path_type=str),
-    help="Attach a file (repeat for several).",
+    help="Attach a file, under 2 MB (repeat for several).",
 )
 @click.option("--body", default=None, help="Message body (mutually exclusive with --body-file).")
 @click.option(
@@ -1484,7 +1728,12 @@ def mail_draft_cmd(
     no_signature: bool,
     as_json_flag: bool,
 ) -> None:
-    """Create a mail draft (does not send)."""
+    """Create a new mail draft. Does not send.
+
+    Send it later with `mail send-draft --id ... --yes`. `--to` / `--cc` /
+    `--bcc` repeat or take comma-separated lists. Use ASCII hyphens in the body,
+    not em dashes.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
@@ -1521,7 +1770,7 @@ def mail_draft_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail.command("forward")
+@mail.command("forward", epilog=help_text.MAIL_FORWARD_EPILOG)
 @click.option("--id", "message_id", required=True, help="Message id to forward.")
 @click.option("--to", required=True, help="Recipient email.")
 @click.option(
@@ -1557,7 +1806,12 @@ def mail_forward_cmd(
     no_signature: bool,
     as_json_flag: bool,
 ) -> None:
-    """Create a forward draft (does not send)."""
+    """Create a forward draft for a message. Does not send.
+
+    Pass `--body` on create; filling it in later with `mail update-draft --body`
+    replaces the quoted original. `--cc` / `--bcc` on create merge with
+    inherited recipients. Send with `mail send-draft --yes`.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
@@ -1589,9 +1843,9 @@ def mail_forward_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail.command("reply")
+@mail.command("reply", epilog=help_text.MAIL_REPLY_EPILOG)
 @click.option("--id", "message_id", required=True, help="Message id to reply to.")
-@click.option("--all", "reply_all", is_flag=True, help="Reply to every recipient.")
+@click.option("--all", "reply_all", is_flag=True, help="Reply to every recipient (reply-all).")
 @click.option(
     "--cc",
     multiple=True,
@@ -1625,7 +1879,13 @@ def mail_reply_cmd(
     no_signature: bool,
     as_json_flag: bool,
 ) -> None:
-    """Create a reply draft that threads correctly (does not send)."""
+    """Create a reply draft that threads in the recipient's client. Does not send.
+
+    Prefer this over a fresh draft with "RE:" - Graph keeps it in the original
+    conversation and inherits recipients. Pass `--body` on create; a later
+    `mail update-draft --body` drops the quoted original. Send with
+    `mail send-draft --yes`.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
@@ -1657,13 +1917,16 @@ def mail_reply_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail.command("send-draft")
-@click.option("--id", "draft_id", required=True, help="Draft message id.")
+@mail.command("send-draft", epilog=help_text.MAIL_SEND_DRAFT_EPILOG)
+@click.option("--id", "draft_id", required=True, help="Draft message id to send.")
 @click.option("--yes", "yes", is_flag=True, help="Confirm send.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_flag: bool) -> None:
-    """Send an existing draft. Requires --yes."""
+    """Send an existing draft (from draft / reply / forward). Requires --yes.
+
+    This is the step that actually delivers mail.
+    """
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
@@ -1679,13 +1942,13 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
     raise SystemExit(EXIT_SUCCESS)
 
 
-@mail.command("update-draft")
-@click.option("--id", "draft_id", required=True, help="Draft message id.")
+@mail.command("update-draft", epilog=help_text.MAIL_UPDATE_DRAFT_EPILOG)
+@click.option("--id", "draft_id", required=True, help="Draft message id to patch.")
 @click.option(
     "--attach",
     multiple=True,
     type=click.Path(dir_okay=False, path_type=str),
-    help="Attach a file to the draft (repeat for several).",
+    help="Add a file to the draft, under 2 MB (additive; repeat for several).",
 )
 @click.option("--subject", default=None, help="New subject (omit to leave unchanged).")
 @click.option(
@@ -1734,7 +1997,11 @@ def mail_update_draft_cmd(
     body_type: str,
     as_json_flag: bool,
 ) -> None:
-    """Patch an existing draft in place (does not send)."""
+    """Patch an existing draft in place. Does not send.
+
+    `--to` / `--cc` / `--bcc` and `--body` each REPLACE that field wholesale
+    when given - include every value that should remain. `--attach` is additive.
+    """
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
@@ -1774,17 +2041,25 @@ def mail_update_draft_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@main.group()
+@main.group(epilog=help_text.MEETING_EPILOG)
 def meeting() -> None:
-    """Online meeting skills."""
+    """Inspect and configure the online meeting on an event you organize.
+
+    Organizer-only. Needs `wo1162425_scopes = true`
+    (OnlineMeetings.ReadWrite). Event ids come from `blumkin calendar today`.
+    """
 
 
-@meeting.command("get")
-@click.option("--event-id", required=True, help="Calendar event id.")
+@meeting.command("get", epilog=help_text.MEETING_GET_EPILOG)
+@click.option("--event-id", required=True, help="Calendar event id (from `calendar today`).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def meeting_get_cmd(ctx: click.Context, event_id: str, as_json_flag: bool) -> None:
-    """Show online-meeting details for a calendar event."""
+    """Resolve an event's online meeting: join URL, id, and settings.
+
+    Exit 5 (not_found) means the event has no online meeting or you are not the
+    organizer.
+    """
     as_json = _as_json(ctx, as_json_flag)
     _require_wo1162425_scopes(as_json=as_json)
     try:
@@ -1803,9 +2078,9 @@ def meeting_get_cmd(ctx: click.Context, event_id: str, as_json_flag: bool) -> No
     raise SystemExit(EXIT_SUCCESS)
 
 
-@meeting.command("transcription")
-@click.option("--event-id", required=True, help="Calendar event id.")
-@click.option("--enable", is_flag=True, help="Set allowTranscription=true.")
+@meeting.command("transcription", epilog=help_text.MEETING_TRANSCRIPTION_EPILOG)
+@click.option("--event-id", required=True, help="Calendar event id (from `calendar today`).")
+@click.option("--enable", is_flag=True, help="Set allowTranscription=true (needs --yes).")
 @click.option("--yes", is_flag=True, help="Confirm enable (required with --enable).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -1816,7 +2091,11 @@ def meeting_transcription_cmd(
     yes: bool,
     as_json_flag: bool,
 ) -> None:
-    """Show or enable transcription on an event's online meeting."""
+    """Show transcription flags, or enable them with --enable --yes.
+
+    Without --enable this is a read. With --enable it sets
+    allowTranscription=true and needs --yes.
+    """
     as_json = _as_json(ctx, as_json_flag)
     _require_wo1162425_scopes(as_json=as_json)
     if enable:
@@ -1837,14 +2116,20 @@ def meeting_transcription_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@main.group()
+@main.group(epilog=help_text.PEOPLE_EPILOG)
 def people() -> None:
-    """People directory skills."""
+    """Resolve a name to an email address before you invite or message someone.
+
+    Needs `wo1162425_scopes = true` (People.Read). Fail-closed: never guess
+    when more than one person matches.
+    """
 
 
-@people.command("resolve")
+@people.command("resolve", epilog=help_text.PEOPLE_RESOLVE_EPILOG)
 @click.option("--name", "name", default=None, help="Display name to search for.")
-@click.option("--email", "email", default=None, help="Exact email / reverse lookup.")
+@click.option(
+    "--email", "email", default=None, help="Exact email for a reverse / exact-match lookup."
+)
 @click.option(
     "--top",
     default=10,
@@ -1861,7 +2146,12 @@ def people_resolve_cmd(
     top: int,
     as_json_flag: bool,
 ) -> None:
-    """Resolve a person to an SMTP address (fail-closed when ambiguous)."""
+    """Resolve a person to an SMTP address, failing closed when ambiguous.
+
+    Zero matches exits 5 (not_found); more than one exits 2 with
+    `ambiguous: true` and the candidate list - ask which person, never guess.
+    Exactly one match: `person.email` is the address to use.
+    """
     as_json = _as_json(ctx, as_json_flag)
     _require_wo1162425_scopes(as_json=as_json)
     try:
