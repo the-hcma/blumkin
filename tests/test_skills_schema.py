@@ -251,9 +251,10 @@ _ARG_REQUIRED_KEYS = {"name", "required", "type"}
 _ARG_SIGNATURES = {
     "calendar.create": [
         ("--subject", True, "string"),
-        ("--with", True, "email"),
+        ("--with", False, "email"),
         ("--start", True, "datetime"),
         ("--duration", False, "duration"),
+        ("--remind-email", False, "duration"),
         ("--no-teams", False, "flag"),
         ("--tz", False, "iana_tz"),
         ("--yes", True, "flag"),

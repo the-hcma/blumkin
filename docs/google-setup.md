@@ -23,15 +23,21 @@ Do **not** put `client_id` / `client_secret` / tenant-style overrides in env var
 `BLUMKIN_CONFIG_DIR` only selects which config directory to use.
 `BLUMKIN_PROFILE` / `--profile` select the profile **name or tag** (non-secret).
 
-MVP verbs with `provider = "google"`: auth, calendar `today` / `view` /
-`freebusy` / `suggest`, mail `inbox` / `list` / `get`. Other skills fail closed
-until a later milestone ([#89](https://github.com/the-hcma/blumkin/issues/89)).
+Supported verbs with `provider = "google"`: auth, calendar `today` / `view` /
+`freebusy` / `suggest` / `create`, mail `inbox` / `list` / `get`. Other skills
+fail closed until a later milestone
+([#89](https://github.com/the-hcma/blumkin/issues/89)).
 
 Requested OAuth scopes at login:
 
+- `https://www.googleapis.com/auth/calendar.events`
 - `https://www.googleapis.com/auth/calendar.readonly`
 - `https://www.googleapis.com/auth/calendar.freebusy`
 - `https://www.googleapis.com/auth/gmail.readonly`
+
+> **Upgrading from a read-only build:** `calendar.events` is new. An existing
+> token was minted without it, so silent refresh will fail once after upgrade —
+> run `blumkin --profile <name> auth login` again to re-consent.
 
 ---
 
@@ -62,8 +68,8 @@ audience / data access, depending on Console UI):
      appears (org users only; no public verification for personal use).
    - Otherwise **External**.
 2. App name / support email: anything sensible (for example `blumkin`).
-3. **Scopes** (optional in the Console UI): Blumkin requests the three scopes
-   above at login. If the UI asks you to register scopes, add those three.
+3. **Scopes** (optional in the Console UI): Blumkin requests the four scopes
+   above at login. If the UI asks you to register scopes, add those four.
 4. **External + Testing (most personal setups):** under **Audience** / **Test
    users**, add the **exact** Google account you will use in the browser Allow
    flow. Apps in **Testing** reject sign-in for accounts that are not listed.

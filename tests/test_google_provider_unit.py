@@ -139,6 +139,81 @@ def test_calendar_freebusy_and_suggest(tmp_path: Path) -> None:
     assert suggest["with"] == ["ada@example.com"]
 
 
+def test_google_scopes_include_calendar_write() -> None:
+    assert "https://www.googleapis.com/auth/calendar.events" in GOOGLE_SCOPES
+
+
+def test_calendar_create_inserts_solo_event_with_email_reminder(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    inserted = {
+        "id": "evt-new",
+        "summary": "Review renewal",
+        "start": {"dateTime": "2026-09-28T10:00:00-04:00"},
+        "end": {"dateTime": "2026-09-28T10:30:00-04:00"},
+        "organizer": {"email": "me@example.com", "self": True},
+    }
+    service.events.return_value.insert.return_value.execute.return_value = inserted
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        payload = asyncio.run(
+            provider.calendar_create(
+                subject="Review renewal",
+                with_emails=[],
+                start_raw="2026-09-28T10:00",
+                remind_email="1d",
+                tz_name="America/New_York",
+            )
+        )
+    assert payload["event"]["id"] == "evt-new"
+    assert payload["event"]["subject"] == "Review renewal"
+    kwargs = service.events.return_value.insert.call_args.kwargs
+    assert kwargs["calendarId"] == "primary"
+    assert kwargs["sendUpdates"] == "none"
+    body = kwargs["body"]
+    assert body["summary"] == "Review renewal"
+    tz = "America/New_York"
+    assert body["start"] == {"dateTime": "2026-09-28T10:00:00-04:00", "timeZone": tz}
+    assert body["end"] == {"dateTime": "2026-09-28T10:30:00-04:00", "timeZone": tz}
+    assert "attendees" not in body
+    assert body["reminders"] == {
+        "useDefault": False,
+        "overrides": [{"method": "email", "minutes": 1440}],
+    }
+
+
+def test_calendar_create_with_attendees_sends_updates(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.events.return_value.insert.return_value.execute.return_value = {
+        "id": "evt-2",
+        "summary": "Sync",
+        "start": {"dateTime": "2026-09-28T14:00:00-04:00"},
+        "end": {"dateTime": "2026-09-28T14:30:00-04:00"},
+        "organizer": {"email": "me@example.com", "self": True},
+    }
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        asyncio.run(
+            provider.calendar_create(
+                subject="Sync",
+                with_emails=["peer@example.com"],
+                start_raw="2026-09-28T14:00",
+                tz_name="America/New_York",
+            )
+        )
+    kwargs = service.events.return_value.insert.call_args.kwargs
+    assert kwargs["sendUpdates"] == "all"
+    assert kwargs["body"]["attendees"] == [{"email": "peer@example.com"}]
+    assert "reminders" not in kwargs["body"]
+
+
 def test_calendar_suggest_rejects_treat_tentative_free(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)

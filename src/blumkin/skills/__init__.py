@@ -92,9 +92,15 @@ SKILLS: list[SkillSpec] = [
         scopes=["Calendars.ReadWrite"],
         args=[
             {"name": "--subject", "required": True, "type": "string"},
-            {"name": "--with", "required": True, "type": "email", "multiple": True},
+            {"name": "--with", "required": False, "type": "email", "multiple": True},
             {"name": "--start", "required": True, "type": "datetime"},
             {"name": "--duration", "required": False, "type": "duration"},
+            {
+                "name": "--remind-email",
+                "required": False,
+                "type": "duration",
+                "note": "reminder lead time; email on Google, Outlook popup on Microsoft",
+            },
             {
                 "name": "--no-teams",
                 "required": False,

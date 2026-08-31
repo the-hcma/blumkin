@@ -50,10 +50,19 @@ class GoogleWorkspaceProvider:
         with_emails: list[str],
         start_raw: str,
         duration: str | None = None,
+        remind_email: str | None = None,
         teams: bool = True,
         tz_name: str | None = None,
     ) -> dict[str, Any]:
-        return self._unsupported("calendar create")
+        return await google_calendar.calendar_create(
+            subject=subject,
+            with_emails=with_emails,
+            start_raw=start_raw,
+            duration=duration,
+            remind_email=remind_email,
+            tz_name=tz_name,
+            config=self._config,
+        )
 
     async def calendar_freebusy(
         self,

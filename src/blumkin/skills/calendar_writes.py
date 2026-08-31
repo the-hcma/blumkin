@@ -29,8 +29,12 @@ from blumkin.skills.calendar import (
     parse_local_datetime,
 )
 
-_DURATION_RE = re.compile(r"^(\d+)\s*(m|min|mins|h|hr|hrs|hour|hours)$", re.I)
+_DURATION_RE = re.compile(
+    r"^(\d+)\s*(m|min|mins|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)$", re.I
+)
 _DEFAULT_DURATION = "30m"
+# Google caps a reminder lead time at four weeks; keep both providers to that bound.
+_MAX_REMINDER_MINUTES = 40320
 
 
 async def calendar_accept(
@@ -77,14 +81,13 @@ async def calendar_create(
     with_emails: list[str],
     start_raw: str,
     duration: str | None = None,
+    remind_email: str | None = None,
     teams: bool = True,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     if not subject.strip():
         raise ValueError("--subject is required")
-    if not with_emails:
-        raise ValueError("at least one --with email is required")
     cfg = config or load_config()
     tz = ZoneInfo(tz_name or cfg.default_tz)
     start = parse_local_datetime(start_raw, tz)
@@ -97,11 +100,16 @@ async def calendar_create(
         for email in with_emails
     ]
     event = Event(
-        attendees=attendees,
+        attendees=attendees or None,
         end=_to_graph_dtz(end),
         start=_to_graph_dtz(start),
         subject=subject.strip(),
     )
+    if remind_email is not None:
+        # Outlook events carry only a client-side (popup) reminder, not a per-event
+        # email reminder; --remind-email maps to that. Google gets a real email.
+        event.is_reminder_on = True
+        event.reminder_minutes_before_start = reminder_minutes_before_start(remind_email)
     if teams:
         event.is_online_meeting = True
         event.online_meeting_provider = OnlineMeetingProviderType.TeamsForBusiness
@@ -193,12 +201,29 @@ def parse_duration(raw: str) -> timedelta:
     text = raw.strip().lower()
     match = _DURATION_RE.match(text)
     if not match:
-        raise ValueError(f"invalid duration {raw!r}; use forms like 30m or 1h")
+        raise ValueError(f"invalid duration {raw!r}; use forms like 30m, 1h, 1d, 1w")
     amount = int(match.group(1))
     unit = match.group(2).lower()
+    if unit.startswith("w"):
+        return timedelta(weeks=amount)
+    if unit.startswith("d"):
+        return timedelta(days=amount)
     if unit.startswith("h"):
         return timedelta(hours=amount)
     return timedelta(minutes=amount)
+
+
+def reminder_minutes_before_start(raw: str) -> int:
+    """Whole minutes before start for a reminder lead time like ``30m``/``1h``/``1d``."""
+    minutes = int(parse_duration(raw).total_seconds() // 60)
+    if minutes <= 0:
+        raise ValueError(f"reminder lead time {raw!r} must be positive")
+    if minutes > _MAX_REMINDER_MINUTES:
+        raise ValueError(
+            f"reminder lead time {raw!r} exceeds the four-week maximum "
+            f"({_MAX_REMINDER_MINUTES} minutes)"
+        )
+    return minutes
 
 
 def _event_join_url(event: Any) -> str | None:
