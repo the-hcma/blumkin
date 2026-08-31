@@ -311,6 +311,25 @@ Messages a real person, so `--yes` is required. Needs `wo1162425_scopes = true`.
 Use ASCII hyphens in `--text`, not em dashes.
 """
 
+COMPLETION_EPILOG = """
+Enable completion (writes a file and sources it from your shell rc):
+
+\b
+  # bash
+  blumkin completion bash > ~/.blumkin-complete.bash
+  echo 'source ~/.blumkin-complete.bash' >> ~/.bashrc
+\b
+  # zsh
+  blumkin completion zsh > ~/.blumkin-complete.zsh
+  echo 'source ~/.blumkin-complete.zsh' >> ~/.zshrc
+\b
+  # fish
+  blumkin completion fish > ~/.config/fish/completions/blumkin.fish
+
+Open a new shell afterwards. The script calls back into `blumkin` at completion
+time via the _BLUMKIN_COMPLETE env var, so keep `blumkin` on PATH.
+"""
+
 DOCTOR_EPILOG = """
 Examples:
 

@@ -611,6 +611,29 @@ def skills_describe(ctx: click.Context, skill_id: str, as_json_flag: bool) -> No
         )
 
 
+@main.command(epilog=help_text.COMPLETION_EPILOG)
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+def completion(shell: str) -> None:
+    """Print a tab-completion script for bash, zsh, or fish.
+
+    Source the output to enable `<TAB>` completion of blumkin commands, options,
+    and Choice values. See the epilog for one-liners per shell.
+    """
+    from click.shell_completion import get_completion_class
+
+    comp_cls = get_completion_class(shell)
+    if comp_cls is None:  # pragma: no cover - Choice already constrains shell
+        _emit_error(
+            error="usage_error",
+            message=f"no completion support for shell: {shell}",
+            as_json=False,
+            hint="Supported shells: bash, zsh, fish.",
+        )
+        raise SystemExit(EXIT_USAGE)
+    completer = comp_cls(main, {}, "blumkin", "_BLUMKIN_COMPLETE")
+    click.echo(completer.source())
+
+
 @main.command(epilog=help_text.DOCTOR_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
