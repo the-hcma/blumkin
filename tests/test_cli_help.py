@@ -135,14 +135,19 @@ def test_documented_datetime_examples_parse(path: list[str]) -> None:
         parse_local_datetime(value, tz)  # raises ValueError if the format is wrong
 
 
+# `<word>` / `<word` / `word>` placeholders break in a POSIX shell (redirection);
+# a lone `>` with spaces around it (`... > file`) is deliberate redirection and fine.
+_ANGLE_PLACEHOLDER = re.compile(r"<\S|\S>")
+
+
 @pytest.mark.parametrize("path", SUBCOMMAND_PATHS + [[]], ids=lambda p: " ".join(p) or "root")
 def test_example_command_lines_are_shell_safe(path: list[str]) -> None:
     """Copy-pasteable `blumkin ...` example lines must not carry <angle-bracket>
-    placeholders (POSIX shells read them as redirection) or unbalanced quotes."""
+    placeholders or unbalanced quotes."""
     out = CliRunner().invoke(main, [*path, "--help"]).output
     for raw in out.splitlines():
         line = raw.strip().rstrip("\\").strip()
         if not line.startswith("blumkin "):
             continue
-        assert "<" not in line and ">" not in line, f"angle-bracket placeholder: {line!r}"
+        assert not _ANGLE_PLACEHOLDER.search(line), f"angle-bracket placeholder: {line!r}"
         assert line.count('"') % 2 == 0, f"unbalanced quote: {line!r}"

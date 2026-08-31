@@ -48,6 +48,26 @@ blumkin calendar create --help     # one command: args, notes, example invocatio
 
 `blumkin skills list --json` is the machine-readable catalog for agents.
 
+### Shell completion
+
+`blumkin completion <bash|zsh|fish>` prints a completion script. Install it once:
+
+```bash
+# bash
+blumkin completion bash > ~/.blumkin-complete.bash
+echo 'source ~/.blumkin-complete.bash' >> ~/.bashrc
+
+# zsh
+blumkin completion zsh > ~/.blumkin-complete.zsh
+echo 'source ~/.blumkin-complete.zsh' >> ~/.zshrc
+
+# fish
+blumkin completion fish > ~/.config/fish/completions/blumkin.fish
+```
+
+Open a new shell afterwards. The script calls back into `blumkin` for
+completions, so keep it on `PATH`.
+
 ## Config (`~/.config/blumkin/`)
 
 Create `~/.config/blumkin/config.toml` (mode `0600`). Prefer **named profiles**
