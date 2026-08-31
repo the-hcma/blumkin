@@ -386,6 +386,49 @@ def test_calendar_create_remind_email_sets_outlook_popup(monkeypatch) -> None:
     assert posted.reminder_minutes_before_start == 60
 
 
+def test_calendar_create_spans_dst_fallback_keeps_length(monkeypatch) -> None:
+    """A 1h event starting inside the Nov 2026 fall-back stays one real hour.
+
+    Absolute-time arithmetic: 01:30 EDT + 1h == 01:30 EST, so the wall clock does
+    not advance to 02:30 (which would be two elapsed hours).
+    """
+    created = SimpleNamespace(
+        id="evt-new",
+        subject="Overlap",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=None,
+    )
+    client = MagicMock()
+    client.me.events.post = AsyncMock(return_value=created)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    asyncio.run(
+        calendar_create(
+            subject="Overlap",
+            with_emails=["peer@example.com"],
+            start_raw="2026-11-01T01:30",
+            duration="1h",
+            teams=False,
+            tz_name="America/New_York",
+        )
+    )
+    post_await = client.me.events.post.await_args
+    assert post_await is not None
+    posted = post_await.args[0]
+    assert posted.start.date_time == "2026-11-01T01:30:00"
+    assert posted.end.date_time == "2026-11-01T01:30:00"
+    assert posted.start.time_zone == "America/New_York"
+
+
 def test_calendar_create_without_attendees_mocked(monkeypatch) -> None:
     created = SimpleNamespace(
         id="evt-new",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -91,7 +91,9 @@ async def calendar_create(
     cfg = config or load_config()
     tz = ZoneInfo(tz_name or cfg.default_tz)
     start = parse_local_datetime(start_raw, tz)
-    end = start + parse_duration(duration or _DEFAULT_DURATION)
+    # Add the duration in absolute time so an event crossing a DST transition keeps
+    # its real length (matches the Google provider path).
+    end = (start.astimezone(UTC) + parse_duration(duration or _DEFAULT_DURATION)).astimezone(tz)
     attendees = [
         Attendee(
             email_address=EmailAddress(address=email),
