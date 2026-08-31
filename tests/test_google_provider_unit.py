@@ -8,9 +8,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httplib2
 import pytest
+from click.testing import CliRunner
+from googleapiclient.errors import HttpError
 
+from blumkin.cli import main
 from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.exit_codes import EXIT_MISSING_SCOPE
 from blumkin.providers.google_auth import GOOGLE_SCOPES, status_dict
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
@@ -212,6 +217,46 @@ def test_calendar_create_with_attendees_sends_updates(tmp_path: Path) -> None:
     assert kwargs["sendUpdates"] == "all"
     assert kwargs["body"]["attendees"] == [{"email": "peer@example.com"}]
     assert "reminders" not in kwargs["body"]
+
+
+def test_calendar_create_google_403_maps_to_missing_scope(tmp_path: Path) -> None:
+    """A token minted before the calendar.events scope 403s; the CLI must exit 4.
+
+    Google raises googleapiclient.errors.HttpError, whose status the CLI reads via
+    HttpError.status_code -> _graph_http_status -> missing_scope.
+    """
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    resp = httplib2.Response({"status": 403})
+    service.events.return_value.insert.return_value.execute.side_effect = HttpError(
+        resp,
+        b'{"error":{"message":"Request had insufficient authentication scopes.",'
+        b'"status":"PERMISSION_DENIED"}}',
+        uri="https://www.googleapis.com/calendar/v3/calendars/primary/events",
+    )
+    provider = GoogleWorkspaceProvider(cfg)
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+        patch("blumkin.cli._workspace", return_value=provider),
+    ):
+        result = CliRunner().invoke(
+            main,
+            [
+                "calendar",
+                "create",
+                "--subject",
+                "Solo hold",
+                "--start",
+                "2026-09-28T10:00",
+                "--tz",
+                "America/New_York",
+                "--yes",
+                "--json",
+            ],
+        )
+    assert result.exit_code == EXIT_MISSING_SCOPE
+    assert json.loads(result.stderr)["error"] == "missing_scope"
 
 
 def test_calendar_suggest_rejects_treat_tentative_free(tmp_path: Path) -> None:

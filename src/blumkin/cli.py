@@ -102,7 +102,12 @@ def _cli_as_json() -> bool:
 
 
 def _graph_http_status(exc: BaseException) -> int | None:
-    """Best-effort HTTP status from kiota/msgraph exceptions."""
+    """Best-effort HTTP status from kiota/msgraph or googleapiclient exceptions.
+
+    ``status_code`` covers both kiota ``APIError`` and
+    ``googleapiclient.errors.HttpError`` (an int property since v2.40); the
+    ``response`` fallbacks catch older/other shapes.
+    """
     for attr in ("response_status_code", "status_code"):
         value = getattr(exc, attr, None)
         if isinstance(value, int):
