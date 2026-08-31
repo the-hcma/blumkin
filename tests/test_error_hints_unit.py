@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
+from blumkin.auth import SecretWriteError
 from blumkin.cli import _DEFAULT_HINTS, main
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_USAGE
 
@@ -17,11 +19,18 @@ def _run(args: list[str]) -> tuple[int, str]:
 
 
 def _json_err(args: list[str]) -> dict:
+    """The compact one-line ``{...}`` object emitted by ``emit_error`` (stderr).
+
+    ``emit_json`` payloads are pretty-printed multi-line, so a start+end brace on
+    one line uniquely identifies the error object.
+    """
     _, combined = _run(args)
     for line in combined.splitlines():
         line = line.strip()
-        if line.startswith("{"):
-            return json.loads(line)
+        if line.startswith("{") and line.endswith("}"):
+            payload = json.loads(line)
+            if "error" in payload:
+                return payload
     raise AssertionError(f"no JSON error line in output:\n{combined}")
 
 
@@ -111,3 +120,42 @@ def test_json_errors_are_single_line_objects_with_ok_false(args: list[str]) -> N
     assert payload["ok"] is False
     assert set(payload) <= {"ok", "error", "message", "hint"}
     assert payload["hint"]
+
+
+class _GraphStatusError(Exception):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+
+
+def _provider_raises(exc: BaseException):
+    async def _boom(**_kwargs):
+        raise exc
+
+    return _boom
+
+
+@pytest.mark.parametrize(
+    ("slug", "exc"),
+    [
+        ("auth_required", ValueError("Authentication required. Run 'blumkin auth login'.")),
+        ("auth_required", _GraphStatusError(401)),
+        ("missing_scope", _GraphStatusError(403)),
+        ("not_found", _GraphStatusError(404)),
+        ("graph_error", RuntimeError("Graph 500 boom")),
+        ("timeout", httpx.ReadTimeout("slow")),
+        ("secret_write_failed", SecretWriteError("cannot write token cache")),
+    ],
+    ids=lambda v: v if isinstance(v, str) else type(v).__name__,
+)
+def test_fallback_hint_reaches_the_cli_for_each_error_class(slug, exc, monkeypatch) -> None:
+    monkeypatch.setattr("blumkin.providers.microsoft.calendar_today", _provider_raises(exc))
+
+    code, human = _run(["calendar", "today", "--tz", "UTC"])
+    assert code != 0
+    assert _DEFAULT_HINTS[slug].split(".")[0] in human
+
+    payload = _json_err(["calendar", "today", "--tz", "UTC", "--json"])
+    assert payload["error"] == slug
+    assert payload["ok"] is False
+    assert payload["hint"] == _DEFAULT_HINTS[slug]

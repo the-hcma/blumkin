@@ -1357,6 +1357,9 @@ def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool
     else:
         emit_lines(format_last_human(payload))
     if payload.get("chat") is None:
+        # Deliberate: no-match keeps the payload on stdout with empty stderr
+        # (chat == null is the signal), pinned by
+        # test_diagnostic_commands_report_failure_on_stdout and the agent guide.
         raise SystemExit(EXIT_NOT_FOUND)
     raise SystemExit(EXIT_SUCCESS)
 
