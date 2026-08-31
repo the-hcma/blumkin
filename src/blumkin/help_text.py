@@ -457,12 +457,17 @@ Examples:
   # From a sender, since a date (half-open [since, until))
   blumkin mail inbox --from "sam@example.com" --since 2026-08-01 --json
 \b
+  # High-importance mail with an attachment (both server-side)
+  blumkin mail inbox --importance high --has-attachments --json
+\b
   # Full-text search across the whole mailbox (server-side)
   blumkin mail inbox --search "quarterly report" --json
 
 `--from` / `--subject` match locally over a newest-first scan capped at 500
-messages (payload then says `complete: false`). `--search` runs on Graph and
-cannot be combined with `--from` / `--subject` / date bounds.
+messages (payload then says `complete: false`). `--importance` /
+`--has-attachments` filter server-side and keep the sort. `--search` runs on
+Graph and cannot be combined with `--from` / `--subject` / date / importance /
+attachment filters.
 """
 
 MAIL_LIST_EPILOG = """
@@ -474,11 +479,16 @@ Examples:
 \b
   # A custom folder by display name, only unread
   blumkin mail list --folder "Receipts" --unread --json
+\b
+  # Archive, high-importance only
+  blumkin mail list --folder archive --importance high --json
 
 `--folder` takes a well-known name (inbox, sentitems, drafts, archive,
 deleteditems, junkemail, outbox), a folder id, or a custom folder's display
 name. Sort defaults by folder (sent for Sent Items, created for Drafts/Outbox,
-received otherwise); override with `--orderby`.
+received otherwise); override with `--orderby`. `--importance` /
+`--has-attachments` filter server-side; same `--search` exclusivity as
+`mail inbox`.
 """
 
 MAIL_REPLY_EPILOG = """

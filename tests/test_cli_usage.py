@@ -682,6 +682,8 @@ def test_mail_list_wires_options_and_emits_json(monkeypatch) -> None:
     assert result.exit_code == EXIT_SUCCESS
     assert seen == {
         "folder": "sent",
+        "has_attachments": False,
+        "importance": None,
         "orderby": "sent",
         "search": None,
         "sender": None,
