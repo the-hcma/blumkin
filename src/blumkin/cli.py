@@ -282,13 +282,18 @@ def _require_wo1162425_scopes(*, as_json: bool) -> None:
     raise SystemExit(EXIT_USAGE)
 
 
-def _require_yes(*, yes: bool, as_json: bool) -> None:
+def _require_yes(
+    *,
+    yes: bool,
+    as_json: bool,
+    reason: str = "This action notifies other people.",
+) -> None:
     if not yes:
         _emit_error(
             error="usage_error",
             message="--yes is required for this command",
             as_json=as_json,
-            hint="This action notifies other people. Re-run the command with --yes to confirm.",
+            hint=f"{reason} Re-run the command with --yes to confirm.",
         )
         raise SystemExit(EXIT_USAGE)
 
@@ -2199,7 +2204,11 @@ def meeting_transcription_cmd(
     as_json = _as_json(ctx, as_json_flag)
     _require_wo1162425_scopes(as_json=as_json)
     if enable:
-        _require_yes(yes=yes, as_json=as_json)
+        _require_yes(
+            yes=yes,
+            as_json=as_json,
+            reason="This changes a meeting setting (allowTranscription).",
+        )
     try:
         payload = asyncio.run(_workspace().meeting_transcription(event_id=event_id, enable=enable))
     except LookupError as exc:

@@ -55,7 +55,22 @@ def test_missing_yes_hint_tells_you_to_add_it() -> None:
     code, out = _run(["calendar", "cancel", "--event-id", "x"])
     assert code == EXIT_USAGE
     assert "--yes" in out
+    assert "notifies other people" in out
     assert "Re-run the command with --yes" in out
+
+
+def test_missing_yes_hint_reason_is_per_command(tmp_path, monkeypatch) -> None:
+    """meeting transcription --enable is a write gate, not a notify gate."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        'client_id = "00000000-0000-0000-0000-000000000001"\n'
+        'tenant_id = "example.onmicrosoft.com"\ndefault_tz = "UTC"\n'
+        "wo1162425_scopes = true\n"
+    )
+    payload = _json_err(["meeting", "transcription", "--event-id", "x", "--enable", "--json"])
+    assert payload["error"] == "usage_error"
+    assert "meeting setting" in payload["hint"]
+    assert "notifies other people" not in payload["hint"]
 
 
 def test_missing_yes_json_carries_hint() -> None:
