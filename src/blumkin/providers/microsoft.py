@@ -319,6 +319,8 @@ class MicrosoftWorkspaceProvider:
         self,
         *,
         top: int = 10,
+        has_attachments: bool = False,
+        importance: str | None = None,
         search: str | None = None,
         sender: str | None = None,
         since: datetime | None = None,
@@ -328,6 +330,8 @@ class MicrosoftWorkspaceProvider:
     ) -> dict[str, Any]:
         return await mail_inbox(
             top=top,
+            has_attachments=has_attachments,
+            importance=importance,
             search=search,
             sender=sender,
             since=since,
@@ -342,6 +346,8 @@ class MicrosoftWorkspaceProvider:
         *,
         top: int = 10,
         folder: str | None = None,
+        has_attachments: bool = False,
+        importance: str | None = None,
         orderby: str | None = None,
         search: str | None = None,
         sender: str | None = None,
@@ -353,6 +359,8 @@ class MicrosoftWorkspaceProvider:
         return await mail_list(
             top=top,
             folder=folder,
+            has_attachments=has_attachments,
+            importance=importance,
             orderby=orderby,
             search=search,
             sender=sender,

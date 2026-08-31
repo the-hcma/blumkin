@@ -89,6 +89,9 @@ class MailMessageNotFoundError(Exception):
     """Message id missing (not_found)."""
 
 
+MAIL_IMPORTANCE_VALUES = ("high", "normal", "low")
+
+
 WELL_KNOWN_MAIL_FOLDERS = (
     "archive",
     "deleteditems",
@@ -600,6 +603,8 @@ async def mail_get(
 async def mail_inbox(
     *,
     top: int = 10,
+    has_attachments: bool = False,
+    importance: str | None = None,
     search: str | None = None,
     sender: str | None = None,
     since: datetime | None = None,
@@ -610,6 +615,8 @@ async def mail_inbox(
 ) -> dict[str, Any]:
     payload = await mail_list(
         top=top,
+        has_attachments=has_attachments,
+        importance=importance,
         search=search,
         sender=sender,
         since=since,
@@ -630,6 +637,8 @@ async def mail_list(
     *,
     top: int = 10,
     folder: str | None = None,
+    has_attachments: bool = False,
+    importance: str | None = None,
     orderby: str | None = None,
     search: str | None = None,
     sender: str | None = None,
@@ -646,8 +655,11 @@ async def mail_list(
     if folder is not None and not label:
         raise ValueError("--folder cannot be empty")
     requested_sort = None if orderby is None else _validate_orderby(orderby)
+    importance = None if importance is None else _validate_importance(importance)
     term = _validate_search(
         search,
+        has_attachments=has_attachments,
+        importance=importance,
         orderby=requested_sort,
         sender=sender,
         since=since,
@@ -679,6 +691,8 @@ async def mail_list(
             return list(found), None, None
         criteria = _build_filter(
             field=_ORDERBY_FIELDS[sort_label],
+            has_attachments=has_attachments,
+            importance=importance,
             since=since,
             unread=unread,
             until=until,
@@ -712,6 +726,8 @@ async def mail_list(
         "filters": {
             "complete": complete,
             "from": sender,
+            "has_attachments": has_attachments,
+            "importance": importance,
             "matched_locally": matched_locally,
             "scanned": scanned,
             "search": term,
@@ -1027,6 +1043,8 @@ def _build_filter(
     since: datetime | None,
     unread: bool,
     until: datetime | None,
+    has_attachments: bool = False,
+    importance: str | None = None,
 ) -> str | None:
     """Assemble the ``$filter`` clauses, or None when nothing was asked for.
 
@@ -1041,6 +1059,11 @@ def _build_filter(
     clauses: list[str] = []
     if unread:
         clauses.append("isRead eq false")
+    if has_attachments:
+        clauses.append("hasAttachments eq true")
+    if importance is not None:
+        # Enum comparison, so it composes with $orderby (unlike a string function).
+        clauses.append(f"importance eq '{importance}'")
     if since is not None:
         clauses.append(f"{field} ge {_odata_datetime(since)}")
     if until is not None:
@@ -1220,6 +1243,7 @@ def _filter_notes(payload: dict[str, Any]) -> list[str]:
             ("search", "search"),
             ("from", "from"),
             ("subject", "subject"),
+            ("importance", "importance"),
             ("since", "since"),
             ("until", "until"),
         )
@@ -1227,6 +1251,8 @@ def _filter_notes(payload: dict[str, Any]) -> list[str]:
     ]
     if filters.get("unread"):
         parts.append("unread only")
+    if filters.get("has_attachments"):
+        parts.append("with attachments")
     if not parts:
         return []
     lines = [f"  filters: {', '.join(parts)}"]
@@ -1299,6 +1325,7 @@ async def _get_messages(
             "sentDateTime",
             "isRead",
             "hasAttachments",
+            "importance",
             "bodyPreview",
         ],
     )
@@ -1408,6 +1435,7 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
         "from_name": from_name,
         "has_attachments": bool(msg.has_attachments),
         "id": msg.id,
+        "importance": getattr(getattr(msg, "importance", None), "value", None),
         "is_read": bool(msg.is_read),
         "received": str(msg.received_date_time) if msg.received_date_time else None,
         "sent": str(sent) if sent else None,
@@ -1796,6 +1824,14 @@ async def _upload_attachments(
     return uploaded
 
 
+def _validate_importance(raw: str) -> str:
+    label = raw.strip().casefold()
+    if label not in MAIL_IMPORTANCE_VALUES:
+        allowed = ", ".join(f"'{name}'" for name in MAIL_IMPORTANCE_VALUES)
+        raise ValueError(f"--importance must be one of {allowed}")
+    return label
+
+
 def _validate_orderby(raw: str) -> str:
     label = raw.strip().casefold()
     if label not in _ORDERBY_FIELDS:
@@ -1813,6 +1849,8 @@ def _validate_search(
     subject: str | None,
     unread: bool,
     until: datetime | None,
+    has_attachments: bool = False,
+    importance: str | None = None,
 ) -> str | None:
     """Check --search against the two combinations Graph refuses to serve.
 
@@ -1831,6 +1869,8 @@ def _validate_search(
         name
         for name, used in (
             ("--from", sender is not None),
+            ("--has-attachments", has_attachments),
+            ("--importance", importance is not None),
             ("--since", since is not None),
             ("--subject", subject is not None),
             ("--unread", unread),

@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
 from click.testing import CliRunner
 from kiota_abstractions.api_error import APIError
 
@@ -682,6 +683,8 @@ def test_mail_list_wires_options_and_emits_json(monkeypatch) -> None:
     assert result.exit_code == EXIT_SUCCESS
     assert seen == {
         "folder": "sent",
+        "has_attachments": False,
+        "importance": None,
         "orderby": "sent",
         "search": None,
         "sender": None,
@@ -728,6 +731,24 @@ def test_mail_list_wires_filters_and_parses_dates(monkeypatch) -> None:
     assert seen["unread"] is True
     assert seen["since"] == datetime(2026, 8, 1, tzinfo=ZoneInfo("UTC"))
     assert seen["until"] == datetime(2026, 8, 8, tzinfo=ZoneInfo("UTC"))
+
+
+@pytest.mark.parametrize("command", ["inbox", "list"])
+def test_mail_listing_wires_importance_and_attachment_flags(monkeypatch, command: str) -> None:
+    """Default-only coverage would miss a dropped flag in the Click wiring or the re-pack."""
+    seen: dict[str, object] = {}
+
+    async def _capture(**kwargs):
+        seen.update({k: v for k, v in kwargs.items() if k != "config"})
+        return {"filters": {}, "folder": None, "items": [], "orderby": "received", "top": 10}
+
+    monkeypatch.setattr(f"blumkin.providers.microsoft.mail_{command}", _capture)
+    result = CliRunner().invoke(
+        main, ["mail", command, "--importance", "high", "--has-attachments", "--json"]
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert seen["importance"] == "high"
+    assert seen["has_attachments"] is True
 
 
 def test_mail_list_rejects_an_unknown_timezone(monkeypatch) -> None:

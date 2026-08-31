@@ -60,6 +60,7 @@ from blumkin.skills.chat import (
     format_delete_human as format_chat_delete_human,
 )
 from blumkin.skills.mail import (
+    MAIL_IMPORTANCE_VALUES,
     WELL_KNOWN_MAIL_FOLDERS,
     MailAttachError,
     MailAttachmentNotFoundError,
@@ -1463,11 +1464,26 @@ def mail() -> None:
 @click.option(
     "--search",
     default=None,
-    help="Graph $search term (whole mailbox); cannot combine with --from/--subject/--since.",
+    help=(
+        "Graph $search term (whole mailbox); excludes --from / --subject / --since / "
+        "--importance / --has-attachments."
+    ),
 )
 @click.option("--since", default=None, help="Only messages at or after this local date/time.")
 @click.option("--until", default=None, help="Only messages strictly before this local date/time.")
 @click.option("--unread", is_flag=True, help="Only unread messages.")
+@click.option(
+    "--importance",
+    default=None,
+    type=click.Choice(MAIL_IMPORTANCE_VALUES, case_sensitive=False),
+    help="Only messages at this importance (server-side).",
+)
+@click.option(
+    "--has-attachments",
+    "has_attachments",
+    is_flag=True,
+    help="Only messages with a file attachment (server-side).",
+)
 @click.option("--top", default=10, show_default=True, type=int, help="Max messages to return.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
@@ -1480,6 +1496,8 @@ def mail_inbox_cmd(
     since: str | None,
     until: str | None,
     unread: bool,
+    importance: str | None,
+    has_attachments: bool,
     top: int,
     as_json_flag: bool,
     tz_flag: str | None,
@@ -1487,8 +1505,10 @@ def mail_inbox_cmd(
     """List recent inbox messages, with optional filters or full-text search.
 
     `--from` / `--subject` match locally over a newest-first scan capped at 500
-    (the payload then reports `complete: false`). `--search` runs on Graph over
-    the whole mailbox and cannot combine with the substring or date filters.
+    (the payload then reports `complete: false`). `--importance` /
+    `--has-attachments` filter server-side and compose with the sort.
+    `--search` runs on Graph over the whole mailbox and cannot combine with the
+    substring, date, importance, or attachment filters.
     """
     as_json = _as_json(ctx, as_json_flag)
     try:
@@ -1496,6 +1516,8 @@ def mail_inbox_cmd(
         payload = asyncio.run(
             _workspace().mail_inbox(
                 top=top,
+                has_attachments=has_attachments,
+                importance=importance,
                 search=search,
                 sender=sender,
                 subject=subject,
@@ -1609,11 +1631,26 @@ def mail_get_cmd(
 @click.option(
     "--search",
     default=None,
-    help="Graph $search term (whole mailbox); cannot combine with --from/--subject/--since.",
+    help=(
+        "Graph $search term (whole mailbox); excludes --from / --subject / --since / "
+        "--importance / --has-attachments."
+    ),
 )
 @click.option("--since", default=None, help="Only messages at or after this local date/time.")
 @click.option("--until", default=None, help="Only messages strictly before this local date/time.")
 @click.option("--unread", is_flag=True, help="Only unread messages.")
+@click.option(
+    "--importance",
+    default=None,
+    type=click.Choice(MAIL_IMPORTANCE_VALUES, case_sensitive=False),
+    help="Only messages at this importance (server-side).",
+)
+@click.option(
+    "--has-attachments",
+    "has_attachments",
+    is_flag=True,
+    help="Only messages with a file attachment (server-side).",
+)
 @click.option("--top", default=10, show_default=True, type=int, help="Max messages to return.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
@@ -1628,6 +1665,8 @@ def mail_list_cmd(
     since: str | None,
     until: str | None,
     unread: bool,
+    importance: str | None,
+    has_attachments: bool,
     top: int,
     as_json_flag: bool,
     tz_flag: str | None,
@@ -1636,7 +1675,7 @@ def mail_list_cmd(
 
     Sort order defaults per folder (sent for Sent Items, created for
     Drafts/Outbox, received otherwise); override with `--orderby`. Same filter
-    rules as `mail inbox`.
+    rules as `mail inbox` (`--importance` / `--has-attachments` are server-side).
     """
     as_json = _as_json(ctx, as_json_flag)
     try:
@@ -1645,6 +1684,8 @@ def mail_list_cmd(
             _workspace().mail_list(
                 top=top,
                 folder=folder,
+                has_attachments=has_attachments,
+                importance=importance,
                 orderby=orderby,
                 search=search,
                 sender=sender,

@@ -271,6 +271,22 @@ def test_mail_list_rejects_top_above_gmail_limit(tmp_path: Path) -> None:
         asyncio.run(provider.mail_list(folder="inbox", top=501))
 
 
+def test_mail_importance_filter_unsupported(tmp_path: Path) -> None:
+    provider = GoogleWorkspaceProvider(_cfg(tmp_path))
+    with pytest.raises(ValueError, match="not supported for provider=google"):
+        asyncio.run(provider.mail_list(importance="high"))
+    with pytest.raises(ValueError, match="not supported for provider=google"):
+        asyncio.run(provider.mail_inbox(importance="high"))
+
+
+def test_mail_has_attachments_filter_unsupported(tmp_path: Path) -> None:
+    provider = GoogleWorkspaceProvider(_cfg(tmp_path))
+    with pytest.raises(ValueError, match="not supported for provider=google"):
+        asyncio.run(provider.mail_list(has_attachments=True))
+    with pytest.raises(ValueError, match="not supported for provider=google"):
+        asyncio.run(provider.mail_inbox(has_attachments=True))
+
+
 def test_mail_list_does_not_claim_complete_when_page_truncated(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     list_body = {"messages": [{"id": "m1"}], "nextPageToken": "page2"}

@@ -223,6 +223,8 @@ class GoogleWorkspaceProvider:
         self,
         *,
         top: int = 10,
+        has_attachments: bool = False,
+        importance: str | None = None,
         search: str | None = None,
         sender: str | None = None,
         since: datetime | None = None,
@@ -230,6 +232,8 @@ class GoogleWorkspaceProvider:
         unread: bool = False,
         until: datetime | None = None,
     ) -> dict[str, Any]:
+        if has_attachments or importance is not None:
+            return self._unsupported("mail --has-attachments/--importance filters")
         return await google_mail.mail_inbox(
             top=top,
             search=search,
@@ -246,6 +250,8 @@ class GoogleWorkspaceProvider:
         *,
         top: int = 10,
         folder: str | None = None,
+        has_attachments: bool = False,
+        importance: str | None = None,
         orderby: str | None = None,
         search: str | None = None,
         sender: str | None = None,
@@ -254,6 +260,8 @@ class GoogleWorkspaceProvider:
         unread: bool = False,
         until: datetime | None = None,
     ) -> dict[str, Any]:
+        if has_attachments or importance is not None:
+            return self._unsupported("mail --has-attachments/--importance filters")
         return await google_mail.mail_list(
             top=top,
             folder=folder,

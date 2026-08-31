@@ -68,6 +68,71 @@ def test_mail_list_still_filters_read_state_server_side(monkeypatch) -> None:
     assert _query(client.me.messages.get).filter == "isRead eq false"
 
 
+def test_mail_list_filters_importance_and_attachments_server_side(monkeypatch) -> None:
+    """Enum/bool comparisons compose with $orderby, so they belong in $filter."""
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(return_value=_page([]))
+
+    asyncio.run(mail_list(importance="high", has_attachments=True))
+
+    query = _query(client.me.messages.get)
+    assert query.filter == "hasAttachments eq true and importance eq 'high'"
+    assert query.orderby == ["receivedDateTime desc"]
+
+
+def test_mail_list_keeps_server_filters_on_the_local_scan_path(monkeypatch) -> None:
+    """--from routes through _scan_messages; the new $filter clauses must survive there."""
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(
+        return_value=_page([_msg("Rebecca Doe", "budget"), _msg("Sam Lee", "budget")])
+    )
+
+    payload = asyncio.run(mail_list(sender="Rebecca", has_attachments=True))
+
+    query = _query(client.me.messages.get)
+    assert query.filter == "hasAttachments eq true"
+    assert query.orderby == ["receivedDateTime desc"]
+    assert payload["filters"]["matched_locally"] is True
+    assert [item["from_name"] for item in payload["items"]] == ["Rebecca Doe"]
+
+
+def test_mail_list_importance_is_case_insensitive(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(return_value=_page([]))
+
+    asyncio.run(mail_list(importance="HIGH"))
+
+    assert _query(client.me.messages.get).filter == "importance eq 'high'"
+
+
+def test_mail_list_rejects_an_unknown_importance() -> None:
+    with pytest.raises(ValueError, match="--importance must be one of"):
+        asyncio.run(mail_list(importance="urgent"))
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "flag"),
+    [
+        ({"importance": "high"}, "--importance"),
+        ({"has_attachments": True}, "--has-attachments"),
+    ],
+)
+def test_mail_list_rejects_search_with_the_new_filters(kwargs: dict[str, Any], flag: str) -> None:
+    with pytest.raises(ValueError, match=flag):
+        asyncio.run(mail_list(search="budget", **kwargs))
+
+
+def test_mail_list_surfaces_importance_on_items(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(
+        return_value=_page([_msg("Rebecca Doe", "budget", importance="high")])
+    )
+
+    payload = asyncio.run(mail_list())
+
+    assert payload["items"][0]["importance"] == "high"
+
+
 def test_mail_list_stops_scanning_at_the_cap(monkeypatch) -> None:
     client = _client(monkeypatch)
     monkeypatch.setattr("blumkin.skills.mail._MAX_SCANNED", 3)
@@ -394,6 +459,8 @@ def test_mail_list_reports_the_filters_it_applied(monkeypatch) -> None:
     assert payload["filters"] == {
         "complete": True,
         "from": "Rebecca",
+        "has_attachments": False,
+        "importance": None,
         "matched_locally": True,
         "scanned": 0,
         "search": None,
@@ -428,6 +495,35 @@ def test_mail_inbox_forwards_search(monkeypatch) -> None:
     assert query.orderby is None
     assert payload["orderby"] is None
     assert payload["filters"]["search"] == "budget"
+
+
+def test_mail_inbox_forwards_importance_and_attachments(monkeypatch) -> None:
+    """Dropping either in the inbox re-pack would silently unfilter the listing."""
+    client = _client(monkeypatch)
+    client.me.messages.get = AsyncMock(return_value=_page([]))
+
+    payload = asyncio.run(mail_inbox(importance="high", has_attachments=True))
+
+    assert (
+        _query(client.me.messages.get).filter == "hasAttachments eq true and importance eq 'high'"
+    )
+    assert payload["filters"]["importance"] == "high"
+    assert payload["filters"]["has_attachments"] is True
+
+
+def test_filter_notes_surface_importance_and_attachments() -> None:
+    lines = format_list_human(
+        {
+            "filters": {"importance": "high", "has_attachments": True},
+            "folder": "inbox",
+            "items": [],
+            "orderby": "received",
+            "top": 10,
+        }
+    )
+    joined = "\n".join(lines)
+    assert "importance='high'" in joined
+    assert "with attachments" in joined
 
 
 def test_format_list_human_discloses_a_truncated_local_scan() -> None:
@@ -582,6 +678,7 @@ def _msg(
     *,
     address: str = "someone@example.com",
     from_: Any = ...,
+    importance: str | None = None,
 ) -> SimpleNamespace:
     sender = from_
     if sender is ...:
@@ -593,6 +690,7 @@ def _msg(
         from_=sender,
         has_attachments=False,
         id=f"msg-{name}-{subject}",
+        importance=None if importance is None else SimpleNamespace(value=importance),
         is_read=True,
         received_date_time="2026-08-27T09:00Z",
         sent_date_time=None,
