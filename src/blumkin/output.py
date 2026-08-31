@@ -27,6 +27,16 @@ def emit_error(
 
 
 def emit_json(payload: Any) -> None:
+    """Print a JSON payload on stdout.
+
+    Every object payload carries a top-level ``ok`` boolean so an agent can branch
+    on success without inspecting the exit code: ``ok`` defaults to ``True`` here
+    and is only ``False`` when the command sets it (a fail-closed result printed
+    before a non-zero exit, e.g. ``people resolve`` ambiguous). Error payloads go
+    through ``emit_error`` and already carry ``ok: false``.
+    """
+    if isinstance(payload, dict) and "ok" not in payload:
+        payload = {"ok": True, **payload}
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
 
 

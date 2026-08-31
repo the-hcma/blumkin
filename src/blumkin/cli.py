@@ -1380,14 +1380,15 @@ def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool
         _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
+    no_match = payload.get("chat") is None
     if as_json:
-        emit_json(payload)
+        # Deliberate: no-match keeps the payload on stdout with empty stderr
+        # (chat == null / ok == false is the signal), pinned by
+        # test_diagnostic_commands_report_failure_on_stdout and the agent guide.
+        emit_json({**payload, "ok": not no_match})
     else:
         emit_lines(format_last_human(payload))
-    if payload.get("chat") is None:
-        # Deliberate: no-match keeps the payload on stdout with empty stderr
-        # (chat == null is the signal), pinned by
-        # test_diagnostic_commands_report_failure_on_stdout and the agent guide.
+    if no_match:
         raise SystemExit(EXIT_NOT_FOUND)
     raise SystemExit(EXIT_SUCCESS)
 
@@ -2295,11 +2296,12 @@ def people_resolve_cmd(
         _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
         _raise_graph_http_error(exc, as_json=as_json)
+    ambiguous = bool(payload.get("ambiguous"))
     if as_json:
-        emit_json(payload)
+        emit_json({**payload, "ok": not ambiguous})
     else:
         emit_lines(format_resolve_human(payload))
-    if payload.get("ambiguous"):
+    if ambiguous:
         raise SystemExit(EXIT_USAGE)
     raise SystemExit(EXIT_SUCCESS)
 
