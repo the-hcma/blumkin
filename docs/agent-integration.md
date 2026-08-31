@@ -163,6 +163,7 @@ Real output, with `skills` cut to one entry — the full list carries every skil
 ```json
 {
   "cli": "blumkin",
+  "ok": true,
   "skills": [
     {
       "args": [
@@ -202,6 +203,7 @@ the CLI actually prints.
 | Field | Meaning |
 |-------|---------|
 | `cli` | Binary name to invoke |
+| `ok` | `true` — see [Success envelope](#success-envelope) |
 | `version` | Schema version — `1` |
 | `skills` | Every skill, **sorted by `id`** |
 
@@ -245,7 +247,7 @@ failure path.
 |------|---------------|---------|
 | 0 | — | Success |
 | 1 | `graph_error`, `secret_write_failed`, `timeout` | Unexpected Graph failure; local secret cache/auth-record write failed (e.g. symlink at the path); or Graph/token HTTP timed out |
-| 2 | `usage_error`, or none | Bad arguments; **`wo1162425_scopes` switched off**; or **`people resolve` ambiguous** (`ambiguous: true` + candidates on **stdout**, no stderr envelope) |
+| 2 | `usage_error`, or none | Bad arguments; **`wo1162425_scopes` switched off**; or **`people resolve` ambiguous** (`ok: false` + `ambiguous: true` + candidates on **stdout**, no stderr envelope) |
 | 3 | `auth_required` | Run `blumkin auth login` on this machine |
 | 4 | `missing_scope` | A scope is unavailable — the tenant has not granted it, or `files_scopes` is off |
 | 5 | `not_found` | The named thing does not exist |
@@ -256,9 +258,9 @@ off" as a single condition:
 - `wo1162425_scopes` off — chat write, meeting commands, and `people resolve`
   exit **2** with `usage_error`. (`calendar create` Teams meetings use
   Calendars.ReadWrite only and do not require this flag.)
-- `people resolve` ambiguous — also exit **2**, but success-shaped **stdout**
-  carries `ambiguous: true` and the candidate list (no stderr `usage_error`
-  envelope). Branch on `ambiguous` / the candidate list before treating exit 2
+- `people resolve` ambiguous — also exit **2**, but **stdout** carries
+  `ok: false`, `ambiguous: true`, and the candidate list (no stderr
+  `usage_error` envelope). Branch on `ok` / `ambiguous` before treating exit 2
   as bad arguments or a missing config flag.
 - `files_scopes` off — `chat attachments download` exits **4** with
   `missing_scope` and the share URL in the message. Listing still works.
@@ -268,6 +270,21 @@ The practical consequence is that neither code means one thing on its own. Exit
 make; exit 4 is usually a tenant grant you cannot fix locally but sometimes that
 one local flag. In both cases the `message` says which, so read it before
 telling the user what to do.
+
+### Success envelope
+
+Every `--json` payload printed on **stdout** is a JSON object with a top-level
+`ok` boolean:
+
+- `ok: true` on success — the rest of the object is the command's result.
+- `ok: false` on a fail-closed result that still prints to stdout rather than
+  the stderr error envelope: `blumkin doctor` (exit 3), `blumkin chat last` with
+  no matching chat (exit 5), `blumkin people resolve` when the name is ambiguous
+  (exit 2). The payload itself is the diagnosis in these cases.
+
+So an agent can branch on `ok` without inspecting the exit code, then fall back
+to the exit code and `error` value for classification. Fields other than `ok`
+are command-specific and not frozen unless listed above.
 
 ### Error envelope
 
@@ -296,7 +313,8 @@ nothing on stderr, because the payload *is* the diagnosis:
 | Command | Exit | What stdout carries |
 |---------|------|---------------------|
 | `blumkin doctor --json` | 3 | `ok: false` and a `problems` array naming what is wrong |
-| `blumkin chat last --json` | 5 | `chat: null` plus `query`, `partial`, and `skipped`, showing how far the search got |
+| `blumkin chat last --json` | 5 | `ok: false`, `chat: null`, plus `query`, `partial`, and `skipped`, showing how far the search got |
+| `blumkin people resolve --json` | 2 | `ok: false`, `ambiguous: true`, and the candidate list |
 
 So the rule is: **on a non-zero exit, if stderr is empty, parse stdout.** Do not
 report "no output" — the explanation is there, in the stream you did not read.

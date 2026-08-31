@@ -34,6 +34,10 @@ workarounds.
      `@work` / `@personal` (or wording such as “on Google” / “on Microsoft”) map
      to profile `tags` in that JSON. `--profile` wins over `BLUMKIN_PROFILE`.
 3. Discover skills: `blumkin skills list --json`.
+   Every `--json` payload on stdout has a top-level `ok` boolean: `true` on
+   success, `false` on a fail-closed stdout result (`doctor`, `chat last` with
+   no match, `people resolve` ambiguous). Errors print `{... "ok": false}` on
+   stderr. Branch on `ok`, then on exit code / `error`.
 4. Reads (prefer `--json`):
    - Calendar: `blumkin calendar today --json`,
      `blumkin calendar view --from YYYY-MM-DD --to YYYY-MM-DD --json`
