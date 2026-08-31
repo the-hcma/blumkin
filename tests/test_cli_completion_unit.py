@@ -28,7 +28,8 @@ def test_completion_emits_a_script_per_shell(shell: str, needle: str) -> None:
 def test_completion_rejects_unknown_shell() -> None:
     result = CliRunner().invoke(main, ["completion", "tcsh"])
     assert result.exit_code == EXIT_USAGE
-    assert "tcsh" in result.output
+    # Click writes the Choice usage error to stderr on newer Click; combine.
+    assert "tcsh" in (result.output or "") + (result.stderr or "")
 
 
 def test_completion_requires_a_shell_argument() -> None:
