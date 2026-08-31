@@ -707,13 +707,13 @@ def calendar_view_cmd(
     "--start",
     "start_raw",
     required=True,
-    help='Local window start, "YYYY-MM-DD HH:MM".',
+    help="Local window start, YYYY-MM-DDTHH:MM.",
 )
 @click.option(
     "--end",
     "end_raw",
     required=True,
-    help='Local window end, "YYYY-MM-DD HH:MM".',
+    help="Local window end, YYYY-MM-DDTHH:MM.",
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
@@ -767,13 +767,13 @@ def calendar_freebusy_cmd(
     "--start",
     "start_raw",
     required=True,
-    help='Earliest local start to consider, "YYYY-MM-DD HH:MM".',
+    help="Earliest local start to consider, YYYY-MM-DDTHH:MM.",
 )
 @click.option(
     "--end",
     "end_raw",
     required=True,
-    help='Latest local end to consider, "YYYY-MM-DD HH:MM".',
+    help="Latest local end to consider, YYYY-MM-DDTHH:MM.",
 )
 @click.option(
     "--duration",
@@ -944,7 +944,7 @@ def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_fl
     "--start",
     "start_raw",
     required=True,
-    help='Local start, "YYYY-MM-DD HH:MM" in the organizer timezone.',
+    help="Local start, YYYY-MM-DDTHH:MM in the organizer timezone.",
 )
 @click.option(
     "--duration",

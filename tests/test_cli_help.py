@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import re
+from zoneinfo import ZoneInfo
+
 import click
 import pytest
 from click.testing import CliRunner
 
 from blumkin.cli import main
 from blumkin.exit_codes import EXIT_SUCCESS
+from blumkin.skills.calendar import parse_local_datetime
 
 
 def _command_paths(command: click.Command, prefix: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
@@ -93,9 +97,39 @@ def test_representative_examples_present(path: list[str], needle: str) -> None:
     assert needle in result.output
 
 
-def test_help_text_uses_ascii_hyphens_only() -> None:
-    """Authoring style: no em/en dashes in help output (.cursor/skills/blumkin)."""
-    for path in [[], *([p] for p in ("auth", "calendar", "chat", "mail", "meeting"))]:
-        result = CliRunner().invoke(main, [*path, "--help"])
-        assert "—" not in result.output  # em dash
-        assert "–" not in result.output  # en dash
+@pytest.mark.parametrize("path", SUBCOMMAND_PATHS, ids=lambda p: " ".join(p))
+def test_help_text_uses_ascii_hyphens_only(path: list[str]) -> None:
+    """Authoring style: no em/en dashes anywhere in help output (.cursor/skills/blumkin)."""
+    out = CliRunner().invoke(main, [*path, "--help"]).output
+    assert "—" not in out  # em dash
+    assert "–" not in out  # en dash
+
+
+def test_root_help_uses_ascii_hyphens_only() -> None:
+    assert "—" not in CliRunner().invoke(main, ["--help"]).output
+    assert "–" not in CliRunner().invoke(main, ["--help"]).output
+
+
+# --start / --end values shown as concrete examples in help must actually parse.
+_DATETIME_ARG = re.compile(
+    r"--(?:start|end)\s+\"?(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?)\"?"
+)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ["calendar", "create"],
+        ["calendar", "suggest"],
+        ["calendar", "freebusy"],
+        ["calendar"],
+    ],
+    ids=lambda p: " ".join(p),
+)
+def test_documented_datetime_examples_parse(path: list[str]) -> None:
+    out = CliRunner().invoke(main, [*path, "--help"]).output
+    values = _DATETIME_ARG.findall(out)
+    assert values, f"no --start/--end example found in `{' '.join(path)} --help`"
+    tz = ZoneInfo("UTC")
+    for value in values:
+        parse_local_datetime(value, tz)  # raises ValueError if the format is wrong

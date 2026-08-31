@@ -106,16 +106,16 @@ Examples:
 \b
   # 30-minute Teams 1:1 (Teams link added by default)
   blumkin calendar create --subject "1:1 sync" --with sam@example.com \\
-    --start "2026-09-01 15:00" --duration 30m --yes
+    --start "2026-09-01T15:00" --duration 30m --yes
 \b
   # Two attendees, one hour, explicit timezone
   blumkin calendar create --subject "Design review" \\
     --with sam@example.com --with dana@example.com \\
-    --start "2026-09-02 09:00" --duration 1h --tz America/New_York --yes
+    --start "2026-09-02T09:00" --duration 1h --tz America/New_York --yes
 \b
   # Offline hold on your own calendar, no Teams link
   blumkin calendar create --subject "Focus block" --with me@example.com \\
-    --start "2026-09-02 13:00" --duration 2h --no-teams --yes
+    --start "2026-09-02T13:00" --duration 2h --no-teams --yes
 
 Invites every `--with` address, so `--yes` is required. For a cross-timezone or
 external attendee, run `calendar freebusy` or `calendar suggest` first and pick a
@@ -132,9 +132,9 @@ Common workflows:
 \b
   # Find and book a mutual slot
   blumkin calendar suggest --with sam@example.com --with dana@example.com \\
-    --start "2026-09-01 09:00" --end "2026-09-03 18:00" --duration 45m --json
+    --start "2026-09-01T09:00" --end "2026-09-03T18:00" --duration 45m --json
   blumkin calendar create --subject "Planning" --with sam@example.com \\
-    --start "2026-09-01 14:00" --duration 45m --yes
+    --start "2026-09-01T14:00" --duration 45m --yes
 \b
   # Clear today's pending invitations
   blumkin calendar accept --today-pending --yes
@@ -148,7 +148,7 @@ Example:
 
 \b
   blumkin calendar freebusy --with sam@example.com --with dana@example.com \\
-    --start "2026-09-01 09:00" --end "2026-09-01 18:00" --json
+    --start "2026-09-01T09:00" --end "2026-09-01T18:00" --json
 
 Returns busy intervals (not free slots) for each person, plus their timezone and
 working hours when Graph exposes them. To get ranked mutual-free start times,
@@ -162,11 +162,11 @@ Examples:
 \b
   # Ranked 45-minute slots where everyone (incl. you) is free
   blumkin calendar suggest --with me@example.com --with sam@example.com \\
-    --start "2026-09-01 09:00" --end "2026-09-03 18:00" --duration 45m --json
+    --start "2026-09-01T09:00" --end "2026-09-03T18:00" --duration 45m --json
 \b
   # Clip to a working-day window, count tentative blocks as free
   blumkin calendar suggest --with sam@example.com \\
-    --start "2026-09-01 09:00" --end "2026-09-01 18:00" \\
+    --start "2026-09-01T09:00" --end "2026-09-01T18:00" \\
     --duration 30m --window 09:00-17:00 --treat-tentative free --json
 
 Only suggests starts; it never creates an event. Feed a chosen start straight
