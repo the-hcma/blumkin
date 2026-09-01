@@ -1381,18 +1381,36 @@ def chat_find_cmd(ctx: click.Context, with_name: str, as_json_flag: bool) -> Non
 
 
 @chat.command("last", epilog=help_text.CHAT_LAST_EPILOG)
-@click.option("--with", "with_name", required=True, help="Display-name substring to match a chat.")
+@click.option(
+    "--with",
+    "with_name",
+    default=None,
+    help="Display-name substring to match a chat (exclusive with --chat-id).",
+)
+@click.option(
+    "--chat-id",
+    "chat_id",
+    default=None,
+    help="Explicit chat id from `chat find` (exclusive with --with).",
+)
 @click.option("--n", "n", default=3, show_default=True, type=int, help="How many messages to show.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
-def chat_last_cmd(ctx: click.Context, with_name: str, n: int, as_json_flag: bool) -> None:
-    """Show the last N messages from the chat matching --with.
+def chat_last_cmd(
+    ctx: click.Context,
+    with_name: str | None,
+    chat_id: str | None,
+    n: int,
+    as_json_flag: bool,
+) -> None:
+    """Show the last N messages from one chat (by --with name or --chat-id).
 
-    Exit 5 (not_found) means no chat matched.
+    Exit 5 (not_found) means no chat matched --with. An ambiguous --with is exit
+    2 (usage_error) listing the candidate ids - pass one back as --chat-id.
     """
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = asyncio.run(_workspace().chat_last(with_name=with_name, n=n))
+        payload = asyncio.run(_workspace().chat_last(with_name=with_name, chat_id=chat_id, n=n))
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:

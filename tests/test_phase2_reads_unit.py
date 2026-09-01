@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from blumkin.skills.calendar import (
     calendar_freebusy,
     calendar_view,
@@ -604,3 +606,73 @@ def test_calendar_view_rejects_inverted_range(monkeypatch) -> None:
         raise AssertionError("expected ValueError")
     except ValueError as exc:
         assert "end must be after start" in str(exc)
+
+
+def test_chat_last_by_chat_id_skips_member_scan(monkeypatch) -> None:
+    """--chat-id goes straight to messages: no /me/chats listing, no member fetch."""
+    message = SimpleNamespace(
+        id="msg-1",
+        message_type="message",
+        created_date_time="2026-09-01T12:00:00+00:00",
+        body=SimpleNamespace(content="<p>ping</p>"),
+        from_=SimpleNamespace(user=SimpleNamespace(display_name="Daniel Erickson", id="u1")),
+    )
+    client = MagicMock()
+    client.me.chats.get = AsyncMock(side_effect=AssertionError("should not list chats"))
+    client.me.chats.by_chat_id.return_value.messages.get = AsyncMock(
+        return_value=SimpleNamespace(value=[message], odata_next_link=None)
+    )
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    last = asyncio.run(chat_last(chat_id="19:abc@unq.gbl.spaces", n=1))
+    assert last["chat"]["id"] == "19:abc@unq.gbl.spaces"
+    assert last["items"][0]["body_text"] == "ping"
+    assert last["query"] is None
+    assert last["partial"] is False
+    client.me.chats.by_chat_id.assert_called_with("19:abc@unq.gbl.spaces")
+
+
+def test_chat_last_requires_exactly_one_selector() -> None:
+    # Neither selector.
+    with pytest.raises(ValueError, match="exactly one of --with or --chat-id"):
+        asyncio.run(chat_last(n=1))
+    # Both selectors.
+    with pytest.raises(ValueError, match="exactly one of --with or --chat-id"):
+        asyncio.run(chat_last(with_name="daniel", chat_id="19:abc", n=1))
+
+
+def test_chat_last_ambiguous_with_lists_candidate_ids(monkeypatch) -> None:
+    """Two name matches must fail closed with the ids, not silently pick the first."""
+    monkeypatch.setattr(
+        "blumkin.skills.chat.chat_find",
+        AsyncMock(
+            return_value={
+                "items": [{"id": "chat-1"}, {"id": "chat-2"}],
+                "partial": False,
+                "skipped": 0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(ValueError, match=r"ambiguous chat match .*chat-1, chat-2"):
+        asyncio.run(chat_last(with_name="daniel", n=1))
+
+
+def test_chat_last_refuses_a_partial_member_scan(monkeypatch) -> None:
+    """One match from a partial scan is not trustworthy: a skipped chat may match too."""
+    monkeypatch.setattr(
+        "blumkin.skills.chat.chat_find",
+        AsyncMock(return_value={"items": [{"id": "chat-1"}], "partial": True, "skipped": 2}),
+    )
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(ValueError, match=r"is partial \(skipped 2 chat\(s\)\)"):
+        asyncio.run(chat_last(with_name="daniel", n=1))
