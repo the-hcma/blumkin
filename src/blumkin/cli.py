@@ -23,7 +23,7 @@ from blumkin.exit_codes import (
 )
 from blumkin.output import emit_error, emit_json, emit_lines
 from blumkin.providers import get_provider
-from blumkin.providers.kind import ProviderConfigError
+from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
@@ -294,7 +294,16 @@ def _raise_mail_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
 
 
 def _require_wo1162425_scopes(*, as_json: bool) -> None:
+    """Gate the skills that need the Microsoft add-on scopes from Remedy WO1162425.
+
+    Microsoft-only by construction: WO1162425 is an Entra tenant request for
+    Chat.ReadWrite / OnlineMeetings.ReadWrite / People.Read. Google grants the
+    equivalent access through its own consent screen, so applying this gate there
+    would make those verbs unreachable no matter what the operator consented to.
+    """
     cfg = _load_config()
+    if cfg.provider is not ProviderKind.MICROSOFT:
+        return
     if cfg.wo1162425_scopes:
         return
     _emit_error(

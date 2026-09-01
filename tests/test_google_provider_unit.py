@@ -64,10 +64,10 @@ def test_logout_deletes_token(tmp_path: Path) -> None:
     assert not path.exists()
 
 
-def test_people_resolve_unsupported(tmp_path: Path) -> None:
+def test_meeting_get_unsupported(tmp_path: Path) -> None:
     provider = GoogleWorkspaceProvider(_cfg(tmp_path))
     with pytest.raises(ValueError, match="not supported for provider=google"):
-        asyncio.run(provider.people_resolve(name="Ada"))
+        asyncio.run(provider.meeting_get(event_id="evt-1"))
 
 
 def test_calendar_today_maps_events(tmp_path: Path) -> None:
