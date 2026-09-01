@@ -172,8 +172,14 @@ def set_profile_email(
     profile: str,
     email: str,
     legacy_flat: bool,
+    overwrite: bool = False,
 ) -> bool:
-    """Write ``email`` into one profile table, only when that key is absent.
+    """Write ``email`` into one profile table.
+
+    By default only when that key is absent - the automatic paths (login,
+    refresh) fill a blank in, they never relabel a profile behind the operator's
+    back. ``overwrite=True`` is for ``profiles set-email``, where replacing the
+    value is the explicit ask.
 
     A targeted line edit rather than a full TOML re-serialize: config.toml is
     hand-maintained here (comments, key order, the signature sub-table), and this
@@ -187,16 +193,21 @@ def set_profile_email(
     value = email.strip()
     if not value or not config_path.is_file():
         return False
+    if any(ch == "\x7f" or (ord(ch) < 0x20 and ch != "\t") for ch in value):
+        # A TOML basic string cannot carry a literal newline or control char, and no
+        # real address does either. Refusing beats writing a file that then fails to
+        # parse on every later command - a newline could even inject a table header.
+        raise ValueError("email must not contain control characters or newlines")
     try:
         lines = config_path.read_text().splitlines(keepends=True)
     except OSError:
         return False
-    header = None if legacy_flat else f"[profiles.{profile}]"
+    header = None if legacy_flat else profile
     # Legacy flat config: top-level keys, i.e. everything before the first table.
     start = 0
     if header is not None:
         start = next(
-            (i + 1 for i, line in enumerate(lines) if line.strip() == header),
+            (i + 1 for i, line in enumerate(lines) if _toml_profile_header(line) == header),
             -1,
         )
         if start < 0:
@@ -209,11 +220,23 @@ def set_profile_email(
         if stripped.startswith("["):
             break
         if _toml_key_of(stripped) == "email":
-            # Already populated (or explicitly set) — onboarding never overwrites.
-            return False
+            if not overwrite and _toml_value_of(stripped).strip():
+                # Already populated — the automatic paths never relabel a profile.
+                # An empty value is a blank to fill, not a label to protect, so the
+                # two guards agree with _populate_profile_email_once's `if cfg.email`.
+                return False
+            lines[index] = f'email = "{_toml_escape(value)}"\n'
+            try:
+                config_path.write_text("".join(lines))
+            except OSError:
+                return False
+            return True
         insert_at = index + 1
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    lines.insert(insert_at, f'email = "{escaped}"\n')
+    if insert_at > 0 and lines[insert_at - 1] and not lines[insert_at - 1].endswith("\n"):
+        # Inserting after a final line with no trailing newline would concatenate the
+        # two into one invalid line, and the write would still report success.
+        lines[insert_at - 1] += "\n"
+    lines.insert(insert_at, f'email = "{_toml_escape(value)}"\n')
     try:
         config_path.write_text("".join(lines))
     except OSError:
@@ -478,12 +501,62 @@ def _resolve_profile_name(
     )
 
 
+def _toml_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _toml_key_of(stripped_line: str) -> str | None:
     """Bare key name of a ``key = value`` line, or None for comments/tables/blanks."""
     if not stripped_line or stripped_line.startswith(("#", "[")):
         return None
     key, sep, _ = stripped_line.partition("=")
     return key.strip().strip('"').strip("'") if sep else None
+
+
+def _toml_profile_header(line: str) -> str | None:
+    """Profile name from a ``[profiles.<name>]`` header line, else None.
+
+    Tolerates what tomllib accepts and a plain string compare would miss: a
+    trailing comment (``[profiles.work]  # main``) and a quoted name
+    (``[profiles."work"]``). Missing the header made the backfill a silent no-op
+    and made set-email claim the section did not exist.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("["):
+        return None
+    closing = stripped.find("]")
+    if closing == -1:
+        return None
+    inside = stripped[1:closing].strip()
+    prefix = "profiles."
+    if not inside.startswith(prefix):
+        return None
+    name = inside[len(prefix) :].strip()
+    if name.startswith(('"', "'")) and name[-1:] == name[:1]:
+        # A quoted name is one key, dots included: [profiles."a.b"] is profile "a.b",
+        # which _profile_tables allows and is the only way to spell a dotted name.
+        return name[1:-1] or None
+    # Unquoted dots mean a nested table ([profiles.work.mail.signature]), not a profile.
+    return name if name and "." not in name else None
+
+
+def _toml_value_of(stripped_line: str) -> str:
+    """Unquoted value of a ``key = value`` line ("" when blank or unparseable).
+
+    Handles a trailing inline comment, which is valid TOML and plausible in a
+    hand-maintained file: ``email = ""  # not yet known`` has to read as blank, or
+    the automatic backfill would decline to fill a value tomllib parses as empty.
+    """
+    _, sep, raw = stripped_line.partition("=")
+    if not sep:
+        return ""
+    raw = raw.strip()
+    for quote in ('"', "'"):
+        if raw.startswith(quote):
+            closing = raw.find(quote, 1)
+            return raw[1:closing] if closing != -1 else raw[1:]
+    # Bare value: anything from an unquoted ``#`` on is a comment.
+    return raw.partition("#")[0].strip()
 
 
 def _string_values(file_data: dict[str, Any]) -> dict[str, str]:

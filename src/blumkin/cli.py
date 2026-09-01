@@ -480,11 +480,14 @@ def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
             hint="Run `blumkin auth login` on a TTY, then retry.",
         )
         raise SystemExit(EXIT_AUTH) from exc
+    populated = _populate_profile_email_once()
     if as_json:
-        emit_json({"ok": True, "status": payload})
+        emit_json({"ok": True, "email_written": populated, "status": payload})
     else:
         expires = payload.get("access_token_expires_at") or "(none)"
         emit_lines([f"Silent refresh ok. access_token_expires_at: {expires}"])
+        if populated:
+            emit_lines([f"Recorded account email in config.toml: {populated}"])
 
 
 @auth.command("status", epilog=help_text.AUTH_STATUS_EPILOG)
@@ -539,6 +542,62 @@ def profiles() -> None:
     Each profile is one account (Microsoft or Google). Select one on any command
     with `--profile <name-or-tag>` or the BLUMKIN_PROFILE env var.
     """
+
+
+@profiles.command("set-email", epilog=help_text.PROFILES_SET_EMAIL_EPILOG)
+@click.option(
+    "--email",
+    "email",
+    default=None,
+    help="Address to record. Omit to resolve it from the signed-in account.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def profiles_set_email(ctx: click.Context, email: str | None, as_json_flag: bool) -> None:
+    """Record (or correct) the account email on the active profile.
+
+    Unlike the automatic fill on `auth login` / `auth refresh`, this overwrites an
+    existing value - it is the explicit way to fix the drift `blumkin doctor`
+    reports, and to backfill a profile that was authenticated before the field
+    existed. Use `--profile` to pick a profile other than the default.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    cfg = _load_config()
+    address = (email or "").strip()
+    if not address:
+        address = _workspace(cfg).account_email()
+    if not address:
+        _emit_error(
+            error="not_found",
+            message="could not resolve the signed-in account email",
+            as_json=as_json,
+            hint="Pass --email explicitly, or run `blumkin auth login` for this profile first.",
+        )
+        raise SystemExit(EXIT_NOT_FOUND)
+    try:
+        written = set_profile_email(
+            cfg.config_path,
+            profile=cfg.profile,
+            email=address,
+            legacy_flat=cfg.legacy_flat,
+            overwrite=True,
+        )
+    except ValueError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    if not written:
+        _emit_error(
+            error="usage_error",
+            message=f"could not write email into {cfg.config_path}",
+            as_json=as_json,
+            hint=f'Add `email = "{address}"` under [profiles.{cfg.profile}] by hand.',
+        )
+        raise SystemExit(EXIT_USAGE)
+    if as_json:
+        emit_json({"ok": True, "email": address, "profile": cfg.profile})
+    else:
+        emit_lines([f"Recorded {address} for profile {cfg.profile!r}."])
+    raise SystemExit(EXIT_SUCCESS)
 
 
 @profiles.command("list", epilog=help_text.PROFILES_LIST_EPILOG)
