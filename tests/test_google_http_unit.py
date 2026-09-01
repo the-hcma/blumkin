@@ -58,6 +58,7 @@ def _cfg(config_dir: Path, *, timeout: float = 60.0) -> BlumkinConfig:
         client_id="fake",
         config_dir=config_dir,
         default_tz="UTC",
+        email="",
         files_scopes=False,
         google_oauth_client_file=None,
         graph_timeout_seconds=timeout,

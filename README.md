@@ -126,6 +126,12 @@ google_oauth_client_file = "~/path/to/google-oauth-desktop-client.json"
 tags = ["@personal", "personal", "google", "gmail"]
 ```
 
+`blumkin auth login` records the signed-in address as `email = "..."` in that
+profile the first time (display only - it is never used to pick a profile, and
+never rewritten afterwards). `blumkin profiles list` shows it, so two profiles
+are tellable apart at a glance; `blumkin doctor` warns if the profile is later
+signed in as a different account.
+
 Optional: set `client_id` in toml as well; when omitted it is read from the JSON.
 Keep the client JSON mode `0600` and outside the repo.
 

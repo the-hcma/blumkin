@@ -20,6 +20,7 @@ class BlumkinConfig:
     client_id: str
     config_dir: Path
     default_tz: str
+    email: str
     files_scopes: bool
     google_oauth_client_file: Path | None
     graph_timeout_seconds: float
@@ -114,6 +115,7 @@ def list_profiles() -> list[dict[str, Any]]:
                     "msal_token_cache": (profile_dir / "msal_token_cache.json").is_file(),
                 },
                 "default_tz": _string_values(table).get("default_tz", "").strip(),
+                "email": _string_values(table).get("email", "").strip(),
                 "is_default": name == marked_default,
                 "name": name,
                 "provider": _provider_kind(table).value,
@@ -150,6 +152,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         client_id=client_id,
         config_dir=directory,
         default_tz=string_values.get("default_tz", "").strip(),
+        email=string_values.get("email", "").strip(),
         files_scopes=_files_scopes_enabled(table),
         google_oauth_client_file=google_oauth_client_file,
         graph_timeout_seconds=_graph_timeout_seconds(table),
@@ -161,6 +164,61 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         tenant_id=string_values.get("tenant_id", "").strip(),
         wo1162425_scopes=_wo1162425_scopes_enabled(table),
     )
+
+
+def set_profile_email(
+    config_path: Path,
+    *,
+    profile: str,
+    email: str,
+    legacy_flat: bool,
+) -> bool:
+    """Write ``email`` into one profile table, only when that key is absent.
+
+    A targeted line edit rather than a full TOML re-serialize: config.toml is
+    hand-maintained here (comments, key order, the signature sub-table), and this
+    runs once per profile at onboarding, so rewriting the whole document to add
+    one display-only key would be a poor trade.
+
+    Returns True when a line was written, False when the key already exists, the
+    section is missing, or the value is empty. Never raises on an unwritable
+    file - the caller treats this as best-effort.
+    """
+    value = email.strip()
+    if not value or not config_path.is_file():
+        return False
+    try:
+        lines = config_path.read_text().splitlines(keepends=True)
+    except OSError:
+        return False
+    header = None if legacy_flat else f"[profiles.{profile}]"
+    # Legacy flat config: top-level keys, i.e. everything before the first table.
+    start = 0
+    if header is not None:
+        start = next(
+            (i + 1 for i, line in enumerate(lines) if line.strip() == header),
+            -1,
+        )
+        if start < 0:
+            return False
+    # Walk this section only: stop at the next table header (which for the
+    # non-legacy layout also excludes the profile's own [profiles.x.mail.signature]).
+    insert_at = start
+    for index in range(start, len(lines)):
+        stripped = lines[index].strip()
+        if stripped.startswith("["):
+            break
+        if _toml_key_of(stripped) == "email":
+            # Already populated (or explicitly set) — onboarding never overwrites.
+            return False
+        insert_at = index + 1
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    lines.insert(insert_at, f'email = "{escaped}"\n')
+    try:
+        config_path.write_text("".join(lines))
+    except OSError:
+        return False
+    return True
 
 
 def _client_id_from_google_oauth_file(path: Path) -> str:
@@ -418,6 +476,14 @@ def _resolve_profile_name(
         "multiple profiles configured; pass --profile / BLUMKIN_PROFILE, or set "
         f"default_profile; available: {available}"
     )
+
+
+def _toml_key_of(stripped_line: str) -> str | None:
+    """Bare key name of a ``key = value`` line, or None for comments/tables/blanks."""
+    if not stripped_line or stripped_line.startswith(("#", "[")):
+        return None
+    key, sep, _ = stripped_line.partition("=")
+    return key.strip().strip('"').strip("'") if sep else None
 
 
 def _string_values(file_data: dict[str, Any]) -> dict[str, str]:

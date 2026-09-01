@@ -67,6 +67,7 @@ def _cfg(*, wo1162425_scopes: bool, files_scopes: bool = False) -> BlumkinConfig
         client_id="abc",
         config_dir=Path("unused"),
         default_tz="UTC",
+        email="",
         files_scopes=files_scopes,
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,

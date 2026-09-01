@@ -621,6 +621,7 @@ def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
         client_id="fake-google-desktop-client.apps.googleusercontent.com",
         config_dir=config_dir,
         default_tz="UTC",
+        email="",
         files_scopes=False,
         google_oauth_client_file=path,
         graph_timeout_seconds=60.0,

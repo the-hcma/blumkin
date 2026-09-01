@@ -12,7 +12,7 @@ import httpx
 
 from blumkin import __version__, help_text
 from blumkin.auth import SecretWriteError
-from blumkin.config import BlumkinConfig, list_profiles, load_config
+from blumkin.config import BlumkinConfig, list_profiles, load_config, set_profile_email
 from blumkin.exit_codes import (
     EXIT_AUTH,
     EXIT_MISSING_SCOPE,
@@ -182,6 +182,32 @@ def _load_config() -> BlumkinConfig:
     except ProviderConfigError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
         raise SystemExit(EXIT_USAGE) from exc
+
+
+def _populate_profile_email_once() -> str | None:
+    """Record the signed-in address in config.toml, once, at onboarding.
+
+    Only writes when the profile has no ``email`` key yet: after that the value is
+    a stable operator-set label, not a live mirror (``blumkin doctor`` reports
+    drift instead of silently rewriting it). Entirely best-effort - resolving or
+    writing must never fail an otherwise successful login.
+    """
+    try:
+        cfg = _load_config()
+        if cfg.email:
+            return None
+        address = _workspace(cfg).account_email()
+        if not address:
+            return None
+        written = set_profile_email(
+            cfg.config_path,
+            profile=cfg.profile,
+            email=address,
+            legacy_flat=cfg.legacy_flat,
+        )
+    except Exception:
+        return None
+    return address if written else None
 
 
 def _mail_time_bounds(
@@ -402,10 +428,13 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
             hint="Set client_id in ~/.config/blumkin/config.toml then retry.",
         )
         raise SystemExit(EXIT_AUTH) from exc
+    populated = _populate_profile_email_once()
     if as_json:
-        emit_json({"ok": True, "status": _workspace().auth_status()})
+        emit_json({"ok": True, "email_written": populated, "status": _workspace().auth_status()})
     else:
         emit_lines(["Signed in. Token cache written under ~/.config/blumkin/."])
+        if populated:
+            emit_lines([f"Recorded account email in config.toml: {populated}"])
 
 
 @auth.command("logout", epilog=help_text.AUTH_LOGOUT_EPILOG)
@@ -548,6 +577,7 @@ def profiles_list(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines(
             [
                 f"{item['name']}{marker}: provider={item['provider']} "
+                f"email={item['email'] or '(unset)'} "
                 f"tz={item['default_tz'] or '(unset)'} tags={tags}"
             ]
         )
@@ -657,10 +687,26 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         problems.append("client_id missing in config.toml")
     if not status["token_cache"] or not status["auth_record"]:
         problems.append("auth cache incomplete — run: blumkin auth login")
+    # Non-fatal: config.toml's email is a label written once at onboarding, so a
+    # mismatch means the profile was re-authenticated as somebody else. Report it;
+    # rewriting the operator's config on their behalf is not doctor's call.
+    warnings: list[str] = []
+    if cfg.email:
+        live = ""
+        try:
+            live = _workspace(cfg).account_email()
+        except Exception:
+            live = ""
+        if live and live.casefold() != cfg.email.casefold():
+            warnings.append(
+                f"config.toml email is {cfg.email!r} but this profile is signed in as "
+                f"{live!r}; update config.toml if the account really changed"
+            )
     payload = {
         "ok": not problems,
         "wo1162425_scopes": cfg.wo1162425_scopes,
         "problems": problems,
+        "warnings": warnings,
         "status": status,
         "skills": [s["id"] for s in skills_catalog()["skills"]],
     }
@@ -672,6 +718,8 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
         for problem in problems:
             emit_lines([f"problem: {problem}"])
+        for warning in warnings:
+            emit_lines([f"warning: {warning}"])
         emit_lines([f"skills: {', '.join(payload['skills'])}"])
     if problems:
         raise SystemExit(EXIT_AUTH)

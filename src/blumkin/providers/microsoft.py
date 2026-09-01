@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -67,6 +68,18 @@ class MicrosoftWorkspaceProvider:
 
     def auth_refresh(self) -> dict[str, Any]:
         return refresh_silent(self._config)
+
+    def account_email(self) -> str:
+        """Signed-in address from the MSAL auth record (written by auth login)."""
+        path = self._config.auth_record_path
+        if not path.is_file():
+            return ""
+        try:
+            record = json.loads(path.read_text())
+        except OSError, json.JSONDecodeError:
+            return ""
+        username = record.get("username") if isinstance(record, dict) else None
+        return str(username).strip() if isinstance(username, str) else ""
 
     def auth_status(self) -> dict[str, Any]:
         return status_dict(self._config)
