@@ -37,8 +37,9 @@ Requested OAuth scopes at login:
 - `https://www.googleapis.com/auth/gmail.readonly`
 
 > **Upgrading from an earlier build:** `calendar.events` and `gmail.compose`
-> (mail drafts) were added after the read MVP. An existing token was minted
-> without them, so those verbs 403 (`missing_scope`, exit 4) until you run
+> (mail writes: `draft` / `update-draft` / `delete-draft` / `send-draft` /
+> `reply` / `forward`) were added after the read MVP. An existing token was
+> minted without them, so those verbs 403 (`missing_scope`, exit 4) until you run
 > `blumkin --profile <name> auth login` again to re-consent.
 
 ---

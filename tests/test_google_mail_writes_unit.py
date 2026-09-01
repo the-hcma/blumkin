@@ -1,4 +1,4 @@
-"""Hermetic unit tests for Google Gmail draft writes (create / update / delete / send)."""
+"""Hermetic unit tests for Google Gmail writes (draft / update / delete / send / reply / fwd)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from blumkin.exit_codes import EXIT_MISSING_SCOPE, EXIT_NOT_FOUND
 from blumkin.providers.google_auth import GOOGLE_SCOPES
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
-from blumkin.skills.mail import MailDraftNotFoundError
+from blumkin.skills.mail import MailDraftNotFoundError, MailMessageNotFoundError
 
 _MAIL_WRITES = "blumkin.providers.google.mail_writes"
 
@@ -218,6 +218,211 @@ def test_mail_draft_403_maps_to_missing_scope_via_cli(tmp_path: Path) -> None:
     assert json.loads(result.stderr)["error"] == "missing_scope"
 
 
+def test_mail_reply_threads_with_original_and_sets_headers(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(
+            subject="Renewal", sender="Ada <ada@example.com>", message_id="<orig@mail>"
+        ),
+        create_result={"id": "d-r", "threadId": "thread-1"},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(message_id="m-1", body="On it.")
+        )
+    draft = payload["draft"]
+    assert draft["kind"] == "reply"
+    assert draft["to"] == "ada@example.com"
+    assert draft["subject"] == "Re: Renewal"
+    assert draft["conversation_id"] == "thread-1"
+    create_body = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]
+    assert create_body["message"]["threadId"] == "thread-1"
+    sent = _sent_message(service, "create")
+    assert sent["In-Reply-To"] == "<orig@mail>"
+    assert "<orig@mail>" in sent["References"]
+    assert sent["Subject"] == "Re: Renewal"
+    assert "On it." in _content(sent, "plain")
+    assert "> original body" in _content(sent, "plain")
+
+
+def test_mail_reply_all_ccs_others_excluding_self(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(
+            subject="Sync",
+            sender="Ada <ada@example.com>",
+            to="me@example.com, Bob <bob@example.com>",
+            cc="carol@example.com",
+        ),
+        profile_email="me@example.com",
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(
+                message_id="m-1", body="thanks", reply_all=True
+            )
+        )
+    draft = payload["draft"]
+    assert draft["kind"] == "reply-all"
+    assert draft["to"] == "ada@example.com"
+    assert set(draft["cc"].split(", ")) == {"bob@example.com", "carol@example.com"}
+
+
+def test_mail_reply_missing_original_raises_not_found(tmp_path: Path) -> None:
+    service = MagicMock()
+    service.users.return_value.messages.return_value.get.return_value.execute.side_effect = (
+        HttpError(httplib2.Response({"status": 404}), b"{}", uri="x")
+    )
+    with _patched(service), pytest.raises(MailMessageNotFoundError):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(message_id="gone"))
+
+
+def test_mail_forward_prefixes_subject_and_carries_attachment(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(
+            subject="Contract",
+            sender="Ada <ada@example.com>",
+            attachments=[("contract.pdf", "att-1")],
+        ),
+        attachment_result={"data": base64.urlsafe_b64encode(b"PDFDATA").decode()},
+        # drafts.create returns threadId on the nested message, not the draft top level.
+        create_result={"id": "d-f", "message": {"threadId": "thread-9"}},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_forward(
+                message_id="m-1", to="dana@example.com", body="fyi"
+            )
+        )
+    draft = payload["draft"]
+    assert draft["kind"] == "forward"
+    assert draft["subject"] == "Fwd: Contract"
+    assert draft["to"] == "dana@example.com"
+    assert draft["conversation_id"] == "thread-9"
+    sent = _sent_message(service, "create")
+    assert "In-Reply-To" not in sent
+    names = [part.get_filename() for part in sent.iter_attachments()]
+    assert names == ["contract.pdf"]
+    assert "Forwarded message" in _content(sent, "plain")
+
+
+def test_mail_forward_requires_to(tmp_path: Path) -> None:
+    with _patched(_service()), pytest.raises(ValueError, match="--to is required"):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_forward(message_id="m-1", to="  "))
+
+
+def test_mail_reply_to_own_sent_message_addresses_original_recipients(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(
+            subject="Update",
+            sender="me@example.com",
+            to="client@example.com, cc@example.com",
+        ),
+        profile_email="me@example.com",
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(message_id="m-1", body="follow-up")
+        )
+    # Following up on your own mail goes to whoever it was sent to, not yourself.
+    assert set(payload["draft"]["to"].split(", ")) == {"client@example.com", "cc@example.com"}
+
+
+def test_mail_reply_all_excludes_reply_to_with_display_name(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(
+            subject="Sync",
+            sender="Ada <ada@example.com>",
+            to="Ada <ada@example.com>, me@example.com, Bob <bob@example.com>",
+            reply_to="Ada Lovelace <ada@example.com>",
+        ),
+        profile_email="me@example.com",
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(
+                message_id="m-1", body="thanks", reply_all=True
+            )
+        )
+    assert payload["draft"]["to"] == "ada@example.com"
+    # ada@example.com must not also appear in Cc.
+    assert payload["draft"]["cc"] == "bob@example.com"
+
+
+def test_mail_reply_spoofed_reply_to_self_still_replies_to_sender(tmp_path: Path) -> None:
+    # From is a third party; a sender-controlled Reply-To: me must NOT redirect the
+    # reply to the other recipients.
+    service = _service(
+        message_result=_full_message(
+            subject="Invoice",
+            sender="attacker@evil.com",
+            to="me@example.com",
+            cc="victim@example.com",
+            reply_to="me@example.com",
+        ),
+        profile_email="me@example.com",
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(message_id="m-1", body="no thanks")
+        )
+    assert payload["draft"]["to"] == "me@example.com"  # honors Reply-To as given
+    assert "victim@example.com" not in (payload["draft"].get("cc") or "")
+
+
+def test_mail_reply_all_merges_cc_flag_with_original(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(
+            subject="Sync",
+            sender="Ada <ada@example.com>",
+            to="me@example.com, Bob <bob@example.com>",
+        ),
+        profile_email="me@example.com",
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(
+                message_id="m-1",
+                body="ok",
+                reply_all=True,
+                cc=["bob@example.com", "extra@example.com"],
+            )
+        )
+    # bob (from the original) + extra (from --cc), deduped.
+    assert set(payload["draft"]["cc"].split(", ")) == {"bob@example.com", "extra@example.com"}
+
+
+def test_mail_reply_html_quotes_original_in_blockquote(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(subject="Q", sender="Ada <ada@example.com>", body="a < b"),
+    )
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(
+                message_id="m-1", body="<p>reply</p>", body_type="html"
+            )
+        )
+    html = _content(_sent_message(service, "create"), "html")
+    assert "<blockquote>" in html
+    assert "a &lt; b" in html  # original escaped
+    plain = _content(_sent_message(service, "create"), "plain")
+    assert "reply" in plain
+
+
+def test_mail_forward_html_quotes_forwarded_block(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(subject="Doc", sender="Ada <ada@example.com>", body="x & y"),
+        create_result={"id": "d", "message": {"threadId": "t"}},
+    )
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_forward(
+                message_id="m-1", to="dana@example.com", body="<p>fyi</p>", body_type="html"
+            )
+        )
+    html = _content(_sent_message(service, "create"), "html")
+    assert "Forwarded message" in html
+    assert "x &amp; y" in html
+
+
 def _cfg(config_dir: Path, *, signature: MailSignatureConfig | None = None) -> BlumkinConfig:
     oauth = config_dir / "desktop-client.json"
     if not oauth.is_file():
@@ -285,18 +490,79 @@ def _sent_message(service: MagicMock, verb: str):
     )
 
 
+def _full_message(
+    *,
+    subject: str,
+    sender: str,
+    to: str = "",
+    cc: str = "",
+    body: str = "original body",
+    message_id: str = "<orig@mail>",
+    references: str = "",
+    thread_id: str = "thread-1",
+    reply_to: str = "",
+    attachments: list[tuple[str, str]] | None = None,
+) -> dict:
+    headers = [
+        {"name": "From", "value": sender},
+        {"name": "Subject", "value": subject},
+        {"name": "Message-ID", "value": message_id},
+        {"name": "Date", "value": "Mon, 01 Sep 2026 09:00:00 +0000"},
+    ]
+    if to:
+        headers.append({"name": "To", "value": to})
+    if cc:
+        headers.append({"name": "Cc", "value": cc})
+    if references:
+        headers.append({"name": "References", "value": references})
+    if reply_to:
+        headers.append({"name": "Reply-To", "value": reply_to})
+    parts: list[dict] = [
+        {
+            "mimeType": "text/plain",
+            "body": {"data": base64.urlsafe_b64encode(body.encode()).decode()},
+        }
+    ]
+    for name, att_id in attachments or []:
+        parts.append(
+            {
+                "mimeType": "application/pdf",
+                "filename": name,
+                "body": {"attachmentId": att_id, "size": 3},
+            }
+        )
+    return {
+        "id": "m-1",
+        "threadId": thread_id,
+        "internalDate": "1756717200000",
+        "payload": {"mimeType": "multipart/mixed", "headers": headers, "parts": parts},
+    }
+
+
 def _service(
     *,
     create_result: dict | None = None,
     update_result: dict | None = None,
     get_result: dict | None = None,
     send_result: dict | None = None,
+    message_result: dict | None = None,
+    attachment_result: dict | None = None,
+    profile_email: str = "me@example.com",
 ) -> MagicMock:
     service = MagicMock()
-    drafts = service.users.return_value.drafts.return_value
-    drafts.create.return_value.execute.return_value = create_result or {"id": "d"}
+    users = service.users.return_value
+    drafts = users.drafts.return_value
+    drafts.create.return_value.execute.return_value = create_result or {"id": "d", "threadId": "t"}
     drafts.update.return_value.execute.return_value = update_result or {"id": "d"}
     drafts.get.return_value.execute.return_value = get_result or _raw_draft(subject="d")
     drafts.delete.return_value.execute.return_value = ""
     drafts.send.return_value.execute.return_value = send_result or {"id": "m"}
+    messages = users.messages.return_value
+    messages.get.return_value.execute.return_value = message_result or _full_message(
+        subject="Hi", sender="Ada <ada@example.com>"
+    )
+    messages.attachments.return_value.get.return_value.execute.return_value = attachment_result or {
+        "data": base64.urlsafe_b64encode(b"pdf").decode()
+    }
+    users.getProfile.return_value.execute.return_value = {"emailAddress": profile_email}
     return service

@@ -233,7 +233,17 @@ class GoogleWorkspaceProvider:
         cc: str | Sequence[str] | None = None,
         no_signature: bool = False,
     ) -> dict[str, Any]:
-        return self._unsupported("mail forward")
+        return await google_mail_writes.mail_forward(
+            message_id=message_id,
+            to=to,
+            body=body,
+            body_file=body_file,
+            body_type=body_type,
+            bcc=bcc,
+            cc=cc,
+            no_signature=no_signature,
+            config=self._config,
+        )
 
     async def mail_get(self, *, message_id: str, body_type: str = "text") -> dict[str, Any]:
         return await google_mail.mail_get(
@@ -308,7 +318,17 @@ class GoogleWorkspaceProvider:
         reply_all: bool = False,
         no_signature: bool = False,
     ) -> dict[str, Any]:
-        return self._unsupported("mail reply")
+        return await google_mail_writes.mail_reply(
+            message_id=message_id,
+            body=body,
+            body_file=body_file,
+            body_type=body_type,
+            bcc=bcc,
+            cc=cc,
+            reply_all=reply_all,
+            no_signature=no_signature,
+            config=self._config,
+        )
 
     async def mail_send_draft(self, *, draft_id: str) -> dict[str, Any]:
         return await google_mail_writes.mail_send_draft(draft_id=draft_id, config=self._config)
