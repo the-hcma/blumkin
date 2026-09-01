@@ -320,81 +320,70 @@ async def mail_update_draft(
             raise ValueError("--body/--body-file must be non-empty when provided")
     cfg = config or load_config()
     service = _gmail_service(cfg)
-    parsed = _parse_raw_message(_get_draft(service, mid))
+    stored = _get_draft(service, mid)
+    thread_id = (stored.get("message") or {}).get("threadId")
+    # Mutate the stored message in place rather than rebuilding it from a parsed
+    # model: this keeps Message-ID / In-Reply-To / References headers, inline
+    # (cid) parts, and any structure the tool does not model.
+    message = _load_raw_message(stored)
 
-    subject_out = parsed.subject if subject is None else subject.strip()
-    if subject is not None and not subject_out:
-        raise ValueError("--subject must be non-empty when provided")
-    to_out = parsed.to if to_addrs is None else to_addrs
-    cc_out = parsed.cc if cc_addrs is None else cc_addrs
-    bcc_out = parsed.bcc if bcc_addrs is None else bcc_addrs
-    if new_content is None:
-        content_out, body_type_out = parsed.body, parsed.body_type
-    else:
-        content_out, body_type_out = new_content, new_body_type or "text"
-    attachments_out = [*parsed.attachments, *pending]
+    if new_content is not None and _has_inline_parts(message):
+        # A body rewrite can't safely reflow multipart/related inline images; the
+        # user should recreate the draft rather than get one with broken cid refs.
+        raise ValueError(
+            "--body cannot rewrite a draft that has inline images; recreate the draft instead"
+        )
+    if subject is not None:
+        if not subject.strip():
+            raise ValueError("--subject must be non-empty when provided")
+        _set_header(message, "Subject", subject.strip())
+    if to_addrs is not None:
+        _set_header(message, "To", ", ".join(to_addrs))
+    if cc_addrs is not None:
+        _set_header(message, "Cc", ", ".join(cc_addrs))
+    if bcc_addrs is not None:
+        _set_header(message, "Bcc", ", ".join(bcc_addrs))
+    if new_content is not None:
+        _replace_body(message, new_content, new_body_type or "text")
+    for name, data in pending:
+        maintype, _, subtype = (
+            mimetypes.guess_type(name)[0] or "application/octet-stream"
+        ).partition("/")
+        message.add_attachment(
+            data, maintype=maintype, subtype=subtype or "octet-stream", filename=name
+        )
 
-    message = _build_message(
-        subject=subject_out,
-        to=to_out,
-        cc=cc_out,
-        bcc=bcc_out,
-        content=content_out,
-        body_type=body_type_out,
-        attachments=attachments_out,
-    )
+    update_message: dict[str, Any] = {"raw": _raw(message)}
+    if isinstance(thread_id, str) and thread_id:
+        # Re-assert threadId (and the preserved In-Reply-To / References headers)
+        # so updating a reply draft keeps it in its conversation.
+        update_message["threadId"] = thread_id
     execute(
-        service.users()
-        .drafts()
-        .update(userId="me", id=mid, body={"message": {"raw": _raw(message)}}),
+        service.users().drafts().update(userId="me", id=mid, body={"message": update_message}),
         num_retries=0,
+    )
+    body_part = message.get_body(preferencelist=("html", "plain"))
+    body_type_out = (
+        "html" if body_part is not None and body_part.get_content_subtype() == "html" else "text"
     )
     return {
         "draft": {
             "attachments": [
-                {"id": None, "name": name, "size": len(raw)} for name, raw in attachments_out
+                {"id": None, "name": name, "size": len(data)} for name, data in pending
             ],
-            "bcc": ", ".join(bcc_out) or None,
+            "bcc": ", ".join(_addresses_from(message, "Bcc")) or None,
             "body_type": body_type_out,
-            "cc": ", ".join(cc_out) or None,
+            "cc": ", ".join(_addresses_from(message, "Cc")) or None,
             "id": mid,
-            "subject": subject_out,
-            "to": ", ".join(to_out),
+            "subject": str(message.get("Subject") or "").strip(),
+            "to": ", ".join(_addresses_from(message, "To")),
         }
     }
 
 
-class _ParsedMessage:
-    """The fields ``mail update-draft`` may keep or override, pulled from raw RFC 822."""
-
-    def __init__(
-        self,
-        *,
-        subject: str,
-        to: list[str],
-        cc: list[str],
-        bcc: list[str],
-        body: str,
-        body_type: str,
-        attachments: list[tuple[str, bytes]],
-    ) -> None:
-        self.attachments = attachments
-        self.bcc = bcc
-        self.body = body
-        self.body_type = body_type
-        self.cc = cc
-        self.subject = subject
-        self.to = to
-
-
-def _addresses(message: EmailMessage, header: str) -> list[str]:
-    out: list[str] = []
-    for value in message.get_all(header, []):
-        for addr in str(value).split(","):
-            cleaned = addr.strip()
-            if cleaned:
-                out.append(cleaned)
-    return out
+def _addresses_from(message: EmailMessage, header: str) -> list[str]:
+    """Bare addresses on ``header``, RFC-parsed so quoted display names with commas survive."""
+    return [addr for _, addr in getaddresses(message.get_all(header, [])) if addr]
 
 
 def _attachment_refs(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
@@ -492,6 +481,29 @@ def _gmail_service(cfg: BlumkinConfig) -> Any:
     return build_api_service("gmail", "v1", creds=creds, config=cfg)
 
 
+def _has_inline_parts(message: Any) -> bool:
+    """True when any leaf part *in the draft's own body* is an inline (cid) attachment.
+
+    Stops at a ``message/rfc822`` boundary: a forwarded/attached message's inline
+    images are preserved wholesale by ``_replace_body`` (the whole nested message is
+    re-attached), so they are not at risk from a body rewrite and must not trigger
+    the reject-and-recreate guard.
+    """
+    for part in message.iter_parts():
+        if part.get_content_maintype() == "message":
+            continue
+        if part.is_multipart():
+            if _has_inline_parts(part):
+                return True
+            continue
+        if part.get("Content-ID"):
+            return True
+        disposition = str(part.get("Content-Disposition") or "").split(";", 1)[0].strip().lower()
+        if disposition == "inline" and part.get_filename():
+            return True
+    return False
+
+
 def _http_status(exc: HttpError) -> int | None:
     status = getattr(exc, "status_code", None)
     if isinstance(status, int):
@@ -543,31 +555,15 @@ def _original_attachments(
     return out
 
 
-def _parse_raw_message(draft: dict[str, Any]) -> _ParsedMessage:
+def _load_raw_message(draft: Mapping[str, Any]) -> EmailMessage:
     raw = ((draft.get("message") or {}).get("raw")) or ""
     data = base64.urlsafe_b64decode(raw.encode() + b"=" * (-len(raw) % 4)) if raw else b""
-    message = BytesParser(policy=_default_policy).parsebytes(data)
-    body_part = message.get_body(preferencelist=("html", "plain"))
-    body_type = "text"
-    body = ""
-    if body_part is not None:
-        body = body_part.get_content()
-        body_type = "html" if body_part.get_content_subtype() == "html" else "text"
-    attachments: list[tuple[str, bytes]] = []
-    for part in message.iter_attachments():
-        payload = part.get_payload(decode=True)
-        if not isinstance(payload, bytes | bytearray):
-            continue
-        attachments.append((part.get_filename() or "attachment", bytes(payload)))
-    return _ParsedMessage(
-        subject=str(message.get("Subject") or "").strip(),
-        to=_addresses(message, "To"),
-        cc=_addresses(message, "Cc"),
-        bcc=_addresses(message, "Bcc"),
-        body=body,
-        body_type=body_type,
-        attachments=attachments,
-    )
+    parsed = BytesParser(policy=_default_policy).parsebytes(data)
+    if not isinstance(
+        parsed, EmailMessage
+    ):  # pragma: no cover - default policy yields EmailMessage
+        raise TypeError("expected EmailMessage from the default email policy")
+    return parsed
 
 
 def _prefixed_subject(subject: Any, prefix: str) -> str:
@@ -610,6 +606,45 @@ def _raw(message: EmailMessage) -> str:
     return base64.urlsafe_b64encode(message.as_bytes()).decode()
 
 
+def _replace_body(message: EmailMessage, content: str, body_type: str) -> None:
+    """Swap the draft body, keeping headers and re-attaching regular file attachments.
+
+    Callers reject drafts with inline (cid) parts first (see ``_has_inline_parts``),
+    so this only has to carry ``Content-Disposition: attachment`` files across.
+    """
+    messages: list[EmailMessage] = []
+    files: list[tuple[bytes, str, str, str]] = []
+    for part in message.iter_attachments():
+        if part.get_content_maintype() == "message":
+            # message/rfc822: payload is a nested Message; carry the whole part.
+            nested = part.get_payload()
+            inner = nested[0] if isinstance(nested, list) and nested else nested
+            if isinstance(inner, EmailMessage):
+                messages.append(inner)
+            continue
+        payload = part.get_payload(decode=True)
+        if not isinstance(payload, bytes | bytearray):
+            continue
+        files.append(
+            (
+                bytes(payload),
+                part.get_content_maintype(),
+                part.get_content_subtype(),
+                part.get_filename() or "attachment",
+            )
+        )
+    message.clear_content()
+    if body_type == "html":
+        message.set_content(_html_to_text(content))
+        message.add_alternative(content, subtype="html")
+    else:
+        message.set_content(content)
+    for data, maintype, subtype, filename in files:
+        message.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
+    for nested_message in messages:
+        message.add_attachment(nested_message)
+
+
 def _reply_forward_summary(
     *,
     created: Mapping[str, Any],
@@ -643,6 +678,11 @@ def _reply_to_addresses(headers: Mapping[str, str], detail: Mapping[str, Any]) -
             return parsed
     sender = detail.get("from_email")
     return [sender] if sender else []
+
+
+def _set_header(message: EmailMessage, name: str, value: str) -> None:
+    del message[name]
+    message[name] = value
 
 
 def _thread_headers(headers: Mapping[str, str]) -> dict[str, str]:

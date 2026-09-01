@@ -24,9 +24,11 @@ Do **not** put `client_id` / `client_secret` / tenant-style overrides in env var
 `BLUMKIN_PROFILE` / `--profile` select the profile **name or tag** (non-secret).
 
 Supported verbs with `provider = "google"`: auth, calendar `today` / `view` /
-`freebusy` / `suggest` / `create`, mail `inbox` / `list` / `get`. Other skills
-fail closed until a later milestone
-([#89](https://github.com/the-hcma/blumkin/issues/89)).
+`freebusy` / `suggest` / `create`, mail `inbox` / `list` / `get` / `folders` /
+`attachments` (list + `download`), and mail writes `draft` / `update-draft` /
+`delete-draft` / `send-draft` / `reply` / `forward`. Remaining skills (chat,
+people, calendar `update` / `cancel` / `accept`) fail closed until a later
+milestone ([#89](https://github.com/the-hcma/blumkin/issues/89)).
 
 Requested OAuth scopes at login:
 
