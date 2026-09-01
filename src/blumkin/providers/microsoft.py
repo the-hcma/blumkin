@@ -228,9 +228,16 @@ class MicrosoftWorkspaceProvider:
         return await chat_find(with_name=with_name, config=self._config)
 
     async def chat_last(
-        self, *, with_name: str | None = None, chat_id: str | None = None, n: int = 3
+        self,
+        *,
+        with_name: str | None = None,
+        chat_id: str | None = None,
+        contains: str | None = None,
+        n: int = 3,
     ) -> dict[str, Any]:
-        return await chat_last(with_name=with_name, chat_id=chat_id, n=n, config=self._config)
+        return await chat_last(
+            with_name=with_name, chat_id=chat_id, contains=contains, n=n, config=self._config
+        )
 
     async def chat_send(
         self,
