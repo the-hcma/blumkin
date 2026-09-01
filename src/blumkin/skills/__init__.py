@@ -344,6 +344,12 @@ SKILLS: list[SkillSpec] = [
                 "type": "string",
                 "note": "exactly one of --with or --chat-id",
             },
+            {
+                "name": "--contains",
+                "required": False,
+                "type": "string",
+                "note": "case-insensitive body filter over a local newest-first scan (max 500)",
+            },
             {"name": "--n", "required": False, "type": "int"},
             {
                 "name": "--with",

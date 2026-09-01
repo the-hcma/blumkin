@@ -1393,6 +1393,12 @@ def chat_find_cmd(ctx: click.Context, with_name: str, as_json_flag: bool) -> Non
     default=None,
     help="Explicit chat id from `chat find` (exclusive with --with).",
 )
+@click.option(
+    "--contains",
+    "contains",
+    default=None,
+    help="Case-insensitive substring filter over message bodies (local scan, max 500).",
+)
 @click.option("--n", "n", default=3, show_default=True, type=int, help="How many messages to show.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -1400,6 +1406,7 @@ def chat_last_cmd(
     ctx: click.Context,
     with_name: str | None,
     chat_id: str | None,
+    contains: str | None,
     n: int,
     as_json_flag: bool,
 ) -> None:
@@ -1410,7 +1417,9 @@ def chat_last_cmd(
     """
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = asyncio.run(_workspace().chat_last(with_name=with_name, chat_id=chat_id, n=n))
+        payload = asyncio.run(
+            _workspace().chat_last(with_name=with_name, chat_id=chat_id, contains=contains, n=n)
+        )
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:

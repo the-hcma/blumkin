@@ -676,3 +676,87 @@ def test_chat_last_refuses_a_partial_member_scan(monkeypatch) -> None:
     )
     with pytest.raises(ValueError, match=r"is partial \(skipped 2 chat\(s\)\)"):
         asyncio.run(chat_last(with_name="daniel", n=1))
+
+
+def _chat_message(msg_id: str, text: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=msg_id,
+        message_type="message",
+        created_date_time="2026-09-01T12:00:00+00:00",
+        body=SimpleNamespace(content=f"<p>{text}</p>"),
+        from_=SimpleNamespace(user=SimpleNamespace(display_name="Vivek", id="u1")),
+    )
+
+
+def _chat_id_client(monkeypatch, pages: list[SimpleNamespace]) -> MagicMock:
+    client = MagicMock()
+    first, *rest = pages
+    client.me.chats.by_chat_id.return_value.messages.get = AsyncMock(return_value=first)
+    client.me.chats.by_chat_id.return_value.messages.with_url.return_value.get = AsyncMock(
+        side_effect=rest or [None]
+    )
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.chat.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    return client
+
+
+def test_chat_last_contains_filters_bodies_case_insensitively(monkeypatch) -> None:
+    page = SimpleNamespace(
+        value=[
+            _chat_message("m1", "lunch?"),
+            _chat_message("m2", "Admin access to your laptop is sorted"),
+            _chat_message("m3", "thanks"),
+        ],
+        odata_next_link=None,
+    )
+    _chat_id_client(monkeypatch, [page])
+    last = asyncio.run(chat_last(chat_id="19:abc", contains="ADMIN ACCESS", n=5))
+    assert [item["id"] for item in last["items"]] == ["m2"]
+    assert last["filters"]["contains"] == "ADMIN ACCESS"
+    # Walked the whole chat, so an empty result would genuinely mean "not there".
+    assert last["filters"]["complete"] is True
+    assert last["filters"]["scanned"] == 3
+
+
+def test_chat_last_contains_reports_incomplete_when_it_stops_early(monkeypatch) -> None:
+    page = SimpleNamespace(
+        value=[_chat_message("m1", "admin"), _chat_message("m2", "admin")],
+        odata_next_link="next-page",
+    )
+    _chat_id_client(monkeypatch, [page])
+    last = asyncio.run(chat_last(chat_id="19:abc", contains="admin", n=1))
+    assert [item["id"] for item in last["items"]] == ["m1"]
+    # Stopped once n matches were in hand, so absence past this point is unknown.
+    assert last["filters"]["complete"] is False
+    assert last["filters"]["scanned"] == 1
+
+
+def test_chat_last_without_contains_leaves_scan_fields_null(monkeypatch) -> None:
+    page = SimpleNamespace(value=[_chat_message("m1", "ping")], odata_next_link=None)
+    _chat_id_client(monkeypatch, [page])
+    last = asyncio.run(chat_last(chat_id="19:abc", n=1))
+    assert last["filters"] == {"complete": None, "contains": None, "scanned": None}
+
+
+def test_chat_last_human_output_says_a_contains_filter_ran(monkeypatch) -> None:
+    """A bare "(none)" must not read as "this chat is empty" when a filter was applied."""
+    page = SimpleNamespace(
+        value=[_chat_message("m1", "lunch?")],
+        odata_next_link="next-page",
+    )
+    _chat_id_client(monkeypatch, [page])
+    last = asyncio.run(chat_last(chat_id="19:abc", contains="admin", n=1))
+    human = format_last_human(last)
+    assert any("contains='admin'" in line for line in human)
+    assert any("stopped after scanning" in line for line in human)
+    assert any("(none)" in line for line in human)
+
+
+def test_chat_last_human_output_is_unchanged_without_contains(monkeypatch) -> None:
+    page = SimpleNamespace(value=[_chat_message("m1", "ping")], odata_next_link=None)
+    _chat_id_client(monkeypatch, [page])
+    human = format_last_human(asyncio.run(chat_last(chat_id="19:abc", n=1)))
+    assert not any("filters:" in line for line in human)

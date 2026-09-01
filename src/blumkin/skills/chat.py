@@ -293,6 +293,7 @@ async def chat_last(
     *,
     with_name: str | None = None,
     chat_id: str | None = None,
+    contains: str | None = None,
     n: int = 3,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
@@ -302,11 +303,18 @@ async def chat_last(
     matching ``chat send`` / ``edit`` / ``delete``: picking an arbitrary one would
     quietly return another person's conversation. ``--chat-id`` is the escape
     hatch, and skips the member-name scan entirely.
+
+    ``contains`` filters message bodies case-insensitively over a newest-first
+    local scan, the same shape ``mail list --from`` / ``--subject`` use: Graph has
+    no ``$search`` on chat messages. The scan stops after ``_MAX_SCANNED``
+    messages, and ``filters.complete`` says whether the whole chat was read — so
+    an empty result reads as "not in the recent N", not "does not exist".
     """
     if n < 1:
         raise ValueError("--n must be >= 1")
     name = (with_name or "").strip() or None
     explicit_id = (chat_id or "").strip() or None
+    term = (contains or "").strip() or None
     if bool(name) == bool(explicit_id):
         raise ValueError("exactly one of --with or --chat-id is required")
     cfg = config or load_config()
@@ -331,6 +339,7 @@ async def chat_last(
             # exception — pinned by test_diagnostic_commands_report_failure_on_stdout.
             return {
                 "chat": None,
+                "filters": _chat_last_filters(term, scanned=None, complete=None),
                 "items": [],
                 "partial": found["partial"],
                 "query": name,
@@ -350,23 +359,43 @@ async def chat_last(
         top=50,
     )
     page = await client.me.chats.by_chat_id(chat_id).messages.get(request_config(query))
-    # Newest-first via $orderby; stop once we have n ordinary messages.
+    # Newest-first via $orderby; stop once we have n ordinary messages (or, with a
+    # --contains term, n matches or the scan cap).
     selected: list[dict[str, Any]] = []
-    while page is not None and len(selected) < n:
+    scanned = 0
+    exhausted = False
+    hit_cap = False
+    while page is not None:
         for msg in page.value or []:
             if not _is_ordinary_message(msg):
                 continue
-            selected.append(_message_to_dict(msg))
+            if term is not None and scanned >= _MAX_SCANNED:
+                hit_cap = True
+                break
+            scanned += 1
+            item = _message_to_dict(msg)
+            if term is not None and term.casefold() not in str(item["body_text"] or "").casefold():
+                continue
+            selected.append(item)
             if len(selected) >= n:
                 break
-        if len(selected) >= n:
+        if len(selected) >= n or hit_cap:
             break
         link = getattr(page, "odata_next_link", None)
         if not link:
+            # Walked the whole chat without filling n or hitting the cap.
+            exhausted = True
             break
         page = await client.me.chats.by_chat_id(chat_id).messages.with_url(link).get()
     return {
         "chat": chat,
+        # scanned/complete describe the local --contains scan only; null without it,
+        # so nobody reads `complete: true, scanned: 3` as an exhaustive search.
+        "filters": _chat_last_filters(
+            term,
+            scanned=scanned if term is not None else None,
+            complete=exhausted if term is not None else None,
+        ),
         "items": selected,
         "partial": found["partial"],
         "query": name,
@@ -480,6 +509,7 @@ def format_last_human(payload: dict[str, Any]) -> list[str]:
     lines = [f"Last messages in {topic!r} ({chat.get('id')}):"]
     if skipped:
         lines.append(f"  (skipped {skipped} chat(s) while matching; results may be partial)")
+    lines.extend(_contains_notes(payload.get("filters") or {}))
     if not payload["items"]:
         lines.append("  (none)")
         return lines
@@ -508,6 +538,9 @@ def format_send_human(payload: dict[str, Any]) -> list[str]:
 
 _CARD_CONTENT_TYPE_PREFIX = "application/vnd.microsoft.card."
 _LATEST_SCAN_PAGE_SIZE = 50
+# Cap on the local --contains scan, mirroring mail's _MAX_SCANNED: deep enough for
+# the recent history people ask about, shallow enough not to walk months of chat.
+_MAX_SCANNED = 500
 _MEMBER_FETCH_CONCURRENCY = 8
 _MESSAGE_REFERENCE_TYPES = frozenset({"forwardedmessagereference", "messagereference"})
 _REFERENCE_CONTENT_TYPE = "reference"
@@ -552,6 +585,33 @@ def _body_is_html(content_type: Any) -> bool:
     if content_type is BodyType.Text:
         return False
     return "html" in str(content_type).lower()
+
+
+def _contains_notes(filters: dict[str, Any]) -> list[str]:
+    """Say a --contains filter ran, and whether the scan was cut short.
+
+    Without this the default output prints a bare "(none)", which reads as "this
+    chat has no messages" rather than "not in the window I scanned" - the exact
+    conflation ``filters.complete`` exists to prevent, and which --json already
+    avoids.
+    """
+    term = filters.get("contains")
+    if not term:
+        return []
+    lines = [f"  filters: contains={sanitize_terminal(str(term))!r}"]
+    if filters.get("complete") is False:
+        lines.append(
+            f"  (stopped after scanning {filters.get('scanned')} message(s); "
+            "raise --n or narrow the term - the match may be further back)"
+        )
+    return lines
+
+
+def _chat_last_filters(
+    term: str | None, *, scanned: int | None, complete: bool | None
+) -> dict[str, Any]:
+    """``chat last`` filter summary; scanned/complete are null without ``--contains``."""
+    return {"complete": complete, "contains": term, "scanned": scanned}
 
 
 def _chat_sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
