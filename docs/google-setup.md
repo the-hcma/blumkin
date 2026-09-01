@@ -35,6 +35,9 @@ Requested OAuth scopes at login:
 - `https://www.googleapis.com/auth/calendar.events`
 - `https://www.googleapis.com/auth/calendar.readonly`
 - `https://www.googleapis.com/auth/calendar.freebusy`
+- `https://www.googleapis.com/auth/chat.memberships.readonly`
+- `https://www.googleapis.com/auth/chat.messages.readonly`
+- `https://www.googleapis.com/auth/chat.spaces.readonly`
 - `https://www.googleapis.com/auth/contacts.readonly`
 - `https://www.googleapis.com/auth/directory.readonly`
 - `https://www.googleapis.com/auth/gmail.compose`

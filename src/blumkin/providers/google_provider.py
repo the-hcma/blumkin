@@ -9,6 +9,7 @@ from typing import Any
 from blumkin.config import BlumkinConfig
 from blumkin.providers import google_auth
 from blumkin.providers.google import calendar as google_calendar
+from blumkin.providers.google import chat as google_chat
 from blumkin.providers.google import mail as google_mail
 from blumkin.providers.google import mail_writes as google_mail_writes
 from blumkin.providers.google import people as google_people
@@ -182,7 +183,7 @@ class GoogleWorkspaceProvider:
         return self._unsupported("chat edit")
 
     async def chat_find(self, *, with_name: str) -> dict[str, Any]:
-        return self._unsupported("chat find")
+        return await google_chat.chat_find(with_name=with_name, config=self._config)
 
     async def chat_last(
         self,
@@ -192,7 +193,9 @@ class GoogleWorkspaceProvider:
         contains: str | None = None,
         n: int = 3,
     ) -> dict[str, Any]:
-        return self._unsupported("chat last")
+        return await google_chat.chat_last(
+            with_name=with_name, chat_id=chat_id, contains=contains, n=n, config=self._config
+        )
 
     async def chat_send(
         self,
