@@ -40,6 +40,7 @@ from blumkin.skills.mail import (
     _read_attachment,
     append_mail_signature,
     resolve_mail_body,
+    split_quoted_original,
 )
 
 
@@ -288,6 +289,8 @@ async def mail_update_draft(
     body_file: str | None = None,
     body_type: str = "text",
     cc: str | Sequence[str] | None = None,
+    keep_quoted: bool = False,
+    no_signature: bool = False,
     to: str | Sequence[str] | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
@@ -319,6 +322,13 @@ async def mail_update_draft(
         if not new_content.strip():
             raise ValueError("--body/--body-file must be non-empty when provided")
     cfg = config or load_config()
+    if new_content is not None:
+        new_content = append_mail_signature(
+            new_content,
+            body_type=new_body_type or "text",
+            config=cfg,
+            no_signature=no_signature,
+        )
     service = _gmail_service(cfg)
     stored = _get_draft(service, mid)
     thread_id = (stored.get("message") or {}).get("threadId")
@@ -344,6 +354,17 @@ async def mail_update_draft(
     if bcc_addrs is not None:
         _set_header(message, "Bcc", ", ".join(bcc_addrs))
     if new_content is not None:
+        if keep_quoted:
+            existing_part = message.get_body(preferencelist=("html", "plain"))
+            existing_body = existing_part.get_content() if existing_part is not None else ""
+            _, quoted = split_quoted_original(str(existing_body))
+            if quoted:
+                # The quoted tail is markup, so the joined body must be html.
+                head = new_content
+                if (new_body_type or "text") != "html":
+                    head = html_lib.escape(head).replace("\n", "<br>")
+                    new_body_type = "html"
+                new_content = f"{head}{quoted}"
         _replace_body(message, new_content, new_body_type or "text")
     for name, data in pending:
         maintype, _, subtype = (

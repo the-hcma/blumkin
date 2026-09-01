@@ -238,6 +238,8 @@ class WorkspaceProvider(Protocol):
         body_file: str | None = None,
         body_type: str = "text",
         cc: str | Sequence[str] | None = None,
+        keep_quoted: bool = False,
+        no_signature: bool = False,
         to: str | Sequence[str] | None = None,
     ) -> dict[str, Any]: ...
 

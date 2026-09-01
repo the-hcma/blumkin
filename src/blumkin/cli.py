@@ -78,6 +78,7 @@ from blumkin.skills.mail import (
     format_list_human,
     format_reply_human,
     format_send_draft_human,
+    render_mail_signature,
 )
 from blumkin.skills.mail import (
     format_get_human as format_mail_get_human,
@@ -2178,6 +2179,45 @@ def mail_reply_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
+@mail.command("signature", epilog=help_text.MAIL_SIGNATURE_EPILOG)
+@click.option(
+    "--body-type",
+    "body_type",
+    default="html",
+    show_default=True,
+    type=click.Choice(["html", "text"], case_sensitive=False),
+    help="Render the signature as HTML or plain text.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_signature_cmd(ctx: click.Context, body_type: str, as_json_flag: bool) -> None:
+    """Print the rendered [mail.signature] for the active profile.
+
+    Read-only. Use it to append the exact configured sign-off to a body you are
+    composing yourself, instead of hand-reconstructing the markup. Empty output
+    means the profile has no signature configured (or it is disabled).
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    cfg = _load_config()
+    try:
+        rendered = render_mail_signature(cfg.mail_signature, body_type=body_type)
+    except ValueError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    if as_json:
+        emit_json(
+            {
+                "ok": True,
+                "body_type": body_type.lower(),
+                "enabled": cfg.mail_signature.enabled,
+                "signature": rendered,
+            }
+        )
+    else:
+        emit_lines([rendered] if rendered else ["(no signature configured)"])
+    raise SystemExit(EXIT_SUCCESS)
+
+
 @mail.command("send-draft", epilog=help_text.MAIL_SEND_DRAFT_EPILOG)
 @click.option("--id", "draft_id", required=True, help="Draft message id to send.")
 @click.option("--yes", "yes", is_flag=True, help="Confirm send.")
@@ -2243,6 +2283,18 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
     type=click.Choice(["text", "html"], case_sensitive=False),
     help="Body content type when updating body.",
 )
+@click.option(
+    "--keep-quoted",
+    "keep_quoted",
+    is_flag=True,
+    help="Re-append the quoted original from the existing draft after the new body.",
+)
+@click.option(
+    "--no-signature",
+    "no_signature",
+    is_flag=True,
+    help="Do not reapply [mail.signature] when replacing the body.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_update_draft_cmd(
@@ -2256,6 +2308,8 @@ def mail_update_draft_cmd(
     body: str | None,
     body_file: str | None,
     body_type: str,
+    keep_quoted: bool,
+    no_signature: bool,
     as_json_flag: bool,
 ) -> None:
     """Patch an existing draft in place. Does not send.
@@ -2276,6 +2330,8 @@ def mail_update_draft_cmd(
                 body=body,
                 body_file=body_file,
                 body_type=body_type,
+                keep_quoted=keep_quoted,
+                no_signature=no_signature,
             )
         )
     except MailAttachError as exc:

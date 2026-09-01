@@ -705,6 +705,23 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="mail.signature",
+        cli=["blumkin", "mail", "signature"],
+        summary="Print the rendered [mail.signature] for the active profile (read-only)",
+        mutates=False,
+        notifies_others=False,
+        scopes=[],
+        args=[
+            {
+                "name": "--body-type",
+                "required": False,
+                "type": "enum",
+                "values": ["html", "text"],
+                "note": "default html",
+            },
+        ],
+    ),
+    SkillSpec(
         id="mail.update-draft",
         cli=["blumkin", "mail", "update-draft"],
         summary="Patch an existing draft in place (does not send)",
@@ -718,6 +735,18 @@ SKILLS: list[SkillSpec] = [
                 "required": False,
                 "type": "path",
                 "note": "repeatable; adds to the draft's existing attachments",
+            },
+            {
+                "name": "--keep-quoted",
+                "required": False,
+                "type": "flag",
+                "note": "re-append the quoted original from the existing draft",
+            },
+            {
+                "name": "--no-signature",
+                "required": False,
+                "type": "flag",
+                "note": "skip reapplying [mail.signature] when replacing the body",
             },
             {"name": "--subject", "required": False, "type": "string"},
             {
