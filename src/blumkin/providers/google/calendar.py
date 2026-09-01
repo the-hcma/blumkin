@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from blumkin.config import BlumkinConfig, load_config
@@ -12,10 +14,90 @@ from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.calendar import find_mutual_free_slots, parse_local_datetime
 from blumkin.skills.calendar_writes import (
     _DEFAULT_DURATION,
+    _needs_accept,
     parse_duration,
     reminder_minutes_before_start,
 )
 from blumkin.skills.freebusy_suggest import collect_busy_intervals, raise_if_schedule_errors
+
+# Google responseStatus -> the Graph vocabulary _needs_accept and the --json
+# contract already speak, so both providers answer `response` the same way.
+_RESPONSE_BY_GOOGLE_STATUS = {
+    "accepted": "accepted",
+    "declined": "declined",
+    "needsAction": "notResponded",
+    "tentative": "tentativelyAccepted",
+}
+
+
+async def calendar_accept(
+    *,
+    event_id: str | None = None,
+    today_pending: bool = False,
+    tz_name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """RSVP accepted on one event, or on today's unanswered invitations."""
+    if today_pending == bool(event_id):
+        raise ValueError("exactly one of --event-id or --today-pending is required")
+    cfg = config or load_config()
+    service = _calendar_service(cfg)
+    if today_pending:
+        payload = await calendar_today(tz_name=tz_name, config=cfg)
+        event_ids = [
+            str(item["id"]) for item in payload["items"] if item.get("id") and _needs_accept(item)
+        ]
+    else:
+        event_ids = [str(event_id)]
+    accepted: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for eid in event_ids:
+        try:
+            _accept_one(service, eid)
+        except Exception as exc:  # noqa: BLE001 - a batch must always report
+            if not today_pending:
+                # An explicit --event-id is a specific ask: surface the reason.
+                raise
+            # A batch must not abort half-done with earlier RSVPs already sent and
+            # no report of what was left. That covers both an event we cannot act on
+            # (_needs_accept passes anything with an unknown response, including
+            # events carrying no self attendee) and an HTTP failure on one event -
+            # a 404 for something deleted since the listing, a transient 5xx, or a
+            # socket timeout - which is not an HttpError at all, so the catch has to
+            # be broad. Re-running is safe: an already-accepted event is a no-op.
+            skipped.append({"id": eid, "reason": str(exc)})
+            continue
+        accepted.append(eid)
+    return {"accepted": accepted, "count": len(accepted), "skipped": skipped}
+
+
+async def calendar_cancel(
+    *,
+    event_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Cancel an event and notify its attendees."""
+    eid = event_id.strip()
+    if not eid:
+        raise ValueError("--event-id is required")
+    cfg = config or load_config()
+    service = _calendar_service(cfg)
+    existing = execute(service.events().get(calendarId="primary", eventId=eid))
+    if not (existing.get("organizer") or {}).get("self"):
+        # events.delete on your primary calendar only removes *your copy* of someone
+        # else's event: attendees are never told and the meeting goes ahead. Reporting
+        # "cancelled" for that would be a lie, and Graph 403s here, so refuse to match.
+        raise ValueError(
+            f"you do not organize event {eid!r}, so cancelling it would only remove your "
+            "own copy without telling anyone; decline it in your calendar client instead"
+        )
+    execute(
+        service.events().delete(calendarId="primary", eventId=eid, sendUpdates="all"),
+        # Cancellation mails attendees; a blind retry past a partial failure could
+        # not un-send them, and a repeat delete 410s anyway.
+        num_retries=0,
+    )
+    return {"cancelled": eid}
 
 
 async def calendar_create(
@@ -170,6 +252,64 @@ async def calendar_today(
     }
 
 
+async def calendar_update(
+    *,
+    event_id: str,
+    teams: bool = True,
+    tz_name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Attach a Google Meet conference to an existing event.
+
+    The Microsoft side calls this "Teams"; on Google the same ``--teams`` flag
+    means a Meet link, requested through conferenceData rather than a separate
+    online-meeting object.
+    """
+    eid = event_id.strip()
+    if not eid:
+        raise ValueError("--event-id is required")
+    if not teams:
+        raise ValueError(
+            "calendar update currently only attaches a meeting; do not pass --no-teams"
+        )
+    cfg = config or load_config()
+    tz = ZoneInfo(tz_name or cfg.default_tz)
+    service = _calendar_service(cfg)
+    body = {
+        "conferenceData": {
+            "createRequest": {
+                "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                "requestId": uuid4().hex,
+            }
+        }
+    }
+    updated = execute(
+        service.events().patch(
+            calendarId="primary",
+            eventId=eid,
+            body=body,
+            conferenceDataVersion=1,
+            sendUpdates="all",
+        ),
+        num_retries=0,
+    )
+    if not _meet_link(updated):
+        # Meet provisions asynchronously: the PATCH response can carry
+        # conferenceData.status "pending" with no entry points yet. Re-read once
+        # before declaring failure, the same way the Graph path re-GETs.
+        updated = execute(service.events().get(calendarId="primary", eventId=eid))
+    if not _meet_link(updated):
+        # Same contract as the Microsoft path: report a missing link rather than
+        # returning an event that looks updated but has nothing to join.
+        raise RuntimeError(
+            f"Meet conference was not provisioned for event {eid!r} "
+            "(no conferenceData entry point after PATCH); re-run `calendar update` "
+            "on this event. Recreating will not help: `calendar create` does not "
+            "attach a conference on Google."
+        )
+    return {"event": _event_to_dict(updated, tz)}
+
+
 async def calendar_view(
     *,
     start: datetime,
@@ -199,6 +339,41 @@ async def calendar_view(
     }
 
 
+def _accept_one(service: Any, event_id: str) -> None:
+    """Set the signed-in attendee's responseStatus to accepted on one event.
+
+    Google has no accept action: you patch your own entry in the attendee list,
+    so the current list has to be read first and sent back with just that one
+    entry changed.
+    """
+    event = execute(service.events().get(calendarId="primary", eventId=event_id))
+    if event.get("attendeesOmitted"):
+        # attendees is a full replace on PATCH, and Google truncates the list it
+        # returns for large meetings. Writing the short list back would delete every
+        # omitted attendee and mail everyone about it, so refuse instead.
+        raise ValueError(
+            f"event {event_id!r} returned a truncated attendee list "
+            "(attendeesOmitted); accepting it here would drop the omitted attendees, "
+            "so RSVP in your calendar client instead"
+        )
+    attendees = [dict(a) for a in (event.get("attendees") or []) if isinstance(a, dict)]
+    mine = next((a for a in attendees if a.get("self")), None)
+    if mine is None:
+        raise ValueError(
+            f"event {event_id!r} does not list you as an attendee, so there is nothing to accept"
+        )
+    mine["responseStatus"] = "accepted"
+    execute(
+        service.events().patch(
+            calendarId="primary",
+            eventId=event_id,
+            body={"attendees": attendees},
+            sendUpdates="all",
+        ),
+        num_retries=0,
+    )
+
+
 def _busy_slot_to_dict(slot: dict[str, Any], display_tz: ZoneInfo) -> dict[str, Any]:
     return {
         "end": _google_dt_to_iso(slot.get("end"), display_tz),
@@ -226,12 +401,12 @@ def _event_to_dict(ev: dict[str, Any], display_tz: ZoneInfo) -> dict[str, Any]:
         "is_all_day": is_all_day,
         "is_organizer": bool(organizer.get("self")),
         "location": location,
-        "online_join_url": (ev.get("hangoutLink") or None),
+        "online_join_url": _meet_link(ev),
         "organizer": {
             "email": organizer.get("email"),
             "name": organizer.get("displayName"),
         },
-        "response": None,
+        "response": _self_response(ev),
         "start": start,
         "subject": ev.get("summary"),
         "timezone": str(display_tz),
@@ -255,6 +430,46 @@ def _google_dt_to_iso(raw: Any, display_tz: ZoneInfo) -> str | None:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=display_tz)
     return dt.astimezone(display_tz).isoformat()
+
+
+def _meet_link(ev: Mapping[str, Any]) -> str | None:
+    """Meet URL for the event: hangoutLink, else a video entry point.
+
+    A freshly patched event carries conferenceData before hangoutLink catches up,
+    so reading only the latter would report "no link" right after attaching one.
+    """
+    direct = ev.get("hangoutLink")
+    if direct:
+        return str(direct)
+    conference = ev.get("conferenceData") or {}
+    for entry in conference.get("entryPoints") or []:
+        if (
+            isinstance(entry, Mapping)
+            and entry.get("entryPointType") == "video"
+            and entry.get("uri")
+        ):
+            return str(entry["uri"])
+    return None
+
+
+def _self_attendee(ev: Mapping[str, Any]) -> dict[str, Any] | None:
+    for attendee in ev.get("attendees") or []:
+        if isinstance(attendee, dict) and attendee.get("self"):
+            return attendee
+    return None
+
+
+def _self_response(ev: Mapping[str, Any]) -> str | None:
+    """The signed-in user's response, in the Microsoft vocabulary.
+
+    ``calendar accept --today-pending`` filters on this via ``_needs_accept``; a
+    hardcoded None there would read as "never responded" and accept every event
+    on the day, so the mapping has to be real.
+    """
+    attendee = _self_attendee(ev)
+    if attendee is None:
+        return None
+    return _RESPONSE_BY_GOOGLE_STATUS.get(str(attendee.get("responseStatus") or ""))
 
 
 def _parse_clock(raw: str, *, flag: str) -> time:
