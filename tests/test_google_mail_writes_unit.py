@@ -675,6 +675,7 @@ def _cfg(config_dir: Path, *, signature: MailSignatureConfig | None = None) -> B
         client_id="id.apps.googleusercontent.com",
         config_dir=config_dir,
         default_tz="UTC",
+        email="",
         files_scopes=False,
         google_oauth_client_file=oauth,
         graph_timeout_seconds=60.0,

@@ -113,6 +113,7 @@ def _cfg(*, provider: ProviderKind = ProviderKind.MICROSOFT) -> BlumkinConfig:
         client_id="abc",
         config_dir=Path("unused"),
         default_tz="UTC",
+        email="",
         files_scopes=False,
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,

@@ -427,6 +427,7 @@ def _client(monkeypatch, *, signature: bool = False) -> MagicMock:
             client_id="x",
             config_dir=Path("/tmp"),
             default_tz="UTC",
+            email="",
             files_scopes=False,
             google_oauth_client_file=None,
             graph_timeout_seconds=60.0,

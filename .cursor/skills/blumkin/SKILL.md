@@ -37,7 +37,8 @@ original's attachments.
 1. Confirm the binary exists: `blumkin --version` (if missing, tell the user to
    run `uv tool install -e .` from their blumkin clone and ensure `~/.local/bin`
    is on `PATH`).
-2. Discover account profiles: `blumkin profiles list --json`.
+2. Discover account profiles: `blumkin profiles list --json` (each entry carries
+   `email`, the address recorded at first login, when it is known).
    - If `count` is `0`, tell the user to configure the active config directory
      (`$BLUMKIN_CONFIG_DIR/config.toml` when set, else
      `~/.config/blumkin/config.toml`) and **stop** before mail, calendar, or

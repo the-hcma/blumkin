@@ -11,6 +11,7 @@ from blumkin.providers import google_auth
 from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google import mail as google_mail
 from blumkin.providers.google import mail_writes as google_mail_writes
+from blumkin.providers.google_http import build_api_service, execute
 from blumkin.providers.kind import ProviderKind
 
 
@@ -28,6 +29,21 @@ class GoogleWorkspaceProvider:
 
     def auth_refresh(self) -> dict[str, Any]:
         return google_auth.refresh_silent(self._config)
+
+    def account_email(self) -> str:
+        """Signed-in address via Gmail users.getProfile (no extra scope).
+
+        Google's saved credential JSON carries no email, so this is a live call.
+        Best-effort: callers use it for a display label and a doctor drift check,
+        neither of which should fail because the network or a scope is missing.
+        """
+        try:
+            creds = google_auth.get_credentials(self._config, allow_interactive=False)
+            service = build_api_service("gmail", "v1", creds=creds, config=self._config)
+            profile = execute(service.users().getProfile(userId="me"))
+        except Exception:
+            return ""
+        return str(profile.get("emailAddress") or "").strip()
 
     def auth_status(self) -> dict[str, Any]:
         return google_auth.status_dict(self._config)
