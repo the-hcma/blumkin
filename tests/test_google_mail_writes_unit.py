@@ -194,9 +194,237 @@ def test_mail_update_draft_appends_attachment_to_existing(tmp_path: Path) -> Non
                 draft_id="d-3", attach=[str(new_file)]
             )
         )
-    assert [a["name"] for a in payload["draft"]["attachments"]] == ["first.txt", "second.txt"]
+    # Payload lists only the newly added attachment (Microsoft-parity); the sent
+    # message keeps both.
+    assert [a["name"] for a in payload["draft"]["attachments"]] == ["second.txt"]
     names = [p.get_filename() for p in _sent_message(service, "update").iter_attachments()]
     assert names == ["first.txt", "second.txt"]
+
+
+def test_mail_update_draft_replaces_to_and_body(tmp_path: Path) -> None:
+    service = _service(
+        get_result=_raw_draft(subject="S", to="old@example.com", body="old body"),
+        update_result={"id": "d-x"},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-x", to=["new@example.com"], body="new body"
+            )
+        )
+    assert payload["draft"]["to"] == "new@example.com"
+    sent = _sent_message(service, "update")
+    assert _addresses(sent, "To") == ["new@example.com"]
+    assert "new body" in _content(sent, "plain")
+    assert "old body" not in _content(sent, "plain")
+
+
+def test_mail_update_draft_body_replace_keeps_regular_attachment(tmp_path: Path) -> None:
+    service = _service(
+        get_result=_raw_draft(
+            subject="S", to="a@example.com", body="old", attachments=[("keep.pdf", b"PDF")]
+        ),
+        update_result={"id": "d-b"},
+    )
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-b", body="new body"
+            )
+        )
+    sent = _sent_message(service, "update")
+    assert "new body" in _content(sent, "plain")
+    assert [p.get_filename() for p in sent.iter_attachments()] == ["keep.pdf"]
+
+
+def test_mail_update_draft_body_replace_html_keeps_alternative(tmp_path: Path) -> None:
+    service = _service(
+        get_result=_raw_draft(subject="S", to="a@example.com", body="old", body_type="html"),
+        update_result={"id": "d-h2"},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-h2", body="<p>fresh</p>", body_type="html"
+            )
+        )
+    assert payload["draft"]["body_type"] == "html"
+    sent = _sent_message(service, "update")
+    assert "<p>fresh</p>" in _content(sent, "html")
+    assert "fresh" in _content(sent, "plain")
+
+
+def test_mail_update_draft_replaces_cc_bcc_adding_when_absent(tmp_path: Path) -> None:
+    # Draft has a Cc but no Bcc header — exercises both del-existing and add-absent.
+    service = _service(
+        get_result=_raw_draft(subject="S", to="a@example.com", cc="old@example.com", body="b"),
+        update_result={"id": "d-cb"},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-cb", cc=["new@example.com"], bcc=["hidden@example.com"]
+            )
+        )
+    assert payload["draft"]["cc"] == "new@example.com"
+    assert payload["draft"]["bcc"] == "hidden@example.com"
+    sent = _sent_message(service, "update")
+    assert _addresses(sent, "Cc") == ["new@example.com"]
+    assert _addresses(sent, "Bcc") == ["hidden@example.com"]
+
+
+def test_mail_update_draft_body_replace_html_draft_with_attachment(tmp_path: Path) -> None:
+    outer = EmailMessage()
+    outer["Subject"] = "Newsletter"
+    outer["To"] = "a@example.com"
+    outer.set_content("old plain")
+    outer.add_alternative("<p>old html</p>", subtype="html")
+    outer.add_attachment(b"PDFBYTES", maintype="application", subtype="pdf", filename="brief.pdf")
+    stored = {"id": "d", "message": {"raw": base64.urlsafe_b64encode(outer.as_bytes()).decode()}}
+    service = _service(get_result=stored, update_result={"id": "d-hx"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-hx", body="<p>new html</p>", body_type="html"
+            )
+        )
+    sent = _sent_message(service, "update")
+    assert "<p>new html</p>" in _content(sent, "html")
+    assert "new html" in _content(sent, "plain")
+    atts = list(sent.iter_attachments())
+    assert [p.get_filename() for p in atts] == ["brief.pdf"]
+    assert atts[0].get_payload(decode=True) == b"PDFBYTES"
+
+
+def test_mail_update_draft_body_replace_rejects_inline_images(tmp_path: Path) -> None:
+    inline = EmailMessage()
+    inline["Subject"] = "Newsletter"
+    inline["To"] = "a@example.com"
+    inline.set_content("text")
+    inline.add_related(b"PNGDATA", maintype="image", subtype="png", cid="<logo@x>")
+    stored = {
+        "id": "d",
+        "message": {"raw": base64.urlsafe_b64encode(inline.as_bytes()).decode()},
+    }
+    service = _service(get_result=stored, update_result={"id": "d-i"})
+    with _patched(service), pytest.raises(ValueError, match="inline images"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(draft_id="d-i", body="new")
+        )
+
+
+def test_mail_update_draft_body_replace_keeps_rfc822_attachment(tmp_path: Path) -> None:
+    forwarded = EmailMessage()
+    forwarded["Subject"] = "Original"
+    forwarded["From"] = "x@example.com"
+    forwarded.set_content("inner")
+    outer = EmailMessage()
+    outer["Subject"] = "Draft"
+    outer["To"] = "a@example.com"
+    outer.set_content("old")
+    outer.add_attachment(forwarded)
+    stored = {"id": "d", "message": {"raw": base64.urlsafe_b64encode(outer.as_bytes()).decode()}}
+    service = _service(get_result=stored, update_result={"id": "d-r8"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(draft_id="d-r8", body="new")
+        )
+    sent = _sent_message(service, "update")
+    rfc822_parts = [p for p in sent.iter_attachments() if p.get_content_type() == "message/rfc822"]
+    assert len(rfc822_parts) == 1
+    payload = rfc822_parts[0].get_payload()
+    assert isinstance(payload, list) and len(payload) == 1
+    nested = payload[0]
+    assert isinstance(nested, EmailMessage)
+    assert nested["Subject"] == "Original"
+    assert "inner" in nested.get_content()
+
+
+def test_mail_update_draft_body_replace_allowed_with_forwarded_inline_image(
+    tmp_path: Path,
+) -> None:
+    # The forwarded message's own inline (cid) image must not trip the
+    # inline-images guard: it's carried wholesale, not reflowed.
+    forwarded = EmailMessage()
+    forwarded["Subject"] = "Original"
+    forwarded.set_content("inner")
+    forwarded.add_related(b"PNGDATA", maintype="image", subtype="png", cid="<img@inner>")
+    outer = EmailMessage()
+    outer["Subject"] = "Draft"
+    outer["To"] = "a@example.com"
+    outer.set_content("old")
+    outer.add_attachment(forwarded)
+    stored = {"id": "d", "message": {"raw": base64.urlsafe_b64encode(outer.as_bytes()).decode()}}
+    service = _service(get_result=stored, update_result={"id": "d-r9"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(draft_id="d-r9", body="new")
+        )
+    sent = _sent_message(service, "update")
+    assert "new" in _content(sent, "plain")
+    rfc822_parts = [p for p in sent.iter_attachments() if p.get_content_type() == "message/rfc822"]
+    assert len(rfc822_parts) == 1
+    payload = rfc822_parts[0].get_payload()
+    assert isinstance(payload, list) and len(payload) == 1
+    nested = payload[0]
+    assert isinstance(nested, EmailMessage)
+    assert "inner" in _content(nested, "plain")
+    nested_cid_parts = [p for p in nested.walk() if p.get("Content-ID") == "<img@inner>"]
+    assert len(nested_cid_parts) == 1
+    assert nested_cid_parts[0].get_payload(decode=True) == b"PNGDATA"
+
+
+def test_mail_update_draft_preserves_bcc_and_headers_on_subject_only_update(tmp_path: Path) -> None:
+    service = _service(
+        get_result=_raw_draft(
+            subject="Old",
+            to="a@example.com",
+            bcc="secret@example.com",
+            body="body",
+            extra_headers={"In-Reply-To": "<prev@mail>", "References": "<prev@mail>"},
+        ),
+        update_result={"id": "d-h"},
+    )
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(draft_id="d-h", subject="New")
+        )
+    sent = _sent_message(service, "update")
+    assert sent["Subject"] == "New"
+    assert _addresses(sent, "Bcc") == ["secret@example.com"]
+    assert sent["In-Reply-To"] == "<prev@mail>"
+    assert sent["References"] == "<prev@mail>"
+
+
+def test_mail_update_draft_keeps_html_body_on_subject_only_update(tmp_path: Path) -> None:
+    service = _service(
+        get_result=_raw_draft(
+            subject="Old", to="a@example.com", body="<p>rich body</p>", body_type="html"
+        ),
+        update_result={"id": "d-html"},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-html", subject="New"
+            )
+        )
+    assert payload["draft"]["body_type"] == "html"
+    sent = _sent_message(service, "update")
+    assert "<p>rich body</p>" in _content(sent, "html")
+
+
+def test_mail_update_draft_preserves_quoted_display_name_with_comma(tmp_path: Path) -> None:
+    service = _service(
+        get_result=_raw_draft(subject="S", to='"Doe, Jane" <jane@example.com>', body="body"),
+        update_result={"id": "d-c"},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(draft_id="d-c", subject="New")
+        )
+    assert payload["draft"]["to"] == "jane@example.com"
+    assert _addresses(_sent_message(service, "update"), "To") == ["jane@example.com"]
 
 
 def test_mail_draft_403_maps_to_missing_scope_via_cli(tmp_path: Path) -> None:
@@ -423,6 +651,20 @@ def test_mail_forward_html_quotes_forwarded_block(tmp_path: Path) -> None:
     assert "x &amp; y" in html
 
 
+def test_mail_update_draft_reasserts_threadid(tmp_path: Path) -> None:
+    draft = _raw_draft(subject="Re: X", to="a@example.com", body="draft")
+    draft["message"]["threadId"] = "thread-77"
+    service = _service(get_result=draft, update_result={"id": "d-t"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-t", subject="Re: X2"
+            )
+        )
+    body = service.users.return_value.drafts.return_value.update.call_args.kwargs["body"]
+    assert body["message"]["threadId"] == "thread-77"
+
+
 def _cfg(config_dir: Path, *, signature: MailSignatureConfig | None = None) -> BlumkinConfig:
     oauth = config_dir / "desktop-client.json"
     if not oauth.is_file():
@@ -446,6 +688,12 @@ def _cfg(config_dir: Path, *, signature: MailSignatureConfig | None = None) -> B
     )
 
 
+def _addresses(message: Any, header: str) -> list[str]:
+    from email.utils import getaddresses
+
+    return [addr for _, addr in getaddresses(message.get_all(header, [])) if addr]
+
+
 def _content(message: Any, subtype: str) -> str:
     part = message.get_body(preferencelist=(subtype,))
     assert part is not None, f"no {subtype} body part"
@@ -465,7 +713,10 @@ def _raw_draft(
     subject: str,
     to: str = "",
     cc: str = "",
+    bcc: str = "",
     body: str = "",
+    body_type: str = "text",
+    extra_headers: dict[str, str] | None = None,
     attachments: list[tuple[str, bytes]] | None = None,
 ) -> dict:
     message = EmailMessage()
@@ -474,7 +725,15 @@ def _raw_draft(
         message["To"] = to
     if cc:
         message["Cc"] = cc
-    message.set_content(body)
+    if bcc:
+        message["Bcc"] = bcc
+    for name, value in (extra_headers or {}).items():
+        message[name] = value
+    if body_type == "html":
+        message.set_content("(plain fallback)")
+        message.add_alternative(body, subtype="html")
+    else:
+        message.set_content(body)
     for name, data in attachments or []:
         message.add_attachment(data, maintype="text", subtype="plain", filename=name)
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
