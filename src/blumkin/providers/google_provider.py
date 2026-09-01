@@ -373,6 +373,8 @@ class GoogleWorkspaceProvider:
         body_file: str | None = None,
         body_type: str = "text",
         cc: str | Sequence[str] | None = None,
+        keep_quoted: bool = False,
+        no_signature: bool = False,
         to: str | Sequence[str] | None = None,
     ) -> dict[str, Any]:
         return await google_mail_writes.mail_update_draft(
@@ -384,6 +386,8 @@ class GoogleWorkspaceProvider:
             body_file=body_file,
             body_type=body_type,
             cc=cc,
+            keep_quoted=keep_quoted,
+            no_signature=no_signature,
             to=to,
             config=self._config,
         )

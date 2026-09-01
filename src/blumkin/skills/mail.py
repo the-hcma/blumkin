@@ -818,9 +818,19 @@ async def mail_update_draft(
     body_file: str | None = None,
     body_type: str = "text",
     cc: str | Sequence[str] | None = None,
+    keep_quoted: bool = False,
+    no_signature: bool = False,
     to: str | Sequence[str] | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
+    """Patch a draft in place.
+
+    Replacing the body reapplies ``[mail.signature]`` (use ``no_signature`` to opt
+    out), so an edited reply keeps the same styled sign-off the drafting verbs
+    add - dropping it silently was the old behaviour. ``keep_quoted`` re-appends
+    the quoted original from the existing draft, so editing your half of a reply
+    no longer means fetching the draft and re-splicing the thread by hand.
+    """
     if not draft_id.strip():
         raise ValueError("--id is required")
     has_body = body is not None or body_file is not None
@@ -849,6 +859,10 @@ async def mail_update_draft(
         if not content.strip():
             raise ValueError("--body/--body-file must be non-empty when provided")
     cfg = config or load_config()
+    if content is not None and body_type_label is not None:
+        content = append_mail_signature(
+            content, body_type=body_type_label, config=cfg, no_signature=no_signature
+        )
     client = create_graph_client(cfg)
     mid = draft_id.strip()
     existing = await client.me.messages.by_message_id(mid).get()
@@ -858,6 +872,18 @@ async def mail_update_draft(
         raise MailDraftNotFoundError(f"message is not a draft: {mid}")
     # Validate field changes before any upload so a usage error cannot leave new
     # attachments behind (a retry would then silently duplicate them).
+    if content is not None and keep_quoted:
+        existing_body = getattr(getattr(existing, "body", None), "content", None)
+        _, quoted = split_quoted_original(str(existing_body or ""))
+        if quoted:
+            # The quoted tail is markup, so the joined body has to be HTML: sending
+            # it as text would render the original thread as literal angle brackets.
+            head = content
+            if body_type_label != "html":
+                head = html_lib.escape(head).replace("\n", "<br>")
+                body_type_label = "html"
+                graph_body_type = BodyType.Html
+            content = f"{head}{quoted}"
     patch = Message()
     if subject is not None:
         if not subject.strip():
@@ -904,6 +930,34 @@ async def mail_update_draft(
             "to": _recipient_field(to_addrs, getattr(updated, "to_recipients", None)) or "",
         }
     }
+
+
+def split_quoted_original(body: str) -> tuple[str, str]:
+    """Split a reply/forward body into (your text, the quoted original tail).
+
+    Returns ``(body, "")`` when no quoted block is recognised, so a caller can
+    always concatenate the two halves back together. Markers cover what the
+    providers this CLI drives actually emit: Outlook's ``divRplyFwdMsg`` block
+    (optionally preceded by its ``<hr>``), the ``blockquote`` a Gmail-style reply
+    uses, and the plain-text ``-----Original Message-----`` separator.
+    """
+    if not body:
+        return "", ""
+    lowered = body.lower()
+    cut = len(body)
+    for marker in ('<div id="divrplyfwdmsg"', "<blockquote", "-----original message-----"):
+        index = lowered.find(marker)
+        if index != -1:
+            cut = min(cut, index)
+    if cut == len(body):
+        return body, ""
+    # Outlook puts an <hr> immediately above divRplyFwdMsg; keep it with the quote
+    # so re-joining reproduces the original separator rather than doubling it.
+    head = body[:cut]
+    hr = head.lower().rfind("<hr")
+    if hr != -1 and not head[hr:].lower().partition(">")[2].strip():
+        cut = hr
+    return body[:cut], body[cut:]
 
 
 def render_mail_signature(signature: MailSignatureConfig, *, body_type: str) -> str:

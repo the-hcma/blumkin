@@ -537,6 +537,19 @@ Sends an existing draft (from `mail draft` / `mail reply` / `mail forward`).
 Requires `--yes` - this is the step that actually delivers mail.
 """
 
+MAIL_SIGNATURE_EPILOG = """
+Examples:
+
+\b
+  blumkin mail signature --json
+  blumkin mail signature --body-type text
+
+Prints the rendered [mail.signature] for the active profile - the same markup
+the drafting verbs append - so you can add it to a body you are composing
+yourself without hand-rebuilding the styling from config. Read-only; empty when
+no signature is configured or it is disabled.
+"""
+
 MAIL_UPDATE_DRAFT_EPILOG = """
 Examples:
 
@@ -547,10 +560,20 @@ Examples:
   # Replace the whole recipient list and subject
   blumkin mail update-draft --id AAMk... --to sam@example.com \\
     --to dana@example.com --subject "Revised: Q3 deck"
+\b
+  # Rewrite your half of a reply, keeping the quoted thread below it
+  blumkin mail update-draft --id AAMk... --body-file ./reply.html \\
+    --body-type html --keep-quoted
 
 No `--yes` (stays in your mailbox). `--to` / `--cc` / `--bcc` and `--body` each
 replace that field wholesale when given - include every value that should remain.
 `--attach` is additive.
+
+Replacing the body reapplies `[mail.signature]` (pass `--no-signature` to skip),
+so an edited reply keeps the same sign-off the drafting verbs add. `--keep-quoted`
+re-appends the quoted original from the existing draft after your new text, so
+editing a reply does not drop the thread; the result is sent as HTML, since the
+quoted block is markup. See also `blumkin mail signature`.
 """
 
 MAIN_EPILOG = """
