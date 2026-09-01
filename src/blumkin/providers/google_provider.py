@@ -184,10 +184,16 @@ class GoogleWorkspaceProvider:
         attachment_id: str | None = None,
         download_all: bool = False,
     ) -> dict[str, Any]:
-        return self._unsupported("mail attachments download")
+        return await google_mail.mail_attachments_download(
+            message_id=message_id,
+            out=out,
+            attachment_id=attachment_id,
+            download_all=download_all,
+            config=self._config,
+        )
 
     async def mail_attachments_list(self, *, message_id: str) -> dict[str, Any]:
-        return self._unsupported("mail attachments list")
+        return await google_mail.mail_attachments_list(message_id=message_id, config=self._config)
 
     async def mail_delete_draft(self, *, draft_id: str) -> dict[str, Any]:
         return await google_mail_writes.mail_delete_draft(draft_id=draft_id, config=self._config)
@@ -219,7 +225,7 @@ class GoogleWorkspaceProvider:
         )
 
     async def mail_folders(self) -> dict[str, Any]:
-        return self._unsupported("mail folders")
+        return await google_mail.mail_folders(config=self._config)
 
     async def mail_forward(
         self,
