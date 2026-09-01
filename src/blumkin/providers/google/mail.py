@@ -12,12 +12,156 @@ from typing import Any, Literal
 
 from googleapiclient.errors import HttpError
 
+from blumkin.attachments import (
+    existing_entry_names,
+    prepare_download_directory,
+    resolve_attachment_dest,
+    resolve_single_download_dest,
+    sanitize_attachment_filename,
+    unique_filename,
+)
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google_auth import get_credentials
 from blumkin.providers.google_http import build_api_service, execute
-from blumkin.skills.mail import MailFolderNotFoundError, MailMessageNotFoundError
+from blumkin.skills.mail import (
+    MailAttachmentNotFoundError,
+    MailFolderNotFoundError,
+    MailMessageNotFoundError,
+)
 
 MailBodyType = Literal["html", "text"]
+
+# Gmail exposes system labels that behave like mail folders; the rest (STARRED,
+# IMPORTANT, CATEGORY_*, …) are views, not containers, so they are left out of
+# `mail folders`. Values are the display names used by the Microsoft provider.
+_FOLDER_SYSTEM_LABELS = {
+    "DRAFT": "Drafts",
+    "INBOX": "Inbox",
+    "SENT": "Sent Items",
+    "SPAM": "Junk Email",
+    "TRASH": "Deleted Items",
+}
+# Bound the per-label count fan-out (one labels.get each). Mailboxes rarely have
+# this many labels; a bigger set is truncated like the Microsoft folder walk.
+_MAX_MAIL_FOLDERS = 300
+
+
+async def mail_attachments_download(
+    *,
+    message_id: str,
+    out: str,
+    attachment_id: str | None = None,
+    download_all: bool = False,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    mid = message_id.strip()
+    if not mid:
+        raise ValueError("--message-id is required")
+    if not out.strip():
+        raise ValueError("--out is required")
+    if download_all == bool(attachment_id and attachment_id.strip()):
+        raise ValueError("provide exactly one of --attachment-id or --all")
+    cfg = config or load_config()
+    service = _gmail_service(cfg)
+    attachments = _attachment_entries(_full_message(service, mid).get("payload") or {})
+    if download_all:
+        out_path = prepare_download_directory(out)
+        targets = list(attachments)
+        used_names = existing_entry_names(out_path)
+    else:
+        aid = attachment_id.strip() if attachment_id else ""
+        match = next((item for item in attachments if item.get("id") == aid), None)
+        if match is None:
+            raise MailAttachmentNotFoundError(f"attachment not found: {aid}")
+        targets = [match]
+        out_path = resolve_single_download_dest(out, match.get("name") or aid)
+        used_names = set()
+    saved: list[dict[str, Any]] = []
+    for meta in targets:
+        aid = str(meta["id"])
+        content = _attachment_bytes(_attachment_data(service, mid, aid))
+        if download_all:
+            filename = unique_filename(
+                sanitize_attachment_filename(meta.get("name") or aid), used_names
+            )
+            dest = resolve_attachment_dest(out_path, filename)
+        else:
+            dest = out_path
+        dest.write_bytes(content)
+        saved.append(
+            {
+                "attachment_id": aid,
+                "content_type": meta.get("content_type"),
+                "name": meta.get("name"),
+                "saved_path": str(dest.resolve()),
+                "size": len(content),
+            }
+        )
+    return {"message_id": mid, "saved": saved, "skipped": []}
+
+
+async def mail_attachments_list(
+    *,
+    message_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    mid = message_id.strip()
+    if not mid:
+        raise ValueError("--id is required")
+    cfg = config or load_config()
+    service = _gmail_service(cfg)
+    payload = _full_message(service, mid).get("payload") or {}
+    return {"attachments": _attachment_entries(payload), "message_id": mid}
+
+
+async def mail_folders(*, config: BlumkinConfig | None = None) -> dict[str, Any]:
+    """List Gmail labels that behave as mail folders, with lag-prone message counts.
+
+    ``total`` / ``unread`` come from ``labels.get`` (``messagesTotal`` /
+    ``messagesUnread``), which trail the real mailbox; prove existence with
+    ``mail list --folder`` / ``mail get``, not a zero count.
+    """
+    cfg = config or load_config()
+    service = _gmail_service(cfg)
+    listing = execute(service.users().labels().list(userId="me"))
+    folders: list[dict[str, Any]] = []
+    # users.labels.list is not paginated (it returns the whole label set), but
+    # honor a nextPageToken defensively rather than claim completeness if one appears.
+    truncated = bool(listing.get("nextPageToken"))
+    for label in listing.get("labels") or []:
+        label_id = label.get("id")
+        if not isinstance(label_id, str):
+            continue
+        if label.get("type") == "system":
+            path = _FOLDER_SYSTEM_LABELS.get(label_id)
+            if path is None:
+                continue
+        else:
+            path = str(label.get("name") or label_id)
+        if len(folders) >= _MAX_MAIL_FOLDERS:
+            truncated = True
+            break
+        # One label deleted mid-listing (404) or a transient error shouldn't sink
+        # the whole listing — list the folder with unknown counts instead.
+        try:
+            detail = execute(service.users().labels().get(userId="me", id=label_id))
+        except HttpError:
+            detail = {}
+        folders.append(
+            {
+                "id": label_id,
+                "path": path,
+                "total": detail.get("messagesTotal"),
+                "unread": detail.get("messagesUnread"),
+            }
+        )
+    folders.sort(key=lambda item: str(item["path"]).casefold())
+    return {
+        "counts_may_lag": True,
+        "folders": folders,
+        "limits": {"max_depth": None, "max_folders": _MAX_MAIL_FOLDERS},
+        "truncated": truncated,
+    }
 
 
 async def mail_get(
@@ -177,6 +321,29 @@ _LIST_HEADERS = ["From", "Subject", "To", "Date"]
 _OUTBOUND_FOLDERS = frozenset({"drafts", "outbox", "sentitems"})
 
 
+def _attachment_bytes(data: str) -> bytes:
+    return base64.urlsafe_b64decode(data.encode() + b"=" * (-len(data) % 4))
+
+
+def _attachment_data(service: Any, message_id: str, attachment_id: str) -> str:
+    fetched = execute(
+        service.users()
+        .messages()
+        .attachments()
+        .get(userId="me", messageId=message_id, id=attachment_id)
+    )
+    data = fetched.get("data")
+    if not isinstance(data, str):
+        raise MailAttachmentNotFoundError(f"attachment not found: {attachment_id}")
+    return data
+
+
+def _attachment_entries(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    _collect_attachment_parts(payload, out)
+    return out
+
+
 def _body_from_payload(
     payload: dict[str, Any], *, wanted: MailBodyType
 ) -> tuple[str | None, MailBodyType]:
@@ -221,6 +388,37 @@ def _build_gmail_query(
     return " ".join(parts) if parts else None
 
 
+def _collect_attachment_parts(part: dict[str, Any], out: list[dict[str, Any]]) -> None:
+    body = part.get("body") or {}
+    attachment_id = body.get("attachmentId")
+    if isinstance(attachment_id, str) and attachment_id:
+        headers = {
+            str(h.get("name") or "").casefold(): str(h.get("value") or "")
+            for h in (part.get("headers") or [])
+            if isinstance(h, dict)
+        }
+        mime = str(part.get("mimeType") or "application/octet-stream")
+        # filename is optional on Content-Disposition (RFC 2183); Gmail still
+        # gives the part an attachmentId, so surface it under a fallback name
+        # rather than dropping it silently.
+        filename = str(part.get("filename") or "").strip() or attachment_id
+        out.append(
+            {
+                "attachment_type": mime,
+                "content_type": mime,
+                "id": attachment_id,
+                "is_inline": _is_inline_disposition(headers.get("content-disposition", ""))
+                or "content-id" in headers,
+                "name": filename,
+                "size": body.get("size"),
+                "skipped": False,
+            }
+        )
+    for child in part.get("parts") or []:
+        if isinstance(child, dict):
+            _collect_attachment_parts(child, out)
+
+
 def _collect_bodies(
     payload: dict[str, Any],
     *,
@@ -254,6 +452,15 @@ def _decode_header_value(raw: str | None) -> str | None:
         return str(make_header(decode_header(text)))
     except Exception:
         return text
+
+
+def _full_message(service: Any, message_id: str) -> dict[str, Any]:
+    try:
+        return execute(service.users().messages().get(userId="me", id=message_id, format="full"))
+    except HttpError as exc:
+        if _http_not_found(exc):
+            raise MailMessageNotFoundError(f"message not found: {message_id}") from exc
+        raise
 
 
 def _gmail_phrase(value: str) -> str:
@@ -291,6 +498,15 @@ def _html_to_text(value: str) -> str:
 def _http_not_found(exc: HttpError) -> bool:
     status = getattr(exc.resp, "status", None) if getattr(exc, "resp", None) else None
     return status == 404
+
+
+def _is_inline_disposition(content_disposition: str) -> bool:
+    """True when the Content-Disposition *directive* (not the whole header) is inline.
+
+    A plain substring check would misclassify e.g. ``attachment; filename="inline-report.pdf"``.
+    """
+    directive = content_disposition.split(";", 1)[0].strip().casefold()
+    return directive == "inline"
 
 
 def _iso_z(value: datetime | None) -> str | None:

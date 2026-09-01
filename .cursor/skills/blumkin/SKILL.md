@@ -12,13 +12,17 @@ Workspace APIs directly when Blumkin covers the job.
 
 With `provider = "google"` in config, supported verbs are calendar
 (`today` / `view` / `freebusy` / `suggest` / `create`), mail
-(`inbox` / `list` / `get`), and mail writes
+(`inbox` / `list` / `get` / `folders` / `attachments` / `attachments download`),
+and mail writes
 (`draft` / `update-draft` / `delete-draft` / `send-draft` / `reply` / `forward`)
 plus auth. Point `google_oauth_client_file` at the Desktop client JSON (secret
 stays in that file, not env/toml). Setup walkthrough:
 [`docs/google-setup.md`](../../../docs/google-setup.md). Unsupported verbs (chat,
-people, mail attachments, calendar `update` / `cancel` / `accept`, …) fail closed
-with a clear error — do not invent workarounds. On Google, `calendar create`
+people, calendar `update` / `cancel` / `accept`, …) fail closed
+with a clear error — do not invent workarounds. `mail folders` lists Gmail
+labels that act as folders (system labels map to Outlook-style names; user
+labels keep their `Parent/Child` path); `mail list --folder` still only accepts
+the well-known names. On Google, `calendar create`
 ignores `--teams` (no Meet link yet) and `--remind-email` adds a real email
 reminder. Mail writes need the `gmail.compose` scope: after upgrading, run
 `blumkin auth login` once to re-consent, or those calls exit 4 (`missing_scope`).
