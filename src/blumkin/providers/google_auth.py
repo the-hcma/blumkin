@@ -21,6 +21,7 @@ GOOGLE_SCOPES = frozenset(
         "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/calendar.freebusy",
         "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
         "https://www.googleapis.com/auth/gmail.readonly",
     }
 )
