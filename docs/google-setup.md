@@ -103,6 +103,33 @@ That file contains an `installed` (sometimes `web`) object with `client_id` and
 `client_secret`. Desktop clients still ship a secret; Google’s token endpoint
 rejects the exchange when it is missing. **Treat the whole JSON as secret.**
 
+> **Download it immediately — the secret is shown once.** The Console does not
+> reliably offer **Download JSON** on the client detail page after creation, and
+> Google does not let you re-download the original secret later. If the download
+> button is not there, copy **Client ID** *and* **Client secret** out of the
+> creation dialog before closing it. `client_id` alone is not enough for blumkin.
+
+**If the secret is already lost:** use **Reset secret** on the existing client
+(this invalidates the old secret) or create a new Desktop client, then point
+`google_oauth_client_file` at the new file and re-run
+`blumkin --profile <name> auth login`.
+
+**If you only saved the ID and secret** (no JSON file), hand-build the file —
+blumkin reads exactly these keys, and fills in `auth_uri` / `token_uri` /
+`redirect_uris` when omitted:
+
+```json
+{
+  "installed": {
+    "client_id": "<id>.apps.googleusercontent.com",
+    "client_secret": "GOCSPX-…",
+    "redirect_uris": ["http://localhost"],
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token"
+  }
+}
+```
+
 ### 5. Store the client JSON safely
 
 Do not leave it in `~/Downloads` under the Console’s long name.
@@ -228,6 +255,7 @@ blumkin --profile personal auth logout
 |---------|--------------|-----|
 | Access blocked / app not verified / only test users | External app in **Testing**; account not listed | Add the exact sign-in account under Test users; retry login |
 | `(invalid_request) client_secret is missing` | Auth not reading Desktop JSON (or empty secret) | Set `google_oauth_client_file` to the Console download; confirm JSON has `installed.client_secret` |
+| Only have the client ID — no **Download JSON** button | Secret is shown once at creation; Console often hides re-download afterwards | **Reset secret** on the client (or create a new Desktop client), then hand-build the JSON from the template in §A.4 and re-run `auth login` |
 | `auth_required` / exit 3 on calendar/mail | No token yet, or refresh expired | Run `blumkin --profile personal auth login` on a TTY |
 | Calendar/mail HTTP 403 after login | API not enabled, or wrong GCP project | Enable Calendar + Gmail APIs on the **same** project as the OAuth client |
 | Wrong mailbox / calendar | Wrong profile selected | Pass `--profile personal` / `@personal`, or check `blumkin profiles list --json` |

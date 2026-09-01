@@ -113,7 +113,10 @@ named profile, login, smoke, troubleshooting).
 
 Short form — point the profile at your Google Cloud **Desktop** OAuth client
 JSON (the Console download). That file holds `client_id` / `client_secret`; do
-not put the secret in toml or environment variables:
+not put the secret in toml or environment variables. **Download that JSON when
+you create the client** — the secret is shown once and Google will not let you
+re-download it later (recovery means Reset secret / a new client; see
+[`docs/google-setup.md`](./docs/google-setup.md) §A.4):
 
 ```toml
 [profiles.personal]
