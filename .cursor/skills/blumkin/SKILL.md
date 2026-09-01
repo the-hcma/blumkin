@@ -11,13 +11,21 @@ SDK code (or Google API client code). Do not invent client IDs or call Graph /
 Workspace APIs directly when Blumkin covers the job.
 
 With `provider = "google"` in config, supported verbs are calendar
-(`today` / `view` / `freebusy` / `suggest` / `create`) and mail
-(`inbox` / `list` / `get`) plus auth. Point `google_oauth_client_file` at the
-Desktop client JSON (secret stays in that file, not env/toml). Setup walkthrough:
+(`today` / `view` / `freebusy` / `suggest` / `create`), mail
+(`inbox` / `list` / `get`), and mail drafts
+(`draft` / `update-draft` / `delete-draft` / `send-draft`) plus auth. Point
+`google_oauth_client_file` at the Desktop client JSON (secret stays in that file,
+not env/toml). Setup walkthrough:
 [`docs/google-setup.md`](../../../docs/google-setup.md). Unsupported verbs (chat,
-people, mail writes, calendar `update` / `cancel` / `accept`, …) fail closed with
-a clear error — do not invent workarounds. On Google, `calendar create` ignores
-`--teams` (no Meet link yet) and `--remind-email` adds a real email reminder.
+people, mail `reply` / `forward`, mail attachments, calendar
+`update` / `cancel` / `accept`, …) fail closed with a clear error — do not invent
+workarounds. On Google, `calendar create` ignores `--teams` (no Meet link yet)
+and `--remind-email` adds a real email reminder. Mail drafts need the
+`gmail.compose` scope: after upgrading, run `blumkin auth login` once to
+re-consent, or draft calls exit 4 (`missing_scope`). The returned draft `id` is
+the Gmail draft id (pass it straight back to `send-draft` / `delete-draft`);
+`attachments[].id` is `null` because Gmail carries attachments inside the raw
+message.
 
 ## Cold start (agent)
 

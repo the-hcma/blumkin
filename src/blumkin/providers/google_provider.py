@@ -10,6 +10,7 @@ from blumkin.config import BlumkinConfig
 from blumkin.providers import google_auth
 from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google import mail as google_mail
+from blumkin.providers.google import mail_writes as google_mail_writes
 from blumkin.providers.kind import ProviderKind
 
 
@@ -189,7 +190,7 @@ class GoogleWorkspaceProvider:
         return self._unsupported("mail attachments list")
 
     async def mail_delete_draft(self, *, draft_id: str) -> dict[str, Any]:
-        return self._unsupported("mail delete-draft")
+        return await google_mail_writes.mail_delete_draft(draft_id=draft_id, config=self._config)
 
     async def mail_draft(
         self,
@@ -204,7 +205,18 @@ class GoogleWorkspaceProvider:
         cc: str | Sequence[str] = (),
         no_signature: bool = False,
     ) -> dict[str, Any]:
-        return self._unsupported("mail draft")
+        return await google_mail_writes.mail_draft(
+            to=to,
+            subject=subject,
+            attach=attach,
+            bcc=bcc,
+            body=body,
+            body_file=body_file,
+            body_type=body_type,
+            cc=cc,
+            no_signature=no_signature,
+            config=self._config,
+        )
 
     async def mail_folders(self) -> dict[str, Any]:
         return self._unsupported("mail folders")
@@ -299,7 +311,7 @@ class GoogleWorkspaceProvider:
         return self._unsupported("mail reply")
 
     async def mail_send_draft(self, *, draft_id: str) -> dict[str, Any]:
-        return self._unsupported("mail send-draft")
+        return await google_mail_writes.mail_send_draft(draft_id=draft_id, config=self._config)
 
     async def mail_update_draft(
         self,
@@ -314,7 +326,18 @@ class GoogleWorkspaceProvider:
         cc: str | Sequence[str] | None = None,
         to: str | Sequence[str] | None = None,
     ) -> dict[str, Any]:
-        return self._unsupported("mail update-draft")
+        return await google_mail_writes.mail_update_draft(
+            draft_id=draft_id,
+            attach=attach,
+            bcc=bcc,
+            subject=subject,
+            body=body,
+            body_file=body_file,
+            body_type=body_type,
+            cc=cc,
+            to=to,
+            config=self._config,
+        )
 
     async def meeting_get(self, *, event_id: str) -> dict[str, Any]:
         return self._unsupported("meeting get")
