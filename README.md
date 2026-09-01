@@ -127,10 +127,10 @@ Optional: set `client_id` in toml as well; when omitted it is read from the JSON
 Keep the client JSON mode `0600` and outside the repo.
 
 Supported Google verbs: auth, calendar `today` / `view` / `freebusy` / `suggest`
-/ `create`, mail `inbox` / `list` / `get`, and mail drafts `draft` /
-`update-draft` / `delete-draft` / `send-draft`. Everything else fails closed with
-a clear error. Mail drafts use the `gmail.compose` scope — re-run
-`blumkin auth login` once after upgrading, or those calls exit `4`
+/ `create`, mail `inbox` / `list` / `get`, and mail writes `draft` /
+`update-draft` / `delete-draft` / `send-draft` / `reply` / `forward`. Everything
+else fails closed with a clear error. Mail writes use the `gmail.compose` scope —
+re-run `blumkin auth login` once after upgrading, or those calls exit `4`
 (`missing_scope`).
 
 Token file (written by `blumkin auth login`): `profiles/<name>/google_token.json`.

@@ -12,20 +12,21 @@ Workspace APIs directly when Blumkin covers the job.
 
 With `provider = "google"` in config, supported verbs are calendar
 (`today` / `view` / `freebusy` / `suggest` / `create`), mail
-(`inbox` / `list` / `get`), and mail drafts
-(`draft` / `update-draft` / `delete-draft` / `send-draft`) plus auth. Point
-`google_oauth_client_file` at the Desktop client JSON (secret stays in that file,
-not env/toml). Setup walkthrough:
+(`inbox` / `list` / `get`), and mail writes
+(`draft` / `update-draft` / `delete-draft` / `send-draft` / `reply` / `forward`)
+plus auth. Point `google_oauth_client_file` at the Desktop client JSON (secret
+stays in that file, not env/toml). Setup walkthrough:
 [`docs/google-setup.md`](../../../docs/google-setup.md). Unsupported verbs (chat,
-people, mail `reply` / `forward`, mail attachments, calendar
-`update` / `cancel` / `accept`, …) fail closed with a clear error — do not invent
-workarounds. On Google, `calendar create` ignores `--teams` (no Meet link yet)
-and `--remind-email` adds a real email reminder. Mail drafts need the
-`gmail.compose` scope: after upgrading, run `blumkin auth login` once to
-re-consent, or draft calls exit 4 (`missing_scope`). The returned draft `id` is
-the Gmail draft id (pass it straight back to `send-draft` / `delete-draft`);
-`attachments[].id` is `null` because Gmail carries attachments inside the raw
-message.
+people, mail attachments, calendar `update` / `cancel` / `accept`, …) fail closed
+with a clear error — do not invent workarounds. On Google, `calendar create`
+ignores `--teams` (no Meet link yet) and `--remind-email` adds a real email
+reminder. Mail writes need the `gmail.compose` scope: after upgrading, run
+`blumkin auth login` once to re-consent, or those calls exit 4 (`missing_scope`).
+The returned draft `id` is the Gmail draft id (pass it straight back to
+`send-draft` / `delete-draft`); `attachments[].id` is `null` because Gmail
+carries attachments inside the raw message. `reply` threads with the original
+(sets `threadId` + `In-Reply-To`); `forward` starts a new thread and carries the
+original's attachments.
 
 ## Cold start (agent)
 
