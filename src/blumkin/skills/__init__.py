@@ -333,13 +333,24 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="chat.last",
         cli=["blumkin", "chat", "last"],
-        summary="Show the last N messages from a chat matched by display name",
+        summary=("Show the last N messages from one chat (exactly one of --with or --chat-id)"),
         mutates=False,
         notifies_others=False,
         scopes=["Chat.Read"],
         args=[
-            {"name": "--with", "required": True, "type": "string"},
+            {
+                "name": "--chat-id",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --with or --chat-id",
+            },
             {"name": "--n", "required": False, "type": "int"},
+            {
+                "name": "--with",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --with or --chat-id; refuses if multiple matches",
+            },
         ],
     ),
     SkillSpec(

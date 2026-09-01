@@ -160,7 +160,9 @@ class GoogleWorkspaceProvider:
     async def chat_find(self, *, with_name: str) -> dict[str, Any]:
         return self._unsupported("chat find")
 
-    async def chat_last(self, *, with_name: str, n: int = 3) -> dict[str, Any]:
+    async def chat_last(
+        self, *, with_name: str | None = None, chat_id: str | None = None, n: int = 3
+    ) -> dict[str, Any]:
         return self._unsupported("chat last")
 
     async def chat_send(

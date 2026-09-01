@@ -298,9 +298,14 @@ Examples:
 \b
   blumkin chat last --with "Sam Rivera" --json
   blumkin chat last --with "Sam Rivera" --n 10 --json
+  blumkin chat last --chat-id "19:...@unq.gbl.spaces" --n 10 --json
 
-Shows the last N messages (default 3) from the matched 1:1. Exit 5 (not_found)
-means no chat matched `--with`.
+Shows the last N messages (default 3) from one chat. Pass exactly one of
+`--with` (display-name substring) or `--chat-id` (from `chat find`).
+
+Exit 5 (not_found) means no chat matched `--with`. Exit 2 (usage_error) means
+`--with` matched several chats - the message lists their ids, so re-run with
+`--chat-id <id>` rather than guessing which one you got.
 """
 
 CHAT_SEND_EPILOG = """

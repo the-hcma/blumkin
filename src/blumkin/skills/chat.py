@@ -291,26 +291,60 @@ async def chat_find(
 
 async def chat_last(
     *,
-    with_name: str,
+    with_name: str | None = None,
+    chat_id: str | None = None,
     n: int = 3,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
+    """Last ``n`` ordinary messages from one chat, selected by name or explicit id.
+
+    ``--with`` that matches several chats is a fail-closed error listing the ids,
+    matching ``chat send`` / ``edit`` / ``delete``: picking an arbitrary one would
+    quietly return another person's conversation. ``--chat-id`` is the escape
+    hatch, and skips the member-name scan entirely.
+    """
     if n < 1:
         raise ValueError("--n must be >= 1")
-    found = await chat_find(with_name=with_name, config=config)
-    items = found["items"]
-    if not items:
-        return {
-            "chat": None,
-            "items": [],
-            "partial": found["partial"],
-            "query": with_name,
-            "skipped": found["skipped"],
-        }
-    chat = items[0]
+    name = (with_name or "").strip() or None
+    explicit_id = (chat_id or "").strip() or None
+    if bool(name) == bool(explicit_id):
+        raise ValueError("exactly one of --with or --chat-id is required")
     cfg = config or load_config()
+    if explicit_id is not None:
+        chat = {"chat_type": None, "id": explicit_id, "members": [], "topic": None}
+        found = {"partial": False, "skipped": 0}
+    else:
+        assert name is not None
+        found = await chat_find(with_name=name, config=cfg)
+        items = found["items"]
+        if found["partial"]:
+            # A skipped chat (403 / throttle on the member fetch) may match the same
+            # name, so neither "exactly one" nor "none" is trustworthy here. Same
+            # guard, and same wording, as _resolve_chat_target.
+            raise ValueError(
+                f"chat match for {name!r} is partial "
+                f"(skipped {int(found['skipped'])} chat(s)); "
+                "retry later or pass --chat-id from `chat find`"
+            )
+        if not items:
+            # No-match stays a stdout result (chat: null / ok: false), not an
+            # exception — pinned by test_diagnostic_commands_report_failure_on_stdout.
+            return {
+                "chat": None,
+                "items": [],
+                "partial": found["partial"],
+                "query": name,
+                "skipped": found["skipped"],
+            }
+        if len(items) > 1:
+            ids = ", ".join(str(item.get("id")) for item in items)
+            raise ValueError(
+                f"ambiguous chat match for {name!r} ({len(items)} chats); "
+                f"pass --chat-id with one of: {ids}"
+            )
+        chat = items[0]
     client = create_graph_client(cfg)
-    chat_id = chat["id"]
+    chat_id = str(chat["id"])
     query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
         orderby=["createdDateTime desc"],
         top=50,
@@ -335,7 +369,7 @@ async def chat_last(
         "chat": chat,
         "items": selected,
         "partial": found["partial"],
-        "query": with_name,
+        "query": name,
         "skipped": found["skipped"],
     }
 
