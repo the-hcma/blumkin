@@ -106,7 +106,7 @@ main() {
 
   printf 'verify-pypi-release: installed commands passed for %s\n' "$version"
 
-  verify_pipx_install "$version"
+  verify_pipx_install "$version" "${venv_dir}/bin/python"
 }
 
 # pipx has its own venv layout and console-script shims (PIPX_HOME / PIPX_BIN_DIR),
@@ -118,6 +118,12 @@ main() {
 # machine's PATH / ~/.local/share/pipx.
 verify_pipx_install() {
   local -r version="$1"
+  # Pin pipx's own venv to the same 3.14 the uv-pip block above already proved -
+  # $HOME is overridden below so uv/pipx can no longer see the managed pythons
+  # under the real HOME and would otherwise fall back to the runner's ambient
+  # python3, which can be older than blumkin's requires-python and fail the
+  # install outright (mergestorm-vortex).
+  local -r python_bin="$2"
   local pipx_uv_home pipx_bin pipx_home pipx_bin_dir version_output
 
   pipx_uv_home="${temp_root}/pipx-uv-home"
@@ -130,7 +136,7 @@ verify_pipx_install() {
   pipx_bin_dir="${temp_root}/pipx-bin"
   mkdir -p "$pipx_home" "$pipx_bin_dir"
   timeout 180 env HOME="$pipx_uv_home" PIPX_HOME="$pipx_home" PIPX_BIN_DIR="$pipx_bin_dir" \
-    "$pipx_bin" install "${package}==${version}"
+    "$pipx_bin" install --python "$python_bin" "${package}==${version}"
 
   version_output="$(
     timeout 30 env -u BLUMKIN_GIT_SHA -u GITHUB_SHA "${pipx_bin_dir}/blumkin" --version

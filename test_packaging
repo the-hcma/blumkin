@@ -120,8 +120,13 @@ fi
 pipx_home="$temp_root/pipx-home"
 pipx_bin_dir="$temp_root/pipx-bin"
 mkdir -p "$pipx_home" "$pipx_bin_dir"
+# Pin pipx's own venv to the same 3.14 the uv-pip block above already proved
+# ($venv_dir/bin/python) - HOME is now the scratch dir, so uv/pipx can no longer see
+# the managed pythons under the real HOME and would otherwise fall back to the
+# runner's ambient python3, which can be older than blumkin's requires-python and
+# fail the install outright (mergestorm-vortex).
 timeout 120 env PIPX_HOME="$pipx_home" PIPX_BIN_DIR="$pipx_bin_dir" \
-  "$pipx_bin" install "$wheel_path"
+  "$pipx_bin" install --python "$venv_dir/bin/python" "$wheel_path"
 
 pipx_version_line="$(installed_env "$pipx_bin_dir/blumkin" --version)"
 printf '%s\n' "$pipx_version_line"
