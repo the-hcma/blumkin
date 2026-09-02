@@ -11,6 +11,7 @@ from blumkin.providers import google_auth
 from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google import mail as google_mail
 from blumkin.providers.google import mail_writes as google_mail_writes
+from blumkin.providers.google import people as google_people
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.providers.kind import ProviderKind
 
@@ -412,7 +413,9 @@ class GoogleWorkspaceProvider:
         email: str | None = None,
         top: int = 10,
     ) -> dict[str, Any]:
-        return self._unsupported("people resolve")
+        return await google_people.people_resolve(
+            name=name, email=email, top=top, config=self._config
+        )
 
     def _unsupported(self, op: str) -> dict[str, Any]:
         raise ValueError(f"{op} not supported for provider=google yet")

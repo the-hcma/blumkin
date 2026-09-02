@@ -1565,3 +1565,34 @@ def test_doctor_auth_cache_incomplete_exits_auth(tmp_path, monkeypatch) -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["doctor"])
     assert result.exit_code == EXIT_AUTH
+
+
+def test_wo1162425_gate_does_not_apply_to_a_google_profile(tmp_path, monkeypatch) -> None:
+    """WO1162425 is a Microsoft Entra add-on; gating Google on it made people resolve
+    unreachable no matter what the operator had consented to."""
+    import json
+    from unittest.mock import MagicMock, patch
+
+    from click.testing import CliRunner
+
+    from blumkin.cli import main
+
+    (tmp_path / "config.toml").write_text(
+        'provider = "google"\n'
+        'default_tz = "UTC"\n'
+        'google_oauth_client_file = "%s"\n' % (tmp_path / "client.json")
+    )
+    (tmp_path / "client.json").write_text(
+        '{"installed": {"client_id": "id.apps.googleusercontent.com", "client_secret": "s"}}'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    provider = MagicMock()
+
+    async def _resolve(**_kwargs):
+        return {"ambiguous": False, "matches": [], "person": {"email": "a@b.com"}, "query": {}}
+
+    provider.people_resolve.side_effect = _resolve
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["people", "resolve", "--name", "Ada", "--json"])
+    assert result.exit_code == 0, result.stderr
+    assert json.loads(result.stdout)["person"]["email"] == "a@b.com"
