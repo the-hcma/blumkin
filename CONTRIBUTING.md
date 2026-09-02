@@ -10,21 +10,24 @@ testing.
 
 ## Review model
 
-Every change to `main` goes through a pull request. No direct pushes.
+Every change to `main` goes through a pull request. No direct pushes, no force
+pushes, and a PR must be up to date with `main` before it merges.
 
-- **Code-owner review is required.** `main` branch protection has
-  `require_code_owner_reviews`, `required_approving_review_count >= 1`, and
-  `require_last_push_approval`, and [`.github/CODEOWNERS`](.github/CODEOWNERS) is
-  `* @thehcma`. So @thehcma must approve every PR, and any push after approval
-  re-requests review.
+- **Required status checks must be green** — `Scaffold checks`,
+  `Python lint & format checks`, `Pytest (hermetic)`, `Packaging smoke`,
+  `Shellcheck` (see the table below). This is the hard merge gate;
+  `enforce_admins` is off so a green run is the only thing routinely bypassed.
 - **Agent review runs on every PR head.** `mergestorm-vortex` reviews each push;
   `.cursor/rules/pr-ship-and-review.mdc` requires an on-thread human reply
-  before any review thread is resolved.
-- **Required status checks** must be green (see the table below).
-- The maintainer's own PRs: GitHub does not allow self-approval, so the
-  maintainer merges their own PRs by admin once agent review is clear and all
-  checks pass. Every PR from anyone else waits for an explicit @thehcma
-  approval. See [`docs/DECISIONS.md`](docs/DECISIONS.md).
+  before any review thread is resolved. Threads are addressed before merge.
+- **Code-owner review.** [`.github/CODEOWNERS`](.github/CODEOWNERS) is
+  `* @thehcma` with `require_code_owner_reviews` on, so GitHub requests
+  @thehcma on every PR and records who reviewed. `required_approving_review_count`
+  is `0` — a solo maintainer cannot approve their own PR, and a block nobody can
+  clear only forces admin-override merges. External contributions get @thehcma's
+  review by practice; only collaborators can merge, and the checks gate it.
+  Rationale and the "second contributor" trigger to raise it back to 1:
+  [`docs/DECISIONS.md`](docs/DECISIONS.md) (D2).
 
 ## Static analysis and scanning
 

@@ -62,7 +62,7 @@ follow the **Rollback** section there.
 
 | Control | Where | Gate |
 |---------|-------|------|
-| Code review | code-owner (`@thehcma`) approval required on every PR + `require_last_push_approval`; agent review (`mergestorm-vortex`) with reply-before-resolve | **blocks merge** |
+| Code review | agent review (`mergestorm-vortex`) on every PR head with reply-before-resolve; code owner (`@thehcma`) requested on every PR via CODEOWNERS (`required_approving_review_count` is 0 for a solo maintainer - see [`docs/DECISIONS.md`](docs/DECISIONS.md) D2) | review threads addressed before merge |
 | Static analysis | `ruff` + `pyright` via `.github/ci/python-static` (`Python lint & format checks`) | **required check - blocks merge** |
 | Tests | `pytest -m 'not live'` (`Pytest (hermetic)`) | **required check - blocks merge** |
 | Installed-artifact check | `test_packaging` (`Packaging smoke`) | **required check - blocks merge** |

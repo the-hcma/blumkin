@@ -29,17 +29,29 @@ ids, tenant ids) live only in each operator's `~/.config/blumkin/`.
 ### D2 - Personal account (`the-hcma`), single code owner
 
 The repo lives under a personal account with @thehcma as the sole code owner.
-This is a personal productivity tool, not a team service. The compensating
-controls for a one-person project:
+This is a personal productivity tool, not a team service, so the review gate is
+tuned for one person rather than a team:
 
-- `main` cannot be pushed to directly; every change is a PR.
-- Branch protection requires a code-owner approval + `require_last_push_approval`;
-  [`.github/CODEOWNERS`](../.github/CODEOWNERS) is `* @thehcma`, so **no external
-  contribution merges without @thehcma's review**.
-- The maintainer's own PRs still run the full agent review + required checks and
-  are admin-merged only after those are clear (GitHub blocks self-approval).
-- Revisit if a second regular contributor appears - at that point add them as a
-  reviewer and drop the admin-merge exception.
+- `main` cannot be pushed to directly; every change is a PR that must be **up to
+  date** with `main` before it merges. No force pushes, no branch deletion.
+- **Required status checks** (`Scaffold checks`, `Python lint & format checks`,
+  `Pytest (hermetic)`, `Packaging smoke`, `Shellcheck`) must be green - this is
+  the hard merge gate, and `enforce_admins` stays off so it is the *only* thing
+  the maintainer routinely bypasses when nothing is red.
+- Agent review (`mergestorm-vortex`) runs on every PR head; its threads are
+  addressed and resolved before merge (`.cursor/rules/pr-ship-and-review.mdc`).
+- [`.github/CODEOWNERS`](../.github/CODEOWNERS) is `* @thehcma` and
+  `require_code_owner_reviews` is on, so GitHub requests @thehcma on every PR
+  and records who reviewed. `required_approving_review_count` is **0**: a lone
+  maintainer cannot approve their own PR, and a hard approval gate with nobody
+  able to satisfy it just means merging by admin override every time, which
+  weakens the status-check gate too. `dismiss_stale_reviews` stays on.
+- External contributions get @thehcma's review by practice (and the requested-
+  reviewer prompt), not by a hard block - only collaborators can merge at all,
+  and the checks still gate every merge.
+- **When a second regular contributor appears:** add them as a reviewer and set
+  `required_approving_review_count` back to 1 - then the code-owner gate is a
+  real block again with someone able to satisfy it.
 
 ### D3 - Delegated Graph auth only
 
