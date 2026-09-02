@@ -71,62 +71,6 @@ def test_meeting_get_unsupported(tmp_path: Path) -> None:
         asyncio.run(provider.meeting_get(event_id="evt-1"))
 
 
-def test_calendar_today_maps_events(tmp_path: Path) -> None:
-    cfg = _cfg(tmp_path)
-    service = MagicMock()
-    service.events.return_value.list.return_value.execute.return_value = {
-        "items": [
-            {
-                "id": "evt-1",
-                "summary": "Standup",
-                "start": {"dateTime": "2026-08-30T15:00:00Z"},
-                "end": {"dateTime": "2026-08-30T15:30:00Z"},
-                "location": "Room A",
-                "organizer": {
-                    "email": "ada@example.com",
-                    "displayName": "Ada",
-                    "self": True,
-                },
-            }
-        ]
-    }
-    with (
-        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
-        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
-    ):
-        provider = GoogleWorkspaceProvider(cfg)
-        payload = asyncio.run(
-            provider.calendar_today(day=datetime(2026, 8, 30, tzinfo=UTC).date(), tz_name="UTC")
-        )
-    assert payload["date"] == "2026-08-30"
-    assert len(payload["items"]) == 1
-    item = payload["items"][0]
-    assert item["id"] == "evt-1"
-    assert item["subject"] == "Standup"
-    assert item["location"] == "Room A"
-    assert item["is_all_day"] is False
-
-
-def test_calendar_today_gates_on_read_only_scope(tmp_path: Path) -> None:
-    """calendar_today/calendar_view only call events().list - must not require write
-    scopes (calendar.events/calendar.freebusy), or a calendar.readonly-only grant
-    fails before any provider call (issue #133 review, round 2)."""
-    from blumkin.providers.google_auth import CALENDAR_READ_SCOPES
-
-    cfg = _cfg(tmp_path)
-    service = MagicMock()
-    service.events.return_value.list.return_value.execute.return_value = {"items": []}
-    with (
-        patch(
-            "blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()
-        ) as get_creds,
-        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
-    ):
-        provider = GoogleWorkspaceProvider(cfg)
-        asyncio.run(provider.calendar_today(tz_name="UTC"))
-    assert get_creds.call_args.kwargs["required_scopes"] == CALENDAR_READ_SCOPES
-
-
 def test_calendar_freebusy_and_suggest(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     service = MagicMock()
@@ -186,6 +130,62 @@ def test_calendar_freebusy_gates_on_freebusy_only_scope(tmp_path: Path) -> None:
             provider.calendar_freebusy(with_emails=["ada@example.com"], start=start, end=end)
         )
     assert get_creds.call_args.kwargs["required_scopes"] == CALENDAR_FREEBUSY_SCOPES
+
+
+def test_calendar_today_gates_on_read_only_scope(tmp_path: Path) -> None:
+    """calendar_today/calendar_view only call events().list - must not require write
+    scopes (calendar.events/calendar.freebusy), or a calendar.readonly-only grant
+    fails before any provider call (issue #133 review, round 2)."""
+    from blumkin.providers.google_auth import CALENDAR_READ_SCOPES
+
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.events.return_value.list.return_value.execute.return_value = {"items": []}
+    with (
+        patch(
+            "blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()
+        ) as get_creds,
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        asyncio.run(provider.calendar_today(tz_name="UTC"))
+    assert get_creds.call_args.kwargs["required_scopes"] == CALENDAR_READ_SCOPES
+
+
+def test_calendar_today_maps_events(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.events.return_value.list.return_value.execute.return_value = {
+        "items": [
+            {
+                "id": "evt-1",
+                "summary": "Standup",
+                "start": {"dateTime": "2026-08-30T15:00:00Z"},
+                "end": {"dateTime": "2026-08-30T15:30:00Z"},
+                "location": "Room A",
+                "organizer": {
+                    "email": "ada@example.com",
+                    "displayName": "Ada",
+                    "self": True,
+                },
+            }
+        ]
+    }
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        payload = asyncio.run(
+            provider.calendar_today(day=datetime(2026, 8, 30, tzinfo=UTC).date(), tz_name="UTC")
+        )
+    assert payload["date"] == "2026-08-30"
+    assert len(payload["items"]) == 1
+    item = payload["items"][0]
+    assert item["id"] == "evt-1"
+    assert item["subject"] == "Standup"
+    assert item["location"] == "Room A"
+    assert item["is_all_day"] is False
 
 
 def test_calendar_create_cli_wires_remind_email(tmp_path: Path) -> None:
