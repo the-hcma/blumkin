@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Shared shellcheck gate for local preflight (scripts/dev/pre-pr-checks) and CI.
+# blumkin has no .sh files; shell scripts are extensionless and selected by shebang.
+set -euo pipefail
+
+if ! command -v shellcheck >/dev/null 2>&1; then
+  echo "ERROR: shellcheck is required but was not found on PATH." >&2
+  exit 1
+fi
+
+targets=(
+  test_packaging
+)
+
+# Extensionless shell helpers under scripts/ and .github/ci/. Skip anything whose
+# shebang names python (for example scripts/embed_build_metadata).
+for dir in scripts .github/ci; do
+  [ -d "$dir" ] || continue
+  while IFS= read -r path; do
+    case "$(head -n 1 "$path" 2>/dev/null || true)" in
+      *python*) continue ;;
+      '#!'*sh*) targets+=("$path") ;;
+    esac
+  done < <(find "$dir" -type f | LC_ALL=C sort)
+done
+
+# Deduplicate while preserving order.
+unique=()
+for path in "${targets[@]}"; do
+  skip=0
+  for seen in "${unique[@]+"${unique[@]}"}"; do
+    [ "$seen" = "$path" ] && skip=1 && break
+  done
+  [ "$skip" -eq 0 ] && unique+=("$path")
+done
+
+shellcheck -S info "${unique[@]}"

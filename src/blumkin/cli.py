@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import click
 import httpx
 
-from blumkin import __version__, help_text
+from blumkin import help_text
 from blumkin.auth import SecretWriteError
 from blumkin.config import BlumkinConfig, list_profiles, load_config, set_profile_email
 from blumkin.exit_codes import (
@@ -88,6 +88,7 @@ from blumkin.skills.meeting import (
 )
 from blumkin.skills.meeting import format_transcription_human
 from blumkin.skills.people import format_resolve_human
+from blumkin.version import build_info, build_status_fields, running_command_path
 
 # Fallback next-step guidance per error slug, used when a call site does not pass
 # its own more specific `hint=`. Keep every non-zero exit actionable (issue #97).
@@ -126,6 +127,13 @@ def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
     value = bool(ctx.obj.get("as_json") or as_json_flag)
     ctx.obj["as_json"] = value
     return value
+
+
+def _auth_status_payload(config: BlumkinConfig | None = None) -> dict[str, Any]:
+    """Auth-status fields plus the resolved build (version, commit, binary path)."""
+    payload = dict(_workspace(config).auth_status())
+    payload.update(build_status_fields())
+    return payload
 
 
 def _cli_as_json() -> bool:
@@ -227,6 +235,15 @@ def _mail_time_bounds(
         None if since is None else parse_local_datetime(since, tz),
         None if until is None else parse_local_datetime(until, tz),
     )
+
+
+def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    """``--version`` callback: package version, short commit, resolved binary path."""
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(build_info())
+    click.echo(f"running from {running_command_path()}")
+    ctx.exit()
 
 
 def _raise_auth_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
@@ -370,7 +387,14 @@ def _workspace(config: BlumkinConfig | None = None) -> WorkspaceProvider:
     default=None,
     help="IANA timezone for date/time in and out (e.g. America/New_York); default from config.",
 )
-@click.version_option(version=__version__, prog_name="blumkin")
+@click.option(
+    "--version",
+    is_flag=True,
+    callback=_print_version,
+    expose_value=False,
+    is_eager=True,
+    help="Show the version, commit, and binary path, then exit.",
+)
 @click.pass_context
 def main(
     ctx: click.Context,
@@ -440,7 +464,7 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         raise SystemExit(EXIT_AUTH) from exc
     populated = _populate_profile_email_once()
     if as_json:
-        emit_json({"ok": True, "email_written": populated, "status": _workspace().auth_status()})
+        emit_json({"ok": True, "email_written": populated, "status": _auth_status_payload()})
     else:
         emit_lines(["Signed in. Token cache written under ~/.config/blumkin/."])
         if populated:
@@ -508,7 +532,7 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
     Read this before assuming a hang is a login problem.
     """
     as_json = _as_json(ctx, as_json_flag)
-    payload = _workspace().auth_status()
+    payload = _auth_status_payload()
     if as_json:
         emit_json(payload)
         return
@@ -520,6 +544,8 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
         f"token_cache: {payload['token_cache']}",
         f"auth_record: {payload['auth_record']}",
         f"refresh_token_present: {payload['refresh_token_present']}",
+        f"build: {payload['build_version']} ({payload['build_commit']})",
+        f"running_from: {payload['running_from']}",
     ]
     expires_at = payload.get("access_token_expires_at")
     if expires_at is None:
@@ -771,8 +797,10 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
                 f"config.toml email is {cfg.email!r} but this profile is signed in as "
                 f"{live!r}; update config.toml if the account really changed"
             )
+    build = build_status_fields()
     payload = {
         "ok": not problems,
+        "build": build,
         "wo1162425_scopes": cfg.wo1162425_scopes,
         "problems": problems,
         "warnings": warnings,
@@ -783,6 +811,8 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_json(payload)
     else:
         emit_lines([f"ok: {payload['ok']}"])
+        emit_lines([f"build: {build['build_version']} ({build['build_commit']})"])
+        emit_lines([f"running_from: {build['running_from']}"])
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
         for problem in problems:

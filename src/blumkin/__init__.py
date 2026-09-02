@@ -2,4 +2,8 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+from blumkin.version import package_version
+
+__all__ = ["__version__"]
+
+__version__ = package_version()
