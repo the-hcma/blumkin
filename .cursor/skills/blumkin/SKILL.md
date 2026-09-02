@@ -15,10 +15,10 @@ With `provider = "google"` in config, supported verbs are calendar
 (`inbox` / `list` / `get` / `folders` / `attachments` / `attachments download`),
 mail writes
 (`draft` / `update-draft` / `delete-draft` / `send-draft` / `reply` / `forward`),
-calendar writes (`accept` / `cancel` / `update`), and `people resolve`
-plus auth. Point `google_oauth_client_file` at the Desktop client JSON (secret
+calendar writes (`accept` / `cancel` / `update`), `people resolve`, and chat
+(`find` / `last` / `send` / `edit` / `delete` / `attachments`) plus auth. Point `google_oauth_client_file` at the Desktop client JSON (secret
 stays in that file, not env/toml). Setup walkthrough:
-[`docs/google-setup.md`](../../../docs/google-setup.md). Unsupported verbs (chat, meeting, …) fail closed
+[`docs/google-setup.md`](../../../docs/google-setup.md). Unsupported verbs (meeting, …) fail closed
 with a clear error — do not invent workarounds. `mail folders` lists Gmail
 labels that act as folders (system labels map to Outlook-style names; user
 labels keep their `Parent/Child` path); `mail list --folder` still only accepts

@@ -139,7 +139,9 @@ Supported Google verbs: auth, calendar `today` / `view` / `freebusy` / `suggest`
 / `create` / `accept` / `cancel` / `update` (`update` attaches a Meet link), mail `inbox` / `list` / `get` / `folders` / `attachments` (list +
 `download`), and mail writes `draft` / `update-draft` / `delete-draft` /
 `send-draft` / `reply` / `forward`, and `people resolve` (own contacts plus the
-Workspace directory; a consumer account just uses contacts). Everything else
+Workspace directory; a consumer account just uses contacts), and chat `find` /
+`last` / `send` / `edit` / `delete` / `attachments` (a 1:1 is a Chat space;
+Drive-backed attachments are listed but not downloadable). Everything else
 fails closed with a clear
 error. `mail folders` lists Gmail labels that act as folders. Mail writes use the
 `gmail.compose` scope — re-run `blumkin auth login` once after upgrading, or those

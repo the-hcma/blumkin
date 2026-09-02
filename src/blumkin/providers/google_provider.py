@@ -164,7 +164,16 @@ class GoogleWorkspaceProvider:
         message_id: str | None = None,
         with_name: str | None = None,
     ) -> dict[str, Any]:
-        return self._unsupported("chat attachments download")
+        return await google_chat.chat_attachments_download(
+            out=out,
+            attachment_id=attachment_id,
+            chat_id=chat_id,
+            download_all=download_all,
+            latest=latest,
+            message_id=message_id,
+            with_name=with_name,
+            config=self._config,
+        )
 
     async def chat_attachments_list(
         self,
@@ -174,13 +183,23 @@ class GoogleWorkspaceProvider:
         message_id: str | None = None,
         with_name: str | None = None,
     ) -> dict[str, Any]:
-        return self._unsupported("chat attachments list")
+        return await google_chat.chat_attachments_list(
+            chat_id=chat_id,
+            latest=latest,
+            message_id=message_id,
+            with_name=with_name,
+            config=self._config,
+        )
 
     async def chat_delete(self, *, chat_id: str, message_id: str) -> dict[str, Any]:
-        return self._unsupported("chat delete")
+        return await google_chat.chat_delete(
+            chat_id=chat_id, message_id=message_id, config=self._config
+        )
 
     async def chat_edit(self, *, chat_id: str, message_id: str, text: str) -> dict[str, Any]:
-        return self._unsupported("chat edit")
+        return await google_chat.chat_edit(
+            chat_id=chat_id, message_id=message_id, text=text, config=self._config
+        )
 
     async def chat_find(self, *, with_name: str) -> dict[str, Any]:
         return await google_chat.chat_find(with_name=with_name, config=self._config)
@@ -204,7 +223,9 @@ class GoogleWorkspaceProvider:
         with_name: str | None = None,
         chat_id: str | None = None,
     ) -> dict[str, Any]:
-        return self._unsupported("chat send")
+        return await google_chat.chat_send(
+            text=text, with_name=with_name, chat_id=chat_id, config=self._config
+        )
 
     @property
     def kind(self) -> ProviderKind:

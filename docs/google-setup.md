@@ -24,11 +24,12 @@ Do **not** put `client_id` / `client_secret` / tenant-style overrides in env var
 `BLUMKIN_PROFILE` / `--profile` select the profile **name or tag** (non-secret).
 
 Supported verbs with `provider = "google"`: auth, calendar `today` / `view` /
-`freebusy` / `suggest` / `create`, mail `inbox` / `list` / `get` / `folders` /
-`attachments` (list + `download`), and mail writes `draft` / `update-draft` /
-`delete-draft` / `send-draft` / `reply` / `forward`. Remaining skills (chat,
-people, calendar `update` / `cancel` / `accept`) fail closed until a later
-milestone ([#89](https://github.com/the-hcma/blumkin/issues/89)).
+`freebusy` / `suggest` / `create` / `accept` / `cancel` / `update`, mail `inbox` /
+`list` / `get` / `folders` / `attachments` (list + `download`), mail writes
+`draft` / `update-draft` / `delete-draft` / `send-draft` / `reply` / `forward`,
+`people resolve`, and chat `find` / `last` / `send` / `edit` / `delete` /
+`attachments`. Only the `meeting` skills still fail closed
+([#89](https://github.com/the-hcma/blumkin/issues/89)).
 
 Requested OAuth scopes at login:
 
@@ -36,6 +37,7 @@ Requested OAuth scopes at login:
 - `https://www.googleapis.com/auth/calendar.readonly`
 - `https://www.googleapis.com/auth/calendar.freebusy`
 - `https://www.googleapis.com/auth/chat.memberships.readonly`
+- `https://www.googleapis.com/auth/chat.messages`
 - `https://www.googleapis.com/auth/chat.messages.readonly`
 - `https://www.googleapis.com/auth/chat.spaces.readonly`
 - `https://www.googleapis.com/auth/contacts.readonly`
@@ -43,8 +45,9 @@ Requested OAuth scopes at login:
 - `https://www.googleapis.com/auth/gmail.compose`
 - `https://www.googleapis.com/auth/gmail.readonly`
 
-> **Upgrading from an earlier build:** `calendar.events`, `gmail.compose`, and the
-> `contacts.readonly` / `directory.readonly` pair (`people resolve`)
+> **Upgrading from an earlier build:** `calendar.events`, `gmail.compose`, the
+> `contacts.readonly` / `directory.readonly` pair (`people resolve`), and the
+> `chat.*` scopes (chat reads plus `chat.messages` for send / edit / delete)
 > (mail writes: `draft` / `update-draft` / `delete-draft` / `send-draft` /
 > `reply` / `forward`) were added after the read MVP. An existing token was
 > minted without them, so those verbs 403 (`missing_scope`, exit 4) until you run
