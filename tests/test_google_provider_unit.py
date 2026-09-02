@@ -655,6 +655,85 @@ def test_get_credentials_refresh_preserves_stale_granted_scopes(tmp_path: Path) 
     assert saved["scopes"] == [contacts_only]
 
 
+def test_needs_additional_scopes_when_persisted_grant_is_incomplete(tmp_path: Path) -> None:
+    from blumkin.providers import google_auth
+
+    cfg = _cfg(tmp_path)
+    cfg.google_token_path.write_text(
+        json.dumps(
+            {
+                "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+                "scopes": ["https://www.googleapis.com/auth/contacts.readonly"],
+            }
+        )
+    )
+    assert google_auth._needs_additional_scopes(cfg) is True
+
+
+def test_needs_additional_scopes_false_when_grant_is_complete(tmp_path: Path) -> None:
+    from blumkin.providers import google_auth
+
+    cfg = _cfg(tmp_path)
+    cfg.google_token_path.write_text(
+        json.dumps(
+            {
+                "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+                "scopes": sorted(google_auth.GOOGLE_SCOPES),
+            }
+        )
+    )
+    assert google_auth._needs_additional_scopes(cfg) is False
+
+
+def test_get_credentials_runs_browser_when_scopes_are_incomplete(tmp_path: Path) -> None:
+    from blumkin.providers import google_auth
+
+    contacts_only = "https://www.googleapis.com/auth/contacts.readonly"
+    cfg = _cfg(tmp_path)
+    cfg.google_token_path.write_text(
+        json.dumps(
+            {
+                "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+                "client_secret": "fake-google-client-secret",
+                "refresh_token": "fake-refresh",
+                "token": "fake-access",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "scopes": [contacts_only],
+            }
+        )
+    )
+    creds = MagicMock()
+    creds.valid = True
+    creds.expired = False
+    flow = MagicMock()
+    flow.run_local_server.return_value = MagicMock(
+        spec=google_auth.Credentials,
+        refresh_token="new-refresh",
+        valid=True,
+    )
+    flow.run_local_server.return_value.to_json = lambda: json.dumps(
+        {
+            "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+            "client_secret": "fake-google-client-secret",
+            "refresh_token": "new-refresh",
+            "token": "new-access",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "scopes": sorted(google_auth.GOOGLE_SCOPES),
+        }
+    )
+
+    with (
+        patch.object(google_auth, "_load_credentials", return_value=creds),
+        patch.object(google_auth, "InstalledAppFlow") as flow_cls,
+    ):
+        flow_cls.from_client_config.return_value = flow
+        google_auth.get_credentials(cfg, allow_interactive=True)
+
+    flow.run_local_server.assert_called_once_with(
+        port=0, authorization_url_params={"prompt": "consent"}
+    )
+
+
 def test_load_credentials_prefers_oauth_file_client_secret(tmp_path: Path) -> None:
     from blumkin.providers import google_auth
 

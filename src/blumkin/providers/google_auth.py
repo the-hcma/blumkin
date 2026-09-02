@@ -44,8 +44,6 @@ def get_credentials(
     interactive = interactive_auth_allowed() if allow_interactive is None else allow_interactive
     creds = _load_credentials(cfg)
     if creds is not None:
-        if creds.valid:
-            return creds
         if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(refresh_request(cfg))
@@ -57,6 +55,10 @@ def get_credentials(
                     ) from None
             else:
                 _save_credentials(cfg, creds, preserve_granted_scopes=True)
+                if not interactive or not _needs_additional_scopes(cfg):
+                    return creds
+        elif creds.valid:
+            if not interactive or not _needs_additional_scopes(cfg):
                 return creds
         elif not interactive:
             raise ValueError(
@@ -74,7 +76,8 @@ def get_credentials(
         _client_config(cfg),
         scopes=sorted(GOOGLE_SCOPES),
     )
-    creds = flow.run_local_server(port=0)
+    url_params = {"prompt": "consent"} if _needs_additional_scopes(cfg) else None
+    creds = flow.run_local_server(port=0, authorization_url_params=url_params)
     if not isinstance(creds, Credentials):
         raise TypeError("expected google.oauth2.credentials.Credentials from InstalledAppFlow")
     _save_credentials(cfg, creds)
@@ -219,6 +222,18 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
         return Credentials.from_authorized_user_info(info, scopes=sorted(GOOGLE_SCOPES))
     except Exception:
         return None
+
+
+def _needs_additional_scopes(cfg: BlumkinConfig) -> bool:
+    """True when the stored grant is missing scopes this build requests."""
+    if not cfg.google_token_path.is_file():
+        return False
+    granted = persisted_granted_scopes(cfg)
+    if not granted:
+        # Pre-scope-tracking token, or an empty list — re-consent so the file
+        # and server grant align with GOOGLE_SCOPES.
+        return True
+    return not GOOGLE_SCOPES.issubset(granted)
 
 
 def _read_persisted_scopes(cfg: BlumkinConfig) -> list[str] | None:
