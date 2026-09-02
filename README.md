@@ -1,5 +1,11 @@
 # blumkin
 
+[![PyPI version](https://img.shields.io/pypi/v/blumkin.svg)](https://pypi.org/project/blumkin/)
+[![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue.svg)](https://pypi.org/project/blumkin/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/the-hcma/blumkin/blob/main/LICENSE)
+[![CI](https://github.com/the-hcma/blumkin/actions/workflows/ci.yml/badge.svg)](https://github.com/the-hcma/blumkin/actions/workflows/ci.yml)
+[![Release Please](https://github.com/the-hcma/blumkin/actions/workflows/release-please.yml/badge.svg)](https://github.com/the-hcma/blumkin/actions/workflows/release-please.yml)
+
 Personal **Microsoft 365 and Google Workspace** skills CLI — named after Rose “Mrs. B” Blumkin, Berkshire’s legendary operator.
 
 blumkin turns your own calendar, mail, and chat into **small, invokable skills** any coding agent (**Cursor**, **GitHub Copilot**, **Claude**, …) — or a human — can run over the shell, instead of re-implementing OAuth and the Graph / Google API clients each time.
