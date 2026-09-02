@@ -924,9 +924,6 @@ def upgrade(ctx: click.Context, as_json_flag: bool) -> None:
 
     pipx_app = pipx_blumkin_path() or pipx_app
     after = _read_pipx_version(pipx_app) if pipx_app is not None else None
-    # When run from the pipx app itself, running_build is the pre-upgrade build,
-    # so it stands in for an unreadable `before`. From a checkout it does not.
-    before_display = before if before is not None else (None if source_checkout else running_build)
 
     if as_json:
         emit_json(
@@ -943,8 +940,11 @@ def upgrade(ctx: click.Context, as_json_flag: bool) -> None:
         )
         return
 
-    if before_display is not None:
-        lines = [f"from: {before_display}"]
+    # `from:` is the pipx app's own pre-upgrade build - the same value as
+    # pipx_app.before in --json, never a stand-in from the running process
+    # (which may be a different install entirely).
+    if before is not None:
+        lines = [f"from: {before}"]
     elif pipx_app is not None:
         lines = ["from: (could not read the pipx app before upgrading)"]
     else:

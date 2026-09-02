@@ -130,6 +130,31 @@ def test_upgrade_when_pipx_app_version_unreadable_after(
     assert payload["pipx_app"]["path"] == str(app)
 
 
+def test_upgrade_when_pipx_app_version_unreadable_before_human_and_json_agree(
+    monkeypatch, pipx_on_path, tmp_path
+) -> None:
+    """before=None must never be papered over with the running process's build."""
+    app = tmp_path / "blumkin"
+    app.write_text("#!/bin/sh\n")
+    # Running from some other non-checkout install (build 0.9.0); the pipx app
+    # exists but its --version fails, so `before` is unknowable.
+    monkeypatch.setattr(cli, "build_version", lambda: "0.9.0 (cccccccccccc)")
+    monkeypatch.setattr(cli, "pipx_blumkin_path", lambda: app)
+    reads = iter([None, "0.2.0 (bbbbbbbbbbbb)"])
+    monkeypatch.setattr(cli, "_read_pipx_version", lambda _exe: next(reads))
+    _run_returns(monkeypatch, _completed(stdout="upgraded"))
+
+    human = CliRunner().invoke(main, ["upgrade"])
+    assert "from: (could not read the pipx app before upgrading)" in human.stdout
+    assert "0.9.0" not in human.stdout  # the running build is not a stand-in
+
+    reads2 = iter([None, "0.2.0 (bbbbbbbbbbbb)"])
+    monkeypatch.setattr(cli, "_read_pipx_version", lambda _exe: next(reads2))
+    payload = json.loads(CliRunner().invoke(main, ["upgrade", "--json"]).stdout)
+    assert payload["pipx_app"]["before"] is None
+    assert payload["running_from"]["build"] == "0.9.0 (cccccccccccc)"
+
+
 def test_upgrade_surfaces_pipx_failure(monkeypatch, pipx_on_path) -> None:
     monkeypatch.setattr(cli, "pipx_blumkin_path", lambda: None)
     _run_returns(monkeypatch, _completed(returncode=1, stderr="Package is not installed"))
