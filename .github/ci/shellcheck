@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Shared shellcheck gate for local preflight (scripts/dev/pre-pr-checks) and CI.
+# .github/ci/ gate — the-hcma/repository-helpers convention; run by pre-pr-checks
+# and ci.yml (see CONTRIBUTING.md "Governance tooling from repository-helpers").
 # blumkin has no .sh files; shell scripts are extensionless and selected by shebang.
 set -euo pipefail
 

@@ -17,8 +17,9 @@ permissions, no multi-tenant anything.
 | Google desktop-client JSON (holds `client_secret`) | operator-chosen path, mode `0600` | never |
 | The user's mail / calendar / chat content | fetched on demand, printed to stdout, not persisted | n/a |
 
-`.gitignore` and the `gitleaks` CI gate keep all of the above out of the repo.
-blumkin never writes another person's data anywhere.
+[`.gitignore`](../.gitignore) and the `gitleaks` CI gate
+([`.github/ci/secret-scan`](../.github/ci/secret-scan)) keep all of the above out
+of the repo. blumkin never writes another person's data anywhere.
 
 ## Auth model
 
@@ -43,19 +44,35 @@ blumkin never writes another person's data anywhere.
 
 ## How releases are trusted
 
-1. Every PR: code-owner review + agent review, `ruff` / `pyright` / `gitleaks` /
-   `shellcheck` / `test_packaging` all green.
-2. Release cut by Release Please from Conventional Commits - no hand-edited
-   versions.
+1. Every PR: agent review + code-owner review, plus the required checks in
+   [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) - `ruff` / `pyright`
+   ([`.github/ci/python-static`](../.github/ci/python-static)), `pytest`
+   ([`pytest-hermetic`](../.github/ci/pytest-hermetic)), `shellcheck`, and
+   [`test_packaging`](../test_packaging) - all green.
+2. Release cut by Release Please from Conventional Commits
+   ([`.github/workflows/release-please.yml`](../.github/workflows/release-please.yml),
+   [`release-please-config.json`](../release-please-config.json)) - no
+   hand-edited versions.
 3. Published to PyPI by **OIDC trusted publishing** (no stored token). The wheel
-   carries the release commit (`blumkin --version` shows it).
-4. `verify-pypi-release` installs the published artifact in isolation and checks
-   the version and commit before the job is green.
+   carries the release commit via
+   [`scripts/embed_build_metadata`](../scripts/embed_build_metadata) /
+   [`src/blumkin/version.py`](../src/blumkin/version.py) - `blumkin --version`
+   shows it.
+4. [`scripts/verify-pypi-release`](../scripts/verify-pypi-release) installs the
+   published artifact in isolation and checks the version and commit before the
+   job is green.
+
+Compliance of the branch protection, workflows, and cursor rules that back all
+of this is enforced by `github-repo-lint` from
+[`the-hcma/repository-helpers`](https://github.com/the-hcma/repository-helpers) -
+see [`SECURITY.md` › Governance tooling](../SECURITY.md#governance-tooling-repository-helpers).
 
 ## Vulnerabilities
 
-- Dependencies: `pip-audit` daily (`cve-check.yml`) + Dependabot with a 10-day
-  cooldown.
+- Dependencies: `pip-audit` daily
+  ([`.github/workflows/cve-check.yml`](../.github/workflows/cve-check.yml)) +
+  Dependabot ([`.github/dependabot.yml`](../.github/dependabot.yml), 10-day
+  cooldown).
 - Report a vulnerability privately:
   <https://github.com/the-hcma/blumkin/security/advisories/new>. Targets and
   scope are in [`SECURITY.md`](../SECURITY.md).

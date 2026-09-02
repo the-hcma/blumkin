@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# .github/ci/ gate — the-hcma/repository-helpers convention; run by pre-pr-checks
+# and ci.yml (see CONTRIBUTING.md "Governance tooling from repository-helpers").
 # Fail when uv.lock's editable project version drifts from pyproject.toml.
 # Catches silent release-please extra-files jsonpath misses on release PRs.
 # Must run before `uv sync`: sync can rewrite uv.lock from pyproject and would

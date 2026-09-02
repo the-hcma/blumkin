@@ -1,5 +1,10 @@
 name: CI
 
+# Job structure and the .github/ci/* gate scripts follow the-hcma/repository-helpers
+# conventions, enforced by github-repo-lint. Required checks on `main`: Scaffold
+# checks, Python lint & format checks, Pytest (hermetic), Packaging smoke,
+# Shellcheck. See CONTRIBUTING.md and SECURITY.md.
+
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review, edited]

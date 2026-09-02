@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# .github/ci/ gate — the-hcma/repository-helpers convention; run by pre-pr-checks
+# and ci.yml (see CONTRIBUTING.md "Governance tooling from repository-helpers").
 set -euo pipefail
 timeout 120 uv python install 3.14
 current="$(uv run python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"

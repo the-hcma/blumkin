@@ -1,6 +1,7 @@
 # Release Please turns Conventional Commits on main into a release PR; merging
 # that PR tags the release and publishes the distributions to PyPI with OIDC
-# trusted publishing. See docs/RELEASING.md. Nobody hand-edits the version.
+# trusted publishing. See docs/RELEASING.md and SECURITY.md. Nobody hand-edits
+# the version. Modeled on the-hcma/repository-helpers' release-please setup.
 
 name: Release Please
 

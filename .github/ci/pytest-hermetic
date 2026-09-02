@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# .github/ci/ gate — the-hcma/repository-helpers convention; run by pre-pr-checks
+# and ci.yml (see CONTRIBUTING.md "Governance tooling from repository-helpers").
 set -euo pipefail
 bash .github/ci/setup-python
 # CI: mocked / offline only. Live Graph tests run on operator machines
