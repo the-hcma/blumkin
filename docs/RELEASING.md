@@ -56,12 +56,9 @@ blumkin --version
 Move to a newer release with:
 
 ```bash
-blumkin upgrade
+pipx upgrade blumkin
+blumkin --version   # confirm the version and commit moved
 ```
-
-which prints the version and commit you are on and the one it upgraded to. Bare
-`pipx upgrade blumkin` also works but cannot tell you whether `PATH` still
-resolves to a dev checkout.
 
 The editable dev install (`uv tool install -e .` from a clone) stays the path
 for working on blumkin itself.

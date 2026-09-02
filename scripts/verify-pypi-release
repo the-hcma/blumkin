@@ -90,7 +90,12 @@ main() {
   bin_dir="${venv_dir}/bin"
   readonly bin_dir
 
-  version_output="$(timeout 30 "${bin_dir}/blumkin" --version)"
+  # Strip any commit override so `--version` must resolve from the wheel's
+  # embedded stamp (the installed dist has no .git). A broken embed then prints
+  # "(unknown)" and is caught here rather than by a real pipx user.
+  version_output="$(
+    timeout 30 env -u BLUMKIN_GIT_SHA -u GITHUB_SHA "${bin_dir}/blumkin" --version
+  )"
   readonly version_output
   grep --fixed-strings --quiet "$version" <<<"$version_output" ||
     die "blumkin --version did not report ${version}: ${version_output}"
