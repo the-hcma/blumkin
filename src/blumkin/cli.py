@@ -868,29 +868,30 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def upgrade(ctx: click.Context, as_json_flag: bool) -> None:
-    """Upgrade the pipx install of blumkin, reporting the build it moved from and to.
+    """Upgrade the pipx install of blumkin, reporting the pipx app's build before and after.
 
-    Wraps `pipx upgrade blumkin`. Bare `pipx upgrade` cannot tell you that PATH
-    still resolves to a checkout, so an upgrade can look like a no-op - this
-    prints the version and commit before and after.
+    Wraps `pipx upgrade blumkin`. `from:` / `to:` are always the pipx app's own
+    version and commit - bare `pipx upgrade` cannot tell you that, and cannot
+    tell you PATH still resolves to a dev checkout, so an upgrade can look like a
+    no-op. When you run this from a checkout, the checkout is reported separately.
     """
     as_json = _as_json(ctx, as_json_flag)
-    from_build = build_version()
-    from_path = running_command_path()
+    running_build = build_version()
+    running_path = running_command_path()
     source_checkout = is_source_checkout()
 
     pipx = shutil.which("pipx")
     if pipx is None:
         _emit_error(
-            error="usage_error",
+            error="upgrade_failed",
             message="pipx is not on PATH",
             as_json=as_json,
             hint="Install pipx and `pipx install blumkin` (see docs/RELEASING.md), then retry.",
         )
-        raise SystemExit(EXIT_USAGE)
+        raise SystemExit(EXIT_OTHER)
 
     pipx_app = pipx_blumkin_path()
-    pipx_app_before = _read_pipx_version(pipx_app) if pipx_app is not None else None
+    before = _read_pipx_version(pipx_app) if pipx_app is not None else None
 
     try:
         completed = subprocess.run(
@@ -922,35 +923,44 @@ def upgrade(ctx: click.Context, as_json_flag: bool) -> None:
         raise SystemExit(EXIT_OTHER)
 
     pipx_app = pipx_blumkin_path() or pipx_app
-    pipx_app_after = _read_pipx_version(pipx_app) if pipx_app is not None else None
+    after = _read_pipx_version(pipx_app) if pipx_app is not None else None
+    # When run from the pipx app itself, running_build is the pre-upgrade build,
+    # so it stands in for an unreadable `before`. From a checkout it does not.
+    before_display = before if before is not None else (None if source_checkout else running_build)
 
     if as_json:
         emit_json(
             {
                 "ok": True,
-                "from": {"build": from_build, "running_from": str(from_path)},
-                "to": {
-                    "build": pipx_app_after,
-                    "pipx_app": str(pipx_app) if pipx_app is not None else None,
+                "pipx_app": {
+                    "path": str(pipx_app) if pipx_app is not None else None,
+                    "before": before,
+                    "after": after,
                 },
-                "pipx_app_before": pipx_app_before,
+                "running_from": {"build": running_build, "path": str(running_path)},
                 "source_checkout": source_checkout,
             }
         )
         return
 
-    lines = [f"from: {from_build}", f"      {from_path}"]
-    if pipx_app_after is not None and pipx_app is not None:
-        lines.append(f"to:   {pipx_app_after}")
-        lines.append(f"      {pipx_app}")
+    if before_display is not None:
+        lines = [f"from: {before_display}"]
     elif pipx_app is not None:
-        lines.append(f"to:   pipx upgrade finished; run `{pipx_app} --version` to confirm")
+        lines = ["from: (could not read the pipx app before upgrading)"]
     else:
-        lines.append("to:   pipx upgrade finished; run `blumkin --version` to confirm")
+        lines = ["from: (no pipx install of blumkin found)"]
+    if after is not None:
+        lines.append(f"to:   {after}")
+    elif pipx_app is not None:
+        lines.append(f"to:   run `{pipx_app} --version` to confirm")
+    else:
+        lines.append("to:   run `blumkin --version` to confirm")
+    if pipx_app is not None:
+        lines.append(f"      {pipx_app}")
     if source_checkout:
         lines.append(
-            "note: this process is a source checkout - the upgrade changed the pipx app "
-            "above, not this tree"
+            f"note: you ran the source checkout ({running_build}) at {running_path}; "
+            "pipx upgrade changed the pipx app above, not this tree"
         )
     emit_lines(lines)
 

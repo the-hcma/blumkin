@@ -715,7 +715,8 @@ Examples:
   blumkin upgrade
   blumkin upgrade --json
 
-Wraps `pipx upgrade blumkin` and prints the version and commit you are on and
-the one the pipx app now reports. Run this from a pipx install; from a source
-checkout it upgrades ~/.local/bin/blumkin and leaves the checkout alone.
+Wraps `pipx upgrade blumkin`. `from:` / `to:` are the pipx app's version and
+commit before and after. Run from a source checkout it upgrades the pipx app and
+reports the checkout separately, leaving the tree alone. Exit 1
+(`upgrade_failed`) means pipx is missing or `pipx upgrade` exited non-zero.
 """
