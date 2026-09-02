@@ -55,10 +55,15 @@ class GoogleWorkspaceProvider:
         today_pending: bool = False,
         tz_name: str | None = None,
     ) -> dict[str, Any]:
-        return self._unsupported("calendar accept")
+        return await google_calendar.calendar_accept(
+            event_id=event_id,
+            today_pending=today_pending,
+            tz_name=tz_name,
+            config=self._config,
+        )
 
     async def calendar_cancel(self, *, event_id: str) -> dict[str, Any]:
-        return self._unsupported("calendar cancel")
+        return await google_calendar.calendar_cancel(event_id=event_id, config=self._config)
 
     async def calendar_create(
         self,
@@ -134,7 +139,9 @@ class GoogleWorkspaceProvider:
         teams: bool = True,
         tz_name: str | None = None,
     ) -> dict[str, Any]:
-        return self._unsupported("calendar update")
+        return await google_calendar.calendar_update(
+            event_id=event_id, teams=teams, tz_name=tz_name, config=self._config
+        )
 
     async def calendar_view(
         self,

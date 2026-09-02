@@ -171,7 +171,12 @@ async def calendar_update(
 
 def format_accept_human(payload: dict[str, Any]) -> list[str]:
     ids = payload.get("accepted") or []
-    return [f"Accepted {payload.get('count', len(ids))} event(s):"] + [f"  • {eid}" for eid in ids]
+    lines = [f"Accepted {payload.get('count', len(ids))} event(s):"] + [f"  • {eid}" for eid in ids]
+    # A batch that quietly left events behind is worse than one that says so; the
+    # --json payload already carries this, and the default path must not drop it.
+    for item in payload.get("skipped") or []:
+        lines.append(f"  • skipped {item.get('id')}: {item.get('reason')}")
+    return lines
 
 
 def format_cancel_human(payload: dict[str, Any]) -> list[str]:
