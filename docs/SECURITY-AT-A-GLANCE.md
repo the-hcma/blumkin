@@ -17,9 +17,10 @@ permissions, no multi-tenant anything.
 | Google desktop-client JSON (holds `client_secret`) | operator-chosen path, mode `0600` | never |
 | The user's mail / calendar / chat content | fetched on demand, printed to stdout, not persisted | n/a |
 
-[`.gitignore`](../.gitignore) and the `gitleaks` CI gate
-([`.github/ci/secret-scan`](../.github/ci/secret-scan)) keep all of the above out
-of the repo. blumkin never writes another person's data anywhere.
+[`.gitignore`](../.gitignore) and the `gitleaks` CI check
+([`.github/ci/secret-scan`](../.github/ci/secret-scan), advisory - runs every PR)
+keep all of the above out of the repo. blumkin never writes another person's
+data anywhere.
 
 ## Auth model
 
@@ -44,11 +45,13 @@ of the repo. blumkin never writes another person's data anywhere.
 
 ## How releases are trusted
 
-1. Every PR: agent review + code-owner review, plus the required checks in
-   [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) - `ruff` / `pyright`
-   ([`.github/ci/python-static`](../.github/ci/python-static)), `pytest`
-   ([`pytest-hermetic`](../.github/ci/pytest-hermetic)), `shellcheck`, and
-   [`test_packaging`](../test_packaging) - all green.
+1. Every PR: agent review + code-owner review, plus the required status checks
+   in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) all green -
+   `Scaffold checks`, `Python lint & format checks`
+   (`ruff` / `pyright`, [`.github/ci/python-static`](../.github/ci/python-static)),
+   `Pytest (hermetic)` ([`.github/ci/pytest-hermetic`](../.github/ci/pytest-hermetic)),
+   `Packaging smoke` ([`test_packaging`](../test_packaging)), and `Shellcheck`
+   ([`.github/ci/shellcheck`](../.github/ci/shellcheck)).
 2. Release cut by Release Please from Conventional Commits
    ([`.github/workflows/release-please.yml`](../.github/workflows/release-please.yml),
    [`release-please-config.json`](../release-please-config.json)) - no
