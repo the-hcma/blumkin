@@ -30,7 +30,7 @@ from googleapiclient.errors import HttpError
 
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google.mail import _header_map, _html_to_text, _message_detail
-from blumkin.providers.google_auth import get_credentials
+from blumkin.providers.google_auth import MAIL_WRITE_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.mail import (
     MailDraftNotFoundError,
@@ -498,7 +498,7 @@ def _get_message(service: Any, message_id: str) -> dict[str, Any]:
 
 
 def _gmail_service(cfg: BlumkinConfig) -> Any:
-    creds = get_credentials(cfg, allow_interactive=False)
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=MAIL_WRITE_SCOPES)
     return build_api_service("gmail", "v1", creds=creds, config=cfg)
 
 

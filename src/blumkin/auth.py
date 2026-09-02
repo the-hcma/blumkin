@@ -17,24 +17,6 @@ from msal import SerializableTokenCache
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.kind import ProviderConfigError
 
-# Request exact granted scope names for MSAL silent refresh (e.g. Calendars.ReadWrite
-# not .Read). Phase 4 add-ons stay off until config enables them and Entra grant
-# + re-consent land (see wo1162425_scopes in config.toml).
-BASE_SCOPES = [
-    "Calendars.ReadWrite",
-    "Chat.Read",
-    "Mail.ReadWrite",
-    "Mail.Send",
-    "User.Read",
-]
-
-# Teams chat files live in SharePoint/OneDrive, so `chat attachments download` needs a
-# Files scope. Off until the tenant grants it and the user re-consents
-# (files_scopes in config.toml), because requesting an ungranted scope breaks silent refresh.
-FILES_SCOPES = [
-    "Files.Read",
-]
-
 
 class AuthError(ValueError):
     """Base for typed, classified auth failures (issue #133).
@@ -59,6 +41,25 @@ class AuthTransientError(AuthError):
     Distinct from :class:`AuthRequiredError` so the CLI can tell the operator
     this is safe to retry, rather than implying the grant itself is bad.
     """
+
+
+# Request exact granted scope names for MSAL silent refresh (e.g. Calendars.ReadWrite
+# not .Read). Phase 4 add-ons stay off until config enables them and Entra grant
+# + re-consent land (see wo1162425_scopes in config.toml).
+BASE_SCOPES = [
+    "Calendars.ReadWrite",
+    "Chat.Read",
+    "Mail.ReadWrite",
+    "Mail.Send",
+    "User.Read",
+]
+
+# Teams chat files live in SharePoint/OneDrive, so `chat attachments download` needs a
+# Files scope. Off until the tenant grants it and the user re-consents
+# (files_scopes in config.toml), because requesting an ungranted scope breaks silent refresh.
+FILES_SCOPES = [
+    "Files.Read",
+]
 
 
 class MissingScopeError(AuthError):
@@ -299,6 +300,13 @@ def _classify_get_token_error(exc: BaseException) -> AuthError:
             f"Microsoft token refresh hit a transient network error: {exc}. Safe to retry."
         )
     msg = str(exc)
+    # MSAL/AAD use the standard OAuth2 (RFC 6749 §5.2) codes for a token-endpoint
+    # outage - server_error / temporarily_unavailable - distinct from a dead grant
+    # (issue #133 review: a plain HTTP 5xx must not read as "re-login").
+    if "temporarily_unavailable" in msg or "server_error" in msg:
+        return AuthTransientError(
+            f"Microsoft token endpoint returned a transient error: {exc}. Safe to retry."
+        )
     if "invalid_grant" in msg or "AADSTS70008" in msg or "AADSTS700082" in msg:
         return AuthRequiredError(
             "Microsoft refresh token was revoked or expired. Run `blumkin auth login` "
@@ -361,7 +369,11 @@ def _granted_scopes_from_cache(cfg: BlumkinConfig) -> frozenset[str]:
     """Bare scope names granted per the MSAL cache's ``AccessToken`` ``target`` claims.
 
     Empty when there is no cache yet — nothing to diff a fresh, never-logged-in
-    profile against.
+    profile against. MSAL's ``SerializableTokenCache`` never prunes, so entries
+    for a previously configured ``client_id`` (or an expired grant) can linger
+    in the same file; only an entry for the *active* client that has not
+    expired counts, otherwise a stale, wider entry could mask a real gap for
+    the current client (issue #133 review).
     """
     if not cfg.token_cache_path.is_file():
         return frozenset()
@@ -369,9 +381,21 @@ def _granted_scopes_from_cache(cfg: BlumkinConfig) -> frozenset[str]:
         data = json.loads(cfg.token_cache_path.read_text())
     except json.JSONDecodeError, OSError:
         return frozenset()
+    now = int(datetime.now(UTC).timestamp())
     scopes: set[str] = set()
     for entry in (data.get("AccessToken") or {}).values():
         if not isinstance(entry, dict):
+            continue
+        if entry.get("client_id") != cfg.client_id:
+            continue
+        raw_expires_on = entry.get("expires_on")
+        if raw_expires_on is None:
+            continue
+        try:
+            expires_on = int(raw_expires_on)
+        except TypeError, ValueError:
+            continue
+        if expires_on <= now:
             continue
         target = entry.get("target")
         if not isinstance(target, str):

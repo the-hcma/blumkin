@@ -9,7 +9,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.providers.google_auth import get_credentials
+from blumkin.providers.google_auth import CALENDAR_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.calendar import find_mutual_free_slots, parse_local_datetime
 from blumkin.skills.calendar_writes import (
@@ -383,7 +383,7 @@ def _busy_slot_to_dict(slot: dict[str, Any], display_tz: ZoneInfo) -> dict[str, 
 
 
 def _calendar_service(cfg: BlumkinConfig) -> Any:
-    creds = get_credentials(cfg, allow_interactive=False)
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=CALENDAR_SCOPES)
     return build_api_service("calendar", "v3", creds=creds, config=cfg)
 
 

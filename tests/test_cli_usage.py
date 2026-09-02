@@ -11,6 +11,7 @@ import pytest
 from click.testing import CliRunner
 from kiota_abstractions.api_error import APIError
 
+from blumkin.auth import AuthTransientError, MissingScopeError
 from blumkin.cli import main
 from blumkin.config import load_config
 from blumkin.exit_codes import (
@@ -1512,6 +1513,22 @@ def test_calendar_today_auth_required_value_error_exits_auth(monkeypatch) -> Non
     assert "auth_required" in combined
 
 
+def test_calendar_today_auth_transient_error_exits_other(monkeypatch) -> None:
+    """AuthTransientError (issue #133) is a network hiccup, not a bad grant - exit 1."""
+
+    async def _boom(**_kwargs):
+        raise AuthTransientError(
+            "Microsoft token refresh hit a transient network error: timed out. Safe to retry."
+        )
+
+    monkeypatch.setattr("blumkin.providers.microsoft.calendar_today", _boom)
+    result = CliRunner().invoke(main, ["calendar", "today", "--tz", "UTC", "--json"])
+    assert result.exit_code == EXIT_OTHER
+    combined = (result.output or "") + (result.stderr or "")
+    assert "transient_error" in combined
+    assert "auth_required" not in combined
+
+
 def test_calendar_today_empty_default_tz_exits_usage(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_TZ", raising=False)
@@ -1527,6 +1544,25 @@ def test_calendar_today_invalid_tz_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--tz", "Not/ARealZone", "calendar", "today"])
     assert result.exit_code == EXIT_USAGE
+
+
+def test_calendar_today_missing_scope_error_exits_missing_scope(monkeypatch) -> None:
+    """MissingScopeError (issue #133) exits 4 and surfaces the current/missing scope gap."""
+
+    async def _boom(**_kwargs):
+        raise MissingScopeError(
+            "Stored Google grant is missing scopes this build needs.\n"
+            "current scopes:  gmail.readonly\nmissing scopes:  calendar.events",
+            current=frozenset({"https://www.googleapis.com/auth/gmail.readonly"}),
+            missing=frozenset({"https://www.googleapis.com/auth/calendar.events"}),
+        )
+
+    monkeypatch.setattr("blumkin.providers.microsoft.calendar_today", _boom)
+    result = CliRunner().invoke(main, ["calendar", "today", "--tz", "UTC", "--json"])
+    assert result.exit_code == EXIT_MISSING_SCOPE
+    combined = (result.output or "") + (result.stderr or "")
+    assert "missing_scope" in combined
+    assert "missing scopes:  calendar.events" in combined
 
 
 def test_calendar_view_accepts_subcommand_tz() -> None:

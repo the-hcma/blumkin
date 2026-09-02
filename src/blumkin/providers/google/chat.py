@@ -27,7 +27,7 @@ from blumkin.attachments import (
     unique_filename,
 )
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.providers.google_auth import get_credentials
+from blumkin.providers.google_auth import CHAT_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.chat import (
     _MAX_SCANNED,
@@ -377,7 +377,7 @@ async def chat_send(
 
 
 def _chat_service(cfg: BlumkinConfig) -> Any:
-    creds = get_credentials(cfg, allow_interactive=False)
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=CHAT_SCOPES)
     return build_api_service("chat", "v1", creds=creds, config=cfg)
 
 

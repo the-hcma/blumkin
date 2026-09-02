@@ -140,6 +140,16 @@ _DEFAULT_HINTS: dict[str, str] = {
     "usage_error": "See `blumkin COMMAND --help` for the accepted arguments and examples.",
 }
 
+# Overrides _DEFAULT_HINTS["missing_scope"] (Microsoft/Graph-only wording) for
+# MissingScopeError specifically: it is provider-neutral, unlike the tenant-grant /
+# wo1162425_scopes / files_scopes hint that only makes sense for a Microsoft 403
+# (issue #133 - a Google profile has neither of those knobs or an MSAL auth record).
+_MISSING_SCOPE_HINT = (
+    "Run `blumkin auth login` on a TTY and tick every scope box (or click "
+    '"Select all") on the consent screen - the message above lists exactly '
+    "which scopes are missing."
+)
+
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
     value = bool(ctx.obj.get("as_json") or as_json_flag)
@@ -277,7 +287,9 @@ def _raise_auth_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     if isinstance(exc, MissingScopeError):
-        _emit_error(error="missing_scope", message=str(exc), as_json=as_json)
+        _emit_error(
+            error="missing_scope", message=str(exc), as_json=as_json, hint=_MISSING_SCOPE_HINT
+        )
         raise SystemExit(EXIT_MISSING_SCOPE) from exc
     if isinstance(exc, AuthTransientError):
         _emit_error(error="transient_error", message=str(exc), as_json=as_json)
@@ -523,7 +535,9 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         )
         raise SystemExit(EXIT_USAGE) from exc
     except MissingScopeError as exc:
-        _emit_error(error="missing_scope", message=str(exc), as_json=as_json)
+        _emit_error(
+            error="missing_scope", message=str(exc), as_json=as_json, hint=_MISSING_SCOPE_HINT
+        )
         raise SystemExit(EXIT_MISSING_SCOPE) from exc
     except AuthTransientError as exc:
         _emit_error(error="transient_error", message=str(exc), as_json=as_json)
@@ -585,7 +599,9 @@ def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
         )
         raise SystemExit(EXIT_USAGE) from exc
     except MissingScopeError as exc:
-        _emit_error(error="missing_scope", message=str(exc), as_json=as_json)
+        _emit_error(
+            error="missing_scope", message=str(exc), as_json=as_json, hint=_MISSING_SCOPE_HINT
+        )
         raise SystemExit(EXIT_MISSING_SCOPE) from exc
     except AuthTransientError as exc:
         _emit_error(error="transient_error", message=str(exc), as_json=as_json)

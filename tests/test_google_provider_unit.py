@@ -712,7 +712,7 @@ def test_needs_additional_scopes_when_persisted_grant_is_incomplete(tmp_path: Pa
             }
         )
     )
-    assert google_auth._needs_additional_scopes(cfg) is True
+    assert google_auth._needs_additional_scopes(cfg, google_auth.GOOGLE_SCOPES) is True
 
 
 def test_needs_additional_scopes_false_when_grant_is_complete(tmp_path: Path) -> None:
@@ -727,7 +727,7 @@ def test_needs_additional_scopes_false_when_grant_is_complete(tmp_path: Path) ->
             }
         )
     )
-    assert google_auth._needs_additional_scopes(cfg) is False
+    assert google_auth._needs_additional_scopes(cfg, google_auth.GOOGLE_SCOPES) is False
 
 
 def test_get_credentials_runs_browser_when_scopes_are_incomplete(tmp_path: Path) -> None:
