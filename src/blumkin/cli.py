@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+import subprocess
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, NoReturn
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -22,6 +25,7 @@ from blumkin.exit_codes import (
     EXIT_USAGE,
 )
 from blumkin.output import emit_error, emit_json, emit_lines
+from blumkin.pipx_install import PIPX_UPGRADE_TIMEOUT_S, pipx_blumkin_path
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
@@ -88,7 +92,13 @@ from blumkin.skills.meeting import (
 )
 from blumkin.skills.meeting import format_transcription_human
 from blumkin.skills.people import format_resolve_human
-from blumkin.version import build_info, build_status_fields, running_command_path
+from blumkin.version import (
+    build_info,
+    build_status_fields,
+    build_version,
+    is_source_checkout,
+    running_command_path,
+)
 
 # Fallback next-step guidance per error slug, used when a call site does not pass
 # its own more specific `hint=`. Keep every non-zero exit actionable (issue #97).
@@ -118,6 +128,10 @@ _DEFAULT_HINTS: dict[str, str] = {
     "timeout": (
         "Raise graph_timeout_seconds in config.toml, kill any stuck blumkin processes "
         "(`pkill -f blumkin`), then run `blumkin auth refresh` if the access token expired."
+    ),
+    "upgrade_failed": (
+        "Run `pipx upgrade blumkin` directly for the full output. If blumkin was not "
+        "installed with pipx, use `pipx install blumkin` (see docs/RELEASING.md)."
     ),
     "usage_error": "See `blumkin COMMAND --help` for the accepted arguments and examples.",
 }
@@ -308,6 +322,32 @@ def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
 
 def _raise_mail_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
     _raise_auth_value_error(exc, as_json=as_json)
+
+
+def _read_pipx_version(executable: Path) -> str | None:
+    """Return ``<executable> --version`` as ``<version> (<commit>)``, or None.
+
+    The first line of ``blumkin --version`` is ``blumkin <version> (<commit>)``;
+    the ``blumkin `` prefix is stripped so the value compares directly against
+    :func:`blumkin.version.build_version` (the from/to pair in ``upgrade``).
+    """
+    try:
+        completed = subprocess.run(
+            [str(executable), "--version"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+    except OSError, subprocess.SubprocessError:
+        return None
+    if completed.returncode != 0:
+        return None
+    lines = (completed.stdout or "").splitlines()
+    first = lines[0].strip() if lines else ""
+    if not first:
+        return None
+    return first.removeprefix("blumkin ").strip() or first
 
 
 def _require_wo1162425_scopes(*, as_json: bool) -> None:
@@ -822,6 +862,107 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"skills: {', '.join(payload['skills'])}"])
     if problems:
         raise SystemExit(EXIT_AUTH)
+
+
+@main.command(epilog=help_text.UPGRADE_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def upgrade(ctx: click.Context, as_json_flag: bool) -> None:
+    """Upgrade the pipx install of blumkin, reporting the pipx app's build before and after.
+
+    Wraps `pipx upgrade blumkin`. `from:` / `to:` are always the pipx app's own
+    version and commit - bare `pipx upgrade` cannot tell you that, and cannot
+    tell you PATH still resolves to a dev checkout, so an upgrade can look like a
+    no-op. When you run this from a checkout, the checkout is reported separately.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    running_build = build_version()
+    running_path = running_command_path()
+    source_checkout = is_source_checkout()
+
+    pipx = shutil.which("pipx")
+    if pipx is None:
+        _emit_error(
+            error="upgrade_failed",
+            message="pipx is not on PATH",
+            as_json=as_json,
+            hint="Install pipx and `pipx install blumkin` (see docs/RELEASING.md), then retry.",
+        )
+        raise SystemExit(EXIT_OTHER)
+
+    pipx_app = pipx_blumkin_path(pipx_bin=pipx)
+    before = _read_pipx_version(pipx_app) if pipx_app is not None else None
+
+    try:
+        completed = subprocess.run(
+            [pipx, "upgrade", "blumkin"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=PIPX_UPGRADE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _emit_error(
+            error="timeout",
+            message="`pipx upgrade blumkin` timed out",
+            as_json=as_json,
+            hint="Run `pipx upgrade blumkin` directly to see where it hangs.",
+        )
+        raise SystemExit(EXIT_OTHER) from exc
+    except OSError as exc:
+        _emit_error(error="upgrade_failed", message=f"could not run pipx: {exc}", as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        _emit_error(
+            error="upgrade_failed",
+            message="`pipx upgrade blumkin` failed",
+            as_json=as_json,
+            hint=detail or "Run `pipx upgrade blumkin` directly for the full output.",
+        )
+        raise SystemExit(EXIT_OTHER)
+
+    pipx_app = pipx_blumkin_path(pipx_bin=pipx) or pipx_app
+    after = _read_pipx_version(pipx_app) if pipx_app is not None else None
+
+    if as_json:
+        emit_json(
+            {
+                "ok": True,
+                "pipx_app": {
+                    "path": str(pipx_app) if pipx_app is not None else None,
+                    "before": before,
+                    "after": after,
+                },
+                "running_from": {"build": running_build, "path": str(running_path)},
+                "source_checkout": source_checkout,
+            }
+        )
+        return
+
+    # `from:` is the pipx app's own pre-upgrade build - the same value as
+    # pipx_app.before in --json, never a stand-in from the running process
+    # (which may be a different install entirely).
+    if before is not None:
+        lines = [f"from: {before}"]
+    elif pipx_app is not None:
+        lines = ["from: (could not read the pipx app before upgrading)"]
+    else:
+        lines = ["from: (no pipx install of blumkin found)"]
+    if after is not None:
+        lines.append(f"to:   {after}")
+    elif pipx_app is not None:
+        lines.append(f"to:   run `{pipx_app} --version` to confirm")
+    else:
+        lines.append("to:   run `blumkin --version` to confirm")
+    if pipx_app is not None:
+        lines.append(f"      {pipx_app}")
+    if source_checkout:
+        lines.append(
+            f"note: you ran the source checkout ({running_build}) at {running_path}; "
+            "pipx upgrade changed the pipx app above, not this tree"
+        )
+    emit_lines(lines)
 
 
 @main.group(epilog=help_text.CALENDAR_EPILOG)
