@@ -16,6 +16,13 @@ follow `.cursor/skills/blumkin/SKILL.md` authoring style: hyphens, not em/en das
 
 ## Session startup & cleanup
 
+- At the **start of every agent session**, before acting from assumed
+  conventions, read this `AGENTS.md` in full.
+- Then read every `alwaysApply: true` rule under `.cursor/rules/*.mdc` (plus any
+  whose `globs` match files you will touch). `AGENTS.md` and `.cursor/rules/`
+  together are the contract — neither alone is complete. `CLAUDE.md` (a
+  `@AGENTS.md` import) and `.github/copilot-instructions.md` are thin shims so
+  Claude Code and Copilot reach this same guidance.
 - At the start of every session (before implementation), run
   `~/work/ai/repository-helpers/scripts/dev/start-development` from
   [repository-helpers](https://github.com/the-hcma/repository-helpers).
