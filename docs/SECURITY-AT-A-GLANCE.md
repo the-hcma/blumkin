@@ -64,6 +64,9 @@ data anywhere.
 4. [`scripts/verify-pypi-release`](../scripts/verify-pypi-release) installs the
    published artifact in isolation, and again via a real `pipx install`, and
    checks the version and commit both ways before the job is green.
+   [`scripts/verify-pipx-upgrade`](../scripts/verify-pipx-upgrade) then proves
+   `blumkin upgrade` against a real pipx install of the previous release lands
+   on the new one (a no-op before the second release ever ships).
 
 Compliance of the branch protection, workflows, and cursor rules that back all
 of this is enforced by `github-repo-lint` from

@@ -20,7 +20,11 @@ publishing. Do not edit the package version or create release tags by hand.
    real `pipx install` (its own venv layout and console-script shims), and
    asserts `blumkin --version` reports the released version and a known
    commit both ways. No manual `pipx install` check is needed to trust a
-   release (issue #142).
+   release (issue #142). It then runs `scripts/verify-pipx-upgrade`, which
+   pipx-installs the *previous* published version and runs `blumkin upgrade`
+   against it, asserting it lands on the version just published (issue #143).
+   That needs two published releases, so it is a no-op — not a failure — on
+   the very first release.
 
 Release Please scans every commit since the previous tag. Keep squash-commit
 subjects conventional, and keep the repo's `squash_merge_commit_message` setting

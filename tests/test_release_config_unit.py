@@ -35,3 +35,4 @@ def test_publish_workflow_uses_the_pypi_environment() -> None:
     assert "environment: pypi" in workflow
     assert "id-token: write" in workflow
     assert "scripts/verify-pypi-release" in workflow
+    assert "scripts/verify-pipx-upgrade" in workflow

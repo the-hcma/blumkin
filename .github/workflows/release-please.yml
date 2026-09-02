@@ -215,3 +215,8 @@ jobs:
         run: |
           version="$(uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           ./scripts/verify-pypi-release "$version"
+
+      - name: Verify pipx upgrade round-trip
+        run: |
+          version="$(uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          ./scripts/verify-pipx-upgrade "$version"
