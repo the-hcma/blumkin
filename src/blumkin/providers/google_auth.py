@@ -56,7 +56,7 @@ def get_credentials(
                         "(or unset BLUMKIN_NONINTERACTIVE), then retry."
                     ) from None
             else:
-                _save_credentials(cfg, creds)
+                _save_credentials(cfg, creds, preserve_granted_scopes=True)
                 return creds
         elif not interactive:
             raise ValueError(
@@ -91,6 +91,16 @@ def logout(config: BlumkinConfig | None = None) -> None:
     cfg = config or load_config()
     if cfg.google_token_path.is_file():
         cfg.google_token_path.unlink()
+
+
+def persisted_granted_scopes(cfg: BlumkinConfig) -> frozenset[str]:
+    """Scopes the user actually consented to, as stored in the token file.
+
+    ``Credentials.scopes`` after load reports ``GOOGLE_SCOPES`` (what this build
+    wants), not the grant. Use this for permission checks against stored tokens.
+    """
+    scopes = _read_persisted_scopes(cfg)
+    return frozenset(scopes or ())
 
 
 def refresh_silent(config: BlumkinConfig | None = None) -> dict[str, Any]:
@@ -211,9 +221,35 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
         return None
 
 
-def _save_credentials(cfg: BlumkinConfig, creds: Credentials) -> None:
+def _read_persisted_scopes(cfg: BlumkinConfig) -> list[str] | None:
+    path = cfg.google_token_path
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError, OSError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("scopes")
+    if not isinstance(raw, list):
+        return None
+    scopes = [scope for scope in raw if isinstance(scope, str) and scope]
+    return scopes if scopes else None
+
+
+def _save_credentials(
+    cfg: BlumkinConfig,
+    creds: Credentials,
+    *,
+    preserve_granted_scopes: bool = False,
+) -> None:
     _ensure_secret_dir(cfg.profile_dir, stop_at=cfg.config_dir)
     payload = json.loads(creds.to_json())
+    if preserve_granted_scopes:
+        granted = _read_persisted_scopes(cfg)
+        if granted is not None:
+            payload["scopes"] = sorted(granted)
     secret = _client_secret_from_oauth_file(cfg)
     if secret:
         payload["client_secret"] = secret

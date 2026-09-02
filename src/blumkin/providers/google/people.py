@@ -11,14 +11,13 @@ and no winner, and exactly one sets ``person``.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from typing import Any
 
 from googleapiclient.errors import HttpError
 
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.providers.google_auth import get_credentials
+from blumkin.providers.google_auth import get_credentials, persisted_granted_scopes
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.people import _DEFAULT_TOP, _MAX_TOP, _dedupe_matches
 
@@ -51,6 +50,8 @@ async def people_resolve(
     search = query_email or query_name
     assert search is not None
     cfg = config or load_config()
+    # Read granted scopes before get_credentials may refresh and rewrite the token file.
+    granted_directory_scope = _has_directory_scope(cfg)
     service = _people_service(cfg)
     matches = _merge_by_any_address(
         [
@@ -61,7 +62,7 @@ async def people_resolve(
                     service,
                     search,
                     min(top, _MAX_PAGE_SIZE),
-                    granted_directory_scope=_has_directory_scope(cfg),
+                    granted_directory_scope=granted_directory_scope,
                 ),
             )
         ]
@@ -147,21 +148,13 @@ def _merge_by_any_address(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _has_directory_scope(cfg: BlumkinConfig) -> bool:
     """True when the *persisted* token was consented with directory.readonly.
 
-    Read from the token file rather than the loaded credential:
-    ``google_auth._load_credentials`` rebuilds every credential with
-    ``scopes=sorted(GOOGLE_SCOPES)``, so ``creds.scopes`` reports the scopes this
-    build wants, not the ones the user actually granted. The file keeps what the
-    original grant returned, which is the thing a 403 has to be judged against.
-
-    Unreadable or absent means "assume not granted", so a directory 403 surfaces
-    as missing_scope rather than being silently swallowed.
+    Uses ``persisted_granted_scopes`` rather than ``creds.scopes``: load rebuilds
+    every credential with ``scopes=sorted(GOOGLE_SCOPES)``, and a silent refresh
+    used to rewrite the file from ``to_json()`` with that full set even when the
+    user never consented. Unreadable or absent means "assume not granted", so a
+    directory 403 surfaces as missing_scope rather than being silently swallowed.
     """
-    try:
-        data = json.loads(cfg.google_token_path.read_text())
-    except OSError, json.JSONDecodeError:
-        return False
-    scopes = data.get("scopes") if isinstance(data, dict) else None
-    return _DIRECTORY_SCOPE in set(scopes or ())
+    return _DIRECTORY_SCOPE in persisted_granted_scopes(cfg)
 
 
 def _http_status(exc: HttpError) -> int | None:
