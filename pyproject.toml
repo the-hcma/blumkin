@@ -50,6 +50,12 @@ dev = [
 [project.scripts]
 blumkin = "blumkin.cli:main"
 
+[project.urls]
+Changelog = "https://github.com/the-hcma/blumkin/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/the-hcma/blumkin"
+Issues = "https://github.com/the-hcma/blumkin/issues"
+Repository = "https://github.com/the-hcma/blumkin"
+
 [tool.pytest.ini_options]
 markers = [
     "live: live Graph read tests (needs ~/.config/blumkin and network)",

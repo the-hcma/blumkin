@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Poll PyPI for a release, install it in isolation, and smoke-test its commands.
+set -euo pipefail
+
+readonly package='blumkin'
+readonly poll_interval_s=15
+readonly poll_timeout_s=600
+temp_root=''
+
+die() {
+  printf 'verify-pypi-release: %s\n' "$*" >&2
+  exit 1
+}
+
+release_is_available() {
+  local -r version="$1"
+  local -r json_file="$2"
+  local -r simple_file="$3"
+
+  timeout 20 curl \
+    --connect-timeout 5 \
+    --fail \
+    --location \
+    --max-time 15 \
+    --output "$json_file" \
+    --silent \
+    --show-error \
+    "https://pypi.org/pypi/${package}/${version}/json" || return 1
+  timeout 20 curl \
+    --connect-timeout 5 \
+    --fail \
+    --location \
+    --max-time 15 \
+    --output "$simple_file" \
+    --silent \
+    --show-error \
+    "https://pypi.org/simple/${package}/" || return 1
+
+  jq --arg version "$version" \
+    --exit-status \
+    '.info.version == $version and (.urls | length > 0)' \
+    "$json_file" >/dev/null &&
+    grep --fixed-strings --quiet "${package}-${version}" "$simple_file"
+}
+
+main() {
+  if [[ $# -ne 1 || -z "$1" ]]; then
+    die 'usage: scripts/verify-pypi-release VERSION'
+  fi
+
+  local -r version="$1"
+  local json_file simple_file deadline venv_dir bin_dir version_output
+  local available=false
+
+  command -v curl >/dev/null 2>&1 || die 'curl is required'
+  command -v jq >/dev/null 2>&1 || die 'jq is required'
+  command -v timeout >/dev/null 2>&1 || die 'timeout is required'
+  command -v uv >/dev/null 2>&1 || die 'uv is required'
+
+  temp_root="$(mktemp -d)"
+  readonly temp_root
+  json_file="${temp_root}/release.json"
+  readonly json_file
+  simple_file="${temp_root}/simple.html"
+  readonly simple_file
+  venv_dir="${temp_root}/venv"
+  readonly venv_dir
+  trap 'rm -rf "$temp_root"' EXIT
+
+  deadline=$((SECONDS + poll_timeout_s))
+  readonly deadline
+  while ((SECONDS < deadline)); do
+    if release_is_available "$version" "$json_file" "$simple_file"; then
+      printf 'verify-pypi-release: PyPI %s/%s is available\n' "$package" "$version"
+      available=true
+      break
+    fi
+    printf 'verify-pypi-release: waiting for PyPI %s/%s\n' "$package" "$version" >&2
+    sleep "$poll_interval_s"
+  done
+
+  if [[ "$available" != true ]]; then
+    die "timed out after ${poll_timeout_s}s waiting for PyPI ${package}/${version}"
+  fi
+
+  timeout 120 uv venv --python 3.14 "$venv_dir"
+  timeout 180 uv pip install \
+    --python "${venv_dir}/bin/python" \
+    "${package}==${version}"
+  bin_dir="${venv_dir}/bin"
+  readonly bin_dir
+
+  # Strip any commit override so `--version` must resolve from the wheel's
+  # embedded stamp (the installed dist has no .git). A broken embed then prints
+  # "(unknown)" and is caught here rather than by a real pipx user.
+  version_output="$(
+    timeout 30 env -u BLUMKIN_GIT_SHA -u GITHUB_SHA "${bin_dir}/blumkin" --version
+  )"
+  readonly version_output
+  grep --fixed-strings --quiet "$version" <<<"$version_output" ||
+    die "blumkin --version did not report ${version}: ${version_output}"
+  if grep --fixed-strings --quiet '(unknown)' <<<"$version_output"; then
+    die "blumkin --version reported unknown commit: ${version_output}"
+  fi
+  timeout 30 "${bin_dir}/blumkin" --help >/dev/null
+
+  printf 'verify-pypi-release: installed commands passed for %s\n' "$version"
+}
+
+main "$@"
