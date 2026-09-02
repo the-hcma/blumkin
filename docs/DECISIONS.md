@@ -89,13 +89,15 @@ ahead of `github-repo-lint` learning to enforce them
 - **Dependabot alerts + security updates** and **private vulnerability
   reporting** on (the latter is what `SECURITY.md`'s advisory link needs).
 - **Actions**: `allowed_actions: selected` with an explicit allowlist; default
-  workflow token read-only and cannot approve PRs; third-party actions and the
-  whole `release-please.yml` toolchain SHA-pinned.
+  workflow token read-only and cannot approve PRs; every `uses:` in every
+  workflow SHA-pinned (so `sha_pinning_required` can be turned on next).
 - **`pypi` environment**: @thehcma is a required reviewer and deploys are
   restricted to `main` / `blumkin-v*`, so every publish pauses for a human and
   cannot run from an arbitrary ref.
 
-Not done (deliberate): GHAS-only `secret_scanning_validity_checks` /
-`non_provider_patterns` (need the paid add-on); consolidating the classic
-branch-protection + `protect-main` ruleset overlap; `required_conversation_resolution`
-(would force every agent-review thread resolved before merge - revisit).
+Not done yet: `sha_pinning_required: true` (flip once all workflows are pinned -
+this PR does that). Not done (deliberate): GHAS-only
+`secret_scanning_validity_checks` / `non_provider_patterns` (need the paid
+add-on); consolidating the classic branch-protection + `protect-main` ruleset
+overlap; `required_conversation_resolution` (would force every agent-review
+thread resolved before merge - revisit).

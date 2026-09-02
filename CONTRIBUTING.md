@@ -72,10 +72,9 @@ New behaviour needs tests. Do not merge a red suite. Live Graph tests
   explicit allowlist (`astral-sh/setup-uv`, `googleapis/release-please-action`,
   `nick-fields/retry`, `pypa/gh-action-pypi-publish`). Adding a new third-party
   action means updating that allowlist (Settings → Actions → General).
-- Pin third-party actions - and every action in
-  [`release-please.yml`](.github/workflows/release-please.yml) (the OIDC publish
-  path) - to a **full commit SHA** with a `# vX.Y.Z` comment. Dependabot's
-  `github-actions` updater keeps the SHAs current.
+- **Every `uses:` is pinned to a full commit SHA** with a `# vX.Y.Z` comment -
+  first-party and third-party, in every workflow. Dependabot's `github-actions`
+  updater bumps both the SHA and the comment.
 - The default workflow token is read-only and cannot approve PRs; a job that
   needs more declares `permissions:` locally.
 - The `pypi` environment gates every publish on @thehcma's approval - see
