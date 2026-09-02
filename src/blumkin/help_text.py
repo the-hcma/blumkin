@@ -671,6 +671,22 @@ default. Use a name or a unique tag with `--profile` on any command, e.g.
 
 PROFILES_LIST_EPILOG = PROFILES_EPILOG
 
+PROFILES_SET_EMAIL_EPILOG = """
+Examples:
+
+\b
+  # Backfill a profile that was signed in before blumkin tracked the address
+  blumkin --profile work profiles set-email
+\b
+  # Set it explicitly (no API call)
+  blumkin --profile personal profiles set-email --email me@example.com
+
+`auth login` / `auth refresh` fill this in only when it is missing, so they never
+relabel a profile on their own. This command overwrites: use it to backfill an
+existing profile, or to resolve the drift `blumkin doctor` reports after a
+profile is re-authenticated as somebody else.
+"""
+
 SKILLS_DESCRIBE_EPILOG = """
 Example:
 
