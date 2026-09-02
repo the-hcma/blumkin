@@ -35,8 +35,9 @@ original's attachments.
 ## Cold start (agent)
 
 1. Confirm the binary exists: `blumkin --version` (if missing, tell the user to
-   run `uv tool install -e .` from their blumkin clone and ensure `~/.local/bin`
-   is on `PATH`).
+   run `pipx install blumkin && pipx ensurepath`, or `uv tool install -e .` from
+   a clone for dev). `--version` also prints the commit and resolved path — use
+   it when behavior does not match this skill.
 2. Discover account profiles: `blumkin profiles list --json` (each entry carries
    `email`, the address recorded at first login, when it is known).
    - If `count` is `0`, tell the user to configure the active config directory

@@ -24,10 +24,15 @@ Every integration below assumes the binary resolves and the machine is signed in
 Agents invoke `blumkin`, never `uv run blumkin`.
 
 ```bash
-uv tool install -e .   # from a clone
-blumkin --version
-blumkin auth login     # once per machine; needs a browser
+pipx install blumkin && pipx ensurepath   # no clone needed
+blumkin --version                          # version, commit, resolved path
+blumkin auth login                         # once per machine; needs a browser
 ```
+
+`uv tool install -e .` from a clone is the path for working on blumkin itself.
+Either way, `blumkin --version` prints the commit and the binary that answered —
+paste that line when a session's behavior does not match these docs, so it is
+clear whether the install is current.
 
 Auth lives on the machine that runs the agent (`~/.config/blumkin/`). A headless
 host needs its own prior `blumkin auth login`; tokens are not portable between
@@ -77,6 +82,9 @@ into this repo, so sessions **in this repo** pick it up with no setup.
 ### Personal skill (any repo)
 
 To use blumkin from sessions in *other* repos, install it as a personal skill.
+This needs a clone of the source — a `pipx install blumkin` ships the CLI but
+not the `.cursor/skills/blumkin/` directory, so clone the repo somewhere stable
+(it does not have to be the install you run) and point the skill at it.
 
 **Symlink** — tracks the clone, so the skill follows `git pull`:
 
@@ -162,6 +170,10 @@ Real output, with `skills` cut to one entry — the full list carries every skil
 
 ```json
 {
+  "build": {
+    "commit": "5216b8be3223",
+    "version": "0.1.0"
+  },
   "cli": "blumkin",
   "ok": true,
   "skills": [
@@ -202,6 +214,7 @@ the CLI actually prints.
 
 | Field | Meaning |
 |-------|---------|
+| `build` | The blumkin that produced this catalog: `version` (package version) and `commit` (short git SHA, or `unknown`). **Not** the schema version |
 | `cli` | Binary name to invoke |
 | `ok` | `true` — see [Success envelope](#success-envelope) |
 | `version` | Schema version — `1` |
@@ -348,6 +361,7 @@ Within schema version 1, these hold for a skill that already exists:
 | `args` — names and types | Existing ones never change. New **optional** arguments may appear |
 | `args` — `values` on an enum | Existing values are never removed or renamed. New ones may be added |
 | exit codes and `error` values | Meanings never change |
+| `build` | Present at the top level; `version` / `commit` strings that track the installed blumkin, not the schema. Informational — never gate on it |
 | `summary` | **May be reworded** — never match on it |
 | `scopes` | **May change** when Graph requirements do — re-read rather than caching |
 

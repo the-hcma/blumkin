@@ -305,7 +305,7 @@ _ENUM_VALUES = {
 }
 
 
-_ENVELOPE_KEYS = {"cli", "skills", "version"}
+_ENVELOPE_KEYS = {"build", "cli", "skills", "version"}
 
 
 _ERROR_KEYS = {"error", "message", "ok"}

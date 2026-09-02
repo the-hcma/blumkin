@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from blumkin.version import get_build_info
+
 
 @dataclass(frozen=True, slots=True)
 class SkillSpec:
@@ -860,7 +862,9 @@ def describe_skill(skill_id: str) -> SkillSpec | None:
 
 
 def skills_catalog() -> dict[str, Any]:
+    package, commit = get_build_info()
     return {
+        "build": {"commit": commit, "version": package},
         "cli": "blumkin",
         "skills": [
             {
