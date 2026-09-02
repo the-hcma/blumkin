@@ -13,6 +13,13 @@ def test_skills_catalog_has_calendar_today() -> None:
     assert ids == sorted(ids)
 
 
+def test_skills_catalog_reports_the_build_distinct_from_schema_version() -> None:
+    catalog = skills_catalog()
+    assert catalog["version"] == 1  # schema contract, unchanged
+    assert set(catalog["build"]) == {"commit", "version"}
+    assert catalog["build"]["version"] and catalog["build"]["commit"]
+
+
 def test_describe_calendar_today() -> None:
     skill = describe_skill("calendar.today")
     assert skill is not None

@@ -14,26 +14,47 @@ Tracking: [#9 Cursor agent integration (M1 MVP)](https://github.com/the-hcma/blu
 
 ## Install (`blumkin` on `PATH`)
 
-From a clone (dev):
-
 ```bash
-uv sync --group dev
-uv tool install -e .
+pipx install blumkin
+pipx ensurepath          # first pipx install only; opens a new shell
 ```
 
 Then invoke the binary directly — **not** `uv run blumkin`:
 
 ```bash
-blumkin --version
+blumkin --version           # version, commit, and which binary answered
 blumkin auth login          # once per machine / when cache is cold
 blumkin auth status
 blumkin skills list --json
 blumkin calendar today --json
 ```
 
-`uv tool install` puts `blumkin` on your tool bin dir (often `~/.local/bin`). Ensure that directory is on `PATH`.
+`pipx` puts `blumkin` in its bin dir (usually `~/.local/bin`); `pipx ensurepath`
+makes sure that is on `PATH`.
 
-To use blumkin from agent sessions in **other** repos (Cursor personal skill, or Copilot CLI instructions), see [`docs/agent-integration.md`](./docs/agent-integration.md).
+### Upgrade
+
+```bash
+blumkin upgrade
+```
+
+Wraps `pipx upgrade blumkin` and prints the version and commit you were on and
+the one you moved to — bare `pipx upgrade` cannot tell you whether `PATH` still
+resolves to a dev checkout.
+
+### From a clone (developing blumkin)
+
+```bash
+uv sync --group dev
+uv tool install -e .        # editable; `blumkin` now points at the checkout
+```
+
+`blumkin --version` reports the checkout's commit, and `blumkin upgrade` will
+say it is running from a source checkout and leave the tree alone.
+
+To use blumkin from agent sessions in **other** repos (Cursor personal skill, or
+Copilot CLI instructions), see [`docs/agent-integration.md`](./docs/agent-integration.md).
+For cutting a release, see [`docs/RELEASING.md`](./docs/RELEASING.md).
 
 ### Discovering commands
 
@@ -171,6 +192,7 @@ Live tests need `~/.config/blumkin/` by default (override with `BLUMKIN_CONFIG_D
 - [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
 - [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md) — M1 ship retrospective (#11)  
 - [`docs/agent-integration.md`](./docs/agent-integration.md) — using blumkin from Cursor / Copilot CLI, and the frozen `skills list --json` contract  
+- [`docs/RELEASING.md`](./docs/RELEASING.md) — release flow, PyPI trusted publishing, verifying a published release  
 - [`docs/google-setup.md`](./docs/google-setup.md) — Google Cloud Desktop OAuth + blumkin Google profile  
 - [`.cursor/skills/blumkin/SKILL.md`](./.cursor/skills/blumkin/SKILL.md) — Cursor agent skill  
 
