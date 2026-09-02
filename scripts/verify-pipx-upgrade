@@ -16,21 +16,38 @@ die() {
 previous_published_version() {
   local -r version="$1"
   local -r releases_json="$2"
+  local attempt all_versions
 
-  timeout 20 curl \
-    --connect-timeout 5 \
-    --fail \
-    --location \
-    --max-time 15 \
-    --output "$releases_json" \
-    --silent \
-    --show-error \
-    "https://pypi.org/pypi/${package}/json"
+  # PyPI's publish-to-visible propagation is flaky (the same reason
+  # verify-pypi-release polls before this script ever runs) - a bounded retry here
+  # keeps one transient 5xx/timeout from reddening an otherwise-good release.
+  for attempt in 1 2 3; do
+    if timeout 20 curl \
+      --connect-timeout 5 \
+      --fail \
+      --location \
+      --max-time 15 \
+      --output "$releases_json" \
+      --silent \
+      --show-error \
+      "https://pypi.org/pypi/${package}/json"; then
+      break
+    fi
+    [[ "$attempt" == 3 ]] && die "could not fetch https://pypi.org/pypi/${package}/json after 3 attempts"
+    sleep $((attempt * 5))
+  done
 
-  jq -r '.releases | keys[]' "$releases_json" | sort -V | awk -v target="$version" '
+  all_versions="$(jq -r '.releases | keys[]' "$releases_json" | sort -V)"
+  # A version missing from the release list entirely is a fetch/lookup failure, not
+  # a legitimate first release - conflating the two would silently disable this
+  # check's gate on every future run where the lookup happens to come up empty.
+  grep --fixed-strings --quiet --line-regexp "$version" <<<"$all_versions" ||
+    die "PyPI's release list for ${package} does not include ${version} yet"
+
+  awk -v target="$version" '
     $0 == target { print prev; exit }
     { prev = $0 }
-  '
+  ' <<<"$all_versions"
 }
 
 main() {
@@ -40,7 +57,7 @@ main() {
 
   local -r version="$1"
   local releases_json previous
-  local pipx_uv_home pipx_bin pipx_home scratch_home bin_dir version_output
+  local pipx_uv_home pipx_bin pipx_home scratch_home pipx_bin_dir version_output
   local upgrade_json
 
   command -v curl >/dev/null 2>&1 || die 'curl is required'
@@ -63,58 +80,71 @@ main() {
 
   # Isolate pipx's own install, the app's install, and its bin dir under one scratch
   # $HOME so this never touches (or is confused by) whatever pipx/blumkin already
-  # exist on the runner or a dev box. $PIPX_BIN_DIR is deliberately left unset for the
-  # `blumkin upgrade` invocation below, so it must fall back to asking pipx directly
-  # (`pipx environment --value PIPX_BIN_DIR`) for a non-default bin dir - the live
-  # coverage issue #143 asks for.
+  # exist on the runner or a dev box. PIPX_BIN_DIR is set to a directory that is
+  # *not* the $HOME-derived default, for both the install and the upgrade below -
+  # the custom-bin-dir path issue #143 asks for (unit-only before this). Real pipx
+  # has no persisted per-app bin-dir memory independent of this env var (verified
+  # empirically: `pipx environment --value PIPX_BIN_DIR` always recomputes fresh
+  # from the *current* environment, never from what an app was actually installed
+  # with), so a scenario where blumkin must discover a custom dir it was never told
+  # about is not something a real pipx can produce - PIPX_BIN_DIR stays set for
+  # both steps here rather than pretending otherwise.
   pipx_uv_home="${temp_root}/pipx-uv-home"
   scratch_home="${temp_root}/scratch-home"
   pipx_home="${temp_root}/pipx-home"
-  mkdir -p "$pipx_uv_home" "$scratch_home" "$pipx_home"
+  pipx_bin_dir="${temp_root}/pipx-bin"
+  mkdir -p "$pipx_uv_home" "$scratch_home" "$pipx_home" "$pipx_bin_dir"
 
   timeout 60 env HOME="$pipx_uv_home" uv tool install pipx >/dev/null
   pipx_bin="$(env HOME="$pipx_uv_home" uv tool dir --bin)/pipx"
   [[ -x "$pipx_bin" ]] || die "pipx not found at ${pipx_bin} after uv tool install"
 
-  timeout 180 env -u PIPX_BIN_DIR HOME="$scratch_home" PIPX_HOME="$pipx_home" \
+  timeout 180 env HOME="$scratch_home" PIPX_HOME="$pipx_home" PIPX_BIN_DIR="$pipx_bin_dir" \
     "$pipx_bin" install "${package}==${previous}"
-  bin_dir="${scratch_home}/.local/bin"
-  [[ -x "${bin_dir}/blumkin" ]] ||
-    die "pipx did not install blumkin under ${bin_dir} (HOME-derived default bin dir)"
+  [[ -x "${pipx_bin_dir}/blumkin" ]] ||
+    die "pipx did not install blumkin under the custom bin dir ${pipx_bin_dir}"
 
   version_output="$(
-    timeout 30 env -u BLUMKIN_GIT_SHA -u GITHUB_SHA "${bin_dir}/blumkin" --version
+    timeout 30 env -u BLUMKIN_GIT_SHA -u GITHUB_SHA "${pipx_bin_dir}/blumkin" --version
   )"
   grep --fixed-strings --quiet "$previous" <<<"$version_output" ||
     die "pipx-installed blumkin --version did not report ${previous}: ${version_output}"
 
   upgrade_json="$(
-    timeout 180 env -u PIPX_BIN_DIR \
+    timeout 180 env \
       HOME="$scratch_home" \
       PIPX_HOME="$pipx_home" \
+      PIPX_BIN_DIR="$pipx_bin_dir" \
       PATH="$(dirname "$pipx_bin"):${PATH}" \
-      "${bin_dir}/blumkin" upgrade --json
+      "${pipx_bin_dir}/blumkin" upgrade --json
   )"
   readonly upgrade_json
 
   jq --exit-status '.ok == true' <<<"$upgrade_json" >/dev/null ||
     die "blumkin upgrade --json reported ok=false: ${upgrade_json}"
 
-  local before after path
+  local before after path after_version
   before="$(jq -r '.pipx_app.before' <<<"$upgrade_json")"
   after="$(jq -r '.pipx_app.after' <<<"$upgrade_json")"
   path="$(jq -r '.pipx_app.path' <<<"$upgrade_json")"
 
   [[ "$before" == "$after" ]] &&
     die "pipx_app.before == pipx_app.after (${before}) - upgrade did not change anything"
-  grep --fixed-strings --quiet "$version" <<<"$after" ||
-    die "pipx_app.after did not report the new version ${version}: ${after}"
+  # `blumkin upgrade` shells out to bare `pipx upgrade blumkin`, which always lands
+  # on whichever version is latest *when it runs* - not necessarily this job's own
+  # $version, if a newer release shipped since (e.g. a re-run after an earlier step
+  # flaked). Assert it advanced to at least $version rather than requiring an exact
+  # match, so a later release doesn't turn an already-good run red.
+  after_version="${after%% *}"
+  if [[ "$(printf '%s\n%s\n' "$version" "$after_version" | sort -V | tail -1)" != "$after_version" ]]; then
+    die "pipx_app.after (${after}) is older than the published ${version} - upgrade did not advance"
+  fi
   # pipx_blumkin_path() resolves the bin-dir shim to its real venv target, so the
-  # live path this reports is under $PIPX_HOME, not the $HOME-derived bin dir - the
-  # assertion that matters is that it is the *scratch* PIPX_HOME, proving the
-  # PIPX_BIN_DIR fallback found this install and not some other one on the box.
+  # live path this reports is under $PIPX_HOME, not the configured bin dir - the
+  # assertion that matters is that it is the *scratch* PIPX_HOME, proving this
+  # install (and not some other one on the box) is what got discovered and upgraded.
   [[ "$path" == "${pipx_home}"/* ]] ||
-    die "pipx_app.path (${path}) is not under the scratch PIPX_HOME ${pipx_home} - the PIPX_BIN_DIR fallback (pipx environment --value PIPX_BIN_DIR) was not exercised"
+    die "pipx_app.path (${path}) is not under the scratch PIPX_HOME ${pipx_home}"
 
   printf 'verify-pipx-upgrade: %s -> %s via pipx upgrade passed (bin dir: %s)\n' \
     "$before" "$after" "$path"
