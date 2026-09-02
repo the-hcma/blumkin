@@ -140,6 +140,8 @@ def test_documented_sample_matches_real_output() -> None:
     live = skills_catalog()
     assert sample["cli"] == live["cli"]
     assert sample["version"] == live["version"]
+    # build values track the installed blumkin, so pin the shape, not the values.
+    assert set(sample["build"]) == set(live["build"])
     by_id = {skill["id"]: skill for skill in live["skills"]}
     for shown in sample["skills"]:
         assert shown == by_id[shown["id"]], f"docs sample for {shown['id']} is stale"

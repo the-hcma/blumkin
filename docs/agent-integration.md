@@ -171,7 +171,7 @@ Real output, with `skills` cut to one entry — the full list carries every skil
 ```json
 {
   "build": {
-    "commit": "5216b8be3223",
+    "commit": "1f4e9ab2c7d0",
     "version": "0.1.0"
   },
   "cli": "blumkin",
@@ -208,9 +208,12 @@ Real output, with `skills` cut to one entry — the full list carries every skil
 }
 ```
 
-`test_documented_sample_matches_real_output` parses this block out of the file
-and compares it against the live catalog, so it cannot quietly drift from what
-the CLI actually prints.
+`test_documented_sample_matches_real_output` parses this block and pins `cli`,
+`version`, and every shown skill against the live catalog, so those cannot
+quietly drift from what the CLI prints. `build` is illustrative only — its
+`version` / `commit` track whatever blumkin you have installed (the test checks
+its shape, not the values here). Do not compare the values above against your
+own `blumkin --version`; run `blumkin --version` itself for that.
 
 | Field | Meaning |
 |-------|---------|
