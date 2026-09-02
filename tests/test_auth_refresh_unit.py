@@ -9,7 +9,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from blumkin.auth import SecretWriteError, create_credential, status_dict
+from blumkin.auth import (
+    AuthRequiredError,
+    AuthTransientError,
+    SecretWriteError,
+    create_credential,
+    status_dict,
+)
 
 
 def test_status_reports_expired_access_token(
@@ -138,6 +144,83 @@ def test_create_credential_falls_back_when_get_token_raises_oserror(
 
     assert cred is fake_cred
     fake_cred.authenticate.assert_called_once()
+
+
+def test_create_credential_noninteractive_transient_get_token_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A network OSError from get_token is not a bad grant - it's retryable (issue #133)."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BLUMKIN_NONINTERACTIVE", "1")
+    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
+    (tmp_path / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "auth_record.json").write_text("record-bytes")
+
+    fake_record = MagicMock(name="AuthenticationRecord")
+    fake_cred = MagicMock(name="InteractiveBrowserCredential")
+    fake_cred.get_token.side_effect = OSError("Network is unreachable")
+
+    with (
+        patch("blumkin.auth.AuthenticationRecord.deserialize", return_value=fake_record),
+        patch("blumkin.auth.InteractiveBrowserCredential", return_value=fake_cred),
+        pytest.raises(AuthTransientError, match="transient"),
+    ):
+        create_credential()
+
+    fake_cred.authenticate.assert_not_called()
+
+
+def test_create_credential_noninteractive_invalid_grant_is_auth_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BLUMKIN_NONINTERACTIVE", "1")
+    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
+    (tmp_path / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "auth_record.json").write_text("record-bytes")
+
+    fake_record = MagicMock(name="AuthenticationRecord")
+    fake_cred = MagicMock(name="InteractiveBrowserCredential")
+    fake_cred.get_token.side_effect = Exception("invalid_grant: AADSTS700082 refresh token expired")
+
+    with (
+        patch("blumkin.auth.AuthenticationRecord.deserialize", return_value=fake_record),
+        patch("blumkin.auth.InteractiveBrowserCredential", return_value=fake_cred),
+        pytest.raises(AuthRequiredError, match="revoked or expired"),
+    ):
+        create_credential()
+
+
+def test_status_dict_reports_granted_and_missing_scopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    cache = {
+        "AccessToken": {
+            "entry1": {
+                "expires_on": str(int((datetime.now(UTC) + timedelta(hours=1)).timestamp())),
+                "target": "https://graph.microsoft.com/User.Read",
+            }
+        },
+        "RefreshToken": {"r1": {"client_id": "test-client"}},
+    }
+    (tmp_path / "msal_token_cache.json").write_text(json.dumps(cache))
+    (tmp_path / "auth_record.json").write_text("{}")
+    (tmp_path / "config.toml").write_text('client_id = "test-client"\n')
+    payload = status_dict()
+    assert payload["granted_scopes"] == ["User.Read"]
+    assert "Calendars.ReadWrite" in payload["missing_scopes"]
+    assert "User.Read" not in payload["missing_scopes"]
+
+
+def test_status_dict_missing_scopes_empty_without_a_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('client_id = "test-client"\n')
+    payload = status_dict()
+    assert payload["granted_scopes"] == []
+    assert payload["missing_scopes"] == []
 
 
 def test_create_credential_reraises_oserror_from_save_token_cache(

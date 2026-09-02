@@ -4,15 +4,26 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from google.auth.exceptions import RefreshError, TransportError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-from blumkin.auth import SecretWriteError, _ensure_secret_dir, interactive_auth_allowed
+from blumkin.auth import (
+    AuthRequiredError,
+    AuthTransientError,
+    MissingScopeError,
+    SecretWriteError,
+    _ensure_secret_dir,
+    format_scope_gap,
+    interactive_auth_allowed,
+)
 from blumkin.config import BlumkinConfig, google_oauth_installed_client, load_config
+from blumkin.output import emit_warning
 from blumkin.providers.google_http import refresh_request
 from blumkin.providers.kind import ProviderConfigError
 
@@ -38,10 +49,15 @@ def get_credentials(
     *,
     allow_interactive: bool | None = None,
 ) -> Credentials:
-    """Load or obtain Google OAuth credentials; refresh silently when possible."""
+    """Load or obtain Google OAuth credentials; refresh silently when possible.
+
+    Non-interactive callers fail fast with :class:`MissingScopeError` when the
+    stored grant does not cover ``GOOGLE_SCOPES`` — before any provider call, not
+    after a 403 (issue #133).
+    """
     cfg = config or load_config()
     if not cfg.client_id and cfg.google_oauth_client_file is None:
-        raise ValueError(
+        raise ProviderConfigError(
             "Missing Google OAuth client — set google_oauth_client_file (path to "
             "Desktop client JSON) or client_id in config.toml."
         )
@@ -51,39 +67,33 @@ def get_credentials(
         if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(refresh_request(cfg))
-            except Exception:
+            except Exception as exc:
                 if not interactive:
-                    raise ValueError(
-                        "Silent token refresh failed. Run `blumkin auth login` on a TTY "
-                        "(or unset BLUMKIN_NONINTERACTIVE), then retry."
-                    ) from None
+                    raise _classify_refresh_error(exc) from exc
             else:
                 _save_credentials(cfg, creds, preserve_granted_scopes=True)
-                if not interactive or not _needs_additional_scopes(cfg):
+                if not _needs_additional_scopes(cfg):
                     return creds
+                if not interactive:
+                    raise _missing_scope_error(cfg)
         elif creds.valid:
-            if not interactive or not _needs_additional_scopes(cfg):
+            if not _needs_additional_scopes(cfg):
                 return creds
+            if not interactive:
+                raise _missing_scope_error(cfg)
         elif not interactive:
-            raise ValueError(
+            raise AuthRequiredError(
                 "Silent token refresh failed. Run `blumkin auth login` on a TTY "
                 "(or unset BLUMKIN_NONINTERACTIVE), then retry."
             )
 
     if not interactive:
-        raise ValueError(
+        raise AuthRequiredError(
             "Authentication required. Run `blumkin auth login` on a TTY "
             "(agent shells should set BLUMKIN_NONINTERACTIVE=1 and never open a browser)."
         )
 
-    flow = InstalledAppFlow.from_client_config(
-        _client_config(cfg),
-        scopes=sorted(GOOGLE_SCOPES),
-    )
-    url_params = {"prompt": "consent"} if _needs_additional_scopes(cfg) else None
-    creds = flow.run_local_server(port=0, authorization_url_params=url_params)
-    if not isinstance(creds, Credentials):
-        raise TypeError("expected google.oauth2.credentials.Credentials from InstalledAppFlow")
+    creds = _run_interactive_consent(cfg)
     _save_credentials(cfg, creds)
     return creds
 
@@ -120,6 +130,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     """Auth status without secrets (aligned keys with Microsoft status where possible)."""
     cfg = config or load_config()
     access = _access_token_expiry(cfg)
+    granted = persisted_granted_scopes(cfg)
     return {
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
@@ -128,6 +139,12 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "client_id_configured": bool(cfg.client_id) or cfg.google_oauth_client_file is not None,
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),
+        "granted_scopes": sorted(granted),
+        # Empty until a token file exists: nothing to diff a fresh, never-logged-in
+        # profile against (auth_required already covers that state).
+        "missing_scopes": sorted(GOOGLE_SCOPES - granted)
+        if cfg.google_token_path.is_file()
+        else [],
         "provider": "google",
         "refresh_token_present": access.get("refresh_token_present", False),
         "requested_scopes": sorted(GOOGLE_SCOPES),
@@ -161,6 +178,23 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
     out["expires_in_seconds"] = remaining
     out["expired"] = remaining <= 0
     return out
+
+
+def _classify_refresh_error(exc: BaseException) -> AuthRequiredError | AuthTransientError:
+    """Map a ``Credentials.refresh()`` failure to a typed auth error (issue #133)."""
+    if isinstance(exc, TransportError | TimeoutError):
+        return AuthTransientError(
+            f"Google token refresh hit a transient network error: {exc}. Safe to retry."
+        )
+    if isinstance(exc, RefreshError) and "invalid_grant" in str(exc):
+        return AuthRequiredError(
+            "Google refresh token was revoked or expired (invalid_grant). Run "
+            "`blumkin auth login` on a TTY, then retry."
+        )
+    return AuthRequiredError(
+        "Silent token refresh failed. Run `blumkin auth login` on a TTY "
+        "(or unset BLUMKIN_NONINTERACTIVE), then retry."
+    )
 
 
 def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
@@ -206,6 +240,16 @@ def _client_secret_from_oauth_file(cfg: BlumkinConfig) -> str:
     return raw.strip() if isinstance(raw, str) else ""
 
 
+def _consent_once(cfg: BlumkinConfig, *, force_consent: bool) -> Credentials:
+    """Run the browser consent flow exactly once; let a partial-grant Warning propagate."""
+    flow = InstalledAppFlow.from_client_config(_client_config(cfg), scopes=sorted(GOOGLE_SCOPES))
+    url_params = {"prompt": "consent"} if force_consent else None
+    creds = flow.run_local_server(port=0, authorization_url_params=url_params)
+    if not isinstance(creds, Credentials):
+        raise TypeError("expected google.oauth2.credentials.Credentials from InstalledAppFlow")
+    return creds
+
+
 def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
     path = cfg.google_token_path
     if not path.is_file():
@@ -226,6 +270,25 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
         return Credentials.from_authorized_user_info(info, scopes=sorted(GOOGLE_SCOPES))
     except Exception:
         return None
+
+
+def _missing_scope_error(
+    cfg: BlumkinConfig, *, current: frozenset[str] | None = None
+) -> MissingScopeError:
+    """Build a :class:`MissingScopeError` showing the granted-vs-needed gap.
+
+    ``current`` overrides the persisted grant when the caller already knows the
+    actual scopes Google returned (e.g. from a partial-consent Warning) — more
+    accurate than the token file on a fresh install that never got that far.
+    """
+    granted = current if current is not None else persisted_granted_scopes(cfg)
+    missing = GOOGLE_SCOPES - granted
+    return MissingScopeError(
+        "Stored Google grant is missing scopes this build needs.\n"
+        + format_scope_gap(current=granted, missing=missing),
+        current=granted,
+        missing=missing,
+    )
 
 
 def _needs_additional_scopes(cfg: BlumkinConfig) -> bool:
@@ -257,6 +320,33 @@ def _read_persisted_scopes(cfg: BlumkinConfig) -> list[str] | None:
     return scopes if scopes else None
 
 
+def _run_interactive_consent(cfg: BlumkinConfig) -> Credentials:
+    """Run the browser consent flow, auto-escalating once on a partial grant.
+
+    Google's consent screen lets the user leave scope checkboxes unticked; when
+    that happens, oauthlib raises a bare ``Warning`` instead of returning partial
+    credentials (issue #133). Retry exactly once with ``prompt=consent`` and a
+    warning telling the operator to tick every box; a second partial grant stops
+    instead of looping.
+    """
+    force_consent = _needs_additional_scopes(cfg)
+    if force_consent:
+        _warn_scope_gap(persisted_granted_scopes(cfg))
+    try:
+        return _consent_once(cfg, force_consent=force_consent)
+    except Warning as exc:
+        granted = _scopes_from_oauthlib_warning(exc)
+        if force_consent:
+            raise _missing_scope_error(cfg, current=granted) from exc
+        _warn_scope_gap(granted or frozenset())
+        try:
+            return _consent_once(cfg, force_consent=True)
+        except Warning as exc2:
+            raise _missing_scope_error(
+                cfg, current=_scopes_from_oauthlib_warning(exc2) or granted
+            ) from exc2
+
+
 def _save_credentials(
     cfg: BlumkinConfig,
     creds: Credentials,
@@ -278,6 +368,30 @@ def _save_credentials(
     else:
         payload.setdefault("client_secret", "")
     _write_secret_text(cfg.google_token_path, json.dumps(payload))
+
+
+def _scopes_from_oauthlib_warning(exc: Warning) -> frozenset[str] | None:
+    """Scopes Google actually granted, parsed from oauthlib's partial-consent Warning.
+
+    oauthlib stamps ``.new_scope`` / ``.old_scope`` list attributes on the
+    ``Warning`` it raises when the returned grant differs from what was
+    requested; fall back to regexing the message if a future oauthlib drops
+    those. ``None`` means neither worked - caller falls back to the persisted
+    grant.
+    """
+    new_scope = getattr(exc, "new_scope", None)
+    if isinstance(new_scope, list) and all(isinstance(scope, str) for scope in new_scope):
+        return frozenset(new_scope)
+    match = re.search(r'Scope has changed from "[^"]*" to "([^"]*)"', str(exc))
+    return frozenset(match.group(1).split()) if match else None
+
+
+def _warn_scope_gap(current: frozenset[str]) -> None:
+    emit_warning(
+        "Stored Google grant is missing scopes this build needs. Re-opening the "
+        'consent screen - tick every box (or click "Select all") this time.\n'
+        + format_scope_gap(current=current, missing=GOOGLE_SCOPES - current)
+    )
 
 
 def _write_secret_text(path: Path, text: str) -> None:

@@ -41,6 +41,10 @@ Opens the system browser for delegated (public-client) sign-in, then writes the
 token cache and auth record under the active config dir. Run it once per machine,
 or again after `auth logout` or a scope change. In non-interactive shells set
 BLUMKIN_NONINTERACTIVE=1 and use `auth refresh` instead.
+
+Google: if the stored grant is missing a scope this build needs, this
+automatically re-opens the consent screen (a warning names the gap first) -
+tick every box, or click "Select all", so the grant does not stay partial.
 """
 
 AUTH_LOGOUT_EPILOG = """
@@ -73,7 +77,8 @@ Examples:
 
 Shows the resolved config path, whether the client id is set, and whether the
 token cache / auth record exist plus the access-token expiry. Read this before
-assuming a hang is a login problem.
+assuming a hang is a login problem. `--json` also carries `granted_scopes` and
+`missing_scopes`, so a scope gap is visible before a command fails on it.
 """
 
 CALENDAR_ACCEPT_EPILOG = """

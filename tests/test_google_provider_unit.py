@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 from googleapiclient.errors import HttpError
 
+from blumkin.auth import MissingScopeError
 from blumkin.cli import main
 from blumkin.config import BlumkinConfig, MailSignatureConfig
 from blumkin.exit_codes import EXIT_MISSING_SCOPE
@@ -609,6 +610,12 @@ def test_save_credentials_preserves_persisted_scopes_when_requested(tmp_path: Pa
 
 
 def test_get_credentials_refresh_preserves_stale_granted_scopes(tmp_path: Path) -> None:
+    """A refreshed-but-insufficient grant is saved as-is, then reported (issue #133).
+
+    Non-interactively this must fail fast with MissingScopeError - it must not
+    silently return usable-looking credentials for a scope set the command
+    actually needs (the bug this issue reports).
+    """
     from blumkin.providers import google_auth
 
     contacts_only = "https://www.googleapis.com/auth/contacts.readonly"
@@ -648,9 +655,13 @@ def test_get_credentials_refresh_preserves_stale_granted_scopes(tmp_path: Path) 
     with (
         patch.object(google_auth, "_load_credentials", return_value=creds),
         patch.object(google_auth, "refresh_request", return_value=MagicMock()),
+        pytest.raises(MissingScopeError) as excinfo,
     ):
         google_auth.get_credentials(cfg, allow_interactive=False)
 
+    assert excinfo.value.current == {contacts_only}
+    assert "contacts.readonly" in str(excinfo.value)
+    assert "gmail.compose" in str(excinfo.value)
     saved = json.loads(cfg.google_token_path.read_text())
     assert saved["scopes"] == [contacts_only]
 

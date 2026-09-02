@@ -152,6 +152,8 @@ client id or call Graph directly when a blumkin skill covers the job.
   downloads, hand the share URL to the user instead of inventing Graph calls.
 - Exit 2 (`usage_error`): usually a malformed command, but sometimes a config
   opt-in that is off. Read the message before calling it bad arguments.
+- Exit 1 (`transient_error`): a network/server hiccup talking to the auth
+  provider, not a bad grant. Safe to retry the same command once.
 ```
 
 Keep it short. It competes with everything else in the context window, and the
@@ -262,7 +264,7 @@ failure path.
 | Code | `error` value | Meaning |
 |------|---------------|---------|
 | 0 | — | Success |
-| 1 | `graph_error`, `secret_write_failed`, `timeout`, `upgrade_failed` | Unexpected Graph failure; local secret cache/auth-record write failed (e.g. symlink at the path); Graph/token HTTP timed out; or `blumkin upgrade` could not run or `pipx upgrade` exited non-zero |
+| 1 | `graph_error`, `secret_write_failed`, `timeout`, `transient_error`, `upgrade_failed` | Unexpected Graph failure; local secret cache/auth-record write failed (e.g. symlink at the path); Graph/token HTTP timed out; a transient network/server error talking to the auth provider (safe to retry, not a bad grant); or `blumkin upgrade` could not run or `pipx upgrade` exited non-zero |
 | 2 | `usage_error`, or none | Bad arguments; **`wo1162425_scopes` switched off**; or **`people resolve` ambiguous** (`ok: false` + `ambiguous: true` + candidates on **stdout**, no stderr envelope) |
 | 3 | `auth_required` | Run `blumkin auth login` on this machine |
 | 4 | `missing_scope` | A scope is unavailable — the tenant has not granted it, or `files_scopes` is off |
