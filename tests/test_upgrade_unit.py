@@ -44,23 +44,60 @@ def test_upgrade_requires_pipx(monkeypatch) -> None:
     monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
     result = CliRunner().invoke(main, ["upgrade", "--json"])
     assert result.exit_code == EXIT_USAGE
-    assert json.loads(result.stdout or result.output)["error"] == "usage_error"
+    assert json.loads(result.stderr)["error"] == "usage_error"
 
 
-def test_upgrade_reports_from_and_to(monkeypatch, pipx_on_path, tmp_path) -> None:
+def test_upgrade_reports_from_and_to_in_one_comparable_format(
+    monkeypatch, pipx_on_path, tmp_path
+) -> None:
     app = tmp_path / "blumkin"
     app.write_text("#!/bin/sh\n")
-    versions = iter(["blumkin 0.1.0 (aaaaaaaaaaaa)", "blumkin 0.2.0 (bbbbbbbbbbbb)"])
+    # _read_pipx_version strips the "blumkin " prefix, so all three build values
+    # are "<version> (<commit>)" - the same shape as build_version().
+    versions = iter(["0.1.0 (aaaaaaaaaaaa)", "0.2.0 (bbbbbbbbbbbb)"])
     monkeypatch.setattr(cli, "pipx_blumkin_path", lambda: app)
     monkeypatch.setattr(cli, "_read_pipx_version", lambda _exe: next(versions))
+    monkeypatch.setattr(cli, "build_version", lambda: "0.1.0 (aaaaaaaaaaaa)")
     _run_returns(monkeypatch, _completed(stdout="upgraded blumkin"))
 
     result = CliRunner().invoke(main, ["upgrade", "--json"])
     assert result.exit_code == EXIT_SUCCESS
-    payload = json.loads(result.output)
-    assert payload["pipx_app_before"] == "blumkin 0.1.0 (aaaaaaaaaaaa)"
-    assert payload["to"]["build"] == "blumkin 0.2.0 (bbbbbbbbbbbb)"
+    payload = json.loads(result.stdout)
+    assert payload["from"]["build"] == "0.1.0 (aaaaaaaaaaaa)"
+    assert payload["pipx_app_before"] == "0.1.0 (aaaaaaaaaaaa)"
+    assert payload["to"]["build"] == "0.2.0 (bbbbbbbbbbbb)"
     assert payload["to"]["pipx_app"] == str(app)
+    # from and to are the same shape, so a no-op upgrade compares equal.
+    assert payload["from"]["build"] == payload["pipx_app_before"]
+
+
+def test_upgrade_human_output_shows_from_and_to(monkeypatch, pipx_on_path, tmp_path) -> None:
+    app = tmp_path / "blumkin"
+    app.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(cli, "pipx_blumkin_path", lambda: app)
+    monkeypatch.setattr(cli, "build_version", lambda: "0.1.0 (aaaaaaaaaaaa)")
+    monkeypatch.setattr(cli, "is_source_checkout", lambda: False)
+    monkeypatch.setattr(cli, "_read_pipx_version", lambda _exe: "0.2.0 (bbbbbbbbbbbb)")
+    _run_returns(monkeypatch, _completed(stdout="upgraded"))
+
+    result = CliRunner().invoke(main, ["upgrade"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert "from: 0.1.0 (aaaaaaaaaaaa)" in result.stdout
+    assert "to:   0.2.0 (bbbbbbbbbbbb)" in result.stdout
+    assert "source checkout" not in result.stdout
+
+
+def test_upgrade_from_a_source_checkout_says_so(monkeypatch, pipx_on_path, tmp_path) -> None:
+    monkeypatch.setattr(cli, "pipx_blumkin_path", lambda: None)
+    monkeypatch.setattr(cli, "build_version", lambda: "0.1.0 (aaaaaaaaaaaa)")
+    monkeypatch.setattr(cli, "is_source_checkout", lambda: True)
+    _run_returns(monkeypatch, _completed(stdout="upgraded"))
+
+    result = CliRunner().invoke(main, ["upgrade"])
+    assert result.exit_code == EXIT_SUCCESS
+    # pipx app path unknown -> generic confirm line, no crash on the None path.
+    assert "run `blumkin --version` to confirm" in result.stdout
+    assert "source checkout" in result.stdout
 
 
 def test_upgrade_surfaces_pipx_failure(monkeypatch, pipx_on_path) -> None:
@@ -68,9 +105,17 @@ def test_upgrade_surfaces_pipx_failure(monkeypatch, pipx_on_path) -> None:
     _run_returns(monkeypatch, _completed(returncode=1, stderr="Package is not installed"))
     result = CliRunner().invoke(main, ["upgrade", "--json"])
     assert result.exit_code == EXIT_OTHER
-    payload = json.loads(result.stdout or result.output)
+    payload = json.loads(result.stderr)
     assert payload["error"] == "upgrade_failed"
     assert "not installed" in payload["hint"]
+
+
+def test_upgrade_handles_pipx_not_executable(monkeypatch, pipx_on_path) -> None:
+    monkeypatch.setattr(cli, "pipx_blumkin_path", lambda: None)
+    _run_returns(monkeypatch, OSError("Exec format error"))
+    result = CliRunner().invoke(main, ["upgrade", "--json"])
+    assert result.exit_code == EXIT_OTHER
+    assert json.loads(result.stderr)["error"] == "upgrade_failed"
 
 
 def test_upgrade_times_out(monkeypatch, pipx_on_path) -> None:
@@ -78,15 +123,15 @@ def test_upgrade_times_out(monkeypatch, pipx_on_path) -> None:
     _run_returns(monkeypatch, subprocess.TimeoutExpired(cmd="pipx", timeout=180))
     result = CliRunner().invoke(main, ["upgrade"])
     assert result.exit_code == EXIT_OTHER
-    assert "timed out" in (result.stderr or result.output)
+    assert "timed out" in result.stderr
 
 
-def test_read_pipx_version_parses_first_line(monkeypatch) -> None:
+def test_read_pipx_version_strips_the_prog_prefix(monkeypatch) -> None:
     _run_returns(
         monkeypatch,
         _completed(stdout="blumkin 1.2.3 (deadbeefcafe)\nrunning from /x\n"),
     )
-    assert cli._read_pipx_version(Path("/x/blumkin")) == "blumkin 1.2.3 (deadbeefcafe)"
+    assert cli._read_pipx_version(Path("/x/blumkin")) == "1.2.3 (deadbeefcafe)"
 
 
 def test_read_pipx_version_none_on_nonzero(monkeypatch) -> None:

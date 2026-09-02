@@ -325,7 +325,12 @@ def _raise_mail_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
 
 
 def _read_pipx_version(executable: Path) -> str | None:
-    """Return the first line of ``<executable> --version``, or None if it fails."""
+    """Return ``<executable> --version`` as ``<version> (<commit>)``, or None.
+
+    The first line of ``blumkin --version`` is ``blumkin <version> (<commit>)``;
+    the ``blumkin `` prefix is stripped so the value compares directly against
+    :func:`blumkin.version.build_version` (the from/to pair in ``upgrade``).
+    """
     try:
         completed = subprocess.run(
             [str(executable), "--version"],
@@ -339,7 +344,10 @@ def _read_pipx_version(executable: Path) -> str | None:
     if completed.returncode != 0:
         return None
     lines = (completed.stdout or "").splitlines()
-    return lines[0].strip() if lines and lines[0].strip() else None
+    first = lines[0].strip() if lines else ""
+    if not first:
+        return None
+    return first.removeprefix("blumkin ").strip() or first
 
 
 def _require_wo1162425_scopes(*, as_json: bool) -> None:
@@ -935,8 +943,10 @@ def upgrade(ctx: click.Context, as_json_flag: bool) -> None:
     if pipx_app_after is not None and pipx_app is not None:
         lines.append(f"to:   {pipx_app_after}")
         lines.append(f"      {pipx_app}")
+    elif pipx_app is not None:
+        lines.append(f"to:   pipx upgrade finished; run `{pipx_app} --version` to confirm")
     else:
-        lines.append("to:   pipx upgrade finished; run ~/.local/bin/blumkin --version to confirm")
+        lines.append("to:   pipx upgrade finished; run `blumkin --version` to confirm")
     if source_checkout:
         lines.append(
             "note: this process is a source checkout - the upgrade changed the pipx app "
