@@ -102,3 +102,41 @@ fi
 installed_env "$bin_dir/blumkin" skills list --json >/dev/null
 
 echo "Installed wheel packaging smoke passed"
+
+# pipx has its own venv layout and console-script shims (PIPX_HOME / PIPX_BIN_DIR),
+# none of which `uv pip install` above exercises - the actual acceptance for #54
+# (`pipx install blumkin`) was only ever checked by hand, on a dev box whose ambient
+# `pipx` turned out to be a broken wrapper (issue #142). Always install a known-good
+# pipx via `uv tool install` instead of trusting whatever `pipx` is already on PATH -
+# it lands under the already-isolated $HOME set above, not the host's real one.
+echo "Installing the wheel with pipx (separate venv layout from the uv pip install above)..."
+timeout 60 uv tool install pipx >/dev/null
+pipx_bin="$(uv tool dir --bin)/pipx"
+if [[ ! -x "$pipx_bin" ]]; then
+  echo "pipx not found at $pipx_bin after uv tool install" >&2
+  exit 1
+fi
+
+pipx_home="$temp_root/pipx-home"
+pipx_bin_dir="$temp_root/pipx-bin"
+mkdir -p "$pipx_home" "$pipx_bin_dir"
+timeout 120 env PIPX_HOME="$pipx_home" PIPX_BIN_DIR="$pipx_bin_dir" \
+  "$pipx_bin" install "$wheel_path"
+
+pipx_version_line="$(installed_env "$pipx_bin_dir/blumkin" --version)"
+printf '%s\n' "$pipx_version_line"
+if [[ "$pipx_version_line" == *"(unknown)"* ]]; then
+  echo "pipx-installed --version reports an unknown commit: $pipx_version_line" >&2
+  exit 1
+fi
+if ! grep --fixed-strings --quiet "$version" <<<"$pipx_version_line"; then
+  echo "pipx-installed --version is missing package version ${version}: $pipx_version_line" >&2
+  exit 1
+fi
+if ! grep --fixed-strings --quiet "${commit:0:12}" <<<"$pipx_version_line"; then
+  echo "pipx-installed --version is missing embedded commit ${commit:0:12}: $pipx_version_line" >&2
+  exit 1
+fi
+"$pipx_bin_dir/blumkin" --help >/dev/null
+
+echo "Installed pipx packaging smoke passed"

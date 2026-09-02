@@ -62,8 +62,8 @@ data anywhere.
    [`src/blumkin/version.py`](../src/blumkin/version.py) - `blumkin --version`
    shows it.
 4. [`scripts/verify-pypi-release`](../scripts/verify-pypi-release) installs the
-   published artifact in isolation and checks the version and commit before the
-   job is green.
+   published artifact in isolation, and again via a real `pipx install`, and
+   checks the version and commit both ways before the job is green.
 
 Compliance of the branch protection, workflows, and cursor rules that back all
 of this is enforced by `github-repo-lint` from
