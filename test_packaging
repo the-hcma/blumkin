@@ -6,6 +6,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly repo_root
+# The build steps below read pyproject.toml and run `git rev-parse` / `uv build`
+# relative to CWD; anchor to the repo so this works when called by path from
+# anywhere (a local preflight helper, say), like restore_build_metadata assumes.
+cd "$repo_root"
 
 temp_root="$(mktemp -d)"
 build_dir="$temp_root/dist"
@@ -67,9 +71,10 @@ cd "$outside_dir"
 export HOME="$home_dir"
 
 installed_env() {
-  # CI sets GITHUB_SHA to the workflow trigger commit, not the embedded one.
-  # A real pipx install has neither variable - match that here.
-  env -u GITHUB_SHA -u BLUMKIN_GIT_SHA "$@"
+  # Prove the embedded stamp wins over an ambient GITHUB_SHA (every GitHub
+  # Actions job exports one for its own repo) and drop any operator override.
+  # A real pipx install has neither - the embedded stamp answers.
+  env -u BLUMKIN_GIT_SHA GITHUB_SHA=0000000000000000000000000000000000000000 "$@"
 }
 
 "$bin_dir/blumkin" --help >/dev/null
@@ -86,6 +91,10 @@ if ! grep --fixed-strings --quiet "$version" <<<"$version_line"; then
 fi
 if ! grep --fixed-strings --quiet "${commit:0:12}" <<<"$version_line"; then
   echo "Installed --version is missing embedded commit ${commit:0:12}: $version_line" >&2
+  exit 1
+fi
+if [[ "$version_line" == *"000000000000"* ]]; then
+  echo "Installed --version leaked ambient GITHUB_SHA instead of the embedded commit: $version_line" >&2
   exit 1
 fi
 

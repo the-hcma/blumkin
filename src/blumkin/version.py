@@ -56,12 +56,18 @@ def git_commit(
     environ: Mapping[str, str] | None = None,
     repository: Path | None = None,
 ) -> str:
-    """Return the configured, embedded, or checkout commit, shortened for display."""
+    """Return the configured, embedded, or checkout commit, shortened for display.
+
+    Only ``BLUMKIN_GIT_SHA`` overrides - deliberately *not* ``GITHUB_SHA``. GitHub
+    Actions exports ``GITHUB_SHA`` for the workflow's own repo on every job, so an
+    installed blumkin invoked from an unrelated workflow would otherwise report
+    that repo's commit as its own. The release workflow bakes ``GITHUB_SHA`` into
+    the embedded stamp at build time, which is where it belongs.
+    """
     environment = os.environ if environ is None else environ
-    for key in ("BLUMKIN_GIT_SHA", "GITHUB_SHA"):
-        configured_sha = environment.get(key, "").strip()
-        if configured_sha:
-            return _normalize_commit(configured_sha)
+    configured_sha = environment.get("BLUMKIN_GIT_SHA", "").strip()
+    if configured_sha:
+        return _normalize_commit(configured_sha)
 
     embedded = getattr(_build_metadata, "EMBEDDED_COMMIT", "")
     if isinstance(embedded, str) and embedded.strip():

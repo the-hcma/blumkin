@@ -26,10 +26,18 @@ def _clear_build_info_cache():
     version_module.get_build_info.cache_clear()
 
 
-def test_git_commit_prefers_env_override_and_shortens(tmp_path) -> None:
+def test_git_commit_prefers_blumkin_override_and_shortens(tmp_path) -> None:
     sha = "0123456789abcdef0123456789abcdef01234567"
     assert git_commit(environ={"BLUMKIN_GIT_SHA": sha}, repository=tmp_path) == sha[:12]
-    assert git_commit(environ={"GITHUB_SHA": sha}, repository=tmp_path) == sha[:12]
+
+
+def test_git_commit_ignores_ambient_github_sha(monkeypatch, tmp_path) -> None:
+    """GITHUB_SHA is the workflow repo's commit, not blumkin's - it must not win."""
+    monkeypatch.setattr(
+        version_module._build_metadata, "EMBEDDED_COMMIT", "abcdef123456", raising=False
+    )
+    unrelated = "9999999999999999999999999999999999999999"
+    assert git_commit(environ={"GITHUB_SHA": unrelated}, repository=tmp_path) == "abcdef123456"
 
 
 def test_git_commit_falls_back_to_embedded(monkeypatch, tmp_path) -> None:
