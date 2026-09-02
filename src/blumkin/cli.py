@@ -890,7 +890,7 @@ def upgrade(ctx: click.Context, as_json_flag: bool) -> None:
         )
         raise SystemExit(EXIT_OTHER)
 
-    pipx_app = pipx_blumkin_path()
+    pipx_app = pipx_blumkin_path(pipx_bin=pipx)
     before = _read_pipx_version(pipx_app) if pipx_app is not None else None
 
     try:
@@ -922,7 +922,7 @@ def upgrade(ctx: click.Context, as_json_flag: bool) -> None:
         )
         raise SystemExit(EXIT_OTHER)
 
-    pipx_app = pipx_blumkin_path() or pipx_app
+    pipx_app = pipx_blumkin_path(pipx_bin=pipx) or pipx_app
     after = _read_pipx_version(pipx_app) if pipx_app is not None else None
 
     if as_json:
