@@ -265,6 +265,9 @@ def _save_credentials(
         granted = _read_persisted_scopes(cfg)
         if granted is not None:
             payload["scopes"] = sorted(granted)
+        else:
+            # Pre-scope-tracking token: do not stamp GOOGLE_SCOPES from to_json().
+            payload.pop("scopes", None)
     secret = _client_secret_from_oauth_file(cfg)
     if secret:
         payload["client_secret"] = secret
