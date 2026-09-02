@@ -65,3 +65,30 @@ from and to. Bare `pipx upgrade blumkin` also works but cannot tell you whether
 
 The editable dev install (`uv tool install -e .` from a clone) stays the path
 for working on blumkin itself.
+
+## Rollback
+
+A published PyPI release cannot be replaced - the version is immutable. To
+recover from a bad release:
+
+1. **Patch forward (preferred).** Land a `fix:` PR on `main`, merge the release
+   PR it triggers, and let the pipeline publish the next patch version.
+   `blumkin upgrade` moves users to it.
+2. **Yank the bad version** if it is actively harmful (crashes on start, leaks,
+   installs broken): on PyPI, project → Manage → Releases → the version →
+   *Yank*. Yanked versions stay installable by exact pin but are skipped by
+   `pipx install blumkin` / `pip install blumkin`. Yank, then patch forward.
+3. **Revert the code.** `git revert` the offending commit(s) on `main` via a PR
+   (`fix:` or `revert:`); that PR's release publishes the reverted state as a
+   new version.
+
+Do not delete the tag or the GitHub release - Release Please tracks state from
+them, and deleting one desyncs the next run. If a release must be fully undone,
+revert on `main` and cut a new version rather than rewriting history.
+
+## Security issues
+
+A vulnerability fix is a normal `fix:` PR and release. For severity targets and
+private reporting, see [`../SECURITY.md`](../SECURITY.md). If the fix must ship
+before the next routine release, merge its release PR immediately after the fix
+PR lands.

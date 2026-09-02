@@ -1,7 +1,13 @@
-# Code owners for blumkin
+# Code owners for blumkin.
+#
+# `*` covers every path, so @thehcma is a required reviewer on every pull
+# request. Combined with branch protection on `main`
+# (require_code_owner_reviews + required_approving_review_count >= 1 +
+# require_last_push_approval), nothing merges without the code owner's review -
+# see CONTRIBUTING.md and SECURITY.md.
+#
+# Do not add narrower rules unless a path genuinely needs a *different* owner:
+# with multiple entries the last matching line wins, so a stray rule can
+# silently drop @thehcma from a path.
 
 * @thehcma
-
-/.github/ @thehcma
-/pyproject.toml @thehcma
-/uv.lock @thehcma
