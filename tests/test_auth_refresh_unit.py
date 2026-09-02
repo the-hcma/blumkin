@@ -221,6 +221,35 @@ def test_create_credential_uses_cached_auth_record(
     fake_cred.authenticate.assert_not_called()
 
 
+def test_status_dict_expired_access_token_still_reports_granted_scopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An expired-but-current-client entry must still count (issue #133 review, round 2).
+
+    Access tokens live ~1h and `auth status` / `doctor` never refresh first, so
+    this is the routine steady state ≥1h after the last silent refresh - not a
+    reason to report a false "no gap".
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    expired = int((datetime.now(UTC) - timedelta(minutes=5)).timestamp())
+    cache = {
+        "AccessToken": {
+            "entry1": {
+                "client_id": "test-client",
+                "expires_on": str(expired),
+                "target": "https://graph.microsoft.com/User.Read",
+            }
+        },
+        "RefreshToken": {"r1": {"client_id": "test-client"}},
+    }
+    (tmp_path / "msal_token_cache.json").write_text(json.dumps(cache))
+    (tmp_path / "auth_record.json").write_text("{}")
+    (tmp_path / "config.toml").write_text('client_id = "test-client"\n')
+    payload = status_dict()
+    assert payload["granted_scopes"] == ["User.Read"]
+    assert "User.Read" not in payload["missing_scopes"]
+
+
 def test_status_dict_missing_scopes_empty_without_a_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

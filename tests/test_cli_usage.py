@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -22,6 +23,7 @@ from blumkin.exit_codes import (
     EXIT_SUCCESS,
     EXIT_USAGE,
 )
+from blumkin.providers.kind import ProviderConfigError
 from blumkin.skills.chat import (
     ChatAttachmentScopeError,
     ChatAttachmentSkippedError,
@@ -43,6 +45,104 @@ def _patch_wo1162425_enabled(monkeypatch) -> None:
         return replace(load_config(profile=profile), wo1162425_scopes=True)
 
     monkeypatch.setattr("blumkin.cli.load_config", _load)
+
+
+def test_auth_login_missing_scope_error_exits_missing_scope(monkeypatch) -> None:
+    """issue #133 review, round 2: auth_login's own dispatch, not just skill commands'."""
+    provider = MagicMock()
+    provider.auth_login.side_effect = MissingScopeError(
+        "Stored Google grant is missing scopes this build needs.\n"
+        "current scopes:  gmail.readonly\nmissing scopes:  calendar.events",
+        current=frozenset({"https://www.googleapis.com/auth/gmail.readonly"}),
+        missing=frozenset({"https://www.googleapis.com/auth/calendar.events"}),
+    )
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "login", "--json"])
+    assert result.exit_code == EXIT_MISSING_SCOPE
+    combined = (result.output or "") + (result.stderr or "")
+    assert "missing_scope" in combined
+    assert "missing scopes:  calendar.events" in combined
+
+
+def test_auth_login_provider_config_error_google_no_client_id_hint(monkeypatch) -> None:
+    """A Google google_oauth_client_file failure must not get the Microsoft hint."""
+    provider = MagicMock()
+    provider.auth_login.side_effect = ProviderConfigError(
+        "google_oauth_client_file is required for Google auth "
+        "(path to Cloud Console Desktop client JSON)."
+    )
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "login", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    combined = (result.output or "") + (result.stderr or "")
+    assert "usage_error" in combined
+    assert "Set client_id" not in combined
+
+
+def test_auth_login_provider_config_error_microsoft_gets_client_id_hint(monkeypatch) -> None:
+    provider = MagicMock()
+    provider.auth_login.side_effect = ProviderConfigError(
+        "Missing client_id — set client_id in ~/.config/blumkin/config.toml."
+    )
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "login", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    combined = (result.output or "") + (result.stderr or "")
+    assert "Set client_id in ~/.config/blumkin/config.toml then retry." in combined
+
+
+def test_auth_login_transient_error_exits_other(monkeypatch) -> None:
+    provider = MagicMock()
+    provider.auth_login.side_effect = AuthTransientError(
+        "Google token endpoint returned a transient error. Safe to retry."
+    )
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "login", "--json"])
+    assert result.exit_code == EXIT_OTHER
+    combined = (result.output or "") + (result.stderr or "")
+    assert "transient_error" in combined
+
+
+def test_auth_refresh_missing_scope_error_exits_missing_scope(monkeypatch) -> None:
+    provider = MagicMock()
+    provider.auth_refresh.side_effect = MissingScopeError(
+        "Stored Google grant is missing scopes this build needs.\n"
+        "current scopes:  gmail.readonly\nmissing scopes:  calendar.events",
+        current=frozenset({"https://www.googleapis.com/auth/gmail.readonly"}),
+        missing=frozenset({"https://www.googleapis.com/auth/calendar.events"}),
+    )
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "refresh", "--json"])
+    assert result.exit_code == EXIT_MISSING_SCOPE
+    combined = (result.output or "") + (result.stderr or "")
+    assert "missing_scope" in combined
+    assert "missing scopes:  calendar.events" in combined
+
+
+def test_auth_refresh_provider_config_error_google_no_client_id_hint(monkeypatch) -> None:
+    provider = MagicMock()
+    provider.auth_refresh.side_effect = ProviderConfigError(
+        "google_oauth_client_file is required for Google auth "
+        "(path to Cloud Console Desktop client JSON)."
+    )
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "refresh", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    combined = (result.output or "") + (result.stderr or "")
+    assert "usage_error" in combined
+    assert "Set client_id" not in combined
+
+
+def test_auth_refresh_transient_error_exits_other(monkeypatch) -> None:
+    provider = MagicMock()
+    provider.auth_refresh.side_effect = AuthTransientError(
+        "Microsoft token endpoint returned a transient error. Safe to retry."
+    )
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "refresh", "--json"])
+    assert result.exit_code == EXIT_OTHER
+    combined = (result.output or "") + (result.stderr or "")
+    assert "transient_error" in combined
 
 
 def test_auth_status_google_provider_ok(tmp_path, monkeypatch) -> None:

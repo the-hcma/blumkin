@@ -369,11 +369,16 @@ def _granted_scopes_from_cache(cfg: BlumkinConfig) -> frozenset[str]:
     """Bare scope names granted per the MSAL cache's ``AccessToken`` ``target`` claims.
 
     Empty when there is no cache yet — nothing to diff a fresh, never-logged-in
-    profile against. MSAL's ``SerializableTokenCache`` never prunes, so entries
-    for a previously configured ``client_id`` (or an expired grant) can linger
-    in the same file; only an entry for the *active* client that has not
-    expired counts, otherwise a stale, wider entry could mask a real gap for
-    the current client (issue #133 review).
+    profile against. MSAL's ``SerializableTokenCache`` never prunes, so an entry
+    for a previously configured ``client_id`` can linger in the same file; only
+    an entry for the *active* client counts, otherwise a stale, wider entry
+    could mask a real gap for the current client (issue #133 review). Unlike
+    the client_id filter, entries are **not** filtered by ``expires_on``: access
+    tokens live ~1h and this is read by ``auth status`` / ``doctor`` without a
+    refresh first, so excluding expired-but-current entries would report an
+    empty (falsely reassuring) gap in the routine post-expiry steady state
+    (issue #133 review, round 2) - Google's equivalent (``persisted_granted_scopes``,
+    reading the token file) has no expiry filter either, for the same reason.
     """
     if not cfg.token_cache_path.is_file():
         return frozenset()
@@ -381,21 +386,11 @@ def _granted_scopes_from_cache(cfg: BlumkinConfig) -> frozenset[str]:
         data = json.loads(cfg.token_cache_path.read_text())
     except json.JSONDecodeError, OSError:
         return frozenset()
-    now = int(datetime.now(UTC).timestamp())
     scopes: set[str] = set()
     for entry in (data.get("AccessToken") or {}).values():
         if not isinstance(entry, dict):
             continue
         if entry.get("client_id") != cfg.client_id:
-            continue
-        raw_expires_on = entry.get("expires_on")
-        if raw_expires_on is None:
-            continue
-        try:
-            expires_on = int(raw_expires_on)
-        except TypeError, ValueError:
-            continue
-        if expires_on <= now:
             continue
         target = entry.get("target")
         if not isinstance(target, str):

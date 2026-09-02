@@ -37,6 +37,12 @@ from blumkin.providers.kind import ProviderConfigError
 # plus directory.readonly (enhances people.resolve, required by no single command,
 # admin-restricted in some Workspaces) - `test_google_scopes_is_the_union_of_every_
 # required_subset` in tests/test_google_auth_unit.py guards that invariant.
+# calendar_view / calendar_today only ever call events().list - gating them on the
+# full CALENDAR_SCOPES (which includes the write-only calendar.events) would fail a
+# calendar.readonly-only grant before any provider call, even though the read itself
+# needs nothing else (issue #133 review, round 2).
+CALENDAR_READ_SCOPES = frozenset({"https://www.googleapis.com/auth/calendar.readonly"})
+
 CALENDAR_SCOPES = frozenset(
     {
         "https://www.googleapis.com/auth/calendar.events",

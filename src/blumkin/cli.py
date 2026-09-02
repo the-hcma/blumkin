@@ -274,6 +274,19 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
     ctx.exit()
 
 
+def _provider_config_hint(message: str) -> str | None:
+    """The client_id hint only applies when the failure is actually about client_id.
+
+    Google's ``ProviderConfigError`` is about ``google_oauth_client_file`` (a
+    Desktop-client JSON path), not ``client_id`` - showing the Microsoft-only
+    remediation there reproduces the exact misleading-hint failure issue #133
+    reports, on the Google config path this time (issue #133 review, round 2).
+    """
+    if "client_id" in message and "google_oauth_client_file" not in message:
+        return "Set client_id in ~/.config/blumkin/config.toml then retry."
+    return None
+
+
 def _raise_auth_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
     """Classify a ``ValueError`` from the auth layer by type, not by sniffing its message.
 
@@ -525,13 +538,14 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         )
         raise SystemExit(EXIT_OTHER) from exc
     except ProviderConfigError as exc:
-        # The only case that gets the client_id hint: bad/missing client config,
-        # not a revoked grant or a transient network error (issue #133).
+        # The client_id hint only fires when the failure is actually about
+        # client_id - not a revoked grant, a transient network error, or a
+        # Google google_oauth_client_file problem (issue #133).
         _emit_error(
             error="usage_error",
             message=str(exc),
             as_json=as_json,
-            hint="Set client_id in ~/.config/blumkin/config.toml then retry.",
+            hint=_provider_config_hint(str(exc)),
         )
         raise SystemExit(EXIT_USAGE) from exc
     except MissingScopeError as exc:
@@ -595,7 +609,7 @@ def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
             error="usage_error",
             message=str(exc),
             as_json=as_json,
-            hint="Set client_id in ~/.config/blumkin/config.toml then retry.",
+            hint=_provider_config_hint(str(exc)),
         )
         raise SystemExit(EXIT_USAGE) from exc
     except MissingScopeError as exc:
