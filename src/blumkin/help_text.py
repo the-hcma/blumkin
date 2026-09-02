@@ -707,3 +707,15 @@ Examples:
 `skills list` is the machine-readable catalog of everything blumkin can do, with
 a `notifies_others` flag per skill. Prefer `--json` in agent sessions.
 """
+
+UPGRADE_EPILOG = """
+Examples:
+
+\b
+  blumkin upgrade
+  blumkin upgrade --json
+
+Wraps `pipx upgrade blumkin` and prints the version and commit you are on and
+the one the pipx app now reports. Run this from a pipx install; from a source
+checkout it upgrades ~/.local/bin/blumkin and leaves the checkout alone.
+"""

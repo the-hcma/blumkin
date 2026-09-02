@@ -39,6 +39,12 @@ def build_status_fields() -> dict[str, str]:
     }
 
 
+def build_version() -> str:
+    """Return ``<version> (<commit>)`` without a program name (for ``upgrade``)."""
+    package, commit = get_build_info()
+    return f"{package} ({commit})"
+
+
 def format_cli_version_line(*, prog: str) -> str:
     """One-line version string for ``--version`` on a console entry point."""
     package, commit = get_build_info()
@@ -88,6 +94,12 @@ def git_commit(
     except OSError, subprocess.SubprocessError:
         return "unknown"
     return result.stdout.strip() or "unknown"
+
+
+def is_source_checkout(*, repository: Path | None = None) -> bool:
+    """Return whether this process runs from a git checkout of blumkin."""
+    checkout = repository or _repository_root()
+    return (checkout / ".git").exists()
 
 
 def package_version(*, pyproject_path: Path | None = None) -> str:

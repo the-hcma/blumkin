@@ -318,6 +318,7 @@ _ERROR_VALUES = {
     "not_found",
     "secret_write_failed",
     "timeout",
+    "upgrade_failed",
     "usage_error",
 }
 
