@@ -129,6 +129,8 @@ jobs:
           test -x .github/ci/secret-scan
           test -x .github/ci/python-static
           test -x .github/ci/pytest-hermetic
+          test -x .github/ci/shellcheck
+          test -x test_packaging
 
   python-static:
     name: Python lint & format checks
@@ -161,6 +163,39 @@ jobs:
           version: latest
       - name: Pytest (hermetic)
         run: bash .github/ci/pytest-hermetic
+
+  packaging:
+    name: Packaging smoke
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: latest
+      - name: Build the wheel, install it outside the repo, run the console script
+        run: ./test_packaging
+
+  shellcheck:
+    name: Shellcheck
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Shellcheck
+        run: bash .github/ci/shellcheck
 
   secret-scan:
     name: Secret Scan

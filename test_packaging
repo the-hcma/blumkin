@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Build the wheel the way "Publish PyPI" does, install it into a throwaway venv
+# outside the repo, and smoke the console script. Catches missing package data
+# and entry-point mistakes that an editable install hides.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly repo_root
+# The build steps below read pyproject.toml and run `git rev-parse` / `uv build`
+# relative to CWD; anchor to the repo so this works when called by path from
+# anywhere (a local preflight helper, say), like restore_build_metadata assumes.
+cd "$repo_root"
+
+temp_root="$(mktemp -d)"
+build_dir="$temp_root/dist"
+venv_dir="$temp_root/venv"
+outside_dir="$temp_root/outside"
+home_dir="$temp_root/home"
+
+mkdir -p "$build_dir" "$outside_dir" "$home_dir"
+
+embed_build_metadata="${repo_root}/scripts/embed_build_metadata"
+readonly embed_build_metadata
+
+restore_build_metadata() {
+  (
+    cd "${repo_root}"
+    env -u BLUMKIN_EMBED_VERSION -u BLUMKIN_EMBED_COMMIT \
+      uv run python "${embed_build_metadata}"
+  ) >/dev/null 2>&1 || true
+}
+cleanup() {
+  restore_build_metadata
+  rm -rf "$temp_root"
+}
+trap cleanup EXIT
+
+echo "Embedding build metadata for the wheel..."
+version="$(
+  uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])'
+)"
+commit="$(git rev-parse HEAD)"
+export BLUMKIN_EMBED_VERSION="${version}"
+export BLUMKIN_EMBED_COMMIT="${commit}"
+uv run python "${embed_build_metadata}"
+
+echo "Building sdist + wheel (same path as Publish PyPI)..."
+timeout 120 uv build --out-dir "$build_dir"
+restore_build_metadata
+
+wheels=("$build_dir"/*.whl)
+sdists=("$build_dir"/*.tar.gz)
+wheel_path="${wheels[0]}"
+sdist_path="${sdists[0]}"
+if [[ ! -f "$wheel_path" ]]; then
+  echo "No wheel produced under $build_dir" >&2
+  exit 1
+fi
+if [[ ! -f "$sdist_path" ]]; then
+  echo "No sdist produced under $build_dir" >&2
+  exit 1
+fi
+
+echo "Installing wheel into an isolated virtual environment..."
+timeout 120 uv venv --python 3.14 "$venv_dir"
+timeout 120 uv pip install --python "$venv_dir/bin/python" "$wheel_path"
+bin_dir="$venv_dir/bin"
+readonly bin_dir
+
+cd "$outside_dir"
+export HOME="$home_dir"
+
+installed_env() {
+  # Prove the embedded stamp wins over an ambient GITHUB_SHA (every GitHub
+  # Actions job exports one for its own repo) and drop any operator override.
+  # A real pipx install has neither - the embedded stamp answers.
+  env -u BLUMKIN_GIT_SHA GITHUB_SHA=0000000000000000000000000000000000000000 "$@"
+}
+
+"$bin_dir/blumkin" --help >/dev/null
+
+version_line="$(installed_env "$bin_dir/blumkin" --version)"
+printf '%s\n' "$version_line"
+if [[ "$version_line" == *"(unknown)"* ]]; then
+  echo "Installed --version still reports an unknown commit: $version_line" >&2
+  exit 1
+fi
+if ! grep --fixed-strings --quiet "$version" <<<"$version_line"; then
+  echo "Installed --version is missing package version ${version}: $version_line" >&2
+  exit 1
+fi
+if ! grep --fixed-strings --quiet "${commit:0:12}" <<<"$version_line"; then
+  echo "Installed --version is missing embedded commit ${commit:0:12}: $version_line" >&2
+  exit 1
+fi
+if [[ "$version_line" == *"000000000000"* ]]; then
+  echo "Installed --version leaked ambient GITHUB_SHA instead of the embedded commit: $version_line" >&2
+  exit 1
+fi
+
+# skills list is a static catalog - it needs the packaged module tree but no auth.
+installed_env "$bin_dir/blumkin" skills list --json >/dev/null
+
+echo "Installed wheel packaging smoke passed"
