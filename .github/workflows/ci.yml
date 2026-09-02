@@ -108,8 +108,10 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-  # Required MQ / classic-protection context until Phase 1 adds python-static + tests.
-  # (Guard, secret-scan, and workflow-lint are intentionally excluded from required checks.)
+  # Required status checks on `main` (branch protection): Scaffold checks,
+  # Python lint & format checks, Pytest (hermetic), Packaging smoke, Shellcheck.
+  # Guard, Secret Scan, and workflow-lint run on every PR but are advisory
+  # (not required) - see CONTRIBUTING.md and SECURITY.md.
   scaffold:
     name: Scaffold checks
     needs: guard

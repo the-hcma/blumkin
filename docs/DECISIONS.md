@@ -1,0 +1,79 @@
+# Decisions
+
+Standing decisions for blumkin and where the reasoning lives. Add an entry when
+a choice would otherwise have to be re-derived from the code or from a PR
+thread. Keep entries short; link the PR / issue / design doc.
+
+## Design artifacts
+
+| Artifact | What it is |
+|----------|------------|
+| [`PLAN.md`](../PLAN.md) | The CLI design: surface, exit codes, auth, safety model, phased scope |
+| [`RETROSPECTIVE-M1.md`](../RETROSPECTIVE-M1.md) | M1 ship retrospective ([#11](https://github.com/the-hcma/blumkin/issues/11)) |
+| [`HANDOFF.md`](../HANDOFF.md) | Session-to-session context handoff |
+| [`docs/agent-integration.md`](agent-integration.md) | How agents call blumkin; the frozen `skills list --json` contract |
+| [`docs/RELEASING.md`](RELEASING.md) | Release flow, trusted publishing, rollback |
+| [`SECURITY.md`](../SECURITY.md) / [`docs/SECURITY-AT-A-GLANCE.md`](SECURITY-AT-A-GLANCE.md) | Security policy and one-page summary |
+
+## Decision log
+
+### D1 - Public repository
+
+blumkin is a public repo. It contains no secrets, no proprietary code, and no
+third-party data; it is a thin wrapper over documented Microsoft Graph and
+Google Workspace APIs. Public means the org's `repository-helpers` practices,
+CI, Dependabot, and trusted publishing all apply without private-repo caveats,
+and `pipx install blumkin` works for anyone. The tenant-specific pieces (client
+ids, tenant ids) live only in each operator's `~/.config/blumkin/`.
+
+### D2 - Personal account (`the-hcma`), single code owner
+
+The repo lives under a personal account with @thehcma as the sole code owner.
+This is a personal productivity tool, not a team service, so the review gate is
+tuned for one person rather than a team:
+
+- `main` cannot be pushed to directly; every change is a PR that must be **up to
+  date** with `main` before it merges. No force pushes, no branch deletion.
+- **Required status checks** (`Scaffold checks`, `Python lint & format checks`,
+  `Pytest (hermetic)`, `Packaging smoke`, `Shellcheck`) must be green - this is
+  the hard merge gate, and `enforce_admins` stays off so it is the *only* thing
+  the maintainer routinely bypasses when nothing is red.
+- Agent review (`mergestorm-vortex`) runs on every PR head; its threads are
+  addressed and resolved before merge (`.cursor/rules/pr-ship-and-review.mdc`).
+- [`.github/CODEOWNERS`](../.github/CODEOWNERS) is `* @thehcma` and
+  `require_code_owner_reviews` is on, so GitHub requests @thehcma on every PR
+  and records who reviewed. `required_approving_review_count` is **0**: a lone
+  maintainer cannot approve their own PR, and a hard approval gate with nobody
+  able to satisfy it just means merging by admin override every time, which
+  weakens the status-check gate too. `dismiss_stale_reviews` stays on.
+- External contributions get @thehcma's review by practice (and the requested-
+  reviewer prompt), not by a hard block - only collaborators can merge at all,
+  and the checks still gate every merge.
+- **When a second regular contributor appears:** add them as a reviewer and set
+  `required_approving_review_count` back to 1 - then the code-owner gate is a
+  real block again with someone able to satisfy it.
+
+### D3 - Delegated Graph auth only
+
+No app-only permissions, no client secret for Microsoft flows, no service
+account. blumkin acts as the signed-in user with their consent. Rationale and
+the full model: [`PLAN.md`](../PLAN.md) sections 1-2 and
+[`docs/SECURITY-AT-A-GLANCE.md`](SECURITY-AT-A-GLANCE.md).
+
+### D4 - PyPI trusted publishing (OIDC), release-please
+
+Releases are automated from Conventional Commits; publishing uses a GitHub OIDC
+trusted publisher with no stored PyPI token. Nobody hand-edits a version.
+Details and one-time setup: [`docs/RELEASING.md`](RELEASING.md). Introduced in
+[#54](https://github.com/the-hcma/blumkin/issues/54) (PRs #135-138).
+
+### D5 - `gh-stack` for stacked PRs
+
+Stacking backend is `gh-stack` (`.github/stacking-tool`), not Graphite. Keeps
+each layer of a change independently reviewable. See
+[`.cursor/rules/stacking-tool.mdc`](../.cursor/rules/stacking-tool.mdc).
+
+### D6 - No MCP server in v1
+
+Agents shell out to `blumkin --json`; there is no MCP server. Reasoning:
+[`PLAN.md`](../PLAN.md) section 6.1.

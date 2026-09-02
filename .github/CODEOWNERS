@@ -1,7 +1,13 @@
-# Code owners for blumkin
+# Code owners for blumkin.
+#
+# `*` covers every path, so GitHub requests @thehcma on every pull request and
+# `require_code_owner_reviews` records who reviewed. The hard merge gate is the
+# required status checks, not an approval count (a solo maintainer cannot
+# approve their own PR) - see CONTRIBUTING.md and docs/DECISIONS.md (D2). Raise
+# required_approving_review_count back to 1 when a second reviewer exists.
+#
+# Do not add narrower rules unless a path genuinely needs a *different* owner:
+# with multiple entries the last matching line wins, so a stray rule can
+# silently drop @thehcma from a path.
 
 * @thehcma
-
-/.github/ @thehcma
-/pyproject.toml @thehcma
-/uv.lock @thehcma
