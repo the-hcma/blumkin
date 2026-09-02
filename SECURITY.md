@@ -62,14 +62,15 @@ follow the **Rollback** section there.
 
 | Control | Where | Gate |
 |---------|-------|------|
-| Dependency CVE scan (`pip-audit`) | `.github/workflows/cve-check.yml`, daily + on demand; files a `security/cve` issue | advisory (issue), not a merge gate |
-| Dependency updates | Dependabot, `.github/dependabot.yml`, 10-day cooldown | PR |
-| Secret scanning (`gitleaks`) | `.github/ci/secret-scan`, every PR + push | **blocks merge** |
-| Static analysis | `ruff`, `pyright` via `.github/ci/python-static` | **blocks merge** |
-| Shell / workflow lint | `shellcheck`, `actionlint` | **blocks merge** (shellcheck) / advisory (actionlint) |
-| Installed-artifact check | `test_packaging`, `scripts/verify-pypi-release` | **blocks merge** / release job |
-| Supply chain | PyPI **trusted publishing** (OIDC, no long-lived token); `_build_metadata.py` records the release commit in the wheel | release job |
-| Code review | code-owner review required on every PR; agent review (`mergestorm-vortex`) with reply-before-resolve | **blocks merge** |
+| Code review | code-owner (`@thehcma`) approval required on every PR + `require_last_push_approval`; agent review (`mergestorm-vortex`) with reply-before-resolve | **blocks merge** |
+| Static analysis | `ruff` + `pyright` via `.github/ci/python-static` (`Python lint & format checks`) | **required check - blocks merge** |
+| Tests | `pytest -m 'not live'` (`Pytest (hermetic)`) | **required check - blocks merge** |
+| Installed-artifact check | `test_packaging` (`Packaging smoke`) | **required check - blocks merge** |
+| Shell lint | `shellcheck` (`Shellcheck`) | **required check - blocks merge** |
+| Secret scanning (`gitleaks`) | `.github/ci/secret-scan`, every PR + push | runs every PR; advisory (not a required check) - relies on code-owner review |
+| Dependency CVE scan (`pip-audit`) | `.github/workflows/cve-check.yml`, daily + on demand | advisory - files a `security/cve` issue |
+| Dependency updates | Dependabot, `.github/dependabot.yml`, 10-day cooldown | opens PRs |
+| Supply chain | PyPI **trusted publishing** (OIDC, no long-lived token); `_build_metadata.py` records the release commit in the wheel; `scripts/verify-pypi-release` re-checks the published artifact | gates the release job |
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full toolchain and the review
 model, and [`docs/DECISIONS.md`](docs/DECISIONS.md) for why the repo is public

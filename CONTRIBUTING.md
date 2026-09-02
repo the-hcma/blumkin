@@ -31,23 +31,29 @@ Every change to `main` goes through a pull request. No direct pushes.
 Run locally with `~/work/ai/repository-helpers/scripts/dev/pre-pr-checks`
 (or the individual `.github/ci/*` scripts). CI runs the same gates.
 
-| Tool | What it catches | Runs in | Blocks merge? |
-|------|-----------------|---------|---------------|
-| `ruff check` | Lint: pyflakes (F), pycodestyle (E), import order (I), pyupgrade (UP) - AST-based | `.github/ci/python-static` | yes |
-| `ruff format --check` | Formatting drift | `.github/ci/python-static` | yes |
-| `pyright` (basic) | Type errors, unresolved names, bad signatures - AST + type graph | `.github/ci/python-static` | yes |
-| `pytest -m 'not live'` | Behaviour, offline/mocked | `.github/ci/pytest-hermetic` | yes |
-| `.github/ci/assert-uv-lock-version` | `uv.lock` project version drift vs `pyproject.toml` | `.github/ci/python-static` | yes |
-| `gitleaks` | Committed secrets / tokens | `.github/ci/secret-scan` | yes |
-| `shellcheck -S info` | Shell script defects | `.github/ci/shellcheck` | yes |
-| `bash -n` | Shell syntax | pre-pr-checks | yes (local) |
-| `test_packaging` | Broken entry point / missing package data in the built wheel | `packaging` CI job | yes |
-| `actionlint` | GitHub Actions workflow errors | pre-pr-checks / repo-lint | advisory |
-| `pip-audit` | Known CVEs in dependencies | `.github/workflows/cve-check.yml` (daily) | advisory - files a `security/cve` issue |
+The **required status checks** on `main` are `Scaffold checks`,
+`Python lint & format checks`, `Pytest (hermetic)`, `Packaging smoke`, and
+`Shellcheck` - a red one of those blocks the merge. `Secret Scan`, `Guard`, and
+workflow-lint run on every PR but are advisory; a code owner still reviews the
+diff before merge, so a real finding is caught there.
+
+| Tool | What it catches | CI check | Required on `main`? |
+|------|-----------------|----------|---------------------|
+| `ruff check` | Lint: pyflakes (F), pycodestyle (E), import order (I), pyupgrade (UP) - AST-based | `Python lint & format checks` | yes |
+| `ruff format --check` | Formatting drift | `Python lint & format checks` | yes |
+| `pyright` (basic) | Type errors, unresolved names, bad signatures - AST + type graph | `Python lint & format checks` | yes |
+| `.github/ci/assert-uv-lock-version` | `uv.lock` project version drift vs `pyproject.toml` | `Python lint & format checks` | yes |
+| `pytest -m 'not live'` | Behaviour, offline/mocked | `Pytest (hermetic)` | yes |
+| `test_packaging` | Broken entry point / missing package data in the built wheel | `Packaging smoke` | yes |
+| `shellcheck -S info` | Shell script defects | `Shellcheck` | yes |
+| `gitleaks` | Committed secrets / tokens | `Secret Scan` | no - advisory, runs every PR |
+| `bash -n` | Shell syntax | (local `pre-pr-checks`) | local gate |
+| `actionlint` | GitHub Actions workflow errors | (local `pre-pr-checks` / repo-lint) | local gate |
+| `github-repo-lint` | Org repo-practice compliance | (local `pre-pr-checks`) | local gate |
+| `pip-audit` | Known CVEs in dependencies | `.github/workflows/cve-check.yml` (daily) | no - files a `security/cve` issue |
 | Dependabot | Outdated dependencies (10-day cooldown) | scheduled | opens PRs |
-| `github-repo-lint` | Org repo-practice compliance | `repo-practices-lint` in pre-pr-checks | yes (local) |
-| `mergestorm-vortex` | Correctness / design review, AST-aware | every PR head | yes (threads must be addressed) |
-| `verify-pypi-release` | Published artifact installs and reports the right version/commit | `Publish PyPI` job | yes (release) |
+| `mergestorm-vortex` | Correctness / design review, AST-aware | every PR head | not a status check - review threads must be addressed before a code owner approves |
+| `verify-pypi-release` | Published artifact installs and reports the right version/commit | `Publish PyPI` job | gates the release job |
 
 New behaviour needs tests. Do not merge a red suite. Live Graph tests
 (`-m live`) run on an operator machine, never in CI - see

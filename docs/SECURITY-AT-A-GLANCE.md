@@ -25,7 +25,10 @@ blumkin never writes another person's data anywhere.
 - **Delegated only.** Interactive browser sign-in (public client + `localhost`
   redirect). No client secret for Microsoft flows; the Google secret stays in
   the desktop-client JSON, never in toml or env.
-- Tokens are per-machine. A cache copied to another host does not work.
+- The token cache and auth record are written under `~/.config/blumkin/` as
+  plaintext, mode `0600`, with **no cryptographic or host binding** - a copy
+  taken with the client id / tenant will refresh on another machine. Protect
+  the directory; revoke tenant-side (or remove the app grant) if it leaks.
 - Silent refresh renews access tokens without a browser; deleting the cache
   forces a fresh sign-in.
 
