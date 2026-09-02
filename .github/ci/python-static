@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# .github/ci/ gate — the-hcma/repository-helpers convention; run by pre-pr-checks
+# and ci.yml (see CONTRIBUTING.md "Governance tooling from repository-helpers").
 set -euo pipefail
 # One sync for ruff + pyright (shared venv). Prefer this in CI over separate jobs.
 # Assert against the committed lock before setup-python's `uv sync` — sync can

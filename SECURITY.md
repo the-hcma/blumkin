@@ -45,9 +45,15 @@ follow the **Rollback** section there.
 ## What is in scope
 
 - The `blumkin` CLI and its packaged code.
-- The release pipeline (`release-please.yml`, trusted publishing, the build
-  scripts under `scripts/`).
-- Handling of the local token cache and config under `~/.config/blumkin/`.
+- The release pipeline
+  ([`.github/workflows/release-please.yml`](.github/workflows/release-please.yml),
+  trusted publishing, and the build scripts
+  [`scripts/embed_build_metadata`](scripts/embed_build_metadata) /
+  [`scripts/verify-pypi-release`](scripts/verify-pypi-release)).
+- Handling of the local token cache and config under `~/.config/blumkin/`
+  ([`src/blumkin/auth.py`](src/blumkin/auth.py),
+  [`src/blumkin/config.py`](src/blumkin/config.py),
+  [`src/blumkin/providers/google_auth.py`](src/blumkin/providers/google_auth.py)).
 
 ## What is out of scope
 
@@ -60,17 +66,40 @@ follow the **Rollback** section there.
 
 ## Controls in place
 
+Every check links to the code that runs it. The **required status checks** on
+`main` are the hard merge gate; the rest are advisory and caught at code-owner
+review.
+
 | Control | Where | Gate |
 |---------|-------|------|
-| Code review | agent review (`mergestorm-vortex`) on every PR head with reply-before-resolve; code owner (`@thehcma`) requested on every PR via CODEOWNERS (`required_approving_review_count` is 0 for a solo maintainer - see [`docs/DECISIONS.md`](docs/DECISIONS.md) D2) | review threads addressed before merge |
-| Static analysis | `ruff` + `pyright` via `.github/ci/python-static` (`Python lint & format checks`) | **required check - blocks merge** |
-| Tests | `pytest -m 'not live'` (`Pytest (hermetic)`) | **required check - blocks merge** |
-| Installed-artifact check | `test_packaging` (`Packaging smoke`) | **required check - blocks merge** |
-| Shell lint | `shellcheck` (`Shellcheck`) | **required check - blocks merge** |
-| Secret scanning (`gitleaks`) | `.github/ci/secret-scan`, every PR + push | runs every PR; advisory (not a required check) - relies on code-owner review |
-| Dependency CVE scan (`pip-audit`) | `.github/workflows/cve-check.yml`, daily + on demand | advisory - files a `security/cve` issue |
-| Dependency updates | Dependabot, `.github/dependabot.yml`, 10-day cooldown | opens PRs |
-| Supply chain | PyPI **trusted publishing** (OIDC, no long-lived token); `_build_metadata.py` records the release commit in the wheel; `scripts/verify-pypi-release` re-checks the published artifact | gates the release job |
+| Code review | agent review (`mergestorm-vortex`) on every PR head with reply-before-resolve ([`.cursor/rules/pr-ship-and-review.mdc`](.cursor/rules/pr-ship-and-review.mdc)); code owner (`@thehcma`) requested on every PR via [`.github/CODEOWNERS`](.github/CODEOWNERS) - `required_approving_review_count` is 0 for a solo maintainer, see [`docs/DECISIONS.md`](docs/DECISIONS.md) D2 | review threads addressed before merge |
+| Static analysis | `ruff` + `pyright` + [`.github/ci/assert-uv-lock-version`](.github/ci/assert-uv-lock-version), run by [`.github/ci/python-static`](.github/ci/python-static) (`[tool.ruff]` / `[tool.pyright]` in [`pyproject.toml`](pyproject.toml)); job [`ci.yml` › `python-static`](.github/workflows/ci.yml) | **required check `Python lint & format checks` - blocks merge** |
+| Tests | `pytest -m 'not live'` via [`.github/ci/pytest-hermetic`](.github/ci/pytest-hermetic); job [`ci.yml` › `test`](.github/workflows/ci.yml) | **required check `Pytest (hermetic)` - blocks merge** |
+| Installed-artifact check | [`test_packaging`](test_packaging) - build the wheel, install it outside the repo, run the console script; job [`ci.yml` › `packaging`](.github/workflows/ci.yml) | **required check `Packaging smoke` - blocks merge** |
+| Shell lint | `shellcheck -S info` via [`.github/ci/shellcheck`](.github/ci/shellcheck); job [`ci.yml` › `shellcheck`](.github/workflows/ci.yml) | **required check `Shellcheck` - blocks merge** |
+| Secret scanning | `gitleaks` via [`.github/ci/secret-scan`](.github/ci/secret-scan) (org-canonical, synced by `github-repo-lint`), every PR + push; job [`ci.yml` › `secret-scan`](.github/workflows/ci.yml) | runs every PR; advisory (not a required check) - relies on code-owner review |
+| Dependency CVE scan | `pip-audit` via [`.github/workflows/cve-check.yml`](.github/workflows/cve-check.yml), daily + on demand | advisory - files a `security/cve` issue |
+| Dependency updates | Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml), 10-day cooldown) + auto-merge ([`.github/workflows/dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml)) | opens PRs; auto-merges once required checks pass |
+| Supply chain | PyPI **trusted publishing** (OIDC, no long-lived token) in [`release-please.yml` › `publish-pypi`](.github/workflows/release-please.yml); [`scripts/embed_build_metadata`](scripts/embed_build_metadata) records the release commit in the wheel ([`src/blumkin/version.py`](src/blumkin/version.py)); [`scripts/verify-pypi-release`](scripts/verify-pypi-release) re-checks the published artifact | gates the release job |
+| Org repo-practice compliance | `github-repo-lint` (branch-protection shape, required workflows, CODEOWNERS, Dependabot cooldown, cursor-rule sync) - see [Governance tooling](#governance-tooling-repository-helpers) | `repo-practices-lint` in `pre-pr-checks`; local gate |
+
+## Governance tooling (repository-helpers)
+
+The compliance and workflow tooling above is **not vendored into this repo**. It
+comes from
+[`the-hcma/repository-helpers`](https://github.com/the-hcma/repository-helpers)
+and is versioned there, re-synced into this repo per `AGENTS.md` ("Repository
+practices / lint" and "Formatting & linting").
+
+| Tool | Purpose | Gate |
+|------|---------|------|
+| [`github-repo-lint`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/github-repo-lint) | Enforces the org repo-practice contract: branch-protection shape, required workflows, CODEOWNERS, Dependabot cooldown, agent-bootstrap shims, and that [`.cursor/rules/*.mdc`](.cursor/rules) match the canonical templates in [`repo-practices-cursor/`](https://github.com/the-hcma/repository-helpers/tree/main/scripts/lib/repo-practices-cursor) | hard - `repo-practices-lint` step of `pre-pr-checks` |
+| [`.cursor/rules/*.mdc`](.cursor/rules) | Coding + workflow rules read at the start of every session (`no-secret-exposure`, `no-third-party-side-effects`, `remote-timeouts-retries`, `git-commit-identity`, `pr-ship-and-review`, `stacking-tool`, `pre-pr-checks`, `main-worktree-off-limits`, `lexicographic-code-organization`, `local-live-graph-tests`, `read-agents-and-rules`, `repo-practices-after-config-change`) - consumer copies of the [canonical templates](https://github.com/the-hcma/repository-helpers/tree/main/scripts/lib/repo-practices-cursor) | reviewed at code-owner review; sync enforced by `github-repo-lint` |
+| [`.github/ci/secret-scan`](.github/ci/secret-scan) | `gitleaks` gate - **byte-identical** to [`scripts/lib/ci-secret-scan`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/lib/ci-secret-scan); do not hand-edit, sync via `github-repo-lint --apply-fix` | advisory check + `github-repo-lint` |
+| [`pre-pr-checks`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/dev/pre-pr-checks) | Local pre-submit gate: runs `python-static`, `pytest-hermetic`, `bash -n`, `shellcheck`, `repo-practices-lint`, `secret-scan`, verified-commits | run before every submit |
+| [`start-development`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/dev/start-development) | Worktree-per-stack setup | session start |
+| [`wait-for-agent-review`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/wait-for-agent-review) | Drives the agent-review loop (reply-before-resolve, CI wait, operator email) | mandatory per PR |
+| [`ship-and-review`](https://github.com/the-hcma/repository-helpers/blob/main/.cursor/skills/ship-and-review/SKILL.md) / [`gh-stack`](https://github.com/the-hcma/repository-helpers/blob/main/.cursor/skills/gh-stack/SKILL.md) skills | The canonical submit + stacking playbooks | followed on every PR |
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full toolchain and the review
 model, and [`docs/DECISIONS.md`](docs/DECISIONS.md) for why the repo is public
