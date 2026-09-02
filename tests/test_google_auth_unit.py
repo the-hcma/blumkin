@@ -14,8 +14,12 @@ from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeErro
 from blumkin.config import BlumkinConfig, MailSignatureConfig
 from blumkin.providers import google_auth
 from blumkin.providers.google_auth import (
+    CALENDAR_FREEBUSY_SCOPES,
+    CALENDAR_READ_SCOPES,
     CALENDAR_SCOPES,
+    CHAT_READ_SCOPES,
     CHAT_SCOPES,
+    GOOGLE_REQUIRED_SCOPES,
     GOOGLE_SCOPES,
     MAIL_READ_SCOPES,
     MAIL_WRITE_SCOPES,
@@ -45,6 +49,21 @@ def test_classify_refresh_error_transport_is_transient() -> None:
 def test_classify_refresh_error_unknown_falls_back_to_auth_required() -> None:
     exc = google_auth._classify_refresh_error(RuntimeError("boom"))
     assert isinstance(exc, AuthRequiredError)
+
+
+def test_get_credentials_noninteractive_default_ignores_directory_readonly(
+    tmp_path: Path,
+) -> None:
+    """auth refresh must not exit 4 for the one scope no command requires.
+
+    Regression from issue #133 review, round 3: a grant covering every command
+    except directory.readonly (admin-restricted in some Workspaces) previously
+    ran `blumkin auth refresh` fine and must keep doing so.
+    """
+    cfg = _cfg(tmp_path)
+    _write_valid_token(cfg, scopes=sorted(GOOGLE_REQUIRED_SCOPES))
+    result = google_auth.get_credentials(cfg, allow_interactive=False)
+    assert result.valid
 
 
 def test_get_credentials_noninteractive_narrows_gate_to_required_subset(tmp_path: Path) -> None:
@@ -92,7 +111,7 @@ def test_get_credentials_noninteractive_valid_but_insufficient_scope_fails_fast(
 
     consent_once.assert_not_called()
     assert excinfo.value.current == granted
-    assert excinfo.value.missing == GOOGLE_SCOPES - granted
+    assert excinfo.value.missing == GOOGLE_REQUIRED_SCOPES - granted
 
 
 def test_google_scopes_is_the_union_of_every_required_subset() -> None:
@@ -111,6 +130,10 @@ def test_google_scopes_is_the_union_of_every_required_subset() -> None:
         | PEOPLE_SCOPES
         | directory_readonly
     )
+    assert GOOGLE_REQUIRED_SCOPES == GOOGLE_SCOPES - directory_readonly
+    assert CALENDAR_FREEBUSY_SCOPES.issubset(CALENDAR_SCOPES)
+    assert CALENDAR_READ_SCOPES.issubset(CALENDAR_SCOPES)
+    assert CHAT_READ_SCOPES.issubset(CHAT_SCOPES)
 
 
 def test_interactive_consent_forces_prompt_immediately_when_grant_already_insufficient(
@@ -185,7 +208,7 @@ def test_status_dict_reports_granted_and_missing_scopes(tmp_path: Path) -> None:
     payload = google_auth.status_dict(cfg)
     assert payload["granted_scopes"] == ["https://www.googleapis.com/auth/gmail.readonly"]
     assert payload["missing_scopes"] == sorted(
-        GOOGLE_SCOPES - {"https://www.googleapis.com/auth/gmail.readonly"}
+        GOOGLE_REQUIRED_SCOPES - {"https://www.googleapis.com/auth/gmail.readonly"}
     )
 
 

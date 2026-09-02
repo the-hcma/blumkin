@@ -165,6 +165,29 @@ def test_calendar_freebusy_and_suggest(tmp_path: Path) -> None:
     assert suggest["with"] == ["ada@example.com"]
 
 
+def test_calendar_freebusy_gates_on_freebusy_only_scope(tmp_path: Path) -> None:
+    """calendar_freebusy only calls freebusy().query - must not require the
+    write-only calendar.events scope (issue #133 review, round 3)."""
+    from blumkin.providers.google_auth import CALENDAR_FREEBUSY_SCOPES
+
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.freebusy.return_value.query.return_value.execute.return_value = {"calendars": {}}
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = datetime(2026, 8, 30, 17, 0, tzinfo=UTC)
+    with (
+        patch(
+            "blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()
+        ) as get_creds,
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        asyncio.run(
+            provider.calendar_freebusy(with_emails=["ada@example.com"], start=start, end=end)
+        )
+    assert get_creds.call_args.kwargs["required_scopes"] == CALENDAR_FREEBUSY_SCOPES
+
+
 def test_calendar_create_cli_wires_remind_email(tmp_path: Path) -> None:
     """Exercise the Click option -> calendar_create_cmd -> provider pass-through.
 

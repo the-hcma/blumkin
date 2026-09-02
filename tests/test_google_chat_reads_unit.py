@@ -35,20 +35,6 @@ def _message(name: str, text: str, sender: str = "Vivek") -> dict:
     }
 
 
-def test_chat_find_matches_on_member_display_name(tmp_path: Path) -> None:
-    service = _service(
-        spaces=[_space("spaces/AAA"), _space("spaces/BBB")],
-        members={"spaces/AAA": ["Vivek Kumar"], "spaces/BBB": ["Ada Lovelace"]},
-    )
-    with _patched(service):
-        payload = asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).chat_find(with_name="vivek"))
-    assert [item["id"] for item in payload["items"]] == ["spaces/AAA"]
-    assert payload["items"][0]["members"] == ["Vivek Kumar"]
-    assert payload["items"][0]["chat_type"] == "oneOnOne"
-    assert payload["partial"] is False
-    assert payload["skipped"] == 0
-
-
 def test_chat_find_counts_a_refused_membership_as_skipped(tmp_path: Path) -> None:
     """A space we cannot read members for makes the result partial, not a silent miss."""
     service = _service(
@@ -61,6 +47,34 @@ def test_chat_find_counts_a_refused_membership_as_skipped(tmp_path: Path) -> Non
     assert [item["id"] for item in payload["items"]] == ["spaces/BBB"]
     assert payload["partial"] is True
     assert payload["skipped"] == 1
+
+
+def test_chat_find_gates_on_read_only_scope(tmp_path: Path) -> None:
+    """chat_find only reads - must not require the write-only chat.messages scope,
+    or a read-only chat grant fails before any provider call (issue #133 review,
+    round 3)."""
+    from blumkin.providers.google_auth import CHAT_READ_SCOPES
+
+    with (
+        patch(f"{_GOOGLE_CHAT}.get_credentials", return_value=MagicMock()) as get_creds,
+        patch(f"{_GOOGLE_CHAT}.build_api_service", return_value=_service()),
+    ):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).chat_find(with_name="vivek"))
+    assert get_creds.call_args.kwargs["required_scopes"] == CHAT_READ_SCOPES
+
+
+def test_chat_find_matches_on_member_display_name(tmp_path: Path) -> None:
+    service = _service(
+        spaces=[_space("spaces/AAA"), _space("spaces/BBB")],
+        members={"spaces/AAA": ["Vivek Kumar"], "spaces/BBB": ["Ada Lovelace"]},
+    )
+    with _patched(service):
+        payload = asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).chat_find(with_name="vivek"))
+    assert [item["id"] for item in payload["items"]] == ["spaces/AAA"]
+    assert payload["items"][0]["members"] == ["Vivek Kumar"]
+    assert payload["items"][0]["chat_type"] == "oneOnOne"
+    assert payload["partial"] is False
+    assert payload["skipped"] == 0
 
 
 def test_chat_find_rejects_an_empty_name(tmp_path: Path) -> None:

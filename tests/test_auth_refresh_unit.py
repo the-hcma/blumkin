@@ -278,6 +278,14 @@ def test_status_dict_reports_granted_and_missing_scopes(
                 "expires_on": str(int((datetime.now(UTC) + timedelta(hours=1)).timestamp())),
                 "target": "https://graph.microsoft.com/Mail.ReadWrite",
             },
+            # Same active client, but for a scope no longer requested (files_scopes
+            # is off here) - e.g. left over from toggling files_scopes on and back
+            # off. Must not count either (issue #133 review, round 3).
+            "entry3": {
+                "client_id": "test-client",
+                "expires_on": str(int((datetime.now(UTC) + timedelta(hours=1)).timestamp())),
+                "target": "https://graph.microsoft.com/Files.Read",
+            },
         },
         "RefreshToken": {"r1": {"client_id": "test-client"}},
     }

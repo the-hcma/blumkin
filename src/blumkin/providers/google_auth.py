@@ -37,6 +37,12 @@ from blumkin.providers.kind import ProviderConfigError
 # plus directory.readonly (enhances people.resolve, required by no single command,
 # admin-restricted in some Workspaces) - `test_google_scopes_is_the_union_of_every_
 # required_subset` in tests/test_google_auth_unit.py guards that invariant.
+# calendar_freebusy / calendar_suggest only ever call freebusy().query - gating
+# them on the full CALENDAR_SCOPES (which includes the write-only calendar.events)
+# would fail a {calendar.readonly, calendar.freebusy} grant before any provider
+# call (issue #133 review, round 3).
+CALENDAR_FREEBUSY_SCOPES = frozenset({"https://www.googleapis.com/auth/calendar.freebusy"})
+
 # calendar_view / calendar_today only ever call events().list - gating them on the
 # full CALENDAR_SCOPES (which includes the write-only calendar.events) would fail a
 # calendar.readonly-only grant before any provider call, even though the read itself
@@ -51,12 +57,44 @@ CALENDAR_SCOPES = frozenset(
     }
 )
 
+# chat_find / chat_last / chat_attachments_* only ever read - gating them on the
+# full CHAT_SCOPES (which includes the write-only chat.messages) would fail a
+# read-only chat grant before any provider call (issue #133 review, round 3).
+CHAT_READ_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/chat.memberships.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly",
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+    }
+)
+
 CHAT_SCOPES = frozenset(
     {
         "https://www.googleapis.com/auth/chat.memberships.readonly",
         "https://www.googleapis.com/auth/chat.messages",
         "https://www.googleapis.com/auth/chat.messages.readonly",
         "https://www.googleapis.com/auth/chat.spaces.readonly",
+    }
+)
+
+# The default `get_credentials(..., required_scopes=None)` gate, and status_dict's
+# missing_scopes: the union of every scope some command actually requires - unlike
+# GOOGLE_SCOPES, this excludes directory.readonly (required by no single command,
+# see PEOPLE_SCOPES below), so `auth refresh` / `auth status` / `doctor` do not
+# report a permanent, unsatisfiable gap for a Workspace that admin-restricts it
+# (issue #133 review, round 3).
+GOOGLE_REQUIRED_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar.freebusy",
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/chat.memberships.readonly",
+        "https://www.googleapis.com/auth/chat.messages",
+        "https://www.googleapis.com/auth/chat.messages.readonly",
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+        "https://www.googleapis.com/auth/contacts.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.readonly",
     }
 )
 
@@ -98,10 +136,12 @@ def get_credentials(
 
     Non-interactive callers fail fast with :class:`MissingScopeError` when the
     stored grant does not cover ``required_scopes`` — before any provider call,
-    not after a 403 (issue #133). ``required_scopes`` defaults to the whole
-    ``GOOGLE_SCOPES`` build set (what ``auth login`` / ``auth refresh`` / ``doctor``
-    want); pass a skill area's narrower subset (``CALENDAR_SCOPES``, ``PEOPLE_SCOPES``,
-    …) so a grant missing an unrelated scope does not block a command that never
+    not after a 403 (issue #133). ``required_scopes`` defaults to
+    ``GOOGLE_REQUIRED_SCOPES`` (the union every command could actually need, used
+    by ``auth refresh`` / ``doctor`` - excludes ``directory.readonly``, which no
+    command requires and some Workspaces admin-restrict, issue #133 review round 3);
+    pass a skill area's narrower subset (``CALENDAR_SCOPES``, ``PEOPLE_SCOPES``, …)
+    so a grant missing an unrelated scope does not block a command that never
     needed it (issue #133 review - e.g. a contacts-only grant must keep working for
     `people resolve`, which already degrades without ``directory.readonly``).
     """
@@ -111,7 +151,7 @@ def get_credentials(
             "Missing Google OAuth client — set google_oauth_client_file (path to "
             "Desktop client JSON) or client_id in config.toml."
         )
-    required = GOOGLE_SCOPES if required_scopes is None else required_scopes
+    required = GOOGLE_REQUIRED_SCOPES if required_scopes is None else required_scopes
     interactive = interactive_auth_allowed() if allow_interactive is None else allow_interactive
     creds = _load_credentials(cfg)
     if creds is not None:
@@ -192,8 +232,10 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "config_path": str(cfg.config_path),
         "granted_scopes": sorted(granted),
         # Empty until a token file exists: nothing to diff a fresh, never-logged-in
-        # profile against (auth_required already covers that state).
-        "missing_scopes": sorted(GOOGLE_SCOPES - granted)
+        # profile against (auth_required already covers that state). Diffed against
+        # GOOGLE_REQUIRED_SCOPES, not GOOGLE_SCOPES: directory.readonly is optional
+        # (issue #133 review, round 3).
+        "missing_scopes": sorted(GOOGLE_REQUIRED_SCOPES - granted)
         if cfg.google_token_path.is_file()
         else [],
         "provider": "google",

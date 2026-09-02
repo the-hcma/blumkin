@@ -9,7 +9,12 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.providers.google_auth import CALENDAR_READ_SCOPES, CALENDAR_SCOPES, get_credentials
+from blumkin.providers.google_auth import (
+    CALENDAR_FREEBUSY_SCOPES,
+    CALENDAR_READ_SCOPES,
+    CALENDAR_SCOPES,
+    get_credentials,
+)
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.calendar import find_mutual_free_slots, parse_local_datetime
 from blumkin.skills.calendar_writes import (
@@ -160,7 +165,7 @@ async def calendar_freebusy(
     cfg = config or load_config()
     tz_name = start.tzinfo.key if isinstance(start.tzinfo, ZoneInfo) else str(start.tzinfo)
     display_tz = ZoneInfo(tz_name) if tz_name else ZoneInfo("UTC")
-    service = _calendar_service(cfg)
+    service = _calendar_service(cfg, required_scopes=CALENDAR_FREEBUSY_SCOPES)
     body = {
         "items": [{"id": email} for email in with_emails],
         "timeMax": _rfc3339(end),

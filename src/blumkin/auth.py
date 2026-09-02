@@ -231,7 +231,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     cfg = config or load_config()
     access = _access_token_expiry(cfg)
     requested = effective_scopes(cfg)
-    granted = _granted_scopes_from_cache(cfg)
+    granted = _granted_scopes_from_cache(cfg, requested)
     return {
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
@@ -365,20 +365,23 @@ def _ensure_secret_dir(directory: Path, *, stop_at: Path) -> None:
             pass
 
 
-def _granted_scopes_from_cache(cfg: BlumkinConfig) -> frozenset[str]:
+def _granted_scopes_from_cache(cfg: BlumkinConfig, requested: Iterable[str]) -> frozenset[str]:
     """Bare scope names granted per the MSAL cache's ``AccessToken`` ``target`` claims.
 
     Empty when there is no cache yet — nothing to diff a fresh, never-logged-in
     profile against. MSAL's ``SerializableTokenCache`` never prunes, so an entry
-    for a previously configured ``client_id`` can linger in the same file; only
-    an entry for the *active* client counts, otherwise a stale, wider entry
-    could mask a real gap for the current client (issue #133 review). Unlike
-    the client_id filter, entries are **not** filtered by ``expires_on``: access
-    tokens live ~1h and this is read by ``auth status`` / ``doctor`` without a
-    refresh first, so excluding expired-but-current entries would report an
-    empty (falsely reassuring) gap in the routine post-expiry steady state
-    (issue #133 review, round 2) - Google's equivalent (``persisted_granted_scopes``,
-    reading the token file) has no expiry filter either, for the same reason.
+    for a previously configured ``client_id`` (issue #133 review) or an earlier,
+    wider ``effective_scopes(cfg)`` (issue #133 review, round 3 - e.g. a scope
+    toggled off, or an Entra grant later shrunk) can linger in the same file. A
+    scope only counts when it is both in an entry for the *active* client **and**
+    still in ``requested`` - otherwise a stale entry could mask a real gap for
+    the client's *current* configuration. Unlike the client_id filter, entries
+    are **not** filtered by ``expires_on``: access tokens live ~1h and this is
+    read by ``auth status`` / ``doctor`` without a refresh first, so excluding
+    expired-but-current entries would report an empty (falsely reassuring) gap
+    in the routine post-expiry steady state (issue #133 review, round 2) -
+    Google's equivalent (``persisted_granted_scopes``, reading the token file)
+    has no expiry filter either, for the same reason.
     """
     if not cfg.token_cache_path.is_file():
         return frozenset()
@@ -386,6 +389,7 @@ def _granted_scopes_from_cache(cfg: BlumkinConfig) -> frozenset[str]:
         data = json.loads(cfg.token_cache_path.read_text())
     except json.JSONDecodeError, OSError:
         return frozenset()
+    requested_casefold = {s.casefold() for s in requested}
     scopes: set[str] = set()
     for entry in (data.get("AccessToken") or {}).values():
         if not isinstance(entry, dict):
@@ -395,7 +399,10 @@ def _granted_scopes_from_cache(cfg: BlumkinConfig) -> frozenset[str]:
         target = entry.get("target")
         if not isinstance(target, str):
             continue
-        scopes.update(raw.rsplit("/", 1)[-1] for raw in target.split())
+        for raw in target.split():
+            name = raw.rsplit("/", 1)[-1]
+            if name.casefold() in requested_casefold:
+                scopes.add(name)
     return frozenset(scopes)
 
 
