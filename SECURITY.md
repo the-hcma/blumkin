@@ -77,9 +77,14 @@ review.
 | Tests | `pytest -m 'not live'` via [`.github/ci/pytest-hermetic`](.github/ci/pytest-hermetic); job [`ci.yml` › `test`](.github/workflows/ci.yml) | **required check `Pytest (hermetic)` - blocks merge** |
 | Installed-artifact check | [`test_packaging`](test_packaging) - build the wheel, install it outside the repo, run the console script; job [`ci.yml` › `packaging`](.github/workflows/ci.yml) | **required check `Packaging smoke` - blocks merge** |
 | Shell lint | `shellcheck -S info` via [`.github/ci/shellcheck`](.github/ci/shellcheck); job [`ci.yml` › `shellcheck`](.github/workflows/ci.yml) | **required check `Shellcheck` - blocks merge** |
-| Secret scanning | `gitleaks` via [`.github/ci/secret-scan`](.github/ci/secret-scan) (org-canonical, synced by `github-repo-lint`), every PR + push; job [`ci.yml` › `secret-scan`](.github/workflows/ci.yml) | runs every PR; advisory (not a required check) - relies on code-owner review |
+| Secret scanning (GitHub-native) | GitHub secret scanning + **push protection** on `the-hcma/blumkin` (Settings › Code security) - blocks a recognised secret from being pushed at all | **blocks the push** |
+| Secret scanning (CI) | `gitleaks` via [`.github/ci/secret-scan`](.github/ci/secret-scan) (org-canonical, synced by `github-repo-lint`), every PR + push; job [`ci.yml` › `secret-scan`](.github/workflows/ci.yml) | runs every PR; advisory (not a required check) - relies on code-owner review + push protection |
 | Dependency CVE scan | `pip-audit` via [`.github/workflows/cve-check.yml`](.github/workflows/cve-check.yml), daily + on demand | advisory - files a `security/cve` issue |
+| Dependency alerts | GitHub **Dependabot alerts + security updates** enabled (advisory-database CVEs, separate from `pip-audit`) | alerts + auto-fix PRs |
 | Dependency updates | Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml), 10-day cooldown) + auto-merge ([`.github/workflows/dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml)) | opens PRs; auto-merges once required checks pass |
+| Vulnerability intake | **Private vulnerability reporting** enabled - [report an advisory](https://github.com/the-hcma/blumkin/security/advisories/new) | private channel, no public disclosure |
+| Actions permissions | `allowed_actions: selected` (GitHub-owned + an explicit allowlist: `astral-sh/setup-uv`, `googleapis/release-please-action`, `nick-fields/retry`, `pypa/gh-action-pypi-publish`); default workflow token is **read-only**; the token **cannot approve PRs**; third-party actions and the whole [`release-please.yml`](.github/workflows/release-please.yml) toolchain are **SHA-pinned** (Dependabot keeps them current) | limits third-party code in CI / the OIDC path |
+| Publish gate | The [`pypi` environment](https://github.com/the-hcma/blumkin/settings/environments) requires **@thehcma to approve** each deployment and only allows deploys from `main` / `blumkin-v*` tags | pauses every PyPI publish for a human |
 | Supply chain | PyPI **trusted publishing** (OIDC, no long-lived token) in [`release-please.yml` › `publish-pypi`](.github/workflows/release-please.yml); [`scripts/embed_build_metadata`](scripts/embed_build_metadata) records the release commit in the wheel ([`src/blumkin/version.py`](src/blumkin/version.py)); [`scripts/verify-pypi-release`](scripts/verify-pypi-release) re-checks the published artifact | gates the release job |
 | Org repo-practice compliance | `github-repo-lint` (branch-protection shape, required workflows, CODEOWNERS, Dependabot cooldown, cursor-rule sync) - see [Governance tooling](#governance-tooling-repository-helpers) | `repo-practices-lint` in `pre-pr-checks`; local gate |
 
@@ -103,4 +108,4 @@ practices / lint" and "Formatting & linting").
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full toolchain and the review
 model, and [`docs/DECISIONS.md`](docs/DECISIONS.md) for why the repo is public
-and on a personal account.
+and in a personal org.

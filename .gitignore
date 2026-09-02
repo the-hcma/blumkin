@@ -14,3 +14,10 @@ build/
 .pytest_cache/
 .mypy_cache/
 
+# Credential / token material — never committed (blumkin keeps these under
+# ~/.config/blumkin/, but guard the repo tree too).
+*token*.json
+client_secret*.json
+credentials*.json
+*.pem
+config.toml

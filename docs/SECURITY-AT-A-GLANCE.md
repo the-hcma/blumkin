@@ -17,7 +17,8 @@ permissions, no multi-tenant anything.
 | Google desktop-client JSON (holds `client_secret`) | operator-chosen path, mode `0600` | never |
 | The user's mail / calendar / chat content | fetched on demand, printed to stdout, not persisted | n/a |
 
-[`.gitignore`](../.gitignore) and the `gitleaks` CI check
+[`.gitignore`](../.gitignore), GitHub **secret-scanning push protection** (blocks
+a recognised secret before it is pushed), and the `gitleaks` CI check
 ([`.github/ci/secret-scan`](../.github/ci/secret-scan), advisory - runs every PR)
 keep all of the above out of the repo. blumkin never writes another person's
 data anywhere.
@@ -56,12 +57,15 @@ data anywhere.
    ([`.github/workflows/release-please.yml`](../.github/workflows/release-please.yml),
    [`release-please-config.json`](../release-please-config.json)) - no
    hand-edited versions.
-3. Published to PyPI by **OIDC trusted publishing** (no stored token). The wheel
+3. The `publish-pypi` job runs in the `pypi` environment, which **pauses for
+   @thehcma to approve** and only deploys from `main` / `blumkin-v*`. Its
+   actions are SHA-pinned; the workflow token is read-only.
+4. Published to PyPI by **OIDC trusted publishing** (no stored token). The wheel
    carries the release commit via
    [`scripts/embed_build_metadata`](../scripts/embed_build_metadata) /
    [`src/blumkin/version.py`](../src/blumkin/version.py) - `blumkin --version`
    shows it.
-4. [`scripts/verify-pypi-release`](../scripts/verify-pypi-release) installs the
+5. [`scripts/verify-pypi-release`](../scripts/verify-pypi-release) installs the
    published artifact in isolation, and again via a real `pipx install`, and
    checks the version and commit both ways before the job is green.
 
