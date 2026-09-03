@@ -105,6 +105,51 @@ main() {
   timeout 30 "${bin_dir}/blumkin" --help >/dev/null
 
   printf 'verify-pypi-release: installed commands passed for %s\n' "$version"
+
+  verify_pipx_install "$version" "${venv_dir}/bin/python"
+}
+
+# pipx has its own venv layout and console-script shims (PIPX_HOME / PIPX_BIN_DIR),
+# none of which the uv-pip-install check above exercises - the actual acceptance for
+# #54 (`pipx install blumkin`) was only ever checked by hand, on a dev box whose
+# ambient `pipx` turned out to be a broken wrapper (issue #142). Install a known-good
+# pipx via `uv tool install` under a scratch $HOME instead of trusting (or mutating)
+# whatever `pipx` - and whatever it thinks is already installed - lives on the real
+# machine's PATH / ~/.local/share/pipx.
+verify_pipx_install() {
+  local -r version="$1"
+  # Pin pipx's own venv to the same 3.14 the uv-pip block above already proved -
+  # $HOME is overridden below so uv/pipx can no longer see the managed pythons
+  # under the real HOME and would otherwise fall back to the runner's ambient
+  # python3, which can be older than blumkin's requires-python and fail the
+  # install outright (mergestorm-vortex).
+  local -r python_bin="$2"
+  local pipx_uv_home pipx_bin pipx_home pipx_bin_dir version_output
+
+  pipx_uv_home="${temp_root}/pipx-uv-home"
+  mkdir -p "$pipx_uv_home"
+  timeout 60 env HOME="$pipx_uv_home" uv tool install pipx >/dev/null
+  pipx_bin="$(env HOME="$pipx_uv_home" uv tool dir --bin)/pipx"
+  [[ -x "$pipx_bin" ]] || die "pipx not found at ${pipx_bin} after uv tool install"
+
+  pipx_home="${temp_root}/pipx-home"
+  pipx_bin_dir="${temp_root}/pipx-bin"
+  mkdir -p "$pipx_home" "$pipx_bin_dir"
+  timeout 180 env HOME="$pipx_uv_home" PIPX_HOME="$pipx_home" PIPX_BIN_DIR="$pipx_bin_dir" \
+    "$pipx_bin" install --python "$python_bin" "${package}==${version}"
+
+  version_output="$(
+    timeout 30 env -u BLUMKIN_GIT_SHA -u GITHUB_SHA "${pipx_bin_dir}/blumkin" --version
+  )"
+  readonly version_output
+  grep --fixed-strings --quiet "$version" <<<"$version_output" ||
+    die "pipx-installed blumkin --version did not report ${version}: ${version_output}"
+  if grep --fixed-strings --quiet '(unknown)' <<<"$version_output"; then
+    die "pipx-installed blumkin --version reported unknown commit: ${version_output}"
+  fi
+  timeout 30 "${pipx_bin_dir}/blumkin" --help >/dev/null
+
+  printf 'verify-pypi-release: pipx install passed for %s\n' "$version"
 }
 
 main "$@"

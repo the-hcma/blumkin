@@ -16,8 +16,11 @@ publishing. Do not edit the package version or create release tags by hand.
 5. The `Release Please` workflow's `Publish PyPI` job embeds the build metadata,
    builds the wheel and sdist, publishes them to PyPI over OpenID Connect (no
    token), then runs `scripts/verify-pypi-release` — which polls PyPI for the
-   new version, installs the real artifact into an isolated venv, and asserts
-   `blumkin --version` reports the released version and a known commit.
+   new version, installs the real artifact into an isolated venv **and** via a
+   real `pipx install` (its own venv layout and console-script shims), and
+   asserts `blumkin --version` reports the released version and a known
+   commit both ways. No manual `pipx install` check is needed to trust a
+   release (issue #142).
 
 Release Please scans every commit since the previous tag. Keep squash-commit
 subjects conventional, and keep the repo's `squash_merge_commit_message` setting
