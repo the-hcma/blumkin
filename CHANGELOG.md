@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.1](https://github.com/the-hcma/blumkin/compare/blumkin-v0.2.0...blumkin-v0.2.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **auth:** typed auth errors, scope-gap detection, and auto re-consent ([#151](https://github.com/the-hcma/blumkin/issues/151)) ([913db19](https://github.com/the-hcma/blumkin/commit/913db19ba5d2fcdfd702c8dbdcdaabd466601a35))
+
+
+### Documentation
+
+* add PyPI, Python, license, CI, and Release Please badges to the README ([#146](https://github.com/the-hcma/blumkin/issues/146)) ([8ab7ddc](https://github.com/the-hcma/blumkin/commit/8ab7ddc2193ad1f8cfa1d7050aeba7e9a4842765))
+* link every CI/static-analysis check to its source; document repository-helpers tooling ([#150](https://github.com/the-hcma/blumkin/issues/150)) ([15e2658](https://github.com/the-hcma/blumkin/commit/15e2658504efd666d457f3ff46dde6e7f95a87af))
+* SDLC, security, and review governance; refresh README ([#145](https://github.com/the-hcma/blumkin/issues/145)) ([13f6eff](https://github.com/the-hcma/blumkin/commit/13f6efff0715464aa3d09de4ff33d1ece866315e))
+
 ## [0.2.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.1.0...blumkin-v0.2.0) (2026-09-02)
 
 
