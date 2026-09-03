@@ -57,8 +57,8 @@ main() {
 
   local -r version="$1"
   local releases_json previous
-  local pipx_uv_home pipx_bin pipx_home scratch_home pipx_bin_dir version_output
-  local upgrade_json
+  local python_venv python_bin pipx_uv_home pipx_bin pipx_home scratch_home pipx_bin_dir
+  local version_output upgrade_json
 
   command -v curl >/dev/null 2>&1 || die 'curl is required'
   command -v jq >/dev/null 2>&1 || die 'jq is required'
@@ -77,6 +77,16 @@ main() {
     exit 0
   fi
   printf 'verify-pipx-upgrade: upgrading %s -> %s\n' "$previous" "$version"
+
+  # Resolve a real 3.14 interpreter *before* any HOME override below: blumkin's
+  # requires-python is >=3.14, but pipx otherwise builds the app's venv from the
+  # runner's ambient python3 (older on stock ubuntu-latest), and a HOME override
+  # hides uv's managed pythons under the real HOME - the exact pipx install would
+  # then reject blumkin's requires-python and die on the very first live run
+  # (mergestorm-vortex; same fix as scripts/verify-pypi-release).
+  python_venv="${temp_root}/python-3.14"
+  timeout 120 uv venv --python 3.14 "$python_venv" >/dev/null
+  python_bin="${python_venv}/bin/python"
 
   # Isolate pipx's own install, the app's install, and its bin dir under one scratch
   # $HOME so this never touches (or is confused by) whatever pipx/blumkin already
@@ -100,7 +110,7 @@ main() {
   [[ -x "$pipx_bin" ]] || die "pipx not found at ${pipx_bin} after uv tool install"
 
   timeout 180 env HOME="$scratch_home" PIPX_HOME="$pipx_home" PIPX_BIN_DIR="$pipx_bin_dir" \
-    "$pipx_bin" install "${package}==${previous}"
+    "$pipx_bin" install --python "$python_bin" "${package}==${previous}"
   [[ -x "${pipx_bin_dir}/blumkin" ]] ||
     die "pipx did not install blumkin under the custom bin dir ${pipx_bin_dir}"
 
