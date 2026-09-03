@@ -40,7 +40,11 @@ class GoogleWorkspaceProvider:
         neither of which should fail because the network or a scope is missing.
         """
         try:
-            creds = google_auth.get_credentials(self._config, allow_interactive=False)
+            creds = google_auth.get_credentials(
+                self._config,
+                allow_interactive=False,
+                required_scopes=google_auth.MAIL_READ_SCOPES,
+            )
             service = build_api_service("gmail", "v1", creds=creds, config=self._config)
             profile = execute(service.users().getProfile(userId="me"))
         except Exception:

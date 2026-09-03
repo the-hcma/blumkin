@@ -9,7 +9,12 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.providers.google_auth import get_credentials
+from blumkin.providers.google_auth import (
+    CALENDAR_FREEBUSY_SCOPES,
+    CALENDAR_READ_SCOPES,
+    CALENDAR_SCOPES,
+    get_credentials,
+)
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.calendar import find_mutual_free_slots, parse_local_datetime
 from blumkin.skills.calendar_writes import (
@@ -160,7 +165,7 @@ async def calendar_freebusy(
     cfg = config or load_config()
     tz_name = start.tzinfo.key if isinstance(start.tzinfo, ZoneInfo) else str(start.tzinfo)
     display_tz = ZoneInfo(tz_name) if tz_name else ZoneInfo("UTC")
-    service = _calendar_service(cfg)
+    service = _calendar_service(cfg, required_scopes=CALENDAR_FREEBUSY_SCOPES)
     body = {
         "items": [{"id": email} for email in with_emails],
         "timeMax": _rfc3339(end),
@@ -320,7 +325,7 @@ async def calendar_view(
         raise ValueError("end must be after start")
     cfg = config or load_config()
     display_tz = start.tzinfo if isinstance(start.tzinfo, ZoneInfo) else ZoneInfo("UTC")
-    service = _calendar_service(cfg)
+    service = _calendar_service(cfg, required_scopes=CALENDAR_READ_SCOPES)
     response = execute(
         service.events().list(
             calendarId="primary",
@@ -382,8 +387,10 @@ def _busy_slot_to_dict(slot: dict[str, Any], display_tz: ZoneInfo) -> dict[str, 
     }
 
 
-def _calendar_service(cfg: BlumkinConfig) -> Any:
-    creds = get_credentials(cfg, allow_interactive=False)
+def _calendar_service(
+    cfg: BlumkinConfig, *, required_scopes: frozenset[str] = CALENDAR_SCOPES
+) -> Any:
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=required_scopes)
     return build_api_service("calendar", "v3", creds=creds, config=cfg)
 
 

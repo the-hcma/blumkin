@@ -27,7 +27,7 @@ from blumkin.attachments import (
     unique_filename,
 )
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.providers.google_auth import get_credentials
+from blumkin.providers.google_auth import CHAT_READ_SCOPES, CHAT_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.chat import (
     _MAX_SCANNED,
@@ -51,7 +51,7 @@ async def chat_find(
     if not needle:
         raise ValueError("--with requires a non-empty display name")
     cfg = config or load_config()
-    service = _chat_service(cfg)
+    service = _chat_service(cfg, required_scopes=CHAT_READ_SCOPES)
     matches: list[dict[str, Any]] = []
     skipped = 0
     attempted = 0
@@ -138,7 +138,7 @@ async def chat_last(
                 f"pass --chat-id with one of: {ids}"
             )
         chat = items[0]
-    service = _chat_service(cfg)
+    service = _chat_service(cfg, required_scopes=CHAT_READ_SCOPES)
     selected: list[dict[str, Any]] = []
     scanned = 0
     exhausted = False
@@ -232,7 +232,7 @@ async def chat_attachments_download(
             raise ChatAttachmentSkippedError(match["skip_reason"] or "attachment is not a file")
         targets = [match]
         out_path = resolve_single_download_dest(out, match["name"] or str(match["id"]))
-    service = _chat_service(cfg)
+    service = _chat_service(cfg, required_scopes=CHAT_READ_SCOPES)
     saved: list[dict[str, Any]] = []
     skipped = [
         {
@@ -289,7 +289,7 @@ async def chat_attachments_list(
     chat, target_id, partial, skipped = await _resolve_chat_target(
         chat_id=chat_id, with_name=with_name, config=cfg
     )
-    service = _chat_service(cfg)
+    service = _chat_service(cfg, required_scopes=CHAT_READ_SCOPES)
     message = (
         _latest_message_with_attachments(service, target_id)
         if latest
@@ -376,8 +376,8 @@ async def chat_send(
     }
 
 
-def _chat_service(cfg: BlumkinConfig) -> Any:
-    creds = get_credentials(cfg, allow_interactive=False)
+def _chat_service(cfg: BlumkinConfig, *, required_scopes: frozenset[str] = CHAT_SCOPES) -> Any:
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=required_scopes)
     return build_api_service("chat", "v1", creds=creds, config=cfg)
 
 

@@ -4,17 +4,99 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from google.auth.exceptions import RefreshError, TransportError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-from blumkin.auth import SecretWriteError, _ensure_secret_dir, interactive_auth_allowed
+from blumkin.auth import (
+    AuthRequiredError,
+    AuthTransientError,
+    MissingScopeError,
+    SecretWriteError,
+    _ensure_secret_dir,
+    format_scope_gap,
+    interactive_auth_allowed,
+)
 from blumkin.config import BlumkinConfig, google_oauth_installed_client, load_config
+from blumkin.output import emit_warning
 from blumkin.providers.google_http import refresh_request
 from blumkin.providers.kind import ProviderConfigError
+
+# Per-skill-area subsets, each the minimum a command in that area needs to work at
+# all - passed as `get_credentials(..., required_scopes=...)` so a non-interactive
+# fail-fast gate only blocks the scopes the invoked command actually needs, not
+# every scope this build could ever request (issue #133 review: a contacts-only
+# grant must keep working for `people resolve`, which already degrades gracefully
+# without directory.readonly; a gmail.readonly-only grant must keep `mail list`
+# working without chat/calendar/gmail.compose). GOOGLE_SCOPES must be their union
+# plus directory.readonly (enhances people.resolve, required by no single command,
+# admin-restricted in some Workspaces) - `test_google_scopes_is_the_union_of_every_
+# required_subset` in tests/test_google_auth_unit.py guards that invariant.
+# calendar_freebusy / calendar_suggest only ever call freebusy().query - gating
+# them on the full CALENDAR_SCOPES (which includes the write-only calendar.events)
+# would fail a {calendar.readonly, calendar.freebusy} grant before any provider
+# call (issue #133 review, round 3).
+CALENDAR_FREEBUSY_SCOPES = frozenset({"https://www.googleapis.com/auth/calendar.freebusy"})
+
+# calendar_view / calendar_today only ever call events().list - gating them on the
+# full CALENDAR_SCOPES (which includes the write-only calendar.events) would fail a
+# calendar.readonly-only grant before any provider call, even though the read itself
+# needs nothing else (issue #133 review, round 2).
+CALENDAR_READ_SCOPES = frozenset({"https://www.googleapis.com/auth/calendar.readonly"})
+
+CALENDAR_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar.freebusy",
+        "https://www.googleapis.com/auth/calendar.readonly",
+    }
+)
+
+# chat_find / chat_last / chat_attachments_* only ever read - gating them on the
+# full CHAT_SCOPES (which includes the write-only chat.messages) would fail a
+# read-only chat grant before any provider call (issue #133 review, round 3).
+CHAT_READ_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/chat.memberships.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly",
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+    }
+)
+
+CHAT_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/chat.memberships.readonly",
+        "https://www.googleapis.com/auth/chat.messages",
+        "https://www.googleapis.com/auth/chat.messages.readonly",
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+    }
+)
+
+# The default `get_credentials(..., required_scopes=None)` gate, and status_dict's
+# missing_scopes: the union of every scope some command actually requires - unlike
+# GOOGLE_SCOPES, this excludes directory.readonly (required by no single command,
+# see PEOPLE_SCOPES below), so `auth refresh` / `auth status` / `doctor` do not
+# report a permanent, unsatisfiable gap for a Workspace that admin-restricts it
+# (issue #133 review, round 3).
+GOOGLE_REQUIRED_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar.freebusy",
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/chat.memberships.readonly",
+        "https://www.googleapis.com/auth/chat.messages",
+        "https://www.googleapis.com/auth/chat.messages.readonly",
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+        "https://www.googleapis.com/auth/contacts.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.readonly",
+    }
+)
 
 GOOGLE_SCOPES = frozenset(
     {
@@ -32,58 +114,77 @@ GOOGLE_SCOPES = frozenset(
     }
 )
 
+MAIL_READ_SCOPES = frozenset({"https://www.googleapis.com/auth/gmail.readonly"})
+
+MAIL_WRITE_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.readonly",
+    }
+)
+
+PEOPLE_SCOPES = frozenset({"https://www.googleapis.com/auth/contacts.readonly"})
+
 
 def get_credentials(
     config: BlumkinConfig | None = None,
     *,
     allow_interactive: bool | None = None,
+    required_scopes: frozenset[str] | None = None,
 ) -> Credentials:
-    """Load or obtain Google OAuth credentials; refresh silently when possible."""
+    """Load or obtain Google OAuth credentials; refresh silently when possible.
+
+    Non-interactive callers fail fast with :class:`MissingScopeError` when the
+    stored grant does not cover ``required_scopes`` — before any provider call,
+    not after a 403 (issue #133). ``required_scopes`` defaults to
+    ``GOOGLE_REQUIRED_SCOPES`` (the union every command could actually need, used
+    by ``auth refresh`` / ``doctor`` - excludes ``directory.readonly``, which no
+    command requires and some Workspaces admin-restrict, issue #133 review round 3);
+    pass a skill area's narrower subset (``CALENDAR_SCOPES``, ``PEOPLE_SCOPES``, …)
+    so a grant missing an unrelated scope does not block a command that never
+    needed it (issue #133 review - e.g. a contacts-only grant must keep working for
+    `people resolve`, which already degrades without ``directory.readonly``).
+    """
     cfg = config or load_config()
     if not cfg.client_id and cfg.google_oauth_client_file is None:
-        raise ValueError(
+        raise ProviderConfigError(
             "Missing Google OAuth client — set google_oauth_client_file (path to "
             "Desktop client JSON) or client_id in config.toml."
         )
+    required = GOOGLE_REQUIRED_SCOPES if required_scopes is None else required_scopes
     interactive = interactive_auth_allowed() if allow_interactive is None else allow_interactive
     creds = _load_credentials(cfg)
     if creds is not None:
         if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(refresh_request(cfg))
-            except Exception:
+            except Exception as exc:
                 if not interactive:
-                    raise ValueError(
-                        "Silent token refresh failed. Run `blumkin auth login` on a TTY "
-                        "(or unset BLUMKIN_NONINTERACTIVE), then retry."
-                    ) from None
+                    raise _classify_refresh_error(exc) from exc
             else:
                 _save_credentials(cfg, creds, preserve_granted_scopes=True)
-                if not interactive or not _needs_additional_scopes(cfg):
+                if not _needs_additional_scopes(cfg, required):
                     return creds
+                if not interactive:
+                    raise _missing_scope_error(cfg, required=required)
         elif creds.valid:
-            if not interactive or not _needs_additional_scopes(cfg):
+            if not _needs_additional_scopes(cfg, required):
                 return creds
+            if not interactive:
+                raise _missing_scope_error(cfg, required=required)
         elif not interactive:
-            raise ValueError(
+            raise AuthRequiredError(
                 "Silent token refresh failed. Run `blumkin auth login` on a TTY "
                 "(or unset BLUMKIN_NONINTERACTIVE), then retry."
             )
 
     if not interactive:
-        raise ValueError(
+        raise AuthRequiredError(
             "Authentication required. Run `blumkin auth login` on a TTY "
             "(agent shells should set BLUMKIN_NONINTERACTIVE=1 and never open a browser)."
         )
 
-    flow = InstalledAppFlow.from_client_config(
-        _client_config(cfg),
-        scopes=sorted(GOOGLE_SCOPES),
-    )
-    url_params = {"prompt": "consent"} if _needs_additional_scopes(cfg) else None
-    creds = flow.run_local_server(port=0, authorization_url_params=url_params)
-    if not isinstance(creds, Credentials):
-        raise TypeError("expected google.oauth2.credentials.Credentials from InstalledAppFlow")
+    creds = _run_interactive_consent(cfg)
     _save_credentials(cfg, creds)
     return creds
 
@@ -120,6 +221,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     """Auth status without secrets (aligned keys with Microsoft status where possible)."""
     cfg = config or load_config()
     access = _access_token_expiry(cfg)
+    granted = persisted_granted_scopes(cfg)
     return {
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
@@ -128,6 +230,14 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "client_id_configured": bool(cfg.client_id) or cfg.google_oauth_client_file is not None,
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),
+        "granted_scopes": sorted(granted),
+        # Empty until a token file exists: nothing to diff a fresh, never-logged-in
+        # profile against (auth_required already covers that state). Diffed against
+        # GOOGLE_REQUIRED_SCOPES, not GOOGLE_SCOPES: directory.readonly is optional
+        # (issue #133 review, round 3).
+        "missing_scopes": sorted(GOOGLE_REQUIRED_SCOPES - granted)
+        if cfg.google_token_path.is_file()
+        else [],
         "provider": "google",
         "refresh_token_present": access.get("refresh_token_present", False),
         "requested_scopes": sorted(GOOGLE_SCOPES),
@@ -161,6 +271,32 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
     out["expires_in_seconds"] = remaining
     out["expired"] = remaining <= 0
     return out
+
+
+def _classify_refresh_error(exc: BaseException) -> AuthRequiredError | AuthTransientError:
+    """Map a ``Credentials.refresh()`` failure to a typed auth error (issue #133)."""
+    if isinstance(exc, TransportError | TimeoutError):
+        return AuthTransientError(
+            f"Google token refresh hit a transient network error: {exc}. Safe to retry."
+        )
+    if isinstance(exc, RefreshError):
+        # google-auth itself marks a 5xx/server-side token-endpoint failure
+        # retryable (GoogleAuthError.retryable) - trust that over guessing from
+        # the message, so a plain outage does not read as "grant revoked"
+        # (issue #133 review).
+        if getattr(exc, "retryable", False):
+            return AuthTransientError(
+                f"Google token endpoint returned a transient error: {exc}. Safe to retry."
+            )
+        if "invalid_grant" in str(exc):
+            return AuthRequiredError(
+                "Google refresh token was revoked or expired (invalid_grant). Run "
+                "`blumkin auth login` on a TTY, then retry."
+            )
+    return AuthRequiredError(
+        "Silent token refresh failed. Run `blumkin auth login` on a TTY "
+        "(or unset BLUMKIN_NONINTERACTIVE), then retry."
+    )
 
 
 def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
@@ -206,6 +342,16 @@ def _client_secret_from_oauth_file(cfg: BlumkinConfig) -> str:
     return raw.strip() if isinstance(raw, str) else ""
 
 
+def _consent_once(cfg: BlumkinConfig, *, force_consent: bool) -> Credentials:
+    """Run the browser consent flow exactly once; let a partial-grant Warning propagate."""
+    flow = InstalledAppFlow.from_client_config(_client_config(cfg), scopes=sorted(GOOGLE_SCOPES))
+    url_params = {"prompt": "consent"} if force_consent else None
+    creds = flow.run_local_server(port=0, authorization_url_params=url_params)
+    if not isinstance(creds, Credentials):
+        raise TypeError("expected google.oauth2.credentials.Credentials from InstalledAppFlow")
+    return creds
+
+
 def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
     path = cfg.google_token_path
     if not path.is_file():
@@ -228,8 +374,33 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
         return None
 
 
-def _needs_additional_scopes(cfg: BlumkinConfig) -> bool:
-    """True when the stored grant is missing scopes this build requests."""
+def _missing_scope_error(
+    cfg: BlumkinConfig,
+    *,
+    current: frozenset[str] | None = None,
+    required: frozenset[str] = GOOGLE_SCOPES,
+) -> MissingScopeError:
+    """Build a :class:`MissingScopeError` showing the granted-vs-needed gap.
+
+    ``current`` overrides the persisted grant when the caller already knows the
+    actual scopes Google returned (e.g. from a partial-consent Warning) — more
+    accurate than the token file on a fresh install that never got that far.
+    ``required`` narrows "needed" to a skill area's subset (default: the whole
+    build); the message always reports against ``required``, not every scope
+    this build could ever request.
+    """
+    granted = current if current is not None else persisted_granted_scopes(cfg)
+    missing = required - granted
+    return MissingScopeError(
+        "Stored Google grant is missing scopes this build needs.\n"
+        + format_scope_gap(current=granted, missing=missing),
+        current=granted,
+        missing=missing,
+    )
+
+
+def _needs_additional_scopes(cfg: BlumkinConfig, required: frozenset[str]) -> bool:
+    """True when the stored grant is missing any scope in ``required``."""
     if not cfg.google_token_path.is_file():
         return False
     granted = persisted_granted_scopes(cfg)
@@ -237,7 +408,7 @@ def _needs_additional_scopes(cfg: BlumkinConfig) -> bool:
         # Pre-scope-tracking token, or an empty list — re-consent so the file
         # and server grant align with GOOGLE_SCOPES.
         return True
-    return not GOOGLE_SCOPES.issubset(granted)
+    return not required.issubset(granted)
 
 
 def _read_persisted_scopes(cfg: BlumkinConfig) -> list[str] | None:
@@ -255,6 +426,33 @@ def _read_persisted_scopes(cfg: BlumkinConfig) -> list[str] | None:
         return None
     scopes = [scope for scope in raw if isinstance(scope, str) and scope]
     return scopes if scopes else None
+
+
+def _run_interactive_consent(cfg: BlumkinConfig) -> Credentials:
+    """Run the browser consent flow, auto-escalating once on a partial grant.
+
+    Google's consent screen lets the user leave scope checkboxes unticked; when
+    that happens, oauthlib raises a bare ``Warning`` instead of returning partial
+    credentials (issue #133). Retry exactly once with ``prompt=consent`` and a
+    warning telling the operator to tick every box; a second partial grant stops
+    instead of looping.
+    """
+    force_consent = _needs_additional_scopes(cfg, GOOGLE_SCOPES)
+    if force_consent:
+        _warn_scope_gap(persisted_granted_scopes(cfg))
+    try:
+        return _consent_once(cfg, force_consent=force_consent)
+    except Warning as exc:
+        granted = _scopes_from_oauthlib_warning(exc)
+        if force_consent:
+            raise _missing_scope_error(cfg, current=granted) from exc
+        _warn_scope_gap(granted or frozenset())
+        try:
+            return _consent_once(cfg, force_consent=True)
+        except Warning as exc2:
+            raise _missing_scope_error(
+                cfg, current=_scopes_from_oauthlib_warning(exc2) or granted
+            ) from exc2
 
 
 def _save_credentials(
@@ -278,6 +476,30 @@ def _save_credentials(
     else:
         payload.setdefault("client_secret", "")
     _write_secret_text(cfg.google_token_path, json.dumps(payload))
+
+
+def _scopes_from_oauthlib_warning(exc: Warning) -> frozenset[str] | None:
+    """Scopes Google actually granted, parsed from oauthlib's partial-consent Warning.
+
+    oauthlib stamps ``.new_scope`` / ``.old_scope`` list attributes on the
+    ``Warning`` it raises when the returned grant differs from what was
+    requested; fall back to regexing the message if a future oauthlib drops
+    those. ``None`` means neither worked - caller falls back to the persisted
+    grant.
+    """
+    new_scope = getattr(exc, "new_scope", None)
+    if isinstance(new_scope, list) and all(isinstance(scope, str) for scope in new_scope):
+        return frozenset(new_scope)
+    match = re.search(r'Scope has changed from "[^"]*" to "([^"]*)"', str(exc))
+    return frozenset(match.group(1).split()) if match else None
+
+
+def _warn_scope_gap(current: frozenset[str]) -> None:
+    emit_warning(
+        "Stored Google grant is missing scopes this build needs. Re-opening the "
+        'consent screen - tick every box (or click "Select all") this time.\n'
+        + format_scope_gap(current=current, missing=GOOGLE_SCOPES - current)
+    )
 
 
 def _write_secret_text(path: Path, text: str) -> None:

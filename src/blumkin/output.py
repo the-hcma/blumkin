@@ -45,6 +45,11 @@ def emit_lines(lines: list[str]) -> None:
         print(line)
 
 
+def emit_warning(message: str) -> None:
+    """Print a non-fatal warning to stderr so stdout stays clean for --json output."""
+    print(f"warning: {message}", file=sys.stderr)
+
+
 def sanitize_terminal(text: str) -> str:
     """Strip C0/C1 control chars that could hijack a terminal in human output."""
     return _CONTROL_RE.sub("", text)

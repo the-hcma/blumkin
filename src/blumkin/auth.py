@@ -6,6 +6,7 @@ import atexit
 import json
 import os
 import sys
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,33 @@ from azure.identity import AuthenticationRecord, InteractiveBrowserCredential
 from msal import SerializableTokenCache
 
 from blumkin.config import BlumkinConfig, load_config
+from blumkin.providers.kind import ProviderConfigError
+
+
+class AuthError(ValueError):
+    """Base for typed, classified auth failures (issue #133).
+
+    A ``ValueError`` subclass so existing ``except ValueError`` call sites keep
+    working; new code should ``isinstance``-check the specific subclass instead
+    of sniffing ``str(exc)``.
+    """
+
+
+class AuthRequiredError(AuthError):
+    """No usable token: the refresh token is dead, revoked, or missing.
+
+    The fix is always the same across providers and flows: `blumkin auth login`
+    on a TTY.
+    """
+
+
+class AuthTransientError(AuthError):
+    """A network or server-side error while talking to the auth provider.
+
+    Distinct from :class:`AuthRequiredError` so the CLI can tell the operator
+    this is safe to retry, rather than implying the grant itself is bad.
+    """
+
 
 # Request exact granted scope names for MSAL silent refresh (e.g. Calendars.ReadWrite
 # not .Read). Phase 4 add-ons stay off until config enables them and Entra grant
@@ -32,6 +60,20 @@ BASE_SCOPES = [
 FILES_SCOPES = [
     "Files.Read",
 ]
+
+
+class MissingScopeError(AuthError):
+    """The stored grant does not cover every scope this build requests.
+
+    ``current`` and ``missing`` are the granted vs. still-needed scope sets, so
+    the error message can show the gap explicitly instead of failing late on a
+    provider 403.
+    """
+
+    def __init__(self, message: str, *, current: frozenset[str], missing: frozenset[str]) -> None:
+        super().__init__(message)
+        self.current = current
+        self.missing = missing
 
 
 class SecretWriteError(OSError):
@@ -68,7 +110,9 @@ def create_credential(
     cfg = config or load_config()
     scopes = effective_scopes(cfg)
     if not cfg.client_id:
-        raise ValueError("Missing client_id — set client_id in ~/.config/blumkin/config.toml.")
+        raise ProviderConfigError(
+            "Missing client_id — set client_id in ~/.config/blumkin/config.toml."
+        )
     interactive = interactive_auth_allowed() if allow_interactive is None else allow_interactive
     _ensure_cache(cfg)
     record = _load_auth_record(cfg)
@@ -92,22 +136,19 @@ def create_credential(
     if record:
         try:
             credential.get_token(*scopes)
-        except Exception:
+        except Exception as exc:
             # Stale auth record / missing refresh token — force interactive login
             # when a TTY is available. Do not wrap save_token_cache here: its
             # OSError (e.g. O_NOFOLLOW) must surface, and get_token transport
             # OSErrors must still fall through when interactive is allowed.
             if not interactive:
-                raise ValueError(
-                    "Silent token refresh failed. Run `blumkin auth login` on a TTY "
-                    "(or unset BLUMKIN_NONINTERACTIVE), then retry."
-                ) from None
+                raise _classify_get_token_error(exc) from exc
         else:
             save_token_cache(cfg)
             return credential
 
     if not interactive:
-        raise ValueError(
+        raise AuthRequiredError(
             "Authentication required. Run `blumkin auth login` on a TTY "
             "(agent shells should set BLUMKIN_NONINTERACTIVE=1 and never open a browser)."
         )
@@ -127,6 +168,18 @@ def effective_scopes(config: BlumkinConfig | None = None) -> list[str]:
     if cfg.wo1162425_scopes:
         scopes.extend(WO1162425_SCOPES)
     return scopes
+
+
+def format_scope_gap(*, current: Iterable[str], missing: Iterable[str]) -> str:
+    """Render the granted-vs-needed scope sets so the gap is obvious (issue #133).
+
+    Provider scope names are shortened for display (Google's full
+    ``https://www.googleapis.com/auth/...`` URIs collapse to the trailing
+    segment; Microsoft's bare names pass through unchanged).
+    """
+    current_s = ", ".join(sorted(_short_scope(s) for s in current)) or "(none)"
+    missing_s = ", ".join(sorted(_short_scope(s) for s in missing)) or "(none)"
+    return f"current scopes:  {current_s}\nmissing scopes:  {missing_s}"
 
 
 def interactive_auth_allowed() -> bool:
@@ -177,6 +230,8 @@ def save_token_cache(config: BlumkinConfig | None = None) -> None:
 def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     cfg = config or load_config()
     access = _access_token_expiry(cfg)
+    requested = effective_scopes(cfg)
+    granted = _granted_scopes_from_cache(cfg, requested)
     return {
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
@@ -187,8 +242,12 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "config_path": str(cfg.config_path),
         "files_scopes": cfg.files_scopes,
         "wo1162425_scopes": cfg.wo1162425_scopes,
+        "granted_scopes": sorted(granted),
+        # Empty until a cache exists: nothing to diff a fresh, never-logged-in
+        # profile against (auth_required already covers that state).
+        "missing_scopes": sorted(_missing_scopes(requested, granted)) if granted else [],
         "refresh_token_present": access.get("refresh_token_present", False),
-        "requested_scopes": effective_scopes(cfg),
+        "requested_scopes": requested,
         "tenant_id": cfg.tenant_id,
         "token_cache": cfg.token_cache_path.is_file(),
     }
@@ -230,6 +289,33 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
     out["expires_in_seconds"] = remaining
     out["expired"] = remaining <= 0
     return out
+
+
+def _classify_get_token_error(exc: BaseException) -> AuthError:
+    """Map a non-interactive ``get_token`` failure to a typed auth error."""
+    if isinstance(exc, OSError):
+        # TimeoutError and most requests/httpx transport errors are OSError
+        # subclasses — a real network problem, not a bad grant.
+        return AuthTransientError(
+            f"Microsoft token refresh hit a transient network error: {exc}. Safe to retry."
+        )
+    msg = str(exc)
+    # MSAL/AAD use the standard OAuth2 (RFC 6749 §5.2) codes for a token-endpoint
+    # outage - server_error / temporarily_unavailable - distinct from a dead grant
+    # (issue #133 review: a plain HTTP 5xx must not read as "re-login").
+    if "temporarily_unavailable" in msg or "server_error" in msg:
+        return AuthTransientError(
+            f"Microsoft token endpoint returned a transient error: {exc}. Safe to retry."
+        )
+    if "invalid_grant" in msg or "AADSTS70008" in msg or "AADSTS700082" in msg:
+        return AuthRequiredError(
+            "Microsoft refresh token was revoked or expired. Run `blumkin auth login` "
+            "on a TTY, then retry."
+        )
+    return AuthRequiredError(
+        "Silent token refresh failed. Run `blumkin auth login` on a TTY "
+        "(or unset BLUMKIN_NONINTERACTIVE), then retry."
+    )
 
 
 def _ensure_cache(cfg: BlumkinConfig) -> None:
@@ -279,6 +365,47 @@ def _ensure_secret_dir(directory: Path, *, stop_at: Path) -> None:
             pass
 
 
+def _granted_scopes_from_cache(cfg: BlumkinConfig, requested: Iterable[str]) -> frozenset[str]:
+    """Bare scope names granted per the MSAL cache's ``AccessToken`` ``target`` claims.
+
+    Empty when there is no cache yet — nothing to diff a fresh, never-logged-in
+    profile against. MSAL's ``SerializableTokenCache`` never prunes, so an entry
+    for a previously configured ``client_id`` (issue #133 review) or an earlier,
+    wider ``effective_scopes(cfg)`` (issue #133 review, round 3 - e.g. a scope
+    toggled off, or an Entra grant later shrunk) can linger in the same file. A
+    scope only counts when it is both in an entry for the *active* client **and**
+    still in ``requested`` - otherwise a stale entry could mask a real gap for
+    the client's *current* configuration. Unlike the client_id filter, entries
+    are **not** filtered by ``expires_on``: access tokens live ~1h and this is
+    read by ``auth status`` / ``doctor`` without a refresh first, so excluding
+    expired-but-current entries would report an empty (falsely reassuring) gap
+    in the routine post-expiry steady state (issue #133 review, round 2) -
+    Google's equivalent (``persisted_granted_scopes``, reading the token file)
+    has no expiry filter either, for the same reason.
+    """
+    if not cfg.token_cache_path.is_file():
+        return frozenset()
+    try:
+        data = json.loads(cfg.token_cache_path.read_text())
+    except json.JSONDecodeError, OSError:
+        return frozenset()
+    requested_casefold = {s.casefold() for s in requested}
+    scopes: set[str] = set()
+    for entry in (data.get("AccessToken") or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("client_id") != cfg.client_id:
+            continue
+        target = entry.get("target")
+        if not isinstance(target, str):
+            continue
+        for raw in target.split():
+            name = raw.rsplit("/", 1)[-1]
+            if name.casefold() in requested_casefold:
+                scopes.add(name)
+    return frozenset(scopes)
+
+
 def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
     if not cfg.auth_record_path.is_file():
         return None
@@ -286,6 +413,12 @@ def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
         return AuthenticationRecord.deserialize(cfg.auth_record_path.read_text())
     except Exception:
         return None
+
+
+def _missing_scopes(requested: Iterable[str], granted: frozenset[str]) -> set[str]:
+    """Requested scope names not present in ``granted`` (case-insensitive)."""
+    granted_casefold = {g.casefold() for g in granted}
+    return {s for s in requested if s.casefold() not in granted_casefold}
 
 
 def _refuse_symlinked_path_components(directory: Path, *, stop_at: Path) -> None:
@@ -326,6 +459,11 @@ def _save_bound_token_cache_at_exit() -> None:
         # Avoid "Exception ignored" on atexit when the secret path is a symlink
         # or the filesystem rejects mode/write; process is already exiting.
         pass
+
+
+def _short_scope(scope: str) -> str:
+    """Collapse a Google scope URI to its trailing segment; other scopes pass through."""
+    return scope.removeprefix("https://www.googleapis.com/auth/")
 
 
 def _write_secret_text(path: Path, text: str) -> None:

@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 from googleapiclient.errors import HttpError
 
+from blumkin.auth import MissingScopeError
 from blumkin.cli import main
 from blumkin.config import BlumkinConfig, MailSignatureConfig
 from blumkin.exit_codes import EXIT_MISSING_SCOPE
@@ -70,42 +71,6 @@ def test_meeting_get_unsupported(tmp_path: Path) -> None:
         asyncio.run(provider.meeting_get(event_id="evt-1"))
 
 
-def test_calendar_today_maps_events(tmp_path: Path) -> None:
-    cfg = _cfg(tmp_path)
-    service = MagicMock()
-    service.events.return_value.list.return_value.execute.return_value = {
-        "items": [
-            {
-                "id": "evt-1",
-                "summary": "Standup",
-                "start": {"dateTime": "2026-08-30T15:00:00Z"},
-                "end": {"dateTime": "2026-08-30T15:30:00Z"},
-                "location": "Room A",
-                "organizer": {
-                    "email": "ada@example.com",
-                    "displayName": "Ada",
-                    "self": True,
-                },
-            }
-        ]
-    }
-    with (
-        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
-        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
-    ):
-        provider = GoogleWorkspaceProvider(cfg)
-        payload = asyncio.run(
-            provider.calendar_today(day=datetime(2026, 8, 30, tzinfo=UTC).date(), tz_name="UTC")
-        )
-    assert payload["date"] == "2026-08-30"
-    assert len(payload["items"]) == 1
-    item = payload["items"][0]
-    assert item["id"] == "evt-1"
-    assert item["subject"] == "Standup"
-    assert item["location"] == "Room A"
-    assert item["is_all_day"] is False
-
-
 def test_calendar_freebusy_and_suggest(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     service = MagicMock()
@@ -142,6 +107,85 @@ def test_calendar_freebusy_and_suggest(tmp_path: Path) -> None:
     assert suggest["slots"]
     assert suggest["treat_tentative"] == "busy"
     assert suggest["with"] == ["ada@example.com"]
+
+
+def test_calendar_freebusy_gates_on_freebusy_only_scope(tmp_path: Path) -> None:
+    """calendar_freebusy only calls freebusy().query - must not require the
+    write-only calendar.events scope (issue #133 review, round 3)."""
+    from blumkin.providers.google_auth import CALENDAR_FREEBUSY_SCOPES
+
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.freebusy.return_value.query.return_value.execute.return_value = {"calendars": {}}
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = datetime(2026, 8, 30, 17, 0, tzinfo=UTC)
+    with (
+        patch(
+            "blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()
+        ) as get_creds,
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        asyncio.run(
+            provider.calendar_freebusy(with_emails=["ada@example.com"], start=start, end=end)
+        )
+    assert get_creds.call_args.kwargs["required_scopes"] == CALENDAR_FREEBUSY_SCOPES
+
+
+def test_calendar_today_gates_on_read_only_scope(tmp_path: Path) -> None:
+    """calendar_today/calendar_view only call events().list - must not require write
+    scopes (calendar.events/calendar.freebusy), or a calendar.readonly-only grant
+    fails before any provider call (issue #133 review, round 2)."""
+    from blumkin.providers.google_auth import CALENDAR_READ_SCOPES
+
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.events.return_value.list.return_value.execute.return_value = {"items": []}
+    with (
+        patch(
+            "blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()
+        ) as get_creds,
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        asyncio.run(provider.calendar_today(tz_name="UTC"))
+    assert get_creds.call_args.kwargs["required_scopes"] == CALENDAR_READ_SCOPES
+
+
+def test_calendar_today_maps_events(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.events.return_value.list.return_value.execute.return_value = {
+        "items": [
+            {
+                "id": "evt-1",
+                "summary": "Standup",
+                "start": {"dateTime": "2026-08-30T15:00:00Z"},
+                "end": {"dateTime": "2026-08-30T15:30:00Z"},
+                "location": "Room A",
+                "organizer": {
+                    "email": "ada@example.com",
+                    "displayName": "Ada",
+                    "self": True,
+                },
+            }
+        ]
+    }
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        payload = asyncio.run(
+            provider.calendar_today(day=datetime(2026, 8, 30, tzinfo=UTC).date(), tz_name="UTC")
+        )
+    assert payload["date"] == "2026-08-30"
+    assert len(payload["items"]) == 1
+    item = payload["items"][0]
+    assert item["id"] == "evt-1"
+    assert item["subject"] == "Standup"
+    assert item["location"] == "Room A"
+    assert item["is_all_day"] is False
 
 
 def test_calendar_create_cli_wires_remind_email(tmp_path: Path) -> None:
@@ -609,6 +653,12 @@ def test_save_credentials_preserves_persisted_scopes_when_requested(tmp_path: Pa
 
 
 def test_get_credentials_refresh_preserves_stale_granted_scopes(tmp_path: Path) -> None:
+    """A refreshed-but-insufficient grant is saved as-is, then reported (issue #133).
+
+    Non-interactively this must fail fast with MissingScopeError - it must not
+    silently return usable-looking credentials for a scope set the command
+    actually needs (the bug this issue reports).
+    """
     from blumkin.providers import google_auth
 
     contacts_only = "https://www.googleapis.com/auth/contacts.readonly"
@@ -648,9 +698,13 @@ def test_get_credentials_refresh_preserves_stale_granted_scopes(tmp_path: Path) 
     with (
         patch.object(google_auth, "_load_credentials", return_value=creds),
         patch.object(google_auth, "refresh_request", return_value=MagicMock()),
+        pytest.raises(MissingScopeError) as excinfo,
     ):
         google_auth.get_credentials(cfg, allow_interactive=False)
 
+    assert excinfo.value.current == {contacts_only}
+    assert "contacts.readonly" in str(excinfo.value)
+    assert "gmail.compose" in str(excinfo.value)
     saved = json.loads(cfg.google_token_path.read_text())
     assert saved["scopes"] == [contacts_only]
 
@@ -701,7 +755,7 @@ def test_needs_additional_scopes_when_persisted_grant_is_incomplete(tmp_path: Pa
             }
         )
     )
-    assert google_auth._needs_additional_scopes(cfg) is True
+    assert google_auth._needs_additional_scopes(cfg, google_auth.GOOGLE_SCOPES) is True
 
 
 def test_needs_additional_scopes_false_when_grant_is_complete(tmp_path: Path) -> None:
@@ -716,7 +770,7 @@ def test_needs_additional_scopes_false_when_grant_is_complete(tmp_path: Path) ->
             }
         )
     )
-    assert google_auth._needs_additional_scopes(cfg) is False
+    assert google_auth._needs_additional_scopes(cfg, google_auth.GOOGLE_SCOPES) is False
 
 
 def test_get_credentials_runs_browser_when_scopes_are_incomplete(tmp_path: Path) -> None:

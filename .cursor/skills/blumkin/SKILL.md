@@ -170,7 +170,9 @@ original's attachments.
    the token cache or auth record could not be written (often a symlink at
    `~/.config/blumkin/` or those files) — fix the path, do not re-login in a
    loop. Exit `1` / `timeout` means Graph or token HTTP exceeded
-   `graph_timeout_seconds` in `config.toml` (default 60).
+   `graph_timeout_seconds` in `config.toml` (default 60). Exit `1` /
+   `transient_error` means a network/server hiccup talking to the auth
+   provider, not a bad grant — safe to retry the same command once.
    Agent shells should set `BLUMKIN_NONINTERACTIVE=1` so Blumkin never opens a
    browser. If a command hangs: `pkill -f blumkin`, check
    `blumkin auth status --json` for `access_token_expired`, then

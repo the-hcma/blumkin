@@ -14,7 +14,7 @@ import click
 import httpx
 
 from blumkin import help_text
-from blumkin.auth import SecretWriteError
+from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
 from blumkin.config import BlumkinConfig, list_profiles, load_config, set_profile_email
 from blumkin.exit_codes import (
     EXIT_AUTH,
@@ -129,12 +129,26 @@ _DEFAULT_HINTS: dict[str, str] = {
         "Raise graph_timeout_seconds in config.toml, kill any stuck blumkin processes "
         "(`pkill -f blumkin`), then run `blumkin auth refresh` if the access token expired."
     ),
+    "transient_error": (
+        "The auth provider hit a transient network or server error - this is not a bad "
+        "grant. Wait a moment and retry the same command."
+    ),
     "upgrade_failed": (
         "Run `pipx upgrade blumkin` directly for the full output. If blumkin was not "
         "installed with pipx, use `pipx install blumkin` (see docs/RELEASING.md)."
     ),
     "usage_error": "See `blumkin COMMAND --help` for the accepted arguments and examples.",
 }
+
+# Overrides _DEFAULT_HINTS["missing_scope"] (Microsoft/Graph-only wording) for
+# MissingScopeError specifically: it is provider-neutral, unlike the tenant-grant /
+# wo1162425_scopes / files_scopes hint that only makes sense for a Microsoft 403
+# (issue #133 - a Google profile has neither of those knobs or an MSAL auth record).
+_MISSING_SCOPE_HINT = (
+    "Run `blumkin auth login` on a TTY and tick every scope box (or click "
+    '"Select all") on the consent screen - the message above lists exactly '
+    "which scopes are missing."
+)
 
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
@@ -260,10 +274,42 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
     ctx.exit()
 
 
+def _provider_config_hint(message: str) -> str | None:
+    """The client_id hint only applies when the failure is actually about client_id.
+
+    Google's ``ProviderConfigError`` is about ``google_oauth_client_file`` (a
+    Desktop-client JSON path), not ``client_id`` - showing the Microsoft-only
+    remediation there reproduces the exact misleading-hint failure issue #133
+    reports, on the Google config path this time (issue #133 review, round 2).
+    """
+    if "client_id" in message and "google_oauth_client_file" not in message:
+        return "Set client_id in ~/.config/blumkin/config.toml then retry."
+    return None
+
+
 def _raise_auth_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
+    """Classify a ``ValueError`` from the auth layer by type, not by sniffing its message.
+
+    ``AuthRequiredError`` / ``AuthTransientError`` / ``MissingScopeError`` /
+    ``ProviderConfigError`` are the typed subclasses raised by
+    ``blumkin.auth`` / ``blumkin.providers.google_auth`` (issue #133); the
+    message-substring fallback below only still applies to a plain
+    ``ValueError`` from elsewhere in the codebase.
+    """
     if isinstance(exc, ProviderConfigError):
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
+    if isinstance(exc, MissingScopeError):
+        _emit_error(
+            error="missing_scope", message=str(exc), as_json=as_json, hint=_MISSING_SCOPE_HINT
+        )
+        raise SystemExit(EXIT_MISSING_SCOPE) from exc
+    if isinstance(exc, AuthTransientError):
+        _emit_error(error="transient_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    if isinstance(exc, AuthRequiredError):
+        _emit_error(error="auth_required", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_AUTH) from exc
     msg = str(exc)
     if (
         "client_id" in msg
@@ -492,15 +538,31 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         )
         raise SystemExit(EXIT_OTHER) from exc
     except ProviderConfigError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    except Exception as exc:
+        # The client_id hint only fires when the failure is actually about
+        # client_id - not a revoked grant, a transient network error, or a
+        # Google google_oauth_client_file problem (issue #133).
         _emit_error(
-            error="auth_required",
+            error="usage_error",
             message=str(exc),
             as_json=as_json,
-            hint="Set client_id in ~/.config/blumkin/config.toml then retry.",
+            hint=_provider_config_hint(str(exc)),
         )
+        raise SystemExit(EXIT_USAGE) from exc
+    except MissingScopeError as exc:
+        _emit_error(
+            error="missing_scope", message=str(exc), as_json=as_json, hint=_MISSING_SCOPE_HINT
+        )
+        raise SystemExit(EXIT_MISSING_SCOPE) from exc
+    except AuthTransientError as exc:
+        _emit_error(error="transient_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    except AuthRequiredError as exc:
+        _emit_error(error="auth_required", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_AUTH) from exc
+    except Exception as exc:
+        # Truly unclassified failure (should be rare now that the auth layer
+        # types its errors) - no client_id hint here, that would usually be wrong.
+        _emit_error(error="auth_required", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_AUTH) from exc
     populated = _populate_profile_email_once()
     if as_json:
@@ -543,9 +605,24 @@ def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
         _emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_OTHER) from exc
     except ProviderConfigError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        _emit_error(
+            error="usage_error",
+            message=str(exc),
+            as_json=as_json,
+            hint=_provider_config_hint(str(exc)),
+        )
         raise SystemExit(EXIT_USAGE) from exc
+    except MissingScopeError as exc:
+        _emit_error(
+            error="missing_scope", message=str(exc), as_json=as_json, hint=_MISSING_SCOPE_HINT
+        )
+        raise SystemExit(EXIT_MISSING_SCOPE) from exc
+    except AuthTransientError as exc:
+        _emit_error(error="transient_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
     except Exception as exc:
+        # Covers AuthRequiredError and any unclassified failure alike: the fix is
+        # always `auth login` on a TTY (issue #133).
         _emit_error(
             error="auth_required",
             message=str(exc),
@@ -822,6 +899,11 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         problems.append("client_id missing in config.toml")
     if not status["token_cache"] or not status["auth_record"]:
         problems.append("auth cache incomplete — run: blumkin auth login")
+    missing_scopes = status.get("missing_scopes") or []
+    if missing_scopes:
+        problems.append(
+            "missing scopes: " + ", ".join(missing_scopes) + " — run: blumkin auth login"
+        )
     # Non-fatal: config.toml's email is a label written once at onboarding, so a
     # mismatch means the profile was re-authenticated as somebody else. Report it;
     # rewriting the operator's config on their behalf is not doctor's call.

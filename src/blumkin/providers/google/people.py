@@ -17,7 +17,7 @@ from typing import Any
 from googleapiclient.errors import HttpError
 
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.providers.google_auth import get_credentials, persisted_granted_scopes
+from blumkin.providers.google_auth import PEOPLE_SCOPES, get_credentials, persisted_granted_scopes
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.people import _DEFAULT_TOP, _MAX_TOP, _dedupe_matches
 
@@ -170,7 +170,7 @@ def _http_status(exc: HttpError) -> int | None:
 
 
 def _people_service(cfg: BlumkinConfig) -> Any:
-    creds = get_credentials(cfg, allow_interactive=False)
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=PEOPLE_SCOPES)
     return build_api_service("people", "v1", creds=creds, config=cfg)
 
 
