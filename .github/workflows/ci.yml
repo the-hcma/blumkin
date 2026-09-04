@@ -215,6 +215,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Secret Scan
         env:
           GITLEAKS_BASE: ${{ github.event.pull_request.base.sha || '' }}
