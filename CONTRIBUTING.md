@@ -52,7 +52,8 @@ diff before merge, so a real finding is caught there.
 | `pytest -m 'not live'` | Behaviour, offline/mocked | [`.github/ci/pytest-hermetic`](.github/ci/pytest-hermetic) → [`ci.yml` `test`](.github/workflows/ci.yml) | `Pytest (hermetic)` - **yes** |
 | [`test_packaging`](test_packaging) | Broken entry point / missing package data in the built wheel | [`ci.yml` `packaging`](.github/workflows/ci.yml) | `Packaging smoke` - **yes** |
 | `shellcheck -S info` | Shell script defects | [`.github/ci/shellcheck`](.github/ci/shellcheck) → [`ci.yml` `shellcheck`](.github/workflows/ci.yml) | `Shellcheck` - **yes** |
-| `gitleaks` | Committed secrets / tokens | [`.github/ci/secret-scan`](.github/ci/secret-scan) (org-canonical) → [`ci.yml` `secret-scan`](.github/workflows/ci.yml) | no - advisory, runs every PR |
+| GitHub secret scanning + **push protection** | Recognised secrets | GitHub-native, on the repo | **blocks the `git push`** before the secret lands |
+| `gitleaks` | Committed secrets / tokens (broader patterns) | [`.github/ci/secret-scan`](.github/ci/secret-scan) (org-canonical) → [`ci.yml` `secret-scan`](.github/workflows/ci.yml) | no - advisory, runs every PR |
 | `bash -n` | Shell syntax | [`pre-pr-checks`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/dev/pre-pr-checks) | local gate |
 | `actionlint` | GitHub Actions workflow errors | `pre-pr-checks` / `github-repo-lint` | local gate |
 | [`github-repo-lint`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/github-repo-lint) | Org repo-practice compliance (see below) | `pre-pr-checks` (`repo-practices-lint`) | local gate |
@@ -64,6 +65,20 @@ diff before merge, so a real finding is caught there.
 New behaviour needs tests. Do not merge a red suite. Live Graph tests
 (`-m live`) run on an operator machine, never in CI - see
 [`.cursor/rules/local-live-graph-tests.mdc`](.cursor/rules/local-live-graph-tests.mdc).
+
+### Workflows and Actions
+
+- The repo runs `allowed_actions: selected`: only GitHub-owned actions and an
+  explicit allowlist (`astral-sh/setup-uv`, `googleapis/release-please-action`,
+  `nick-fields/retry`, `pypa/gh-action-pypi-publish`). Adding a new third-party
+  action means updating that allowlist (Settings → Actions → General).
+- **Every `uses:` is pinned to a full commit SHA** with a `# vX.Y.Z` comment -
+  first-party and third-party, in every workflow. Dependabot's `github-actions`
+  updater bumps both the SHA and the comment.
+- The default workflow token is read-only and cannot approve PRs; a job that
+  needs more declares `permissions:` locally.
+- The `pypi` environment gates every publish on @thehcma's approval - see
+  [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Governance tooling from repository-helpers
 

@@ -26,11 +26,11 @@ CI, Dependabot, and trusted publishing all apply without private-repo caveats,
 and `pipx install blumkin` works for anyone. The tenant-specific pieces (client
 ids, tenant ids) live only in each operator's `~/.config/blumkin/`.
 
-### D2 - Personal account (`the-hcma`), single code owner
+### D2 - Personal org (`the-hcma`), single code owner
 
-The repo lives under a personal account with @thehcma as the sole code owner.
-This is a personal productivity tool, not a team service, so the review gate is
-tuned for one person rather than a team:
+The repo lives in a personal GitHub org (`the-hcma`, no other members) with
+@thehcma as the sole code owner. This is a personal productivity tool, not a
+team service, so the review gate is tuned for one person rather than a team:
 
 - `main` cannot be pushed to directly; every change is a PR that must be **up to
   date** with `main` before it merges. No force pushes, no branch deletion.
@@ -77,3 +77,27 @@ each layer of a change independently reviewable. See
 
 Agents shell out to `blumkin --json`; there is no MCP server. Reasoning:
 [`PLAN.md`](../PLAN.md) section 6.1.
+
+### D7 - GitHub-native security hardening
+
+Applied on `the-hcma/blumkin` ([#155](https://github.com/the-hcma/blumkin/issues/155)),
+ahead of `github-repo-lint` learning to enforce them
+([repository-helpers#588](https://github.com/the-hcma/repository-helpers/issues/588)):
+
+- **Secret scanning + push protection** on. Push protection blocks a recognised
+  secret at `git push`, before the CI `gitleaks` gate would ever see it.
+- **Dependabot alerts + security updates** and **private vulnerability
+  reporting** on (the latter is what `SECURITY.md`'s advisory link needs).
+- **Actions**: `allowed_actions: selected` with an explicit allowlist; default
+  workflow token read-only and cannot approve PRs; every `uses:` in every
+  workflow SHA-pinned (so `sha_pinning_required` can be turned on next).
+- **`pypi` environment**: @thehcma is a required reviewer and deploys are
+  restricted to `main` / `blumkin-v*`, so every publish pauses for a human and
+  cannot run from an arbitrary ref.
+
+Not done yet: `sha_pinning_required: true` (flip once all workflows are pinned -
+this PR does that). Not done (deliberate): GHAS-only
+`secret_scanning_validity_checks` / `non_provider_patterns` (need the paid
+add-on); consolidating the classic branch-protection + `protect-main` ruleset
+overlap; `required_conversation_resolution` (would force every agent-review
+thread resolved before merge - revisit).

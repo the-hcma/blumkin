@@ -13,14 +13,16 @@ publishing. Do not edit the package version or create release tags by hand.
    `CHANGELOG.md`, `pyproject.toml`, and `uv.lock`.
 3. Review and merge the release PR.
 4. Release Please creates the version tag and GitHub release.
-5. The `Release Please` workflow's `Publish PyPI` job embeds the build metadata,
-   builds the wheel and sdist, publishes them to PyPI over OpenID Connect (no
-   token), then runs `scripts/verify-pypi-release` — which polls PyPI for the
-   new version, installs the real artifact into an isolated venv **and** via a
-   real `pipx install` (its own venv layout and console-script shims), and
-   asserts `blumkin --version` reports the released version and a known
-   commit both ways. No manual `pipx install` check is needed to trust a
-   release (issue #142).
+5. The `Publish PyPI` job runs in the `pypi` environment, which **waits for
+   @thehcma to approve the deployment** (Actions run page → Review deployments).
+   Approve it.
+6. The job then embeds the build metadata, builds the wheel and sdist, publishes
+   them to PyPI over OpenID Connect (no token), then runs
+   `scripts/verify-pypi-release` — which polls PyPI for the new version, installs
+   the real artifact into an isolated venv **and** via a real `pipx install` (its
+   own venv layout and console-script shims), and asserts `blumkin --version`
+   reports the released version and a known commit both ways. No manual
+   `pipx install` check is needed to trust a release (issue #142).
 
 Release Please scans every commit since the previous tag. Keep squash-commit
 subjects conventional, and keep the repo's `squash_merge_commit_message` setting
@@ -34,10 +36,10 @@ token or repository secret is involved — the workflow's `id-token: write`
 permission plus the protected `pypi` environment mint the short-lived
 credential.
 
-1. **GitHub** — repository Settings → Environments → create an environment named
-   `pypi` (equivalently
-   `gh api -X PUT repos/the-hcma/blumkin/environments/pypi`). Required
-   reviewers and branch restrictions are optional.
+1. **GitHub** — repository Settings → Environments → environment `pypi`, with
+   **@thehcma as a required reviewer** and deployments restricted to the `main`
+   branch and `blumkin-v*` tags. So every publish pauses for a human, and a
+   publish cannot be triggered from an arbitrary ref.
 2. **PyPI** — the `blumkin` project does not exist yet, so add a *pending*
    trusted publisher: PyPI account → Publishing → "Add a pending publisher":
    - PyPI Project Name: `blumkin`
