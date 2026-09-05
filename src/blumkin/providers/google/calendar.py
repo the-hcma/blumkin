@@ -31,6 +31,7 @@ from blumkin.skills.calendar_writes import (
     parse_duration,
     recurrence_payload,
     recurrence_rrule,
+    reject_date_only_start,
     reminder_minutes_before_start,
     resolve_event_body,
 )
@@ -150,6 +151,7 @@ async def calendar_create(
         payload_start: dict[str, Any] = {"date": first_day.isoformat()}
         payload_end: dict[str, Any] = {"date": end_day.isoformat()}
     else:
+        reject_date_only_start(start_raw)
         start = parse_local_datetime(start_raw, tz)
         # Absolute-time arithmetic so an event spanning a DST transition keeps its
         # real length.
@@ -168,7 +170,7 @@ async def calendar_create(
     if location:
         event_body["location"] = location
     if recurrence is not None:
-        event_body["recurrence"] = recurrence_rrule(recurrence, start)
+        event_body["recurrence"] = recurrence_rrule(recurrence, start, all_day=all_day)
     attendees = [{"email": email} for email in with_emails] + [
         {"email": email, "optional": True} for email in optional_emails or []
     ]

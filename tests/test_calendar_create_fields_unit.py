@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from click.testing import CliRunner
@@ -19,7 +20,12 @@ from blumkin.config import BlumkinConfig, MailSignatureConfig
 from blumkin.exit_codes import EXIT_USAGE
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
-from blumkin.skills.calendar_writes import calendar_create, resolve_event_body
+from blumkin.skills.calendar_writes import (
+    Recurrence,
+    calendar_create,
+    recurrence_rrule,
+    resolve_event_body,
+)
 
 _GOOGLE_CAL = "blumkin.providers.google.calendar"
 _NY = "America/New_York"
@@ -135,6 +141,55 @@ def test_graph_create_all_day_rejects(monkeypatch, kwargs: dict, match: str) -> 
         )
 
 
+def test_graph_create_rejects_date_only_start_without_all_day(monkeypatch) -> None:
+    _graph_client(monkeypatch)
+    with pytest.raises(ValueError, match="needs --all-day"):
+        asyncio.run(
+            calendar_create(
+                subject="OOO",
+                with_emails=[],
+                start_raw="2026-12-24",
+                teams=False,
+                tz_name=_NY,
+            )
+        )
+
+
+def test_graph_create_all_day_never_attaches_teams(monkeypatch) -> None:
+    # Default teams=True must be forced off for all-day events - Graph rejects an
+    # all-day online meeting and would leave a half-created event behind.
+    client = _graph_client(monkeypatch)
+    asyncio.run(
+        calendar_create(
+            subject="OOO",
+            with_emails=[],
+            start_raw="2026-12-24",
+            all_day=True,
+            tz_name=_NY,
+        )
+    )
+    posted = client.me.events.post.await_args.args[0]
+    assert posted.is_online_meeting is None
+    assert posted.online_meeting_provider is None
+
+
+# ------------------------------------------------------------------------- recurrence
+
+
+def test_recurrence_rrule_all_day_until_is_a_bare_date() -> None:
+    rec = Recurrence(freq="weekly", days=("MO",), until=date(2026, 12, 31))
+    start = datetime(2026, 1, 5, tzinfo=ZoneInfo(_NY))
+    assert recurrence_rrule(rec, start, all_day=True) == [
+        "RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=MO;UNTIL=20261231"
+    ]
+
+
+def test_recurrence_rrule_timed_until_stays_a_utc_timestamp() -> None:
+    rec = Recurrence(freq="daily", until=date(2026, 12, 31))
+    start = datetime(2026, 1, 5, 9, 0, tzinfo=ZoneInfo(_NY))
+    assert recurrence_rrule(rec, start) == ["RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20270101T045959Z"]
+
+
 # --------------------------------------------------------------------------- Google
 
 
@@ -220,6 +275,72 @@ def test_google_create_all_day(tmp_path: Path) -> None:
     assert date.fromisoformat(body["end"]["date"]) - date.fromisoformat(body["start"]["date"]) == (
         date(2026, 12, 27) - date(2026, 12, 24)
     )
+
+
+def test_google_create_optional_only_still_notifies(tmp_path: Path) -> None:
+    service = MagicMock()
+    service.events.return_value.insert.return_value.execute.return_value = {
+        "id": "g",
+        "summary": "x",
+        "start": {"dateTime": "2026-09-22T09:00:00-04:00"},
+        "end": {"dateTime": "2026-09-22T10:00:00-04:00"},
+    }
+    with patch.multiple(
+        _GOOGLE_CAL,
+        get_credentials=MagicMock(return_value=MagicMock()),
+        build_api_service=MagicMock(return_value=service),
+    ):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_create(
+                subject="x",
+                with_emails=[],
+                optional_emails=["dana@example.com"],
+                start_raw="2026-09-22T09:00",
+            )
+        )
+    assert service.events.return_value.insert.call_args.kwargs["sendUpdates"] == "all"
+
+
+def test_google_create_all_day_recurrence_until_is_a_bare_date(tmp_path: Path) -> None:
+    service = MagicMock()
+    service.events.return_value.insert.return_value.execute.return_value = {
+        "id": "g",
+        "summary": "OOO",
+        "start": {"date": "2026-12-24"},
+        "end": {"date": "2026-12-25"},
+    }
+    with patch.multiple(
+        _GOOGLE_CAL,
+        get_credentials=MagicMock(return_value=MagicMock()),
+        build_api_service=MagicMock(return_value=service),
+    ):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_create(
+                subject="OOO",
+                with_emails=[],
+                start_raw="2026-12-24",
+                all_day=True,
+                recurrence=Recurrence(freq="daily", until=date(2027, 1, 2)),
+            )
+        )
+    body = service.events.return_value.insert.call_args.kwargs["body"]
+    assert body["recurrence"] == ["RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20270102"]
+
+
+def test_google_create_rejects_date_only_start_without_all_day(tmp_path: Path) -> None:
+    with patch.multiple(
+        _GOOGLE_CAL,
+        get_credentials=MagicMock(return_value=MagicMock()),
+        build_api_service=MagicMock(return_value=MagicMock()),
+    ):
+        with pytest.raises(ValueError, match="needs --all-day"):
+            asyncio.run(
+                GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_create(
+                    subject="OOO",
+                    with_emails=[],
+                    start_raw="2026-12-24",
+                )
+            )
 
 
 # --------------------------------------------------------------------------- CLI

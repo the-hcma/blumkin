@@ -149,7 +149,9 @@ Invites every `--with` address, so `--yes` is required (still required with no
 attendees). `--optional` attendees are invited too but marked optional.
 `--body` / `--body-file` set the agenda (`--body-type` html/text is Microsoft
 only). `--location` is free text. `--all-day` makes `--start` a date and
-`--duration` whole days. `--remind-email` adds an email reminder on Google and
+`--duration` whole days, and never attaches a Teams link (an all-day online
+meeting is rejected); a date-only `--start` without `--all-day` is an error.
+`--remind-email` adds an email reminder on Google and
 an Outlook popup reminder on Microsoft. For a cross-timezone or external
 attendee, run `calendar freebusy` or `calendar suggest` first and pick a slot
 inside their working hours. `--start` stays in the organizer timezone.

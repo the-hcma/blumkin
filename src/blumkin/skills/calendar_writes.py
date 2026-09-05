@@ -158,11 +158,15 @@ async def calendar_create(
     cfg = config or load_config()
     tz = ZoneInfo(tz_name or cfg.default_tz)
     body_content, graph_body_type = resolve_event_body(body, body_file, body_type)
+    # An all-day event cannot host a Teams online meeting; never try to attach one
+    # (Graph would fail the create and leave a half-built event behind).
+    teams = teams and not all_day
     if all_day:
         first_day, last_day = _all_day_bounds(start_raw, duration)
         start = datetime.combine(first_day, datetime.min.time(), tzinfo=tz)
         end = datetime.combine(last_day, datetime.min.time(), tzinfo=tz)
     else:
+        reject_date_only_start(start_raw)
         start = parse_local_datetime(start_raw, tz)
         # Add the duration in absolute time so an event crossing a DST transition
         # keeps its real length (matches the Google provider path).
@@ -414,7 +418,9 @@ def recurrence_payload(recurrence: Recurrence, start: datetime) -> dict[str, Any
     return payload
 
 
-def recurrence_rrule(recurrence: Recurrence, start: datetime) -> list[str]:
+def recurrence_rrule(
+    recurrence: Recurrence, start: datetime, *, all_day: bool = False
+) -> list[str]:
     """Build the RFC 5545 ``RRULE`` line list for the Google Calendar event body."""
     parts = [f"FREQ={recurrence.freq.upper()}", f"INTERVAL={recurrence.interval}"]
     if recurrence.freq == "weekly" and recurrence.days:
@@ -422,14 +428,33 @@ def recurrence_rrule(recurrence: Recurrence, start: datetime) -> list[str]:
     if recurrence.count is not None:
         parts.append(f"COUNT={recurrence.count}")
     elif recurrence.until is not None:
-        # RFC 5545: with a timezone-aware DTSTART, UNTIL must be a UTC timestamp.
-        # Take the end of the until day in the event's zone so that day's
-        # occurrence is still included.
-        until_utc = datetime.combine(
-            recurrence.until, datetime.max.time(), tzinfo=start.tzinfo
-        ).astimezone(UTC)
-        parts.append("UNTIL=" + until_utc.strftime("%Y%m%dT%H%M%SZ"))
+        if all_day:
+            # RFC 5545: an all-day event has a DATE-valued DTSTART, so UNTIL must
+            # also be a date (a DATE-TIME here is a type mismatch Google rejects).
+            parts.append("UNTIL=" + recurrence.until.strftime("%Y%m%d"))
+        else:
+            # With a timezone-aware DATE-TIME DTSTART, UNTIL must be a UTC
+            # timestamp. Take the end of the until day in the event's zone so
+            # that day's occurrence is still included.
+            until_utc = datetime.combine(
+                recurrence.until, datetime.max.time(), tzinfo=start.tzinfo
+            ).astimezone(UTC)
+            parts.append("UNTIL=" + until_utc.strftime("%Y%m%dT%H%M%SZ"))
     return ["RRULE:" + ";".join(parts)]
+
+
+def reject_date_only_start(start_raw: str) -> None:
+    """Reject a bare ``YYYY-MM-DD`` ``--start`` unless ``--all-day`` was passed.
+
+    Without this a forgotten ``--all-day`` silently books a zero-dark timed
+    meeting at 00:00 instead of the all-day hold the date implies.
+    """
+    text = start_raw.strip()
+    if "T" not in text and not text.casefold().endswith("z"):
+        raise ValueError(
+            "a date-only --start needs --all-day; "
+            "pass a time (e.g. 2026-12-24T09:00) for a timed event"
+        )
 
 
 def reminder_minutes_before_start(raw: str) -> int:

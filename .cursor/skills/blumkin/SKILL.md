@@ -134,7 +134,8 @@ original's attachments.
      pattern (must include the `--start` weekday).
      `--body`/`--body-file` set an agenda, `--location` is free text,
      `--optional email` adds an optional attendee, and `--all-day` makes
-     `--start` a date with `--duration` in whole days.)
+     `--start` a date with `--duration` in whole days (no Teams link; a
+     date-only `--start` without `--all-day` is rejected).)
    - `blumkin calendar update --event-id '<id>' --yes` (attach Teams to an
      existing event; uses Calendars.ReadWrite, not OnlineMeetings.ReadWrite)
    - `blumkin calendar cancel --event-id '<id>' --yes`
