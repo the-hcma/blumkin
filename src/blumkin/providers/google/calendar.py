@@ -173,11 +173,14 @@ async def calendar_create(
 async def calendar_get(
     *,
     event_id: str,
-    body_type: str = "text",
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    """Read one event in full - description, per-attendee responses, recurrence."""
+    """Read one event in full - description, per-attendee responses, recurrence.
+
+    ``--body-type`` is a Microsoft-only knob: Google stores a single description
+    (which may contain HTML) and does not convert it server-side.
+    """
     eid = event_id.strip()
     if not eid:
         raise ValueError("--event-id is required")
@@ -190,7 +193,7 @@ async def calendar_get(
         if getattr(getattr(exc, "resp", None), "status", None) in {404, 410}:
             raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
         raise
-    return {"event": _event_detail_to_dict(event, tz, body_type)}
+    return {"event": _event_detail_to_dict(event, tz)}
 
 
 async def calendar_freebusy(
@@ -445,15 +448,15 @@ def _attendee_to_dict(attendee: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _event_detail_to_dict(
-    ev: dict[str, Any], display_tz: ZoneInfo, body_type: str
-) -> dict[str, Any]:
+def _event_detail_to_dict(ev: dict[str, Any], display_tz: ZoneInfo) -> dict[str, Any]:
     detail = _event_to_dict(ev, display_tz)
     detail["attendees"] = [
         _attendee_to_dict(a) for a in (ev.get("attendees") or []) if isinstance(a, dict)
     ]
     detail["body"] = ev.get("description")
-    detail["body_type"] = body_type
+    # Google stores a single representation that may contain HTML; --body-type is
+    # a Microsoft-only knob (Graph converts the body server-side).
+    detail["body_type"] = "html"
     detail["is_cancelled"] = ev.get("status") == "cancelled"
     detail["recurrence"] = _rrule_to_payload(ev.get("recurrence"), display_tz)
     detail["series_master_id"] = ev.get("recurringEventId")
@@ -589,9 +592,15 @@ def _rrule_to_payload(recurrence: list[str] | None, display_tz: ZoneInfo) -> dic
         freq = _RRULE_FREQ.get(parts.get("FREQ", "").upper())
         if freq is None:
             return {"freq": "other", "raw": str(line)}
+        # The normalized schema has no ordinal-weekday / set-position selector, so
+        # anything it cannot represent (2nd-Wednesday, last-Friday, …) is "other".
+        if freq == "monthly" and (parts.get("BYDAY") or parts.get("BYSETPOS")):
+            return {"freq": "other", "raw": str(line)}
         payload: dict[str, Any] = {"freq": freq, "interval": int(parts.get("INTERVAL") or 1)}
         if freq == "weekly" and parts.get("BYDAY"):
             payload["days"] = [d.strip().lower() for d in parts["BYDAY"].split(",") if d.strip()]
+        if freq == "monthly" and parts.get("BYMONTHDAY", "").lstrip("+-").isdigit():
+            payload["day_of_month"] = int(parts["BYMONTHDAY"])
         if "COUNT" in parts:
             payload["count"] = int(parts["COUNT"])
         elif "UNTIL" in parts:

@@ -241,6 +241,58 @@ def test_google_calendar_get_full_shape(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "rrule",
+    [
+        "RRULE:FREQ=MONTHLY;BYDAY=2WE",  # second Wednesday
+        "RRULE:FREQ=MONTHLY;BYSETPOS=-1;BYDAY=FR",  # last Friday
+        "RRULE:FREQ=YEARLY",
+    ],
+)
+def test_google_calendar_get_unsupported_recurrence_is_other(tmp_path: Path, rrule: str) -> None:
+    event = {**_GOOGLE_EVENT, "recurrence": [rrule]}
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = event
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_get(event_id="g-evt")
+        )
+    rec = payload["event"]["recurrence"]
+    assert rec["freq"] == "other"
+    assert rec["raw"] == rrule
+
+
+def test_google_calendar_get_monthly_bymonthday(tmp_path: Path) -> None:
+    event = {**_GOOGLE_EVENT, "recurrence": ["RRULE:FREQ=MONTHLY;BYMONTHDAY=15;COUNT=6"]}
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = event
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_get(event_id="g-evt")
+        )
+    assert payload["event"]["recurrence"] == {
+        "freq": "monthly",
+        "interval": 1,
+        "day_of_month": 15,
+        "count": 6,
+    }
+
+
+def test_graph_calendar_get_relative_monthly_is_other(monkeypatch) -> None:
+    event = _graph_event()
+    event.recurrence = PatternedRecurrence(
+        pattern=RecurrencePattern(
+            type=RecurrencePatternType.RelativeMonthly,
+            interval=1,
+            days_of_week=[DayOfWeek.Wednesday],
+        ),
+        range=RecurrenceRange(type=RecurrenceRangeType.NoEnd),
+    )
+    _graph_client(monkeypatch, event)
+    payload = asyncio.run(calendar_get(event_id="evt-1"))
+    assert payload["event"]["recurrence"]["freq"] == "other"
+
+
 def test_google_calendar_get_until_readback_uses_local_date(tmp_path: Path) -> None:
     # recurrence_rrule stores --until 2026-12-31 (America/New_York) as the UTC
     # end-of-day: 2027-01-01T04:59:59Z. The readback must report 2026-12-31.

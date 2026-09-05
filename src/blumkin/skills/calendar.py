@@ -572,10 +572,12 @@ _DOW_TO_CODE = {
     "tuesday": "tu",
     "wednesday": "we",
 }
+# Only the patterns the normalized recurrence schema can express. RelativeMonthly
+# ("2nd Wednesday"), AbsoluteYearly, etc. fall through to freq="other" + raw so
+# the selector is not silently dropped.
 _GRAPH_PATTERN_TO_FREQ = {
     RecurrencePatternType.AbsoluteMonthly: "monthly",
     RecurrencePatternType.Daily: "daily",
-    RecurrencePatternType.RelativeMonthly: "monthly",
     RecurrencePatternType.Weekly: "weekly",
 }
 
