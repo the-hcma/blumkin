@@ -8,6 +8,8 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from googleapiclient.errors import HttpError
+
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google_auth import (
     CALENDAR_FREEBUSY_SCOPES,
@@ -16,7 +18,11 @@ from blumkin.providers.google_auth import (
     get_credentials,
 )
 from blumkin.providers.google_http import build_api_service, execute
-from blumkin.skills.calendar import find_mutual_free_slots, parse_local_datetime
+from blumkin.skills.calendar import (
+    CalendarEventNotFoundError,
+    find_mutual_free_slots,
+    parse_local_datetime,
+)
 from blumkin.skills.calendar_writes import (
     _DEFAULT_DURATION,
     Recurrence,
@@ -27,6 +33,8 @@ from blumkin.skills.calendar_writes import (
     reminder_minutes_before_start,
 )
 from blumkin.skills.freebusy_suggest import collect_busy_intervals, raise_if_schedule_errors
+
+_RRULE_FREQ = {"DAILY": "daily", "MONTHLY": "monthly", "WEEKLY": "weekly"}
 
 # Google responseStatus -> the Graph vocabulary _needs_accept and the --json
 # contract already speak, so both providers answer `response` the same way.
@@ -160,6 +168,29 @@ async def calendar_create(
     if recurrence_echo is not None:
         result["recurrence"] = recurrence_echo
     return result
+
+
+async def calendar_get(
+    *,
+    event_id: str,
+    body_type: str = "text",
+    tz_name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Read one event in full - description, per-attendee responses, recurrence."""
+    eid = event_id.strip()
+    if not eid:
+        raise ValueError("--event-id is required")
+    cfg = config or load_config()
+    tz = ZoneInfo(tz_name or cfg.default_tz)
+    service = _calendar_service(cfg, required_scopes=CALENDAR_READ_SCOPES)
+    try:
+        event = execute(service.events().get(calendarId="primary", eventId=eid))
+    except HttpError as exc:
+        if getattr(getattr(exc, "resp", None), "status", None) in {404, 410}:
+            raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
+        raise
+    return {"event": _event_detail_to_dict(event, tz, body_type)}
 
 
 async def calendar_freebusy(
@@ -405,6 +436,31 @@ def _calendar_service(
     return build_api_service("calendar", "v3", creds=creds, config=cfg)
 
 
+def _attendee_to_dict(attendee: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "email": attendee.get("email"),
+        "name": attendee.get("displayName"),
+        "response": _RESPONSE_BY_GOOGLE_STATUS.get(str(attendee.get("responseStatus") or "")),
+        "type": "optional" if attendee.get("optional") else "required",
+    }
+
+
+def _event_detail_to_dict(
+    ev: dict[str, Any], display_tz: ZoneInfo, body_type: str
+) -> dict[str, Any]:
+    detail = _event_to_dict(ev, display_tz)
+    detail["attendees"] = [
+        _attendee_to_dict(a) for a in (ev.get("attendees") or []) if isinstance(a, dict)
+    ]
+    detail["body"] = ev.get("description")
+    detail["body_type"] = body_type
+    detail["is_cancelled"] = ev.get("status") == "cancelled"
+    detail["recurrence"] = _rrule_to_payload(ev.get("recurrence"))
+    detail["series_master_id"] = ev.get("recurringEventId")
+    detail["web_link"] = ev.get("htmlLink")
+    return detail
+
+
 def _event_to_dict(ev: dict[str, Any], display_tz: ZoneInfo) -> dict[str, Any]:
     start_raw = ev.get("start") or {}
     end_raw = ev.get("end") or {}
@@ -521,6 +577,31 @@ def _rfc3339(value: datetime) -> str:
     if value.tzinfo is None:
         raise ValueError("datetime must be timezone-aware")
     return value.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00", "Z")
+
+
+def _rrule_to_payload(recurrence: list[str] | None) -> dict[str, Any] | None:
+    """First ``RRULE:`` line of a Google ``recurrence`` -> the ``calendar create`` shape."""
+    for line in recurrence or []:
+        if not str(line).upper().startswith("RRULE:"):
+            continue
+        parts = dict(token.split("=", 1) for token in str(line)[6:].split(";") if "=" in token)
+        parts = {key.upper(): value for key, value in parts.items()}
+        freq = _RRULE_FREQ.get(parts.get("FREQ", "").upper())
+        if freq is None:
+            return {"freq": "other", "raw": str(line)}
+        payload: dict[str, Any] = {"freq": freq, "interval": int(parts.get("INTERVAL") or 1)}
+        if freq == "weekly" and parts.get("BYDAY"):
+            payload["days"] = [d.strip().lower() for d in parts["BYDAY"].split(",") if d.strip()]
+        if "COUNT" in parts:
+            payload["count"] = int(parts["COUNT"])
+        elif "UNTIL" in parts:
+            payload["until"] = date.fromisoformat(
+                f"{parts['UNTIL'][:4]}-{parts['UNTIL'][4:6]}-{parts['UNTIL'][6:8]}"
+            ).isoformat()
+        else:
+            payload["ends"] = "never"
+        return payload
+    return None
 
 
 def _schedule_error_message(entry: dict[str, Any]) -> str | None:

@@ -109,6 +109,20 @@ class GoogleWorkspaceProvider:
             config=self._config,
         )
 
+    async def calendar_get(
+        self,
+        *,
+        event_id: str,
+        body_type: str = "text",
+        tz_name: str | None = None,
+    ) -> dict[str, Any]:
+        return await google_calendar.calendar_get(
+            event_id=event_id,
+            body_type=body_type,
+            tz_name=tz_name,
+            config=self._config,
+        )
+
     async def calendar_suggest(
         self,
         *,

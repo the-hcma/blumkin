@@ -300,6 +300,7 @@ _ARG_TYPES = {
 
 _ENUM_VALUES = {
     ("calendar.create", "--repeat"): ["daily", "weekly", "monthly"],
+    ("calendar.get", "--body-type"): ["html", "text"],
     ("calendar.suggest", "--treat-tentative"): ["busy", "free"],
     ("mail.draft", "--body-type"): ["text", "html"],
     ("mail.forward", "--body-type"): ["html", "text"],
@@ -349,6 +350,7 @@ _CONSENT = {
     "calendar.cancel": (True, True),
     "calendar.create": (True, True),
     "calendar.freebusy": (False, False),
+    "calendar.get": (False, False),
     "calendar.suggest": (False, False),
     "calendar.today": (False, False),
     "calendar.update": (True, True),

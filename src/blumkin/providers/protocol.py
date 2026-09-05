@@ -61,6 +61,14 @@ class WorkspaceProvider(Protocol):
         end: datetime,
     ) -> dict[str, Any]: ...
 
+    async def calendar_get(
+        self,
+        *,
+        event_id: str,
+        body_type: str = "text",
+        tz_name: str | None = None,
+    ) -> dict[str, Any]: ...
+
     async def calendar_suggest(
         self,
         *,

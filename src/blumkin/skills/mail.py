@@ -55,7 +55,7 @@ from blumkin.attachments import (
     unique_filename,
 )
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
-from blumkin.graph import create_graph_client, request_config
+from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.output import sanitize_terminal
 
 MailBodyType = Literal["html", "text"]
@@ -589,7 +589,7 @@ async def mail_get(
             request_config(query, headers=headers)
         )
     except ODataError as exc:
-        if not _is_id_lookup_failure(exc):
+        if not is_id_lookup_failure(exc):
             raise
         raise MailMessageNotFoundError(f"message not found: {mid}") from exc
     if msg is None or not msg.id:
@@ -712,7 +712,7 @@ async def mail_list(
     except ODataError as exc:
         # An exact well-known name cannot be a stale id, so only fall back for
         # free-form labels: a real folder of that display name wins over the alias.
-        if label is None or well_known is not None or not _is_id_lookup_failure(exc):
+        if label is None or well_known is not None or not is_id_lookup_failure(exc):
             raise
         target, well_known, truncated = await _resolve_folder_fallback(client, label)
         if target is None:
@@ -1010,16 +1010,6 @@ def resolve_mail_body(
 
 
 _FOLDER_PAGE_SIZE = 100
-# Graph's id-shaped complaints, shared by the folder and message lookups: both mean
-# "that id does not name anything" rather than "your query was wrong".
-_ID_LOOKUP_ERROR_CODES = frozenset(
-    {
-        "errorfoldernotfound",
-        "errorinvalididmalformed",
-        "erroritemnotfound",
-        "resourcenotfound",
-    }
-)
 # Graph accepts an attachment inline on the attachments collection only up to 3 MB of
 # request body; past that it wants an upload session, which this CLI does not implement.
 # Base64 inflates by 4/3, and the JSON wrapper around contentBytes eats more, so keep
@@ -1204,7 +1194,7 @@ async def _create_draft_from(builder: Any, request: Any, *, message_id: str) -> 
     try:
         created = await builder.post(request)
     except ODataError as exc:
-        if not _is_id_lookup_failure(exc):
+        if not is_id_lookup_failure(exc):
             raise
         raise MailMessageNotFoundError(f"message not found: {message_id}") from exc
     if created is None or not getattr(created, "id", None):
@@ -1389,20 +1379,6 @@ async def _get_messages(
         else client.me.mail_folders.by_mail_folder_id(folder).messages
     )
     return await builder.get(request_config(query))
-
-
-def _is_id_lookup_failure(exc: ODataError) -> bool:
-    """True when Graph rejected an id in the path rather than the query itself.
-
-    A bare 400 is not enough: Graph also returns it for query-level problems such as
-    a --top above its cap, and reporting those as a missing folder or message sends
-    the operator after the wrong thing. Only id-shaped complaints count.
-    """
-    status = getattr(exc, "response_status_code", None)
-    code = str(getattr(getattr(exc, "error", None), "code", "") or "").casefold()
-    if code in _ID_LOOKUP_ERROR_CODES:
-        return True
-    return status == 404
 
 
 def _matches_text(msg: Any, *, sender: str | None, subject: str | None) -> bool:

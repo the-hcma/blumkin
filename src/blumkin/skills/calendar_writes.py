@@ -33,6 +33,7 @@ from blumkin.skills.calendar import (
     _event_to_dict,
     _to_graph_dtz,
     calendar_today,
+    format_recurrence,
     parse_local_datetime,
 )
 
@@ -252,7 +253,7 @@ def format_create_human(payload: dict[str, Any]) -> list[str]:
     lines = [f"Created: {subject!r} ({when})"]
     recurrence = payload.get("recurrence")
     if recurrence:
-        lines.append(f"  repeats: {_format_recurrence(recurrence)}")
+        lines.append(f"  repeats: {format_recurrence(recurrence)}")
     if event.get("online_join_url"):
         lines.append(f"  join: {sanitize_terminal(str(event['online_join_url']))}")
     lines.append(f"  id={event.get('id')}")
@@ -407,24 +408,6 @@ def _event_join_url(event: Any) -> str | None:
     if isinstance(url, str) and url.strip():
         return url.strip()
     return None
-
-
-def _format_recurrence(recurrence: dict[str, Any]) -> str:
-    """One-line human summary of a :func:`recurrence_payload` dict."""
-    freq = str(recurrence.get("freq") or "?")
-    interval = int(recurrence.get("interval") or 1)
-    unit = {"daily": "day", "monthly": "month", "weekly": "week"}.get(freq, freq)
-    text = freq if interval == 1 else f"every {interval} {unit}s"
-    days = recurrence.get("days")
-    if days:
-        text += " on " + ", ".join(days)
-    if recurrence.get("count") is not None:
-        text += f", {recurrence['count']} times"
-    elif recurrence.get("until"):
-        text += f" until {recurrence['until']}"
-    else:
-        text += ", no end"
-    return text
 
 
 def _graph_recurrence(recurrence: Recurrence, start: datetime) -> PatternedRecurrence:

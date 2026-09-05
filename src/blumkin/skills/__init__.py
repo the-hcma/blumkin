@@ -162,6 +162,19 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="calendar.get",
+        cli=["blumkin", "calendar", "get"],
+        summary="Read one calendar event in full (body, attendees + responses, recurrence)",
+        mutates=False,
+        notifies_others=False,
+        scopes=["Calendars.ReadWrite"],
+        args=[
+            {"name": "--event-id", "required": True, "type": "string"},
+            {"name": "--body-type", "required": False, "type": "enum", "values": ["html", "text"]},
+            {"name": "--tz", "required": False, "type": "iana_tz"},
+        ],
+    ),
+    SkillSpec(
         id="calendar.suggest",
         cli=["blumkin", "calendar", "suggest"],
         summary=(

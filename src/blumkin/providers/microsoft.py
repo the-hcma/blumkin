@@ -12,6 +12,7 @@ from blumkin.config import BlumkinConfig
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.calendar import (
     calendar_freebusy,
+    calendar_get,
     calendar_suggest,
     calendar_today,
     calendar_view,
@@ -137,6 +138,20 @@ class MicrosoftWorkspaceProvider:
             with_emails=with_emails,
             start=start,
             end=end,
+            config=self._config,
+        )
+
+    async def calendar_get(
+        self,
+        *,
+        event_id: str,
+        body_type: str = "text",
+        tz_name: str | None = None,
+    ) -> dict[str, Any]:
+        return await calendar_get(
+            event_id=event_id,
+            body_type=body_type,
+            tz_name=tz_name,
             config=self._config,
         )
 

@@ -33,6 +33,8 @@ from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
+    CalendarEventNotFoundError,
+    format_calendar_get_human,
     format_freebusy_human,
     format_suggest_human,
     format_today_human,
@@ -1281,6 +1283,58 @@ def calendar_view_cmd(
         emit_json(payload)
     else:
         emit_lines(format_view_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@calendar.command("get", epilog=help_text.CALENDAR_GET_EPILOG)
+@click.option("--event-id", required=True, help="Event id (from a listing).")
+@click.option(
+    "--body-type",
+    default="text",
+    show_default=True,
+    type=click.Choice(["html", "text"]),
+    help="Body format to request; html keeps the markup.",
+)
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def calendar_get_cmd(
+    ctx: click.Context,
+    event_id: str,
+    body_type: str,
+    tz_flag: str | None,
+    as_json_flag: bool,
+) -> None:
+    """Read one event in full: body, per-attendee responses, recurrence, join URL.
+
+    Prefer this over scraping a `calendar view` listing once you have the id.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            _workspace().calendar_get(
+                event_id=event_id, body_type=body_type, tz_name=_tz_name(ctx, tz_flag)
+            )
+        )
+    except CalendarEventNotFoundError as exc:
+        _emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        _raise_auth_value_error(exc, as_json=as_json)
+    except ZoneInfoNotFoundError as exc:
+        _emit_error(
+            error="usage_error",
+            message=f"invalid timezone: {exc}",
+            as_json=as_json,
+            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
+        )
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_calendar_get_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 

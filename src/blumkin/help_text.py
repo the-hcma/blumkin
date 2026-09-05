@@ -171,6 +171,19 @@ Times are local to the organizer (config `default_tz`, or `--tz AREA`). Ranges
 are half-open: `view --from D1 --to D2` excludes D2.
 """
 
+CALENDAR_GET_EPILOG = """
+Example:
+
+\b
+  blumkin calendar get --event-id AAMk... --json
+  blumkin calendar get --event-id AAMk... --body-type html
+
+Returns the full event: body/agenda, every attendee with their response, the
+recurrence (same shape `calendar create --json` emits), the online-meeting join
+URL, and `series_master_id` when it is one instance of a recurring series.
+Read-only.
+"""
+
 CALENDAR_FREEBUSY_EPILOG = """
 Example:
 
