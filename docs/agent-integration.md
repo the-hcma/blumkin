@@ -264,7 +264,7 @@ failure path.
 | Code | `error` value | Meaning |
 |------|---------------|---------|
 | 0 | — | Success |
-| 1 | `graph_error`, `secret_write_failed`, `timeout`, `transient_error`, `upgrade_failed` | Unexpected Graph failure; local secret cache/auth-record write failed (e.g. symlink at the path); Graph/token HTTP timed out; a transient network/server error talking to the auth provider (safe to retry, not a bad grant); or `blumkin upgrade` could not run or `pipx upgrade` exited non-zero |
+| 1 | `graph_error`, `install_failed`, `secret_write_failed`, `timeout`, `transient_error`, `upgrade_failed` | Unexpected Graph failure; `completion --install` could not write the script (directory at the path, unwritable dir); local secret cache/auth-record write failed (e.g. symlink at the path); Graph/token HTTP timed out; a transient network/server error talking to the auth provider (safe to retry, not a bad grant); or `blumkin upgrade` could not run or `pipx upgrade` exited non-zero |
 | 2 | `usage_error`, or none | Bad arguments; **`wo1162425_scopes` switched off**; or **`people resolve` ambiguous** (`ok: false` + `ambiguous: true` + candidates on **stdout**, no stderr envelope) |
 | 3 | `auth_required` | Run `blumkin auth login` on this machine |
 | 4 | `missing_scope` | A scope is unavailable — the tenant has not granted it, or `files_scopes` is off |

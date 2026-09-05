@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from blumkin.cli import main
-from blumkin.exit_codes import EXIT_SUCCESS, EXIT_USAGE
+from blumkin.exit_codes import EXIT_OTHER, EXIT_SUCCESS, EXIT_USAGE
 
 
 @pytest.mark.parametrize(
@@ -106,3 +106,41 @@ def test_completion_json_without_install_returns_the_script() -> None:
     payload = json.loads(result.stdout)
     assert payload["shell"] == "fish"
     assert "_BLUMKIN_COMPLETE=fish_complete" in payload["script"]
+
+
+def test_completion_install_human_output_zsh_names_fpath(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    target = tmp_path / "zsh" / "site-functions" / "_blumkin"
+    first = CliRunner().invoke(main, ["completion", "zsh", "--install"])
+    assert first.exit_code == EXIT_SUCCESS
+    assert first.stderr == ""
+    assert first.stdout.splitlines()[0] == f"written: {target}"
+    assert "fpath" in first.stdout and "compinit" in first.stdout
+    again = CliRunner().invoke(main, ["completion", "zsh", "--install"])
+    assert again.stdout.splitlines()[0] == f"unchanged: {target}"
+
+
+def test_completion_install_human_output_bash_says_open_a_new_shell(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    result = CliRunner().invoke(main, ["completion", "bash", "--install"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.stdout.splitlines()[0].startswith("written: ")
+    assert "open a new shell" in result.stdout
+    assert "fpath" not in result.stdout
+
+
+def test_completion_install_reports_a_clean_error_when_target_is_a_directory(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    (tmp_path / "bash-completion" / "completions" / "blumkin.bash").mkdir(parents=True)
+    result = CliRunner().invoke(main, ["completion", "bash", "--install", "--json"])
+    assert result.exit_code == EXIT_OTHER
+    assert result.stdout == ""
+    payload = json.loads(result.stderr)
+    assert payload["ok"] is False
+    assert payload["error"] == "install_failed"
+    assert str(tmp_path) in payload["message"]
+    assert "Traceback" not in result.stderr

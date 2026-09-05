@@ -113,6 +113,10 @@ _DEFAULT_HINTS: dict[str, str] = {
         "Retry once. If it persists, check `blumkin auth status` and Microsoft 365 "
         "service health, and re-run with --json for the raw Graph error."
     ),
+    "install_failed": (
+        "Completion `--install` could not write the script. Ensure the target path is "
+        "a writable file you own (not a directory), then retry with --force."
+    ),
     "missing_scope": (
         "The signed-in account is missing a Graph scope for this command. Run "
         "`blumkin doctor`; if the flow needs an add-on scope, set wo1162425_scopes "
@@ -928,21 +932,33 @@ def completion(
         raise SystemExit(EXIT_SUCCESS)
 
     path = _completion_install_path(shell)
-    existing = path.read_text() if path.is_file() else None
-    if existing == script:
-        action = "unchanged"
-    elif existing is not None and not force:
+    try:
+        existing = path.read_text() if path.is_file() else None
+        if existing == script:
+            action = "unchanged"
+        elif existing is not None and not force:
+            _emit_error(
+                error="usage_error",
+                message=f"{path} already exists with different contents",
+                as_json=as_json,
+                hint="Re-run with --force to overwrite it.",
+            )
+            raise SystemExit(EXIT_USAGE)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(script)
+            action = "written"
+    except OSError as exc:
+        # A directory at the target, an unwritable XDG dir, or a file owned by
+        # another account: report it the way every other I/O site does, not as a
+        # raw traceback (and keep the --json contract).
         _emit_error(
-            error="usage_error",
-            message=f"{path} already exists with different contents",
+            error="install_failed",
+            message=f"could not install the completion script to {path}: {exc}",
             as_json=as_json,
-            hint="Re-run with --force to overwrite it.",
+            hint="Ensure the path is a writable file (not a directory) that you own.",
         )
-        raise SystemExit(EXIT_USAGE)
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(script)
-        action = "written"
+        raise SystemExit(EXIT_OTHER) from exc
 
     if as_json:
         emit_json({"shell": shell, "path": str(path), "action": action})

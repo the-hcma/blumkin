@@ -322,6 +322,7 @@ _ERROR_KEYS = {"error", "message", "ok"}
 _ERROR_VALUES = {
     "auth_required",
     "graph_error",
+    "install_failed",
     "missing_scope",
     "not_found",
     "secret_write_failed",
