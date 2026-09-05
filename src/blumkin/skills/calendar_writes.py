@@ -5,14 +5,18 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from msgraph.generated.models.attendee import Attendee
 from msgraph.generated.models.attendee_type import AttendeeType
+from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.day_of_week import DayOfWeek
 from msgraph.generated.models.email_address import EmailAddress
 from msgraph.generated.models.event import Event
+from msgraph.generated.models.item_body import ItemBody
+from msgraph.generated.models.location import Location
 from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
 from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
 from msgraph.generated.models.recurrence_pattern import RecurrencePattern
@@ -136,7 +140,13 @@ async def calendar_create(
     subject: str,
     with_emails: list[str],
     start_raw: str,
+    all_day: bool = False,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_type: str = "text",
     duration: str | None = None,
+    location: str | None = None,
+    optional_emails: list[str] | None = None,
     recurrence: Recurrence | None = None,
     remind_email: str | None = None,
     teams: bool = True,
@@ -147,22 +157,33 @@ async def calendar_create(
         raise ValueError("--subject is required")
     cfg = config or load_config()
     tz = ZoneInfo(tz_name or cfg.default_tz)
-    start = parse_local_datetime(start_raw, tz)
-    # Add the duration in absolute time so an event crossing a DST transition keeps
-    # its real length (matches the Google provider path).
-    end = (start.astimezone(UTC) + parse_duration(duration or _DEFAULT_DURATION)).astimezone(tz)
+    body_content, graph_body_type = resolve_event_body(body, body_file, body_type)
+    if all_day:
+        first_day, last_day = _all_day_bounds(start_raw, duration)
+        start = datetime.combine(first_day, datetime.min.time(), tzinfo=tz)
+        end = datetime.combine(last_day, datetime.min.time(), tzinfo=tz)
+    else:
+        start = parse_local_datetime(start_raw, tz)
+        # Add the duration in absolute time so an event crossing a DST transition
+        # keeps its real length (matches the Google provider path).
+        end = (start.astimezone(UTC) + parse_duration(duration or _DEFAULT_DURATION)).astimezone(tz)
     # Validate the recurrence against --start before any network call.
     recurrence_echo = recurrence_payload(recurrence, start) if recurrence is not None else None
     attendees = [
-        Attendee(
-            email_address=EmailAddress(address=email),
-            type=AttendeeType.Required,
-        )
+        Attendee(email_address=EmailAddress(address=email), type=AttendeeType.Required)
         for email in with_emails
+    ] + [
+        Attendee(email_address=EmailAddress(address=email), type=AttendeeType.Optional)
+        for email in optional_emails or []
     ]
     event = Event(
         attendees=attendees or None,
+        body=ItemBody(content=body_content, content_type=graph_body_type)
+        if body_content is not None
+        else None,
         end=_to_graph_dtz(end),
+        is_all_day=all_day or None,
+        location=Location(display_name=location) if location else None,
         recurrence=_graph_recurrence(recurrence, start) if recurrence is not None else None,
         start=_to_graph_dtz(start),
         subject=subject.strip(),
@@ -286,6 +307,28 @@ def parse_duration(raw: str) -> timedelta:
     return timedelta(minutes=amount)
 
 
+def resolve_event_body(
+    body: str | None, body_file: str | None, body_type: str
+) -> tuple[str | None, BodyType]:
+    """``(content, Graph BodyType)`` from the event-body flags.
+
+    ``content`` is ``None`` when neither ``--body`` nor ``--body-file`` is given
+    (unlike mail, an event body is optional).
+    """
+    label = body_type.strip().lower()
+    if label not in {"html", "text"}:
+        raise ValueError("--body-type must be 'text' or 'html'")
+    graph_type = BodyType.Html if label == "html" else BodyType.Text
+    if body is not None and body_file is not None:
+        raise ValueError("pass only one of --body or --body-file")
+    if body_file is not None:
+        try:
+            return Path(body_file).read_text(encoding="utf-8"), graph_type
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValueError(f"cannot read --body-file {body_file}: {exc}") from exc
+    return body, graph_type
+
+
 def parse_recurrence(
     *,
     repeat: str,
@@ -400,6 +443,24 @@ def reminder_minutes_before_start(raw: str) -> int:
             f"({_MAX_REMINDER_MINUTES} minutes)"
         )
     return minutes
+
+
+def _all_day_bounds(start_raw: str, duration: str | None) -> tuple[date, date]:
+    """``(first_day, end_day_exclusive)`` for an all-day event; ``--duration`` is whole days."""
+    text = start_raw.strip()
+    if "T" in text:
+        raise ValueError("--all-day needs a date --start (YYYY-MM-DD), not a time")
+    try:
+        first = date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"invalid --start date {start_raw!r}; use YYYY-MM-DD") from exc
+    days = 1
+    if duration is not None:
+        delta = parse_duration(duration)
+        if delta < timedelta(days=1) or delta % timedelta(days=1):
+            raise ValueError("--all-day --duration must be whole days, e.g. 1d, 3d")
+        days = delta.days
+    return first, first + timedelta(days=days)
 
 
 def _event_join_url(event: Any) -> str | None:

@@ -135,12 +135,24 @@ Examples:
   blumkin calendar create --subject "Lunch" --start "2026-09-22T12:00" \\
     --duration 1h --repeat weekly --days mon,tue,wed,thu,fri --count 20 \\
     --no-teams --yes
+\b
+  # Design review with an agenda, a location, and an optional attendee
+  blumkin calendar create --subject "Design review" --with sam@example.com \\
+    --optional dana@example.com --start "2026-09-22T09:00" --duration 1h \\
+    --location "Room 4" --body "Agenda: API shape, timeline" --yes
+\b
+  # All-day out-of-office hold, three days, no Teams link
+  blumkin calendar create --subject "OOO" --start "2026-12-24" --all-day \\
+    --duration 3d --no-teams --yes
 
 Invites every `--with` address, so `--yes` is required (still required with no
-attendees). `--remind-email` adds an email reminder on Google and an Outlook
-popup reminder on Microsoft. For a cross-timezone or external attendee, run
-`calendar freebusy` or `calendar suggest` first and pick a slot inside their
-working hours. `--start` stays in the organizer timezone.
+attendees). `--optional` attendees are invited too but marked optional.
+`--body` / `--body-file` set the agenda (`--body-type` html/text is Microsoft
+only). `--location` is free text. `--all-day` makes `--start` a date and
+`--duration` whole days. `--remind-email` adds an email reminder on Google and
+an Outlook popup reminder on Microsoft. For a cross-timezone or external
+attendee, run `calendar freebusy` or `calendar suggest` first and pick a slot
+inside their working hours. `--start` stays in the organizer timezone.
 
 `--repeat {daily,weekly,monthly}` makes a recurring series (Graph
 patternedRecurrence / Google RRULE). Bound it with `--until DATE` or `--count N`

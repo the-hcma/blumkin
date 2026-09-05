@@ -131,7 +131,10 @@ original's attachments.
      `--repeat daily|weekly|monthly` makes a recurring series; bound it with
      `--until YYYY-MM-DD` or `--count N` (omit both for an open-ended series),
      `--interval N` widens the gap, and `--days mon,tue,...` restricts a weekly
-     pattern (must include the `--start` weekday).)
+     pattern (must include the `--start` weekday).
+     `--body`/`--body-file` set an agenda, `--location` is free text,
+     `--optional email` adds an optional attendee, and `--all-day` makes
+     `--start` a date with `--duration` in whole days.)
    - `blumkin calendar update --event-id '<id>' --yes` (attach Teams to an
      existing event; uses Calendars.ReadWrite, not OnlineMeetings.ReadWrite)
    - `blumkin calendar cancel --event-id '<id>' --yes`

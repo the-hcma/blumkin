@@ -26,11 +26,13 @@ from blumkin.skills.calendar import (
 from blumkin.skills.calendar_writes import (
     _DEFAULT_DURATION,
     Recurrence,
+    _all_day_bounds,
     _needs_accept,
     parse_duration,
     recurrence_payload,
     recurrence_rrule,
     reminder_minutes_before_start,
+    resolve_event_body,
 )
 from blumkin.skills.freebusy_suggest import collect_busy_intervals, raise_if_schedule_errors
 
@@ -124,7 +126,13 @@ async def calendar_create(
     subject: str,
     with_emails: list[str],
     start_raw: str,
+    all_day: bool = False,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_type: str = "text",
     duration: str | None = None,
+    location: str | None = None,
+    optional_emails: list[str] | None = None,
     recurrence: Recurrence | None = None,
     remind_email: str | None = None,
     tz_name: str | None = None,
@@ -135,23 +143,39 @@ async def calendar_create(
     cfg = config or load_config()
     tz = ZoneInfo(tz_name or cfg.default_tz)
     tz_key = tz.key if isinstance(tz, ZoneInfo) else str(tz)
-    start = parse_local_datetime(start_raw, tz)
-    # Add the duration in absolute time so an event spanning a DST transition keeps
-    # its real length (wall-clock arithmetic would over- or under-count by an hour).
-    end = (start.astimezone(UTC) + parse_duration(duration or _DEFAULT_DURATION)).astimezone(tz)
+    description, _ = resolve_event_body(body, body_file, body_type)
+    if all_day:
+        first_day, end_day = _all_day_bounds(start_raw, duration)
+        start = datetime.combine(first_day, time(), tzinfo=tz)
+        payload_start: dict[str, Any] = {"date": first_day.isoformat()}
+        payload_end: dict[str, Any] = {"date": end_day.isoformat()}
+    else:
+        start = parse_local_datetime(start_raw, tz)
+        # Absolute-time arithmetic so an event spanning a DST transition keeps its
+        # real length.
+        end = (start.astimezone(UTC) + parse_duration(duration or _DEFAULT_DURATION)).astimezone(tz)
+        payload_start = {"dateTime": start.isoformat(timespec="seconds"), "timeZone": tz_key}
+        payload_end = {"dateTime": end.isoformat(timespec="seconds"), "timeZone": tz_key}
     # Validate the recurrence against --start before any network call.
     recurrence_echo = recurrence_payload(recurrence, start) if recurrence is not None else None
-    body: dict[str, Any] = {
+    event_body: dict[str, Any] = {
         "summary": subject.strip(),
-        "start": {"dateTime": start.isoformat(timespec="seconds"), "timeZone": tz_key},
-        "end": {"dateTime": end.isoformat(timespec="seconds"), "timeZone": tz_key},
+        "start": payload_start,
+        "end": payload_end,
     }
+    if description is not None:
+        event_body["description"] = description
+    if location:
+        event_body["location"] = location
     if recurrence is not None:
-        body["recurrence"] = recurrence_rrule(recurrence, start)
-    if with_emails:
-        body["attendees"] = [{"email": email} for email in with_emails]
+        event_body["recurrence"] = recurrence_rrule(recurrence, start)
+    attendees = [{"email": email} for email in with_emails] + [
+        {"email": email, "optional": True} for email in optional_emails or []
+    ]
+    if attendees:
+        event_body["attendees"] = attendees
     if remind_email is not None:
-        body["reminders"] = {
+        event_body["reminders"] = {
             "useDefault": False,
             "overrides": [
                 {"method": "email", "minutes": reminder_minutes_before_start(remind_email)}
@@ -161,8 +185,8 @@ async def calendar_create(
     created = execute(
         service.events().insert(
             calendarId="primary",
-            body=body,
-            sendUpdates="all" if with_emails else "none",
+            body=event_body,
+            sendUpdates="all" if attendees else "none",
         ),
         # events.insert is a non-idempotent POST; a blind retry could double-book.
         num_retries=0,

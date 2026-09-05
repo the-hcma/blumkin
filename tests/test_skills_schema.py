@@ -256,6 +256,12 @@ _ARG_SIGNATURES = {
         ("--with", False, "email"),
         ("--start", True, "datetime"),
         ("--duration", False, "duration"),
+        ("--all-day", False, "flag"),
+        ("--location", False, "string"),
+        ("--optional", False, "email"),
+        ("--body", False, "string"),
+        ("--body-file", False, "path"),
+        ("--body-type", False, "enum"),
         ("--remind-email", False, "duration"),
         ("--no-teams", False, "flag"),
         ("--repeat", False, "enum"),
@@ -299,6 +305,7 @@ _ARG_TYPES = {
 
 
 _ENUM_VALUES = {
+    ("calendar.create", "--body-type"): ["html", "text"],
     ("calendar.create", "--repeat"): ["daily", "weekly", "monthly"],
     ("calendar.get", "--body-type"): ["html", "text"],
     ("calendar.suggest", "--treat-tentative"): ["busy", "free"],
