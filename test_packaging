@@ -145,3 +145,80 @@ fi
 "$pipx_bin_dir/blumkin" --help >/dev/null
 
 echo "Installed pipx packaging smoke passed"
+
+# `blumkin upgrade` round-trip against PyPI (issue #143). The block above installs
+# the freshly built wheel; here we install the *second-newest* published release
+# into a second, custom PIPX_BIN_DIR, run `blumkin upgrade` (which shells
+# `pipx upgrade blumkin`), and assert it moved to the newest published release and
+# reported the pipx app under that custom bin dir. Needs >=2 published releases, so
+# this is a no-op skip from the first release and real from the second onward.
+echo "Checking the blumkin upgrade round-trip against PyPI..."
+roundtrip_home="$temp_root/pipx-roundtrip-home"
+roundtrip_bin_dir="$temp_root/pipx-roundtrip-bin"
+mkdir -p "$roundtrip_home" "$roundtrip_bin_dir"
+
+roundtrip_env() {
+  # `blumkin upgrade` resolves pipx via PATH; pin the pipx env to the second bin dir.
+  env PIPX_HOME="$roundtrip_home" PIPX_BIN_DIR="$roundtrip_bin_dir" \
+    PATH="$(dirname "$pipx_bin"):$PATH" "$@"
+}
+
+# Newest and second-newest published versions (stdlib only; blumkin uses plain semver).
+pypi_versions="$(
+  timeout 30 "$venv_dir/bin/python" - <<'PY'
+import json
+import urllib.request
+
+with urllib.request.urlopen("https://pypi.org/pypi/blumkin/json", timeout=25) as response:
+    releases = json.load(response)["releases"]
+# Skip fully-yanked releases: `pipx upgrade` / pip skip them too, so including
+# one here would make `after` mismatch what the upgrade actually installs.
+ordered = sorted(
+    (
+        v
+        for v, files in releases.items()
+        if files and not all(f.get("yanked", False) for f in files)
+    ),
+    key=lambda v: [int(p) for p in v.split(".")],
+)
+print(ordered[-2] if len(ordered) >= 2 else "")
+print(ordered[-1] if ordered else "")
+PY
+)"
+prev_version="$(printf '%s\n' "$pypi_versions" | sed -n '1p')"
+latest_version="$(printf '%s\n' "$pypi_versions" | sed -n '2p')"
+
+if [[ -z "$prev_version" ]]; then
+  echo "Skipping upgrade round-trip: fewer than two blumkin releases on PyPI"
+else
+  echo "Round-trip: install blumkin==${prev_version}, upgrade, expect ${latest_version}"
+  roundtrip_env timeout 120 "$pipx_bin" install \
+    --python "$venv_dir/bin/python" "blumkin==${prev_version}"
+  upgrade_json="$temp_root/pipx-roundtrip-upgrade.json"
+  roundtrip_env timeout 180 "$roundtrip_bin_dir/blumkin" upgrade --json >"$upgrade_json"
+  cat "$upgrade_json"
+  "$venv_dir/bin/python" - "$upgrade_json" "$prev_version" "$latest_version" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1]))
+prev_version, latest_version = sys.argv[2], sys.argv[3]
+app = data.get("pipx_app") or {}
+# before/after are non-None only because pipx_blumkin_path found the app via the
+# custom $PIPX_BIN_DIR - the sole place blumkin is installed in this run - so this
+# also exercises the PIPX_BIN_DIR override branch of _pipx_bin_dirs live.
+assert data.get("ok") is True, data
+assert app.get("before") and app.get("after"), f"upgrade did not read both builds: {app}"
+assert app["before"] != app["after"], f"upgrade was a no-op: {app}"
+assert app["before"].split()[0] == prev_version, app
+assert app["after"].split()[0] == latest_version, app
+# A non-null path means pipx_blumkin_path found the app via the custom
+# $PIPX_BIN_DIR (nothing is installed anywhere else in this run).
+assert app.get("path"), app
+running = (data.get("running_from") or {}).get("path") or ""
+assert "pipx-roundtrip-bin" in running, f"not invoked from the custom bin dir: {running}"
+print(f"upgrade round-trip: {app['before']} -> {app['after']}")
+PY
+  "$roundtrip_bin_dir/blumkin" --help >/dev/null
+  echo "blumkin upgrade round-trip passed"
+fi
