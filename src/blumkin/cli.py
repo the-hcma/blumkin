@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 from datetime import date, datetime
@@ -163,6 +164,17 @@ def _auth_status_payload(config: BlumkinConfig | None = None) -> dict[str, Any]:
     payload = dict(_workspace(config).auth_status())
     payload.update(build_status_fields())
     return payload
+
+
+def _completion_install_path(shell: str) -> Path:
+    """Conventional per-user path for a shell's blumkin completion script."""
+    xdg_data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    if shell == "bash":
+        return xdg_data / "bash-completion" / "completions" / "blumkin.bash"
+    if shell == "fish":
+        xdg_config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        return xdg_config / "fish" / "completions" / "blumkin.fish"
+    return xdg_data / "zsh" / "site-functions" / "_blumkin"
 
 
 def _cli_as_json() -> bool:
@@ -862,25 +874,89 @@ def skills_describe(ctx: click.Context, skill_id: str, as_json_flag: bool) -> No
 
 @main.command(epilog=help_text.COMPLETION_EPILOG)
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
-def completion(shell: str) -> None:
-    """Print a tab-completion script for bash, zsh, or fish.
+@click.option(
+    "--install",
+    is_flag=True,
+    help="Write the script to the conventional per-user completion dir instead of printing it.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="With --install, overwrite an existing file whose contents differ.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def completion(
+    ctx: click.Context, shell: str, install: bool, force: bool, as_json_flag: bool
+) -> None:
+    """Print a tab-completion script for bash, zsh, or fish (or --install it).
 
     Source the output to enable `<TAB>` completion of blumkin commands, options,
-    and Choice values. See the epilog for one-liners per shell.
+    and Choice values. `--install` writes it to the per-user completion directory
+    for the shell (idempotent; `--force` overwrites a differing file). See the
+    epilog for one-liners per shell.
     """
     from click.shell_completion import get_completion_class
 
+    as_json = _as_json(ctx, as_json_flag)
+    if force and not install:
+        _emit_error(
+            error="usage_error",
+            message="--force only applies with --install",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
     comp_cls = get_completion_class(shell)
     if comp_cls is None:  # pragma: no cover - Choice already constrains shell
         _emit_error(
             error="usage_error",
             message=f"no completion support for shell: {shell}",
-            as_json=False,
+            as_json=as_json,
             hint="Supported shells: bash, zsh, fish.",
         )
         raise SystemExit(EXIT_USAGE)
     completer = comp_cls(main, {}, "blumkin", "_BLUMKIN_COMPLETE")
-    click.echo(completer.source())
+    script = completer.source()
+    if not script.endswith("\n"):
+        script += "\n"
+
+    if not install:
+        if as_json:
+            emit_json({"shell": shell, "script": script})
+        else:
+            click.echo(script, nl=False)
+        raise SystemExit(EXIT_SUCCESS)
+
+    path = _completion_install_path(shell)
+    existing = path.read_text() if path.is_file() else None
+    if existing == script:
+        action = "unchanged"
+    elif existing is not None and not force:
+        _emit_error(
+            error="usage_error",
+            message=f"{path} already exists with different contents",
+            as_json=as_json,
+            hint="Re-run with --force to overwrite it.",
+        )
+        raise SystemExit(EXIT_USAGE)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(script)
+        action = "written"
+
+    if as_json:
+        emit_json({"shell": shell, "path": str(path), "action": action})
+    else:
+        lines = [f"{action}: {path}"]
+        if shell == "zsh":
+            lines.append(
+                f"  ensure {path.parent} is on $fpath before `compinit` "
+                "(e.g. in ~/.zshrc), then open a new shell"
+            )
+        else:
+            lines.append("  open a new shell to pick it up")
+        emit_lines(lines)
+    raise SystemExit(EXIT_SUCCESS)
 
 
 @main.command(epilog=help_text.DOCTOR_EPILOG)
