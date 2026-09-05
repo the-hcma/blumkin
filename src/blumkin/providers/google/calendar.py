@@ -594,7 +594,9 @@ def _rrule_to_payload(recurrence: list[str] | None, display_tz: ZoneInfo) -> dic
             return {"freq": "other", "raw": str(line)}
         # The normalized schema has no ordinal-weekday / set-position selector, so
         # anything it cannot represent (2nd-Wednesday, last-Friday, …) is "other".
-        if freq == "monthly" and (parts.get("BYDAY") or parts.get("BYSETPOS")):
+        if (freq == "monthly" and (parts.get("BYDAY") or parts.get("BYSETPOS"))) or (
+            freq == "daily" and parts.get("BYDAY")
+        ):
             return {"freq": "other", "raw": str(line)}
         payload: dict[str, Any] = {"freq": freq, "interval": int(parts.get("INTERVAL") or 1)}
         if freq == "weekly" and parts.get("BYDAY"):

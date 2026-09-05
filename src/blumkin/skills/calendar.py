@@ -309,6 +309,11 @@ def format_freebusy_human(payload: dict[str, Any]) -> list[str]:
 def format_recurrence(recurrence: dict[str, Any]) -> str:
     """One-line human summary of a ``recurrence_payload`` dict."""
     freq = str(recurrence.get("freq") or "?")
+    if freq == "other":
+        # A rule the normalized schema cannot express; show it verbatim rather
+        # than asserting a bound (a bounded "other" series has its COUNT/UNTIL
+        # only in `raw`).
+        return f"custom ({recurrence.get('raw') or 'unrecognized rule'})"
     interval = int(recurrence.get("interval") or 1)
     unit = {"daily": "day", "monthly": "month", "weekly": "week"}.get(freq, freq)
     text = freq if interval == 1 else f"every {interval} {unit}s"

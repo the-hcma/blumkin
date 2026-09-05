@@ -246,6 +246,7 @@ def test_google_calendar_get_full_shape(tmp_path: Path) -> None:
     [
         "RRULE:FREQ=MONTHLY;BYDAY=2WE",  # second Wednesday
         "RRULE:FREQ=MONTHLY;BYSETPOS=-1;BYDAY=FR",  # last Friday
+        "RRULE:FREQ=DAILY;INTERVAL=2;BYDAY=MO,WE,FR",  # every other weekday subset
         "RRULE:FREQ=YEARLY",
     ],
 )
@@ -309,15 +310,24 @@ def test_google_calendar_get_until_readback_uses_local_date(tmp_path: Path) -> N
     assert payload["event"]["recurrence"]["until"] == "2026-12-31"
 
 
-def test_google_calendar_get_missing_id_raises_not_found(tmp_path: Path) -> None:
+@pytest.mark.parametrize("status", [404, 410])
+def test_google_calendar_get_missing_id_raises_not_found(tmp_path: Path, status: int) -> None:
     service = MagicMock()
     service.events.return_value.get.return_value.execute.side_effect = HttpError(
-        httplib2.Response({"status": 404}), b"not found"
+        httplib2.Response({"status": status}), b"not found"
     )
     with _google_patched(service), pytest.raises(CalendarEventNotFoundError, match="g-missing"):
         asyncio.run(
             google_calendar.calendar_get(event_id="g-missing", config=_google_cfg(tmp_path))
         )
+
+
+def test_format_recurrence_other_shows_the_raw_rule_not_no_end() -> None:
+    from blumkin.skills.calendar import format_recurrence
+
+    out = format_recurrence({"freq": "other", "raw": "RRULE:FREQ=MONTHLY;BYDAY=2WE;COUNT=12"})
+    assert "no end" not in out
+    assert "BYDAY=2WE" in out
 
 
 def test_format_calendar_get_human_sanitizes_attacker_controlled_names() -> None:
