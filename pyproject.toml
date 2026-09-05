@@ -30,7 +30,7 @@ classifiers = [
 ]
 dependencies = [
     "azure-identity>=1.25.3",
-    "click>=8.4.2",
+    "click>=8.5.0",
     "google-api-python-client>=2.199.0",
     "google-auth>=2.57.0",
     "google-auth-httplib2>=0.4.2",
