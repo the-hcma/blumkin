@@ -181,7 +181,8 @@ Example:
 Returns the full event: body/agenda, every attendee with their response, the
 recurrence (same shape `calendar create --json` emits), the online-meeting join
 URL, and `series_master_id` when it is one instance of a recurring series.
-Read-only.
+Read-only. `--body-type` is Microsoft-only (Graph converts server-side); Google
+returns its single stored description, which may contain HTML.
 """
 
 CALENDAR_FREEBUSY_EPILOG = """
