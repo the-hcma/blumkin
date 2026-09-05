@@ -27,6 +27,7 @@ from blumkin.skills.calendar_writes import (
     _DEFAULT_DURATION,
     Recurrence,
     _all_day_bounds,
+    _all_day_span_days,
     _needs_accept,
     parse_duration,
     recurrence_payload,
@@ -367,11 +368,16 @@ async def calendar_update(
     service = _calendar_service(cfg)
 
     changes_time = start_raw is not None or end_raw is not None or duration is not None
-    existing = (
-        execute(service.events().get(calendarId="primary", eventId=eid))
-        if changes_time or all_day is not None
-        else None
-    )
+    existing: Mapping[str, Any] | None = None
+    if changes_time or all_day is not None:
+        try:
+            existing = execute(service.events().get(calendarId="primary", eventId=eid))
+        except HttpError as exc:
+            # Same 404/410 -> not_found mapping the PATCH below uses, so a time
+            # edit against a missing/deleted event does not leak a raw HttpError.
+            if getattr(getattr(exc, "resp", None), "status", None) in {404, 410}:
+                raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
+            raise
 
     patch: dict[str, Any] = {}
     if subject is not None:
@@ -608,14 +614,8 @@ def _google_updated_bounds(
         first = (
             date.fromisoformat(start_raw.strip()) if start_raw is not None else prev_start.date()
         )
-        days = 1
-        if duration is not None:
-            delta = parse_duration(duration)
-            if delta < timedelta(days=1) or delta % timedelta(days=1):
-                raise ValueError("--all-day --duration must be whole days, e.g. 1d, 3d")
-            days = delta.days
-        elif was_all_day and all_day is None:
-            days = max(1, (prev_end.date() - prev_start.date()).days)
+        old_span_days = (prev_end.date() - prev_start.date()).days if was_all_day else None
+        days = _all_day_span_days(first, end_raw, duration, old_span_days, all_day)
         start_dt = datetime.combine(first, time(), tzinfo=tz)
         return start_dt, start_dt + timedelta(days=days), True
 
@@ -624,8 +624,12 @@ def _google_updated_bounds(
         end_dt = parse_local_datetime(end_raw, tz)
     elif duration is not None:
         end_dt = (start_dt.astimezone(UTC) + parse_duration(duration)).astimezone(tz)
-    else:
+    elif not was_all_day:
         end_dt = (start_dt.astimezone(UTC) + (prev_end - prev_start)).astimezone(tz)
+    else:
+        # all-day -> timed with no new length given: a default-length meeting,
+        # not a multi-day block from the old all-day span.
+        end_dt = (start_dt.astimezone(UTC) + parse_duration(_DEFAULT_DURATION)).astimezone(tz)
     if end_dt <= start_dt:
         raise ValueError("event end must be after start")
     return start_dt, end_dt, False

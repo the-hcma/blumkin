@@ -31,6 +31,7 @@ Context: [PR #10](https://github.com/the-hcma/blumkin/pull/10) delivered the fir
 | Confirm cold-path install (`uv tool install` → `blumkin` on `PATH`) | Done ([#16](https://github.com/the-hcma/blumkin/issues/16) / #23) |
 | Require **Python lint & format checks** + **Pytest (hermetic)** on protection / MQ | Done ([#21](https://github.com/the-hcma/blumkin/issues/21) / #23) |
 | Decide Bugbot on/off and align `AGENT_REVIEW_QUOTA_FALLBACK_CHAIN` | **Decided** (below) — validate TODO open |
+| **TODO (validate):** `calendar update --no-teams` really removes a Teams meeting on Microsoft (`isOnlineMeeting: false` PATCH). Live-check `BLUMKIN_LIVE=1` against a solo hold, then delete it. See `docs/DECISIONS.md` D9. | Open |
 
 ---
 

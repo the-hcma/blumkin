@@ -116,6 +116,84 @@ def test_graph_update_convert_to_all_day(monkeypatch) -> None:
     assert patched.end.date_time == "2026-12-26T00:00:00"
 
 
+def _all_day_existing(first: str, last_exclusive: str) -> SimpleNamespace:
+    # Graph serializes an all-day event at 00:00 UTC under Prefer: outlook.timezone="UTC".
+    return SimpleNamespace(
+        id="evt-1",
+        is_all_day=True,
+        start=_dtz(f"{first}T00:00:00"),
+        end=_dtz(f"{last_exclusive}T00:00:00"),
+    )
+
+
+def test_graph_update_all_day_end_sets_span(monkeypatch) -> None:
+    client = _graph_client(monkeypatch, existing=_all_day_existing("2026-09-21", "2026-09-22"))
+    asyncio.run(
+        calendar_update(event_id="evt-1", start_raw="2026-09-21", end_raw="2026-09-24", tz_name=_NY)
+    )
+    patched = _posted(client)
+    assert patched.is_all_day is None  # already all-day, not a conversion
+    assert patched.start.date_time == "2026-09-21T00:00:00"
+    assert patched.end.date_time == "2026-09-24T00:00:00"  # exclusive end honored
+
+
+def test_graph_update_all_day_start_alone_keeps_span(monkeypatch) -> None:
+    client = _graph_client(monkeypatch, existing=_all_day_existing("2026-09-21", "2026-09-24"))
+    asyncio.run(calendar_update(event_id="evt-1", start_raw="2026-10-05", tz_name=_NY))
+    patched = _posted(client)
+    assert patched.start.date_time == "2026-10-05T00:00:00"
+    assert patched.end.date_time == "2026-10-08T00:00:00"  # 3-day span preserved
+
+
+def test_graph_update_convert_from_all_day_keeps_date(monkeypatch) -> None:
+    client = _graph_client(monkeypatch, existing=_all_day_existing("2026-09-21", "2026-09-22"))
+    asyncio.run(calendar_update(event_id="evt-1", all_day=False, tz_name=_NY))
+    patched = _posted(client)
+    assert patched.is_all_day is False
+    # America/New_York: must stay on the 21st, not slip to 2026-09-20T20:00.
+    assert patched.start.date_time == "2026-09-21T00:00:00"
+    assert patched.end.date_time == "2026-09-21T00:30:00"  # default length, not a full day
+
+
+def test_graph_update_teams_attach_refetches_when_unprovisioned(monkeypatch) -> None:
+    provisioned = SimpleNamespace(
+        id="evt-1",
+        subject="x",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=SimpleNamespace(join_url="https://teams.example/join"),
+    )
+    client = _graph_client(
+        monkeypatch, existing=provisioned
+    )  # patch result has online_meeting=None
+    out = asyncio.run(calendar_update(event_id="evt-1", teams=True, tz_name=_NY))
+    client.me.events.by_event_id.return_value.get.assert_awaited()
+    assert out["event"]["online_join_url"] == "https://teams.example/join"
+
+
+def test_graph_update_teams_attach_raises_when_never_provisioned(monkeypatch) -> None:
+    never = SimpleNamespace(
+        id="evt-1",
+        subject="x",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=None,
+    )
+    _graph_client(monkeypatch, existing=never)
+    with pytest.raises(RuntimeError, match="was not provisioned"):
+        asyncio.run(calendar_update(event_id="evt-1", teams=True, tz_name=_NY))
+
+
 def test_graph_update_end_and_duration_mutually_exclusive(monkeypatch) -> None:
     _graph_client(monkeypatch)
     with pytest.raises(ValueError, match="only one of --end or --duration"):
@@ -226,6 +304,47 @@ def test_google_update_missing_event(tmp_path: Path) -> None:
         asyncio.run(
             google_calendar.calendar_update(
                 event_id="evt-1", subject="x", config=_google_cfg(tmp_path)
+            )
+        )
+
+
+def test_google_update_all_day_end_sets_span(tmp_path: Path) -> None:
+    existing = {"id": "evt-1", "start": {"date": "2026-09-21"}, "end": {"date": "2026-09-22"}}
+    service = _google_service(existing)
+    with _google_patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_update(
+                event_id="evt-1", start_raw="2026-09-21", end_raw="2026-09-24"
+            )
+        )
+    body = service.events.return_value.patch.call_args.kwargs["body"]
+    assert body["start"] == {"date": "2026-09-21"}
+    assert body["end"] == {"date": "2026-09-24"}
+
+
+def test_google_update_convert_from_all_day_keeps_date(tmp_path: Path) -> None:
+    existing = {"id": "evt-1", "start": {"date": "2026-09-21"}, "end": {"date": "2026-09-22"}}
+    service = _google_service(existing)
+    with _google_patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_update(
+                event_id="evt-1", all_day=False
+            )
+        )
+    body = service.events.return_value.patch.call_args.kwargs["body"]
+    assert body["start"]["dateTime"].startswith("2026-09-21T00:00:00")
+    assert body["end"]["dateTime"].startswith("2026-09-21T00:30:00")  # default length
+
+
+def test_google_update_time_edit_missing_event_maps_not_found(tmp_path: Path) -> None:
+    service = _google_service()
+    service.events.return_value.get.return_value.execute.side_effect = HttpError(
+        httplib2.Response({"status": 410}), b"gone"
+    )
+    with _google_patched(service), pytest.raises(CalendarEventNotFoundError):
+        asyncio.run(
+            google_calendar.calendar_update(
+                event_id="evt-1", start_raw="2026-09-23T15:00", config=_google_cfg(tmp_path)
             )
         )
 

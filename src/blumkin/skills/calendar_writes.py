@@ -316,6 +316,20 @@ async def calendar_update(
         updated = await client.me.events.by_event_id(eid).get()
     if updated is None or not updated.id:
         raise CalendarEventNotFoundError(f"event not found: {eid}")
+    if teams is True and not _event_join_url(updated):
+        # Graph provisions the Teams meeting asynchronously, so the PATCH (or
+        # 204) response can precede onlineMeeting.joinUrl. Re-GET once, then fail
+        # loudly - the same guard calendar_create keeps - rather than report a
+        # join-less success an agent would trust.
+        updated = await client.me.events.by_event_id(eid).get()
+        if updated is None or not updated.id:
+            raise CalendarEventNotFoundError(f"event not found: {eid}")
+        if not _event_join_url(updated):
+            raise RuntimeError(
+                f"Teams online meeting was not provisioned for event {eid!r} "
+                "(no onlineMeeting.joinUrl after update); retry once Graph "
+                "finishes provisioning."
+            )
     return {"event": _event_to_dict(updated, tz)}
 
 
@@ -561,6 +575,37 @@ def _all_day_bounds(start_raw: str, duration: str | None) -> tuple[date, date]:
     return first, first + timedelta(days=days)
 
 
+def _all_day_span_days(
+    first: date,
+    end_raw: str | None,
+    duration: str | None,
+    old_span_days: int | None,
+    all_day: bool | None,
+) -> int:
+    """Whole-day length of an all-day event edit.
+
+    Precedence: an explicit ``--end`` date (exclusive, matching Google's all-day
+    end-date semantics), then a whole-day ``--duration``, then the event's
+    current span for a move that keeps ``--all-day`` (``all_day is None``), else
+    a single day.
+    """
+    if end_raw is not None:
+        if "T" in end_raw:
+            raise ValueError("--all-day needs a date --end (YYYY-MM-DD), not a time")
+        span = (date.fromisoformat(end_raw.strip()) - first).days
+        if span < 1:
+            raise ValueError("--all-day --end must be at least one day after --start")
+        return span
+    if duration is not None:
+        delta = parse_duration(duration)
+        if delta < timedelta(days=1) or delta % timedelta(days=1):
+            raise ValueError("--all-day --duration must be whole days, e.g. 1d, 3d")
+        return delta.days
+    if all_day is None and old_span_days:
+        return max(1, old_span_days)
+    return 1
+
+
 def _dtz_to_utc_datetime(dtz: Any) -> datetime | None:
     """Graph DateTimeTimeZone fetched with ``Prefer: outlook.timezone="UTC"`` -> aware datetime."""
     raw = getattr(dtz, "date_time", None)
@@ -586,36 +631,43 @@ def _updated_bounds(
     old_end = _dtz_to_utc_datetime(getattr(existing, "end", None))
     was_all_day = bool(getattr(existing, "is_all_day", False))
     target_all_day = was_all_day if all_day is None else all_day
+    # An all-day event serializes at 00:00 UTC under Prefer: outlook.timezone="UTC";
+    # its real value is a calendar date, so read the UTC date directly and never
+    # .astimezone() it (that shifts the day in negative-offset zones).
+    old_start_date = old_start.date() if old_start else None
+    old_end_date = old_end.date() if old_end else None
 
     if target_all_day:
+        if start_raw is not None and "T" in start_raw:
+            raise ValueError("--all-day needs a date --start (YYYY-MM-DD), not a time")
         first = (
             date.fromisoformat(start_raw.strip())
             if start_raw is not None
-            else (old_start.astimezone(tz).date() if old_start else datetime.now(tz).date())
+            else (old_start_date or datetime.now(tz).date())
         )
-        if start_raw is not None and "T" in start_raw:
-            raise ValueError("--all-day needs a date --start (YYYY-MM-DD), not a time")
-        days = 1
-        if duration is not None:
-            delta = parse_duration(duration)
-            if delta < timedelta(days=1) or delta % timedelta(days=1):
-                raise ValueError("--all-day --duration must be whole days, e.g. 1d, 3d")
-            days = delta.days
-        elif old_start and old_end and not all_day:
-            days = max(1, (old_end.date() - old_start.date()).days)
+        old_span_days = (
+            (old_end_date - old_start_date).days
+            if was_all_day and old_start_date and old_end_date
+            else None
+        )
+        days = _all_day_span_days(first, end_raw, duration, old_span_days, all_day)
         start_dt = datetime.combine(first, datetime.min.time(), tzinfo=tz)
         return start_dt, start_dt + timedelta(days=days), True if all_day is not None else None
 
-    start_dt = (
-        parse_local_datetime(start_raw, tz)
-        if start_raw is not None
-        else (old_start.astimezone(tz) if old_start else datetime.now(tz))
-    )
+    if start_raw is not None:
+        start_dt = parse_local_datetime(start_raw, tz)
+    elif was_all_day and old_start_date:
+        # all-day -> timed: keep the date, open at local midnight.
+        start_dt = datetime.combine(old_start_date, datetime.min.time(), tzinfo=tz)
+    elif old_start:
+        start_dt = old_start.astimezone(tz)
+    else:
+        start_dt = datetime.now(tz)
     if end_raw is not None:
         end_dt = parse_local_datetime(end_raw, tz)
     elif duration is not None:
         end_dt = (start_dt.astimezone(UTC) + parse_duration(duration)).astimezone(tz)
-    elif old_start and old_end:
+    elif old_start and old_end and not was_all_day:
         end_dt = (start_dt.astimezone(UTC) + (old_end - old_start)).astimezone(tz)
     else:
         end_dt = (start_dt.astimezone(UTC) + parse_duration(_DEFAULT_DURATION)).astimezone(tz)
