@@ -30,7 +30,9 @@ Supported verbs with `provider = "google"`: auth, calendar `today` / `view` /
 `people resolve`, and chat `find` / `last` / `send` / `edit` / `delete` /
 `attachments`. The `meeting` skills (`meeting get` / `meeting transcription`)
 fail closed by design - Google Meet transcript access is intentionally not
-implemented ([DECISIONS.md D8](./DECISIONS.md)).
+implemented ([DECISIONS.md D8](./DECISIONS.md)). A few option-level combinations
+also fail closed: `mail list` / `mail inbox` `--importance` /
+`--has-attachments` / `--orderby`, and `calendar suggest --treat-tentative free`.
 
 Requested OAuth scopes at login:
 
