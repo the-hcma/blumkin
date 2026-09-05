@@ -107,6 +107,15 @@ blumkin completion bash > ~/.local/share/bash-completion/completions/blumkin.bas
 blumkin completion fish > ~/.config/fish/completions/blumkin.fish
 ```
 
+…or source it from your rc file:
+
+```bash
+blumkin completion bash > ~/.blumkin-complete.bash
+echo 'source ~/.blumkin-complete.bash' >> ~/.bashrc
+blumkin completion zsh > ~/.blumkin-complete.zsh
+echo 'source ~/.blumkin-complete.zsh' >> ~/.zshrc
+```
+
 Open a new shell afterwards. The script calls back into `blumkin` for
 completions, so keep it on `PATH`.
 

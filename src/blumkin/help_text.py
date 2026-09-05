@@ -370,9 +370,13 @@ re-source:
   # fish
   blumkin completion fish > ~/.config/fish/completions/blumkin.fish
 \b
-  # bash/zsh, the source-from-rc way
+  # source-from-rc way (bash)
   blumkin completion bash > ~/.blumkin-complete.bash
   echo 'source ~/.blumkin-complete.bash' >> ~/.bashrc
+\b
+  # source-from-rc way (zsh)
+  blumkin completion zsh > ~/.blumkin-complete.zsh
+  echo 'source ~/.blumkin-complete.zsh' >> ~/.zshrc
 
 Open a new shell afterwards. The script calls back into `blumkin` at completion
 time via the _BLUMKIN_COMPLETE env var, so keep `blumkin` on PATH.

@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import click
 import httpx
+from click.shell_completion import get_completion_class
 
 from blumkin import help_text
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
@@ -900,8 +901,6 @@ def completion(
     for the shell (idempotent; `--force` overwrites a differing file). See the
     epilog for one-liners per shell.
     """
-    from click.shell_completion import get_completion_class
-
     as_json = _as_json(ctx, as_json_flag)
     if force and not install:
         _emit_error(
@@ -932,22 +931,41 @@ def completion(
         raise SystemExit(EXIT_SUCCESS)
 
     path = _completion_install_path(shell)
+    want = script.encode()
+
+    def _refuse_clobber() -> NoReturn:
+        _emit_error(
+            error="usage_error",
+            message=f"{path} already exists with different contents",
+            as_json=as_json,
+            hint="Re-run with --force to overwrite it.",
+        )
+        raise SystemExit(EXIT_USAGE)
+
     try:
-        existing = path.read_text() if path.is_file() else None
-        if existing == script:
+        # Compare bytes so a non-UTF-8 file at the target (hand-placed, another
+        # tool) is "different", not a decode crash.
+        current = path.read_bytes() if path.is_file() else None
+        if current == want:
             action = "unchanged"
-        elif existing is not None and not force:
-            _emit_error(
-                error="usage_error",
-                message=f"{path} already exists with different contents",
-                as_json=as_json,
-                hint="Re-run with --force to overwrite it.",
-            )
-            raise SystemExit(EXIT_USAGE)
-        else:
+        elif current is not None and not force:
+            _refuse_clobber()
+        elif force:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(script)
+            path.write_bytes(want)
             action = "written"
+        else:
+            # Nothing there a moment ago: create exclusively so a racing
+            # --install cannot be clobbered without --force.
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with path.open("xb") as handle:
+                    handle.write(want)
+                action = "written"
+            except FileExistsError:
+                if path.read_bytes() != want:
+                    _refuse_clobber()
+                action = "unchanged"
     except OSError as exc:
         # A directory at the target, an unwritable XDG dir, or a file owned by
         # another account: report it the way every other I/O site does, not as a
