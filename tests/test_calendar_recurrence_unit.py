@@ -280,24 +280,38 @@ def test_google_calendar_create_sets_rrule_and_echo(tmp_path: Path) -> None:
     }
 
 
-def test_google_calendar_create_rejects_until_before_start(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("recurrence_kwargs", "match"),
+    [
+        ({"repeat": "weekly", "until": "2020-01-01"}, "is before --start"),
+        # _START "2026-09-22" is a Tuesday.
+        ({"repeat": "weekly", "days": "mon,wed"}, "must include the --start weekday"),
+    ],
+)
+def test_google_calendar_create_rejects_bad_recurrence_before_any_insert(
+    tmp_path: Path, recurrence_kwargs: dict, match: str
+) -> None:
+    service = MagicMock()
     with (
         patch.multiple(
             _GOOGLE_CAL,
             get_credentials=MagicMock(return_value=MagicMock()),
-            build_api_service=MagicMock(return_value=MagicMock()),
+            build_api_service=MagicMock(return_value=service),
         ),
-        pytest.raises(ValueError, match="is before --start"),
+        pytest.raises(ValueError, match=match),
     ):
         asyncio.run(
             google_calendar.calendar_create(
                 subject="1:1",
-                with_emails=[],
+                with_emails=["sam@example.com"],
                 start_raw="2026-09-22T13:05",
-                recurrence=parse_recurrence(repeat="weekly", until="2020-01-01"),
+                recurrence=parse_recurrence(**recurrence_kwargs),
                 config=_google_cfg(tmp_path),
             )
         )
+    # Google's events.insert is a non-idempotent POST that mails attendees; the
+    # rejection must land before it (mirrors the Graph post.assert_not_awaited).
+    service.events.return_value.insert.assert_not_called()
 
 
 # --------------------------------------------------------------------------- CLI
