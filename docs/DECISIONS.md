@@ -101,3 +101,21 @@ this PR does that). Not done (deliberate): GHAS-only
 add-on); consolidating the classic branch-protection + `protect-main` ruleset
 overlap; `required_conversation_resolution` (would force every agent-review
 thread resolved before merge - revisit).
+
+### D8 - Google Meet / transcription stays stubbed for `provider = "google"`
+
+Layers A-F of [#89](https://github.com/the-hcma/blumkin/issues/89) brought
+`provider = "google"` to Microsoft parity for calendar, mail, people, and chat.
+Layer G - `meeting get` / `meeting transcription` - is **deliberately left
+stubbed**: both raise a clear `not supported for provider=google` error.
+
+Reasoning: the Meet REST surface (`conferenceRecords` / `conferenceRecords.
+transcripts`) needs new OAuth scopes (`meetings.space.readonly` plus a
+transcript scope) and a fresh browser consent, and transcripts only exist when a
+meeting was recorded through Google's own artifacts config - a large, low-value
+addition for a personal CLI whose Meet usage is ad hoc. The Microsoft
+`meeting.*` skills themselves are gated on the WO1162425 add-on and rarely used.
+
+If Meet transcript access becomes necessary, reopen as a new issue rather than
+under #89. Layer H (this change) adds the `live_google` pytest marker and
+refreshes the support matrix, closing #89.
