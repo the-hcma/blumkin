@@ -593,8 +593,8 @@ def _attendee_to_dict(attendee: Any) -> dict[str, Any]:
     return {
         "email": getattr(email, "address", None),
         "name": getattr(email, "name", None),
-        "response": str(status.response) if status and status.response else None,
-        "type": str(attendee.type) if getattr(attendee, "type", None) else None,
+        "response": _enum_value(status.response) if status and status.response else None,
+        "type": _enum_value(getattr(attendee, "type", None)),
     }
 
 
@@ -612,6 +612,18 @@ def _busy_slot_to_dict(item: Any, display_tz: ZoneInfo) -> dict[str, Any]:
 def _clean(value: Any) -> str:
     """Terminal-safe rendering of a possibly attacker-controlled string."""
     return sanitize_terminal(str(value)) if value is not None else ""
+
+
+def _enum_value(member: Any) -> str | None:
+    """Wire vocabulary for a kiota enum member (``AttendeeType.Required`` -> ``required``).
+
+    On a real Graph event these fields are ``msgraph-sdk`` enum members whose
+    ``str()`` is class-prefixed; ``.value`` is the plain string the Google
+    provider and the JSON contract use. Plain-string fixtures pass through.
+    """
+    if member is None:
+        return None
+    return str(getattr(member, "value", member))
 
 
 def _event_detail_to_dict(ev: Any, display_tz: ZoneInfo, body_type: str) -> dict[str, Any]:

@@ -13,6 +13,7 @@ import httplib2
 import pytest
 from click.testing import CliRunner
 from googleapiclient.errors import HttpError
+from msgraph.generated.models.attendee_type import AttendeeType
 from msgraph.generated.models.day_of_week import DayOfWeek
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
@@ -21,6 +22,7 @@ from msgraph.generated.models.recurrence_pattern import RecurrencePattern
 from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
 from msgraph.generated.models.recurrence_range import RecurrenceRange
 from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
+from msgraph.generated.models.response_type import ResponseType
 
 from blumkin.cli import main
 from blumkin.config import BlumkinConfig, MailSignatureConfig
@@ -68,8 +70,10 @@ def _graph_event() -> SimpleNamespace:
         attendees=[
             SimpleNamespace(
                 email_address=SimpleNamespace(name="Sam", address="sam@example.com"),
-                status=SimpleNamespace(response="accepted"),
-                type="required",
+                # Real Graph events carry kiota enum members here, not strings;
+                # the mapper must emit the plain .value vocabulary.
+                status=SimpleNamespace(response=ResponseType.Accepted),
+                type=AttendeeType.Required,
             ),
         ],
         recurrence=PatternedRecurrence(
@@ -117,6 +121,22 @@ def test_graph_calendar_get_full_shape(monkeypatch) -> None:
         "days": ["mo"],
         "until": "2026-12-31",
     }
+
+
+def test_graph_calendar_get_attendee_uses_wire_vocab_in_human_output(monkeypatch) -> None:
+    _graph_client(monkeypatch, _graph_event())
+    payload = asyncio.run(calendar_get(event_id="evt-1", tz_name="America/New_York"))
+    lines = format_calendar_get_human(payload)
+    assert any("Sam — accepted (required)" in line for line in lines)
+
+
+def test_graph_calendar_get_cancelled_event(monkeypatch) -> None:
+    event = _graph_event()
+    event.is_cancelled = True
+    _graph_client(monkeypatch, event)
+    payload = asyncio.run(calendar_get(event_id="evt-1", tz_name="America/New_York"))
+    assert payload["event"]["is_cancelled"] is True
+    assert "  [cancelled]" in format_calendar_get_human(payload)
 
 
 def test_graph_calendar_get_html_body(monkeypatch) -> None:
@@ -239,6 +259,20 @@ def test_google_calendar_get_full_shape(tmp_path: Path) -> None:
         "days": ["mo", "we"],
         "count": 8,
     }
+
+
+def test_google_calendar_get_cancelled_event(tmp_path: Path) -> None:
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = {
+        **_GOOGLE_EVENT,
+        "status": "cancelled",
+    }
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_get(event_id="g-evt")
+        )
+    assert payload["event"]["is_cancelled"] is True
+    assert "  [cancelled]" in format_calendar_get_human(payload)
 
 
 @pytest.mark.parametrize(
