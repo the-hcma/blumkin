@@ -182,10 +182,16 @@ Optional: set `client_id` in toml as well; when omitted it is read from the JSON
 Keep the client JSON mode `0600` and outside the repo.
 
 **Coverage.** Google runs `auth`, all of `calendar` (`update` attaches a Meet
-link instead of a Teams link), all of `mail` reads and writes, `people resolve`
-(own contacts, plus the Workspace directory on a Workspace account), and `chat`
-`find` / `last` / `send` / `edit` / `delete` / `attachments`. Everything else
-fails closed with a clear error.
+link instead of a Teams link; `create` takes the same `--repeat` recurrence
+flags), all of `mail` reads and writes, `people resolve` (own contacts, plus the
+Workspace directory on a Workspace account), and `chat` `find` / `last` / `send`
+/ `edit` / `delete` / `attachments`. `meeting get` / `meeting transcription` are
+stubbed by design — Google Meet transcript access is deliberately not
+implemented ([`docs/DECISIONS.md` D8](./docs/DECISIONS.md)). A few option-level
+combinations also still fail closed on a Google profile: `mail list` /
+`mail inbox` `--importance` / `--has-attachments` / `--orderby`, and
+`calendar suggest --treat-tentative free`. Everything else fails closed with a
+clear error.
 
 **Provider differences.**
 
@@ -204,12 +210,15 @@ Google HTTP and token-refresh calls too. Never commit any of these files.
 ## Tests
 
 ```bash
-uv run pytest -m 'not live'          # CI-equivalent (mocks / offline)
-BLUMKIN_LIVE=1 uv run pytest -m live # live Graph reads + silent refresh
+uv run pytest -m 'not live'                        # CI-equivalent (mocks / offline)
+BLUMKIN_LIVE=1 uv run pytest -m live               # live Graph reads + silent refresh
+BLUMKIN_LIVE_GOOGLE=1 uv run pytest -m live_google # live Google reads (Google profile)
 ```
 
 Live tests need `~/.config/blumkin/` by default (override with `BLUMKIN_CONFIG_DIR`):
-`config.toml`, token cache, auth record, and a usable refresh token. Never commit those files.
+`config.toml`, token cache, auth record, and a usable refresh token. The
+`live_google` tests instead need a logged-in Google profile (`provider =
+"google"`). Never commit those files.
 
 ## Security
 

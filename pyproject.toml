@@ -59,6 +59,7 @@ Repository = "https://github.com/the-hcma/blumkin"
 [tool.pytest.ini_options]
 markers = [
     "live: live Graph read tests (needs ~/.config/blumkin and network)",
+    "live_google: live Google API read tests (needs a logged-in Google profile and network); also marked 'live'",
 ]
 testpaths = ["tests"]
 
