@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,7 @@ def test_completion_install_refuses_to_clobber_without_force(monkeypatch, tmp_pa
     assert "_BLUMKIN_COMPLETE" in target.read_text()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is POSIX-only")
 def test_completion_install_rejects_a_non_regular_target(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     target = tmp_path / "bash-completion" / "completions" / "blumkin.bash"
