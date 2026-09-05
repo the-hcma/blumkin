@@ -307,6 +307,7 @@ _ARG_TYPES = {
 _ENUM_VALUES = {
     ("calendar.create", "--body-type"): ["html", "text"],
     ("calendar.create", "--repeat"): ["daily", "weekly", "monthly"],
+    ("calendar.update", "--body-type"): ["html", "text"],
     ("calendar.get", "--body-type"): ["html", "text"],
     ("calendar.suggest", "--treat-tentative"): ["busy", "free"],
     ("mail.draft", "--body-type"): ["text", "html"],

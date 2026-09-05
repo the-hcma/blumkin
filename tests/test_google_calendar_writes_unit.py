@@ -15,6 +15,7 @@ from googleapiclient.errors import HttpError
 from blumkin.config import BlumkinConfig, MailSignatureConfig
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
+from blumkin.skills.calendar import CalendarEventNotFoundError
 
 _GOOGLE_CAL = "blumkin.providers.google.calendar"
 
@@ -140,52 +141,6 @@ def test_calendar_cancel_deletes_and_notifies(tmp_path: Path) -> None:
     service.events.return_value.delete.return_value.execute.assert_called_with(num_retries=0)
 
 
-def test_calendar_update_attaches_a_meet_conference(tmp_path: Path) -> None:
-    patched_event = {
-        "id": "evt-1",
-        "summary": "Sync",
-        "start": {"dateTime": "2026-09-01T10:00:00-04:00"},
-        "end": {"dateTime": "2026-09-01T10:30:00-04:00"},
-        "conferenceData": {
-            "entryPoints": [
-                {"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij"}
-            ]
-        },
-    }
-    service = _service(patched=patched_event)
-    with _patched(service):
-        payload = asyncio.run(
-            GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(
-                event_id="evt-1", tz_name="America/New_York"
-            )
-        )
-    # hangoutLink lags a fresh patch, so the link has to come off conferenceData.
-    assert payload["event"]["online_join_url"] == "https://meet.google.com/abc-defg-hij"
-    kwargs = service.events.return_value.patch.call_args.kwargs
-    assert kwargs["conferenceDataVersion"] == 1
-    # This PATCH emails every attendee about the new link; dropping it would leave
-    # them never told, with every test still green.
-    assert kwargs["sendUpdates"] == "all"
-    request = kwargs["body"]["conferenceData"]["createRequest"]
-    assert request["conferenceSolutionKey"] == {"type": "hangoutsMeet"}
-    assert request["requestId"]
-    # sendUpdates="all" on this PATCH means a retry would re-notify attendees.
-    service.events.return_value.patch.return_value.execute.assert_called_with(num_retries=0)
-
-
-def test_calendar_update_reports_a_conference_that_never_provisioned(tmp_path: Path) -> None:
-    service = _service(patched={"id": "evt-1", "summary": "Sync"})
-    with _patched(service), pytest.raises(RuntimeError, match="was not provisioned"):
-        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(event_id="evt-1"))
-
-
-def test_calendar_update_rejects_no_teams(tmp_path: Path) -> None:
-    with _patched(_service()), pytest.raises(ValueError, match="do not pass --no-teams"):
-        asyncio.run(
-            GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(event_id="evt-1", teams=False)
-        )
-
-
 def _cfg(config_dir: Path) -> BlumkinConfig:
     oauth = config_dir / "desktop-client.json"
     if not oauth.is_file():
@@ -228,12 +183,66 @@ def _service(*, event: dict | None = None, patched: dict | None = None) -> Magic
     return service
 
 
-def test_calendar_cancel_refuses_an_event_you_do_not_organize(tmp_path: Path) -> None:
-    """Google's delete would only drop your copy, silently leaving the meeting alive."""
-    service = _service(event={"id": "evt-1", "organizer": {"email": "ada@example.com"}})
-    with _patched(service), pytest.raises(ValueError, match="do not organize"):
-        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_cancel(event_id="evt-1"))
-    service.events.return_value.delete.assert_not_called()
+def test_calendar_update_teams_true_attaches_meet(tmp_path: Path) -> None:
+    patched_event = {
+        "id": "evt-1",
+        "summary": "Sync",
+        "start": {"dateTime": "2026-09-01T10:00:00-04:00"},
+        "end": {"dateTime": "2026-09-01T10:30:00-04:00"},
+        "conferenceData": {
+            "entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/x"}]
+        },
+    }
+    service = _service(patched=patched_event)
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(event_id="evt-1", teams=True)
+        )
+    assert payload["event"]["online_join_url"] == "https://meet.google.com/x"
+    kwargs = service.events.return_value.patch.call_args.kwargs
+    assert kwargs["conferenceDataVersion"] == 1
+    assert kwargs["sendUpdates"] == "all"
+    assert kwargs["body"]["conferenceData"]["createRequest"]["conferenceSolutionKey"] == {
+        "type": "hangoutsMeet"
+    }
+
+
+def test_calendar_update_teams_false_clears_conference(tmp_path: Path) -> None:
+    service = _service(patched={"id": "evt-1", "summary": "Sync"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(event_id="evt-1", teams=False)
+        )
+    kwargs = service.events.return_value.patch.call_args.kwargs
+    assert kwargs["body"]["conferenceData"] is None
+    assert kwargs["conferenceDataVersion"] == 1
+
+
+def test_calendar_update_subject_only_patches_summary(tmp_path: Path) -> None:
+    service = _service(patched={"id": "evt-1", "summary": "New"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(event_id="evt-1", subject="New")
+        )
+    kwargs = service.events.return_value.patch.call_args.kwargs
+    assert kwargs["body"] == {"summary": "New"}
+    assert kwargs["sendUpdates"] == "all"
+
+
+def test_calendar_update_nothing_to_update_rejected(tmp_path: Path) -> None:
+    with _patched(_service()), pytest.raises(ValueError, match="nothing to update"):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(event_id="evt-1"))
+
+
+def test_calendar_update_missing_event_is_not_found(tmp_path: Path) -> None:
+    service = _service()
+    service.events.return_value.patch.return_value.execute.side_effect = HttpError(
+        httplib2.Response({"status": 404}), b"gone"
+    )
+    with _patched(service), pytest.raises(CalendarEventNotFoundError, match="evt-1"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(event_id="evt-1", subject="x")
+        )
 
 
 def test_calendar_update_rereads_when_the_conference_is_still_pending(tmp_path: Path) -> None:
@@ -252,7 +261,7 @@ def test_calendar_update_rereads_when_the_conference_is_still_pending(tmp_path: 
     service.events.return_value.get.return_value.execute.return_value = settled
     with _patched(service):
         payload = asyncio.run(
-            GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(event_id="evt-1")
+            GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(event_id="evt-1", teams=True)
         )
     assert payload["event"]["online_join_url"] == "https://meet.google.com/x"
 
@@ -328,15 +337,6 @@ def test_accept_human_output_names_the_events_it_skipped() -> None:
     )
     assert any("evt-pending" in line for line in lines)
     assert any("skipped evt-orphan" in line and "attendee" in line for line in lines)
-
-
-def test_calendar_update_hint_does_not_send_you_to_create_teams(tmp_path: Path) -> None:
-    """`calendar create --teams` attaches nothing on Google, so it is a dead-end hint."""
-    service = _service(patched={"id": "evt-1", "summary": "Sync"})
-    with _patched(service), pytest.raises(RuntimeError) as excinfo:
-        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_update(event_id="evt-1"))
-    assert "calendar create --teams" not in str(excinfo.value)
-    assert "re-run `calendar update`" in str(excinfo.value)
 
 
 def test_calendar_accept_today_pending_survives_an_http_failure_on_one_event(

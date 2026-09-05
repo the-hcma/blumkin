@@ -241,14 +241,27 @@ Lists events for the local day. Graph returns UTC; blumkin converts to `--tz`
 """
 
 CALENDAR_UPDATE_EPILOG = """
-Example:
+Examples:
 
 \b
-  blumkin calendar update --event-id AAMk... --yes
+  # Move a meeting and change its length
+  blumkin calendar update --event-id AAMk... --start "2026-09-23T14:00" \\
+    --duration 45m --yes
+\b
+  # Edit the agenda and location only
+  blumkin calendar update --event-id AAMk... --location "Room 7" \\
+    --body "Updated agenda: …" --yes
+\b
+  # Replace the attendee list and remove the online meeting
+  blumkin calendar update --event-id AAMk... --with sam@example.com \\
+    --with dana@example.com --no-teams --yes
 
-Attaches a Teams online meeting to an event that does not have one (v1 only adds,
-it cannot remove). Uses Calendars.ReadWrite. Requires `--yes` because attendees
-are notified.
+Only the flags you pass are changed. `--with` **replaces** the whole attendee
+list. `--teams` attaches an online meeting, `--no-teams` removes it, omit to
+leave it. `--all-day` / `--no-all-day` convert the event type (`--start` becomes
+a date, `--duration` whole days). `--start` alone keeps the current length;
+`--duration` or `--end` (not both) sets a new one. Editing a recurring series
+edits the whole series. Uses Calendars.ReadWrite; requires `--yes`.
 """
 
 CALENDAR_VIEW_EPILOG = """
