@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,21 @@ def test_completion_install_human_output_zsh_names_fpath(monkeypatch, tmp_path: 
     assert again.stdout.splitlines()[0] == f"unchanged: {target}"
 
 
+def test_completion_install_ignores_a_relative_xdg_dir(monkeypatch, tmp_path: Path) -> None:
+    # XDG spec: a relative base-dir value is invalid and must be ignored. Chdir
+    # into tmp_path so the fallback (~/.local/share) is the only writable option
+    # we can assert on without polluting CWD.
+    monkeypatch.setenv("XDG_DATA_HOME", "relative/data")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["completion", "bash", "--install", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert json.loads(result.stdout)["path"] == str(
+        tmp_path / ".local" / "share" / "bash-completion" / "completions" / "blumkin.bash"
+    )
+    assert not (tmp_path / "relative").exists()
+
+
 def test_completion_install_is_idempotent(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     first = CliRunner().invoke(main, ["completion", "bash", "--install", "--json"])
@@ -85,6 +101,18 @@ def test_completion_install_refuses_to_clobber_without_force(monkeypatch, tmp_pa
     assert forced.exit_code == EXIT_SUCCESS
     assert json.loads(forced.stdout)["action"] == "written"
     assert "_BLUMKIN_COMPLETE" in target.read_text()
+
+
+def test_completion_install_rejects_a_non_regular_target(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    target = tmp_path / "bash-completion" / "completions" / "blumkin.bash"
+    target.parent.mkdir(parents=True)
+    os.mkfifo(target)
+    result = CliRunner().invoke(main, ["completion", "bash", "--install", "--force", "--json"])
+    assert result.exit_code == EXIT_OTHER
+    payload = json.loads(result.stderr)
+    assert payload["error"] == "install_failed"
+    assert "not a regular file" in payload["message"]
 
 
 def test_completion_install_reports_a_clean_error_when_target_is_a_directory(

@@ -173,11 +173,11 @@ def _auth_status_payload(config: BlumkinConfig | None = None) -> dict[str, Any]:
 
 def _completion_install_path(shell: str) -> Path:
     """Conventional per-user path for a shell's blumkin completion script."""
-    xdg_data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    xdg_data = _xdg_base("XDG_DATA_HOME", Path.home() / ".local" / "share")
     if shell == "bash":
         return xdg_data / "bash-completion" / "completions" / "blumkin.bash"
     if shell == "fish":
-        xdg_config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        xdg_config = _xdg_base("XDG_CONFIG_HOME", Path.home() / ".config")
         return xdg_config / "fish" / "completions" / "blumkin.fish"
     return xdg_data / "zsh" / "site-functions" / "_blumkin"
 
@@ -471,6 +471,13 @@ def _workspace(config: BlumkinConfig | None = None) -> WorkspaceProvider:
     except ProviderConfigError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
         raise SystemExit(EXIT_USAGE) from exc
+
+
+def _xdg_base(var: str, default: Path) -> Path:
+    """XDG base dir from ``$var``, honoring the spec: a relative value is ignored."""
+    value = os.environ.get(var, "")
+    candidate = Path(value) if value else default
+    return candidate if candidate.is_absolute() else default
 
 
 @click.group(epilog=help_text.MAIN_EPILOG)
@@ -943,6 +950,16 @@ def completion(
         raise SystemExit(EXIT_USAGE)
 
     try:
+        if path.exists() and not path.is_file():
+            # A directory, FIFO, socket, or device at the target: is_file() is
+            # False so the paths below would misread it as "nothing there".
+            _emit_error(
+                error="install_failed",
+                message=f"{path} exists but is not a regular file",
+                as_json=as_json,
+                hint="Remove it (or point XDG_DATA_HOME/XDG_CONFIG_HOME elsewhere), then retry.",
+            )
+            raise SystemExit(EXIT_OTHER)
         # Compare bytes so a non-UTF-8 file at the target (hand-placed, another
         # tool) is "different", not a decode crash.
         current = path.read_bytes() if path.is_file() else None
