@@ -432,10 +432,10 @@ class GoogleWorkspaceProvider:
         )
 
     async def meeting_get(self, *, event_id: str) -> dict[str, Any]:
-        return self._unsupported("meeting get")
+        return self._meeting_unsupported("meeting get")
 
     async def meeting_transcription(self, *, event_id: str, enable: bool = False) -> dict[str, Any]:
-        return self._unsupported("meeting transcription")
+        return self._meeting_unsupported("meeting transcription")
 
     async def people_resolve(
         self,
@@ -446,6 +446,14 @@ class GoogleWorkspaceProvider:
     ) -> dict[str, Any]:
         return await google_people.people_resolve(
             name=name, email=email, top=top, config=self._config
+        )
+
+    def _meeting_unsupported(self, op: str) -> dict[str, Any]:
+        # Deliberate, not a TODO: Meet REST + transcript scopes are out of scope
+        # for the parity milestone (docs/DECISIONS.md D8).
+        raise ValueError(
+            f"{op} not supported for provider=google "
+            "(Meet get/transcription is intentionally not implemented; see docs/DECISIONS.md D8)"
         )
 
     def _unsupported(self, op: str) -> dict[str, Any]:

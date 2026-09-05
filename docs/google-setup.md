@@ -28,8 +28,9 @@ Supported verbs with `provider = "google"`: auth, calendar `today` / `view` /
 `list` / `get` / `folders` / `attachments` (list + `download`), mail writes
 `draft` / `update-draft` / `delete-draft` / `send-draft` / `reply` / `forward`,
 `people resolve`, and chat `find` / `last` / `send` / `edit` / `delete` /
-`attachments`. Only the `meeting` skills still fail closed
-([#89](https://github.com/the-hcma/blumkin/issues/89)).
+`attachments`. The `meeting` skills (`meeting get` / `meeting transcription`)
+fail closed by design - Google Meet transcript access is intentionally not
+implemented ([DECISIONS.md D8](./DECISIONS.md)).
 
 Requested OAuth scopes at login:
 
@@ -288,6 +289,7 @@ blumkin --profile personal auth logout
 
 - Parent epic: [#67](https://github.com/the-hcma/blumkin/issues/67)
 - Post-MVP Google surface: [#89](https://github.com/the-hcma/blumkin/issues/89)
+  (delivered A-F; Meet/transcription stubbed by [DECISIONS.md D8](./DECISIONS.md))
 - Multi-provider agent context protocol: [#91](https://github.com/the-hcma/blumkin/issues/91)
 - Agent skill notes: [`.cursor/skills/blumkin/SKILL.md`](../.cursor/skills/blumkin/SKILL.md)
 - Agent integration overview: [`agent-integration.md`](./agent-integration.md)

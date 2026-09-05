@@ -31,3 +31,17 @@ When changing auth, Graph client, calendar/mail/chat skills, or live/auth tests:
    ```
 
 Do not skip step 2 for auth/token-cache changes: the live test force-expires the cached access token and asserts Graph still works and `auth status` shows a future expiry.
+
+## Google provider (`provider = "google"`)
+
+`tests/test_live_google_reads.py` is the Google equivalent. It is marked both
+`live` and `live_google`, so CI's `-m 'not live'` still deselects it; run it
+against a logged-in Google profile:
+
+```bash
+BLUMKIN_LIVE_GOOGLE=1 uv run pytest -m live_google
+```
+
+Requires a Google profile (`provider = "google"`, Desktop client JSON, token
+file with a refresh token) under `~/.config/blumkin/` (or `BLUMKIN_CONFIG_DIR`
+/ `BLUMKIN_PROFILE`). Reads only — never a notifying verb.
