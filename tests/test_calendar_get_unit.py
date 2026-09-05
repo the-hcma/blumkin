@@ -65,7 +65,7 @@ def _graph_event() -> SimpleNamespace:
         organizer=SimpleNamespace(
             email_address=SimpleNamespace(name="Me", address="me@example.com")
         ),
-        response_status=SimpleNamespace(response="organizer"),
+        response_status=SimpleNamespace(response=ResponseType.Organizer),
         body=SimpleNamespace(content="Agenda: status, blockers", content_type="text"),
         attendees=[
             SimpleNamespace(
@@ -112,6 +112,7 @@ def test_graph_calendar_get_full_shape(monkeypatch) -> None:
     assert ev["series_master_id"] == "series-1"
     assert ev["web_link"] == "https://outlook.example/evt-1"
     assert ev["is_cancelled"] is False
+    assert ev["response"] == "organizer"  # kiota ResponseType -> wire vocab
     assert ev["attendees"] == [
         {"email": "sam@example.com", "name": "Sam", "response": "accepted", "type": "required"}
     ]

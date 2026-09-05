@@ -653,7 +653,7 @@ def _event_to_dict(ev: Any, display_tz: ZoneInfo) -> dict[str, Any]:
         location = ev.location.display_name
     response = None
     if ev.response_status and ev.response_status.response:
-        response = str(ev.response_status.response)
+        response = _enum_value(ev.response_status.response)
     online = None
     if ev.online_meeting and getattr(ev.online_meeting, "join_url", None):
         online = ev.online_meeting.join_url
