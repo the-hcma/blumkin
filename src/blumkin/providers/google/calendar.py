@@ -455,7 +455,7 @@ def _event_detail_to_dict(
     detail["body"] = ev.get("description")
     detail["body_type"] = body_type
     detail["is_cancelled"] = ev.get("status") == "cancelled"
-    detail["recurrence"] = _rrule_to_payload(ev.get("recurrence"))
+    detail["recurrence"] = _rrule_to_payload(ev.get("recurrence"), display_tz)
     detail["series_master_id"] = ev.get("recurringEventId")
     detail["web_link"] = ev.get("htmlLink")
     return detail
@@ -579,7 +579,7 @@ def _rfc3339(value: datetime) -> str:
     return value.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00", "Z")
 
 
-def _rrule_to_payload(recurrence: list[str] | None) -> dict[str, Any] | None:
+def _rrule_to_payload(recurrence: list[str] | None, display_tz: ZoneInfo) -> dict[str, Any] | None:
     """First ``RRULE:`` line of a Google ``recurrence`` -> the ``calendar create`` shape."""
     for line in recurrence or []:
         if not str(line).upper().startswith("RRULE:"):
@@ -595,13 +595,30 @@ def _rrule_to_payload(recurrence: list[str] | None) -> dict[str, Any] | None:
         if "COUNT" in parts:
             payload["count"] = int(parts["COUNT"])
         elif "UNTIL" in parts:
-            payload["until"] = date.fromisoformat(
-                f"{parts['UNTIL'][:4]}-{parts['UNTIL'][4:6]}-{parts['UNTIL'][6:8]}"
-            ).isoformat()
+            payload["until"] = _until_local_date(parts["UNTIL"], display_tz).isoformat()
         else:
             payload["ends"] = "never"
         return payload
     return None
+
+
+def _until_local_date(raw: str, display_tz: ZoneInfo) -> date:
+    """Local calendar date of an RRULE ``UNTIL`` value.
+
+    ``recurrence_rrule`` stores UNTIL as the UTC end-of-day of the user's
+    ``--until`` date, so a bare ``raw[:8]`` slice reports one day late in
+    negative-offset zones; convert the timestamp back to ``display_tz`` first.
+    """
+    text = raw.strip()
+    ymd = date.fromisoformat(f"{text[:4]}-{text[4:6]}-{text[6:8]}")
+    if "T" not in text:
+        return ymd
+    clock = text[9:].replace("Z", "")
+    try:
+        moment = datetime.combine(ymd, time.fromisoformat(clock[:8] or "00:00:00"), tzinfo=UTC)
+    except ValueError:
+        return ymd
+    return moment.astimezone(display_tz).date()
 
 
 def _schedule_error_message(entry: dict[str, Any]) -> str | None:

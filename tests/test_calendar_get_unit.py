@@ -14,6 +14,7 @@ import pytest
 from click.testing import CliRunner
 from googleapiclient.errors import HttpError
 from msgraph.generated.models.day_of_week import DayOfWeek
+from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
 from msgraph.generated.models.recurrence_pattern import RecurrencePattern
@@ -27,9 +28,21 @@ from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_SUCCESS
 from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
-from blumkin.skills.calendar import CalendarEventNotFoundError, calendar_get
+from blumkin.skills.calendar import (
+    CalendarEventNotFoundError,
+    calendar_get,
+    format_calendar_get_human,
+)
 
 _GOOGLE_CAL = "blumkin.providers.google.calendar"
+
+
+def _odata_error(*, status: int, code: str | None = None) -> ODataError:
+    err = ODataError()
+    err.response_status_code = status
+    if code is not None:
+        err.error = MainError(code=code)
+    return err
 
 
 def _dtz(value: str) -> SimpleNamespace:
@@ -114,9 +127,17 @@ def test_graph_calendar_get_html_body(monkeypatch) -> None:
     assert header == {'outlook.body-content-type="html"'}
 
 
-def test_graph_calendar_get_missing_id_raises_not_found(monkeypatch) -> None:
-    err = ODataError()
-    err.response_status_code = 404
+@pytest.mark.parametrize(
+    "err",
+    [
+        _odata_error(status=404),
+        # A malformed id: Graph answers 400 + an id-shaped error code, the arm
+        # is_id_lookup_failure exists for.
+        _odata_error(status=400, code="ErrorInvalidIdMalformed"),
+        _odata_error(status=400, code="ErrorItemNotFound"),
+    ],
+)
+def test_graph_calendar_get_bad_id_raises_not_found(monkeypatch, err) -> None:
     client = MagicMock()
     client.me.events.by_event_id.return_value.get = AsyncMock(side_effect=err)
     monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
@@ -126,6 +147,20 @@ def test_graph_calendar_get_missing_id_raises_not_found(monkeypatch) -> None:
     )
     with pytest.raises(CalendarEventNotFoundError, match="event not found: nope"):
         asyncio.run(calendar_get(event_id="nope"))
+
+
+def test_graph_calendar_get_query_400_still_raises(monkeypatch) -> None:
+    """A query-level 400 (no id-shaped code) must not be mistaken for not_found."""
+    client = MagicMock()
+    client.me.events.by_event_id.return_value.get = AsyncMock(
+        side_effect=_odata_error(status=400, code="ErrorInvalidUrlQuery")
+    )
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config", lambda: SimpleNamespace(default_tz="UTC")
+    )
+    with pytest.raises(ODataError):
+        asyncio.run(calendar_get(event_id="evt-1"))
 
 
 def _google_cfg(config_dir: Path) -> BlumkinConfig:
@@ -206,6 +241,22 @@ def test_google_calendar_get_full_shape(tmp_path: Path) -> None:
     }
 
 
+def test_google_calendar_get_until_readback_uses_local_date(tmp_path: Path) -> None:
+    # recurrence_rrule stores --until 2026-12-31 (America/New_York) as the UTC
+    # end-of-day: 2027-01-01T04:59:59Z. The readback must report 2026-12-31.
+    event = {
+        **_GOOGLE_EVENT,
+        "recurrence": ["RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=MO;UNTIL=20270101T045959Z"],
+    }
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = event
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_get(event_id="g-evt")
+        )
+    assert payload["event"]["recurrence"]["until"] == "2026-12-31"
+
+
 def test_google_calendar_get_missing_id_raises_not_found(tmp_path: Path) -> None:
     service = MagicMock()
     service.events.return_value.get.return_value.execute.side_effect = HttpError(
@@ -215,6 +266,32 @@ def test_google_calendar_get_missing_id_raises_not_found(tmp_path: Path) -> None
         asyncio.run(
             google_calendar.calendar_get(event_id="g-missing", config=_google_cfg(tmp_path))
         )
+
+
+def test_format_calendar_get_human_sanitizes_attacker_controlled_names() -> None:
+    lines = format_calendar_get_human(
+        {
+            "event": {
+                "id": "e",
+                "subject": "sub",
+                "start": "s",
+                "end": "e2",
+                "timezone": "UTC",
+                "organizer": {"email": "x@e.com", "name": "Ev\x1b[31mil"},
+                "attendees": [
+                    {
+                        "email": "a@e.com",
+                        "name": "A\x07t",
+                        "response": "acc\x1bepted",
+                        "type": "required",
+                    }
+                ],
+            }
+        }
+    )
+    joined = "\n".join(lines)
+    assert "\x1b" not in joined
+    assert "\x07" not in joined
 
 
 def test_cli_calendar_get_help_and_not_found(monkeypatch) -> None:

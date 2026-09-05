@@ -272,15 +272,18 @@ def format_calendar_get_human(payload: dict[str, Any]) -> list[str]:
         lines.append(f"  location: {sanitize_terminal(str(ev['location']))}")
     org = ev.get("organizer") or {}
     if org.get("email"):
-        lines.append(f"  organizer: {org.get('name') or org['email']} <{org['email']}>")
+        who = _clean(org.get("name") or org["email"])
+        lines.append(f"  organizer: {who} <{_clean(org['email'])}>")
     if ev.get("response"):
-        lines.append(f"  your response: {ev['response']}")
+        lines.append(f"  your response: {_clean(ev['response'])}")
     recurrence = ev.get("recurrence")
     if recurrence:
         lines.append(f"  repeats: {format_recurrence(recurrence)}")
     for att in ev.get("attendees") or []:
-        who = att.get("name") or att.get("email") or "(unknown)"
-        lines.append(f"  • {who} — {att.get('response') or 'no response'} ({att.get('type')})")
+        # An external organizer controls these display names / addresses.
+        who = _clean(att.get("name") or att.get("email") or "(unknown)")
+        response = _clean(att.get("response") or "no response")
+        lines.append(f"  • {who} — {response} ({_clean(att.get('type'))})")
     if ev.get("online_join_url"):
         lines.append(f"  join: {sanitize_terminal(str(ev['online_join_url']))}")
     if ev.get("body"):
@@ -597,6 +600,11 @@ def _busy_slot_to_dict(item: Any, display_tz: ZoneInfo) -> dict[str, Any]:
         "start": _graph_dt_to_iso(item.start, display_tz),
         "status": status,
     }
+
+
+def _clean(value: Any) -> str:
+    """Terminal-safe rendering of a possibly attacker-controlled string."""
+    return sanitize_terminal(str(value)) if value is not None else ""
 
 
 def _event_detail_to_dict(ev: Any, display_tz: ZoneInfo, body_type: str) -> dict[str, Any]:
