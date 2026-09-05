@@ -36,6 +36,24 @@ from blumkin.skills.calendar import (
     parse_local_datetime,
 )
 
+
+@dataclass(frozen=True)
+class Recurrence:
+    """A normalized, provider-agnostic recurrence request.
+
+    ``freq`` is ``daily`` / ``weekly`` / ``monthly``. ``days`` holds RRULE
+    two-letter weekday codes (``MO``..``SU``) and is only ever set for weekly
+    patterns. At most one of ``count`` / ``until`` is set; neither means an
+    open-ended series.
+    """
+
+    freq: str
+    interval: int = 1
+    days: tuple[str, ...] = ()
+    count: int | None = None
+    until: date | None = None
+
+
 _DEFAULT_DURATION = "30m"
 _DURATION_RE = re.compile(
     r"^(\d+)\s*(m|min|mins|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)$", re.I
@@ -72,23 +90,6 @@ _WEEKDAY_BY_TOKEN = {
     "wed": "WE",
     "wednesday": "WE",
 }
-
-
-@dataclass(frozen=True)
-class Recurrence:
-    """A normalized, provider-agnostic recurrence request.
-
-    ``freq`` is ``daily`` / ``weekly`` / ``monthly``. ``days`` holds RRULE
-    two-letter weekday codes (``MO``..``SU``) and is only ever set for weekly
-    patterns. At most one of ``count`` / ``until`` is set; neither means an
-    open-ended series.
-    """
-
-    freq: str
-    interval: int = 1
-    days: tuple[str, ...] = ()
-    count: int | None = None
-    until: date | None = None
 
 
 async def calendar_accept(
@@ -345,6 +346,15 @@ def recurrence_payload(recurrence: Recurrence, start: datetime) -> dict[str, Any
         raise ValueError(
             f"--until {recurrence.until.isoformat()} is before --start {start.date().isoformat()}"
         )
+    if recurrence.freq == "weekly" and recurrence.days:
+        start_code = _RRULE_WEEKDAYS[start.weekday()]
+        if start_code not in recurrence.days:
+            # RFC 5545: a DTSTART not matching the BYDAY set produces an undefined
+            # series, and Graph rejects it outright. Fail fast with a clear message.
+            raise ValueError(
+                f"--days {','.join(c.lower() for c in recurrence.days)} must include the "
+                f"--start weekday ({start_code.lower()})"
+            )
     payload: dict[str, Any] = {"freq": recurrence.freq, "interval": recurrence.interval}
     if recurrence.freq == "weekly":
         codes = recurrence.days or (_RRULE_WEEKDAYS[start.weekday()],)
@@ -424,6 +434,9 @@ def _graph_recurrence(recurrence: Recurrence, start: datetime) -> PatternedRecur
         codes = recurrence.days or (_RRULE_WEEKDAYS[start.weekday()],)
         pattern = RecurrencePattern(
             days_of_week=[_GRAPH_DAY_OF_WEEK[code] for code in codes],
+            # Required by Graph for weekly patterns; Monday matches the RRULE
+            # default (WKST=MO) so both providers count multi-week intervals alike.
+            first_day_of_week=DayOfWeek.Monday,
             interval=recurrence.interval,
             type=RecurrencePatternType.Weekly,
         )

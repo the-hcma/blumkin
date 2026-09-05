@@ -7,6 +7,7 @@ Covers the shared flag parser, the two provider mappings (Graph
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,6 +87,13 @@ def test_recurrence_payload_echo_shapes() -> None:
     assert monthly == {"freq": "monthly", "interval": 1, "day_of_month": 22, "ends": "never"}
 
 
+def test_recurrence_payload_rejects_days_without_the_start_weekday() -> None:
+    # _START is a Tuesday.
+    rec = Recurrence(freq="weekly", days=("MO", "WE"))
+    with pytest.raises(ValueError, match="must include the --start weekday"):
+        recurrence_payload(rec, _START)
+
+
 # --------------------------------------------------------------------------- rrule
 
 
@@ -140,7 +148,7 @@ def test_graph_calendar_create_weekly_recurrence(monkeypatch) -> None:
         calendar_create(
             subject="1:1",
             with_emails=["sam@example.com"],
-            start_raw="2026-09-22T13:05",
+            start_raw="2026-09-21T13:05",  # a Monday
             duration="45m",
             recurrence=parse_recurrence(repeat="weekly", days="mon,wed", until="2026-12-31"),
             teams=False,
@@ -150,8 +158,9 @@ def test_graph_calendar_create_weekly_recurrence(monkeypatch) -> None:
     posted = client.me.events.post.await_args.args[0]
     assert posted.recurrence.pattern.type == RecurrencePatternType.Weekly
     assert posted.recurrence.pattern.days_of_week == [DayOfWeek.Monday, DayOfWeek.Wednesday]
+    assert posted.recurrence.pattern.first_day_of_week == DayOfWeek.Monday
     assert posted.recurrence.range.type == RecurrenceRangeType.EndDate
-    assert posted.recurrence.range.start_date == date(2026, 9, 22)
+    assert posted.recurrence.range.start_date == date(2026, 9, 21)
     assert posted.recurrence.range.end_date == date(2026, 12, 31)
     assert payload["recurrence"] == {
         "freq": "weekly",
@@ -159,6 +168,22 @@ def test_graph_calendar_create_weekly_recurrence(monkeypatch) -> None:
         "days": ["mo", "we"],
         "until": "2026-12-31",
     }
+
+
+def test_graph_calendar_create_rejects_until_before_start_without_posting(monkeypatch) -> None:
+    client = _graph_client(monkeypatch)
+    with pytest.raises(ValueError, match="is before --start"):
+        asyncio.run(
+            calendar_create(
+                subject="1:1",
+                with_emails=[],
+                start_raw="2026-09-22T13:05",
+                recurrence=parse_recurrence(repeat="weekly", until="2020-01-01"),
+                teams=False,
+                tz_name="America/New_York",
+            )
+        )
+    client.me.events.post.assert_not_awaited()
 
 
 def test_graph_calendar_create_monthly_count(monkeypatch) -> None:
@@ -305,6 +330,31 @@ def test_cli_days_without_weekly_is_usage_error() -> None:
     )
     assert result.exit_code == EXIT_USAGE
     assert "weekly" in result.stderr
+
+
+def test_cli_until_before_start_exits_usage_not_auth() -> None:
+    # The rejection comes from recurrence_payload deep in the skill, caught by the
+    # CLI's generic ValueError handler - pin that it classifies as usage_error /
+    # exit 2, not auth_required / exit 3, and never reaches a Graph call.
+    result = CliRunner().invoke(
+        main,
+        [
+            "calendar",
+            "create",
+            "--subject",
+            "x",
+            "--start",
+            "2026-09-22T13:05",
+            "--repeat",
+            "weekly",
+            "--until",
+            "2020-01-01",
+            "--yes",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert json.loads(result.stderr)["error"] == "usage_error"
 
 
 def test_cli_recurrence_flags_require_repeat() -> None:

@@ -145,8 +145,9 @@ working hours. `--start` stays in the organizer timezone.
 `--repeat {daily,weekly,monthly}` makes a recurring series (Graph
 patternedRecurrence / Google RRULE). Bound it with `--until DATE` or `--count N`
 (omit both for an open-ended series), widen the gap with `--interval N`, and for
-weekly patterns restrict the weekdays with `--days mon,tue,...`. Monthly repeats
-on the same day-of-month as `--start`.
+weekly patterns restrict the weekdays with `--days mon,tue,...` (which must
+include the `--start` weekday). Monthly repeats on the same day-of-month as
+`--start`.
 """
 
 CALENDAR_EPILOG = """

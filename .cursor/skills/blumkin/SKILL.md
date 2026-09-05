@@ -126,8 +126,9 @@ original's attachments.
      `--yes` is still required. `--remind-email 30m|1h|1d|1w` adds a reminder:
      a real email on Google, an Outlook popup on Microsoft.
      `--repeat daily|weekly|monthly` makes a recurring series; bound it with
-     `--until YYYY-MM-DD` or `--count N`, `--interval N` widens the gap, and
-     `--days mon,tue,...` restricts a weekly pattern.)
+     `--until YYYY-MM-DD` or `--count N` (omit both for an open-ended series),
+     `--interval N` widens the gap, and `--days mon,tue,...` restricts a weekly
+     pattern (must include the `--start` weekday).)
    - `blumkin calendar update --event-id '<id>' --yes` (attach Teams to an
      existing event; uses Calendars.ReadWrite, not OnlineMeetings.ReadWrite)
    - `blumkin calendar cancel --event-id '<id>' --yes`
