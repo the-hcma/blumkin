@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 from datetime import date, datetime
@@ -12,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import click
 import httpx
+from click.shell_completion import get_completion_class
 
 from blumkin import help_text
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
@@ -112,6 +114,10 @@ _DEFAULT_HINTS: dict[str, str] = {
         "Retry once. If it persists, check `blumkin auth status` and Microsoft 365 "
         "service health, and re-run with --json for the raw Graph error."
     ),
+    "install_failed": (
+        "Completion `--install` could not write the script. Ensure the target path is "
+        "a writable file you own (not a directory), then retry with --force."
+    ),
     "missing_scope": (
         "The signed-in account is missing a Graph scope for this command. Run "
         "`blumkin doctor`; if the flow needs an add-on scope, set wo1162425_scopes "
@@ -163,6 +169,17 @@ def _auth_status_payload(config: BlumkinConfig | None = None) -> dict[str, Any]:
     payload = dict(_workspace(config).auth_status())
     payload.update(build_status_fields())
     return payload
+
+
+def _completion_install_path(shell: str) -> Path:
+    """Conventional per-user path for a shell's blumkin completion script."""
+    xdg_data = _xdg_base("XDG_DATA_HOME", Path.home() / ".local" / "share")
+    if shell == "bash":
+        return xdg_data / "bash-completion" / "completions" / "blumkin.bash"
+    if shell == "fish":
+        xdg_config = _xdg_base("XDG_CONFIG_HOME", Path.home() / ".config")
+        return xdg_config / "fish" / "completions" / "blumkin.fish"
+    return xdg_data / "zsh" / "site-functions" / "_blumkin"
 
 
 def _cli_as_json() -> bool:
@@ -454,6 +471,13 @@ def _workspace(config: BlumkinConfig | None = None) -> WorkspaceProvider:
     except ProviderConfigError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
         raise SystemExit(EXIT_USAGE) from exc
+
+
+def _xdg_base(var: str, default: Path) -> Path:
+    """XDG base dir from ``$var``, honoring the spec: a relative value is ignored."""
+    value = os.environ.get(var, "")
+    candidate = Path(value) if value else default
+    return candidate if candidate.is_absolute() else default
 
 
 @click.group(epilog=help_text.MAIN_EPILOG)
@@ -862,25 +886,128 @@ def skills_describe(ctx: click.Context, skill_id: str, as_json_flag: bool) -> No
 
 @main.command(epilog=help_text.COMPLETION_EPILOG)
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
-def completion(shell: str) -> None:
-    """Print a tab-completion script for bash, zsh, or fish.
+@click.option(
+    "--install",
+    is_flag=True,
+    help="Write the script to the conventional per-user completion dir instead of printing it.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="With --install, overwrite an existing file whose contents differ.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def completion(
+    ctx: click.Context, shell: str, install: bool, force: bool, as_json_flag: bool
+) -> None:
+    """Print a tab-completion script for bash, zsh, or fish (or --install it).
 
     Source the output to enable `<TAB>` completion of blumkin commands, options,
-    and Choice values. See the epilog for one-liners per shell.
+    and Choice values. `--install` writes it to the per-user completion directory
+    for the shell (idempotent; `--force` overwrites a differing file). See the
+    epilog for one-liners per shell.
     """
-    from click.shell_completion import get_completion_class
-
+    as_json = _as_json(ctx, as_json_flag)
+    if force and not install:
+        _emit_error(
+            error="usage_error",
+            message="--force only applies with --install",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
     comp_cls = get_completion_class(shell)
     if comp_cls is None:  # pragma: no cover - Choice already constrains shell
         _emit_error(
             error="usage_error",
             message=f"no completion support for shell: {shell}",
-            as_json=False,
+            as_json=as_json,
             hint="Supported shells: bash, zsh, fish.",
         )
         raise SystemExit(EXIT_USAGE)
     completer = comp_cls(main, {}, "blumkin", "_BLUMKIN_COMPLETE")
-    click.echo(completer.source())
+    script = completer.source()
+    if not script.endswith("\n"):
+        script += "\n"
+
+    if not install:
+        if as_json:
+            emit_json({"shell": shell, "script": script})
+        else:
+            click.echo(script, nl=False)
+        raise SystemExit(EXIT_SUCCESS)
+
+    path = _completion_install_path(shell)
+    want = script.encode()
+
+    def _refuse_clobber() -> NoReturn:
+        _emit_error(
+            error="usage_error",
+            message=f"{path} already exists with different contents",
+            as_json=as_json,
+            hint="Re-run with --force to overwrite it.",
+        )
+        raise SystemExit(EXIT_USAGE)
+
+    try:
+        if path.exists() and not path.is_file():
+            # A directory, FIFO, socket, or device at the target: is_file() is
+            # False so the paths below would misread it as "nothing there".
+            _emit_error(
+                error="install_failed",
+                message=f"{path} exists but is not a regular file",
+                as_json=as_json,
+                hint="Remove it (or point XDG_DATA_HOME/XDG_CONFIG_HOME elsewhere), then retry.",
+            )
+            raise SystemExit(EXIT_OTHER)
+        # Compare bytes so a non-UTF-8 file at the target (hand-placed, another
+        # tool) is "different", not a decode crash.
+        current = path.read_bytes() if path.is_file() else None
+        if current == want:
+            action = "unchanged"
+        elif current is not None and not force:
+            _refuse_clobber()
+        elif force:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(want)
+            action = "written"
+        else:
+            # Nothing there a moment ago: create exclusively so a racing
+            # --install cannot be clobbered without --force.
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with path.open("xb") as handle:
+                    handle.write(want)
+                action = "written"
+            except FileExistsError:
+                if path.read_bytes() != want:
+                    _refuse_clobber()
+                action = "unchanged"
+    except OSError as exc:
+        # A directory at the target, an unwritable XDG dir, or a file owned by
+        # another account: report it the way every other I/O site does, not as a
+        # raw traceback (and keep the --json contract).
+        _emit_error(
+            error="install_failed",
+            message=f"could not install the completion script to {path}: {exc}",
+            as_json=as_json,
+            hint="Ensure the path is a writable file (not a directory) that you own.",
+        )
+        raise SystemExit(EXIT_OTHER) from exc
+
+    if as_json:
+        emit_json({"shell": shell, "path": str(path), "action": action})
+    else:
+        lines = [f"{action}: {path}"]
+        if shell == "zsh":
+            lines.append(
+                f"  ensure {path.parent} is on $fpath before `compinit` "
+                "(e.g. in ~/.zshrc), then open a new shell"
+            )
+        else:
+            lines.append("  open a new shell to pick it up")
+        emit_lines(lines)
+    raise SystemExit(EXIT_SUCCESS)
 
 
 @main.command(epilog=help_text.DOCTOR_EPILOG)

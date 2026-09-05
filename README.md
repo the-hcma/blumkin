@@ -90,19 +90,30 @@ blumkin calendar create --help     # one command: args, notes, example invocatio
 
 ### Shell completion
 
-`blumkin completion <bash|zsh|fish>` prints a completion script. Install it once:
+`blumkin completion <bash|zsh|fish>` prints a completion script. Let blumkin
+install it to the per-user completion dir (idempotent; `--force` to overwrite,
+`--json` reports the path):
 
 ```bash
-# bash
+blumkin completion bash --install
+blumkin completion zsh --install    # then put its dir on $fpath before compinit
+blumkin completion fish --install
+```
+
+Or place it yourself — bash-completion v2 lazy-loads this path (no rc edit):
+
+```bash
+blumkin completion bash > ~/.local/share/bash-completion/completions/blumkin.bash
+blumkin completion fish > ~/.config/fish/completions/blumkin.fish
+```
+
+…or source it from your rc file:
+
+```bash
 blumkin completion bash > ~/.blumkin-complete.bash
 echo 'source ~/.blumkin-complete.bash' >> ~/.bashrc
-
-# zsh
 blumkin completion zsh > ~/.blumkin-complete.zsh
 echo 'source ~/.blumkin-complete.zsh' >> ~/.zshrc
-
-# fish
-blumkin completion fish > ~/.config/fish/completions/blumkin.fish
 ```
 
 Open a new shell afterwards. The script calls back into `blumkin` for

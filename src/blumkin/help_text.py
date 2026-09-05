@@ -353,19 +353,30 @@ Use ASCII hyphens in `--text`, not em dashes.
 """
 
 COMPLETION_EPILOG = """
-Enable completion (writes a file and sources it from your shell rc):
+Easiest: let blumkin write the file to the per-user completion dir for your
+shell (idempotent; --force overwrites a differing file; --json reports the path):
 
 \b
-  # bash
-  blumkin completion bash > ~/.blumkin-complete.bash
-  echo 'source ~/.blumkin-complete.bash' >> ~/.bashrc
+  blumkin completion bash --install
+  blumkin completion zsh --install   # then put its dir on $fpath before compinit
+  blumkin completion fish --install
+
+Or place it yourself. bash-completion v2 lazy-loads this path - no rc edit, no
+re-source:
+
 \b
-  # zsh
-  blumkin completion zsh > ~/.blumkin-complete.zsh
-  echo 'source ~/.blumkin-complete.zsh' >> ~/.zshrc
+  blumkin completion bash > ~/.local/share/bash-completion/completions/blumkin.bash
 \b
   # fish
   blumkin completion fish > ~/.config/fish/completions/blumkin.fish
+\b
+  # source-from-rc way (bash)
+  blumkin completion bash > ~/.blumkin-complete.bash
+  echo 'source ~/.blumkin-complete.bash' >> ~/.bashrc
+\b
+  # source-from-rc way (zsh)
+  blumkin completion zsh > ~/.blumkin-complete.zsh
+  echo 'source ~/.blumkin-complete.zsh' >> ~/.zshrc
 
 Open a new shell afterwards. The script calls back into `blumkin` at completion
 time via the _BLUMKIN_COMPLETE env var, so keep `blumkin` on PATH.
