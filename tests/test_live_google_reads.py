@@ -13,7 +13,9 @@ Reads only - never a verb that notifies anyone (see
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+from datetime import UTC, datetime
 
 import pytest
 
@@ -62,12 +64,31 @@ def test_live_google_mail_inbox() -> None:
     assert len(payload["items"]) <= 5
 
 
-def test_live_google_status_reports_a_future_expiry() -> None:
+def test_live_google_silent_refresh_after_forced_expiry() -> None:
+    """Force the cached access token to expire; the next read must refresh it."""
     if not _live_ready():
         pytest.skip(_SKIP)
-    # A read forces a silent refresh when the access token has lapsed.
-    asyncio.run(get_provider().calendar_today())
-    status = status_dict(load_config())
-    assert status["access_token_expired"] is False
-    assert status["access_token_expires_in_seconds"]
-    assert status["access_token_expires_in_seconds"] > 0
+    cfg = load_config()
+    token_path = cfg.google_token_path
+    backup = token_path.read_text()
+    try:
+        data = json.loads(backup)
+        data["expiry"] = datetime(2000, 1, 1, tzinfo=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        token_path.write_text(json.dumps(data))
+        token_path.chmod(0o600)
+
+        before = status_dict(cfg)
+        assert before["access_token_expired"] is True
+        assert before["refresh_token_present"] is True
+
+        # get_credentials refreshes silently (expired + refresh token) and persists.
+        asyncio.run(get_provider(cfg).calendar_today())
+
+        after = status_dict(load_config())
+        assert after["access_token_expired"] is False
+        assert after["access_token_expires_in_seconds"]
+        assert after["access_token_expires_in_seconds"] > 0
+    except BaseException:
+        token_path.write_text(backup)
+        token_path.chmod(0o600)
+        raise
