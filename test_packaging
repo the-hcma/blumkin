@@ -165,8 +165,9 @@ roundtrip_env() {
 
 # Newest and second-newest *final* published versions, matching what `pipx
 # upgrade` (pip) actually resolves against: no pre-releases, no yanked releases.
-# Any parse or network failure prints nothing, so the block below skips instead
-# of aborting the job (set -euo pipefail).
+# A parse error prints nothing (Python side); a hang / SIGTERM from the outer
+# `timeout` is caught by `|| pypi_versions=""` (shell side). Either way the block
+# below skips instead of aborting the job (set -euo pipefail).
 pypi_versions="$(
   timeout 30 "$venv_dir/bin/python" - <<'PY'
 import json
@@ -192,7 +193,7 @@ except Exception:
 print(finals[-2] if len(finals) >= 2 else "")
 print(finals[-1] if finals else "")
 PY
-)"
+)" || pypi_versions=""
 prev_version="$(printf '%s\n' "$pypi_versions" | sed -n '1p')"
 latest_version="$(printf '%s\n' "$pypi_versions" | sed -n '2p')"
 
