@@ -163,26 +163,34 @@ roundtrip_env() {
     PATH="$(dirname "$pipx_bin"):$PATH" "$@"
 }
 
-# Newest and second-newest published versions (stdlib only; blumkin uses plain semver).
+# Newest and second-newest *final* published versions, matching what `pipx
+# upgrade` (pip) actually resolves against: no pre-releases, no yanked releases.
+# Any parse or network failure prints nothing, so the block below skips instead
+# of aborting the job (set -euo pipefail).
 pypi_versions="$(
   timeout 30 "$venv_dir/bin/python" - <<'PY'
 import json
+import re
 import urllib.request
 
-with urllib.request.urlopen("https://pypi.org/pypi/blumkin/json", timeout=25) as response:
-    releases = json.load(response)["releases"]
-# Skip fully-yanked releases: `pipx upgrade` / pip skip them too, so including
-# one here would make `after` mismatch what the upgrade actually installs.
-ordered = sorted(
-    (
-        v
-        for v, files in releases.items()
-        if files and not all(f.get("yanked", False) for f in files)
-    ),
-    key=lambda v: [int(p) for p in v.split(".")],
-)
-print(ordered[-2] if len(ordered) >= 2 else "")
-print(ordered[-1] if ordered else "")
+FINAL = re.compile(r"^[0-9]+(?:\.[0-9]+)*$")  # 1.2.3 — excludes 1.2.3rc1 / .post1 / .dev0
+try:
+    with urllib.request.urlopen("https://pypi.org/pypi/blumkin/json", timeout=25) as response:
+        releases = json.load(response)["releases"]
+    finals = sorted(
+        (
+            v
+            for v, files in releases.items()
+            if FINAL.match(v)
+            and files
+            and not all(f.get("yanked", False) for f in files)
+        ),
+        key=lambda v: [int(p) for p in v.split(".")],
+    )
+except Exception:
+    finals = []
+print(finals[-2] if len(finals) >= 2 else "")
+print(finals[-1] if finals else "")
 PY
 )"
 prev_version="$(printf '%s\n' "$pypi_versions" | sed -n '1p')"
