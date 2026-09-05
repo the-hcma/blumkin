@@ -207,6 +207,25 @@ def test_graph_calendar_create_monthly_count(monkeypatch) -> None:
     assert rng.number_of_occurrences == 6
 
 
+def test_graph_calendar_create_daily_open_ended(monkeypatch) -> None:
+    client = _graph_client(monkeypatch)
+    asyncio.run(
+        calendar_create(
+            subject="Standup",
+            with_emails=[],
+            start_raw="2026-09-22T09:00",
+            recurrence=parse_recurrence(repeat="daily", interval=3),
+            teams=False,
+            tz_name="America/New_York",
+        )
+    )
+    recurrence = client.me.events.post.await_args.args[0].recurrence
+    assert recurrence.pattern.type == RecurrencePatternType.Daily
+    assert recurrence.pattern.interval == 3
+    assert recurrence.range.type == RecurrenceRangeType.NoEnd
+    assert recurrence.range.start_date == date(2026, 9, 22)
+
+
 def test_graph_calendar_create_single_event_has_no_recurrence(monkeypatch) -> None:
     client = _graph_client(monkeypatch)
     payload = asyncio.run(
@@ -346,10 +365,19 @@ def test_cli_days_without_weekly_is_usage_error() -> None:
     assert "weekly" in result.stderr
 
 
-def test_cli_until_before_start_exits_usage_not_auth() -> None:
-    # The rejection comes from recurrence_payload deep in the skill, caught by the
-    # CLI's generic ValueError handler - pin that it classifies as usage_error /
-    # exit 2, not auth_required / exit 3, and never reaches a Graph call.
+def test_cli_recurrence_value_error_classifies_as_usage_not_auth(monkeypatch) -> None:
+    # recurrence_payload raises this ValueError deep in the skill; pin that the
+    # CLI's generic handler classifies that message as usage_error / exit 2, not
+    # auth_required / exit 3. Patch the provider so the test is hermetic and only
+    # exercises the classification (recurrence_payload firing before any network
+    # call is pinned by the Graph/Google create tests above).
+    async def _raise_recurrence_error(**_kwargs):
+        raise ValueError("--until 2020-01-01 is before --start 2026-09-22")
+
+    monkeypatch.setattr(
+        "blumkin.cli._workspace",
+        lambda: SimpleNamespace(calendar_create=_raise_recurrence_error),
+    )
     result = CliRunner().invoke(
         main,
         [
