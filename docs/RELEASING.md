@@ -68,6 +68,12 @@ which wraps `pipx upgrade blumkin` and prints the version and commit you moved
 from and to. Bare `pipx upgrade blumkin` also works but cannot tell you whether
 `PATH` still resolves to a dev checkout.
 
+From the second published release onward, `test_packaging` (CI *Packaging smoke*)
+also runs the real round-trip: `pipx install` the second-newest published
+release into a custom `PIPX_BIN_DIR`, `blumkin upgrade`, and assert it moved to
+the newest release and reported the pipx app under that bin dir (issue #143).
+The `pipx.ini` / `PIPX_HOME` custom-bin-dir fallback stays unit-only.
+
 The editable dev install (`uv tool install -e .` from a clone) stays the path
 for working on blumkin itself.
 
