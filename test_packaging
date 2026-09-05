@@ -171,8 +171,14 @@ import urllib.request
 
 with urllib.request.urlopen("https://pypi.org/pypi/blumkin/json", timeout=25) as response:
     releases = json.load(response)["releases"]
+# Skip fully-yanked releases: `pipx upgrade` / pip skip them too, so including
+# one here would make `after` mismatch what the upgrade actually installs.
 ordered = sorted(
-    (v for v, files in releases.items() if files),
+    (
+        v
+        for v, files in releases.items()
+        if files and not all(f.get("yanked", False) for f in files)
+    ),
     key=lambda v: [int(p) for p in v.split(".")],
 )
 print(ordered[-2] if len(ordered) >= 2 else "")
