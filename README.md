@@ -185,9 +185,13 @@ Keep the client JSON mode `0600` and outside the repo.
 link instead of a Teams link; `create` takes the same `--repeat` recurrence
 flags), all of `mail` reads and writes, `people resolve` (own contacts, plus the
 Workspace directory on a Workspace account), and `chat` `find` / `last` / `send`
-/ `edit` / `delete` / `attachments`. Only `meeting get` / `meeting transcription`
-fail closed — Google Meet transcript access is deliberately not implemented
-([`docs/DECISIONS.md` D8](./docs/DECISIONS.md)).
+/ `edit` / `delete` / `attachments`. `meeting get` / `meeting transcription` are
+stubbed by design — Google Meet transcript access is deliberately not
+implemented ([`docs/DECISIONS.md` D8](./docs/DECISIONS.md)). A few option-level
+combinations also still fail closed on a Google profile: `mail list` /
+`mail inbox` `--importance` / `--has-attachments` / `--orderby`, and
+`calendar suggest --treat-tentative free`. Everything else fails closed with a
+clear error.
 
 **Provider differences.**
 
