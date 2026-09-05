@@ -646,21 +646,21 @@ wheels = [
 
 [[package]]
 name = "microsoft-kiota-abstractions"
-version = "1.11.9"
+version = "1.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
     { name = "std-uritemplate" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d4/30/00121e45175d11dbb24203a670d27513ff0ae761ffcb7c5c76354621dd82/microsoft_kiota_abstractions-1.11.9.tar.gz", hash = "sha256:c731f270573689437c07b3ecd9533fed7d6d895e19d98ed5d3df5cec1750fe14", size = 25375, upload-time = "2026-08-14T13:53:03.215Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6d/90/387b442587501d8912570def5988e2ae752a04a7282eb500b38e063eeb2c/microsoft_kiota_abstractions-1.12.0.tar.gz", hash = "sha256:1e459414432b367ccb693ed45be94c2f4bad202280cde3a903acc44744b4abbe", size = 25477, upload-time = "2026-08-27T13:26:19.786Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/16/521f32ca4261d822f72fc39baefcac8f116c59374246ab8b9728c7cac4b2/microsoft_kiota_abstractions-1.11.9-py3-none-any.whl", hash = "sha256:b6988ce3b58b0f2243e60acc26064cbe0f48800478e1f018d3fc85948eb4fb12", size = 44495, upload-time = "2026-08-14T13:53:10.037Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/b5/e2a91a7c83f3c56389d9e600f068b8bcda1b77547568eddbac505b2dee62/microsoft_kiota_abstractions-1.12.0-py3-none-any.whl", hash = "sha256:a69b03cb0a062c51ac2ae3969a2691db134cd0ae260a3096242e4f0140b6674c", size = 44578, upload-time = "2026-08-27T13:26:27.812Z" },
 ]
 
 [[package]]
 name = "microsoft-kiota-authentication-azure"
-version = "1.11.9"
+version = "1.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -669,14 +669,14 @@ dependencies = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cb/ff/d046a015e5865074c51a3b5275e3e4104075073b6c0ba94d803e00a475c8/microsoft_kiota_authentication_azure-1.11.9.tar.gz", hash = "sha256:41ac68bb2b91488306742d4bdaa52d10d7fa4ecf61bd5aaeaebe0691bf2a17c0", size = 5283, upload-time = "2026-08-14T13:53:04.301Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/ee/454ac0fd434566355b13cc8ce340ca4081b4dc73a9bbe1d097ba3640b8de/microsoft_kiota_authentication_azure-1.12.0.tar.gz", hash = "sha256:ae16cd257539b0c9d95e3559ba2db61b984a28ef0341f9173d414086e4eca217", size = 5277, upload-time = "2026-08-27T13:26:20.802Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/b3/47066be6c65bba48b28cb80d529e3cb00816993c0ee45fb181240d54a173/microsoft_kiota_authentication_azure-1.11.9-py3-none-any.whl", hash = "sha256:0119561561845c26f2ffaf7b63d56d64e341ce231505e940e8d33b317a93b793", size = 7246, upload-time = "2026-08-14T13:53:11.061Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/b6/95e3c86e7e63ae0270c7b6ff765e31246bfeeec3184947bdfc35e03a6436/microsoft_kiota_authentication_azure-1.12.0-py3-none-any.whl", hash = "sha256:b40a244ed7f35a63d049a5472ba259ab2b18e616bc1afafdc7bdfb7ae0587694", size = 7246, upload-time = "2026-08-27T13:26:28.814Z" },
 ]
 
 [[package]]
 name = "microsoft-kiota-http"
-version = "1.11.9"
+version = "1.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", extra = ["http2"] },
@@ -684,57 +684,57 @@ dependencies = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/20/48/333f4d5e9af6e59e2529895777b18b78382f23d0ad3f88defb62d4ecf8b0/microsoft_kiota_http-1.11.9.tar.gz", hash = "sha256:a7254df64665cadb1ff081f6c8c4df86b98d2e901985b56e746ab91bfa516d75", size = 22406, upload-time = "2026-08-14T13:53:05.892Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/68/7e/d2f9ce3b7033481d3a634c2834a81c18917a94483eb99924090e6709420f/microsoft_kiota_http-1.12.0.tar.gz", hash = "sha256:f2b97d0b773cc093842114a6ccaea3cc21c03bdc6877a02e7af11d97c0f9a37c", size = 22417, upload-time = "2026-08-27T13:26:23.121Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/eb/48a406b703a88b102072774005dadc5958e4028dd9db82607e2f52b37286/microsoft_kiota_http-1.11.9-py3-none-any.whl", hash = "sha256:f91ecfd775b51dd07d4059b572111c69e9867430b729cb07fb629d84ea049b35", size = 32000, upload-time = "2026-08-14T13:53:12.776Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/f5/df817794ebaef428ab961c82aa3bdd7212f0a4b52288b2e2442d7a4633f2/microsoft_kiota_http-1.12.0-py3-none-any.whl", hash = "sha256:a1ec9e6c6b1ec6d3afce309f3353c91c1e3c8c4614c84c7f5199f1179fa13858", size = 31999, upload-time = "2026-08-27T13:26:30.435Z" },
 ]
 
 [[package]]
 name = "microsoft-kiota-serialization-form"
-version = "1.11.9"
+version = "1.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "microsoft-kiota-abstractions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/97/b1/3e69a62f9a18e6ac59e6852d6743a092be2811e3da57ae21f4cc05972121/microsoft_kiota_serialization_form-1.11.9.tar.gz", hash = "sha256:b4130eba95ab49e358d0726408387c87943d740ed0cbe73697c292d78f4ee6a1", size = 9183, upload-time = "2026-08-14T13:53:06.808Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/1a/4dd8fddd28d220f1db3e3a121ab08f63db580c7040656bee96fd2ec6cc33/microsoft_kiota_serialization_form-1.12.0.tar.gz", hash = "sha256:27a0b2925cbdfd3e7dbee9131cc23933f922d1aabf453737b73ecb3a177ca019", size = 9186, upload-time = "2026-08-27T13:26:24.084Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/95/64/295dddcfe43cdba14f38bd9548b3c83dbcba3fa2f5c1fd448e8ad9fc3ed1/microsoft_kiota_serialization_form-1.11.9-py3-none-any.whl", hash = "sha256:74644aac7e1b750fb6238e1f6b62560f2a2ff1b829786df6b99cf29c794708a5", size = 10882, upload-time = "2026-08-14T13:53:13.797Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/a7/6e0b358a54578dc0e8174cb8021618b338e7e5854b00261a0c5d31317b7a/microsoft_kiota_serialization_form-1.12.0-py3-none-any.whl", hash = "sha256:07bb8a2f45f92c456fd33fb2778632b991cae0ac2ccb3a8781f30d73db59b80d", size = 10880, upload-time = "2026-08-27T13:26:31.373Z" },
 ]
 
 [[package]]
 name = "microsoft-kiota-serialization-json"
-version = "1.11.9"
+version = "1.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "microsoft-kiota-abstractions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/20/8f/c3473031f1d09f92e4d46c6632ab0dbe5c66678c0d591a9ea427daa032b8/microsoft_kiota_serialization_json-1.11.9.tar.gz", hash = "sha256:1c577ddd479051a34a92c889ab85bbd37cbc76fed661b0f40ecbbd96e98947c5", size = 10164, upload-time = "2026-08-14T13:53:07.655Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/32/11/3ecd364cf890759dc44be5a1a833c64982187c90abb5249c7aecdfff8b1a/microsoft_kiota_serialization_json-1.12.0.tar.gz", hash = "sha256:33b514e993402379a7824192a88da27b701a9bbb648c6871d469321d7ab04fa4", size = 10166, upload-time = "2026-08-27T13:26:25.094Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/77/31/6d9bd7ca2db9287c8ffe3c9f8330a1b6fb8aca7177a94c000fccc33f3723/microsoft_kiota_serialization_json-1.11.9-py3-none-any.whl", hash = "sha256:71bc0e9a4066d2a15180258a74b239cf6b7b0ee40581b2b45fc93bd2016b7997", size = 11808, upload-time = "2026-08-14T13:53:14.693Z" },
+    { url = "https://files.pythonhosted.org/packages/16/17/dae7ec346792df0e1403006fb08ce464775265a1a85cc2293b19def43840/microsoft_kiota_serialization_json-1.12.0-py3-none-any.whl", hash = "sha256:bfbd156792aeb5e684b90b54397f0a1161bcee390ba920c8abe6bf5dd1ab1fb2", size = 11806, upload-time = "2026-08-27T13:26:32.425Z" },
 ]
 
 [[package]]
 name = "microsoft-kiota-serialization-multipart"
-version = "1.11.9"
+version = "1.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "microsoft-kiota-abstractions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cc/f7/7f1cc3d102cd44cb8e98c902b36b9ac373b88205a6775261fe3bc5caa247/microsoft_kiota_serialization_multipart-1.11.9.tar.gz", hash = "sha256:ad815dfba1618cf8be3a20f5355aa7e97947efbc06dfeca086360c0cd1b18dd8", size = 5110, upload-time = "2026-08-14T13:53:08.405Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7b/b3/b1fc021ea5ddee2ce62f8cd272f45772a3a05e8974dc3f660650565be079/microsoft_kiota_serialization_multipart-1.12.0.tar.gz", hash = "sha256:f219158dcd31ff4153985dd8436db325c39c8cd19a19794d5b27a4d6b7852231", size = 5117, upload-time = "2026-08-27T13:26:25.995Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/13/6289cc5177121e58b1792abf6f02c03adad6f754ab67954716994102088f/microsoft_kiota_serialization_multipart-1.11.9-py3-none-any.whl", hash = "sha256:89bec6c3dab18be73fbe08c25c895e9b359238de1558f7a151ddcd6bbea97d92", size = 6702, upload-time = "2026-08-14T13:53:15.688Z" },
+    { url = "https://files.pythonhosted.org/packages/08/fa/f4bc8ee7b570fbd4e2e9c7da34f17c70ab2f044f84312f76b64fb79e6038/microsoft_kiota_serialization_multipart-1.12.0-py3-none-any.whl", hash = "sha256:7d3fa3505e761bb874f7055ffea73fb149ad335d46b7ead2fbd36d6018746d9d", size = 6701, upload-time = "2026-08-27T13:26:33.403Z" },
 ]
 
 [[package]]
 name = "microsoft-kiota-serialization-text"
-version = "1.11.9"
+version = "1.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "microsoft-kiota-abstractions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bb/cf/5e276a80380d6cc0430f601535916d7987ccbb9c6e38e2fa4923a82f3940/microsoft_kiota_serialization_text-1.11.9.tar.gz", hash = "sha256:d47e8c0b754e7f9716962fbef2ff10d23675c0e5a51993ea519fa05c775bbec0", size = 7351, upload-time = "2026-08-14T13:53:09.2Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/d2/5c47a749288b6e5334e47df3565740293d630cb752f427fe9bb5e3dad0fd/microsoft_kiota_serialization_text-1.12.0.tar.gz", hash = "sha256:a5c14a401a8849ab688bdc958eed467efadce3e0d6488186474a92f07728eff9", size = 7369, upload-time = "2026-08-27T13:26:26.823Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/3f/169bfe56c90496656d481c90a85f37a30e9f2e9467dd57ccf9f49afc1451/microsoft_kiota_serialization_text-1.11.9-py3-none-any.whl", hash = "sha256:3f075c1e20001ffcabc9cbeed157883acf78e14b7491c8cb5c18f41e3e9ff896", size = 8897, upload-time = "2026-08-14T13:53:16.551Z" },
+    { url = "https://files.pythonhosted.org/packages/36/24/95e8f0ab7e854f51dee35b25d80ed4f77c6ac73d953963f02f49e27267a8/microsoft_kiota_serialization_text-1.12.0-py3-none-any.whl", hash = "sha256:f53730bc69850c13a34ddb8279342fe65f03c68cee4fed0f7a29aa75edc57a3c", size = 8893, upload-time = "2026-08-27T13:26:34.311Z" },
 ]
 
 [[package]]
