@@ -124,7 +124,10 @@ original's attachments.
      (Teams online meeting by default; pass `--no-teams` for an offline hold.
      `--with email` is optional - omit it for a solo hold that notifies nobody;
      `--yes` is still required. `--remind-email 30m|1h|1d|1w` adds a reminder:
-     a real email on Google, an Outlook popup on Microsoft.)
+     a real email on Google, an Outlook popup on Microsoft.
+     `--repeat daily|weekly|monthly` makes a recurring series; bound it with
+     `--until YYYY-MM-DD` or `--count N`, `--interval N` widens the gap, and
+     `--days mon,tue,...` restricts a weekly pattern.)
    - `blumkin calendar update --event-id '<id>' --yes` (attach Teams to an
      existing event; uses Calendars.ReadWrite, not OnlineMeetings.ReadWrite)
    - `blumkin calendar cancel --event-id '<id>' --yes`

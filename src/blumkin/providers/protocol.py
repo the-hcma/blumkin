@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Protocol
 
 from blumkin.providers.kind import ProviderKind
+from blumkin.skills.calendar_writes import Recurrence
 
 
 class WorkspaceProvider(Protocol):
@@ -46,6 +47,7 @@ class WorkspaceProvider(Protocol):
         with_emails: list[str],
         start_raw: str,
         duration: str | None = None,
+        recurrence: Recurrence | None = None,
         remind_email: str | None = None,
         teams: bool = True,
         tz_name: str | None = None,

@@ -17,6 +17,7 @@ from blumkin.skills.calendar import (
     calendar_view,
 )
 from blumkin.skills.calendar_writes import (
+    Recurrence,
     calendar_accept,
     calendar_cancel,
     calendar_create,
@@ -108,6 +109,7 @@ class MicrosoftWorkspaceProvider:
         with_emails: list[str],
         start_raw: str,
         duration: str | None = None,
+        recurrence: Recurrence | None = None,
         remind_email: str | None = None,
         teams: bool = True,
         tz_name: str | None = None,
@@ -117,6 +119,7 @@ class MicrosoftWorkspaceProvider:
             with_emails=with_emails,
             start_raw=start_raw,
             duration=duration,
+            recurrence=recurrence,
             remind_email=remind_email,
             teams=teams,
             tz_name=tz_name,
