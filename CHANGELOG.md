@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/the-hcma/blumkin/compare/blumkin-v0.2.1...blumkin-v0.2.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* disable checkout credential persistence in secret-scan and PyPI publish jobs ([#159](https://github.com/the-hcma/blumkin/issues/159)) ([b63e08f](https://github.com/the-hcma/blumkin/commit/b63e08f3adfe1c8a508f1eaac9f3697d18bbafaf))
+
 ## [0.2.1](https://github.com/the-hcma/blumkin/compare/blumkin-v0.2.0...blumkin-v0.2.1) (2026-09-03)
 
 
