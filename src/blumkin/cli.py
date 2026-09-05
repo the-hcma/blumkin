@@ -43,6 +43,7 @@ from blumkin.skills.calendar_writes import (
     format_create_human,
     format_update_human,
     parse_duration,
+    parse_recurrence,
 )
 from blumkin.skills.chat import (
     ChatAttachmentNotFoundError,
@@ -1446,6 +1447,40 @@ def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_fl
         "--no-teams for an offline hold."
     ),
 )
+@click.option(
+    "--repeat",
+    "repeat",
+    type=click.Choice(["daily", "weekly", "monthly"]),
+    default=None,
+    help="Make this a recurring series instead of a single event.",
+)
+@click.option(
+    "--interval",
+    "interval",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Repeat every N days/weeks/months (with --repeat).",
+)
+@click.option(
+    "--until",
+    "until",
+    default=None,
+    help="End the series on this date, YYYY-MM-DD (mutually exclusive with --count).",
+)
+@click.option(
+    "--count",
+    "count",
+    type=int,
+    default=None,
+    help="Stop the series after N occurrences (mutually exclusive with --until).",
+)
+@click.option(
+    "--days",
+    "days",
+    default=None,
+    help="Weekly only: comma list of weekdays, e.g. mon,tue,wed,thu,fri.",
+)
 @click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
@@ -1458,6 +1493,11 @@ def calendar_create_cmd(
     duration: str,
     remind_email: str | None,
     teams: bool,
+    repeat: str | None,
+    interval: int,
+    until: str | None,
+    count: int | None,
+    days: str | None,
     yes: bool,
     tz_flag: str | None,
     as_json_flag: bool,
@@ -1466,10 +1506,27 @@ def calendar_create_cmd(
 
     A Teams online meeting is added by default; pass --no-teams for an offline
     hold. --start stays in the organizer timezone. For a cross-zone or external
-    attendee, check `calendar freebusy` / `calendar suggest` first.
+    attendee, check `calendar freebusy` / `calendar suggest` first. Pass --repeat
+    for a recurring series.
     """
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
+    recurrence = None
+    if repeat is not None:
+        try:
+            recurrence = parse_recurrence(
+                repeat=repeat, count=count, days=days, interval=interval, until=until
+            )
+        except ValueError as exc:
+            _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+            raise SystemExit(EXIT_USAGE) from exc
+    elif any(v is not None for v in (until, count, days)) or interval != 1:
+        _emit_error(
+            error="usage_error",
+            message="--interval / --until / --count / --days require --repeat",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
     try:
         payload = asyncio.run(
             _workspace().calendar_create(
@@ -1477,6 +1534,7 @@ def calendar_create_cmd(
                 with_emails=list(with_emails),
                 start_raw=start_raw,
                 duration=duration,
+                recurrence=recurrence,
                 remind_email=remind_email,
                 teams=teams,
                 tz_name=_tz_name(ctx, tz_flag),

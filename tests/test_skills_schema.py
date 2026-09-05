@@ -258,6 +258,11 @@ _ARG_SIGNATURES = {
         ("--duration", False, "duration"),
         ("--remind-email", False, "duration"),
         ("--no-teams", False, "flag"),
+        ("--repeat", False, "enum"),
+        ("--interval", False, "int"),
+        ("--until", False, "date"),
+        ("--count", False, "int"),
+        ("--days", False, "string"),
         ("--tz", False, "iana_tz"),
         ("--yes", True, "flag"),
     ],
@@ -294,6 +299,7 @@ _ARG_TYPES = {
 
 
 _ENUM_VALUES = {
+    ("calendar.create", "--repeat"): ["daily", "weekly", "monthly"],
     ("calendar.suggest", "--treat-tentative"): ["busy", "free"],
     ("mail.draft", "--body-type"): ["text", "html"],
     ("mail.forward", "--body-type"): ["html", "text"],

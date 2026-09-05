@@ -15,6 +15,7 @@ from blumkin.providers.google import mail_writes as google_mail_writes
 from blumkin.providers.google import people as google_people
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.providers.kind import ProviderKind
+from blumkin.skills.calendar_writes import Recurrence
 
 
 class GoogleWorkspaceProvider:
@@ -78,6 +79,7 @@ class GoogleWorkspaceProvider:
         with_emails: list[str],
         start_raw: str,
         duration: str | None = None,
+        recurrence: Recurrence | None = None,
         remind_email: str | None = None,
         teams: bool = True,
         tz_name: str | None = None,
@@ -87,6 +89,7 @@ class GoogleWorkspaceProvider:
             with_emails=with_emails,
             start_raw=start_raw,
             duration=duration,
+            recurrence=recurrence,
             remind_email=remind_email,
             tz_name=tz_name,
             config=self._config,

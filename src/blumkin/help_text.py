@@ -125,12 +125,29 @@ Examples:
   # Solo hold with a reminder a day ahead (email on Google, popup on Outlook)
   blumkin calendar create --subject "Review renewal" \\
     --start "2026-09-28T10:00" --remind-email 1d --no-teams --yes
+\b
+  # Weekly recurring 1:1, ending on a date
+  blumkin calendar create --subject "Henrique/Sam 1:1" --with sam@example.com \\
+    --start "2026-09-22T13:05" --duration 45m \\
+    --repeat weekly --until "2026-12-31" --yes
+\b
+  # Every-weekday lunch hold for the next 20 working days, no Teams link
+  blumkin calendar create --subject "Lunch" --start "2026-09-22T12:00" \\
+    --duration 1h --repeat weekly --days mon,tue,wed,thu,fri --count 20 \\
+    --no-teams --yes
 
 Invites every `--with` address, so `--yes` is required (still required with no
 attendees). `--remind-email` adds an email reminder on Google and an Outlook
 popup reminder on Microsoft. For a cross-timezone or external attendee, run
 `calendar freebusy` or `calendar suggest` first and pick a slot inside their
 working hours. `--start` stays in the organizer timezone.
+
+`--repeat {daily,weekly,monthly}` makes a recurring series (Graph
+patternedRecurrence / Google RRULE). Bound it with `--until DATE` or `--count N`
+(omit both for an open-ended series), widen the gap with `--interval N`, and for
+weekly patterns restrict the weekdays with `--days mon,tue,...` (which must
+include the `--start` weekday). Monthly repeats on the same day-of-month as
+`--start`.
 """
 
 CALENDAR_EPILOG = """

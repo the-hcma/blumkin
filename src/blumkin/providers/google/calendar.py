@@ -19,8 +19,11 @@ from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.calendar import find_mutual_free_slots, parse_local_datetime
 from blumkin.skills.calendar_writes import (
     _DEFAULT_DURATION,
+    Recurrence,
     _needs_accept,
     parse_duration,
+    recurrence_payload,
+    recurrence_rrule,
     reminder_minutes_before_start,
 )
 from blumkin.skills.freebusy_suggest import collect_busy_intervals, raise_if_schedule_errors
@@ -111,6 +114,7 @@ async def calendar_create(
     with_emails: list[str],
     start_raw: str,
     duration: str | None = None,
+    recurrence: Recurrence | None = None,
     remind_email: str | None = None,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
@@ -124,11 +128,15 @@ async def calendar_create(
     # Add the duration in absolute time so an event spanning a DST transition keeps
     # its real length (wall-clock arithmetic would over- or under-count by an hour).
     end = (start.astimezone(UTC) + parse_duration(duration or _DEFAULT_DURATION)).astimezone(tz)
+    # Validate the recurrence against --start before any network call.
+    recurrence_echo = recurrence_payload(recurrence, start) if recurrence is not None else None
     body: dict[str, Any] = {
         "summary": subject.strip(),
         "start": {"dateTime": start.isoformat(timespec="seconds"), "timeZone": tz_key},
         "end": {"dateTime": end.isoformat(timespec="seconds"), "timeZone": tz_key},
     }
+    if recurrence is not None:
+        body["recurrence"] = recurrence_rrule(recurrence, start)
     if with_emails:
         body["attendees"] = [{"email": email} for email in with_emails]
     if remind_email is not None:
@@ -148,7 +156,10 @@ async def calendar_create(
         # events.insert is a non-idempotent POST; a blind retry could double-book.
         num_retries=0,
     )
-    return {"event": _event_to_dict(created, tz)}
+    result: dict[str, Any] = {"event": _event_to_dict(created, tz)}
+    if recurrence_echo is not None:
+        result["recurrence"] = recurrence_echo
+    return result
 
 
 async def calendar_freebusy(
