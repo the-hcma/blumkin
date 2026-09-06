@@ -113,6 +113,41 @@ def test_graph_decline_propose_time_rejects_a_bare_date(monkeypatch) -> None:
         asyncio.run(calendar_decline(event_id="evt-1", propose_start="2026-09-02", tz_name=_NY))
 
 
+def test_graph_decline_propose_duration_zero_rejected(monkeypatch) -> None:
+    _graph_client(monkeypatch)
+    with pytest.raises(ValueError, match="--propose-duration must be positive"):
+        asyncio.run(
+            calendar_decline(
+                event_id="evt-1",
+                propose_start="2026-09-02T15:00",
+                propose_duration="0m",
+                tz_name=_NY,
+            )
+        )
+
+
+def test_cli_decline_bad_timezone_with_propose_is_usage_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blumkin.cli._workspace", lambda: SimpleNamespace(calendar_decline=AsyncMock())
+    )
+    result = CliRunner().invoke(
+        main,
+        [
+            "calendar",
+            "decline",
+            "--event-id",
+            "e",
+            "--propose-time",
+            "2026-09-02T15:00",
+            "--tz",
+            "Not/AZone",
+            "--yes",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE
+
+
 def test_graph_decline_single_event_needs_no_timezone(monkeypatch) -> None:
     # No default_tz, no --tz: a single-event RSVP must not touch a clock.
     client = MagicMock()

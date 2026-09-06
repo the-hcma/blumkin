@@ -1526,7 +1526,9 @@ def _run_calendar_rsvp(
     _require_yes(yes=yes, as_json=as_json)
     try:
         tz_name = _tz_name(ctx, tz_flag)
-        if today_pending:
+        if today_pending or propose_start:
+            # Both paths resolve a ZoneInfo in the skill; surface a bad zone as a
+            # usage error here rather than a late graph_error.
             cfg = _load_config()
             ZoneInfo(tz_name or cfg.default_tz)
         method = getattr(_workspace(), f"calendar_{verb}")

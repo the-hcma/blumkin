@@ -907,6 +907,9 @@ def _proposed_time_slot(start_raw: str, duration_raw: str | None, tz: ZoneInfo) 
     # every other timed-input path in this module.
     if "T" not in start_raw.strip():
         raise ValueError("--propose-time needs a time, e.g. 2026-09-02T15:00")
+    delta = parse_duration(duration_raw or _DEFAULT_DURATION)
+    if delta <= timedelta(0):
+        raise ValueError("--propose-duration must be positive")
     start = parse_local_datetime(start_raw, tz)
-    end = (start.astimezone(UTC) + parse_duration(duration_raw or _DEFAULT_DURATION)).astimezone(tz)
+    end = (start.astimezone(UTC) + delta).astimezone(tz)
     return TimeSlot(start=_to_graph_dtz(start), end=_to_graph_dtz(end))
