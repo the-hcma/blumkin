@@ -19,6 +19,159 @@ class SkillSpec:
     summary: str
 
 
+# Dotted skill id -> provider method, where `id.replace(".", "_").replace("-", "_")`
+# does not land on the right name.
+SKILL_METHOD_OVERRIDES: dict[str, str] = {
+    "chat.attachments": "chat_attachments_list",
+    "mail.attachments": "mail_attachments_list",
+}
+
+# Skills gated on `wo1162425_scopes` (Microsoft add-on grant). `mail.auto-reply` is
+# gated only when it is actually changing a setting - handled in the dispatch layer.
+WO1162425_SKILLS: frozenset[str] = frozenset(
+    {
+        "chat.delete",
+        "chat.edit",
+        "chat.send",
+        "meeting.get",
+        "meeting.transcription",
+        "people.resolve",
+    }
+)
+
+# Skills with no `WorkspaceProvider` method - the CLI keeps a bespoke callback and
+# the MCP server does not expose them.
+BESPOKE_SKILLS: frozenset[str] = frozenset(
+    {
+        "auth.login",
+        "auth.logout",
+        "auth.refresh",
+        "auth.status",
+        "doctor",
+        "mail.signature",
+        "skills.describe",
+        "skills.list",
+    }
+)
+
+# (skill id, catalog arg name) -> provider kwarg. Only listed where it differs from
+# the default `name.lstrip("-").replace("-", "_")`. `None` means the value is consumed
+# by the consent gate or a dispatch preprocessor and never passed as a direct kwarg.
+_ARG_PARAM: dict[tuple[str, str], str | None] = {
+    # --tz: `tz_name` where the provider method takes it; consumed (folded into a
+    # tz-aware datetime) on the range/search verbs.
+    ("calendar.accept", "--tz"): "tz_name",
+    ("calendar.create", "--tz"): "tz_name",
+    ("calendar.decline", "--tz"): "tz_name",
+    ("calendar.get", "--tz"): "tz_name",
+    ("calendar.tentative", "--tz"): "tz_name",
+    ("calendar.today", "--tz"): "tz_name",
+    ("calendar.update", "--tz"): "tz_name",
+    ("calendar.freebusy", "--tz"): None,
+    ("calendar.suggest", "--tz"): None,
+    ("calendar.view", "--tz"): None,
+    ("mail.inbox", "--tz"): None,
+    ("mail.list", "--tz"): None,
+    ("mail.search", "--tz"): None,
+    # --with: attendee emails vs a display name to resolve.
+    ("calendar.create", "--with"): "with_emails",
+    ("calendar.update", "--with"): "with_emails",
+    ("calendar.freebusy", "--with"): "with_emails",
+    ("calendar.suggest", "--with"): "with_emails",
+    ("chat.attachments", "--with"): "with_name",
+    ("chat.attachments.download", "--with"): "with_name",
+    ("chat.find", "--with"): "with_name",
+    ("chat.last", "--with"): "with_name",
+    ("chat.send", "--with"): "with_name",
+    # calendar create/update take the start/end strings raw (the skill parses them);
+    # calendar view folds --from/--to into a [start, end) datetime pair.
+    ("calendar.create", "--start"): "start_raw",
+    ("calendar.create", "--optional"): "optional_emails",
+    ("calendar.update", "--start"): "start_raw",
+    ("calendar.update", "--end"): "end_raw",
+    ("calendar.view", "--from"): "start",
+    ("calendar.view", "--to"): "end",
+    ("calendar.today", "--date"): "day",
+    ("calendar.decline", "--propose-time"): "propose_start",
+    ("calendar.tentative", "--propose-time"): "propose_start",
+    # recurrence flags are folded into a single `recurrence` value object.
+    ("calendar.create", "--repeat"): None,
+    ("calendar.create", "--interval"): None,
+    ("calendar.create", "--until"): None,
+    ("calendar.create", "--count"): None,
+    ("calendar.create", "--days"): None,
+    # mail: --from is a sender substring, not a range bound.
+    ("mail.inbox", "--from"): "sender",
+    ("mail.list", "--from"): "sender",
+    # --id spans three id namespaces.
+    ("mail.attachments", "--id"): "message_id",
+    ("mail.get", "--id"): "message_id",
+    ("mail.thread", "--id"): "message_id",
+    ("mail.forward", "--id"): "message_id",
+    ("mail.reply", "--id"): "message_id",
+    ("mail.delete", "--id"): "message_ids",
+    ("mail.mark", "--id"): "message_ids",
+    ("mail.move", "--id"): "message_ids",
+    ("mail.delete-draft", "--id"): "draft_id",
+    ("mail.send-draft", "--id"): "draft_id",
+    ("mail.update-draft", "--id"): "draft_id",
+    # --all: download every attachment vs reply to everyone.
+    ("chat.attachments.download", "--all"): "download_all",
+    ("mail.attachments.download", "--all"): "download_all",
+    ("mail.reply", "--all"): "reply_all",
+    ("mail.mark", "--flag"): "flagged",
+    ("mail.auto-reply", "--external"): "external_audience",
+    ("mail.auto-reply", "--on"): None,
+    ("mail.auto-reply", "--off"): None,
+}
+
+# (skill id, catalog arg name) -> a coercion the dispatch layer applies on top of the
+# `type` vocabulary before calling the provider.
+_ARG_COERCE: dict[tuple[str, str], str] = {
+    ("calendar.today", "--date"): "date",
+    ("calendar.view", "--from"): "local_midnight",
+    ("calendar.view", "--to"): "local_midnight",
+    ("calendar.create", "--start"): "raw",
+    ("calendar.update", "--start"): "raw",
+    ("calendar.update", "--end"): "raw",
+    ("calendar.freebusy", "--start"): "local_datetime",
+    ("calendar.freebusy", "--end"): "local_datetime",
+    ("calendar.suggest", "--start"): "local_datetime",
+    ("calendar.suggest", "--end"): "local_datetime",
+    ("calendar.suggest", "--duration"): "duration",
+    ("mail.inbox", "--since"): "local_datetime",
+    ("mail.inbox", "--until"): "local_datetime",
+    ("mail.list", "--since"): "local_datetime",
+    ("mail.list", "--until"): "local_datetime",
+    ("mail.search", "--since"): "local_datetime",
+    ("mail.search", "--until"): "local_datetime",
+    ("mail.auto-reply", "--start"): "date",
+    ("mail.auto-reply", "--until"): "date",
+    ("calendar.create", "--with"): "list",
+    ("calendar.create", "--optional"): "list",
+    ("calendar.update", "--with"): "list",
+    ("calendar.freebusy", "--with"): "list",
+    ("calendar.suggest", "--with"): "list",
+    ("mail.delete", "--id"): "list",
+    ("mail.mark", "--id"): "list",
+    ("mail.move", "--id"): "list",
+}
+
+
+def _default_param(arg_name: str) -> str:
+    return arg_name.lstrip("-").replace("-", "_")
+
+
+def resolve_arg_param(skill_id: str, arg: dict[str, Any]) -> str | None:
+    """The provider kwarg an arg maps to (``None`` = consumed by a gate/preprocessor)."""
+    name = arg["name"]
+    if name == "--yes":
+        return None
+    if (skill_id, name) in _ARG_PARAM:
+        return _ARG_PARAM[(skill_id, name)]
+    return _default_param(name)
+
+
 SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="auth.login",
@@ -129,10 +282,10 @@ SKILLS: list[SkillSpec] = [
                 "note": "reminder lead time; email on Google, Outlook popup on Microsoft",
             },
             {
-                "name": "--no-teams",
+                "name": "--teams",
                 "required": False,
                 "type": "flag",
-                "note": "skip Teams online meeting (default is Teams)",
+                "note": "--teams / --no-teams; a Teams online meeting is attached by default",
             },
             {
                 "name": "--repeat",
@@ -336,7 +489,7 @@ SKILLS: list[SkillSpec] = [
                 "note": "replaces the attendee list",
             },
             {
-                "name": "--no-teams",
+                "name": "--teams",
                 "required": False,
                 "type": "flag",
                 "note": "--teams attaches, --no-teams removes the online meeting; omit to leave it",
@@ -1146,6 +1299,24 @@ SKILLS: list[SkillSpec] = [
         args=[],
     ),
 ]
+
+
+def _enrich_args() -> None:
+    """Attach the resolved provider kwarg (``param``) and coercion hint to every arg.
+
+    Runs once at import so ``describe_skill`` and ``skills_catalog`` agree. ``param``
+    is the single source the dispatch layer and the MCP server read, and
+    ``tests/test_skills_schema.py`` pins it against the live provider signatures.
+    """
+    for skill in SKILLS:
+        for arg in skill.args:
+            arg["param"] = resolve_arg_param(skill.id, arg)
+            coerce = _ARG_COERCE.get((skill.id, arg["name"]))
+            if coerce is not None:
+                arg["coerce"] = coerce
+
+
+_enrich_args()
 
 
 def describe_skill(skill_id: str) -> SkillSpec | None:

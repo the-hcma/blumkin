@@ -37,6 +37,38 @@ def test_arg_objects_match_the_documented_shape() -> None:
             assert isinstance(arg["name"], str) and arg["name"]
             assert isinstance(arg["required"], bool)
             assert arg["type"] in _ARG_TYPES, f"{skill['id']}: undocumented type {arg['type']}"
+            # `param` is always present (added by _enrich_args); None = consumed by a
+            # gate/preprocessor, else the provider-method kwarg name.
+            assert "param" in arg, f"{skill['id']} {arg['name']}: no resolved param"
+            assert arg["param"] is None or isinstance(arg["param"], str)
+            if "coerce" in arg:
+                assert arg["coerce"] in _ARG_COERCE_VALUES
+
+
+def test_every_catalog_arg_maps_to_a_real_provider_kwarg() -> None:
+    """The anti-drift guard: a catalog arg whose `param` is not a real kwarg of the
+    resolved `WorkspaceProvider` method is a bug the dispatch layer would hit at runtime.
+    """
+    import inspect
+
+    from blumkin.providers.protocol import WorkspaceProvider
+    from blumkin.skills import BESPOKE_SKILLS, SKILL_METHOD_OVERRIDES
+
+    for skill in skills_catalog()["skills"]:
+        sid = skill["id"]
+        if sid in BESPOKE_SKILLS:
+            continue
+        method: str = SKILL_METHOD_OVERRIDES.get(sid) or sid.replace(".", "_").replace("-", "_")
+        fn = getattr(WorkspaceProvider, method, None)
+        assert fn is not None, f"{sid}: no provider method {method}"
+        kwargs = {p for p in inspect.signature(fn).parameters if p != "self"}
+        for arg in skill["args"]:
+            param = arg["param"]
+            if param is None:  # consumed by the consent gate or a preprocessor
+                continue
+            assert param in kwargs, (
+                f"{sid} {arg['name']}: param '{param}' is not a kwarg of {method}({sorted(kwargs)})"
+            )
 
 
 def test_arg_signatures_are_pinned_for_documented_skills() -> None:
@@ -264,7 +296,7 @@ _ARG_SIGNATURES = {
         ("--body-file", False, "path"),
         ("--body-type", False, "enum"),
         ("--remind-email", False, "duration"),
-        ("--no-teams", False, "flag"),
+        ("--teams", False, "flag"),
         ("--repeat", False, "enum"),
         ("--interval", False, "int"),
         ("--until", False, "date"),
@@ -303,6 +335,9 @@ _ARG_TYPES = {
     "path",
     "string",
 }
+
+
+_ARG_COERCE_VALUES = {"date", "duration", "list", "local_datetime", "local_midnight", "raw"}
 
 
 _ENUM_VALUES = {
