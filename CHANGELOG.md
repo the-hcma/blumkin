@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.2.1...blumkin-v0.3.0) (2026-09-06)
+
+
+### Features
+
+* **calendar:** calendar create --body / --location / --all-day / --optional ([#175](https://github.com/the-hcma/blumkin/issues/175)) ([#181](https://github.com/the-hcma/blumkin/issues/181)) ([8c2b922](https://github.com/the-hcma/blumkin/commit/8c2b92210ef0613a6f5f15693623698891887b23))
+* **calendar:** calendar decline + calendar tentative — RSVP no / maybe ([#174](https://github.com/the-hcma/blumkin/issues/174)) ([#185](https://github.com/the-hcma/blumkin/issues/185)) ([3616543](https://github.com/the-hcma/blumkin/commit/36165432759151a6d8ad33c5dac2e530dc0fd279))
+* **calendar:** calendar get - read one event in full ([#173](https://github.com/the-hcma/blumkin/issues/173)) ([#180](https://github.com/the-hcma/blumkin/issues/180)) ([3834b02](https://github.com/the-hcma/blumkin/commit/3834b0258f99e9ae9028a8c3cfa58c25afb6d9c2))
+* **calendar:** calendar list + --calendar targeting ([#176](https://github.com/the-hcma/blumkin/issues/176)) ([#186](https://github.com/the-hcma/blumkin/issues/186)) ([367e863](https://github.com/the-hcma/blumkin/commit/367e863d15333d9f1c13b867a117c3c8b98f3878))
+* **calendar:** calendar update - edit event fields, not just attach Teams ([#172](https://github.com/the-hcma/blumkin/issues/172)) ([#183](https://github.com/the-hcma/blumkin/issues/183)) ([8bafd0d](https://github.com/the-hcma/blumkin/commit/8bafd0d78b0bf606ce570fbcef38e23f8d0906f9))
+* **completion:** add `completion <shell> --install` ([#167](https://github.com/the-hcma/blumkin/issues/167)) ([#169](https://github.com/the-hcma/blumkin/issues/169)) ([411abe6](https://github.com/the-hcma/blumkin/commit/411abe6bc85e9c4cf853968f3b42742c212b392c))
+* live_google pytest marker; close Google parity ([#89](https://github.com/the-hcma/blumkin/issues/89)) ([#166](https://github.com/the-hcma/blumkin/issues/166)) ([b01adc5](https://github.com/the-hcma/blumkin/commit/b01adc50a2bf27bc8da95443d2bff787badd6cdf))
+* **mail:** mail triage ([#177](https://github.com/the-hcma/blumkin/issues/177)) + auto-reply / vacation responder ([#179](https://github.com/the-hcma/blumkin/issues/179)) ([#188](https://github.com/the-hcma/blumkin/issues/188)) ([5631339](https://github.com/the-hcma/blumkin/commit/563133996c19d25a9b82c29eea475c84970d7ec6))
+* **mcp:** blumkin mcp install / status - guided registrar for agent CLIs ([#195](https://github.com/the-hcma/blumkin/issues/195)) ([8265366](https://github.com/the-hcma/blumkin/commit/826536665d3742540c529d7eade3bee3ffea97c0))
+* **mcp:** stdio MCP adapter - blumkin mcp serve ([#193](https://github.com/the-hcma/blumkin/issues/193)) ([504de81](https://github.com/the-hcma/blumkin/commit/504de8138e0b646eebdd4a2eb82ad414de173e4c))
+* recurring events in calendar create ([#158](https://github.com/the-hcma/blumkin/issues/158)) ([#163](https://github.com/the-hcma/blumkin/issues/163)) ([32dfcf9](https://github.com/the-hcma/blumkin/commit/32dfcf97882ff14f3407feccb336b0ba33256448))
+
+
+### Bug Fixes
+
+* disable checkout credential persistence in secret-scan and PyPI publish jobs ([#159](https://github.com/the-hcma/blumkin/issues/159)) ([b63e08f](https://github.com/the-hcma/blumkin/commit/b63e08f3adfe1c8a508f1eaac9f3697d18bbafaf))
+
 ## [0.2.1](https://github.com/the-hcma/blumkin/compare/blumkin-v0.2.0...blumkin-v0.2.1) (2026-09-03)
 
 
