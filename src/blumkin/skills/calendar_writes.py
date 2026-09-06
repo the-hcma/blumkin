@@ -855,6 +855,7 @@ async def _calendar_rsvp(
     key, _label = _RSVP_LABELS[action]
     done: list[str] = []
     skipped: list[dict[str, str]] = []
+    first_error: Exception | None = None
     for eid in event_ids:
         try:
             await _graph_rsvp_one(client, eid, action, comment, proposed)
@@ -864,14 +865,21 @@ async def _calendar_rsvp(
                 if is_id_lookup_failure(exc):
                     raise CalendarEventNotFoundError(reason) from exc
                 raise
+            first_error = first_error or exc
             skipped.append({"id": eid, "reason": reason})
             continue
         except Exception as exc:  # noqa: BLE001 - a batch must always report
             if not today_pending:
                 raise
+            first_error = first_error or exc
             skipped.append({"id": eid, "reason": str(exc)})
             continue
         done.append(eid)
+    if event_ids and not done and first_error is not None:
+        # Every event failed: a systemic problem (auth, scope, outage), not a
+        # per-event quirk. Let it propagate so the exit code still signals it,
+        # rather than reporting an exit-0 "success" that responded to nothing.
+        raise first_error
     return {key: done, "count": len(done), "skipped": skipped}
 
 

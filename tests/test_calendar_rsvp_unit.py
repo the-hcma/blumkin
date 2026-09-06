@@ -150,6 +150,19 @@ def test_graph_decline_missing_event_maps_not_found(monkeypatch, err) -> None:
         asyncio.run(calendar_decline(event_id="evt-1", tz_name=_NY))
 
 
+def test_graph_decline_today_pending_all_fail_propagates(monkeypatch) -> None:
+    items = [
+        {"id": "a", "is_organizer": False, "response": "ResponseType.NotResponded"},
+        {"id": "b", "is_organizer": False, "response": "ResponseType.NotResponded"},
+    ]
+    client = _graph_client(monkeypatch, today_items=items)
+    client.me.events.by_event_id.return_value.decline.post = AsyncMock(
+        side_effect=RuntimeError("token expired")
+    )
+    with pytest.raises(RuntimeError, match="token expired"):
+        asyncio.run(calendar_decline(today_pending=True, tz_name=_NY))
+
+
 def test_graph_decline_today_pending_reports_skips(monkeypatch) -> None:
     items = [
         {"id": "a", "is_organizer": False, "response": "ResponseType.NotResponded"},

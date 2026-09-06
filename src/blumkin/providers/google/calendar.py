@@ -153,6 +153,7 @@ async def _calendar_rsvp(
     key = _RSVP_STATUS[action]
     done: list[str] = []
     skipped: list[dict[str, str]] = []
+    first_error: Exception | None = None
     for eid in event_ids:
         try:
             _rsvp_one(service, eid, key, comment)
@@ -167,9 +168,14 @@ async def _calendar_rsvp(
             # a 404 for something deleted since the listing, a transient 5xx, or a
             # socket timeout - which is not an HttpError at all, so the catch has to
             # be broad. Re-running is safe: an already-set RSVP is a no-op.
+            first_error = first_error or exc
             skipped.append({"id": eid, "reason": str(exc)})
             continue
         done.append(eid)
+    if event_ids and not done and first_error is not None:
+        # Every event failed: a systemic problem, not a per-event quirk - let it
+        # propagate so the exit code signals it rather than an exit-0 no-op.
+        raise first_error
     return {key: done, "count": len(done), "skipped": skipped}
 
 
