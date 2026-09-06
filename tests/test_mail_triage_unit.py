@@ -354,6 +354,30 @@ def test_cli_triage_help_and_yes() -> None:
     assert no_yes.exit_code == EXIT_USAGE
 
 
+def test_cli_triage_without_yes_never_reaches_the_provider(monkeypatch) -> None:
+    """delete / mark / move are mutates:true, notifies_others:false - the consent gate
+    still demands --yes (catalog `--yes required: True`), and must fail before dispatch
+    ever calls the provider. A regression dropping `yes` from _run_mail_triage's args
+    would slip past this without a CLI-level check."""
+    spy = SimpleNamespace(
+        mail_delete=AsyncMock(return_value={}),
+        mail_mark=AsyncMock(return_value={}),
+        mail_move=AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr("blumkin.cli._workspace", lambda: spy)
+    cases = [
+        ["mail", "delete", "--id", "m", "--json"],
+        ["mail", "mark", "--id", "m", "--read", "--json"],
+        ["mail", "move", "--id", "m", "--to", "archive", "--json"],
+    ]
+    for argv in cases:
+        result = CliRunner().invoke(main, argv)
+        assert result.exit_code == EXIT_USAGE, argv
+    spy.mail_delete.assert_not_awaited()
+    spy.mail_mark.assert_not_awaited()
+    spy.mail_move.assert_not_awaited()
+
+
 def test_cli_triage_missing_scope_routes(monkeypatch) -> None:
     from blumkin.auth import MissingScopeError
 
