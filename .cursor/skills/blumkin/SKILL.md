@@ -11,8 +11,8 @@ SDK code (or Google API client code). Do not invent client IDs or call Graph /
 Workspace APIs directly when Blumkin covers the job.
 
 With `provider = "google"` in config, supported verbs are calendar
-(`today` / `view` / `freebusy` / `suggest` / `create` / `get`), mail
-(`inbox` / `list` / `get` / `folders` / `attachments` / `attachments download`),
+(`today` / `view` / `freebusy` / `suggest` / `create` / `get` / `list`), mail
+(`inbox` / `list` / `get` / `search` / `thread` / `folders` / `attachments` / `attachments download`),
 mail writes
 (`draft` / `update-draft` / `delete-draft` / `send-draft` / `reply` / `forward`),
 calendar writes (`accept` / `decline` / `tentative` / `cancel` / `update`;
@@ -61,6 +61,10 @@ original's attachments.
      (half-open `[from,to)`),
      `blumkin calendar get --event-id '<id>' --json` (one event in full: body,
      every attendee + their response, recurrence, join URL, `series_master_id`),
+     `blumkin calendar list --json` (every calendar the account can see: `id`,
+     `name`, `is_default`, `can_edit`, `owner`). Pass a `name` or `id` from it to
+     `--calendar` on `today` / `view` / `get` / `create` / `update` / `cancel` to
+     target a non-default calendar (ambiguous name -> usage error; use the id).
      `blumkin calendar freebusy --with email --start … --end … --json`
      Freebusy `--json` items include `timezone` and `working_hours` when Graph returns
      them (from the attendee's mailbox settings via getSchedule — no extra scope).
@@ -111,6 +115,13 @@ original's attachments.
      `blumkin mail get --id '<message-id>' --json` (one message in full: participants,
      timestamps, attachments, and body — use this instead of listing and filtering
      client-side; `--body-type html` keeps the markup, default `text`)
+     `blumkin mail search --query '<term>' --json` searches the WHOLE mailbox
+     (every folder), relevance-ranked, tagging each hit with its `folder` —
+     prefer this over `mail list --search` (one folder). Google `--query` takes
+     Gmail operators (`from:` / `subject:` / `has:attachment`). `--since` /
+     `--until` filter the returned page locally.
+     `blumkin mail thread --id '<message-id>' --json` lists every message in that
+     conversation, oldest first; `--full` adds each body.
      `blumkin mail folders --json` (folder ids and counts, for custom folders;
      Graph's totals can lag — do not treat `total: 0` as proof a folder is empty;
      use `mail list --folder drafts` or `mail get --id` for existence)

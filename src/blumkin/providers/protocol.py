@@ -39,7 +39,9 @@ class WorkspaceProvider(Protocol):
         tz_name: str | None = None,
     ) -> dict[str, Any]: ...
 
-    async def calendar_cancel(self, *, event_id: str) -> dict[str, Any]: ...
+    async def calendar_cancel(
+        self, *, event_id: str, calendar: str | None = None
+    ) -> dict[str, Any]: ...
 
     async def calendar_decline(
         self,
@@ -73,6 +75,7 @@ class WorkspaceProvider(Protocol):
         body: str | None = None,
         body_file: str | None = None,
         body_type: str = "text",
+        calendar: str | None = None,
         duration: str | None = None,
         location: str | None = None,
         optional_emails: list[str] | None = None,
@@ -95,8 +98,11 @@ class WorkspaceProvider(Protocol):
         *,
         event_id: str,
         body_type: str = "text",
+        calendar: str | None = None,
         tz_name: str | None = None,
     ) -> dict[str, Any]: ...
+
+    async def calendar_list(self) -> dict[str, Any]: ...
 
     async def calendar_suggest(
         self,
@@ -115,6 +121,7 @@ class WorkspaceProvider(Protocol):
         self,
         *,
         day: date | None = None,
+        calendar: str | None = None,
         tz_name: str | None = None,
     ) -> dict[str, Any]: ...
 
@@ -126,6 +133,7 @@ class WorkspaceProvider(Protocol):
         body: str | None = None,
         body_file: str | None = None,
         body_type: str = "text",
+        calendar: str | None = None,
         duration: str | None = None,
         end_raw: str | None = None,
         location: str | None = None,
@@ -141,6 +149,7 @@ class WorkspaceProvider(Protocol):
         *,
         start: datetime,
         end: datetime,
+        calendar: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def chat_attachments_download(
@@ -274,7 +283,24 @@ class WorkspaceProvider(Protocol):
         no_signature: bool = False,
     ) -> dict[str, Any]: ...
 
+    async def mail_search(
+        self,
+        *,
+        query: str,
+        top: int = 25,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, Any]: ...
+
     async def mail_send_draft(self, *, draft_id: str) -> dict[str, Any]: ...
+
+    async def mail_thread(
+        self,
+        *,
+        message_id: str,
+        full: bool = False,
+        body_type: str = "text",
+    ) -> dict[str, Any]: ...
 
     async def mail_update_draft(
         self,

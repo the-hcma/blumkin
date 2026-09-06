@@ -19,7 +19,10 @@ from blumkin.providers.google_auth import (
 )
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.calendar import (
+    CalendarAmbiguousError,
     CalendarEventNotFoundError,
+    CalendarListTooLargeError,
+    CalendarNotFoundError,
     find_mutual_free_slots,
     parse_local_datetime,
 )
@@ -182,6 +185,7 @@ async def _calendar_rsvp(
 async def calendar_cancel(
     *,
     event_id: str,
+    calendar: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     """Cancel an event and notify its attendees."""
@@ -190,7 +194,8 @@ async def calendar_cancel(
         raise ValueError("--event-id is required")
     cfg = config or load_config()
     service = _calendar_service(cfg)
-    existing = execute(service.events().get(calendarId="primary", eventId=eid))
+    cal_id = _resolve_calendar_id(service, calendar)
+    existing = execute(service.events().get(calendarId=cal_id, eventId=eid))
     if not (existing.get("organizer") or {}).get("self"):
         # events.delete on your primary calendar only removes *your copy* of someone
         # else's event: attendees are never told and the meeting goes ahead. Reporting
@@ -200,7 +205,7 @@ async def calendar_cancel(
             "own copy without telling anyone; decline it in your calendar client instead"
         )
     execute(
-        service.events().delete(calendarId="primary", eventId=eid, sendUpdates="all"),
+        service.events().delete(calendarId=cal_id, eventId=eid, sendUpdates="all"),
         # Cancellation mails attendees; a blind retry past a partial failure could
         # not un-send them, and a repeat delete 410s anyway.
         num_retries=0,
@@ -217,6 +222,7 @@ async def calendar_create(
     body: str | None = None,
     body_file: str | None = None,
     body_type: str = "text",
+    calendar: str | None = None,
     duration: str | None = None,
     location: str | None = None,
     optional_emails: list[str] | None = None,
@@ -272,7 +278,7 @@ async def calendar_create(
     service = _calendar_service(cfg)
     created = execute(
         service.events().insert(
-            calendarId="primary",
+            calendarId=_resolve_calendar_id(service, calendar),
             body=event_body,
             sendUpdates="all" if attendees else "none",
         ),
@@ -288,6 +294,7 @@ async def calendar_create(
 async def calendar_get(
     *,
     event_id: str,
+    calendar: str | None = None,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
@@ -302,13 +309,43 @@ async def calendar_get(
     cfg = config or load_config()
     tz = ZoneInfo(tz_name or cfg.default_tz)
     service = _calendar_service(cfg, required_scopes=CALENDAR_READ_SCOPES)
+    cal_id = _resolve_calendar_id(service, calendar)
     try:
-        event = execute(service.events().get(calendarId="primary", eventId=eid))
+        event = execute(service.events().get(calendarId=cal_id, eventId=eid))
     except HttpError as exc:
         if getattr(getattr(exc, "resp", None), "status", None) in {404, 410}:
             raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
         raise
     return {"event": _event_detail_to_dict(event, tz)}
+
+
+async def calendar_list(*, config: BlumkinConfig | None = None) -> dict[str, Any]:
+    """List the calendars this account can see (id, name, default, editability, owner)."""
+    cfg = config or load_config()
+    service = _calendar_service(cfg, required_scopes=CALENDAR_READ_SCOPES)
+    calendars = [_calendar_list_entry_to_dict(item) for item in _all_calendar_list_items(service)]
+    return {"calendars": calendars, "count": len(calendars)}
+
+
+_MAX_CALENDARS = 2000
+
+
+def _all_calendar_list_items(service: Any) -> list[dict[str, Any]]:
+    """Every entry from ``calendarList.list``, following ``nextPageToken`` (page ~100).
+
+    Raises :class:`CalendarListTooLargeError` rather than returning a truncated list
+    that name resolution would treat as authoritative.
+    """
+    items: list[dict[str, Any]] = []
+    page_token: str | None = None
+    while True:
+        page = execute(service.calendarList().list(pageToken=page_token))
+        items.extend(page.get("items") or [])
+        page_token = page.get("nextPageToken")
+        if not page_token:
+            return items
+        if len(items) >= _MAX_CALENDARS:
+            raise CalendarListTooLargeError("Google")
 
 
 async def calendar_freebusy(
@@ -401,6 +438,7 @@ async def calendar_suggest(
 async def calendar_today(
     *,
     day: date | None = None,
+    calendar: str | None = None,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
@@ -409,7 +447,7 @@ async def calendar_today(
     target = day or datetime.now(tz).date()
     start = datetime(target.year, target.month, target.day, tzinfo=tz)
     end = start + timedelta(days=1)
-    payload = await calendar_view(start=start, end=end, config=cfg)
+    payload = await calendar_view(start=start, end=end, calendar=calendar, config=cfg)
     return {
         "date": target.isoformat(),
         "items": payload["items"],
@@ -424,6 +462,7 @@ async def calendar_update(
     body: str | None = None,
     body_file: str | None = None,
     body_type: str = "text",
+    calendar: str | None = None,
     duration: str | None = None,
     end_raw: str | None = None,
     location: str | None = None,
@@ -451,12 +490,13 @@ async def calendar_update(
     if body is not None or body_file is not None:
         description, _ = resolve_event_body(body, body_file, body_type)
     service = _calendar_service(cfg)
+    cal_id = _resolve_calendar_id(service, calendar)
 
     changes_time = start_raw is not None or end_raw is not None or duration is not None
     existing: Mapping[str, Any] | None = None
     if changes_time or all_day is not None:
         try:
-            existing = execute(service.events().get(calendarId="primary", eventId=eid))
+            existing = execute(service.events().get(calendarId=cal_id, eventId=eid))
         except HttpError as exc:
             # Same 404/410 -> not_found mapping the PATCH below uses, so a time
             # edit against a missing/deleted event does not leak a raw HttpError.
@@ -509,7 +549,7 @@ async def calendar_update(
     try:
         updated = execute(
             service.events().patch(
-                calendarId="primary",
+                calendarId=cal_id,
                 eventId=eid,
                 body=patch,
                 conferenceDataVersion=conference_version,
@@ -526,7 +566,7 @@ async def calendar_update(
         # "pending" on the immediate follow-up read. Re-GET once, then fail loudly
         # - the same guard calendar_create / the Graph update path keep - rather
         # than return a join-less success an agent would trust.
-        updated = execute(service.events().get(calendarId="primary", eventId=eid))
+        updated = execute(service.events().get(calendarId=cal_id, eventId=eid))
         if not _meet_link(updated):
             raise RuntimeError(
                 f"Google Meet was not provisioned for event {eid!r} "
@@ -540,6 +580,7 @@ async def calendar_view(
     *,
     start: datetime,
     end: datetime,
+    calendar: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     if end <= start:
@@ -549,7 +590,7 @@ async def calendar_view(
     service = _calendar_service(cfg, required_scopes=CALENDAR_READ_SCOPES)
     response = execute(
         service.events().list(
-            calendarId="primary",
+            calendarId=_resolve_calendar_id(service, calendar),
             singleEvents=True,
             orderBy="startTime",
             timeMax=_rfc3339(end),
@@ -563,6 +604,48 @@ async def calendar_view(
         "start": start.isoformat(),
         "timezone": str(display_tz),
     }
+
+
+def _calendar_list_entry_to_dict(item: dict[str, Any]) -> dict[str, Any]:
+    role = str(item.get("accessRole") or "")
+    return {
+        "id": item.get("id"),
+        "name": item.get("summaryOverride") or item.get("summary"),
+        "is_default": bool(item.get("primary")),
+        "can_edit": role in {"owner", "writer"},
+        # Gmail's calendarList carries no owner mailbox address; Graph's `owner`
+        # is one, so return None here rather than an id that is not an address.
+        "owner": None,
+        "color": item.get("backgroundColor"),
+    }
+
+
+def _resolve_calendar_id(service: Any, calendar: str | None) -> str:
+    """A ``--calendar`` name or id -> a Google calendar id (``"primary"`` by default).
+
+    Exact id first, then a case-insensitive summary; raises on no match or an
+    ambiguous name (like ``people resolve``).
+    """
+    wanted = (calendar or "").strip()
+    if not wanted:
+        return "primary"
+    items = _all_calendar_list_items(service)
+    if any(i.get("id") == wanted for i in items):
+        return wanted
+    matches = [
+        i
+        for i in items
+        if str(i.get("summaryOverride") or i.get("summary") or "").casefold() == wanted.casefold()
+    ]
+    if len(matches) == 1:
+        return str(matches[0]["id"])
+    if len(matches) > 1:
+        names = ", ".join(sorted({str(i.get("summary")) for i in matches}))
+        raise CalendarAmbiguousError(f"{calendar!r} matches more than one calendar: {names}")
+    # No id or name match. Fail closed, same as the Graph resolver - do NOT fall
+    # back to the `primary` API alias: an unmatched token must mean the same thing
+    # on both providers, and the default calendar is reachable by omitting --calendar.
+    raise CalendarNotFoundError(f"no calendar named {calendar!r}")
 
 
 def _rsvp_one(service: Any, event_id: str, status: str, comment: str | None = None) -> None:

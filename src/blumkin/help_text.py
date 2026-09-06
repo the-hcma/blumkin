@@ -221,7 +221,21 @@ Returns the full event: body/agenda, every attendee with their response, the
 recurrence (same shape `calendar create --json` emits), the online-meeting join
 URL, and `series_master_id` when it is one instance of a recurring series.
 Read-only. `--body-type` is Microsoft-only (Graph converts server-side); Google
-returns its single stored description, which may contain HTML.
+returns its single stored description, which may contain HTML. `--calendar
+NAME|ID` reads from a non-default calendar (see `calendar list`).
+"""
+
+CALENDAR_LIST_EPILOG = """
+Example:
+
+\b
+  blumkin calendar list --json
+
+Lists every calendar the account can see: `id`, `name`, `is_default`,
+`can_edit`, `owner`, `color`. Pass a `name` or `id` from here to `--calendar` on
+`calendar today` / `view` / `get` / `create` / `update` / `cancel` to target a
+non-default calendar (an ambiguous name is a usage error - use the id).
+Read-only, no extra scope.
 """
 
 CALENDAR_FREEBUSY_EPILOG = """
@@ -563,6 +577,39 @@ Examples:
 
 Fetches one message in full. Prefer this over listing and filtering client-side
 when you already have the id. Default body type is text.
+"""
+
+MAIL_SEARCH_EPILOG = """
+Examples:
+
+\b
+  blumkin mail search --query "renewal from:dana" --json
+  blumkin mail search --query invoice --since 2026-08-01 --until 2026-09-01 --json
+
+Searches the WHOLE mailbox (every folder), relevance-ranked, and tags each hit
+with its `folder`. `mail list --search` only covers one folder. Microsoft uses
+Graph `$search`, Google uses Gmail `q=` (so Gmail operators like `from:` /
+`subject:` / `has:attachment` work there). Graph `$search` cannot combine with a
+server-side date filter, so with `--since` / `--until` it over-fetches a
+relevance window and filters locally - `complete` is then `null` (a match
+outside the window cannot be ruled out), and a hit with no timestamp (a draft)
+is dropped rather than passed. Graph `$search` has no escape for a `"` inside
+the query, so a quoted phrase is rejected on Microsoft (it works on Gmail
+`q=`). No extra scope.
+"""
+
+MAIL_THREAD_EPILOG = """
+Examples:
+
+\b
+  blumkin mail thread --id AAMk... --json
+  blumkin mail thread --id AAMk... --full --body-type text
+
+Lists every message in the conversation the given message belongs to, oldest
+first, each with the `mail list` summary shape. `--full` adds each body
+(`--body-type` html/text; Microsoft converts server-side, Google returns its
+stored representation). Microsoft resolves the `conversationId` and filters
+`/me/messages`; Google reads the Gmail thread. No extra scope.
 """
 
 MAIL_INBOX_EPILOG = """

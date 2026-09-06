@@ -71,8 +71,12 @@ class GoogleWorkspaceProvider:
             config=self._config,
         )
 
-    async def calendar_cancel(self, *, event_id: str) -> dict[str, Any]:
-        return await google_calendar.calendar_cancel(event_id=event_id, config=self._config)
+    async def calendar_cancel(
+        self, *, event_id: str, calendar: str | None = None
+    ) -> dict[str, Any]:
+        return await google_calendar.calendar_cancel(
+            event_id=event_id, calendar=calendar, config=self._config
+        )
 
     async def calendar_decline(
         self,
@@ -124,6 +128,7 @@ class GoogleWorkspaceProvider:
         body: str | None = None,
         body_file: str | None = None,
         body_type: str = "text",
+        calendar: str | None = None,
         duration: str | None = None,
         location: str | None = None,
         optional_emails: list[str] | None = None,
@@ -140,6 +145,7 @@ class GoogleWorkspaceProvider:
             body=body,
             body_file=body_file,
             body_type=body_type,
+            calendar=calendar,
             duration=duration,
             location=location,
             optional_emails=optional_emails,
@@ -168,13 +174,18 @@ class GoogleWorkspaceProvider:
         *,
         event_id: str,
         body_type: str = "text",  # Microsoft-only; ignored on Google
+        calendar: str | None = None,
         tz_name: str | None = None,
     ) -> dict[str, Any]:
         return await google_calendar.calendar_get(
             event_id=event_id,
+            calendar=calendar,
             tz_name=tz_name,
             config=self._config,
         )
+
+    async def calendar_list(self) -> dict[str, Any]:
+        return await google_calendar.calendar_list(config=self._config)
 
     async def calendar_suggest(
         self,
@@ -204,9 +215,12 @@ class GoogleWorkspaceProvider:
         self,
         *,
         day: date | None = None,
+        calendar: str | None = None,
         tz_name: str | None = None,
     ) -> dict[str, Any]:
-        return await google_calendar.calendar_today(day=day, tz_name=tz_name, config=self._config)
+        return await google_calendar.calendar_today(
+            day=day, calendar=calendar, tz_name=tz_name, config=self._config
+        )
 
     async def calendar_update(
         self,
@@ -216,6 +230,7 @@ class GoogleWorkspaceProvider:
         body: str | None = None,
         body_file: str | None = None,
         body_type: str = "text",
+        calendar: str | None = None,
         duration: str | None = None,
         end_raw: str | None = None,
         location: str | None = None,
@@ -231,6 +246,7 @@ class GoogleWorkspaceProvider:
             body=body,
             body_file=body_file,
             body_type=body_type,
+            calendar=calendar,
             duration=duration,
             end_raw=end_raw,
             location=location,
@@ -247,8 +263,11 @@ class GoogleWorkspaceProvider:
         *,
         start: datetime,
         end: datetime,
+        calendar: str | None = None,
     ) -> dict[str, Any]:
-        return await google_calendar.calendar_view(start=start, end=end, config=self._config)
+        return await google_calendar.calendar_view(
+            start=start, end=end, calendar=calendar, config=self._config
+        )
 
     async def chat_attachments_download(
         self,
@@ -488,8 +507,27 @@ class GoogleWorkspaceProvider:
             config=self._config,
         )
 
+    async def mail_search(
+        self,
+        *,
+        query: str,
+        top: int = 25,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, Any]:
+        return await google_mail.mail_search(
+            query=query, top=top, since=since, until=until, config=self._config
+        )
+
     async def mail_send_draft(self, *, draft_id: str) -> dict[str, Any]:
         return await google_mail_writes.mail_send_draft(draft_id=draft_id, config=self._config)
+
+    async def mail_thread(
+        self, *, message_id: str, full: bool = False, body_type: str = "text"
+    ) -> dict[str, Any]:
+        return await google_mail.mail_thread(
+            message_id=message_id, full=full, body_type=body_type, config=self._config
+        )
 
     async def mail_update_draft(
         self,
