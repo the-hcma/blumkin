@@ -514,14 +514,25 @@ def _emitted_error_values() -> set[str]:
                 continue
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            where = f"{path.name}:{node.lineno}"
+            if name == "ErrorInfo":
+                # classify_exception builds these instead of calling emit_error;
+                # the slug is the first positional argument.
+                literal = node.args[0] if node.args else None
+                assert isinstance(literal, ast.Constant) and isinstance(literal.value, str), (
+                    f"{where}: ErrorInfo slug is not a string literal"
+                )
+                values.add(literal.value)
+                continue
             if name not in {"emit_error", "_emit_error"}:
                 continue
             keyword = next((kw for kw in node.keywords if kw.arg == "error"), None)
-            where = f"{path.name}:{node.lineno}"
             assert keyword is not None, f"{where}: {name} without an error= keyword"
             literal = keyword.value
-            if isinstance(literal, ast.Name) and path.name == "cli.py":
-                continue  # the _emit_error wrapper forwarding its own `error` param
+            if not isinstance(literal, ast.Constant) and path.name == "cli.py":
+                # cli.py forwards a variable `error=` in two thin wrappers:
+                # `_emit_error` (its own param) and `_fail` (classify_exception's slug).
+                continue
             assert isinstance(literal, ast.Constant) and isinstance(literal.value, str), (
                 f"{where}: error= is not a string literal, so the documented set cannot be verified"
             )

@@ -419,6 +419,24 @@ def test_cli_change_flags_without_on_off_is_usage(monkeypatch) -> None:
     assert called is False
 
 
+def test_cli_schedule_flags_without_on_off_is_usage(monkeypatch) -> None:
+    # A window without --on/--off is the same "forgot the verb" mistake as --message
+    # alone: it must be a usage error, not a read that quietly ignores the window.
+    called = False
+
+    async def _read(**_kwargs):
+        nonlocal called
+        called = True
+        return {"auto_reply": {"enabled": False}}
+
+    monkeypatch.setattr("blumkin.cli._workspace", lambda: SimpleNamespace(mail_auto_reply=_read))
+    result = CliRunner().invoke(
+        main, ["mail", "auto-reply", "--start", "2026-09-01", "--until", "2026-09-08", "--json"]
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert called is False
+
+
 def test_cli_read_path_needs_no_yes(monkeypatch) -> None:
     async def _read(**_kwargs):
         return {"auto_reply": {"enabled": False}}

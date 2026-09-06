@@ -6,13 +6,10 @@ import asyncio
 import os
 import shutil
 import subprocess
-from datetime import date, datetime
 from pathlib import Path
 from typing import Any, NoReturn
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import click
-import httpx
 from click.shell_completion import get_completion_class
 
 from blumkin import help_text
@@ -33,35 +30,18 @@ from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
-    CalendarAmbiguousError,
-    CalendarEventNotFoundError,
-    CalendarListTooLargeError,
-    CalendarNotFoundError,
     format_calendar_get_human,
     format_calendar_list_human,
     format_freebusy_human,
     format_suggest_human,
     format_today_human,
     format_view_human,
-    parse_local_datetime,
 )
 from blumkin.skills.calendar_writes import (
     format_cancel_human,
     format_create_human,
     format_rsvp_human,
     format_update_human,
-    parse_duration,
-    parse_recurrence,
-)
-from blumkin.skills.chat import (
-    ChatAttachmentNotFoundError,
-    ChatAttachmentScopeError,
-    ChatAttachmentSkippedError,
-    ChatMessageNotFoundError,
-    format_edit_human,
-    format_find_human,
-    format_last_human,
-    format_send_human,
 )
 from blumkin.skills.chat import (
     format_attachments_download_human as format_chat_attachments_download_human,
@@ -72,16 +52,17 @@ from blumkin.skills.chat import (
 from blumkin.skills.chat import (
     format_delete_human as format_chat_delete_human,
 )
+from blumkin.skills.chat import (
+    format_edit_human,
+    format_find_human,
+    format_last_human,
+    format_send_human,
+)
+from blumkin.skills.dispatch import run_skill
+from blumkin.skills.errors import ErrorInfo, classify_exception
 from blumkin.skills.mail import (
     MAIL_IMPORTANCE_VALUES,
     WELL_KNOWN_MAIL_FOLDERS,
-    MailAttachError,
-    MailAttachmentNotFoundError,
-    MailAttachmentSkippedError,
-    MailBodyFileError,
-    MailDraftNotFoundError,
-    MailFolderNotFoundError,
-    MailMessageNotFoundError,
     format_attachments_download_human,
     format_attachments_human,
     format_delete_draft_human,
@@ -223,26 +204,6 @@ def _emit_error(
     )
 
 
-def _graph_http_status(exc: BaseException) -> int | None:
-    """Best-effort HTTP status from kiota/msgraph or googleapiclient exceptions.
-
-    ``status_code`` covers both kiota ``APIError`` and
-    ``googleapiclient.errors.HttpError`` (an int property since v2.40); the
-    ``response`` fallbacks catch older/other shapes.
-    """
-    for attr in ("response_status_code", "status_code"):
-        value = getattr(exc, attr, None)
-        if isinstance(value, int):
-            return value
-    response = getattr(exc, "response", None)
-    if response is not None:
-        for attr in ("status_code", "status"):
-            value = getattr(response, attr, None)
-            if isinstance(value, int):
-                return value
-    return None
-
-
 def _load_config() -> BlumkinConfig:
     ctx = click.get_current_context(silent=True)
     profile: str | None = None
@@ -283,24 +244,6 @@ def _populate_profile_email_once() -> str | None:
     return address if written else None
 
 
-def _mail_time_bounds(
-    ctx: click.Context,
-    tz_flag: str | None,
-    *,
-    since: str | None,
-    until: str | None,
-) -> tuple[datetime | None, datetime | None]:
-    """Parse --since/--until in the operator's timezone, as `calendar view` does."""
-    if since is None and until is None:
-        # Resolving a zone nobody asked about would reject a plain listing over --tz.
-        return (None, None)
-    tz = ZoneInfo(_tz_name(ctx, tz_flag) or _load_config().default_tz)
-    return (
-        None if since is None else parse_local_datetime(since, tz),
-        None if until is None else parse_local_datetime(until, tz),
-    )
-
-
 def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
     """``--version`` callback: package version, short commit, resolved binary path."""
     if not value or ctx.resilient_parsing:
@@ -323,109 +266,9 @@ def _provider_config_hint(message: str) -> str | None:
     return None
 
 
-def _route_calendar_resolve_error(exc: BaseException, *, as_json: bool) -> None:
-    """``--calendar`` name resolution: ambiguous -> usage (2), no match -> not_found (5).
-
-    A no-op for any other exception, so callers chain it before the generic
-    handler.
-    """
-    if isinstance(exc, CalendarAmbiguousError):
-        _emit_error(
-            error="usage_error",
-            message=str(exc),
-            as_json=as_json,
-            hint="Pass the calendar id (from `blumkin calendar list --json`), not the name.",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    if isinstance(exc, CalendarNotFoundError):
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    if isinstance(exc, CalendarListTooLargeError):
-        _emit_error(error="graph_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
-
-
-def _raise_auth_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
-    """Classify a ``ValueError`` from the auth layer by type, not by sniffing its message.
-
-    ``AuthRequiredError`` / ``AuthTransientError`` / ``MissingScopeError`` /
-    ``ProviderConfigError`` are the typed subclasses raised by
-    ``blumkin.auth`` / ``blumkin.providers.google_auth`` (issue #133); the
-    message-substring fallback below only still applies to a plain
-    ``ValueError`` from elsewhere in the codebase.
-    """
-    if isinstance(exc, ProviderConfigError):
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    if isinstance(exc, MissingScopeError):
-        _emit_error(
-            error="missing_scope", message=str(exc), as_json=as_json, hint=_MISSING_SCOPE_HINT
-        )
-        raise SystemExit(EXIT_MISSING_SCOPE) from exc
-    if isinstance(exc, AuthTransientError):
-        _emit_error(error="transient_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
-    if isinstance(exc, AuthRequiredError):
-        _emit_error(error="auth_required", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_AUTH) from exc
-    msg = str(exc)
-    if (
-        "client_id" in msg
-        or "Missing" in msg
-        or msg.startswith("Authentication required")
-        or msg.startswith("Silent token refresh failed")
-    ):
-        _emit_error(error="auth_required", message=msg, as_json=as_json)
-        raise SystemExit(EXIT_AUTH) from exc
-    _emit_error(error="usage_error", message=msg, as_json=as_json)
-    raise SystemExit(EXIT_USAGE) from exc
-
-
 def _raise_chat_attachment_error(exc: BaseException, *, as_json: bool) -> NoReturn:
-    if isinstance(exc, ChatAttachmentScopeError):
-        _emit_error(error="missing_scope", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_MISSING_SCOPE) from exc
-    if isinstance(exc, ChatAttachmentNotFoundError | ChatMessageNotFoundError | LookupError):
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    if isinstance(exc, ChatAttachmentSkippedError):
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    if isinstance(exc, ProviderConfigError):
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    if isinstance(exc, ValueError):
-        _raise_auth_value_error(exc, as_json=as_json)
-    _raise_graph_http_error(exc, as_json=as_json)
-
-
-def _raise_graph_http_error(exc: BaseException, *, as_json: bool) -> NoReturn:
-    if isinstance(exc, SecretWriteError):
-        _emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
-    if isinstance(exc, httpx.TimeoutException | TimeoutError):
-        _emit_error(
-            error="timeout",
-            message=str(exc) or "Graph or token HTTP call timed out",
-            as_json=as_json,
-        )
-        raise SystemExit(EXIT_OTHER) from exc
-    status = _graph_http_status(exc)
-    if status == 401:
-        _emit_error(error="auth_required", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_AUTH) from exc
-    if status == 403:
-        _emit_error(error="missing_scope", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_MISSING_SCOPE) from exc
-    if status == 404:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    _emit_error(error="graph_error", message=str(exc), as_json=as_json)
-    raise SystemExit(EXIT_OTHER) from exc
-
-
-def _raise_mail_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
-    _raise_auth_value_error(exc, as_json=as_json)
+    """Kept for tests that call it directly; delegates to the shared classifier."""
+    _fail(exc, as_json=as_json)
 
 
 def _read_pipx_version(executable: Path) -> str | None:
@@ -486,22 +329,6 @@ def _require_wo1162425_scopes(*, as_json: bool) -> None:
     raise SystemExit(EXIT_USAGE)
 
 
-def _require_yes(
-    *,
-    yes: bool,
-    as_json: bool,
-    reason: str = "This action notifies other people.",
-) -> None:
-    if not yes:
-        _emit_error(
-            error="usage_error",
-            message="--yes is required for this command",
-            as_json=as_json,
-            hint=f"{reason} Re-run the command with --yes to confirm.",
-        )
-        raise SystemExit(EXIT_USAGE)
-
-
 def _tz_name(ctx: click.Context, tz_flag: str | None) -> str | None:
     return tz_flag if tz_flag is not None else ctx.obj.get("tz_name")
 
@@ -512,6 +339,67 @@ def _workspace(config: BlumkinConfig | None = None) -> WorkspaceProvider:
     except ProviderConfigError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
         raise SystemExit(EXIT_USAGE) from exc
+
+
+def _fail(exc: BaseException, *, as_json: bool) -> NoReturn:
+    """Classify any exception and turn it into the documented envelope + exit code."""
+    info: ErrorInfo = classify_exception(exc)
+    _emit_error(error=info.slug, message=info.message, as_json=as_json, hint=info.hint)
+    raise SystemExit(info.exit_code) from exc
+
+
+def _dispatch(
+    ctx: click.Context,
+    skill_id: str,
+    arguments: dict[str, Any],
+    *,
+    human: Any,
+    as_json_flag: bool,
+) -> NoReturn:
+    """Run a skill through :func:`run_skill` and emit its payload the standard way."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            run_skill(skill_id, arguments, config=_load_config(), provider=_workspace())
+        )
+    except Exception as exc:  # noqa: BLE001 - classify_exception owns the taxonomy
+        _fail(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+def _dispatch_soft(
+    ctx: click.Context,
+    skill_id: str,
+    arguments: dict[str, Any],
+    *,
+    human: Any,
+    as_json_flag: bool,
+    is_failure: Any,
+    fail_exit: int,
+) -> NoReturn:
+    """Like :func:`_dispatch` but for skills that report a soft miss on stdout.
+
+    ``chat last`` (no chat matched) / ``people resolve`` (ambiguous) keep their
+    payload on stdout with ``ok: false`` and a non-zero exit - the agent guide
+    and ``test_diagnostic_commands_report_failure_on_stdout`` pin this.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            run_skill(skill_id, arguments, config=_load_config(), provider=_workspace())
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail(exc, as_json=as_json)
+    failed = bool(is_failure(payload))
+    if as_json:
+        emit_json({**payload, "ok": not failed})
+    else:
+        emit_lines(human(payload))
+    raise SystemExit(fail_exit if failed else EXIT_SUCCESS)
 
 
 def _xdg_base(var: str, default: Path) -> Path:
@@ -1249,32 +1137,13 @@ def calendar_today_cmd(
     --json to get event ids for accept / cancel / update. `--calendar` targets a
     non-default calendar (name or id from `blumkin calendar list`).
     """
-    as_json = _as_json(ctx, as_json_flag)
-    tz_name = _tz_name(ctx, tz_flag)
-    day_value: date | None = day.date() if day is not None else None
-    try:
-        payload = asyncio.run(
-            _workspace().calendar_today(day=day_value, calendar=calendar, tz_name=tz_name)
-        )
-    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
-        _route_calendar_resolve_error(exc, as_json=as_json)
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_today_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "calendar.today",
+        {"date": day, "calendar": calendar, "tz": _tz_name(ctx, tz_flag)},
+        human=format_today_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @calendar.command("view", epilog=help_text.CALENDAR_VIEW_EPILOG)
@@ -1311,32 +1180,13 @@ def calendar_view_cmd(
     The range is half-open: `--to` is the first day NOT shown, so
     `--from 2026-09-01 --to 2026-09-08` covers exactly that week.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        cfg = _load_config()
-        tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
-        start = datetime(from_day.year, from_day.month, from_day.day, tzinfo=tz)
-        end = datetime(to_day.year, to_day.month, to_day.day, tzinfo=tz)
-        payload = asyncio.run(_workspace().calendar_view(start=start, end=end, calendar=calendar))
-    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
-        _route_calendar_resolve_error(exc, as_json=as_json)
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_view_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "calendar.view",
+        {"from": from_day, "to": to_day, "calendar": calendar, "tz": _tz_name(ctx, tz_flag)},
+        human=format_view_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @calendar.command("get", epilog=help_text.CALENDAR_GET_EPILOG)
@@ -1366,38 +1216,18 @@ def calendar_get_cmd(
 
     Prefer this over scraping a `calendar view` listing once you have the id.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(
-            _workspace().calendar_get(
-                event_id=event_id,
-                body_type=body_type,
-                calendar=calendar,
-                tz_name=_tz_name(ctx, tz_flag),
-            )
-        )
-    except CalendarEventNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
-        _route_calendar_resolve_error(exc, as_json=as_json)
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_calendar_get_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "calendar.get",
+        {
+            "event_id": event_id,
+            "body_type": body_type,
+            "calendar": calendar,
+            "tz": _tz_name(ctx, tz_flag),
+        },
+        human=format_calendar_get_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @calendar.command("list", epilog=help_text.CALENDAR_LIST_EPILOG)
@@ -1408,18 +1238,7 @@ def calendar_list_cmd(ctx: click.Context, as_json_flag: bool) -> None:
 
     Pass an `id` or `name` from here to `--calendar` on the other calendar verbs.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(_workspace().calendar_list())
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_calendar_list_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(ctx, "calendar.list", {}, human=format_calendar_list_human, as_json_flag=as_json_flag)
 
 
 @calendar.command("freebusy", epilog=help_text.CALENDAR_FREEBUSY_EPILOG)
@@ -1459,32 +1278,18 @@ def calendar_freebusy_cmd(
     exposes them), not free slots. For ranked mutual-free start times, use
     `calendar suggest`. Do not use this to guess someone's address.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        cfg = _load_config()
-        tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
-        start = parse_local_datetime(start_raw, tz)
-        end = parse_local_datetime(end_raw, tz)
-        payload = asyncio.run(
-            _workspace().calendar_freebusy(with_emails=list(with_emails), start=start, end=end)
-        )
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_freebusy_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "calendar.freebusy",
+        {
+            "with": list(with_emails),
+            "start": start_raw,
+            "end": end_raw,
+            "tz": _tz_name(ctx, tz_flag),
+        },
+        human=format_freebusy_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @calendar.command("suggest", epilog=help_text.CALENDAR_SUGGEST_EPILOG)
@@ -1553,44 +1358,22 @@ def calendar_suggest_cmd(
     Suggests starts only - it never creates an event. Feed a chosen start into
     `calendar create`. Clip to a working-day window with `--window HH:MM-HH:MM`.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        cfg = _load_config()
-        tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
-        start = parse_local_datetime(start_raw, tz)
-        end = parse_local_datetime(end_raw, tz)
-        payload = asyncio.run(
-            _workspace().calendar_suggest(
-                with_emails=list(with_emails),
-                start=start,
-                end=end,
-                duration=parse_duration(duration),
-                window=window,
-                treat_tentative=treat_tentative,
-                limit=limit,
-            )
-        )
-    except ValueError as exc:
-        msg = str(exc)
-        if msg.startswith("freebusy lookup failed"):
-            _emit_error(error="graph_error", message=msg, as_json=as_json)
-            raise SystemExit(EXIT_OTHER) from exc
-        _raise_auth_value_error(exc, as_json=as_json)
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_suggest_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "calendar.suggest",
+        {
+            "with": list(with_emails),
+            "start": start_raw,
+            "end": end_raw,
+            "duration": duration,
+            "window": window,
+            "treat_tentative": treat_tentative,
+            "limit": limit,
+            "tz": _tz_name(ctx, tz_flag),
+        },
+        human=format_suggest_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 def _run_calendar_rsvp(
@@ -1606,46 +1389,23 @@ def _run_calendar_rsvp(
     tz_flag: str | None,
     as_json_flag: bool,
 ) -> None:
-    as_json = _as_json(ctx, as_json_flag)
-    _require_yes(yes=yes, as_json=as_json)
-    try:
-        tz_name = _tz_name(ctx, tz_flag)
-        if today_pending or propose_start:
-            # Both paths resolve a ZoneInfo in the skill; surface a bad zone as a
-            # usage error here rather than a late graph_error.
-            cfg = _load_config()
-            ZoneInfo(tz_name or cfg.default_tz)
-        method = getattr(_workspace(), f"calendar_{verb}")
-        kwargs: dict[str, Any] = {
-            "event_id": event_id,
-            "today_pending": today_pending,
-            "comment": comment,
-            "tz_name": tz_name,
-        }
-        if verb != "accept":
-            kwargs["propose_start"] = propose_start
-            kwargs["propose_duration"] = propose_duration
-        payload = asyncio.run(method(**kwargs))
-    except CalendarEventNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_rsvp_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    arguments: dict[str, Any] = {
+        "event_id": event_id,
+        "today_pending": today_pending,
+        "comment": comment,
+        "tz": _tz_name(ctx, tz_flag),
+        "yes": yes,
+    }
+    if verb != "accept":
+        arguments["propose_time"] = propose_start
+        arguments["propose_duration"] = propose_duration
+    _dispatch(
+        ctx,
+        f"calendar.{verb}",
+        arguments,
+        human=format_rsvp_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @calendar.command("accept", epilog=help_text.CALENDAR_ACCEPT_EPILOG)
@@ -1792,21 +1552,13 @@ def calendar_cancel_cmd(
     ctx: click.Context, event_id: str, calendar: str | None, yes: bool, as_json_flag: bool
 ) -> None:
     """Cancel an event you organize and notify every attendee. Requires --yes."""
-    as_json = _as_json(ctx, as_json_flag)
-    _require_yes(yes=yes, as_json=as_json)
-    try:
-        payload = asyncio.run(_workspace().calendar_cancel(event_id=event_id, calendar=calendar))
-    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
-        _route_calendar_resolve_error(exc, as_json=as_json)
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_cancel_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "calendar.cancel",
+        {"event_id": event_id, "calendar": calendar, "yes": yes},
+        human=format_cancel_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @calendar.command("create", epilog=help_text.CALENDAR_CREATE_EPILOG)
@@ -1945,63 +1697,34 @@ def calendar_create_cmd(
     attendee, check `calendar freebusy` / `calendar suggest` first. Pass --repeat
     for a recurring series.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    _require_yes(yes=yes, as_json=as_json)
-    recurrence = None
-    if repeat is not None:
-        try:
-            recurrence = parse_recurrence(
-                repeat=repeat, count=count, days=days, interval=interval, until=until
-            )
-        except ValueError as exc:
-            _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-            raise SystemExit(EXIT_USAGE) from exc
-    elif any(v is not None for v in (until, count, days)) or interval != 1:
-        _emit_error(
-            error="usage_error",
-            message="--interval / --until / --count / --days require --repeat",
-            as_json=as_json,
-        )
-        raise SystemExit(EXIT_USAGE)
-    try:
-        payload = asyncio.run(
-            _workspace().calendar_create(
-                subject=subject,
-                with_emails=list(with_emails),
-                start_raw=start_raw,
-                all_day=all_day,
-                body=body,
-                body_file=body_file,
-                body_type=body_type,
-                calendar=calendar,
-                duration=duration,
-                location=location,
-                optional_emails=list(optional_emails),
-                recurrence=recurrence,
-                remind_email=remind_email,
-                teams=teams,
-                tz_name=_tz_name(ctx, tz_flag),
-            )
-        )
-    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
-        _route_calendar_resolve_error(exc, as_json=as_json)
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_create_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "calendar.create",
+        {
+            "subject": subject,
+            "with": list(with_emails),
+            "start": start_raw,
+            "duration": duration,
+            "all_day": all_day,
+            "location": location,
+            "calendar": calendar,
+            "optional": list(optional_emails),
+            "body": body,
+            "body_file": body_file,
+            "body_type": body_type,
+            "remind_email": remind_email,
+            "no_teams": not teams,
+            "repeat": repeat,
+            "interval": interval,
+            "until": until,
+            "count": count,
+            "days": days,
+            "tz": _tz_name(ctx, tz_flag),
+            "yes": yes,
+        },
+        human=format_create_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @calendar.command("update", epilog=help_text.CALENDAR_UPDATE_EPILOG)
@@ -2073,49 +1796,29 @@ def calendar_update_cmd(
 
     Uses Calendars.ReadWrite. Editing a recurring series edits the whole series.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    _require_yes(yes=yes, as_json=as_json)
-    try:
-        payload = asyncio.run(
-            _workspace().calendar_update(
-                event_id=event_id,
-                subject=subject,
-                start_raw=start_raw,
-                end_raw=end_raw,
-                duration=duration,
-                all_day=all_day,
-                location=location,
-                calendar=calendar,
-                body=body,
-                body_file=body_file,
-                body_type=body_type,
-                with_emails=list(with_emails) if with_emails else None,
-                teams=teams,
-                tz_name=_tz_name(ctx, tz_flag),
-            )
-        )
-    except CalendarEventNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
-        _route_calendar_resolve_error(exc, as_json=as_json)
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_update_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "calendar.update",
+        {
+            "event_id": event_id,
+            "subject": subject,
+            "start": start_raw,
+            "end": end_raw,
+            "duration": duration,
+            "all_day": all_day,
+            "location": location,
+            "calendar": calendar,
+            "body": body,
+            "body_file": body_file,
+            "body_type": body_type,
+            "with": list(with_emails) if with_emails else None,
+            "no_teams": None if teams is None else not teams,
+            "tz": _tz_name(ctx, tz_flag),
+            "yes": yes,
+        },
+        human=format_update_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @main.group(epilog=help_text.CHAT_EPILOG)
@@ -2150,23 +1853,13 @@ def chat_attachments_cmd(
     """
     if ctx.invoked_subcommand is not None:
         return
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(
-            _workspace().chat_attachments_list(
-                chat_id=chat_id,
-                latest=latest,
-                message_id=message_id,
-                with_name=with_name,
-            )
-        )
-    except Exception as exc:
-        _raise_chat_attachment_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_chat_attachments_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "chat.attachments",
+        {"chat_id": chat_id, "latest": latest, "message_id": message_id, "with": with_name},
+        human=format_chat_attachments_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @chat_attachments_cmd.command("download", epilog=help_text.CHAT_ATTACHMENTS_DOWNLOAD_EPILOG)
@@ -2196,26 +1889,21 @@ def chat_attachments_download_cmd(
     (missing_scope) with a share URL to open in Teams. --out is a file path for
     one attachment, or a directory with --all.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(
-            _workspace().chat_attachments_download(
-                attachment_id=attachment_id,
-                chat_id=chat_id,
-                download_all=download_all,
-                latest=latest,
-                message_id=message_id,
-                out=out,
-                with_name=with_name,
-            )
-        )
-    except Exception as exc:
-        _raise_chat_attachment_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_chat_attachments_download_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "chat.attachments.download",
+        {
+            "attachment_id": attachment_id,
+            "chat_id": chat_id,
+            "all": download_all,
+            "latest": latest,
+            "message_id": message_id,
+            "out": out,
+            "with": with_name,
+        },
+        human=format_chat_attachments_download_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @chat.command("delete", epilog=help_text.CHAT_DELETE_EPILOG)
@@ -2236,20 +1924,13 @@ def chat_delete_cmd(
     Every participant sees the message disappear. Needs
     `wo1162425_scopes = true` (Chat.ReadWrite).
     """
-    as_json = _as_json(ctx, as_json_flag)
-    _require_wo1162425_scopes(as_json=as_json)
-    _require_yes(yes=yes, as_json=as_json)
-    try:
-        payload = asyncio.run(_workspace().chat_delete(chat_id=chat_id, message_id=message_id))
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_chat_delete_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "chat.delete",
+        {"chat_id": chat_id, "message_id": message_id, "yes": yes},
+        human=format_chat_delete_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @chat.command("edit", epilog=help_text.CHAT_EDIT_EPILOG)
@@ -2272,22 +1953,13 @@ def chat_edit_cmd(
     Other people have already read the message. Needs
     `wo1162425_scopes = true` (Chat.ReadWrite).
     """
-    as_json = _as_json(ctx, as_json_flag)
-    _require_wo1162425_scopes(as_json=as_json)
-    _require_yes(yes=yes, as_json=as_json)
-    try:
-        payload = asyncio.run(
-            _workspace().chat_edit(chat_id=chat_id, message_id=message_id, text=text)
-        )
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_edit_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "chat.edit",
+        {"chat_id": chat_id, "message_id": message_id, "text": text, "yes": yes},
+        human=format_edit_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @chat.command("find", epilog=help_text.CHAT_FIND_EPILOG)
@@ -2299,18 +1971,9 @@ def chat_find_cmd(ctx: click.Context, with_name: str, as_json_flag: bool) -> Non
 
     Use it to get a --chat-id when a name matches more than one chat.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(_workspace().chat_find(with_name=with_name))
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_find_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx, "chat.find", {"with": with_name}, human=format_find_human, as_json_flag=as_json_flag
+    )
 
 
 @chat.command("last", epilog=help_text.CHAT_LAST_EPILOG)
@@ -2348,26 +2011,15 @@ def chat_last_cmd(
     Exit 5 (not_found) means no chat matched --with. An ambiguous --with is exit
     2 (usage_error) listing the candidate ids - pass one back as --chat-id.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(
-            _workspace().chat_last(with_name=with_name, chat_id=chat_id, contains=contains, n=n)
-        )
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    no_match = payload.get("chat") is None
-    if as_json:
-        # Deliberate: no-match keeps the payload on stdout with empty stderr
-        # (chat == null / ok == false is the signal), pinned by
-        # test_diagnostic_commands_report_failure_on_stdout and the agent guide.
-        emit_json({**payload, "ok": not no_match})
-    else:
-        emit_lines(format_last_human(payload))
-    if no_match:
-        raise SystemExit(EXIT_NOT_FOUND)
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch_soft(
+        ctx,
+        "chat.last",
+        {"with": with_name, "chat_id": chat_id, "contains": contains, "n": n},
+        human=format_last_human,
+        as_json_flag=as_json_flag,
+        is_failure=lambda payload: payload.get("chat") is None,
+        fail_exit=EXIT_NOT_FOUND,
+    )
 
 
 @chat.command("send", epilog=help_text.CHAT_SEND_EPILOG)
@@ -2400,25 +2052,13 @@ def chat_send_cmd(
     This messages a real person. Needs `wo1162425_scopes = true`
     (Chat.ReadWrite). If --with is ambiguous, use --chat-id from `chat find`.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    _require_wo1162425_scopes(as_json=as_json)
-    _require_yes(yes=yes, as_json=as_json)
-    try:
-        payload = asyncio.run(
-            _workspace().chat_send(with_name=with_name, chat_id=chat_id, text=text)
-        )
-    except LookupError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_send_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "chat.send",
+        {"with": with_name, "chat_id": chat_id, "text": text, "yes": yes},
+        human=format_send_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @main.group(epilog=help_text.MAIL_EPILOG)
@@ -2486,39 +2126,24 @@ def mail_inbox_cmd(
     `--search` runs on Graph over the whole mailbox and cannot combine with the
     substring, date, importance, or attachment filters.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        since_dt, until_dt = _mail_time_bounds(ctx, tz_flag, since=since, until=until)
-        payload = asyncio.run(
-            _workspace().mail_inbox(
-                top=top,
-                has_attachments=has_attachments,
-                importance=importance,
-                search=search,
-                sender=sender,
-                subject=subject,
-                since=since_dt,
-                unread=unread,
-                until=until_dt,
-            )
-        )
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except ValueError as exc:
-        _raise_mail_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_inbox_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.inbox",
+        {
+            "from": sender,
+            "subject": subject,
+            "search": search,
+            "since": since,
+            "until": until,
+            "unread": unread,
+            "importance": importance,
+            "has_attachments": has_attachments,
+            "top": top,
+            "tz": _tz_name(ctx, tz_flag),
+        },
+        human=format_inbox_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("folders", epilog=help_text.MAIL_FOLDERS_EPILOG)
@@ -2530,18 +2155,7 @@ def mail_folders_cmd(ctx: click.Context, as_json_flag: bool) -> None:
     Graph's totals can lag - do not treat `total: 0` as proof a folder is
     empty; confirm with `mail list --folder <name>`.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(_workspace().mail_folders())
-    except ValueError as exc:
-        _raise_mail_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_folders_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(ctx, "mail.folders", {}, human=format_folders_human, as_json_flag=as_json_flag)
 
 
 @mail.command("get", epilog=help_text.MAIL_GET_EPILOG)
@@ -2565,21 +2179,13 @@ def mail_get_cmd(
 
     Prefer this over listing and filtering client-side once you have the id.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(_workspace().mail_get(message_id=message_id, body_type=body_type))
-    except MailMessageNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_mail_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_mail_get_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.get",
+        {"id": message_id, "body_type": body_type},
+        human=format_mail_get_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("search", epilog=help_text.MAIL_SEARCH_EPILOG)
@@ -2605,29 +2211,13 @@ def mail_search_cmd(
     tags each hit with its `folder`. `--since` / `--until` filter the returned
     page locally ($search cannot combine with a server-side date filter).
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        since_dt, until_dt = _mail_time_bounds(ctx, tz_flag, since=since, until=until)
-        payload = asyncio.run(
-            _workspace().mail_search(query=query, top=top, since=since_dt, until=until_dt)
-        )
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except ValueError as exc:
-        _raise_mail_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_mail_search_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.search",
+        {"query": query, "since": since, "until": until, "top": top, "tz": _tz_name(ctx, tz_flag)},
+        human=format_mail_search_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("thread", epilog=help_text.MAIL_THREAD_EPILOG)
@@ -2651,23 +2241,13 @@ def mail_thread_cmd(
     as_json_flag: bool,
 ) -> None:
     """List every message in the conversation a message belongs to, oldest first."""
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(
-            _workspace().mail_thread(message_id=message_id, full=full, body_type=body_type)
-        )
-    except MailMessageNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_mail_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_mail_thread_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.thread",
+        {"id": message_id, "full": full, "body_type": body_type},
+        human=format_mail_thread_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("list", epilog=help_text.MAIL_LIST_EPILOG)
@@ -2741,44 +2321,26 @@ def mail_list_cmd(
     Drafts/Outbox, received otherwise); override with `--orderby`. Same filter
     rules as `mail inbox` (`--importance` / `--has-attachments` are server-side).
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        since_dt, until_dt = _mail_time_bounds(ctx, tz_flag, since=since, until=until)
-        payload = asyncio.run(
-            _workspace().mail_list(
-                top=top,
-                folder=folder,
-                has_attachments=has_attachments,
-                importance=importance,
-                orderby=orderby,
-                search=search,
-                sender=sender,
-                subject=subject,
-                since=since_dt,
-                unread=unread,
-                until=until_dt,
-            )
-        )
-    except ZoneInfoNotFoundError as exc:
-        _emit_error(
-            error="usage_error",
-            message=f"invalid timezone: {exc}",
-            as_json=as_json,
-            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except MailFolderNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_mail_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_list_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.list",
+        {
+            "folder": folder,
+            "orderby": orderby,
+            "from": sender,
+            "subject": subject,
+            "search": search,
+            "since": since,
+            "until": until,
+            "unread": unread,
+            "importance": importance,
+            "has_attachments": has_attachments,
+            "top": top,
+            "tz": _tz_name(ctx, tz_flag),
+        },
+        human=format_list_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.group("attachments", invoke_without_command=True, epilog=help_text.MAIL_ATTACHMENTS_EPILOG)
@@ -2801,20 +2363,13 @@ def mail_attachments_cmd(ctx: click.Context, message_id: str | None, as_json_fla
             hint="Pass --id <message-id>; get one from `blumkin mail list --json`.",
         )
         raise SystemExit(EXIT_USAGE)
-    try:
-        payload = asyncio.run(_workspace().mail_attachments_list(message_id=message_id))
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except MailMessageNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_attachments_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.attachments",
+        {"id": message_id},
+        human=format_attachments_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail_attachments_cmd.command("download", epilog=help_text.MAIL_ATTACHMENTS_DOWNLOAD_EPILOG)
@@ -2845,58 +2400,30 @@ def mail_attachments_download_cmd(
 
     Get attachment ids from `mail attachments --id ... --json`.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(
-            _workspace().mail_attachments_download(
-                message_id=message_id,
-                attachment_id=attachment_id,
-                download_all=download_all,
-                out=out,
-            )
-        )
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except MailMessageNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except MailAttachmentNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except MailAttachmentSkippedError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_attachments_download_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.attachments.download",
+        {
+            "message_id": message_id,
+            "attachment_id": attachment_id,
+            "all": download_all,
+            "out": out,
+        },
+        human=format_attachments_download_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 def _run_mail_triage(
-    ctx: click.Context, *, verb: str, yes: bool, as_json_flag: bool, **kwargs: Any
+    ctx: click.Context, *, verb: str, yes: bool, as_json_flag: bool, arguments: dict[str, Any]
 ) -> None:
-    as_json = _as_json(ctx, as_json_flag)
-    _require_yes(yes=yes, as_json=as_json)
-    try:
-        payload = asyncio.run(getattr(_workspace(), f"mail_{verb}")(**kwargs))
-    except MailMessageNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except MailFolderNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_mail_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_mail_triage_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        f"mail.{verb}",
+        {**arguments, "yes": yes},
+        human=format_mail_triage_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("delete", epilog=help_text.MAIL_TRIAGE_EPILOG)
@@ -2909,7 +2436,7 @@ def mail_delete_cmd(
 ) -> None:
     """Move one or more messages to Deleted Items / Trash (recoverable). Requires --yes."""
     _run_mail_triage(
-        ctx, verb="delete", yes=yes, as_json_flag=as_json_flag, message_ids=list(message_ids)
+        ctx, verb="delete", yes=yes, as_json_flag=as_json_flag, arguments={"id": list(message_ids)}
     )
 
 
@@ -2941,10 +2468,12 @@ def mail_mark_cmd(
         verb="mark",
         yes=yes,
         as_json_flag=as_json_flag,
-        message_ids=list(message_ids),
-        read=read,
-        flagged=flagged,
-        importance=importance,
+        arguments={
+            "id": list(message_ids),
+            "read": read,
+            "flag": flagged,
+            "importance": importance,
+        },
     )
 
 
@@ -2968,8 +2497,7 @@ def mail_move_cmd(
         verb="move",
         yes=yes,
         as_json_flag=as_json_flag,
-        message_ids=list(message_ids),
-        to=to,
+        arguments={"id": list(message_ids), "to": to},
     )
 
 
@@ -3036,49 +2564,23 @@ def mail_auto_reply_cmd(
     schedule a window. Microsoft needs `wo1162425_scopes` (MailboxSettings.ReadWrite);
     Google needs the `gmail.settings.basic` scope.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    if enable is None and any(
-        v is not None
-        for v in (message, message_file, external_message, external_audience, start, until)
-    ):
-        _emit_error(
-            error="usage_error",
-            message=(
-                "pass --on to turn the auto-reply on (with --message / --start / ...) "
-                "or --off to clear it"
-            ),
-            as_json=as_json,
-        )
-        raise SystemExit(EXIT_USAGE)
-    if enable is not None:
-        _require_wo1162425_scopes(as_json=as_json)
-        _require_yes(
-            yes=yes, as_json=as_json, reason="This changes your mailbox auto-reply setting."
-        )
-    try:
-        payload = asyncio.run(
-            _workspace().mail_auto_reply(
-                enable=enable,
-                message=message,
-                message_file=message_file,
-                external_message=external_message,
-                external_audience=external_audience,
-                start=start.date() if start is not None else None,
-                until=until.date() if until is not None else None,
-            )
-        )
-    except MailFolderNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_mail_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_mail_auto_reply_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.auto-reply",
+        {
+            "on": enable is True,
+            "off": enable is False,
+            "message": message,
+            "message_file": message_file,
+            "external_message": external_message,
+            "external": external_audience,
+            "start": start,
+            "until": until,
+            "yes": yes,
+        },
+        human=format_mail_auto_reply_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 mail.add_command(mail_auto_reply_cmd, "oof")
@@ -3093,21 +2595,13 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
 
     The safe way to clean up a draft you created only to inspect it.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(_workspace().mail_delete_draft(draft_id=draft_id))
-    except MailDraftNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_delete_draft_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.delete-draft",
+        {"id": draft_id},
+        human=format_delete_draft_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("draft", epilog=help_text.MAIL_DRAFT_EPILOG)
@@ -3177,40 +2671,23 @@ def mail_draft_cmd(
     `--bcc` repeat or take comma-separated lists. Use ASCII hyphens in the body,
     not em dashes.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(
-            _workspace().mail_draft(
-                to=to,
-                cc=cc,
-                bcc=bcc,
-                subject=subject,
-                attach=attach,
-                body=body,
-                body_file=body_file,
-                body_type=body_type,
-                no_signature=no_signature,
-            )
-        )
-    except MailAttachError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    except MailBodyFileError as exc:
-        _emit_error(
-            error="usage_error",
-            message=str(exc),
-            as_json=as_json,
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_draft_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.draft",
+        {
+            "to": to,
+            "cc": cc,
+            "bcc": bcc,
+            "subject": subject,
+            "attach": attach,
+            "body": body,
+            "body_file": body_file,
+            "body_type": body_type,
+            "no_signature": no_signature,
+        },
+        human=format_draft_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("forward", epilog=help_text.MAIL_FORWARD_EPILOG)
@@ -3255,35 +2732,22 @@ def mail_forward_cmd(
     replaces the quoted original. `--cc` / `--bcc` on create merge with
     inherited recipients. Send with `mail send-draft --yes`.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(
-            _workspace().mail_forward(
-                message_id=message_id,
-                to=to,
-                body=body,
-                body_file=body_file,
-                body_type=body_type,
-                cc=cc or None,
-                bcc=bcc or None,
-                no_signature=no_signature,
-            )
-        )
-    except MailBodyFileError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    except MailMessageNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_mail_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_reply_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.forward",
+        {
+            "id": message_id,
+            "to": to,
+            "cc": cc or None,
+            "bcc": bcc or None,
+            "body": body,
+            "body_file": body_file,
+            "body_type": body_type,
+            "no_signature": no_signature,
+        },
+        human=format_reply_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("reply", epilog=help_text.MAIL_REPLY_EPILOG)
@@ -3329,35 +2793,22 @@ def mail_reply_cmd(
     `mail update-draft --body` drops the quoted original. Send with
     `mail send-draft --yes`.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(
-            _workspace().mail_reply(
-                message_id=message_id,
-                body=body,
-                body_file=body_file,
-                body_type=body_type,
-                reply_all=reply_all,
-                cc=cc or None,
-                bcc=bcc or None,
-                no_signature=no_signature,
-            )
-        )
-    except MailBodyFileError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    except MailMessageNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_mail_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_reply_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.reply",
+        {
+            "id": message_id,
+            "all": reply_all,
+            "cc": cc or None,
+            "bcc": bcc or None,
+            "body": body,
+            "body_file": body_file,
+            "body_type": body_type,
+            "no_signature": no_signature,
+        },
+        human=format_reply_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("signature", epilog=help_text.MAIL_SIGNATURE_EPILOG)
@@ -3409,19 +2860,13 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
 
     This is the step that actually delivers mail.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    _require_yes(yes=yes, as_json=as_json)
-    try:
-        payload = asyncio.run(_workspace().mail_send_draft(draft_id=draft_id))
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_send_draft_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.send-draft",
+        {"id": draft_id, "yes": yes},
+        human=format_send_draft_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("update-draft", epilog=help_text.MAIL_UPDATE_DRAFT_EPILOG)
@@ -3498,45 +2943,25 @@ def mail_update_draft_cmd(
     `--to` / `--cc` / `--bcc` and `--body` each REPLACE that field wholesale
     when given - include every value that should remain. `--attach` is additive.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = asyncio.run(
-            _workspace().mail_update_draft(
-                draft_id=draft_id,
-                attach=attach,
-                subject=subject,
-                to=to or None,
-                cc=cc or None,
-                bcc=bcc or None,
-                body=body,
-                body_file=body_file,
-                body_type=body_type,
-                keep_quoted=keep_quoted,
-                no_signature=no_signature,
-            )
-        )
-    except MailAttachError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    except MailBodyFileError as exc:
-        _emit_error(
-            error="usage_error",
-            message=str(exc),
-            as_json=as_json,
-        )
-        raise SystemExit(EXIT_USAGE) from exc
-    except MailDraftNotFoundError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_draft_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "mail.update-draft",
+        {
+            "id": draft_id,
+            "attach": attach,
+            "subject": subject,
+            "to": to or None,
+            "cc": cc or None,
+            "bcc": bcc or None,
+            "body": body,
+            "body_file": body_file,
+            "body_type": body_type,
+            "keep_quoted": keep_quoted,
+            "no_signature": no_signature,
+        },
+        human=format_draft_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @main.group(epilog=help_text.MEETING_EPILOG)
@@ -3558,22 +2983,13 @@ def meeting_get_cmd(ctx: click.Context, event_id: str, as_json_flag: bool) -> No
     Exit 5 (not_found) means the event has no online meeting or you are not the
     organizer.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    _require_wo1162425_scopes(as_json=as_json)
-    try:
-        payload = asyncio.run(_workspace().meeting_get(event_id=event_id))
-    except LookupError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_meeting_get_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "meeting.get",
+        {"event_id": event_id},
+        human=format_meeting_get_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @meeting.command("transcription", epilog=help_text.MEETING_TRANSCRIPTION_EPILOG)
@@ -3594,28 +3010,13 @@ def meeting_transcription_cmd(
     Without --enable this is a read. With --enable it sets
     allowTranscription=true and needs --yes.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    _require_wo1162425_scopes(as_json=as_json)
-    if enable:
-        _require_yes(
-            yes=yes,
-            as_json=as_json,
-            reason="This changes a meeting setting (allowTranscription).",
-        )
-    try:
-        payload = asyncio.run(_workspace().meeting_transcription(event_id=event_id, enable=enable))
-    except LookupError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    if as_json:
-        emit_json(payload)
-    else:
-        emit_lines(format_transcription_human(payload))
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch(
+        ctx,
+        "meeting.transcription",
+        {"event_id": event_id, "enable": enable, "yes": yes},
+        human=format_transcription_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @main.group(epilog=help_text.PEOPLE_EPILOG)
@@ -3654,25 +3055,15 @@ def people_resolve_cmd(
     `ambiguous: true` and the candidate list - ask which person, never guess.
     Exactly one match: `person.email` is the address to use.
     """
-    as_json = _as_json(ctx, as_json_flag)
-    _require_wo1162425_scopes(as_json=as_json)
-    try:
-        payload = asyncio.run(_workspace().people_resolve(name=name, email=email, top=top))
-    except LookupError as exc:
-        _emit_error(error="not_found", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_NOT_FOUND) from exc
-    except ValueError as exc:
-        _raise_auth_value_error(exc, as_json=as_json)
-    except Exception as exc:
-        _raise_graph_http_error(exc, as_json=as_json)
-    ambiguous = bool(payload.get("ambiguous"))
-    if as_json:
-        emit_json({**payload, "ok": not ambiguous})
-    else:
-        emit_lines(format_resolve_human(payload))
-    if ambiguous:
-        raise SystemExit(EXIT_USAGE)
-    raise SystemExit(EXIT_SUCCESS)
+    _dispatch_soft(
+        ctx,
+        "people.resolve",
+        {"name": name, "email": email, "top": top},
+        human=format_resolve_human,
+        as_json_flag=as_json_flag,
+        is_failure=lambda payload: bool(payload.get("ambiguous")),
+        fail_exit=EXIT_USAGE,
+    )
 
 
 if __name__ == "__main__":
