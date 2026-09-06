@@ -125,10 +125,12 @@ def test_graph_batch_reports_skips_but_all_fail_propagates(monkeypatch) -> None:
     assert payload["deleted"] == ["ok"]
     assert payload["skipped"] == [{"id": "gone", "reason": "message not found: gone"}]
 
+    # Every id fails: _mail_triage_batch re-raises the first error so the batch
+    # cannot report exit 0 with an empty result set.
     client.me.messages.by_message_id.return_value.delete = AsyncMock(
-        side_effect=RuntimeError("token expired")
+        side_effect=[_odata(404), _odata(404)]
     )
-    with pytest.raises(RuntimeError, match="token expired"):
+    with pytest.raises(ODataError):
         asyncio.run(mail_delete(message_ids=["a", "b"]))
 
 
