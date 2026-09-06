@@ -92,6 +92,16 @@ def test_graph_search_filters_since_until_locally(monkeypatch) -> None:
     assert [i["id"] for i in payload["items"]] == ["keep"]
 
 
+def test_graph_search_non_dated_complete_reflects_the_page_fill(monkeypatch) -> None:
+    # A short page is exhaustive; a page filled to exactly --top is not.
+    _graph(monkeypatch, messages_get_return=SimpleNamespace(value=[_msg("m1", subject="x")]))
+    assert asyncio.run(mail_search(query="x", top=3))["complete"] is True
+
+    full = [_msg(f"m{i}", subject="x") for i in range(3)]
+    _graph(monkeypatch, messages_get_return=SimpleNamespace(value=full))
+    assert asyncio.run(mail_search(query="x", top=3))["complete"] is False
+
+
 def test_graph_search_rejects_empty_query(monkeypatch) -> None:
     _graph(monkeypatch, messages_get_return=SimpleNamespace(value=[]))
     with pytest.raises(ValueError, match="--query is required"):
