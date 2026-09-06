@@ -318,7 +318,14 @@ async def calendar_update(
             "--end / --location / --body / --with / --all-day / --teams"
         )
 
-    updated = await client.me.events.by_event_id(eid).patch(patch)
+    try:
+        updated = await client.me.events.by_event_id(eid).patch(patch)
+    except ODataError as exc:
+        # A subject/body-only edit skips the pre-edit GET, so the PATCH is where a
+        # gone or malformed-id event first surfaces - map it the same way.
+        if not is_id_lookup_failure(exc):
+            raise
+        raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
     if updated is None:
         updated = await client.me.events.by_event_id(eid).get()
     if updated is None or not updated.id:

@@ -41,7 +41,9 @@ def _odata_error(*, status: int, code: str | None = None) -> ODataError:
     return err
 
 
-def _graph_client(monkeypatch, *, existing=None, existing_error=None) -> MagicMock:
+def _graph_client(
+    monkeypatch, *, existing=None, existing_error=None, patch_error=None
+) -> MagicMock:
     updated = SimpleNamespace(
         id="evt-1",
         subject="x",
@@ -55,7 +57,9 @@ def _graph_client(monkeypatch, *, existing=None, existing_error=None) -> MagicMo
         online_meeting=None,
     )
     client = MagicMock()
-    client.me.events.by_event_id.return_value.patch = AsyncMock(return_value=updated)
+    client.me.events.by_event_id.return_value.patch = AsyncMock(
+        return_value=updated, side_effect=patch_error
+    )
     client.me.events.by_event_id.return_value.get = AsyncMock(
         return_value=existing, side_effect=existing_error
     )
@@ -290,6 +294,28 @@ def test_graph_update_query_400_on_prefetch_still_raises(monkeypatch) -> None:
         asyncio.run(calendar_update(event_id="evt-1", start_raw="2026-09-23T15:00", tz_name=_NY))
 
 
+@pytest.mark.parametrize(
+    "err",
+    [
+        _odata_error(status=404),
+        _odata_error(status=400, code="ErrorItemNotFound"),
+        _odata_error(status=400, code="ErrorInvalidIdMalformed"),
+    ],
+)
+def test_graph_update_missing_event_on_subject_only_edit(monkeypatch, err) -> None:
+    # A subject-only edit skips the pre-edit GET, so the PATCH is where a gone or
+    # malformed-id event surfaces - it must map to not_found, not leak ODataError.
+    _graph_client(monkeypatch, patch_error=err)
+    with pytest.raises(CalendarEventNotFoundError, match="event not found: evt-1"):
+        asyncio.run(calendar_update(event_id="evt-1", subject="New", tz_name=_NY))
+
+
+def test_graph_update_patch_query_400_still_raises(monkeypatch) -> None:
+    _graph_client(monkeypatch, patch_error=_odata_error(status=400, code="ErrorInvalidUrlQuery"))
+    with pytest.raises(ODataError):
+        asyncio.run(calendar_update(event_id="evt-1", subject="New", tz_name=_NY))
+
+
 def test_graph_update_rejects_date_only_start_on_timed_event(monkeypatch) -> None:
     existing = SimpleNamespace(
         id="evt-1",
@@ -497,6 +523,24 @@ def test_google_update_convert_from_all_day_keeps_date(tmp_path: Path) -> None:
     body = service.events.return_value.patch.call_args.kwargs["body"]
     assert body["start"]["dateTime"].startswith("2026-09-21T00:00:00")
     assert body["end"]["dateTime"].startswith("2026-09-21T00:30:00")  # default length
+
+
+def test_google_update_convert_to_all_day(tmp_path: Path) -> None:
+    existing = {
+        "id": "evt-1",
+        "start": {"dateTime": "2026-09-21T13:00:00-04:00"},
+        "end": {"dateTime": "2026-09-21T14:00:00-04:00"},
+    }
+    service = _google_service(existing)
+    with _google_patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_update(
+                event_id="evt-1", all_day=True, start_raw="2026-12-24", duration="2d"
+            )
+        )
+    body = service.events.return_value.patch.call_args.kwargs["body"]
+    assert body["start"] == {"date": "2026-12-24"}
+    assert body["end"] == {"date": "2026-12-26"}
 
 
 def test_google_update_time_edit_missing_event_maps_not_found(tmp_path: Path) -> None:

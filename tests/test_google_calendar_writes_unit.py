@@ -141,6 +141,15 @@ def test_calendar_cancel_deletes_and_notifies(tmp_path: Path) -> None:
     service.events.return_value.delete.return_value.execute.assert_called_with(num_retries=0)
 
 
+def test_calendar_cancel_refuses_an_event_you_do_not_organize(tmp_path: Path) -> None:
+    # events.delete on someone else's meeting only removes your own copy and
+    # tells nobody, so calendar_cancel must refuse rather than report success.
+    service = _service(event={"id": "evt-9", "organizer": {"email": "sam@example.com"}})
+    with _patched(service), pytest.raises(ValueError, match="you do not organize"):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_cancel(event_id="evt-9"))
+    service.events.return_value.delete.assert_not_called()
+
+
 def _cfg(config_dir: Path) -> BlumkinConfig:
     oauth = config_dir / "desktop-client.json"
     if not oauth.is_file():
