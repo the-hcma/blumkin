@@ -240,7 +240,7 @@ def build_plan(
                 scope=scope,
                 detected=client in detected,
                 via=via,
-                config_path=config_path(client, scope, cwd) if via == "file" else None,
+                config_path=config_path(client, scope, cwd),
                 current=current,
                 desired=desired,
                 action=action,
@@ -294,6 +294,10 @@ def _restore_previous(plan: ClientPlan) -> bool:
 
 
 def _apply_cli(plan: ClientPlan, binary: str) -> str:
+    # `claude mcp add -s project` rewrites cwd/.mcp.json - a freshly cloned repo
+    # can ship that as a symlink, same as the file-merge path guards against.
+    if plan.scope == "project" and plan.config_path is not None:
+        _reject_symlinked_target(plan.config_path)
     remove = (
         ["claude", "mcp", "remove", "blumkin", "-s", plan.scope]
         if plan.client == "claude"
@@ -327,8 +331,13 @@ def _apply_cli(plan: ClientPlan, binary: str) -> str:
 
 def _reject_symlinked_target(path: Path) -> None:
     """Refuse ``path`` or any parent (down to the filesystem root) that is a
-    symlink - a freshly cloned repo can ship ``.cursor`` or ``.cursor/mcp.json``
-    as a link, and the write would then clobber the link's real target."""
+    symlink.
+
+    Called for **project scope** only: a freshly cloned repo can ship ``.cursor``
+    or ``.mcp.json`` as a link, and the write would then clobber the link's real
+    target. A user-scope config the operator symlinked into their own dotfiles is
+    their choice and left alone.
+    """
     current = path
     while True:
         if current.is_symlink():
@@ -344,8 +353,12 @@ def _reject_symlinked_target(path: Path) -> None:
 
 def _apply_file(plan: ClientPlan) -> str:
     path = plan.config_path
-    assert path is not None  # via == "file" always carries a path
-    _reject_symlinked_target(path)
+    assert path is not None  # config_path covers every client
+    if plan.scope == "project":
+        _reject_symlinked_target(path)
+    # A user-scope config the operator symlinked into their dotfiles: honour the
+    # link, write to its real target rather than replacing the symlink with a file.
+    target = path.resolve() if plan.scope == "user" and path.is_symlink() else path
     data = _read_config(path)  # strict: refuses an existing file it cannot parse
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):
@@ -353,23 +366,23 @@ def _apply_file(plan: ClientPlan) -> str:
         data["mcpServers"] = servers
     servers["blumkin"] = plan.desired
     body = json.dumps(data, indent=2) + "\n"
-    existed = path.is_file()
-    tmp = path.with_name(f".{path.name}.blumkin-{os.getpid()}")
+    existed = target.is_file()
+    tmp = target.with_name(f".{target.name}.blumkin-{os.getpid()}")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(body, "utf-8")
         # MCP configs can hold `env` credentials (ours and other servers'), so do
         # not widen a locked-down file, and create a new one private.
         if existed:
-            shutil.copymode(path, tmp)
+            shutil.copymode(target, tmp)
         else:
             tmp.chmod(0o600)
-        os.replace(tmp, path)  # atomic: a failed write never truncates the real file
+        os.replace(tmp, target)  # atomic: a failed write never truncates the real file
     except OSError as exc:
         tmp.unlink(missing_ok=True)
         raise McpInstallError(
-            f"{plan.label}: could not write {path}: {exc}",
-            hint=f"Check that {path.parent} is writable and {path} is a regular file you own.",
+            f"{plan.label}: could not write {target}: {exc}",
+            hint=f"Check that {target.parent} is writable and {target} is a regular file you own.",
         ) from exc
     if plan.client == "cursor" and shutil.which("cursor-agent"):
         _run(["cursor-agent", "mcp", "enable", "blumkin"])  # best effort; ignore result

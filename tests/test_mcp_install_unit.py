@@ -288,6 +288,86 @@ def test_apply_cli_restores_previous_entry_on_add_failure(
     assert json.loads(restore[-1]) == {"command": "/old/bin/blumkin", "args": ["mcp", "serve"]}
 
 
+def test_apply_cli_copilot_restore_reconstructs_env_and_tools(
+    home: Path, all_clients: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (home / ".copilot").mkdir()
+    (home / ".copilot" / "mcp-config.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "blumkin": {
+                        "type": "stdio",
+                        "command": "blumkin",
+                        "args": ["mcp", "serve"],
+                        "tools": ["calendar", "mail"],
+                        "env": {"BLUMKIN_PROFILE": "work"},
+                    }
+                }
+            }
+        )
+    )
+    calls: list[list[str]] = []
+
+    def _run(cmd: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        # the replacing add fails; remove and the restore add succeed
+        rc = 1 if cmd[:3] == ["copilot", "mcp", "add"] and "--read-only" in cmd else 0
+        return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="nope")
+
+    monkeypatch.setattr(mi.subprocess, "run", _run)
+    (plan,) = mi.build_plan(
+        clients=["copilot"],
+        scope="user",
+        binary="blumkin",
+        serve=mi.ServeSpec(read_only=True),
+        cwd=home,
+    )
+    assert plan.action == "update"
+    with pytest.raises(mi.McpInstallError, match="copilot mcp add"):
+        mi.apply_plan(plan, binary="blumkin")
+    restore = [c for c in calls if c[:3] == ["copilot", "mcp", "add"]][-1]
+    assert "--tools" in restore and restore[restore.index("--tools") + 1] == "calendar,mail"
+    assert "--env" in restore and "BLUMKIN_PROFILE=work" in restore
+
+
+def test_apply_cli_claude_project_scope_refuses_a_symlink(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]]
+) -> None:
+    cwd = home / "repo"
+    cwd.mkdir()
+    victim = home / "secret"
+    victim.write_text("keep me")
+    (cwd / ".mcp.json").symlink_to(victim)
+    (plan,) = mi.build_plan(
+        clients=["claude"], scope="project", binary="blumkin", serve=mi.ServeSpec(), cwd=cwd
+    )
+    with pytest.raises(mi.McpInstallError, match="symlink"):
+        mi.apply_plan(plan, binary="blumkin")
+    assert not any(c[:2] == ["claude", "mcp"] for c in fake_subprocess)
+    assert victim.read_text() == "keep me"
+
+
+def test_apply_file_user_scope_honours_a_dotfile_symlink(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    dotfiles = home / "dotfiles"
+    dotfiles.mkdir()
+    real = dotfiles / "cursor-mcp.json"
+    real.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}))
+    (home / ".cursor").mkdir()
+    (home / ".cursor" / "mcp.json").symlink_to(real)
+    (plan,) = mi.build_plan(
+        clients=["cursor"], scope="user", binary="blumkin", serve=mi.ServeSpec(), cwd=home
+    )
+    assert mi.apply_plan(plan, binary="blumkin") == "added"
+    assert (home / ".cursor" / "mcp.json").is_symlink()  # link preserved
+    data = json.loads(real.read_text())  # real target updated
+    assert data["mcpServers"]["other"] == {"command": "x"}
+    assert "blumkin" in data["mcpServers"]
+
+
 def test_apply_cli_reports_when_restore_also_fails(
     home: Path, all_clients: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
