@@ -53,16 +53,94 @@ _RESPONSE_BY_GOOGLE_STATUS = {
 }
 
 
+_RSVP_STATUS = {"accept": "accepted", "decline": "declined", "tentative": "tentative"}
+
+
 async def calendar_accept(
     *,
     event_id: str | None = None,
     today_pending: bool = False,
+    comment: str | None = None,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     """RSVP accepted on one event, or on today's unanswered invitations."""
+    return await _calendar_rsvp(
+        "accept",
+        event_id=event_id,
+        today_pending=today_pending,
+        comment=comment,
+        propose_start=None,
+        propose_duration=None,
+        tz_name=tz_name,
+        config=config,
+    )
+
+
+async def calendar_decline(
+    *,
+    event_id: str | None = None,
+    today_pending: bool = False,
+    comment: str | None = None,
+    propose_start: str | None = None,
+    propose_duration: str | None = None,
+    tz_name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """RSVP declined on one event, or on today's unanswered invitations."""
+    return await _calendar_rsvp(
+        "decline",
+        event_id=event_id,
+        today_pending=today_pending,
+        comment=comment,
+        propose_start=propose_start,
+        propose_duration=propose_duration,
+        tz_name=tz_name,
+        config=config,
+    )
+
+
+async def calendar_tentative(
+    *,
+    event_id: str | None = None,
+    today_pending: bool = False,
+    comment: str | None = None,
+    propose_start: str | None = None,
+    propose_duration: str | None = None,
+    tz_name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """RSVP tentative on one event, or on today's unanswered invitations."""
+    return await _calendar_rsvp(
+        "tentative",
+        event_id=event_id,
+        today_pending=today_pending,
+        comment=comment,
+        propose_start=propose_start,
+        propose_duration=propose_duration,
+        tz_name=tz_name,
+        config=config,
+    )
+
+
+async def _calendar_rsvp(
+    action: str,
+    *,
+    event_id: str | None,
+    today_pending: bool,
+    comment: str | None,
+    propose_start: str | None,
+    propose_duration: str | None,
+    tz_name: str | None,
+    config: BlumkinConfig | None,
+) -> dict[str, Any]:
     if today_pending == bool(event_id):
         raise ValueError("exactly one of --event-id or --today-pending is required")
+    if propose_start or propose_duration:
+        raise ValueError(
+            "Google Calendar has no propose-new-time; decline and suggest a slot "
+            "in a message to the organizer instead"
+        )
     cfg = config or load_config()
     service = _calendar_service(cfg)
     if today_pending:
@@ -72,11 +150,12 @@ async def calendar_accept(
         ]
     else:
         event_ids = [str(event_id)]
-    accepted: list[str] = []
+    key = _RSVP_STATUS[action]
+    done: list[str] = []
     skipped: list[dict[str, str]] = []
     for eid in event_ids:
         try:
-            _accept_one(service, eid)
+            _rsvp_one(service, eid, key, comment)
         except Exception as exc:  # noqa: BLE001 - a batch must always report
             if not today_pending:
                 # An explicit --event-id is a specific ask: surface the reason.
@@ -87,11 +166,11 @@ async def calendar_accept(
             # events carrying no self attendee) and an HTTP failure on one event -
             # a 404 for something deleted since the listing, a transient 5xx, or a
             # socket timeout - which is not an HttpError at all, so the catch has to
-            # be broad. Re-running is safe: an already-accepted event is a no-op.
+            # be broad. Re-running is safe: an already-set RSVP is a no-op.
             skipped.append({"id": eid, "reason": str(exc)})
             continue
-        accepted.append(eid)
-    return {"accepted": accepted, "count": len(accepted), "skipped": skipped}
+        done.append(eid)
+    return {key: done, "count": len(done), "skipped": skipped}
 
 
 async def calendar_cancel(
@@ -480,12 +559,13 @@ async def calendar_view(
     }
 
 
-def _accept_one(service: Any, event_id: str) -> None:
-    """Set the signed-in attendee's responseStatus to accepted on one event.
+def _rsvp_one(service: Any, event_id: str, status: str, comment: str | None = None) -> None:
+    """Set the signed-in attendee's ``responseStatus`` (``accepted`` / ``declined`` /
+    ``tentative``) on one event.
 
-    Google has no accept action: you patch your own entry in the attendee list,
-    so the current list has to be read first and sent back with just that one
-    entry changed.
+    Google has no RSVP action: you patch your own entry in the attendee list, so
+    the current list has to be read first and sent back with just that one entry
+    changed.
     """
     event = execute(service.events().get(calendarId="primary", eventId=event_id))
     if event.get("attendeesOmitted"):
@@ -494,16 +574,18 @@ def _accept_one(service: Any, event_id: str) -> None:
         # omitted attendee and mail everyone about it, so refuse instead.
         raise ValueError(
             f"event {event_id!r} returned a truncated attendee list "
-            "(attendeesOmitted); accepting it here would drop the omitted attendees, "
+            "(attendeesOmitted); responding here would drop the omitted attendees, "
             "so RSVP in your calendar client instead"
         )
     attendees = [dict(a) for a in (event.get("attendees") or []) if isinstance(a, dict)]
     mine = next((a for a in attendees if a.get("self")), None)
     if mine is None:
         raise ValueError(
-            f"event {event_id!r} does not list you as an attendee, so there is nothing to accept"
+            f"event {event_id!r} does not list you as an attendee, so there is nothing to answer"
         )
-    mine["responseStatus"] = "accepted"
+    mine["responseStatus"] = status
+    if comment is not None:
+        mine["comment"] = comment
     execute(
         service.events().patch(
             calendarId="primary",

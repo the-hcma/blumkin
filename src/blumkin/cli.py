@@ -42,9 +42,9 @@ from blumkin.skills.calendar import (
     parse_local_datetime,
 )
 from blumkin.skills.calendar_writes import (
-    format_accept_human,
     format_cancel_human,
     format_create_human,
+    format_rsvp_human,
     format_update_human,
     parse_duration,
     parse_recurrence,
@@ -1509,31 +1509,19 @@ def calendar_suggest_cmd(
     raise SystemExit(EXIT_SUCCESS)
 
 
-@calendar.command("accept", epilog=help_text.CALENDAR_ACCEPT_EPILOG)
-@click.option("--event-id", "event_id", default=None, help="Single event id to accept.")
-@click.option(
-    "--today-pending",
-    "today_pending",
-    is_flag=True,
-    help="Accept all not-yet-responded events for today.",
-)
-@click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
-@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
-@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
-@click.pass_context
-def calendar_accept_cmd(
+def _run_calendar_rsvp(
     ctx: click.Context,
+    *,
+    verb: str,
     event_id: str | None,
     today_pending: bool,
     yes: bool,
+    comment: str | None,
+    propose_start: str | None,
+    propose_duration: str | None,
     tz_flag: str | None,
     as_json_flag: bool,
 ) -> None:
-    """Accept one invitation (--event-id) or all pending ones for today.
-
-    Sends a response to each organizer, so --yes is required. Event ids come
-    from `blumkin calendar today --json`.
-    """
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
@@ -1541,13 +1529,20 @@ def calendar_accept_cmd(
         if today_pending:
             cfg = _load_config()
             ZoneInfo(tz_name or cfg.default_tz)
-        payload = asyncio.run(
-            _workspace().calendar_accept(
-                event_id=event_id,
-                today_pending=today_pending,
-                tz_name=tz_name,
-            )
-        )
+        method = getattr(_workspace(), f"calendar_{verb}")
+        kwargs: dict[str, Any] = {
+            "event_id": event_id,
+            "today_pending": today_pending,
+            "comment": comment,
+            "tz_name": tz_name,
+        }
+        if verb != "accept":
+            kwargs["propose_start"] = propose_start
+            kwargs["propose_duration"] = propose_duration
+        payload = asyncio.run(method(**kwargs))
+    except CalendarEventNotFoundError as exc:
+        _emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
@@ -1563,8 +1558,140 @@ def calendar_accept_cmd(
     if as_json:
         emit_json(payload)
     else:
-        emit_lines(format_accept_human(payload))
+        emit_lines(format_rsvp_human(payload))
     raise SystemExit(EXIT_SUCCESS)
+
+
+@calendar.command("accept", epilog=help_text.CALENDAR_ACCEPT_EPILOG)
+@click.option("--event-id", "event_id", default=None, help="Single event id to accept.")
+@click.option(
+    "--today-pending",
+    "today_pending",
+    is_flag=True,
+    help="Accept all not-yet-responded events for today.",
+)
+@click.option("--comment", "comment", default=None, help="Note to the organizer.")
+@click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def calendar_accept_cmd(
+    ctx: click.Context,
+    event_id: str | None,
+    today_pending: bool,
+    comment: str | None,
+    yes: bool,
+    tz_flag: str | None,
+    as_json_flag: bool,
+) -> None:
+    """Accept one invitation (--event-id) or all pending ones for today.
+
+    Sends a response to each organizer, so --yes is required. Event ids come
+    from `blumkin calendar today --json`.
+    """
+    _run_calendar_rsvp(
+        ctx,
+        verb="accept",
+        event_id=event_id,
+        today_pending=today_pending,
+        yes=yes,
+        comment=comment,
+        propose_start=None,
+        propose_duration=None,
+        tz_flag=tz_flag,
+        as_json_flag=as_json_flag,
+    )
+
+
+_RSVP_NO_MAYBE_OPTIONS = (
+    click.option("--event-id", "event_id", default=None, help="Single event id."),
+    click.option(
+        "--today-pending",
+        "today_pending",
+        is_flag=True,
+        help="Respond to all not-yet-responded events for today.",
+    ),
+    click.option("--comment", "comment", default=None, help="Note to the organizer."),
+    click.option(
+        "--propose-time",
+        "propose_start",
+        default=None,
+        help="Suggest a new start (Microsoft only; e.g. 2026-09-02T15:00).",
+    ),
+    click.option(
+        "--propose-duration",
+        "propose_duration",
+        default=None,
+        help="Length of the proposed slot (with --propose-time; default 30m).",
+    ),
+    click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action."),
+    click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config)."),
+    click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout."),
+)
+
+
+def _rsvp_no_maybe_options(fn):  # noqa: ANN001, ANN202 - Click decorator stack
+    for decorator in reversed(_RSVP_NO_MAYBE_OPTIONS):
+        fn = decorator(fn)
+    return fn
+
+
+@calendar.command("decline", epilog=help_text.CALENDAR_DECLINE_EPILOG)
+@_rsvp_no_maybe_options
+@click.pass_context
+def calendar_decline_cmd(
+    ctx: click.Context,
+    event_id: str | None,
+    today_pending: bool,
+    comment: str | None,
+    propose_start: str | None,
+    propose_duration: str | None,
+    yes: bool,
+    tz_flag: str | None,
+    as_json_flag: bool,
+) -> None:
+    """Decline one invitation (--event-id) or all pending ones for today. Requires --yes."""
+    _run_calendar_rsvp(
+        ctx,
+        verb="decline",
+        event_id=event_id,
+        today_pending=today_pending,
+        yes=yes,
+        comment=comment,
+        propose_start=propose_start,
+        propose_duration=propose_duration,
+        tz_flag=tz_flag,
+        as_json_flag=as_json_flag,
+    )
+
+
+@calendar.command("tentative", epilog=help_text.CALENDAR_DECLINE_EPILOG)
+@_rsvp_no_maybe_options
+@click.pass_context
+def calendar_tentative_cmd(
+    ctx: click.Context,
+    event_id: str | None,
+    today_pending: bool,
+    comment: str | None,
+    propose_start: str | None,
+    propose_duration: str | None,
+    yes: bool,
+    tz_flag: str | None,
+    as_json_flag: bool,
+) -> None:
+    """Respond "tentative" to one invitation or today's pending ones. Requires --yes."""
+    _run_calendar_rsvp(
+        ctx,
+        verb="tentative",
+        event_id=event_id,
+        today_pending=today_pending,
+        yes=yes,
+        comment=comment,
+        propose_start=propose_start,
+        propose_duration=propose_duration,
+        tz_flag=tz_flag,
+        as_json_flag=as_json_flag,
+    )
 
 
 @calendar.command("cancel", epilog=help_text.CALENDAR_CANCEL_EPILOG)

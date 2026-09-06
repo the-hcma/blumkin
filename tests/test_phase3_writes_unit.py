@@ -20,9 +20,9 @@ from blumkin.skills.calendar_writes import (
     calendar_accept,
     calendar_cancel,
     calendar_create,
-    format_accept_human,
     format_cancel_human,
     format_create_human,
+    format_rsvp_human,
     format_update_human,
     parse_duration,
     reminder_minutes_before_start,
@@ -68,7 +68,7 @@ def test_calendar_accept_by_event_id_mocked(monkeypatch) -> None:
         lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
     )
     payload = asyncio.run(calendar_accept(event_id="evt-1", today_pending=False))
-    assert payload == {"accepted": ["evt-1"], "count": 1}
+    assert payload == {"accepted": ["evt-1"], "count": 1, "skipped": []}
     client.me.events.by_event_id.assert_called_once_with("evt-1")
     accept_await = client.me.events.by_event_id.return_value.accept.post.await_args
     assert accept_await is not None
@@ -1048,7 +1048,7 @@ def test_mail_update_draft_message_not_found(monkeypatch) -> None:
 
 
 def test_write_formatters_human() -> None:
-    assert any("evt-1" in line for line in format_accept_human({"accepted": ["evt-1"], "count": 1}))
+    assert any("evt-1" in line for line in format_rsvp_human({"accepted": ["evt-1"], "count": 1}))
     assert any("evt-9" in line for line in format_cancel_human({"cancelled": "evt-9"}))
     create_lines = format_create_human(
         {

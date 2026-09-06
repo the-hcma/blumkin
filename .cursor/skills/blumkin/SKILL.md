@@ -11,11 +11,12 @@ SDK code (or Google API client code). Do not invent client IDs or call Graph /
 Workspace APIs directly when Blumkin covers the job.
 
 With `provider = "google"` in config, supported verbs are calendar
-(`today` / `view` / `freebusy` / `suggest` / `create`), mail
+(`today` / `view` / `freebusy` / `suggest` / `create` / `get`), mail
 (`inbox` / `list` / `get` / `folders` / `attachments` / `attachments download`),
 mail writes
 (`draft` / `update-draft` / `delete-draft` / `send-draft` / `reply` / `forward`),
-calendar writes (`accept` / `cancel` / `update`), `people resolve`, and chat
+calendar writes (`accept` / `decline` / `tentative` / `cancel` / `update`;
+`--propose-time` is Microsoft-only), `people resolve`, and chat
 (`find` / `last` / `send` / `edit` / `delete` / `attachments`) plus auth. Point `google_oauth_client_file` at the Desktop client JSON (secret
 stays in that file, not env/toml). Setup walkthrough:
 [`docs/google-setup.md`](../../../docs/google-setup.md). Unsupported verbs (meeting, …) fail closed
@@ -122,7 +123,13 @@ original's attachments.
      `blumkin chat attachments download --chat-id '<chat-id>' --message-id '<message-id>' --attachment-id '<id>' --out ./file.docx`
      `blumkin chat attachments download --with "Name" --latest --all --out ./downloads/`
 5. Writes (require `--yes` when they notify others):
-   - `blumkin calendar accept --event-id '<id>' --yes`
+   - `blumkin calendar accept --event-id '<id>' [--comment TEXT] --yes`
+   - `blumkin calendar decline --event-id '<id>' [--comment TEXT] --yes` /
+     `blumkin calendar tentative …` - RSVP no / maybe. Both take
+     `--today-pending` (batch every unanswered invite for today, reporting
+     skips) like `calendar accept`. `--propose-time <start> [--propose-duration]`
+     suggests another slot **on Microsoft only** (fails closed on Google) and
+     needs a single `--event-id`.
    - `blumkin calendar create --subject … --start … --yes`
      (Teams online meeting by default; pass `--no-teams` for an offline hold.
      `--with email` is optional - omit it for a solo hold that notifies nobody;

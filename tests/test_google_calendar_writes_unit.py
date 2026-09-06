@@ -335,9 +335,9 @@ def test_calendar_accept_refuses_a_truncated_attendee_list(tmp_path: Path) -> No
 
 def test_accept_human_output_names_the_events_it_skipped() -> None:
     """The batch report has to survive the default (non-json) path too."""
-    from blumkin.skills.calendar_writes import format_accept_human
+    from blumkin.skills.calendar_writes import format_rsvp_human
 
-    lines = format_accept_human(
+    lines = format_rsvp_human(
         {
             "accepted": ["evt-pending"],
             "count": 1,

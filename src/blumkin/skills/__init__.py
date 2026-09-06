@@ -66,6 +66,7 @@ SKILLS: list[SkillSpec] = [
         args=[
             {"name": "--event-id", "required": False, "type": "string"},
             {"name": "--today-pending", "required": False, "type": "flag"},
+            {"name": "--comment", "required": False, "type": "string"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
             {"name": "--yes", "required": True, "type": "flag"},
         ],
@@ -162,6 +163,28 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="calendar.decline",
+        cli=["blumkin", "calendar", "decline"],
+        summary="Decline calendar invitation(s); optional --comment / --propose-time",
+        mutates=True,
+        notifies_others=True,
+        scopes=["Calendars.ReadWrite"],
+        args=[
+            {"name": "--event-id", "required": False, "type": "string"},
+            {"name": "--today-pending", "required": False, "type": "flag"},
+            {"name": "--comment", "required": False, "type": "string"},
+            {
+                "name": "--propose-time",
+                "required": False,
+                "type": "datetime",
+                "note": "Microsoft only; fails closed on Google",
+            },
+            {"name": "--propose-duration", "required": False, "type": "duration"},
+            {"name": "--tz", "required": False, "type": "iana_tz"},
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
         id="calendar.freebusy",
         cli=["blumkin", "calendar", "freebusy"],
         summary=(
@@ -221,6 +244,28 @@ SKILLS: list[SkillSpec] = [
             },
             {"name": "--limit", "required": False, "type": "int", "note": "default 10"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+        ],
+    ),
+    SkillSpec(
+        id="calendar.tentative",
+        cli=["blumkin", "calendar", "tentative"],
+        summary='Respond "tentative" to calendar invitation(s); optional --comment/--propose-time',
+        mutates=True,
+        notifies_others=True,
+        scopes=["Calendars.ReadWrite"],
+        args=[
+            {"name": "--event-id", "required": False, "type": "string"},
+            {"name": "--today-pending", "required": False, "type": "flag"},
+            {"name": "--comment", "required": False, "type": "string"},
+            {
+                "name": "--propose-time",
+                "required": False,
+                "type": "datetime",
+                "note": "Microsoft only; fails closed on Google",
+            },
+            {"name": "--propose-duration", "required": False, "type": "duration"},
+            {"name": "--tz", "required": False, "type": "iana_tz"},
+            {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
     SkillSpec(
