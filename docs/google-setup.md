@@ -48,14 +48,16 @@ Requested OAuth scopes at login:
 - `https://www.googleapis.com/auth/gmail.compose`
 - `https://www.googleapis.com/auth/gmail.modify`
 - `https://www.googleapis.com/auth/gmail.readonly`
+- `https://www.googleapis.com/auth/gmail.settings.basic`
 
 > **Upgrading from an earlier build:** `calendar.events`, `gmail.compose`, the
 > `contacts.readonly` / `directory.readonly` pair (`people resolve`), the
 > `chat.*` scopes (chat reads plus `chat.messages` for send / edit / delete)
 > (mail writes: `draft` / `update-draft` / `delete-draft` / `send-draft` /
-> `reply` / `forward`), and **`gmail.modify`** (mail triage: `mail move` /
+> `reply` / `forward`), **`gmail.modify`** (mail triage: `mail move` /
 > `mark` / `delete` - `gmail.compose` does not permit `messages.modify` /
-> `trash`) were added after the read MVP. An existing token was minted without
+> `trash`), and **`gmail.settings.basic`** (`mail auto-reply`: the vacation
+> responder) were added after the read MVP. An existing token was minted without
 > them, so those verbs 403 (`missing_scope`, exit 4) until you run
 > `blumkin --profile <name> auth login` again to re-consent.
 
