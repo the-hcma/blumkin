@@ -579,6 +579,28 @@ Fetches one message in full. Prefer this over listing and filtering client-side
 when you already have the id. Default body type is text.
 """
 
+MAIL_TRIAGE_EPILOG = """
+Examples:
+
+\b
+  blumkin mail move --id AAMk... --to archive --yes
+  blumkin mail move --id AAMk... --id AAMk2... --to "Receipts" --yes
+  blumkin mail mark --id AAMk... --read --flag --yes
+  blumkin mail mark --id AAMk... --importance high --yes
+  blumkin mail delete --id AAMk... --yes
+
+`move` / `mark` / `delete` change mailbox state but notify no one, so `--yes` is
+a safety confirm, not a notify gate. `--id` is repeatable; a batch reports each
+message it skipped rather than aborting. `delete` goes to Deleted Items / Gmail
+Trash (recoverable). `move --to archive` just removes the Inbox label; other
+targets are a well-known name, a folder id, or a Gmail label.
+
+Microsoft: covered by `Mail.ReadWrite` (already granted). Google: needs
+`gmail.modify` - a NEW scope. Until you re-run `blumkin auth login` and grant it,
+these exit 4 (`missing_scope`). `gmail`'s `flag` maps to the STARRED label and
+`importance` to the IMPORTANT label.
+"""
+
 MAIL_SEARCH_EPILOG = """
 Examples:
 

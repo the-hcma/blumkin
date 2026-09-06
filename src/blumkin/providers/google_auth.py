@@ -94,6 +94,7 @@ GOOGLE_REQUIRED_SCOPES = frozenset(
         "https://www.googleapis.com/auth/chat.spaces.readonly",
         "https://www.googleapis.com/auth/contacts.readonly",
         "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/gmail.readonly",
     }
 )
@@ -110,6 +111,7 @@ GOOGLE_SCOPES = frozenset(
         "https://www.googleapis.com/auth/contacts.readonly",
         "https://www.googleapis.com/auth/directory.readonly",
         "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/gmail.readonly",
     }
 )
@@ -122,6 +124,10 @@ MAIL_WRITE_SCOPES = frozenset(
         "https://www.googleapis.com/auth/gmail.readonly",
     }
 )
+
+# Mail triage (move / mark / delete): gmail.compose does NOT permit
+# messages.modify / trash, so this needs its own consent (issue #177).
+MAIL_MODIFY_SCOPES = frozenset({"https://www.googleapis.com/auth/gmail.modify"})
 
 PEOPLE_SCOPES = frozenset({"https://www.googleapis.com/auth/contacts.readonly"})
 

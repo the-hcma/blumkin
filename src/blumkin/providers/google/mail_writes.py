@@ -29,19 +29,156 @@ from typing import Any
 from googleapiclient.errors import HttpError
 
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.providers.google.mail import _header_map, _html_to_text, _message_detail
-from blumkin.providers.google_auth import MAIL_WRITE_SCOPES, get_credentials
+from blumkin.providers.google.mail import (
+    _FOLDER_LABELS,
+    _header_map,
+    _html_to_text,
+    _message_detail,
+)
+from blumkin.providers.google_auth import (
+    MAIL_MODIFY_SCOPES,
+    MAIL_WRITE_SCOPES,
+    get_credentials,
+)
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.mail import (
     MailDraftNotFoundError,
+    MailFolderNotFoundError,
     MailMessageNotFoundError,
+    _clean_message_ids,
     _merge_addresses,
     _parse_addresses,
     _read_attachment,
+    _validate_importance,
     append_mail_signature,
     resolve_mail_body,
     split_quoted_original,
 )
+
+_IMPORTANCE_LABEL_OPS = {
+    "high": (["IMPORTANT"], []),
+    "normal": ([], ["IMPORTANT"]),
+    "low": ([], ["IMPORTANT"]),
+}
+
+
+async def mail_delete(
+    *,
+    message_ids: Sequence[str],
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Move one or more messages to the Gmail Trash (recoverable)."""
+    ids = _clean_message_ids(message_ids)
+    service = _gmail_modify_service(config or load_config())
+
+    def _apply(mid: str) -> None:
+        execute(service.users().messages().trash(userId="me", id=mid), num_retries=0)
+
+    return _triage_batch(ids, _apply, key="deleted")
+
+
+async def mail_mark(
+    *,
+    message_ids: Sequence[str],
+    read: bool | None = None,
+    flagged: bool | None = None,
+    importance: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Set read/unread (UNREAD), the star (STARRED), and/or importance (IMPORTANT)."""
+    ids = _clean_message_ids(message_ids)
+    if read is None and flagged is None and importance is None:
+        raise ValueError("pass at least one of --read/--unread, --flag/--unflag, --importance")
+    add: list[str] = []
+    remove: list[str] = []
+    if read is not None:
+        (remove if read else add).append("UNREAD")
+    if flagged is not None:
+        (add if flagged else remove).append("STARRED")
+    if importance is not None:
+        imp_add, imp_remove = _IMPORTANCE_LABEL_OPS[_validate_importance(importance)]
+        add += imp_add
+        remove += imp_remove
+    body = {"addLabelIds": add, "removeLabelIds": remove}
+    service = _gmail_modify_service(config or load_config())
+
+    def _apply(mid: str) -> None:
+        execute(service.users().messages().modify(userId="me", id=mid, body=body), num_retries=0)
+
+    return _triage_batch(ids, _apply, key="marked")
+
+
+async def mail_move(
+    *,
+    message_ids: Sequence[str],
+    to: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Move one or more messages: to a folder label, or `archive` (remove INBOX)."""
+    ids = _clean_message_ids(message_ids)
+    label = to.strip()
+    if not label:
+        raise ValueError("--to is required")
+    add, dest = _gmail_move_labels(label)
+    body = {"addLabelIds": add, "removeLabelIds": ["INBOX"]}
+    service = _gmail_modify_service(config or load_config())
+
+    def _apply(mid: str) -> None:
+        execute(service.users().messages().modify(userId="me", id=mid, body=body), num_retries=0)
+
+    result = _triage_batch(ids, _apply, key="moved")
+    result["to"] = dest
+    return result
+
+
+def _gmail_move_labels(label: str) -> tuple[list[str], str]:
+    """`--to` -> (labels to add, destination name). `archive` just removes INBOX."""
+    key = label.casefold()
+    if key in {"archive", "all mail", "allmail"}:
+        return [], "archive"
+    if key in _FOLDER_LABELS:
+        mapped = _FOLDER_LABELS[key]
+        if mapped is None:
+            raise MailFolderNotFoundError(
+                f"mail folder {label!r} is not a move target for provider=google"
+            )
+        return [mapped], mapped
+    # A user label id (Label_NNN) or its name; Gmail modify takes the id, but a
+    # bare name is a common ask - pass it through and let Gmail 400 a bad one.
+    return [label], label
+
+
+def _gmail_modify_service(cfg: BlumkinConfig) -> Any:
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=MAIL_MODIFY_SCOPES)
+    return build_api_service("gmail", "v1", creds=creds, config=cfg)
+
+
+def _triage_batch(
+    ids: Sequence[str],
+    apply: Any,
+    *,
+    key: str,
+) -> dict[str, Any]:
+    done: list[str] = []
+    skipped: list[dict[str, str]] = []
+    first_error: Exception | None = None
+    for mid in ids:
+        try:
+            apply(mid)
+        except HttpError as exc:
+            missing = _http_status(exc) in {404, 410}
+            reason = f"message not found: {mid}" if missing else str(exc)
+            if len(ids) == 1:
+                if missing:
+                    raise MailMessageNotFoundError(reason) from exc
+                raise
+            first_error = first_error or exc
+            skipped.append({"id": mid, "reason": reason})
+            continue
+        done.append(mid)
+    if len(ids) > 1 and not done and first_error is not None:
+        raise first_error
+    return {key: done, "count": len(done), "skipped": skipped}
 
 
 async def mail_delete_draft(
