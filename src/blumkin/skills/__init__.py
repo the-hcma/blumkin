@@ -105,6 +105,8 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("calendar.create", "--until"): None,
     ("calendar.create", "--count"): None,
     ("calendar.create", "--days"): None,
+    # docs create: --format selects the body parser (markdown | text).
+    ("docs.create", "--format"): "body_format",
     # mail: --from is a sender substring, not a range bound.
     ("mail.inbox", "--from"): "sender",
     ("mail.list", "--from"): "sender",
@@ -712,6 +714,46 @@ SKILLS: list[SkillSpec] = [
                 "note": "exactly one of --with or --chat-id; refuses if multiple matches",
             },
             {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
+        id="docs.create",
+        cli=["blumkin", "docs", "create"],
+        summary=(
+            "Author a document from a Markdown (or plain-text) body and store it in the "
+            "user's drive as a real Google Doc. Does not notify anyone. "
+            "(provider = microsoft is not implemented yet.)"
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=["Files.ReadWrite"],
+        args=[
+            {"name": "--title", "required": True, "type": "string"},
+            {
+                "name": "--body",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --body or --body-file",
+            },
+            {
+                "name": "--body-file",
+                "required": False,
+                "type": "path",
+                "note": "exactly one of --body or --body-file; UTF-8, under 1 MB",
+            },
+            {
+                "name": "--format",
+                "required": False,
+                "type": "enum",
+                "values": ["markdown", "text"],
+                "note": "how --body is parsed; default markdown",
+            },
+            {
+                "name": "--folder",
+                "required": False,
+                "type": "string",
+                "note": "destination folder name (created if absent); drive root if omitted",
+            },
         ],
     ),
     SkillSpec(

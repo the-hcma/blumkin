@@ -196,6 +196,16 @@ class WorkspaceProvider(Protocol):
         chat_id: str | None = None,
     ) -> dict[str, Any]: ...
 
+    async def docs_create(
+        self,
+        *,
+        title: str,
+        body: str | None = None,
+        body_file: str | None = None,
+        body_format: str = "markdown",
+        folder: str | None = None,
+    ) -> dict[str, Any]: ...
+
     async def mail_attachments_download(
         self,
         *,

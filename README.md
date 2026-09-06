@@ -14,7 +14,7 @@ It acts **as the signed-in user** over **delegated** OAuth (public client + inte
 
 ## What it does
 
-One config file, one or more **named profiles** (Microsoft, Google, or both), selected with `--profile` or a tag. 38 skills (`blumkin skills list --json`):
+One config file, one or more **named profiles** (Microsoft, Google, or both), selected with `--profile` or a tag. `blumkin skills list --json` is the live catalog:
 
 | Group | Skills |
 |-------|--------|
@@ -22,8 +22,10 @@ One config file, one or more **named profiles** (Microsoft, Google, or both), se
 | `calendar` | `today`, `view`, `freebusy`, `suggest`, `create`, `accept`, `cancel`, `update` |
 | `mail` | `inbox`, `list`, `get`, `folders`, `draft`, `update-draft`, `delete-draft`, `send-draft`, `reply`, `forward`, `signature`, `attachments` (+ `download`) |
 | `chat` (Teams / Google Chat) | `find`, `last`, `send`, `edit`, `delete`, `attachments` (+ `download`) |
+| `docs` | `create` (a Markdown subset → a real Google Doc) |
 | `meeting` (Microsoft) | `get`, `transcription` |
 | `people` | `resolve` |
+| `mcp` | `serve`, `install`, `status` |
 
 Plus `blumkin doctor` (setup check), `skills` / `profiles` (discovery), `upgrade` (self-update over pipx), and `completion`.
 
@@ -201,8 +203,10 @@ Keep the client JSON mode `0600` and outside the repo.
 **Coverage.** Google runs `auth`, all of `calendar` (`update` attaches a Meet
 link instead of a Teams link; `create` takes the same `--repeat` recurrence
 flags), all of `mail` reads and writes, `people resolve` (own contacts, plus the
-Workspace directory on a Workspace account), and `chat` `find` / `last` / `send`
-/ `edit` / `delete` / `attachments`. `meeting get` / `meeting transcription` are
+Workspace directory on a Workspace account), `chat` `find` / `last` / `send`
+/ `edit` / `delete` / `attachments`, and `docs create` (a native Google Doc via
+the Docs API; `--folder` targets a folder blumkin itself created).
+`meeting get` / `meeting transcription` are
 stubbed by design — Google Meet transcript access is deliberately not
 implemented ([`docs/DECISIONS.md` D8](./docs/DECISIONS.md)). A few option-level
 combinations also still fail closed on a Google profile: `mail list` /

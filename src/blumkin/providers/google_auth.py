@@ -77,6 +77,16 @@ CHAT_SCOPES = frozenset(
     }
 )
 
+# docs_create authors a real Google Doc (documents) and files it under a folder
+# (drive.file - deliberately the narrow scope: it only ever sees files blumkin
+# itself created, never the rest of the user's Drive).
+DOCS_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive.file",
+    }
+)
+
 # The default `get_credentials(..., required_scopes=None)` gate, and status_dict's
 # missing_scopes: the union of every scope some command actually requires - unlike
 # GOOGLE_SCOPES, this excludes directory.readonly (required by no single command,
@@ -93,6 +103,8 @@ GOOGLE_REQUIRED_SCOPES = frozenset(
         "https://www.googleapis.com/auth/chat.messages.readonly",
         "https://www.googleapis.com/auth/chat.spaces.readonly",
         "https://www.googleapis.com/auth/contacts.readonly",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/gmail.compose",
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/gmail.readonly",
@@ -111,6 +123,8 @@ GOOGLE_SCOPES = frozenset(
         "https://www.googleapis.com/auth/chat.spaces.readonly",
         "https://www.googleapis.com/auth/contacts.readonly",
         "https://www.googleapis.com/auth/directory.readonly",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/gmail.compose",
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/gmail.readonly",

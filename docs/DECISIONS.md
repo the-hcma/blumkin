@@ -150,3 +150,29 @@ attach, `--no-teams` to remove.
   **TODO (validate)** - see `RETROSPECTIVE-M1.md`. If a live check shows Graph
   ignores the flag, scope the removal claim to Google and document Microsoft
   `--no-teams` as attach-only.
+
+### D10 - `docs create` scope and Markdown-subset choices ([#194](https://github.com/the-hcma/blumkin/issues/194))
+
+`docs create` authors a document from one authoring format (a Markdown subset)
+into a provider-neutral block model, rendered as a native Google Doc or an
+uploaded `.docx`. Standing calls for phases 1-2:
+
+- **Markdown subset, not a JSON block model.** Headings, bold / italic / inline
+  code / links, bullet + numbered lists (one nesting level), fenced code,
+  horizontal rules, and pipe tables. Anything outside the subset renders as
+  plain text - never an error. Friendlier for agents and humans than a block
+  DSL; the subset is small enough that both backends render it faithfully.
+- **Tables render as a monospace text grid in v1.** Native Google Docs tables
+  need fragile `insertTable` index arithmetic that CI (offline) cannot verify;
+  `python-docx` tables are easy but asymmetry with Google is worse than a
+  consistent fallback. Native tables are phase 4 ("renderer hardening").
+- **Google: `documents` + `drive.file`, not `drive`.** `drive.file` only ever
+  sees files blumkin created, so `--folder` targets (and reuses, or creates) a
+  folder blumkin itself made - it cannot file a doc under an arbitrary existing
+  Drive folder. Broad `drive` is not worth it for a personal CLI.
+- **Microsoft (phase 2): a dedicated `docs_scopes` toggle for `Files.ReadWrite`,
+  not a widened `files_scopes`.** `files_scopes` currently unlocks only chat-file
+  *downloads* (`Files.Read`); silently widening it to write would change the
+  grant for existing configs and break their MSAL silent refresh until
+  re-consent. Same pattern as `wo1162425_scopes`.
+- **`docs export` is deferred** to a fast-follow issue (phase 3).
