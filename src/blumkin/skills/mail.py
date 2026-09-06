@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from kiota_abstractions.method import Method
 from kiota_abstractions.request_information import RequestInformation
@@ -528,7 +529,9 @@ async def mail_auto_reply(
         if external_audience is not None and external_audience not in _OOF_AUDIENCE:
             raise ValueError("--external must be none, contacts, or all")
         scheduled = start is not None or until is not None
-        tz_name = cfg.default_tz
+        # default_tz is a free-form, unvalidated config string; fall back so a
+        # scheduled OOF window never ships an empty/garbage IANA name to Graph.
+        tz_name = _oof_zone_name(cfg.default_tz) if scheduled else cfg.default_tz
         setting = AutomaticRepliesSetting(
             status=AutomaticRepliesStatus.Scheduled
             if scheduled
@@ -554,6 +557,15 @@ def _oof_dtz(day: date, tz_name: str, *, end: bool = False) -> DateTimeTimeZone:
     """
     boundary = day + timedelta(days=1) if end else day
     return DateTimeTimeZone(date_time=f"{boundary.isoformat()}T00:00:00", time_zone=tz_name)
+
+
+def _oof_zone_name(tz_name: str) -> str:
+    """A valid IANA zone name, falling back to UTC for an empty/garbage ``default_tz``."""
+    try:
+        ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError, ValueError:
+        return "UTC"
+    return tz_name
 
 
 def _read_body_arg(message: str | None, message_file: str | None) -> str | None:

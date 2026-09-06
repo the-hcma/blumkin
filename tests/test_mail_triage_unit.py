@@ -93,6 +93,15 @@ def test_graph_move_resolves_a_display_name_to_a_folder_id(monkeypatch) -> None:
     assert payload["to"] == "AAMkFOLDERID"
 
 
+def test_graph_move_none_response_is_not_found(monkeypatch) -> None:
+    # Graph .move.post returns None for a missing message; the move-specific
+    # _apply branch turns that into MailMessageNotFoundError.
+    client = _graph(monkeypatch)
+    client.me.messages.by_message_id.return_value.move.post = AsyncMock(return_value=None)
+    with pytest.raises(MailMessageNotFoundError):
+        asyncio.run(mail_move(message_ids=["gone"], to="archive"))
+
+
 def test_graph_mark_direction_branches(monkeypatch) -> None:
     client = _graph(monkeypatch)
     asyncio.run(mail_mark(message_ids=["m1"], read=False, flagged=False, importance="low"))

@@ -27,7 +27,7 @@ from email.parser import BytesParser
 from email.policy import default as _default_policy
 from email.utils import getaddresses
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from googleapiclient.errors import HttpError
 
@@ -101,7 +101,6 @@ async def mail_auto_reply(
             raise ValueError("turning auto-reply on needs --message or --message-file")
         if external_audience is not None and external_audience not in {"none", "contacts", "all"}:
             raise ValueError("--external must be none, contacts, or all")
-        tz = ZoneInfo(cfg.default_tz)
         # A full-resource write: startTime/endTime are set only when scheduled, so
         # re-enabling always-on drops any window left over from an earlier schedule.
         body = {
@@ -110,10 +109,12 @@ async def mail_auto_reply(
             "restrictToContacts": external_audience == "contacts",
             "restrictToDomain": external_audience == "none",
         }
-        if start is not None:
-            body["startTime"] = _day_epoch_ms(start, tz)
-        if until is not None:
-            body["endTime"] = _day_epoch_ms(until, tz, end=True)
+        if start is not None or until is not None:
+            tz = _oof_zone(cfg.default_tz)
+            if start is not None:
+                body["startTime"] = _day_epoch_ms(start, tz)
+            if until is not None:
+                body["endTime"] = _day_epoch_ms(until, tz, end=True)
     updated = execute(service.users().settings().updateVacation(userId="me", body=body))
     return {"auto_reply": _vacation_to_dict(updated)}
 
@@ -137,6 +138,19 @@ def _day_epoch_ms(day: date, tz: ZoneInfo, *, end: bool = False) -> int:
     """A calendar date -> local-midnight epoch ms in ``tz``. ``end`` makes ``--until`` inclusive."""
     boundary = day + timedelta(days=1) if end else day
     return int(datetime(boundary.year, boundary.month, boundary.day, tzinfo=tz).timestamp() * 1000)
+
+
+def _oof_zone(tz_name: str) -> ZoneInfo:
+    """Resolve the profile timezone for an OOF window, falling back to UTC.
+
+    ``default_tz`` is a free-form, unvalidated config string (``""`` when a profile
+    never set it), so ``ZoneInfo`` can raise - a scheduled auto-reply must not
+    crash on that.
+    """
+    try:
+        return ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError, ValueError:
+        return ZoneInfo("UTC")
 
 
 def _gmail_settings_service(cfg: BlumkinConfig) -> Any:

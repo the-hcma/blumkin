@@ -230,6 +230,59 @@ def test_google_turn_on_with_window(tmp_path: Path) -> None:
     assert body["startTime"] == 1788998400000
 
 
+def test_google_until_is_inclusive_local_midnight_of_the_next_day(tmp_path: Path) -> None:
+    service = MagicMock()
+    _vacation_call(service).updateVacation.return_value.execute.return_value = {
+        "enableAutoReply": True
+    }
+    with _google_patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).mail_auto_reply(
+                enable=True,
+                message="x",
+                start=date(2026, 9, 10),
+                until=date(2026, 9, 15),
+            )
+        )
+    body = _vacation_call(service).updateVacation.call_args.kwargs["body"]
+    # default_tz is UTC here: start = 2026-09-10T00:00Z, end = 2026-09-16T00:00Z (inclusive).
+    assert body["startTime"] == 1788998400000
+    assert body["endTime"] == 1789516800000
+
+
+def test_google_always_on_does_not_crash_when_default_tz_is_unset(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    service = MagicMock()
+    _vacation_call(service).updateVacation.return_value.execute.return_value = {
+        "enableAutoReply": True
+    }
+    cfg = replace(_google_cfg(tmp_path), default_tz="")
+    with _google_patched(service):
+        asyncio.run(google_mail_writes.mail_auto_reply(enable=True, message="brb", config=cfg))
+    body = _vacation_call(service).updateVacation.call_args.kwargs["body"]
+    assert body["enableAutoReply"] is True
+    assert "startTime" not in body  # no schedule requested, tz never resolved
+
+
+def test_google_scheduled_window_falls_back_to_utc_when_default_tz_is_unset(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    service = MagicMock()
+    _vacation_call(service).updateVacation.return_value.execute.return_value = {
+        "enableAutoReply": True
+    }
+    cfg = replace(_google_cfg(tmp_path), default_tz="")
+    with _google_patched(service):
+        asyncio.run(
+            google_mail_writes.mail_auto_reply(
+                enable=True, message="x", start=date(2026, 9, 10), config=cfg
+            )
+        )
+    body = _vacation_call(service).updateVacation.call_args.kwargs["body"]
+    assert body["startTime"] == 1788998400000  # UTC fallback
+
+
 def test_google_turn_off_keeps_the_existing_body(tmp_path: Path) -> None:
     service = MagicMock()
     _vacation_call(service).getVacation.return_value.execute.return_value = {
