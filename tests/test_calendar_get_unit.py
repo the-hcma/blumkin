@@ -34,6 +34,7 @@ from blumkin.skills.calendar import (
     CalendarEventNotFoundError,
     calendar_get,
     format_calendar_get_human,
+    format_recurrence,
 )
 
 _GOOGLE_CAL = "blumkin.providers.google.calendar"
@@ -282,6 +283,9 @@ def test_google_calendar_get_cancelled_event(tmp_path: Path) -> None:
         "RRULE:FREQ=MONTHLY;BYDAY=2WE",  # second Wednesday
         "RRULE:FREQ=MONTHLY;BYSETPOS=-1;BYDAY=FR",  # last Friday
         "RRULE:FREQ=DAILY;INTERVAL=2;BYDAY=MO,WE,FR",  # every other weekday subset
+        "RRULE:FREQ=DAILY;BYMONTHDAY=15",  # BYMONTHDAY only means anything for monthly
+        "RRULE:FREQ=WEEKLY;BYMONTHDAY=1",  # selector the weekly branch cannot hold
+        "RRULE:FREQ=MONTHLY;BYMONTHDAY=1,15",  # a list, not a single day-of-month
         "RRULE:FREQ=YEARLY",
     ],
 )
@@ -329,6 +333,53 @@ def test_graph_calendar_get_relative_monthly_is_other(monkeypatch) -> None:
     assert payload["event"]["recurrence"]["freq"] == "other"
 
 
+def test_graph_calendar_get_numbered_range_reads_back_count(monkeypatch) -> None:
+    event = _graph_event()
+    event.recurrence = PatternedRecurrence(
+        pattern=RecurrencePattern(
+            type=RecurrencePatternType.Weekly, interval=1, days_of_week=[DayOfWeek.Monday]
+        ),
+        range=RecurrenceRange(type=RecurrenceRangeType.Numbered, number_of_occurrences=8),
+    )
+    _graph_client(monkeypatch, event)
+    payload = asyncio.run(calendar_get(event_id="evt-1"))
+    assert payload["event"]["recurrence"] == {
+        "freq": "weekly",
+        "interval": 1,
+        "days": ["mo"],
+        "count": 8,
+    }
+
+
+def test_graph_calendar_get_absolute_monthly_reads_back_day_of_month(monkeypatch) -> None:
+    event = _graph_event()
+    event.recurrence = PatternedRecurrence(
+        pattern=RecurrencePattern(
+            type=RecurrencePatternType.AbsoluteMonthly, interval=1, day_of_month=15
+        ),
+        range=RecurrenceRange(type=RecurrenceRangeType.NoEnd),
+    )
+    _graph_client(monkeypatch, event)
+    payload = asyncio.run(calendar_get(event_id="evt-1"))
+    assert payload["event"]["recurrence"] == {
+        "freq": "monthly",
+        "interval": 1,
+        "day_of_month": 15,
+        "ends": "never",
+    }
+
+
+def test_graph_calendar_get_no_end_range_reads_back_never(monkeypatch) -> None:
+    event = _graph_event()
+    event.recurrence = PatternedRecurrence(
+        pattern=RecurrencePattern(type=RecurrencePatternType.Daily, interval=3, days_of_week=[]),
+        range=RecurrenceRange(type=RecurrenceRangeType.NoEnd),
+    )
+    _graph_client(monkeypatch, event)
+    payload = asyncio.run(calendar_get(event_id="evt-1"))
+    assert payload["event"]["recurrence"] == {"freq": "daily", "interval": 3, "ends": "never"}
+
+
 def test_google_calendar_get_until_readback_uses_local_date(tmp_path: Path) -> None:
     # recurrence_rrule stores --until 2026-12-31 (America/New_York) as the UTC
     # end-of-day: 2027-01-01T04:59:59Z. The readback must report 2026-12-31.
@@ -358,8 +409,6 @@ def test_google_calendar_get_missing_id_raises_not_found(tmp_path: Path, status:
 
 
 def test_format_recurrence_other_shows_the_raw_rule_not_no_end() -> None:
-    from blumkin.skills.calendar import format_recurrence
-
     out = format_recurrence({"freq": "other", "raw": "RRULE:FREQ=MONTHLY;BYDAY=2WE;COUNT=12"})
     assert "no end" not in out
     assert "BYDAY=2WE" in out

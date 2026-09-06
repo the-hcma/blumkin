@@ -35,6 +35,8 @@ from blumkin.skills.calendar_writes import (
 from blumkin.skills.freebusy_suggest import collect_busy_intervals, raise_if_schedule_errors
 
 _RRULE_FREQ = {"DAILY": "daily", "MONTHLY": "monthly", "WEEKLY": "weekly"}
+# Plain RRULE weekday codes; a prefixed form ("2WE") is an ordinal we cannot model.
+_RRULE_WEEKDAY_CODES = frozenset({"MO", "TU", "WE", "TH", "FR", "SA", "SU"})
 
 # Google responseStatus -> the Graph vocabulary _needs_accept and the --json
 # contract already speak, so both providers answer `response` the same way.
@@ -592,17 +594,29 @@ def _rrule_to_payload(recurrence: list[str] | None, display_tz: ZoneInfo) -> dic
         freq = _RRULE_FREQ.get(parts.get("FREQ", "").upper())
         if freq is None:
             return {"freq": "other", "raw": str(line)}
-        # The normalized schema has no ordinal-weekday / set-position selector, so
-        # anything it cannot represent (2nd-Wednesday, last-Friday, …) is "other".
-        if (freq == "monthly" and (parts.get("BYDAY") or parts.get("BYSETPOS"))) or (
-            freq == "daily" and parts.get("BYDAY")
-        ):
+        # The normalized schema represents only FREQ/INTERVAL/COUNT/UNTIL plus a
+        # weekly BYDAY and a monthly BYMONTHDAY. Any other selector (BYSETPOS,
+        # BYYEARDAY, a BYDAY on a non-weekly rule, a BYMONTHDAY on a non-monthly
+        # rule, …) means an ordinal/positional pattern it cannot express -> "other".
+        recognized = {"FREQ", "INTERVAL", "COUNT", "UNTIL", "WKST"}
+        if freq == "weekly":
+            recognized.add("BYDAY")
+        if freq == "monthly":
+            recognized.add("BYMONTHDAY")
+        if any(key not in recognized for key in parts):
+            return {"freq": "other", "raw": str(line)}
+        by_day = [d.strip().upper() for d in parts.get("BYDAY", "").split(",") if d.strip()]
+        # A prefixed weekday ("2WE", "-1FR") is an ordinal the schema cannot hold.
+        if by_day and any(code not in _RRULE_WEEKDAY_CODES for code in by_day):
+            return {"freq": "other", "raw": str(line)}
+        by_month_day = parts.get("BYMONTHDAY", "")
+        if by_month_day and not by_month_day.isdigit():
             return {"freq": "other", "raw": str(line)}
         payload: dict[str, Any] = {"freq": freq, "interval": int(parts.get("INTERVAL") or 1)}
-        if freq == "weekly" and parts.get("BYDAY"):
-            payload["days"] = [d.strip().lower() for d in parts["BYDAY"].split(",") if d.strip()]
-        if freq == "monthly" and parts.get("BYMONTHDAY", "").lstrip("+-").isdigit():
-            payload["day_of_month"] = int(parts["BYMONTHDAY"])
+        if freq == "weekly" and by_day:
+            payload["days"] = [code.lower() for code in by_day]
+        if freq == "monthly" and by_month_day:
+            payload["day_of_month"] = int(by_month_day)
         if "COUNT" in parts:
             payload["count"] = int(parts["COUNT"])
         elif "UNTIL" in parts:
