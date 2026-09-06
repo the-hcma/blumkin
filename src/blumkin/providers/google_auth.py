@@ -94,7 +94,9 @@ GOOGLE_REQUIRED_SCOPES = frozenset(
         "https://www.googleapis.com/auth/chat.spaces.readonly",
         "https://www.googleapis.com/auth/contacts.readonly",
         "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.settings.basic",
     }
 )
 
@@ -110,7 +112,9 @@ GOOGLE_SCOPES = frozenset(
         "https://www.googleapis.com/auth/contacts.readonly",
         "https://www.googleapis.com/auth/directory.readonly",
         "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.settings.basic",
     }
 )
 
@@ -122,6 +126,14 @@ MAIL_WRITE_SCOPES = frozenset(
         "https://www.googleapis.com/auth/gmail.readonly",
     }
 )
+
+# Mail triage (move / mark / delete): gmail.compose does NOT permit
+# messages.modify / trash, so this needs its own consent (issue #177).
+MAIL_MODIFY_SCOPES = frozenset({"https://www.googleapis.com/auth/gmail.modify"})
+
+# Vacation responder (mail auto-reply): users.settings.getVacation /
+# updateVacation - its own consent (issue #179).
+MAIL_SETTINGS_SCOPES = frozenset({"https://www.googleapis.com/auth/gmail.settings.basic"})
 
 PEOPLE_SCOPES = frozenset({"https://www.googleapis.com/auth/contacts.readonly"})
 

@@ -240,6 +240,31 @@ class WorkspaceProvider(Protocol):
 
     async def mail_get(self, *, message_id: str, body_type: str = "text") -> dict[str, Any]: ...
 
+    async def mail_delete(self, *, message_ids: Sequence[str]) -> dict[str, Any]: ...
+
+    async def mail_mark(
+        self,
+        *,
+        message_ids: Sequence[str],
+        read: bool | None = None,
+        flagged: bool | None = None,
+        importance: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def mail_move(self, *, message_ids: Sequence[str], to: str) -> dict[str, Any]: ...
+
+    async def mail_auto_reply(
+        self,
+        *,
+        enable: bool | None = None,
+        message: str | None = None,
+        message_file: str | None = None,
+        external_message: str | None = None,
+        external_audience: str | None = None,
+        start: date | None = None,
+        until: date | None = None,
+    ) -> dict[str, Any]: ...
+
     async def mail_inbox(
         self,
         *,

@@ -590,6 +590,61 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="mail.auto-reply",
+        cli=["blumkin", "mail", "auto-reply"],
+        summary=(
+            "Read, set, or clear the automatic-reply / vacation responder "
+            "(Microsoft needs wo1162425_scopes + MailboxSettings.ReadWrite; "
+            "Google needs gmail.settings.basic)"
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=["MailboxSettings.ReadWrite"],
+        args=[
+            {
+                "name": "--on",
+                "required": False,
+                "type": "flag",
+                "note": "--on/--off; omit both to read. --on needs --message or --message-file",
+            },
+            {"name": "--off", "required": False, "type": "flag"},
+            {"name": "--message", "required": False, "type": "string"},
+            {"name": "--message-file", "required": False, "type": "path"},
+            {
+                "name": "--external-message",
+                "required": False,
+                "type": "string",
+                "note": "Microsoft only; Google has one response body",
+            },
+            {
+                "name": "--external",
+                "required": False,
+                "type": "enum",
+                "values": ["none", "contacts", "all"],
+            },
+            {"name": "--start", "required": False, "type": "date"},
+            {"name": "--until", "required": False, "type": "date"},
+            {
+                "name": "--yes",
+                "required": False,
+                "type": "flag",
+                "note": "required with --on/--off",
+            },
+        ],
+    ),
+    SkillSpec(
+        id="mail.delete",
+        cli=["blumkin", "mail", "delete"],
+        summary="Move message(s) to Deleted Items / Trash (recoverable)",
+        mutates=True,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string", "multiple": True},
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
         id="mail.delete-draft",
         cli=["blumkin", "mail", "delete-draft"],
         summary="Delete a draft message (does not notify recipients)",
@@ -807,6 +862,55 @@ SKILLS: list[SkillSpec] = [
             },
             {"name": "--top", "required": False, "type": "int"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+        ],
+    ),
+    SkillSpec(
+        id="mail.mark",
+        cli=["blumkin", "mail", "mark"],
+        summary="Set read/unread, the follow-up flag, and/or importance on message(s)",
+        mutates=True,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string", "multiple": True},
+            {
+                "name": "--read",
+                "required": False,
+                "type": "flag",
+                "note": "--read / --unread; Gmail UNREAD label",
+            },
+            {
+                "name": "--flag",
+                "required": False,
+                "type": "flag",
+                "note": "--flag / --unflag; Gmail STARRED label",
+            },
+            {
+                "name": "--importance",
+                "required": False,
+                "type": "enum",
+                "values": ["high", "normal", "low"],
+                "note": "Gmail IMPORTANT label",
+            },
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
+        id="mail.move",
+        cli=["blumkin", "mail", "move"],
+        summary="Move message(s) to a folder / label (or archive = remove Inbox)",
+        mutates=True,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string", "multiple": True},
+            {
+                "name": "--to",
+                "required": True,
+                "type": "string",
+                "note": "well-known name, folder id, or Gmail label",
+            },
+            {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
     SkillSpec(
