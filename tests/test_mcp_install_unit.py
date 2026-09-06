@@ -118,14 +118,25 @@ def test_build_plan_classifies_add_unchanged_update(home: Path, all_clients: Non
     assert plan.action == "update"
 
 
-def test_matches_ignores_extra_registered_keys() -> None:
-    current = {
-        "type": "stdio",
-        "command": "/opt/pipx/bin/blumkin",
-        "args": ["mcp", "serve"],
-        "env": {},
-    }
-    assert mi._matches(current, {"args": ["mcp", "serve"]}, "blumkin") is True
+def test_matches_command_and_missing_required_keys() -> None:
+    copilot = mi.desired_entry("copilot", "blumkin", mi.ServeSpec())
+
+    # extra keys the client added (env) are ignored; command must be exact
+    ok = {"type": "stdio", "command": "blumkin", "args": ["mcp", "serve"], "env": {}}
+    assert mi._matches(ok, copilot, "blumkin") is True
+
+    # a bare `blumkin` left behind after the binary moved no longer matches an abs path
+    moved = {"command": "blumkin", "args": ["mcp", "serve"]}
+    desired_abs = {"command": "/venv/bin/blumkin", "args": ["mcp", "serve"]}
+    assert mi._matches(moved, desired_abs, "/venv/bin/blumkin") is False
+
+    # a Copilot entry missing the required `type` is NOT a match -> forces an update
+    no_type = {"command": "blumkin", "args": ["mcp", "serve"], "tools": ["*"]}
+    assert mi._matches(no_type, copilot, "blumkin") is False
+
+    # `tools` narrowed by the user is still a match
+    narrowed = {**ok, "tools": ["calendar"]}
+    assert mi._matches(narrowed, copilot, "blumkin") is True
 
 
 def test_apply_file_preserves_other_servers(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -142,6 +153,49 @@ def test_apply_file_preserves_other_servers(home: Path, monkeypatch: pytest.Monk
     data = json.loads(path.read_text())
     assert data["mcpServers"]["other"] == {"command": "x"}
     assert data["mcpServers"]["blumkin"]["args"] == ["mcp", "serve"]
+
+
+def test_apply_file_refuses_a_malformed_config(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    path = cwd / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text('{ "mcpServers": { "other": {} },')  # trailing comma - invalid
+    (plan,) = mi.build_plan(
+        clients=["cursor"], scope="project", binary="blumkin", serve=mi.ServeSpec(), cwd=cwd
+    )
+    with pytest.raises(mi.McpInstallError, match="not valid JSON"):
+        mi.apply_plan(plan, binary="blumkin")
+    assert path.read_text() == '{ "mcpServers": { "other": {} },'  # left untouched
+
+
+def test_apply_file_refuses_a_symlinked_target(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    victim = home / "secret"
+    victim.write_text("do not touch")
+    (cwd / ".cursor").mkdir()
+    (cwd / ".cursor" / "mcp.json").symlink_to(victim)
+    (plan,) = mi.build_plan(
+        clients=["cursor"], scope="project", binary="blumkin", serve=mi.ServeSpec(), cwd=cwd
+    )
+    with pytest.raises(mi.McpInstallError, match="symlink"):
+        mi.apply_plan(plan, binary="blumkin")
+    assert victim.read_text() == "do not touch"
+
+
+def test_build_plan_updates_a_copilot_entry_missing_type(home: Path, all_clients: None) -> None:
+    cwd = home / "repo"
+    cwd.mkdir()
+    (cwd / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"blumkin": {"command": "blumkin", "args": ["mcp", "serve"]}}})
+    )
+    (plan,) = mi.build_plan(
+        clients=["copilot"], scope="project", binary="blumkin", serve=mi.ServeSpec(), cwd=cwd
+    )
+    assert plan.action == "update"
 
 
 def test_apply_file_cursor_runs_enable_when_present(
@@ -238,6 +292,14 @@ def test_cli_install_without_scope_non_interactive_is_usage_error(all_clients: N
     result = _invoke(["mcp", "install", "--client", "cursor", "--yes", "--json"])
     assert result.exit_code == EXIT_USAGE
     assert "scope is required" in json.loads(result.output)["message"]
+
+
+def test_cli_install_non_tty_without_yes_is_usage_error(all_clients: None) -> None:
+    # CliRunner gives a non-TTY stdin/stdout: writing every client's config
+    # without the per-client prompt must require an explicit --yes.
+    result = _invoke(["mcp", "install", "--client", "cursor", "--scope", "user", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    assert "--yes" in json.loads(result.output)["message"]
 
 
 def test_cli_install_reports_a_failing_client(

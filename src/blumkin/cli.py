@@ -3062,7 +3062,20 @@ def mcp_install_cmd(
     from blumkin import mcp_install as mi
 
     as_json = _as_json(ctx, as_json_flag)
-    interactive = sys.stdin.isatty() and sys.stdout.isatty() and not yes
+    tty = sys.stdin.isatty() and sys.stdout.isatty()
+    interactive = tty and not yes
+
+    # Without a TTY there is no per-client prompt, so writing to every client's
+    # config must be an explicit opt-in - not the default of a redirected run.
+    if not tty and not yes:
+        _emit_error(
+            error="usage_error",
+            message="`mcp install` needs a TTY for the per-client prompt; pass --yes to skip it",
+            as_json=as_json,
+            hint="Non-interactive: `blumkin mcp install --yes --scope user` "
+            "(also --client / --read-only / ...).",
+        )
+        raise SystemExit(EXIT_USAGE)
 
     targets = list(clients) or sorted(mi.detect())
     if not targets:
@@ -3078,7 +3091,7 @@ def mcp_install_cmd(
         if not interactive:
             _emit_error(
                 error="usage_error",
-                message="--scope is required without a TTY (or with --yes)",
+                message="--scope is required with --yes",
                 as_json=as_json,
                 hint="Pass --scope user or --scope project.",
             )

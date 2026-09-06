@@ -122,6 +122,11 @@ def config_path(client: str, scope: Scope, cwd: Path) -> Path | None:
 
 
 def _load_json(path: Path | None) -> dict[str, Any]:
+    """Lenient read for planning: a missing *or* unreadable file is ``{}``.
+
+    ``_read_config`` is the strict variant a merge uses - it refuses to proceed
+    past a file it cannot parse rather than reporting it as absent.
+    """
     if path is None or not path.is_file():
         return {}
     try:
@@ -129,6 +134,25 @@ def _load_json(path: Path | None) -> dict[str, Any]:
     except OSError, ValueError:
         return {}
     return loaded if isinstance(loaded, dict) else {}
+
+
+def _read_config(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise McpInstallError(
+            f"{path} is not valid JSON",
+            hint="mcp install merges into this file and will not overwrite content it "
+            "cannot parse. Fix or remove it, then retry.",
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise McpInstallError(
+            f"{path} is not a JSON object",
+            hint='Expected `{ "mcpServers": { ... } }`. Fix or remove it, then retry.',
+        )
+    return loaded
 
 
 def current_entry(client: str, scope: Scope, cwd: Path) -> dict[str, Any] | None:
@@ -146,10 +170,19 @@ def desired_entry(client: str, binary: str, serve: ServeSpec) -> dict[str, Any]:
 
 
 def _matches(current: dict[str, Any], desired: dict[str, Any], binary: str) -> bool:
-    cur_cmd = str(current.get("command", ""))
-    cmd_ok = cur_cmd == binary or Path(cur_cmd).name == Path(binary).name
-    args_ok = list(current.get("args") or []) == list(desired["args"])
-    return cmd_ok and args_ok
+    # The command must be exactly what we would write - a bare `blumkin` entry
+    # left behind after the binary moved (pipx -> uv-run) no longer resolves for
+    # the host, so basename equality is not enough.
+    if str(current.get("command", "")) != binary:
+        return False
+    if list(current.get("args") or []) != list(desired["args"]):
+        return False
+    # Other keys `desired` requires (Copilot's `type`) must match too; `tools`
+    # may have been narrowed by the user, so it is not part of the comparison.
+    for key, value in desired.items():
+        if key not in ("command", "args", "tools") and current.get(key) != value:
+            return False
+    return True
 
 
 def _via(client: str, scope: Scope) -> Literal["cli", "file"]:
@@ -224,10 +257,22 @@ def _apply_cli(plan: ClientPlan, binary: str) -> str:
     return "added" if plan.action == "add" else "updated"
 
 
+def _reject_symlinked_target(path: Path) -> None:
+    """A symlinked config file (or its parent dir) - which a freshly cloned repo
+    can ship at project scope - would make the write clobber the link's target."""
+    for part in (path, path.parent):
+        if part.is_symlink():
+            raise McpInstallError(
+                f"{part} is a symlink - refusing to write through it",
+                hint="Remove the symlink (or install at a different scope), then retry.",
+            )
+
+
 def _apply_file(plan: ClientPlan) -> str:
     path = plan.config_path
     assert path is not None  # via == "file" always carries a path
-    data = _load_json(path)
+    _reject_symlinked_target(path)
+    data = _read_config(path)  # strict: refuses an existing file it cannot parse
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):
         servers = {}
