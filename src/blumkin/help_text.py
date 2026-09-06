@@ -589,9 +589,10 @@ Examples:
 Searches the WHOLE mailbox (every folder), relevance-ranked, and tags each hit
 with its `folder`. `mail list --search` only covers one folder. Microsoft uses
 Graph `$search`, Google uses Gmail `q=` (so Gmail operators like `from:` /
-`subject:` / `has:attachment` work there). `$search` cannot combine with a
-server-side date filter, so `--since` / `--until` filter the returned page
-locally. No extra scope.
+`subject:` / `has:attachment` work there). Graph `$search` cannot combine with a
+server-side date filter, so with `--since` / `--until` it over-fetches a
+relevance window and filters locally - `complete` is then `null` (a match
+outside the window cannot be ruled out). No extra scope.
 """
 
 MAIL_THREAD_EPILOG = """

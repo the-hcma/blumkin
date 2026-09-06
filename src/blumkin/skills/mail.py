@@ -91,6 +91,9 @@ class MailMessageNotFoundError(Exception):
 
 MAIL_IMPORTANCE_VALUES = ("high", "normal", "low")
 
+# Upper bound on the mail thread walk; a conversation this long is pathological.
+_MAX_THREAD_MESSAGES = 500
+
 
 WELL_KNOWN_MAIL_FOLDERS = (
     "archive",
@@ -835,9 +838,11 @@ async def mail_search(
 ) -> dict[str, Any]:
     """Search the whole mailbox (every folder) with Graph ``$search``.
 
-    ``$search`` cannot be combined with ``$filter`` / ``$orderby``, so ``--since``
-    / ``--until`` are applied locally to the returned page and results come back
-    relevance-ranked.
+    ``$search`` cannot be combined with ``$filter`` / ``$orderby``, so results are
+    relevance-ranked and ``--since`` / ``--until`` are applied locally. When a
+    date filter is set the search over-fetches a bounded relevance window before
+    filtering, and ``complete`` is ``null`` because a match outside that window
+    cannot be ruled out.
     """
     q = query.strip()
     if not q:
@@ -848,7 +853,9 @@ async def mail_search(
         raise ValueError("--until must be after --since")
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    page = await _get_messages(client, None, top=top, sort=None, criteria=None, search=q)
+    dated = since is not None or until is not None
+    fetch_top = min(max(top * 3, 60), 250) if dated else top
+    page = await _get_messages(client, None, top=fetch_top, sort=None, criteria=None, search=q)
     found = [] if page is None else (page.value or [])
     folder_names: dict[str, str] = {}
     items: list[dict[str, Any]] = []
@@ -864,10 +871,13 @@ async def mail_search(
             folder_names[fid] = await _folder_display_name(client, str(fid)) or str(fid)
         item["folder"] = folder_names.get(fid) if fid else None
         items.append(item)
+        if len(items) >= top:
+            break
     return {
         "query": q,
         "items": items,
         "count": len(items),
+        "complete": None if dated else len(found) < fetch_top,
         "since": _odata_datetime(since),
         "until": _odata_datetime(until),
     }
@@ -934,7 +944,13 @@ async def mail_thread(
         ],
     )
     page = await client.me.messages.get(request_config(list_query))
-    messages = [] if page is None else (page.value or [])
+    messages: list[Any] = []
+    while page is not None:
+        messages.extend(page.value or [])
+        link = getattr(page, "odata_next_link", None)
+        if not link or len(messages) >= _MAX_THREAD_MESSAGES:
+            break
+        page = await client.me.messages.with_url(str(link)).get()
     items: list[dict[str, Any]] = []
     for msg in messages:
         item = _message_to_dict(msg)

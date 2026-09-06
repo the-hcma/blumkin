@@ -330,6 +330,7 @@ async def mail_search(
         search=q, sender=None, since=since, subject=None, unread=False, until=until
     )
     listing = execute(service.users().messages().list(userId="me", maxResults=top, q=gmail_q))
+    truncated = bool(listing.get("nextPageToken"))
     items: list[dict[str, Any]] = []
     for ref in listing.get("messages") or []:
         mid = ref.get("id")
@@ -347,6 +348,9 @@ async def mail_search(
         "query": q,
         "items": items,
         "count": len(items),
+        # Gmail applies since/until server-side (after:/before:), so unlike the
+        # Graph path there is no relevance-window caveat - just top truncation.
+        "complete": not truncated,
         "since": _iso_z(since),
         "until": _iso_z(until),
     }

@@ -117,6 +117,54 @@ def test_graph_thread_orders_the_conversation(monkeypatch) -> None:
     assert "conversationId eq 'c1'" in posted.query_parameters.filter
 
 
+def test_graph_thread_walks_pages(monkeypatch) -> None:
+    p2 = SimpleNamespace(value=[_msg("c", subject="Re: hi")], odata_next_link=None)
+    p1 = SimpleNamespace(value=[_msg("a", subject="Re: hi"), _msg("b", subject="Re: hi")])
+    p1.odata_next_link = "next"
+    client = MagicMock()
+    client.me.messages.get = AsyncMock(return_value=p1)
+    client.me.messages.with_url.return_value.get = AsyncMock(return_value=p2)
+    client.me.messages.by_message_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(conversation_id="c1")
+    )
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    payload = asyncio.run(mail_thread(message_id="a"))
+    assert [i["id"] for i in payload["items"]] == ["a", "b", "c"]
+
+
+def test_graph_thread_full_merges_each_body(monkeypatch) -> None:
+    client = _graph(
+        monkeypatch, messages_get_return=SimpleNamespace(value=[_msg("a", subject="hi")])
+    )
+    client.me.messages.by_message_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(conversation_id="c1")
+    )
+
+    async def _fake_get(*, message_id, body_type, config):  # noqa: ANN001
+        return {"message": {"body": f"body-of-{message_id}", "body_type": body_type}}
+
+    monkeypatch.setattr("blumkin.skills.mail.mail_get", _fake_get)
+    payload = asyncio.run(mail_thread(message_id="a", full=True, body_type="html"))
+    assert payload["items"][0]["body"] == "body-of-a"
+    assert payload["items"][0]["body_type"] == "html"
+
+
+def test_graph_search_dated_overfetches_and_marks_incomplete(monkeypatch) -> None:
+    from datetime import UTC, datetime
+
+    msgs = [_msg(f"m{i}", subject="x") for i in range(5)]
+    client = _graph(monkeypatch, messages_get_return=SimpleNamespace(value=msgs))
+    payload = asyncio.run(mail_search(query="x", top=2, since=datetime(2026, 1, 1, tzinfo=UTC)))
+    assert payload["complete"] is None  # a date filter can't guarantee exhaustiveness
+    assert payload["count"] == 2
+    posted = client.me.messages.get.await_args.args[0]
+    assert posted.query_parameters.top >= 60  # over-fetched a relevance window
+
+
 def test_graph_thread_missing_message_is_not_found(monkeypatch) -> None:
     client = _graph(monkeypatch, messages_get_return=SimpleNamespace(value=[]))
     from msgraph.generated.models.o_data_errors.o_data_error import ODataError
