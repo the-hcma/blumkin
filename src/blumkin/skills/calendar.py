@@ -34,8 +34,20 @@ class CalendarEventNotFoundError(Exception):
     """No event matched the given id."""
 
 
-# Upper bound on the calendar-list walk; mailboxes rarely have this many.
-_MAX_CALENDARS = 500
+# Runaway guard on the calendar-list walk. Real accounts have a handful; this only
+# trips on a pathological mailbox or a paging bug, and we raise rather than return
+# a truncated list that name resolution would treat as authoritative.
+_MAX_CALENDARS = 2000
+
+
+class CalendarListTooLargeError(Exception):
+    """More calendars than ``_MAX_CALENDARS`` with pages pending; the walk is not authoritative."""
+
+    def __init__(self, provider: str = "calendar") -> None:
+        super().__init__(
+            f"stopped after {_MAX_CALENDARS} {provider} calendars with more pages "
+            "pending; refusing to act on a truncated calendar list"
+        )
 
 
 class CalendarNotFoundError(Exception):
@@ -673,8 +685,10 @@ async def _all_graph_calendars(client: Any) -> list[Any]:
     while page is not None:
         calendars.extend(page.value or [])
         link = getattr(page, "odata_next_link", None)
-        if not link or len(calendars) >= _MAX_CALENDARS:
+        if not link:
             break
+        if len(calendars) >= _MAX_CALENDARS:
+            raise CalendarListTooLargeError("Graph")
         page = await client.me.calendars.with_url(str(link)).get()
     return calendars
 

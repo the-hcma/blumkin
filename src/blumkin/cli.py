@@ -35,6 +35,7 @@ from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
     CalendarAmbiguousError,
     CalendarEventNotFoundError,
+    CalendarListTooLargeError,
     CalendarNotFoundError,
     format_calendar_get_human,
     format_calendar_list_human,
@@ -327,6 +328,9 @@ def _route_calendar_resolve_error(exc: BaseException, *, as_json: bool) -> None:
     if isinstance(exc, CalendarNotFoundError):
         _emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
+    if isinstance(exc, CalendarListTooLargeError):
+        _emit_error(error="graph_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
 
 
 def _raise_auth_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
@@ -1239,7 +1243,7 @@ def calendar_today_cmd(
         payload = asyncio.run(
             _workspace().calendar_today(day=day_value, calendar=calendar, tz_name=tz_name)
         )
-    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
         _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
@@ -1301,7 +1305,7 @@ def calendar_view_cmd(
         start = datetime(from_day.year, from_day.month, from_day.day, tzinfo=tz)
         end = datetime(to_day.year, to_day.month, to_day.day, tzinfo=tz)
         payload = asyncio.run(_workspace().calendar_view(start=start, end=end, calendar=calendar))
-    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
         _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
@@ -1362,7 +1366,7 @@ def calendar_get_cmd(
     except CalendarEventNotFoundError as exc:
         _emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
-    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
         _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
@@ -1779,7 +1783,7 @@ def calendar_cancel_cmd(
     _require_yes(yes=yes, as_json=as_json)
     try:
         payload = asyncio.run(_workspace().calendar_cancel(event_id=event_id, calendar=calendar))
-    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
         _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
@@ -1966,7 +1970,7 @@ def calendar_create_cmd(
                 tz_name=_tz_name(ctx, tz_flag),
             )
         )
-    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
         _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
@@ -2080,7 +2084,7 @@ def calendar_update_cmd(
     except CalendarEventNotFoundError as exc:
         _emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
-    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+    except (CalendarNotFoundError, CalendarAmbiguousError, CalendarListTooLargeError) as exc:
         _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)

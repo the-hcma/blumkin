@@ -130,6 +130,46 @@ def test_graph_today_threads_calendar(monkeypatch) -> None:
     client.me.calendars.by_calendar_id.assert_called_once_with("HOL")
 
 
+def test_graph_get_threads_named_calendar(monkeypatch) -> None:
+    from blumkin.skills.calendar import calendar_get
+
+    client = MagicMock()
+    client.me.calendars.get = AsyncMock(
+        return_value=SimpleNamespace(value=[_graph_calendar("TEAM", "Team")])
+    )
+    cal = client.me.calendars.by_calendar_id.return_value
+    cal.events.by_event_id.return_value.get = AsyncMock(return_value=SimpleNamespace(id="e1"))
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(default_tz=_NY, client_id="x"),
+    )
+    monkeypatch.setattr(
+        "blumkin.skills.calendar._event_detail_to_dict", lambda ev, tz, wanted: {"id": ev.id}
+    )
+    asyncio.run(calendar_get(event_id="e1", calendar="Team"))
+    client.me.calendars.by_calendar_id.assert_called_once_with("TEAM")
+
+
+def test_graph_calendar_list_over_cap_raises(monkeypatch) -> None:
+    from blumkin.skills.calendar import _MAX_CALENDARS, CalendarListTooLargeError
+
+    page = SimpleNamespace(
+        value=[_graph_calendar(f"c{i}", f"Cal {i}") for i in range(_MAX_CALENDARS)],
+        odata_next_link="more",
+    )
+    client = MagicMock()
+    client.me.calendars.get = AsyncMock(return_value=page)
+    client.me.calendars.with_url.return_value.get = AsyncMock(return_value=page)
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(default_tz=_NY, client_id="x"),
+    )
+    with pytest.raises(CalendarListTooLargeError):
+        asyncio.run(calendar_list())
+
+
 # --------------------------------------------------------------------------- Google
 
 
@@ -251,12 +291,14 @@ def test_google_list_owner_is_null_no_address_available(tmp_path: Path) -> None:
     assert payload["calendars"][0]["owner"] is None  # Graph-shape parity: an address or None
 
 
-def test_google_primary_keyword_falls_back_when_no_such_calendar(tmp_path: Path) -> None:
+def test_google_primary_keyword_no_longer_falls_back_to_the_alias(tmp_path: Path) -> None:
+    # Parity with the Graph resolver: an unmatched --calendar token fails closed
+    # on both providers rather than silently targeting the default calendar.
     service = _google_service(
         calendar_items=[{"id": "me@example.com", "summary": "Me", "primary": True}]
     )
     start = datetime(2026, 9, 1, tzinfo=ZoneInfo(_NY))
-    with _google_patched(service):
+    with _google_patched(service), pytest.raises(CalendarNotFoundError):
         asyncio.run(
             google_calendar.calendar_view(
                 start=start,
@@ -265,7 +307,6 @@ def test_google_primary_keyword_falls_back_when_no_such_calendar(tmp_path: Path)
                 config=_google_cfg(tmp_path),
             )
         )
-    assert service.events.return_value.list.call_args.kwargs["calendarId"] == "primary"
 
 
 def test_google_real_primary_named_calendar_wins_over_the_keyword(tmp_path: Path) -> None:
@@ -418,6 +459,43 @@ def test_google_calendar_list_walks_pages(tmp_path: Path) -> None:
     with _google_patched(service):
         payload = asyncio.run(GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_list())
     assert [c["id"] for c in payload["calendars"]] == ["a", "b"]
+
+
+def test_google_get_threads_named_calendar(tmp_path: Path) -> None:
+    service = _google_service(
+        calendar_items=[
+            {"id": "primary", "summary": "Me", "primary": True},
+            {"id": "team@g.calendar.google.com", "summary": "Team", "accessRole": "writer"},
+        ]
+    )
+    service.events.return_value.get.return_value.execute.return_value = {
+        "id": "g",
+        "summary": "x",
+        "start": {"dateTime": "2026-09-22T09:00:00-04:00"},
+        "end": {"dateTime": "2026-09-22T10:00:00-04:00"},
+    }
+    with _google_patched(service):
+        asyncio.run(
+            google_calendar.calendar_get(
+                event_id="g", calendar="Team", config=_google_cfg(tmp_path)
+            )
+        )
+    assert service.events.return_value.get.call_args.kwargs["calendarId"] == (
+        "team@g.calendar.google.com"
+    )
+
+
+def test_google_calendar_list_over_cap_raises(tmp_path: Path) -> None:
+    from blumkin.providers.google.calendar import _MAX_CALENDARS
+    from blumkin.skills.calendar import CalendarListTooLargeError
+
+    service = MagicMock()
+    service.calendarList.return_value.list.return_value.execute.return_value = {
+        "items": [{"id": f"c{i}", "summary": f"Cal {i}"} for i in range(_MAX_CALENDARS)],
+        "nextPageToken": "more",
+    }
+    with _google_patched(service), pytest.raises(CalendarListTooLargeError):
+        asyncio.run(GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_list())
 
 
 # --------------------------------------------------------------------------- formatter / CLI
