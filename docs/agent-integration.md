@@ -451,9 +451,10 @@ Add blumkin for Cursor -> ~/.cursor/mcp.json [Y/n]:
 Add blumkin for GitHub Copilot CLI -> copilot mcp add (scope: user) [Y/n]:
 ```
 
-For Claude and Copilot at user scope it calls the client's own `mcp add`; for
-Cursor, and for anything at project scope, it merges the entry into the client's
-JSON config and leaves any other servers alone. **Re-running is safe** — an entry
+It uses each client's own `mcp add` where it has one — `claude mcp add` at either
+scope, `copilot mcp add` at user scope — and merges the entry into the JSON
+config otherwise (Cursor at either scope; Copilot at project scope → `.mcp.json`),
+leaving any other servers alone. **Re-running is safe** — an entry
 that already matches is reported "already current", a stale one (say, after the
 `blumkin` binary moved) is updated. Non-interactive: `blumkin mcp install --yes
 --scope user` (or `--client cursor`, `--read-only`, `--profile work`,

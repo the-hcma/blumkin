@@ -86,8 +86,9 @@ surface. `mcp` is an optional extra (`pipx install 'blumkin[mcp]'`); the CLI-onl
 verbs (`auth *`, `doctor`, `skills *`, `mail signature`, `mcp serve`) are not
 exposed; every tool whose CLI form needs `--yes` requires a server-enforced
 `confirm: true` argument (the MCP mirror of `--yes`). `blumkin mcp install` is a
-guided, idempotent registrar for the three clients (its own `mcp add` where the
-client has one, a JSON config merge otherwise); `blumkin mcp status` shows the
+guided, idempotent registrar for the three clients (`claude mcp add` /
+`copilot mcp add` where available, a JSON config merge for Cursor and for Copilot
+project scope); `blumkin mcp status` shows the
 result. Superseded reasoning for the old "no MCP server in v1" stance:
 [`PLAN.md`](../PLAN.md) section 6.1.
 

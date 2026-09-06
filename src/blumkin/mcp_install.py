@@ -14,6 +14,7 @@ passes a ready plan to :func:`apply_plan`.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -92,6 +93,30 @@ def detect(clients: tuple[str, ...] = CLIENTS) -> set[str]:
     if shutil.which("copilot"):
         found.add("copilot")
     return {c for c in clients if c in found}
+
+
+def _canonical(command: str) -> Path | None:
+    """The real executable a registered ``command`` points at, or ``None``."""
+    located = command if os.path.isabs(command) else shutil.which(command)
+    if not located:
+        return None
+    try:
+        return Path(located).resolve()
+    except OSError:
+        return None
+
+
+def command_is_current(registered: str, binary: str) -> bool:
+    """Does a registered ``command`` still resolve to *this* blumkin?
+
+    Compares canonical executable paths, so a dead `/old/venv/bin/blumkin` (or a
+    bare `blumkin` no longer on PATH) is reported stale even though the basename
+    matches.
+    """
+    if registered == binary:
+        return True
+    reg, want = _canonical(registered), _canonical(binary)
+    return reg is not None and reg == want
 
 
 def resolve_binary() -> tuple[str, bool]:
@@ -239,33 +264,61 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         ) from exc
 
 
-def _apply_cli(plan: ClientPlan, binary: str) -> str:
-    if plan.client == "claude":
-        _run(["claude", "mcp", "remove", "blumkin", "-s", plan.scope])
-        add = ["claude", "mcp", "add", "blumkin", "-s", plan.scope, "--transport", "stdio"]
+def _client_add_argv(client: str, scope: Scope, command: str, args: list[str]) -> list[str]:
+    if client == "claude":
+        base = ["claude", "mcp", "add", "blumkin", "-s", scope, "--transport", "stdio"]
     else:  # copilot, user scope
-        _run(["copilot", "mcp", "remove", "blumkin"])
-        add = ["copilot", "mcp", "add", "blumkin", "--transport", "stdio", "--tools", "*"]
-    proc = _run([*add, "--", binary, *plan.desired["args"]])
+        base = ["copilot", "mcp", "add", "blumkin", "--transport", "stdio", "--tools", "*"]
+    return [*base, "--", command, *args]
+
+
+def _apply_cli(plan: ClientPlan, binary: str) -> str:
+    remove = (
+        ["claude", "mcp", "remove", "blumkin", "-s", plan.scope]
+        if plan.client == "claude"
+        else ["copilot", "mcp", "remove", "blumkin"]
+    )
+    replacing = plan.current is not None
+    if replacing:
+        _run(remove)  # `mcp add` errors on a duplicate name, so a replace removes first
+    add = _client_add_argv(plan.client, plan.scope, binary, plan.desired["args"])
+    proc = _run(add)
     if proc.returncode != 0:
+        if replacing and isinstance(plan.current, dict):
+            # Put the previous registration back so a failed replace is not a loss.
+            old = plan.current
+            _run(
+                _client_add_argv(
+                    plan.client,
+                    plan.scope,
+                    str(old.get("command", binary)),
+                    list(old.get("args") or []),
+                )
+            )
         detail = (proc.stderr or proc.stdout or "").strip().splitlines()
         raise McpInstallError(
             f"{plan.label}: `{plan.client} mcp add` failed"
             + (f" - {detail[-1]}" if detail else ""),
-            hint=f"Run `{' '.join(add)} -- {binary} {' '.join(plan.desired['args'])}` to debug.",
+            hint=f"Run `{' '.join(add)}` to see the error.",
         )
     return "added" if plan.action == "add" else "updated"
 
 
 def _reject_symlinked_target(path: Path) -> None:
-    """A symlinked config file (or its parent dir) - which a freshly cloned repo
-    can ship at project scope - would make the write clobber the link's target."""
-    for part in (path, path.parent):
-        if part.is_symlink():
+    """Refuse ``path`` or any parent (down to the filesystem root) that is a
+    symlink - a freshly cloned repo can ship ``.cursor`` or ``.cursor/mcp.json``
+    as a link, and the write would then clobber the link's real target."""
+    current = path
+    while True:
+        if current.is_symlink():
             raise McpInstallError(
-                f"{part} is a symlink - refusing to write through it",
+                f"{current} is a symlink - refusing to write through it",
                 hint="Remove the symlink (or install at a different scope), then retry.",
             )
+        parent = current.parent
+        if parent == current:
+            return
+        current = parent
 
 
 def _apply_file(plan: ClientPlan) -> str:
@@ -278,10 +331,14 @@ def _apply_file(plan: ClientPlan) -> str:
         servers = {}
         data["mcpServers"] = servers
     servers["blumkin"] = plan.desired
+    body = json.dumps(data, indent=2) + "\n"
+    tmp = path.with_name(f".{path.name}.blumkin-{os.getpid()}")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", "utf-8")
+        tmp.write_text(body, "utf-8")
+        os.replace(tmp, path)  # atomic: a failed write never truncates the real file
     except OSError as exc:
+        tmp.unlink(missing_ok=True)
         raise McpInstallError(
             f"{plan.label}: could not write {path}: {exc}",
             hint=f"Check that {path.parent} is writable and {path} is a regular file you own.",

@@ -23,7 +23,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def all_clients(monkeypatch: pytest.MonkeyPatch) -> None:
-    binaries = {"claude", "cursor-agent", "copilot", "blumkin"}
+    binaries = {"blumkin", "claude", "copilot", "cursor-agent"}
     monkeypatch.setattr(
         mi.shutil, "which", lambda name: f"/usr/bin/{name}" if name in binaries else None
     )
@@ -210,7 +210,7 @@ def test_apply_file_cursor_runs_enable_when_present(
     assert ["cursor-agent", "mcp", "enable", "blumkin"] in fake_subprocess
 
 
-def test_apply_cli_invokes_claude_mcp_add(
+def test_apply_cli_fresh_add_does_not_remove_first(
     home: Path, all_clients: None, fake_subprocess: list[list[str]]
 ) -> None:
     (plan,) = mi.build_plan(
@@ -221,7 +221,7 @@ def test_apply_cli_invokes_claude_mcp_add(
         cwd=home,
     )
     assert mi.apply_plan(plan, binary="blumkin") == "added"
-    assert ["claude", "mcp", "remove", "blumkin", "-s", "user"] in fake_subprocess
+    assert not any(c[:3] == ["claude", "mcp", "remove"] for c in fake_subprocess)
     add = next(c for c in fake_subprocess if c[:3] == ["claude", "mcp", "add"])
     assert add == [
         "claude",
@@ -238,6 +238,83 @@ def test_apply_cli_invokes_claude_mcp_add(
         "serve",
         "--read-only",
     ]
+
+
+def test_apply_cli_update_removes_then_adds(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]]
+) -> None:
+    (home / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"blumkin": {"command": "blumkin", "args": ["mcp", "serve"]}}})
+    )
+    (plan,) = mi.build_plan(
+        clients=["claude"],
+        scope="user",
+        binary="blumkin",
+        serve=mi.ServeSpec(read_only=True),
+        cwd=home,
+    )
+    assert plan.action == "update"
+    assert mi.apply_plan(plan, binary="blumkin") == "updated"
+    assert ["claude", "mcp", "remove", "blumkin", "-s", "user"] in fake_subprocess
+
+
+def test_apply_cli_restores_previous_entry_on_add_failure(
+    home: Path, all_clients: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (home / ".claude.json").write_text(
+        json.dumps(
+            {"mcpServers": {"blumkin": {"command": "/old/bin/blumkin", "args": ["mcp", "serve"]}}}
+        )
+    )
+    calls: list[list[str]] = []
+
+    def _run(cmd: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        rc = 1 if cmd[:4] == ["claude", "mcp", "add", "blumkin"] and "--read-only" in cmd else 0
+        return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="nope")
+
+    monkeypatch.setattr(mi.subprocess, "run", _run)
+    (plan,) = mi.build_plan(
+        clients=["claude"],
+        scope="user",
+        binary="blumkin",
+        serve=mi.ServeSpec(read_only=True),
+        cwd=home,
+    )
+    with pytest.raises(mi.McpInstallError, match="claude mcp add"):
+        mi.apply_plan(plan, binary="blumkin")
+    # the old entry was re-added after the failing replace
+    restore = [c for c in calls if c[:4] == ["claude", "mcp", "add", "blumkin"]][-1]
+    assert restore[-3:] == ["/old/bin/blumkin", "mcp", "serve"]
+
+
+def test_apply_file_write_is_atomic_and_cleans_up(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    path = cwd / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}))
+
+    monkeypatch.setattr(mi.os, "replace", lambda *_a: (_ for _ in ()).throw(OSError("disk full")))
+    (plan,) = mi.build_plan(
+        clients=["cursor"], scope="project", binary="blumkin", serve=mi.ServeSpec(), cwd=cwd
+    )
+    with pytest.raises(mi.McpInstallError, match="could not write"):
+        mi.apply_plan(plan, binary="blumkin")
+    assert json.loads(path.read_text())["mcpServers"] == {"other": {"command": "x"}}  # intact
+    assert not list(path.parent.glob(".*blumkin*"))  # temp file cleaned up
+
+
+def test_command_is_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert mi.command_is_current("blumkin", "blumkin") is True
+    monkeypatch.setattr(
+        mi.shutil, "which", lambda n: "/opt/bin/blumkin" if n == "blumkin" else None
+    )
+    assert mi.command_is_current("blumkin", "/opt/bin/blumkin") is True
+    assert mi.command_is_current("/dead/venv/bin/blumkin", "blumkin") is False
 
 
 def test_apply_cli_nonzero_returncode_raises(

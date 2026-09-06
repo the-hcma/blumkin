@@ -3204,7 +3204,7 @@ def mcp_status_cmd(ctx: click.Context, as_json_flag: bool) -> None:
                     "config": str(mi.config_path(client, scope, Path.cwd())),
                     "command": command,
                     "args": list(current.get("args") or []),
-                    "resolves_to_blumkin": Path(command).name == Path(binary).name,
+                    "resolves_to_blumkin": mi.command_is_current(command, binary),
                 }
             )
     payload = {
