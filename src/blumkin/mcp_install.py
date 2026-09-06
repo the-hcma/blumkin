@@ -264,12 +264,33 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         ) from exc
 
 
+def _last_line(proc: subprocess.CompletedProcess[str]) -> str:
+    lines = (proc.stderr or proc.stdout or "").strip().splitlines()
+    return lines[-1] if lines else ""
+
+
 def _client_add_argv(client: str, scope: Scope, command: str, args: list[str]) -> list[str]:
     if client == "claude":
         base = ["claude", "mcp", "add", "blumkin", "-s", scope, "--transport", "stdio"]
     else:  # copilot, user scope
         base = ["copilot", "mcp", "add", "blumkin", "--transport", "stdio", "--tools", "*"]
     return [*base, "--", command, *args]
+
+
+def _restore_previous(plan: ClientPlan) -> bool:
+    """Re-register the entry `plan.current`, preserving its keys. Returns success."""
+    old = plan.current or {}
+    if plan.client == "claude":  # add-json puts the exact object back (type / env / ...)
+        proc = _run(["claude", "mcp", "add-json", "-s", plan.scope, "blumkin", json.dumps(old)])
+    else:
+        argv = ["copilot", "mcp", "add", "blumkin", "--transport", str(old.get("type") or "stdio")]
+        if isinstance(old.get("tools"), list):
+            argv += ["--tools", ",".join(str(t) for t in old["tools"])]
+        for key, value in (old.get("env") or {}).items():
+            argv += ["--env", f"{key}={value}"]
+        argv += ["--", str(old.get("command", "")), *(str(a) for a in old.get("args") or [])]
+        proc = _run(argv)
+    return proc.returncode == 0
 
 
 def _apply_cli(plan: ClientPlan, binary: str) -> str:
@@ -280,27 +301,27 @@ def _apply_cli(plan: ClientPlan, binary: str) -> str:
     )
     replacing = plan.current is not None
     if replacing:
-        _run(remove)  # `mcp add` errors on a duplicate name, so a replace removes first
+        # `mcp add` errors on a duplicate name, so a replace removes first. Bail if
+        # that fails - the entry is still there and nothing has been lost.
+        rm = _run(remove)
+        if rm.returncode != 0:
+            raise McpInstallError(
+                f"{plan.label}: could not remove the existing entry to replace it"
+                + (f" - {_last_line(rm)}" if _last_line(rm) else ""),
+                hint=f"Run `{' '.join(remove)}` to see the error.",
+            )
     add = _client_add_argv(plan.client, plan.scope, binary, plan.desired["args"])
     proc = _run(add)
     if proc.returncode != 0:
-        if replacing and isinstance(plan.current, dict):
-            # Put the previous registration back so a failed replace is not a loss.
-            old = plan.current
-            _run(
-                _client_add_argv(
-                    plan.client,
-                    plan.scope,
-                    str(old.get("command", binary)),
-                    list(old.get("args") or []),
-                )
+        message = f"{plan.label}: `{plan.client} mcp add` failed"
+        if _last_line(proc):
+            message += f" - {_last_line(proc)}"
+        if replacing and not _restore_previous(plan):
+            raise McpInstallError(
+                message + "; the previous registration was removed and could NOT be restored",
+                hint="Re-run `blumkin mcp install` to re-register blumkin with this client.",
             )
-        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        raise McpInstallError(
-            f"{plan.label}: `{plan.client} mcp add` failed"
-            + (f" - {detail[-1]}" if detail else ""),
-            hint=f"Run `{' '.join(add)}` to see the error.",
-        )
+        raise McpInstallError(message, hint=f"Run `{' '.join(add)}` to see the error.")
     return "added" if plan.action == "add" else "updated"
 
 
@@ -332,10 +353,17 @@ def _apply_file(plan: ClientPlan) -> str:
         data["mcpServers"] = servers
     servers["blumkin"] = plan.desired
     body = json.dumps(data, indent=2) + "\n"
+    existed = path.is_file()
     tmp = path.with_name(f".{path.name}.blumkin-{os.getpid()}")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(body, "utf-8")
+        # MCP configs can hold `env` credentials (ours and other servers'), so do
+        # not widen a locked-down file, and create a new one private.
+        if existed:
+            shutil.copymode(path, tmp)
+        else:
+            tmp.chmod(0o600)
         os.replace(tmp, path)  # atomic: a failed write never truncates the real file
     except OSError as exc:
         tmp.unlink(missing_ok=True)

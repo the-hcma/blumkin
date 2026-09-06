@@ -3014,6 +3014,10 @@ def mcp_serve_cmd(
     mcp_server.serve(profile=profile, read_only=read_only, only=tuple(only))
 
 
+def _stdio_is_tty() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 @mcp_group.command("install", epilog=help_text.MCP_INSTALL_EPILOG)
 @click.option(
     "--client",
@@ -3062,7 +3066,7 @@ def mcp_install_cmd(
     from blumkin import mcp_install as mi
 
     as_json = _as_json(ctx, as_json_flag)
-    tty = sys.stdin.isatty() and sys.stdout.isatty()
+    tty = _stdio_is_tty()
     interactive = tty and not yes
 
     # Without a TTY there is no per-client prompt, so writing to every client's

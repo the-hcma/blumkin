@@ -270,7 +270,7 @@ def test_apply_cli_restores_previous_entry_on_add_failure(
 
     def _run(cmd: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
         calls.append(list(cmd))
-        rc = 1 if cmd[:4] == ["claude", "mcp", "add", "blumkin"] and "--read-only" in cmd else 0
+        rc = 1 if cmd[:3] == ["claude", "mcp", "add"] else 0  # the replacing add fails
         return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="nope")
 
     monkeypatch.setattr(mi.subprocess, "run", _run)
@@ -283,9 +283,32 @@ def test_apply_cli_restores_previous_entry_on_add_failure(
     )
     with pytest.raises(mi.McpInstallError, match="claude mcp add"):
         mi.apply_plan(plan, binary="blumkin")
-    # the old entry was re-added after the failing replace
-    restore = [c for c in calls if c[:4] == ["claude", "mcp", "add", "blumkin"]][-1]
-    assert restore[-3:] == ["/old/bin/blumkin", "mcp", "serve"]
+    # add-json put the old entry back verbatim (preserves every key)
+    restore = next(c for c in calls if c[:3] == ["claude", "mcp", "add-json"])
+    assert json.loads(restore[-1]) == {"command": "/old/bin/blumkin", "args": ["mcp", "serve"]}
+
+
+def test_apply_cli_reports_when_restore_also_fails(
+    home: Path, all_clients: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (home / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"blumkin": {"command": "blumkin", "args": ["mcp", "serve"]}}})
+    )
+
+    def _run(cmd: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        rc = 0 if cmd[:3] == ["claude", "mcp", "remove"] else 1  # remove ok, both adds fail
+        return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="down")
+
+    monkeypatch.setattr(mi.subprocess, "run", _run)
+    (plan,) = mi.build_plan(
+        clients=["claude"],
+        scope="user",
+        binary="blumkin",
+        serve=mi.ServeSpec(read_only=True),
+        cwd=home,
+    )
+    with pytest.raises(mi.McpInstallError, match="could NOT be restored"):
+        mi.apply_plan(plan, binary="blumkin")
 
 
 def test_apply_file_write_is_atomic_and_cleans_up(
@@ -409,3 +432,75 @@ def test_cli_status_lists_registrations(
     cursor_regs = [r for r in payload["registrations"] if r["client"] == "cursor"]
     assert cursor_regs and cursor_regs[0]["args"] == ["mcp", "serve"]
     assert cursor_regs[0]["resolves_to_blumkin"] is True
+
+
+def test_cli_status_empty_and_stale(
+    home: Path, all_clients: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(home)
+    empty = _invoke(["mcp", "status"])
+    assert "no client has blumkin registered" in empty.output
+
+    (home / ".cursor").mkdir()
+    (home / ".cursor" / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"blumkin": {"command": "/dead/bin/blumkin", "args": []}}})
+    )
+    stale = _invoke(["mcp", "status", "--json"])
+    reg = json.loads(stale.output)["registrations"][0]
+    assert reg["resolves_to_blumkin"] is False
+    assert "does not resolve" in _invoke(["mcp", "status"]).output
+
+
+def test_cli_install_force_reapplies_a_matching_entry(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(home)
+    _invoke([*_CURSOR_PROJECT, "--json"])
+    forced = _invoke([*_CURSOR_PROJECT, "--force", "--json"])
+    assert json.loads(forced.output)["clients"][0]["action"] == "updated"
+
+
+def _tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    import blumkin.cli as cli
+
+    monkeypatch.setattr(cli, "_stdio_is_tty", lambda: True)
+
+
+def test_cli_install_interactive_decline_skips_without_writing(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(home)
+    _tty(monkeypatch)
+    # scope prompt -> project; read-only? -> n; families -> blank; confirm cursor -> n
+    result = _invoke(["mcp", "install", "--client", "cursor"], input="project\nn\n\nn\n")
+    assert result.exit_code == EXIT_SUCCESS
+    assert "skipped" in result.output
+    assert not (home / ".cursor" / "mcp.json").exists()
+
+
+def test_cli_install_interactive_confirm_writes(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(home)
+    _tty(monkeypatch)
+    result = _invoke(["mcp", "install", "--client", "cursor"], input="project\nn\n\ny\n")
+    assert result.exit_code == EXIT_SUCCESS
+    assert "added" in result.output
+    assert (home / ".cursor" / "mcp.json").is_file()
+
+
+def test_apply_file_keeps_a_locked_down_file_private(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    path = cwd / ".mcp.json"
+    path.write_text(json.dumps({"mcpServers": {"secret": {"env": {"TOKEN": "x"}}}}))
+    path.chmod(0o600)
+    (plan,) = mi.build_plan(
+        clients=["copilot"], scope="project", binary="blumkin", serve=mi.ServeSpec(), cwd=cwd
+    )
+    mi.apply_plan(plan, binary="blumkin")
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert json.loads(path.read_text())["mcpServers"]["secret"] == {"env": {"TOKEN": "x"}}
