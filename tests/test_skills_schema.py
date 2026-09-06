@@ -7,6 +7,7 @@ control. Adding a field is fine; renaming or removing one is a version bump.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import re
 from pathlib import Path
@@ -24,7 +25,8 @@ from blumkin.exit_codes import (
     EXIT_SUCCESS,
     EXIT_USAGE,
 )
-from blumkin.skills import skills_catalog
+from blumkin.providers.protocol import WorkspaceProvider
+from blumkin.skills import BESPOKE_SKILLS, SKILL_METHOD_OVERRIDES, skills_catalog
 from blumkin.skills.chat import ChatAttachmentScopeError
 
 
@@ -37,6 +39,83 @@ def test_arg_objects_match_the_documented_shape() -> None:
             assert isinstance(arg["name"], str) and arg["name"]
             assert isinstance(arg["required"], bool)
             assert arg["type"] in _ARG_TYPES, f"{skill['id']}: undocumented type {arg['type']}"
+            # `param` is always present (added by _enrich_args); None = consumed by a
+            # gate/preprocessor, else the provider-method kwarg name.
+            assert "param" in arg, f"{skill['id']} {arg['name']}: no resolved param"
+            assert arg["param"] is None or isinstance(arg["param"], str)
+            if "coerce" in arg:
+                assert arg["coerce"] in _ARG_COERCE_VALUES
+
+
+def test_every_catalog_arg_maps_to_a_real_provider_kwarg() -> None:
+    """The anti-drift guard: a catalog arg whose `param` is not a real kwarg of the
+    resolved `WorkspaceProvider` method is a bug the dispatch layer would hit at runtime.
+    """
+    for skill in skills_catalog()["skills"]:
+        sid = skill["id"]
+        if sid in BESPOKE_SKILLS:
+            continue
+        method: str = SKILL_METHOD_OVERRIDES.get(sid) or sid.replace(".", "_").replace("-", "_")
+        fn = getattr(WorkspaceProvider, method, None)
+        assert fn is not None, f"{sid}: no provider method {method}"
+        kwargs = {p for p in inspect.signature(fn).parameters if p != "self"}
+        for arg in skill["args"]:
+            param = arg["param"]
+            if param is None:  # consumed by the consent gate or a preprocessor
+                continue
+            assert param in kwargs, (
+                f"{sid} {arg['name']}: param '{param}' is not a kwarg of {method}({sorted(kwargs)})"
+            )
+        # A wrong-but-existing swap (e.g. --start -> `start` where the method wants
+        # `start_raw`) passes the check above. Pin the full resolved binding for the
+        # skills whose remaps are load-bearing so such a swap fails here.
+        if sid in _ARG_PARAM_PINS:
+            resolved = {a["name"]: (a["param"], a.get("coerce")) for a in skill["args"]}
+            assert resolved == _ARG_PARAM_PINS[sid], sid
+
+
+# skill id -> {catalog arg name: (resolved param, coerce or None)}. Covers the args
+# whose `param` deliberately differs from the Click dest, so the dispatch layer
+# (which reads `param` verbatim) cannot silently rebind them.
+_ARG_PARAM_PINS = {
+    "calendar.create": {
+        "--subject": ("subject", None),
+        "--with": ("with_emails", "list"),
+        "--start": ("start_raw", "raw"),
+        "--duration": ("duration", None),
+        "--all-day": ("all_day", None),
+        "--location": ("location", None),
+        "--calendar": ("calendar", None),
+        "--optional": ("optional_emails", "list"),
+        "--body": ("body", None),
+        "--body-file": ("body_file", None),
+        "--body-type": ("body_type", None),
+        "--remind-email": ("remind_email", None),
+        "--no-teams": ("teams", "negate_flag"),
+        "--repeat": (None, None),
+        "--interval": (None, None),
+        "--until": (None, None),
+        "--count": (None, None),
+        "--days": (None, None),
+        "--tz": ("tz_name", None),
+        "--yes": (None, None),
+    },
+    "calendar.view": {
+        "--from": ("start", "local_midnight"),
+        "--to": ("end", "local_midnight"),
+        "--calendar": ("calendar", None),
+        "--tz": (None, None),
+    },
+    "calendar.decline": {
+        "--event-id": ("event_id", None),
+        "--today-pending": ("today_pending", None),
+        "--comment": ("comment", None),
+        "--propose-time": ("propose_start", "raw"),
+        "--propose-duration": ("propose_duration", None),
+        "--yes": (None, None),
+        "--tz": ("tz_name", None),
+    },
+}
 
 
 def test_arg_signatures_are_pinned_for_documented_skills() -> None:
@@ -302,6 +381,17 @@ _ARG_TYPES = {
     "int",
     "path",
     "string",
+}
+
+
+_ARG_COERCE_VALUES = {
+    "date",
+    "duration",
+    "list",
+    "local_datetime",
+    "local_midnight",
+    "negate_flag",
+    "raw",
 }
 
 

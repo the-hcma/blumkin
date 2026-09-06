@@ -184,17 +184,21 @@ Real output, with `skills` cut to one entry — the full list carries every skil
         {
           "name": "--date",
           "required": false,
-          "type": "date"
+          "type": "date",
+          "param": "day",
+          "coerce": "date"
         },
         {
           "name": "--calendar",
           "required": false,
-          "type": "string"
+          "type": "string",
+          "param": "calendar"
         },
         {
           "name": "--tz",
           "required": false,
-          "type": "iana_tz"
+          "type": "iana_tz",
+          "param": "tz_name"
         }
       ],
       "cli": [
@@ -242,9 +246,18 @@ Each skill:
 | `scopes` | Graph scopes required |
 | `args` | Accepted arguments, in the order they read naturally on the command line — **not** sorted |
 
-Each arg has `name`, `required`, and `type`; optionally `values` (for `enum`),
-`multiple`, and `note`. Types are `date`, `datetime`, `duration`, `email`, `enum`,
-`flag`, `iana_tz`, `int`, `path`, `string`.
+Each arg has `name`, `required`, `type`, and `param`; optionally `coerce`,
+`values` (for `enum`), `multiple`, and `note`. Types are `date`, `datetime`,
+`duration`, `email`, `enum`, `flag`, `iana_tz`, `int`, `path`, `string`.
+
+`param` is the internal name blumkin binds the value to (so `--from` on
+`mail.list` is `param: "sender"`, `--tz` is `param: "tz_name"`); `null` means the
+value is never passed to a worker method as a direct argument — it is consumed by
+a gate, folded into another argument (`calendar view`'s `--from` / `--to` become
+a single `[start, end)` range), or the command is bespoke CLI-only plumbing
+(`auth *`, `doctor`, `skills *`, `mail signature`, `mcp serve`). Agents driving
+the CLI pass `name`; the MCP server (`blumkin mcp serve`) uses `param`-derived
+tool schemas. The catalog is pinned against the live code so `param` cannot drift.
 
 `name` is normally an option (`--folder`), but may be a positional with no leading
 dash — `skills.describe` takes `skill-id`. Build the command from `cli` plus these
