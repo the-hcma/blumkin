@@ -98,6 +98,23 @@ SKILLS: list[SkillSpec] = [
             {"name": "--start", "required": True, "type": "datetime"},
             {"name": "--duration", "required": False, "type": "duration"},
             {
+                "name": "--all-day",
+                "required": False,
+                "type": "flag",
+                "note": "--start is a date, --duration is whole days",
+            },
+            {"name": "--location", "required": False, "type": "string"},
+            {"name": "--optional", "required": False, "type": "email", "multiple": True},
+            {"name": "--body", "required": False, "type": "string"},
+            {"name": "--body-file", "required": False, "type": "path"},
+            {
+                "name": "--body-type",
+                "required": False,
+                "type": "enum",
+                "values": ["html", "text"],
+                "note": "Microsoft only",
+            },
+            {
                 "name": "--remind-email",
                 "required": False,
                 "type": "duration",

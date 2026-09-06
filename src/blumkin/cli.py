@@ -1601,13 +1601,35 @@ def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_fl
     "--start",
     "start_raw",
     required=True,
-    help="Local start, YYYY-MM-DDTHH:MM in the organizer timezone.",
+    help="Local start, YYYY-MM-DDTHH:MM (or YYYY-MM-DD with --all-day).",
 )
 @click.option(
     "--duration",
-    default="30m",
+    default=None,
+    help="Length, e.g. 30m, 1h (default 30m); with --all-day, whole days like 2d (default 1d).",
+)
+@click.option(
+    "--all-day",
+    "all_day",
+    is_flag=True,
+    help="All-day event; --start is a date, --duration is in whole days.",
+)
+@click.option("--location", default=None, help="Free-text location (a room, 'Zoom', a phone line).")
+@click.option(
+    "--optional",
+    "optional_emails",
+    multiple=True,
+    help="Optional attendee email; repeat once per attendee (vs required --with).",
+)
+@click.option("--body", default=None, help="Event body / agenda text.")
+@click.option("--body-file", "body_file", default=None, help="Read the event body from this file.")
+@click.option(
+    "--body-type",
+    "body_type",
+    default="text",
     show_default=True,
-    help="Length as a short duration, e.g. 30m, 45m, 1h, 1d, 1w.",
+    type=click.Choice(["html", "text"]),
+    help="Body format (Microsoft only).",
 )
 @click.option(
     "--remind-email",
@@ -1671,7 +1693,13 @@ def calendar_create_cmd(
     subject: str,
     with_emails: tuple[str, ...],
     start_raw: str,
-    duration: str,
+    duration: str | None,
+    all_day: bool,
+    location: str | None,
+    optional_emails: tuple[str, ...],
+    body: str | None,
+    body_file: str | None,
+    body_type: str,
     remind_email: str | None,
     teams: bool,
     repeat: str | None,
@@ -1714,7 +1742,13 @@ def calendar_create_cmd(
                 subject=subject,
                 with_emails=list(with_emails),
                 start_raw=start_raw,
+                all_day=all_day,
+                body=body,
+                body_file=body_file,
+                body_type=body_type,
                 duration=duration,
+                location=location,
+                optional_emails=list(optional_emails),
                 recurrence=recurrence,
                 remind_email=remind_email,
                 teams=teams,

@@ -233,6 +233,56 @@ def test_calendar_create_cli_wires_remind_email(tmp_path: Path) -> None:
     assert json.loads(bad.stderr)["error"] == "usage_error"
 
 
+def test_calendar_create_cli_wires_new_fields(tmp_path: Path) -> None:
+    """CliRunner -> calendar_create_cmd -> provider: --location / --body-file /
+    --optional / --all-day all reach the insert body with the right names."""
+    cfg = _cfg(tmp_path)
+    agenda = tmp_path / "agenda.txt"
+    agenda.write_text("Agenda: API shape\n")
+    service = MagicMock()
+    service.events.return_value.insert.return_value.execute.return_value = {
+        "id": "evt-cli",
+        "summary": "OOO",
+        "start": {"date": "2026-12-24"},
+        "end": {"date": "2026-12-25"},
+        "organizer": {"email": "me@example.com", "self": True},
+    }
+    provider = GoogleWorkspaceProvider(cfg)
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+        patch("blumkin.cli._workspace", return_value=provider),
+    ):
+        result = CliRunner().invoke(
+            main,
+            [
+                "calendar",
+                "create",
+                "--subject",
+                "OOO",
+                "--start",
+                "2026-12-24",
+                "--all-day",
+                "--location",
+                "Room 4",
+                "--body-file",
+                str(agenda),
+                "--optional",
+                "dana@example.com",
+                "--tz",
+                "America/New_York",
+                "--yes",
+                "--json",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    body = service.events.return_value.insert.call_args.kwargs["body"]
+    assert body["start"] == {"date": "2026-12-24"}
+    assert body["location"] == "Room 4"
+    assert body["description"] == "Agenda: API shape\n"
+    assert body["attendees"] == [{"email": "dana@example.com", "optional": True}]
+
+
 def test_calendar_create_google_403_maps_to_missing_scope(tmp_path: Path) -> None:
     """A token minted before the calendar.events scope 403s; the CLI must exit 4.
 
