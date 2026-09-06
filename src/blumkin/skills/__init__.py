@@ -94,6 +94,10 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("calendar.today", "--date"): "day",
     ("calendar.decline", "--propose-time"): "propose_start",
     ("calendar.tentative", "--propose-time"): "propose_start",
+    # --no-teams is the negated pole of Click's `--teams/--no-teams`; it binds to the
+    # `teams` kwarg (negated by the `negate_flag` coerce below).
+    ("calendar.create", "--no-teams"): "teams",
+    ("calendar.update", "--no-teams"): "teams",
     # recurrence flags are folded into a single `recurrence` value object.
     ("calendar.create", "--repeat"): None,
     ("calendar.create", "--interval"): None,
@@ -132,8 +136,10 @@ _ARG_COERCE: dict[tuple[str, str], str] = {
     ("calendar.view", "--from"): "local_midnight",
     ("calendar.view", "--to"): "local_midnight",
     ("calendar.create", "--start"): "raw",
+    ("calendar.create", "--no-teams"): "negate_flag",
     ("calendar.update", "--start"): "raw",
     ("calendar.update", "--end"): "raw",
+    ("calendar.update", "--no-teams"): "negate_flag",
     ("calendar.freebusy", "--start"): "local_datetime",
     ("calendar.freebusy", "--end"): "local_datetime",
     ("calendar.suggest", "--start"): "local_datetime",
@@ -282,7 +288,7 @@ SKILLS: list[SkillSpec] = [
                 "note": "reminder lead time; email on Google, Outlook popup on Microsoft",
             },
             {
-                "name": "--teams",
+                "name": "--no-teams",
                 "required": False,
                 "type": "flag",
                 "note": "--teams / --no-teams; a Teams online meeting is attached by default",
@@ -489,7 +495,7 @@ SKILLS: list[SkillSpec] = [
                 "note": "replaces the attendee list",
             },
             {
-                "name": "--teams",
+                "name": "--no-teams",
                 "required": False,
                 "type": "flag",
                 "note": "--teams attaches, --no-teams removes the online meeting; omit to leave it",

@@ -7,6 +7,7 @@ control. Adding a field is fine; renaming or removing one is a version bump.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import re
 from pathlib import Path
@@ -24,7 +25,8 @@ from blumkin.exit_codes import (
     EXIT_SUCCESS,
     EXIT_USAGE,
 )
-from blumkin.skills import skills_catalog
+from blumkin.providers.protocol import WorkspaceProvider
+from blumkin.skills import BESPOKE_SKILLS, SKILL_METHOD_OVERRIDES, skills_catalog
 from blumkin.skills.chat import ChatAttachmentScopeError
 
 
@@ -49,11 +51,6 @@ def test_every_catalog_arg_maps_to_a_real_provider_kwarg() -> None:
     """The anti-drift guard: a catalog arg whose `param` is not a real kwarg of the
     resolved `WorkspaceProvider` method is a bug the dispatch layer would hit at runtime.
     """
-    import inspect
-
-    from blumkin.providers.protocol import WorkspaceProvider
-    from blumkin.skills import BESPOKE_SKILLS, SKILL_METHOD_OVERRIDES
-
     for skill in skills_catalog()["skills"]:
         sid = skill["id"]
         if sid in BESPOKE_SKILLS:
@@ -296,7 +293,7 @@ _ARG_SIGNATURES = {
         ("--body-file", False, "path"),
         ("--body-type", False, "enum"),
         ("--remind-email", False, "duration"),
-        ("--teams", False, "flag"),
+        ("--no-teams", False, "flag"),
         ("--repeat", False, "enum"),
         ("--interval", False, "int"),
         ("--until", False, "date"),
@@ -337,7 +334,15 @@ _ARG_TYPES = {
 }
 
 
-_ARG_COERCE_VALUES = {"date", "duration", "list", "local_datetime", "local_midnight", "raw"}
+_ARG_COERCE_VALUES = {
+    "date",
+    "duration",
+    "list",
+    "local_datetime",
+    "local_midnight",
+    "negate_flag",
+    "raw",
+}
 
 
 _ENUM_VALUES = {
