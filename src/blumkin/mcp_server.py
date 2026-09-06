@@ -79,6 +79,14 @@ def build_server(
 ) -> Server:
     tools = build_tools(read_only=read_only, only=only)
     names = {tool.name for tool in tools}
+    bool_props = {
+        tool.name: {
+            key
+            for key, spec in tool.input_schema["properties"].items()
+            if spec.get("type") == "boolean"
+        }
+        for tool in tools
+    }
 
     async def on_list_tools(_ctx: Any, _params: Any) -> types.ListToolsResult:
         return types.ListToolsResult(tools=tools)
@@ -87,11 +95,16 @@ def build_server(
         if params.name not in names:
             return _error_result(LookupError(f"unknown tool: {params.name}"))
         args: dict[str, Any] = dict(params.arguments or {})
-        # The low-level Server does not validate arguments against the advertised
-        # schema, so a model can send `"confirm": "false"`. Only a real JSON bool
-        # is consent - anything else is a usage error, never a silent yes.
-        for key in ("confirm", "on"):
-            if key in args and not isinstance(args[key], bool):
+        # `yes` is the internal consent token; a client consents via `confirm`.
+        # An inbound `yes` (e.g. `"yes": "false"`, truthy) would smuggle past the gate.
+        if "yes" in args:
+            return _error_result(ValueError("pass `confirm`, not `yes`, to consent"))
+        # The low-level Server does not type-check arguments against the schema, so
+        # a model can send `"confirm": "false"` (truthy) or `"enable": "false"`.
+        # Every property advertised as boolean must arrive as a real JSON bool -
+        # `bool("false")` must never become a silent yes or a flipped flag.
+        for key, value in args.items():
+            if key in bool_props[params.name] and not isinstance(value, bool):
                 return _error_result(ValueError(f"`{key}` must be a JSON boolean (true or false)"))
         if "confirm" in args:
             args["yes"] = args.pop("confirm")

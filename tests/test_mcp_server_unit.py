@@ -148,18 +148,34 @@ def test_confirm_true_passes_the_gate_and_is_not_forwarded() -> None:
     assert "yes" not in prov.chat_send.await_args.kwargs
 
 
-def test_non_boolean_confirm_is_rejected_never_a_silent_yes() -> None:
-    prov = SimpleNamespace(chat_send=AsyncMock(return_value={"sent": True}))
+def test_non_boolean_bool_args_are_rejected_never_a_silent_flip() -> None:
+    """Every schema-advertised boolean must arrive as a real JSON bool - `bool("false")`
+    must never become a silent yes (`confirm`) or a flipped flag (`enable`)."""
+    prov = SimpleNamespace(
+        chat_send=AsyncMock(return_value={}),
+        meeting_transcription=AsyncMock(return_value={}),
+    )
     with (
         patch("blumkin.mcp_server.load_config", return_value=_CFG),
         patch("blumkin.skills.dispatch.get_provider", return_value=prov),
     ):
-        result = _drive(
+        bad_confirm = _drive(
             lambda c: c.call_tool("chat.send", {"chat_id": "c1", "text": "hi", "confirm": "false"})
         )
-    assert result.is_error is True
-    assert result.structured_content["error"] == "usage_error"
+        bad_flag = _drive(
+            lambda c: c.call_tool(
+                "meeting.transcription",
+                {"event_id": "e1", "enable": "false", "confirm": True},
+            )
+        )
+        smuggled_yes = _drive(
+            lambda c: c.call_tool("chat.send", {"chat_id": "c1", "text": "hi", "yes": "false"})
+        )
+    for result in (bad_confirm, bad_flag, smuggled_yes):
+        assert result.is_error is True
+        assert result.structured_content["error"] == "usage_error"
     prov.chat_send.assert_not_awaited()
+    prov.meeting_transcription.assert_not_awaited()
 
 
 def test_auto_reply_on_off_collapse_round_trips_to_enable() -> None:
