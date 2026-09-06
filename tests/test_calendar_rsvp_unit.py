@@ -113,6 +113,12 @@ def test_graph_decline_propose_time_rejects_a_bare_date(monkeypatch) -> None:
         asyncio.run(calendar_decline(event_id="evt-1", propose_start="2026-09-02", tz_name=_NY))
 
 
+def test_graph_decline_empty_propose_time_is_rejected(monkeypatch) -> None:
+    _graph_client(monkeypatch)
+    with pytest.raises(ValueError, match="--propose-time cannot be empty"):
+        asyncio.run(calendar_decline(event_id="evt-1", propose_start="  ", tz_name=_NY))
+
+
 def test_graph_decline_propose_duration_zero_rejected(monkeypatch) -> None:
     _graph_client(monkeypatch)
     with pytest.raises(ValueError, match="--propose-duration must be positive"):

@@ -828,6 +828,10 @@ async def _calendar_rsvp(
     """Send one RSVP (or a today-pending batch) to the organizer(s) via Graph."""
     if today_pending == bool(event_id):
         raise ValueError("exactly one of --event-id or --today-pending is required")
+    # An explicitly-passed empty --propose-time is a mistake, not "no proposal";
+    # normalize so the guards below (and the caller) don't silently drop it.
+    if propose_start is not None and not propose_start.strip():
+        raise ValueError("--propose-time cannot be empty")
     if (propose_start or propose_duration) and action == "accept":
         raise ValueError("--propose-time only works with `calendar decline` / `calendar tentative`")
     if propose_duration and not propose_start:
