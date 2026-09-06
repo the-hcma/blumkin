@@ -312,7 +312,48 @@ def test_graph_cancel_targets_the_named_calendar(monkeypatch) -> None:
     cancel.post.assert_awaited_once()
 
 
-def test_google_create_inserts_into_the_named_calendar(tmp_path: Path) -> None:
+def test_graph_create_and_update_target_the_named_calendar(monkeypatch) -> None:
+    from blumkin.skills.calendar_writes import calendar_create, calendar_update
+
+    client = MagicMock()
+    client.me.calendars.get = AsyncMock(
+        return_value=SimpleNamespace(value=[_graph_calendar("TEAM", "Team")])
+    )
+    cal = client.me.calendars.by_calendar_id.return_value
+    created = SimpleNamespace(
+        id="e1",
+        subject="x",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=None,
+    )
+    cal.events.post = AsyncMock(return_value=created)
+    cal.events.by_event_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(id="e1", is_all_day=False, start=None, end=None)
+    )
+    cal.events.by_event_id.return_value.patch = AsyncMock(return_value=created)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz=_NY, client_id="x"),
+    )
+    asyncio.run(
+        calendar_create(
+            subject="x", with_emails=[], start_raw="2026-09-22T09:00", calendar="Team", teams=False
+        )
+    )
+    asyncio.run(calendar_update(event_id="e1", subject="new", calendar="Team"))
+    assert client.me.calendars.by_calendar_id.call_args_list[0].args == ("TEAM",)
+    cal.events.post.assert_awaited_once()
+    cal.events.by_event_id.return_value.patch.assert_awaited_once()
+
+
+def test_google_create_and_cancel_target_the_named_calendar(tmp_path: Path) -> None:
     service = _google_service(
         calendar_items=[
             {"id": "primary", "summary": "Me", "primary": True},
@@ -325,6 +366,11 @@ def test_google_create_inserts_into_the_named_calendar(tmp_path: Path) -> None:
         "start": {"dateTime": "2026-09-22T09:00:00-04:00"},
         "end": {"dateTime": "2026-09-22T10:00:00-04:00"},
     }
+    service.events.return_value.get.return_value.execute.return_value = {
+        "id": "g",
+        "organizer": {"self": True},
+    }
+    service.events.return_value.delete.return_value.execute.return_value = ""
     with _google_patched(service):
         asyncio.run(
             google_calendar.calendar_create(
@@ -335,9 +381,43 @@ def test_google_create_inserts_into_the_named_calendar(tmp_path: Path) -> None:
                 config=_google_cfg(tmp_path),
             )
         )
+        asyncio.run(
+            google_calendar.calendar_cancel(
+                event_id="g", calendar="Team", config=_google_cfg(tmp_path)
+            )
+        )
     assert service.events.return_value.insert.call_args.kwargs["calendarId"] == (
         "team@g.calendar.google.com"
     )
+    assert service.events.return_value.delete.call_args.kwargs["calendarId"] == (
+        "team@g.calendar.google.com"
+    )
+
+
+def test_graph_calendar_list_walks_pages(monkeypatch) -> None:
+    p2 = SimpleNamespace(value=[_graph_calendar("B", "Two")], odata_next_link=None)
+    p1 = SimpleNamespace(value=[_graph_calendar("A", "One")], odata_next_link="next")
+    client = MagicMock()
+    client.me.calendars.get = AsyncMock(return_value=p1)
+    client.me.calendars.with_url.return_value.get = AsyncMock(return_value=p2)
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(default_tz=_NY, client_id="x"),
+    )
+    payload = asyncio.run(calendar_list())
+    assert [c["id"] for c in payload["calendars"]] == ["A", "B"]
+
+
+def test_google_calendar_list_walks_pages(tmp_path: Path) -> None:
+    service = MagicMock()
+    service.calendarList.return_value.list.return_value.execute.side_effect = [
+        {"items": [{"id": "a", "summary": "One"}], "nextPageToken": "t"},
+        {"items": [{"id": "b", "summary": "Two"}]},
+    ]
+    with _google_patched(service):
+        payload = asyncio.run(GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_list())
+    assert [c["id"] for c in payload["calendars"]] == ["a", "b"]
 
 
 # --------------------------------------------------------------------------- formatter / CLI

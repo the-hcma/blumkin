@@ -322,9 +322,23 @@ async def calendar_list(*, config: BlumkinConfig | None = None) -> dict[str, Any
     """List the calendars this account can see (id, name, default, editability, owner)."""
     cfg = config or load_config()
     service = _calendar_service(cfg, required_scopes=CALENDAR_READ_SCOPES)
-    response = execute(service.calendarList().list())
-    calendars = [_calendar_list_entry_to_dict(item) for item in (response.get("items") or [])]
+    calendars = [_calendar_list_entry_to_dict(item) for item in _all_calendar_list_items(service)]
     return {"calendars": calendars, "count": len(calendars)}
+
+
+_MAX_CALENDARS = 500
+
+
+def _all_calendar_list_items(service: Any) -> list[dict[str, Any]]:
+    """Every entry from ``calendarList.list``, following ``nextPageToken`` (page ~100)."""
+    items: list[dict[str, Any]] = []
+    page_token: str | None = None
+    while True:
+        page = execute(service.calendarList().list(pageToken=page_token))
+        items.extend(page.get("items") or [])
+        page_token = page.get("nextPageToken")
+        if not page_token or len(items) >= _MAX_CALENDARS:
+            return items
 
 
 async def calendar_freebusy(
@@ -608,7 +622,7 @@ def _resolve_calendar_id(service: Any, calendar: str | None) -> str:
     wanted = (calendar or "").strip()
     if not wanted:
         return "primary"
-    items = execute(service.calendarList().list()).get("items") or []
+    items = _all_calendar_list_items(service)
     if any(i.get("id") == wanted for i in items):
         return wanted
     matches = [

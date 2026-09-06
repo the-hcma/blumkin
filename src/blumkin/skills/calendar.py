@@ -34,6 +34,10 @@ class CalendarEventNotFoundError(Exception):
     """No event matched the given id."""
 
 
+# Upper bound on the calendar-list walk; mailboxes rarely have this many.
+_MAX_CALENDARS = 500
+
+
 class CalendarNotFoundError(Exception):
     """No calendar matched the given name or id."""
 
@@ -76,9 +80,7 @@ async def calendar_list(*, config: BlumkinConfig | None = None) -> dict[str, Any
     """List the calendars this account can see (id, name, default, editability, owner)."""
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    response = await client.me.calendars.get()
-    values = [] if response is None else (response.value or [])
-    calendars = [_calendar_to_dict(cal) for cal in values]
+    calendars = [_calendar_to_dict(cal) for cal in await _all_graph_calendars(client)]
     return {"calendars": calendars, "count": len(calendars)}
 
 
@@ -664,6 +666,19 @@ async def _graph_calendar_view_builder(client: Any, calendar: str | None) -> Any
     return client.me.calendars.by_calendar_id(cal_id).calendar_view
 
 
+async def _all_graph_calendars(client: Any) -> list[Any]:
+    """Every calendar from ``/me/calendars``, walking ``@odata.nextLink`` (page ~100)."""
+    page = await client.me.calendars.get()
+    calendars: list[Any] = []
+    while page is not None:
+        calendars.extend(page.value or [])
+        link = getattr(page, "odata_next_link", None)
+        if not link or len(calendars) >= _MAX_CALENDARS:
+            break
+        page = await client.me.calendars.with_url(str(link)).get()
+    return calendars
+
+
 async def _resolve_graph_calendar_id(client: Any, calendar: str | None) -> str | None:
     """A ``--calendar`` name or id -> a calendar id (``None`` = the default calendar).
 
@@ -673,8 +688,7 @@ async def _resolve_graph_calendar_id(client: Any, calendar: str | None) -> str |
     wanted = (calendar or "").strip()
     if not wanted:
         return None
-    response = await client.me.calendars.get()
-    values = [] if response is None else (response.value or [])
+    values = await _all_graph_calendars(client)
     by_id = [c for c in values if getattr(c, "id", None) == wanted]
     if by_id:
         return wanted
