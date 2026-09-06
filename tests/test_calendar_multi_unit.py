@@ -86,6 +86,7 @@ def test_graph_view_default_calendar_uses_me_calendar(monkeypatch) -> None:
     asyncio.run(calendar_view(start=start, end=start.replace(day=2)))
     client.me.calendar.calendar_view.get.assert_awaited()
     client.me.calendars.by_calendar_id.assert_not_called()
+    client.me.calendars.get.assert_not_awaited()  # no /me/calendars round trip for the default
 
 
 def test_graph_view_named_calendar_resolves_and_targets_it(monkeypatch) -> None:
@@ -450,6 +451,42 @@ def test_google_create_and_cancel_target_the_named_calendar(tmp_path: Path) -> N
         "team@g.calendar.google.com"
     )
     assert service.events.return_value.delete.call_args.kwargs["calendarId"] == (
+        "team@g.calendar.google.com"
+    )
+
+
+def test_google_update_targets_the_named_calendar(tmp_path: Path) -> None:
+    service = _google_service(
+        calendar_items=[
+            {"id": "primary", "summary": "Me", "primary": True},
+            {"id": "team@g.calendar.google.com", "summary": "Team", "accessRole": "writer"},
+        ]
+    )
+    service.events.return_value.get.return_value.execute.return_value = {
+        "id": "g",
+        "start": {"dateTime": "2026-09-22T09:00:00-04:00"},
+        "end": {"dateTime": "2026-09-22T10:00:00-04:00"},
+    }
+    service.events.return_value.patch.return_value.execute.return_value = {
+        "id": "g",
+        "summary": "new",
+        "start": {"dateTime": "2026-09-22T11:00:00-04:00"},
+        "end": {"dateTime": "2026-09-22T12:00:00-04:00"},
+    }
+    with _google_patched(service):
+        asyncio.run(
+            google_calendar.calendar_update(
+                event_id="g",
+                subject="new",
+                start_raw="2026-09-22T11:00",
+                calendar="Team",
+                config=_google_cfg(tmp_path),
+            )
+        )
+    assert service.events.return_value.get.call_args.kwargs["calendarId"] == (
+        "team@g.calendar.google.com"
+    )
+    assert service.events.return_value.patch.call_args.kwargs["calendarId"] == (
         "team@g.calendar.google.com"
     )
 
