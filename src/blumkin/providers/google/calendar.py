@@ -21,6 +21,7 @@ from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.calendar import (
     CalendarAmbiguousError,
     CalendarEventNotFoundError,
+    CalendarListTooLargeError,
     CalendarNotFoundError,
     find_mutual_free_slots,
     parse_local_datetime,
@@ -326,19 +327,25 @@ async def calendar_list(*, config: BlumkinConfig | None = None) -> dict[str, Any
     return {"calendars": calendars, "count": len(calendars)}
 
 
-_MAX_CALENDARS = 500
+_MAX_CALENDARS = 2000
 
 
 def _all_calendar_list_items(service: Any) -> list[dict[str, Any]]:
-    """Every entry from ``calendarList.list``, following ``nextPageToken`` (page ~100)."""
+    """Every entry from ``calendarList.list``, following ``nextPageToken`` (page ~100).
+
+    Raises :class:`CalendarListTooLargeError` rather than returning a truncated list
+    that name resolution would treat as authoritative.
+    """
     items: list[dict[str, Any]] = []
     page_token: str | None = None
     while True:
         page = execute(service.calendarList().list(pageToken=page_token))
         items.extend(page.get("items") or [])
         page_token = page.get("nextPageToken")
-        if not page_token or len(items) >= _MAX_CALENDARS:
+        if not page_token:
             return items
+        if len(items) >= _MAX_CALENDARS:
+            raise CalendarListTooLargeError("Google")
 
 
 async def calendar_freebusy(
@@ -635,10 +642,9 @@ def _resolve_calendar_id(service: Any, calendar: str | None) -> str:
     if len(matches) > 1:
         names = ", ".join(sorted({str(i.get("summary")) for i in matches}))
         raise CalendarAmbiguousError(f"{calendar!r} matches more than one calendar: {names}")
-    # No id or name match: `primary` is the API alias for the default calendar,
-    # but only when no calendar is actually named that (fail-closed otherwise).
-    if wanted.casefold() == "primary":
-        return "primary"
+    # No id or name match. Fail closed, same as the Graph resolver - do NOT fall
+    # back to the `primary` API alias: an unmatched token must mean the same thing
+    # on both providers, and the default calendar is reachable by omitting --calendar.
     raise CalendarNotFoundError(f"no calendar named {calendar!r}")
 
 
