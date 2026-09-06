@@ -26,8 +26,16 @@ from blumkin.output import sanitize_terminal
 from blumkin.skills.freebusy_suggest import collect_busy_intervals, raise_if_schedule_errors
 
 
+class CalendarAmbiguousError(Exception):
+    """More than one calendar matched the given name."""
+
+
 class CalendarEventNotFoundError(Exception):
     """No event matched the given id."""
+
+
+class CalendarNotFoundError(Exception):
+    """No calendar matched the given name or id."""
 
 
 async def calendar_freebusy(
@@ -64,10 +72,21 @@ async def calendar_freebusy(
     }
 
 
+async def calendar_list(*, config: BlumkinConfig | None = None) -> dict[str, Any]:
+    """List the calendars this account can see (id, name, default, editability, owner)."""
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    response = await client.me.calendars.get()
+    values = [] if response is None else (response.value or [])
+    calendars = [_calendar_to_dict(cal) for cal in values]
+    return {"calendars": calendars, "count": len(calendars)}
+
+
 async def calendar_get(
     *,
     event_id: str,
     body_type: str = "text",
+    calendar: str | None = None,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
@@ -79,6 +98,7 @@ async def calendar_get(
     cfg = config or load_config()
     tz = ZoneInfo(tz_name or cfg.default_tz)
     client = create_graph_client(cfg)
+    events = await _graph_events_builder(client, calendar)
     query = EventItemRequestBuilder.EventItemRequestBuilderGetQueryParameters(
         select=[
             "attendees",
@@ -102,7 +122,7 @@ async def calendar_get(
     )
     headers = {"Prefer": f'outlook.body-content-type="{wanted}"'}
     try:
-        event = await client.me.events.by_event_id(eid).get(request_config(query, headers=headers))
+        event = await events.by_event_id(eid).get(request_config(query, headers=headers))
     except ODataError as exc:
         if not is_id_lookup_failure(exc):
             raise
@@ -168,6 +188,7 @@ async def calendar_suggest(
 async def calendar_today(
     *,
     day: date | None = None,
+    calendar: str | None = None,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
@@ -176,7 +197,7 @@ async def calendar_today(
     target = day or datetime.now(tz).date()
     start = datetime(target.year, target.month, target.day, tzinfo=tz)
     end = start + timedelta(days=1)
-    payload = await calendar_view(start=start, end=end, config=cfg)
+    payload = await calendar_view(start=start, end=end, calendar=calendar, config=cfg)
     return {
         "date": target.isoformat(),
         "items": payload["items"],
@@ -188,6 +209,7 @@ async def calendar_view(
     *,
     start: datetime,
     end: datetime,
+    calendar: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     if end <= start:
@@ -195,6 +217,7 @@ async def calendar_view(
     cfg = config or load_config()
     display_tz = start.tzinfo if isinstance(start.tzinfo, ZoneInfo) else ZoneInfo("UTC")
     client = create_graph_client(cfg)
+    view_builder = await _graph_calendar_view_builder(client, calendar)
     query = CalendarViewRequestBuilder.CalendarViewRequestBuilderGetQueryParameters(
         start_date_time=start.isoformat(),
         end_date_time=end.isoformat(),
@@ -212,7 +235,7 @@ async def calendar_view(
             "onlineMeeting",
         ],
     )
-    view = await client.me.calendar.calendar_view.get(request_config(query))
+    view = await view_builder.get(request_config(query))
     items = [] if view is None else (view.value or [])
     events = [_event_to_dict(ev, display_tz) for ev in items]
     return {
@@ -290,6 +313,22 @@ def format_calendar_get_human(payload: dict[str, Any]) -> list[str]:
         lines.append("  ---")
         lines.extend(f"  {line}" for line in sanitize_terminal(str(ev["body"])).splitlines())
     lines.append(f"  id={ev.get('id')}")
+    return lines
+
+
+def format_calendar_list_human(payload: dict[str, Any]) -> list[str]:
+    calendars = payload.get("calendars") or []
+    lines = [f"{payload.get('count', len(calendars))} calendar(s):"]
+    for cal in calendars:
+        marks = []
+        if cal.get("is_default"):
+            marks.append("default")
+        if not cal.get("can_edit"):
+            marks.append("read-only")
+        suffix = f"  [{', '.join(marks)}]" if marks else ""
+        name = sanitize_terminal(str(cal.get("name") or "(unnamed)"))
+        lines.append(f"  • {name}{suffix}")
+        lines.append(f"    id={cal.get('id')}")
     return lines
 
 
@@ -596,6 +635,56 @@ def _attendee_to_dict(attendee: Any) -> dict[str, Any]:
         "response": _enum_value(status.response) if status and status.response else None,
         "type": _enum_value(getattr(attendee, "type", None)),
     }
+
+
+def _calendar_to_dict(cal: Any) -> dict[str, Any]:
+    owner = getattr(cal, "owner", None)
+    return {
+        "id": getattr(cal, "id", None),
+        "name": getattr(cal, "name", None),
+        "is_default": bool(getattr(cal, "is_default_calendar", False)),
+        "can_edit": bool(getattr(cal, "can_edit", False)),
+        "owner": getattr(owner, "address", None),
+        "color": getattr(cal, "hex_color", None) or _enum_value(getattr(cal, "color", None)),
+    }
+
+
+async def _graph_events_builder(client: Any, calendar: str | None) -> Any:
+    """``client.me.events`` for the default calendar, else the named calendar's events."""
+    cal_id = await _resolve_graph_calendar_id(client, calendar)
+    if cal_id is None:
+        return client.me.events
+    return client.me.calendars.by_calendar_id(cal_id).events
+
+
+async def _graph_calendar_view_builder(client: Any, calendar: str | None) -> Any:
+    cal_id = await _resolve_graph_calendar_id(client, calendar)
+    if cal_id is None:
+        return client.me.calendar.calendar_view
+    return client.me.calendars.by_calendar_id(cal_id).calendar_view
+
+
+async def _resolve_graph_calendar_id(client: Any, calendar: str | None) -> str | None:
+    """A ``--calendar`` name or id -> a calendar id (``None`` = the default calendar).
+
+    Matches an exact id first, then a case-insensitive name; raises on no match or
+    an ambiguous name (like ``people resolve``).
+    """
+    wanted = (calendar or "").strip()
+    if not wanted:
+        return None
+    response = await client.me.calendars.get()
+    values = [] if response is None else (response.value or [])
+    by_id = [c for c in values if getattr(c, "id", None) == wanted]
+    if by_id:
+        return wanted
+    matches = [c for c in values if (getattr(c, "name", "") or "").casefold() == wanted.casefold()]
+    if len(matches) == 1:
+        return matches[0].id
+    if not matches:
+        raise CalendarNotFoundError(f"no calendar named {calendar!r}")
+    names = ", ".join(sorted({str(getattr(c, "name", "")) for c in matches}))
+    raise CalendarAmbiguousError(f"{calendar!r} matches more than one calendar: {names}")
 
 
 def _busy_slot_to_dict(item: Any, display_tz: ZoneInfo) -> dict[str, Any]:

@@ -13,6 +13,7 @@ from blumkin.providers.kind import ProviderKind
 from blumkin.skills.calendar import (
     calendar_freebusy,
     calendar_get,
+    calendar_list,
     calendar_suggest,
     calendar_today,
     calendar_view,
@@ -104,8 +105,10 @@ class MicrosoftWorkspaceProvider:
             config=self._config,
         )
 
-    async def calendar_cancel(self, *, event_id: str) -> dict[str, Any]:
-        return await calendar_cancel(event_id=event_id, config=self._config)
+    async def calendar_cancel(
+        self, *, event_id: str, calendar: str | None = None
+    ) -> dict[str, Any]:
+        return await calendar_cancel(event_id=event_id, calendar=calendar, config=self._config)
 
     async def calendar_decline(
         self,
@@ -157,6 +160,7 @@ class MicrosoftWorkspaceProvider:
         body: str | None = None,
         body_file: str | None = None,
         body_type: str = "text",
+        calendar: str | None = None,
         duration: str | None = None,
         location: str | None = None,
         optional_emails: list[str] | None = None,
@@ -173,6 +177,7 @@ class MicrosoftWorkspaceProvider:
             body=body,
             body_file=body_file,
             body_type=body_type,
+            calendar=calendar,
             duration=duration,
             location=location,
             optional_emails=optional_emails,
@@ -202,14 +207,19 @@ class MicrosoftWorkspaceProvider:
         *,
         event_id: str,
         body_type: str = "text",
+        calendar: str | None = None,
         tz_name: str | None = None,
     ) -> dict[str, Any]:
         return await calendar_get(
             event_id=event_id,
             body_type=body_type,
+            calendar=calendar,
             tz_name=tz_name,
             config=self._config,
         )
+
+    async def calendar_list(self) -> dict[str, Any]:
+        return await calendar_list(config=self._config)
 
     async def calendar_suggest(
         self,
@@ -239,9 +249,12 @@ class MicrosoftWorkspaceProvider:
         self,
         *,
         day: date | None = None,
+        calendar: str | None = None,
         tz_name: str | None = None,
     ) -> dict[str, Any]:
-        return await calendar_today(day=day, tz_name=tz_name, config=self._config)
+        return await calendar_today(
+            day=day, calendar=calendar, tz_name=tz_name, config=self._config
+        )
 
     async def calendar_update(
         self,
@@ -251,6 +264,7 @@ class MicrosoftWorkspaceProvider:
         body: str | None = None,
         body_file: str | None = None,
         body_type: str = "text",
+        calendar: str | None = None,
         duration: str | None = None,
         end_raw: str | None = None,
         location: str | None = None,
@@ -266,6 +280,7 @@ class MicrosoftWorkspaceProvider:
             body=body,
             body_file=body_file,
             body_type=body_type,
+            calendar=calendar,
             duration=duration,
             end_raw=end_raw,
             location=location,
@@ -282,8 +297,9 @@ class MicrosoftWorkspaceProvider:
         *,
         start: datetime,
         end: datetime,
+        calendar: str | None = None,
     ) -> dict[str, Any]:
-        return await calendar_view(start=start, end=end, config=self._config)
+        return await calendar_view(start=start, end=end, calendar=calendar, config=self._config)
 
     async def chat_attachments_download(
         self,

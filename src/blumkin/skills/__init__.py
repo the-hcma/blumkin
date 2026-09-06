@@ -80,6 +80,7 @@ SKILLS: list[SkillSpec] = [
         scopes=["Calendars.ReadWrite"],
         args=[
             {"name": "--event-id", "required": True, "type": "string"},
+            {"name": "--calendar", "required": False, "type": "string"},
             {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
@@ -105,6 +106,12 @@ SKILLS: list[SkillSpec] = [
                 "note": "--start is a date, --duration is whole days",
             },
             {"name": "--location", "required": False, "type": "string"},
+            {
+                "name": "--calendar",
+                "required": False,
+                "type": "string",
+                "note": "name or id; default primary",
+            },
             {"name": "--optional", "required": False, "type": "email", "multiple": True},
             {"name": "--body", "required": False, "type": "string"},
             {"name": "--body-file", "required": False, "type": "path"},
@@ -211,8 +218,18 @@ SKILLS: list[SkillSpec] = [
         args=[
             {"name": "--event-id", "required": True, "type": "string"},
             {"name": "--body-type", "required": False, "type": "enum", "values": ["html", "text"]},
+            {"name": "--calendar", "required": False, "type": "string"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
         ],
+    ),
+    SkillSpec(
+        id="calendar.list",
+        cli=["blumkin", "calendar", "list"],
+        summary="List the calendars this account can see (id, name, default, editability)",
+        mutates=False,
+        notifies_others=False,
+        scopes=["Calendars.ReadWrite"],
+        args=[],
     ),
     SkillSpec(
         id="calendar.suggest",
@@ -277,6 +294,7 @@ SKILLS: list[SkillSpec] = [
         scopes=["Calendars.ReadWrite"],
         args=[
             {"name": "--date", "required": False, "type": "date"},
+            {"name": "--calendar", "required": False, "type": "string"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
         ],
     ),
@@ -300,6 +318,7 @@ SKILLS: list[SkillSpec] = [
                 "note": "--no-all-day converts back to a timed event",
             },
             {"name": "--location", "required": False, "type": "string"},
+            {"name": "--calendar", "required": False, "type": "string"},
             {"name": "--body", "required": False, "type": "string"},
             {"name": "--body-file", "required": False, "type": "path"},
             {
@@ -336,6 +355,7 @@ SKILLS: list[SkillSpec] = [
         args=[
             {"name": "--from", "required": True, "type": "date"},
             {"name": "--to", "required": True, "type": "date"},
+            {"name": "--calendar", "required": False, "type": "string"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
         ],
     ),

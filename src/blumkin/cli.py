@@ -33,8 +33,11 @@ from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
+    CalendarAmbiguousError,
     CalendarEventNotFoundError,
+    CalendarNotFoundError,
     format_calendar_get_human,
+    format_calendar_list_human,
     format_freebusy_human,
     format_suggest_human,
     format_today_human,
@@ -305,6 +308,25 @@ def _provider_config_hint(message: str) -> str | None:
     if "client_id" in message and "google_oauth_client_file" not in message:
         return "Set client_id in ~/.config/blumkin/config.toml then retry."
     return None
+
+
+def _route_calendar_resolve_error(exc: BaseException, *, as_json: bool) -> None:
+    """``--calendar`` name resolution: ambiguous -> usage (2), no match -> not_found (5).
+
+    A no-op for any other exception, so callers chain it before the generic
+    handler.
+    """
+    if isinstance(exc, CalendarAmbiguousError):
+        _emit_error(
+            error="usage_error",
+            message=str(exc),
+            as_json=as_json,
+            hint="Pass the calendar id (from `blumkin calendar list --json`), not the name.",
+        )
+        raise SystemExit(EXIT_USAGE) from exc
+    if isinstance(exc, CalendarNotFoundError):
+        _emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
 
 
 def _raise_auth_value_error(exc: ValueError, *, as_json: bool) -> NoReturn:
@@ -1195,22 +1217,30 @@ def calendar() -> None:
     default=None,
     help="Local day to list as YYYY-MM-DD (default: today).",
 )
+@click.option(
+    "--calendar", "calendar", default=None, help="Calendar name or id (default: primary)."
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
 def calendar_today_cmd(
-    ctx: click.Context, day: Any, as_json_flag: bool, tz_flag: str | None
+    ctx: click.Context, day: Any, calendar: str | None, as_json_flag: bool, tz_flag: str | None
 ) -> None:
     """List events for the local day (today, or --date YYYY-MM-DD).
 
     Graph returns UTC; blumkin converts to --tz or the config default. Use
-    --json to get event ids for accept / cancel / update.
+    --json to get event ids for accept / cancel / update. `--calendar` targets a
+    non-default calendar (name or id from `blumkin calendar list`).
     """
     as_json = _as_json(ctx, as_json_flag)
     tz_name = _tz_name(ctx, tz_flag)
     day_value: date | None = day.date() if day is not None else None
     try:
-        payload = asyncio.run(_workspace().calendar_today(day=day_value, tz_name=tz_name))
+        payload = asyncio.run(
+            _workspace().calendar_today(day=day_value, calendar=calendar, tz_name=tz_name)
+        )
+    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+        _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
@@ -1245,6 +1275,9 @@ def calendar_today_cmd(
     type=click.DateTime(formats=["%Y-%m-%d"]),
     help="First local day to EXCLUDE (YYYY-MM-DD); range is half-open.",
 )
+@click.option(
+    "--calendar", "calendar", default=None, help="Calendar name or id (default: primary)."
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
@@ -1252,6 +1285,7 @@ def calendar_view_cmd(
     ctx: click.Context,
     from_day: Any,
     to_day: Any,
+    calendar: str | None,
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
@@ -1266,7 +1300,9 @@ def calendar_view_cmd(
         tz = ZoneInfo(_tz_name(ctx, tz_flag) or cfg.default_tz)
         start = datetime(from_day.year, from_day.month, from_day.day, tzinfo=tz)
         end = datetime(to_day.year, to_day.month, to_day.day, tzinfo=tz)
-        payload = asyncio.run(_workspace().calendar_view(start=start, end=end))
+        payload = asyncio.run(_workspace().calendar_view(start=start, end=end, calendar=calendar))
+    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+        _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
@@ -1295,6 +1331,9 @@ def calendar_view_cmd(
     type=click.Choice(["html", "text"]),
     help="Body format to request; html keeps the markup.",
 )
+@click.option(
+    "--calendar", "calendar", default=None, help="Calendar name or id (default: primary)."
+)
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -1302,6 +1341,7 @@ def calendar_get_cmd(
     ctx: click.Context,
     event_id: str,
     body_type: str,
+    calendar: str | None,
     tz_flag: str | None,
     as_json_flag: bool,
 ) -> None:
@@ -1313,12 +1353,17 @@ def calendar_get_cmd(
     try:
         payload = asyncio.run(
             _workspace().calendar_get(
-                event_id=event_id, body_type=body_type, tz_name=_tz_name(ctx, tz_flag)
+                event_id=event_id,
+                body_type=body_type,
+                calendar=calendar,
+                tz_name=_tz_name(ctx, tz_flag),
             )
         )
     except CalendarEventNotFoundError as exc:
         _emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
+    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+        _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
@@ -1335,6 +1380,28 @@ def calendar_get_cmd(
         emit_json(payload)
     else:
         emit_lines(format_calendar_get_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@calendar.command("list", epilog=help_text.CALENDAR_LIST_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def calendar_list_cmd(ctx: click.Context, as_json_flag: bool) -> None:
+    """List the calendars this account can see (id, name, default, editability).
+
+    Pass an `id` or `name` from here to `--calendar` on the other calendar verbs.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(_workspace().calendar_list())
+    except ValueError as exc:
+        _raise_auth_value_error(exc, as_json=as_json)
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_calendar_list_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 
@@ -1698,15 +1765,22 @@ def calendar_tentative_cmd(
 
 @calendar.command("cancel", epilog=help_text.CALENDAR_CANCEL_EPILOG)
 @click.option("--event-id", "event_id", required=True, help="Event id to cancel (organizer only).")
+@click.option(
+    "--calendar", "calendar", default=None, help="Calendar name or id (default: primary)."
+)
 @click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
-def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_flag: bool) -> None:
+def calendar_cancel_cmd(
+    ctx: click.Context, event_id: str, calendar: str | None, yes: bool, as_json_flag: bool
+) -> None:
     """Cancel an event you organize and notify every attendee. Requires --yes."""
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
     try:
-        payload = asyncio.run(_workspace().calendar_cancel(event_id=event_id))
+        payload = asyncio.run(_workspace().calendar_cancel(event_id=event_id, calendar=calendar))
+    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+        _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
     except Exception as exc:
@@ -1744,6 +1818,12 @@ def calendar_cancel_cmd(ctx: click.Context, event_id: str, yes: bool, as_json_fl
     help="All-day event; --start is a date, --duration is in whole days.",
 )
 @click.option("--location", default=None, help="Free-text location (a room, 'Zoom', a phone line).")
+@click.option(
+    "--calendar",
+    "calendar",
+    default=None,
+    help="Create on this calendar (name or id; default: primary).",
+)
 @click.option(
     "--optional",
     "optional_emails",
@@ -1825,6 +1905,7 @@ def calendar_create_cmd(
     duration: str | None,
     all_day: bool,
     location: str | None,
+    calendar: str | None,
     optional_emails: tuple[str, ...],
     body: str | None,
     body_file: str | None,
@@ -1875,6 +1956,7 @@ def calendar_create_cmd(
                 body=body,
                 body_file=body_file,
                 body_type=body_type,
+                calendar=calendar,
                 duration=duration,
                 location=location,
                 optional_emails=list(optional_emails),
@@ -1884,6 +1966,8 @@ def calendar_create_cmd(
                 tz_name=_tz_name(ctx, tz_flag),
             )
         )
+    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+        _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:
@@ -1918,6 +2002,12 @@ def calendar_create_cmd(
     help="Convert to / from an all-day event.",
 )
 @click.option("--location", default=None, help="New free-text location.")
+@click.option(
+    "--calendar",
+    "calendar",
+    default=None,
+    help="Calendar the event is on (name or id; default: primary).",
+)
 @click.option("--body", default=None, help="New event body / agenda.")
 @click.option("--body-file", "body_file", default=None, help="Read the new body from this file.")
 @click.option(
@@ -1952,6 +2042,7 @@ def calendar_update_cmd(
     duration: str | None,
     all_day: bool | None,
     location: str | None,
+    calendar: str | None,
     body: str | None,
     body_file: str | None,
     body_type: str,
@@ -1977,6 +2068,7 @@ def calendar_update_cmd(
                 duration=duration,
                 all_day=all_day,
                 location=location,
+                calendar=calendar,
                 body=body,
                 body_file=body_file,
                 body_type=body_type,
@@ -1988,6 +2080,8 @@ def calendar_update_cmd(
     except CalendarEventNotFoundError as exc:
         _emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
+    except (CalendarNotFoundError, CalendarAmbiguousError) as exc:
+        _route_calendar_resolve_error(exc, as_json=as_json)
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:

@@ -187,6 +187,11 @@ Real output, with `skills` cut to one entry — the full list carries every skil
           "type": "date"
         },
         {
+          "name": "--calendar",
+          "required": false,
+          "type": "string"
+        },
+        {
           "name": "--tz",
           "required": false,
           "type": "iana_tz"
