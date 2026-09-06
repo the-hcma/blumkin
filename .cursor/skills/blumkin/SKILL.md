@@ -136,8 +136,11 @@ original's attachments.
      `--optional email` adds an optional attendee, and `--all-day` makes
      `--start` a date with `--duration` in whole days (no Teams link; a
      date-only `--start` without `--all-day` is rejected).)
-   - `blumkin calendar update --event-id '<id>' --yes` (attach Teams to an
-     existing event; uses Calendars.ReadWrite, not OnlineMeetings.ReadWrite)
+   - `blumkin calendar update --event-id '<id>' [--subject …] [--start …]
+     [--duration …|--end …] [--location …] [--body …] [--with … (replaces the
+     attendee list)] [--teams|--no-teams (attach/remove online meeting)]
+     [--all-day|--no-all-day] --yes` - only the flags you pass change; editing a
+     recurring series edits the whole series
    - `blumkin calendar cancel --event-id '<id>' --yes`
    - `blumkin mail draft --to … --subject … --body …` (draft only; `--body-type html` / `--body-file` optional)
      `--to` / `--cc` / `--bcc` are repeatable or comma-separated for multiple recipients.

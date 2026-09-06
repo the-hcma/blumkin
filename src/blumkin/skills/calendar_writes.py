@@ -17,6 +17,7 @@ from msgraph.generated.models.email_address import EmailAddress
 from msgraph.generated.models.event import Event
 from msgraph.generated.models.item_body import ItemBody
 from msgraph.generated.models.location import Location
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
 from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
 from msgraph.generated.models.recurrence_pattern import RecurrencePattern
@@ -31,9 +32,10 @@ from msgraph.generated.users.item.events.item.cancel.cancel_post_request_body im
 )
 
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.graph import create_graph_client
+from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.output import sanitize_terminal
 from blumkin.skills.calendar import (
+    CalendarEventNotFoundError,
     _event_to_dict,
     _to_graph_dtz,
     calendar_today,
@@ -226,34 +228,122 @@ async def calendar_create(
 async def calendar_update(
     *,
     event_id: str,
-    teams: bool = True,
+    all_day: bool | None = None,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_type: str = "text",
+    duration: str | None = None,
+    end_raw: str | None = None,
+    location: str | None = None,
+    start_raw: str | None = None,
+    subject: str | None = None,
+    teams: bool | None = None,
+    with_emails: list[str] | None = None,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    """Attach a Teams online meeting to an existing event (Calendars.ReadWrite only)."""
-    if not event_id.strip():
+    """PATCH an existing event's fields (Calendars.ReadWrite).
+
+    Every argument is optional; only what is passed is changed. ``teams`` is
+    tri-state: ``None`` leaves the online meeting alone, ``True`` attaches one,
+    ``False`` removes it. Editing a recurring series edits the whole series.
+    """
+    eid = event_id.strip()
+    if not eid:
         raise ValueError("--event-id is required")
-    if not teams:
-        raise ValueError("calendar update currently only attaches Teams; do not pass --no-teams")
+    if end_raw is not None and duration is not None:
+        raise ValueError("pass only one of --end or --duration")
     cfg = config or load_config()
     tz = ZoneInfo(tz_name or cfg.default_tz)
+    graph_body_type = BodyType.Text
+    body_content = None
+    if body is not None or body_file is not None:
+        body_content, graph_body_type = resolve_event_body(body, body_file, body_type)
     client = create_graph_client(cfg)
-    patch = Event(
-        is_online_meeting=True,
-        online_meeting_provider=OnlineMeetingProviderType.TeamsForBusiness,
-    )
-    updated = await client.me.events.by_event_id(event_id).patch(patch)
-    # Graph may return 204 (None), or 200 before onlineMeeting is populated.
-    if updated is None or not _event_join_url(updated):
-        updated = await client.me.events.by_event_id(event_id).get()
-    if updated is None or not updated.id:
-        raise RuntimeError(f"Graph returned no event after update: {event_id}")
-    if not _event_join_url(updated):
-        raise RuntimeError(
-            f"Teams online meeting was not provisioned for event {event_id!r} "
-            "(no onlineMeeting.joinUrl after PATCH); retry or recreate with "
-            "`calendar create --teams`."
+
+    changes_time = start_raw is not None or end_raw is not None or duration is not None
+    need_existing = changes_time or all_day is not None
+    existing = None
+    if need_existing:
+        try:
+            existing = await client.me.events.by_event_id(eid).get(
+                request_config(headers={"Prefer": 'outlook.timezone="UTC"'})
+            )
+        except ODataError as exc:
+            # A 404, or a 400 with an id-shaped code, on the pre-edit GET means the
+            # event is gone - map it like calendar_get rather than leaking ODataError.
+            if not is_id_lookup_failure(exc):
+                raise
+            raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
+        if existing is None or not existing.id:
+            raise CalendarEventNotFoundError(f"event not found: {eid}")
+
+    patch = Event()
+    touched = False
+    if subject is not None:
+        patch.subject = subject.strip()
+        touched = True
+    if location is not None:
+        patch.location = Location(display_name=location)
+        touched = True
+    if body_content is not None:
+        patch.body = ItemBody(content=body_content, content_type=graph_body_type)
+        touched = True
+    if with_emails is not None:
+        patch.attendees = [
+            Attendee(email_address=EmailAddress(address=email), type=AttendeeType.Required)
+            for email in with_emails
+        ] or None
+        touched = True
+    if changes_time or all_day is not None:
+        new_start, new_end, is_all_day = _updated_bounds(
+            existing, start_raw, end_raw, duration, all_day, tz
         )
+        patch.start = _to_graph_dtz(new_start)
+        patch.end = _to_graph_dtz(new_end)
+        if is_all_day is not None:
+            patch.is_all_day = is_all_day
+        touched = True
+    if teams is True:
+        patch.is_online_meeting = True
+        patch.online_meeting_provider = OnlineMeetingProviderType.TeamsForBusiness
+        touched = True
+    elif teams is False:
+        patch.is_online_meeting = False
+        touched = True
+
+    if not touched:
+        raise ValueError(
+            "nothing to update; pass at least one of --subject / --start / --duration / "
+            "--end / --location / --body / --with / --all-day / --teams"
+        )
+
+    try:
+        updated = await client.me.events.by_event_id(eid).patch(patch)
+    except ODataError as exc:
+        # A subject/body-only edit skips the pre-edit GET, so the PATCH is where a
+        # gone or malformed-id event first surfaces - map it the same way.
+        if not is_id_lookup_failure(exc):
+            raise
+        raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
+    if updated is None:
+        updated = await client.me.events.by_event_id(eid).get()
+    if updated is None or not updated.id:
+        raise CalendarEventNotFoundError(f"event not found: {eid}")
+    if teams is True and not _event_join_url(updated):
+        # Graph provisions the Teams meeting asynchronously, so the PATCH (or
+        # 204) response can precede onlineMeeting.joinUrl. Re-GET once, then fail
+        # loudly - the same guard calendar_create keeps - rather than report a
+        # join-less success an agent would trust.
+        updated = await client.me.events.by_event_id(eid).get()
+        if updated is None or not updated.id:
+            raise CalendarEventNotFoundError(f"event not found: {eid}")
+        if not _event_join_url(updated):
+            raise RuntimeError(
+                f"Teams online meeting was not provisioned for event {eid!r} "
+                "(no onlineMeeting.joinUrl after update); retry once Graph "
+                "finishes provisioning."
+            )
     return {"event": _event_to_dict(updated, tz)}
 
 
@@ -295,7 +385,10 @@ def format_create_human(payload: dict[str, Any]) -> list[str]:
 def format_update_human(payload: dict[str, Any]) -> list[str]:
     event = payload.get("event") or {}
     subject = sanitize_terminal(str(event.get("subject") or "(no subject)"))
-    lines = [f"Updated: {subject!r}"]
+    when = "all day" if event.get("is_all_day") else f"{event.get('start')} → {event.get('end')}"
+    lines = [f"Updated: {subject!r} ({when})"]
+    if event.get("location"):
+        lines.append(f"  location: {sanitize_terminal(str(event['location']))}")
     if event.get("online_join_url"):
         lines.append(f"  join: {sanitize_terminal(str(event['online_join_url']))}")
     lines.append(f"  id={event.get('id')}")
@@ -494,6 +587,121 @@ def _all_day_bounds(start_raw: str, duration: str | None) -> tuple[date, date]:
             raise ValueError("--all-day --duration must be whole days, e.g. 1d, 3d")
         days = delta.days
     return first, first + timedelta(days=days)
+
+
+def _all_day_span_days(
+    first: date,
+    end_raw: str | None,
+    duration: str | None,
+    old_span_days: int | None,
+) -> int:
+    """Whole-day length of an all-day event edit.
+
+    Precedence: an explicit ``--end`` date (exclusive, matching Google's all-day
+    end-date semantics), then a whole-day ``--duration``, then the event's
+    current span (``old_span_days`` is only set when the event was already
+    all-day, so a genuine timed->all-day conversion still falls through), else a
+    single day.
+    """
+    if end_raw is not None:
+        if "T" in end_raw:
+            raise ValueError("--all-day needs a date --end (YYYY-MM-DD), not a time")
+        span = (date.fromisoformat(end_raw.strip()) - first).days
+        if span < 1:
+            raise ValueError("--all-day --end must be at least one day after --start")
+        return span
+    if duration is not None:
+        delta = parse_duration(duration)
+        if delta < timedelta(days=1) or delta % timedelta(days=1):
+            raise ValueError("--all-day --duration must be whole days, e.g. 1d, 3d")
+        return delta.days
+    if old_span_days:
+        return max(1, old_span_days)
+    return 1
+
+
+def _dtz_to_utc_datetime(dtz: Any) -> datetime | None:
+    """Graph DateTimeTimeZone fetched with ``Prefer: outlook.timezone="UTC"`` -> aware datetime."""
+    raw = getattr(dtz, "date_time", None)
+    if not raw:
+        return None
+    text = str(raw).rstrip("Z")
+    try:
+        return datetime.fromisoformat(text).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _updated_bounds(
+    existing: Any,
+    start_raw: str | None,
+    end_raw: str | None,
+    duration: str | None,
+    all_day: bool | None,
+    tz: ZoneInfo,
+) -> tuple[datetime, datetime, bool | None]:
+    """Resolve the new (start, end, is_all_day) for a time edit, filling from ``existing``."""
+    old_start = _dtz_to_utc_datetime(getattr(existing, "start", None))
+    old_end = _dtz_to_utc_datetime(getattr(existing, "end", None))
+    was_all_day = bool(getattr(existing, "is_all_day", False))
+    target_all_day = was_all_day if all_day is None else all_day
+    # An already-all-day event serializes at 00:00 UTC under Prefer:
+    # outlook.timezone="UTC", so its UTC date IS the calendar date - read it
+    # directly. A timed event is a real instant, so its calendar date is the
+    # local one (the UTC date can be a day off in either direction).
+    old_start_date = (
+        (old_start.date() if was_all_day else old_start.astimezone(tz).date())
+        if old_start
+        else None
+    )
+    old_end_date = old_end.date() if old_end and was_all_day else None
+
+    if target_all_day:
+        if start_raw is not None and "T" in start_raw:
+            raise ValueError("--all-day needs a date --start (YYYY-MM-DD), not a time")
+        first = (
+            date.fromisoformat(start_raw.strip())
+            if start_raw is not None
+            else (old_start_date or datetime.now(tz).date())
+        )
+        old_span_days = (
+            (old_end_date - old_start_date).days
+            if was_all_day and old_start_date and old_end_date
+            else None
+        )
+        days = _all_day_span_days(first, end_raw, duration, old_span_days)
+        start_dt = datetime.combine(first, datetime.min.time(), tzinfo=tz)
+        return start_dt, start_dt + timedelta(days=days), True if all_day is not None else None
+
+    # A bare YYYY-MM-DD start/end on a timed event means a forgotten --all-day;
+    # reject it rather than silently booking a 00:00 meeting (matches create).
+    if not was_all_day:
+        if start_raw is not None:
+            reject_date_only_start(start_raw)
+        if end_raw is not None and "T" not in end_raw.strip():
+            raise ValueError(
+                "a date-only --end needs --all-day; pass a time (e.g. 2026-12-24T17:00)"
+            )
+    if start_raw is not None:
+        start_dt = parse_local_datetime(start_raw, tz)
+    elif was_all_day and old_start_date:
+        # all-day -> timed: keep the date, open at local midnight.
+        start_dt = datetime.combine(old_start_date, datetime.min.time(), tzinfo=tz)
+    elif old_start:
+        start_dt = old_start.astimezone(tz)
+    else:
+        start_dt = datetime.now(tz)
+    if end_raw is not None:
+        end_dt = parse_local_datetime(end_raw, tz)
+    elif duration is not None:
+        end_dt = (start_dt.astimezone(UTC) + parse_duration(duration)).astimezone(tz)
+    elif old_start and old_end and not was_all_day:
+        end_dt = (start_dt.astimezone(UTC) + (old_end - old_start)).astimezone(tz)
+    else:
+        end_dt = (start_dt.astimezone(UTC) + parse_duration(_DEFAULT_DURATION)).astimezone(tz)
+    if end_dt <= start_dt:
+        raise ValueError("event end must be after start")
+    return start_dt, end_dt, False if all_day is not None else None
 
 
 def _event_join_url(event: Any) -> str | None:

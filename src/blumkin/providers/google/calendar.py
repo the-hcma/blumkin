@@ -27,6 +27,7 @@ from blumkin.skills.calendar_writes import (
     _DEFAULT_DURATION,
     Recurrence,
     _all_day_bounds,
+    _all_day_span_days,
     _needs_accept,
     parse_duration,
     recurrence_payload,
@@ -334,58 +335,119 @@ async def calendar_today(
 async def calendar_update(
     *,
     event_id: str,
-    teams: bool = True,
+    all_day: bool | None = None,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_type: str = "text",
+    duration: str | None = None,
+    end_raw: str | None = None,
+    location: str | None = None,
+    start_raw: str | None = None,
+    subject: str | None = None,
+    teams: bool | None = None,
+    with_emails: list[str] | None = None,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    """Attach a Google Meet conference to an existing event.
+    """PATCH an existing event's fields. ``--teams`` maps to a Google Meet link.
 
-    The Microsoft side calls this "Teams"; on Google the same ``--teams`` flag
-    means a Meet link, requested through conferenceData rather than a separate
-    online-meeting object.
+    Every argument is optional; only what is passed is changed. ``teams`` is
+    tri-state (None leave / True attach a Meet link / False remove it).
     """
     eid = event_id.strip()
     if not eid:
         raise ValueError("--event-id is required")
-    if not teams:
-        raise ValueError(
-            "calendar update currently only attaches a meeting; do not pass --no-teams"
-        )
+    if end_raw is not None and duration is not None:
+        raise ValueError("pass only one of --end or --duration")
     cfg = config or load_config()
     tz = ZoneInfo(tz_name or cfg.default_tz)
+    tz_key = tz.key if isinstance(tz, ZoneInfo) else str(tz)
+    description = None
+    if body is not None or body_file is not None:
+        description, _ = resolve_event_body(body, body_file, body_type)
     service = _calendar_service(cfg)
-    body = {
-        "conferenceData": {
+
+    changes_time = start_raw is not None or end_raw is not None or duration is not None
+    existing: Mapping[str, Any] | None = None
+    if changes_time or all_day is not None:
+        try:
+            existing = execute(service.events().get(calendarId="primary", eventId=eid))
+        except HttpError as exc:
+            # Same 404/410 -> not_found mapping the PATCH below uses, so a time
+            # edit against a missing/deleted event does not leak a raw HttpError.
+            if getattr(getattr(exc, "resp", None), "status", None) in {404, 410}:
+                raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
+            raise
+
+    patch: dict[str, Any] = {}
+    if subject is not None:
+        patch["summary"] = subject.strip()
+    if location is not None:
+        patch["location"] = location
+    if description is not None:
+        patch["description"] = description
+    if with_emails is not None:
+        patch["attendees"] = [{"email": email} for email in with_emails]
+    if changes_time or all_day is not None:
+        start_dt, end_dt, is_all_day = _google_updated_bounds(
+            existing or {}, start_raw, end_raw, duration, all_day, tz
+        )
+        if is_all_day:
+            patch["start"] = {"date": start_dt.date().isoformat()}
+            patch["end"] = {"date": end_dt.date().isoformat()}
+        else:
+            patch["start"] = {
+                "dateTime": start_dt.isoformat(timespec="seconds"),
+                "timeZone": tz_key,
+            }
+            patch["end"] = {"dateTime": end_dt.isoformat(timespec="seconds"), "timeZone": tz_key}
+
+    conference_version = 0
+    if teams is True:
+        patch["conferenceData"] = {
             "createRequest": {
                 "conferenceSolutionKey": {"type": "hangoutsMeet"},
                 "requestId": uuid4().hex,
             }
         }
-    }
-    updated = execute(
-        service.events().patch(
-            calendarId="primary",
-            eventId=eid,
-            body=body,
-            conferenceDataVersion=1,
-            sendUpdates="all",
-        ),
-        num_retries=0,
-    )
-    if not _meet_link(updated):
-        # Meet provisions asynchronously: the PATCH response can carry
-        # conferenceData.status "pending" with no entry points yet. Re-read once
-        # before declaring failure, the same way the Graph path re-GETs.
-        updated = execute(service.events().get(calendarId="primary", eventId=eid))
-    if not _meet_link(updated):
-        # Same contract as the Microsoft path: report a missing link rather than
-        # returning an event that looks updated but has nothing to join.
-        raise RuntimeError(
-            f"Meet conference was not provisioned for event {eid!r} "
-            "(no conferenceData entry point after PATCH); re-run `calendar update` "
-            "on this event. Recreating will not help: `calendar create` does not "
-            "attach a conference on Google."
+        conference_version = 1
+    elif teams is False:
+        patch["conferenceData"] = None
+        conference_version = 1
+
+    if not patch:
+        raise ValueError(
+            "nothing to update; pass at least one of --subject / --start / --duration / "
+            "--end / --location / --body / --with / --all-day / --teams"
         )
+
+    try:
+        updated = execute(
+            service.events().patch(
+                calendarId="primary",
+                eventId=eid,
+                body=patch,
+                conferenceDataVersion=conference_version,
+                sendUpdates="all",
+            ),
+            num_retries=0,
+        )
+    except HttpError as exc:
+        if getattr(getattr(exc, "resp", None), "status", None) in {404, 410}:
+            raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
+        raise
+    if teams is True and not _meet_link(updated):
+        # Meet provisions asynchronously; conferenceData.status can still be
+        # "pending" on the immediate follow-up read. Re-GET once, then fail loudly
+        # - the same guard calendar_create / the Graph update path keep - rather
+        # than return a join-less success an agent would trust.
+        updated = execute(service.events().get(calendarId="primary", eventId=eid))
+        if not _meet_link(updated):
+            raise RuntimeError(
+                f"Google Meet was not provisioned for event {eid!r} "
+                "(no conferenceData entry point after update); retry once Google "
+                "finishes provisioning."
+            )
     return {"event": _event_to_dict(updated, tz)}
 
 
@@ -536,6 +598,60 @@ def _google_dt_to_iso(raw: Any, display_tz: ZoneInfo) -> str | None:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=display_tz)
     return dt.astimezone(display_tz).isoformat()
+
+
+def _google_updated_bounds(
+    existing: Mapping[str, Any],
+    start_raw: str | None,
+    end_raw: str | None,
+    duration: str | None,
+    all_day: bool | None,
+    tz: ZoneInfo,
+) -> tuple[datetime, datetime, bool]:
+    """New (start, end, is_all_day) for a Google time edit, filling from ``existing``."""
+    ex_start = existing.get("start") or {}
+    ex_end = existing.get("end") or {}
+    was_all_day = "date" in ex_start and "dateTime" not in ex_start
+    target_all_day = was_all_day if all_day is None else all_day
+    old_start = _google_dt_to_iso(ex_start.get("dateTime") or ex_start.get("date"), tz)
+    old_end = _google_dt_to_iso(ex_end.get("dateTime") or ex_end.get("date"), tz)
+    prev_start = datetime.fromisoformat(old_start) if old_start else datetime.now(tz)
+    prev_end = datetime.fromisoformat(old_end) if old_end else prev_start
+
+    if target_all_day:
+        if start_raw is not None and "T" in start_raw:
+            raise ValueError("--all-day needs a date --start (YYYY-MM-DD), not a time")
+        first = (
+            date.fromisoformat(start_raw.strip()) if start_raw is not None else prev_start.date()
+        )
+        old_span_days = (prev_end.date() - prev_start.date()).days if was_all_day else None
+        days = _all_day_span_days(first, end_raw, duration, old_span_days)
+        start_dt = datetime.combine(first, time(), tzinfo=tz)
+        return start_dt, start_dt + timedelta(days=days), True
+
+    # A bare YYYY-MM-DD start/end on a timed event means a forgotten --all-day;
+    # reject it rather than silently booking a 00:00 meeting (matches create).
+    if not was_all_day:
+        if start_raw is not None:
+            reject_date_only_start(start_raw)
+        if end_raw is not None and "T" not in end_raw.strip():
+            raise ValueError(
+                "a date-only --end needs --all-day; pass a time (e.g. 2026-12-24T17:00)"
+            )
+    start_dt = parse_local_datetime(start_raw, tz) if start_raw is not None else prev_start
+    if end_raw is not None:
+        end_dt = parse_local_datetime(end_raw, tz)
+    elif duration is not None:
+        end_dt = (start_dt.astimezone(UTC) + parse_duration(duration)).astimezone(tz)
+    elif not was_all_day:
+        end_dt = (start_dt.astimezone(UTC) + (prev_end - prev_start)).astimezone(tz)
+    else:
+        # all-day -> timed with no new length given: a default-length meeting,
+        # not a multi-day block from the old all-day span.
+        end_dt = (start_dt.astimezone(UTC) + parse_duration(_DEFAULT_DURATION)).astimezone(tz)
+    if end_dt <= start_dt:
+        raise ValueError("event end must be after start")
+    return start_dt, end_dt, False
 
 
 def _meet_link(ev: Mapping[str, Any]) -> str | None:

@@ -1775,12 +1775,40 @@ def calendar_create_cmd(
 
 
 @calendar.command("update", epilog=help_text.CALENDAR_UPDATE_EPILOG)
-@click.option("--event-id", required=True, help="Event id to attach a Teams meeting to.")
+@click.option("--event-id", required=True, help="Event id to edit.")
+@click.option("--subject", default=None, help="New event title.")
+@click.option(
+    "--start", "start_raw", default=None, help="New local start (or date with --all-day)."
+)
+@click.option("--end", "end_raw", default=None, help="New local end (exclusive with --duration).")
+@click.option("--duration", default=None, help="New length, e.g. 45m, 1h (exclusive with --end).")
+@click.option(
+    "--all-day/--no-all-day",
+    "all_day",
+    default=None,
+    help="Convert to / from an all-day event.",
+)
+@click.option("--location", default=None, help="New free-text location.")
+@click.option("--body", default=None, help="New event body / agenda.")
+@click.option("--body-file", "body_file", default=None, help="Read the new body from this file.")
+@click.option(
+    "--body-type",
+    "body_type",
+    default="text",
+    type=click.Choice(["html", "text"]),
+    help="Body format (Microsoft only).",
+)
+@click.option(
+    "--with",
+    "with_emails",
+    multiple=True,
+    help="Replace the attendee list with these emails (repeat per attendee).",
+)
 @click.option(
     "--teams/--no-teams",
-    default=True,
-    show_default=True,
-    help="Attach Teams online meeting (v1 only supports enabling Teams).",
+    "teams",
+    default=None,
+    help="Attach (--teams) or remove (--no-teams) the online meeting; omit to leave it.",
 )
 @click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
@@ -1789,15 +1817,24 @@ def calendar_create_cmd(
 def calendar_update_cmd(
     ctx: click.Context,
     event_id: str,
-    teams: bool,
+    subject: str | None,
+    start_raw: str | None,
+    end_raw: str | None,
+    duration: str | None,
+    all_day: bool | None,
+    location: str | None,
+    body: str | None,
+    body_file: str | None,
+    body_type: str,
+    with_emails: tuple[str, ...],
+    teams: bool | None,
     yes: bool,
     tz_flag: str | None,
     as_json_flag: bool,
 ) -> None:
-    """Attach a Teams online meeting to an existing event. Requires --yes.
+    """Edit an existing event's fields. Only the flags you pass are changed. Requires --yes.
 
-    v1 only adds Teams; it cannot remove it. Uses Calendars.ReadWrite (not
-    OnlineMeetings.ReadWrite). Attendees are notified.
+    Uses Calendars.ReadWrite. Editing a recurring series edits the whole series.
     """
     as_json = _as_json(ctx, as_json_flag)
     _require_yes(yes=yes, as_json=as_json)
@@ -1805,10 +1842,23 @@ def calendar_update_cmd(
         payload = asyncio.run(
             _workspace().calendar_update(
                 event_id=event_id,
+                subject=subject,
+                start_raw=start_raw,
+                end_raw=end_raw,
+                duration=duration,
+                all_day=all_day,
+                location=location,
+                body=body,
+                body_file=body_file,
+                body_type=body_type,
+                with_emails=list(with_emails) if with_emails else None,
                 teams=teams,
                 tz_name=_tz_name(ctx, tz_flag),
             )
         )
+    except CalendarEventNotFoundError as exc:
+        _emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
     except ValueError as exc:
         _raise_auth_value_error(exc, as_json=as_json)
     except ZoneInfoNotFoundError as exc:

@@ -119,3 +119,20 @@ addition for a personal CLI whose Meet usage is ad hoc. The Microsoft
 If Meet transcript access becomes necessary, reopen as a new issue rather than
 under #89. Layer H (this change) adds the `live_google` pytest marker and
 refreshes the support matrix, closing #89.
+
+### D9 - `calendar update --no-teams` removes the online meeting on both providers
+
+`calendar update` ([#172](https://github.com/the-hcma/blumkin/issues/172)) makes
+`--teams` tri-state: omit to leave the online meeting alone, `--teams` to
+attach, `--no-teams` to remove.
+
+- **Google**: `--no-teams` sends `conferenceData: null` with
+  `conferenceDataVersion=1`, which the Calendar API documents as the removal
+  path. Exercised end to end by the `live_google` update test.
+- **Microsoft**: `--no-teams` PATCHes `isOnlineMeeting: false`. Graph documents
+  this as clearing the meeting (`onlineMeeting` goes null on the next read).
+  This is **only offline-mocked** so far (the hermetic test pins the PATCH body);
+  a `BLUMKIN_LIVE=1` check against a solo hold that we then delete is a
+  **TODO (validate)** - see `RETROSPECTIVE-M1.md`. If a live check shows Graph
+  ignores the flag, scope the removal claim to Google and document Microsoft
+  `--no-teams` as attach-only.

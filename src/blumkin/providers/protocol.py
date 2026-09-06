@@ -99,7 +99,17 @@ class WorkspaceProvider(Protocol):
         self,
         *,
         event_id: str,
-        teams: bool = True,
+        all_day: bool | None = None,
+        body: str | None = None,
+        body_file: str | None = None,
+        body_type: str = "text",
+        duration: str | None = None,
+        end_raw: str | None = None,
+        location: str | None = None,
+        start_raw: str | None = None,
+        subject: str | None = None,
+        teams: bool | None = None,
+        with_emails: list[str] | None = None,
         tz_name: str | None = None,
     ) -> dict[str, Any]: ...
 

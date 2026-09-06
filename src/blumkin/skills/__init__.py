@@ -238,15 +238,45 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="calendar.update",
         cli=["blumkin", "calendar", "update"],
-        summary=(
-            "Attach a Teams online meeting to an existing event "
-            "(Calendars.ReadWrite isOnlineMeeting; not OnlineMeetings.ReadWrite)"
-        ),
+        summary="Edit an existing event's fields (only the flags you pass are changed)",
         mutates=True,
         notifies_others=True,
         scopes=["Calendars.ReadWrite"],
         args=[
             {"name": "--event-id", "required": True, "type": "string"},
+            {"name": "--subject", "required": False, "type": "string"},
+            {"name": "--start", "required": False, "type": "datetime"},
+            {"name": "--end", "required": False, "type": "datetime"},
+            {"name": "--duration", "required": False, "type": "duration"},
+            {
+                "name": "--all-day",
+                "required": False,
+                "type": "flag",
+                "note": "--no-all-day converts back to a timed event",
+            },
+            {"name": "--location", "required": False, "type": "string"},
+            {"name": "--body", "required": False, "type": "string"},
+            {"name": "--body-file", "required": False, "type": "path"},
+            {
+                "name": "--body-type",
+                "required": False,
+                "type": "enum",
+                "values": ["html", "text"],
+                "note": "Microsoft only",
+            },
+            {
+                "name": "--with",
+                "required": False,
+                "type": "email",
+                "multiple": True,
+                "note": "replaces the attendee list",
+            },
+            {
+                "name": "--no-teams",
+                "required": False,
+                "type": "flag",
+                "note": "--teams attaches, --no-teams removes the online meeting; omit to leave it",
+            },
             {"name": "--tz", "required": False, "type": "iana_tz"},
             {"name": "--yes", "required": True, "type": "flag"},
         ],
