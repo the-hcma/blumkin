@@ -835,16 +835,23 @@ async def _calendar_rsvp(
     if propose_start and today_pending:
         raise ValueError("--propose-time needs a single --event-id, not --today-pending")
     cfg = config or load_config()
-    tz = ZoneInfo(tz_name or cfg.default_tz)
     client = create_graph_client(cfg)
+    # Only the today-pending scan and --propose-time need a timezone; resolving it
+    # unconditionally would break a single --event-id RSVP on a profile with no
+    # default_tz and no --tz (that path never touched a clock before).
     if today_pending:
+        tz = ZoneInfo(tz_name or cfg.default_tz)
         payload = await calendar_today(tz_name=str(tz), config=cfg)
         event_ids = [
             str(item["id"]) for item in payload["items"] if item.get("id") and _needs_accept(item)
         ]
     else:
         event_ids = [str(event_id)]
-    proposed = _proposed_time_slot(propose_start, propose_duration, tz) if propose_start else None
+    proposed = (
+        _proposed_time_slot(propose_start, propose_duration, ZoneInfo(tz_name or cfg.default_tz))
+        if propose_start
+        else None
+    )
     key, _label = _RSVP_LABELS[action]
     done: list[str] = []
     skipped: list[dict[str, str]] = []
@@ -888,6 +895,10 @@ async def _graph_rsvp_one(
 
 def _proposed_time_slot(start_raw: str, duration_raw: str | None, tz: ZoneInfo) -> TimeSlot:
     """``--propose-time`` / ``--propose-duration`` -> a Graph ``timeSlot`` (Microsoft only)."""
+    # A bare date would silently propose a midnight slot; require a time, like
+    # every other timed-input path in this module.
+    if "T" not in start_raw.strip():
+        raise ValueError("--propose-time needs a time, e.g. 2026-09-02T15:00")
     start = parse_local_datetime(start_raw, tz)
     end = (start.astimezone(UTC) + parse_duration(duration_raw or _DEFAULT_DURATION)).astimezone(tz)
     return TimeSlot(start=_to_graph_dtz(start), end=_to_graph_dtz(end))

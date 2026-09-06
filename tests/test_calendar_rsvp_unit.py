@@ -107,6 +107,25 @@ def test_graph_decline_propose_duration_needs_propose_time(monkeypatch) -> None:
         asyncio.run(calendar_decline(event_id="evt-1", propose_duration="30m", tz_name=_NY))
 
 
+def test_graph_decline_propose_time_rejects_a_bare_date(monkeypatch) -> None:
+    _graph_client(monkeypatch)
+    with pytest.raises(ValueError, match="--propose-time needs a time"):
+        asyncio.run(calendar_decline(event_id="evt-1", propose_start="2026-09-02", tz_name=_NY))
+
+
+def test_graph_decline_single_event_needs_no_timezone(monkeypatch) -> None:
+    # No default_tz, no --tz: a single-event RSVP must not touch a clock.
+    client = MagicMock()
+    client.me.events.by_event_id.return_value.decline.post = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="", client_id="x"),
+    )
+    payload = asyncio.run(calendar_decline(event_id="evt-1"))
+    assert payload == {"declined": ["evt-1"], "count": 1, "skipped": []}
+
+
 def test_graph_decline_propose_time_needs_single_event(monkeypatch) -> None:
     _graph_client(monkeypatch, today_items=[])
     with pytest.raises(ValueError, match="needs a single --event-id"):
