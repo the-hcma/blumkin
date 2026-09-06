@@ -17,6 +17,7 @@ from msgraph.generated.models.email_address import EmailAddress
 from msgraph.generated.models.event import Event
 from msgraph.generated.models.item_body import ItemBody
 from msgraph.generated.models.location import Location
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
 from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
 from msgraph.generated.models.recurrence_pattern import RecurrencePattern
@@ -31,7 +32,7 @@ from msgraph.generated.users.item.events.item.cancel.cancel_post_request_body im
 )
 
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.graph import create_graph_client, request_config
+from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.output import sanitize_terminal
 from blumkin.skills.calendar import (
     CalendarEventNotFoundError,
@@ -261,15 +262,21 @@ async def calendar_update(
     client = create_graph_client(cfg)
 
     changes_time = start_raw is not None or end_raw is not None or duration is not None
-    existing = (
-        await client.me.events.by_event_id(eid).get(
-            request_config(headers={"Prefer": 'outlook.timezone="UTC"'})
-        )
-        if changes_time or all_day is not None
-        else None
-    )
-    if (changes_time or all_day is not None) and (existing is None or not existing.id):
-        raise CalendarEventNotFoundError(f"event not found: {eid}")
+    need_existing = changes_time or all_day is not None
+    existing = None
+    if need_existing:
+        try:
+            existing = await client.me.events.by_event_id(eid).get(
+                request_config(headers={"Prefer": 'outlook.timezone="UTC"'})
+            )
+        except ODataError as exc:
+            # A 404, or a 400 with an id-shaped code, on the pre-edit GET means the
+            # event is gone - map it like calendar_get rather than leaking ODataError.
+            if not is_id_lookup_failure(exc):
+                raise
+            raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
+        if existing is None or not existing.id:
+            raise CalendarEventNotFoundError(f"event not found: {eid}")
 
     patch = Event()
     touched = False
@@ -631,11 +638,16 @@ def _updated_bounds(
     old_end = _dtz_to_utc_datetime(getattr(existing, "end", None))
     was_all_day = bool(getattr(existing, "is_all_day", False))
     target_all_day = was_all_day if all_day is None else all_day
-    # An all-day event serializes at 00:00 UTC under Prefer: outlook.timezone="UTC";
-    # its real value is a calendar date, so read the UTC date directly and never
-    # .astimezone() it (that shifts the day in negative-offset zones).
-    old_start_date = old_start.date() if old_start else None
-    old_end_date = old_end.date() if old_end else None
+    # An already-all-day event serializes at 00:00 UTC under Prefer:
+    # outlook.timezone="UTC", so its UTC date IS the calendar date - read it
+    # directly. A timed event is a real instant, so its calendar date is the
+    # local one (the UTC date can be a day off in either direction).
+    old_start_date = (
+        (old_start.date() if was_all_day else old_start.astimezone(tz).date())
+        if old_start
+        else None
+    )
+    old_end_date = old_end.date() if old_end and was_all_day else None
 
     if target_all_day:
         if start_raw is not None and "T" in start_raw:
@@ -654,6 +666,15 @@ def _updated_bounds(
         start_dt = datetime.combine(first, datetime.min.time(), tzinfo=tz)
         return start_dt, start_dt + timedelta(days=days), True if all_day is not None else None
 
+    # A bare YYYY-MM-DD start/end on a timed event means a forgotten --all-day;
+    # reject it rather than silently booking a 00:00 meeting (matches create).
+    if not was_all_day:
+        if start_raw is not None:
+            reject_date_only_start(start_raw)
+        if end_raw is not None and "T" not in end_raw and not end_raw.casefold().endswith("z"):
+            raise ValueError(
+                "a date-only --end needs --all-day; pass a time (e.g. 2026-12-24T17:00)"
+            )
     if start_raw is not None:
         start_dt = parse_local_datetime(start_raw, tz)
     elif was_all_day and old_start_date:

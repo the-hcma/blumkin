@@ -437,7 +437,17 @@ async def calendar_update(
             raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
         raise
     if teams is True and not _meet_link(updated):
+        # Meet provisions asynchronously; conferenceData.status can still be
+        # "pending" on the immediate follow-up read. Re-GET once, then fail loudly
+        # - the same guard calendar_create / the Graph update path keep - rather
+        # than return a join-less success an agent would trust.
         updated = execute(service.events().get(calendarId="primary", eventId=eid))
+        if not _meet_link(updated):
+            raise RuntimeError(
+                f"Google Meet was not provisioned for event {eid!r} "
+                "(no conferenceData entry point after update); retry once Google "
+                "finishes provisioning."
+            )
     return {"event": _event_to_dict(updated, tz)}
 
 
@@ -619,6 +629,15 @@ def _google_updated_bounds(
         start_dt = datetime.combine(first, time(), tzinfo=tz)
         return start_dt, start_dt + timedelta(days=days), True
 
+    # A bare YYYY-MM-DD start/end on a timed event means a forgotten --all-day;
+    # reject it rather than silently booking a 00:00 meeting (matches create).
+    if not was_all_day:
+        if start_raw is not None:
+            reject_date_only_start(start_raw)
+        if end_raw is not None and "T" not in end_raw and not end_raw.casefold().endswith("z"):
+            raise ValueError(
+                "a date-only --end needs --all-day; pass a time (e.g. 2026-12-24T17:00)"
+            )
     start_dt = parse_local_datetime(start_raw, tz) if start_raw is not None else prev_start
     if end_raw is not None:
         end_dt = parse_local_datetime(end_raw, tz)

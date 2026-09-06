@@ -13,6 +13,8 @@ import pytest
 from click.testing import CliRunner
 from googleapiclient.errors import HttpError
 from msgraph.generated.models.attendee_type import AttendeeType
+from msgraph.generated.models.o_data_errors.main_error import MainError
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.cli import main
 from blumkin.config import BlumkinConfig, MailSignatureConfig
@@ -31,7 +33,15 @@ def _dtz(value: str) -> SimpleNamespace:
     return SimpleNamespace(date_time=value, time_zone="UTC")
 
 
-def _graph_client(monkeypatch, *, existing=None) -> MagicMock:
+def _odata_error(*, status: int, code: str | None = None) -> ODataError:
+    err = ODataError()
+    err.response_status_code = status
+    if code is not None:
+        err.error = MainError(code=code)
+    return err
+
+
+def _graph_client(monkeypatch, *, existing=None, existing_error=None) -> MagicMock:
     updated = SimpleNamespace(
         id="evt-1",
         subject="x",
@@ -46,7 +56,9 @@ def _graph_client(monkeypatch, *, existing=None) -> MagicMock:
     )
     client = MagicMock()
     client.me.events.by_event_id.return_value.patch = AsyncMock(return_value=updated)
-    client.me.events.by_event_id.return_value.get = AsyncMock(return_value=existing)
+    client.me.events.by_event_id.return_value.get = AsyncMock(
+        return_value=existing, side_effect=existing_error
+    )
     monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.calendar_writes.load_config",
@@ -210,10 +222,54 @@ def test_graph_update_nothing_to_update(monkeypatch) -> None:
         asyncio.run(calendar_update(event_id="evt-1", tz_name=_NY))
 
 
-def test_graph_update_missing_event_on_time_change(monkeypatch) -> None:
-    _graph_client(monkeypatch, existing=None)
+@pytest.mark.parametrize(
+    "err",
+    [
+        _odata_error(status=404),
+        _odata_error(status=400, code="ErrorItemNotFound"),
+        _odata_error(status=400, code="ErrorInvalidIdMalformed"),
+    ],
+)
+def test_graph_update_missing_event_on_time_change(monkeypatch, err) -> None:
+    # The real kiota client raises ODataError on a 404/id-shaped-400 GET; the
+    # pre-edit fetch must map it, not leak it.
+    _graph_client(monkeypatch, existing_error=err)
     with pytest.raises(CalendarEventNotFoundError, match="event not found: evt-1"):
         asyncio.run(calendar_update(event_id="evt-1", start_raw="2026-09-23T15:00", tz_name=_NY))
+
+
+def test_graph_update_query_400_on_prefetch_still_raises(monkeypatch) -> None:
+    _graph_client(monkeypatch, existing_error=_odata_error(status=400, code="ErrorInvalidUrlQuery"))
+    with pytest.raises(ODataError):
+        asyncio.run(calendar_update(event_id="evt-1", start_raw="2026-09-23T15:00", tz_name=_NY))
+
+
+def test_graph_update_rejects_date_only_start_on_timed_event(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="evt-1",
+        is_all_day=False,
+        start=_dtz("2026-09-21T13:00:00"),
+        end=_dtz("2026-09-21T14:00:00"),
+    )
+    _graph_client(monkeypatch, existing=existing)
+    with pytest.raises(ValueError, match="needs --all-day"):
+        asyncio.run(calendar_update(event_id="evt-1", start_raw="2026-12-24", tz_name=_NY))
+
+
+def test_graph_update_convert_to_all_day_uses_local_date(monkeypatch) -> None:
+    # 21:00 EDT serializes as 2026-09-22T01:00Z; converting to all-day with no
+    # --start must land on the local date (Sep 21), not the UTC date (Sep 22).
+    existing = SimpleNamespace(
+        id="evt-1",
+        is_all_day=False,
+        start=_dtz("2026-09-22T01:00:00"),
+        end=_dtz("2026-09-22T02:00:00"),
+    )
+    client = _graph_client(monkeypatch, existing=existing)
+    asyncio.run(calendar_update(event_id="evt-1", all_day=True, tz_name=_NY))
+    patched = _posted(client)
+    assert patched.start.date_time == "2026-09-21T00:00:00"
+    assert patched.end.date_time == "2026-09-22T00:00:00"
 
 
 # --------------------------------------------------------------------------- Google
@@ -304,6 +360,34 @@ def test_google_update_missing_event(tmp_path: Path) -> None:
         asyncio.run(
             google_calendar.calendar_update(
                 event_id="evt-1", subject="x", config=_google_cfg(tmp_path)
+            )
+        )
+
+
+def test_google_update_rejects_date_only_start_on_timed_event(tmp_path: Path) -> None:
+    existing = {
+        "id": "evt-1",
+        "start": {"dateTime": "2026-09-21T13:00:00-04:00"},
+        "end": {"dateTime": "2026-09-21T14:00:00-04:00"},
+    }
+    service = _google_service(existing)
+    with _google_patched(service), pytest.raises(ValueError, match="needs --all-day"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_update(
+                event_id="evt-1", start_raw="2026-12-24"
+            )
+        )
+
+
+def test_google_update_teams_attach_raises_when_meet_never_provisions(tmp_path: Path) -> None:
+    service = _google_service()
+    # PATCH response and the follow-up GET both carry no Meet entry point.
+    service.events.return_value.patch.return_value.execute.return_value = {"id": "evt-1"}
+    service.events.return_value.get.return_value.execute.return_value = {"id": "evt-1"}
+    with _google_patched(service), pytest.raises(RuntimeError, match="was not provisioned"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_update(
+                event_id="evt-1", teams=True
             )
         )
 
