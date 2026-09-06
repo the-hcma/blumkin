@@ -114,6 +114,17 @@ def test_calendar_create_recurrence_and_require_repeat() -> None:
         )
 
 
+def test_calendar_create_defaults_with_emails_for_a_solo_hold() -> None:
+    # Over MCP `--with` can be omitted; the provider kwarg has no default.
+    prov = _provider("calendar_create")
+    _run(
+        "calendar.create",
+        {"subject": "Focus", "start": "2026-09-22T09:00", "no_teams": True, "yes": True},
+        provider=prov,
+    )
+    assert prov.calendar_create.await_args.kwargs["with_emails"] == []
+
+
 def test_no_teams_flag_is_negated_into_the_teams_kwarg() -> None:
     prov = _provider("calendar_create")
     _run(
