@@ -415,10 +415,12 @@ argument rather than a frozen list.
 ## MCP server
 
 `blumkin mcp serve` runs a stdio [Model Context
-Protocol](https://modelcontextprotocol.io) server: every skill except `auth
-login` becomes a typed tool named by its id (`calendar.today`, `mail.send-draft`,
-…). Tools are generated from `skills list --json` and dispatched through the same
-`run_skill` path the CLI uses, so the CLI stays the single source of truth.
+Protocol](https://modelcontextprotocol.io) server: every skill with a worker
+method becomes a typed tool named by its id (`calendar.today`,
+`mail.send-draft`, …). The CLI-only verbs — `auth *`, `doctor`, `skills *`,
+`mail signature`, and `mcp serve` itself — are not exposed. Tools are generated
+from `skills list --json` and dispatched through the same `run_skill` path the
+CLI uses, so the CLI stays the single source of truth.
 
 It needs the optional extra:
 
@@ -458,12 +460,14 @@ Options: `--profile <name>` acts as that profile; `--read-only` exposes only
 non-mutating tools; `--only <prefix>` (repeatable) keeps only tools under an id
 prefix, e.g. `blumkin mcp serve --only calendar --only mail`.
 
-Tools that notify people or change a shared setting (calendar RSVP/create/cancel,
-`chat.send`, `mail.send-draft`/`forward`, `mail.auto-reply`,
-`meeting.transcription`) carry a **required `confirm: true`** argument the server
-enforces — the MCP mirror of the CLI's `--yes` gate. `readOnlyHint` /
-`destructiveHint` annotations and `anthropic/requiresUserInteraction` metadata
-are set so MCP clients can prompt appropriately.
+Every tool whose CLI form requires `--yes` carries a **required `confirm: true`**
+argument the server enforces — the MCP mirror of the `--yes` gate. That is the
+notifying skills (calendar RSVP/create/cancel, `chat.send`, `mail.send-draft`),
+the `mail.delete` / `mail.mark` / `mail.move` safety confirms, and the
+`mail.auto-reply` / `meeting.transcription` setting changes. Those tools also
+carry `anthropic/requiresUserInteraction` metadata, and every tool sets
+`readOnlyHint` / `destructiveHint`, so MCP clients can prompt appropriately.
+(`mail.forward` only drafts a forward, so it needs no confirm.)
 
 v1 is stdio only. A loopback HTTP transport is a later option if a host needs it.
 

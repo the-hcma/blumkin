@@ -2983,11 +2983,18 @@ def mcp_group() -> None:
     multiple=True,
     help="Expose only skills under this id prefix (repeatable, e.g. --only calendar).",
 )
-def mcp_serve_cmd(profile: str | None, read_only: bool, only: tuple[str, ...]) -> None:
+@click.pass_context
+def mcp_serve_cmd(
+    ctx: click.Context, profile: str | None, read_only: bool, only: tuple[str, ...]
+) -> None:
     """Start the stdio MCP server. Blocks until the client disconnects."""
     try:
         from blumkin import mcp_server
     except ModuleNotFoundError as exc:
+        # The wrapper in blumkin.mcp_server re-raises with name=None; a genuinely
+        # missing non-`mcp` module is a real bug, not a missing optional extra.
+        if exc.name is not None and exc.name != "mcp" and not exc.name.startswith("mcp."):
+            raise
         _emit_error(
             error="usage_error",
             message="the MCP server needs the optional `mcp` dependency",
@@ -2996,6 +3003,11 @@ def mcp_serve_cmd(profile: str | None, read_only: bool, only: tuple[str, ...]) -
             "(or `uv tool install 'blumkin[mcp]'`), then retry.",
         )
         raise SystemExit(EXIT_USAGE) from exc
+    # A command-level --profile wins; otherwise honour the global `blumkin --profile`.
+    if profile is None and isinstance(ctx.obj, dict):
+        raw = ctx.obj.get("profile")
+        if isinstance(raw, str) and raw.strip():
+            profile = raw.strip()
     mcp_server.serve(profile=profile, read_only=read_only, only=tuple(only))
 
 

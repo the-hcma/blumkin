@@ -829,9 +829,10 @@ Example:
   blumkin mcp serve --only calendar --only mail
 
 Blocks, speaking JSON-RPC on stdin/stdout, until the client disconnects (the
-host spawns and reaps it per session - there is no daemon). Every skill except
-`auth login` is exposed as a tool named by its id; tools that notify people or
-change a shared setting require a `confirm: true` argument the server enforces.
+host spawns and reaps it per session - there is no daemon). Every skill with a
+worker method is exposed as a tool named by its id; the CLI-only verbs (`auth
+*`, `doctor`, `skills *`, `mail signature`, `mcp serve`) are not. Tools whose
+CLI form needs `--yes` require a `confirm: true` argument the server enforces.
 `--read-only` drops every mutating tool; `--only PREFIX` (repeatable) keeps only
 tools under that id prefix.
 """

@@ -8,6 +8,8 @@ network). The provider is always mocked - these tests never touch Graph.
 from __future__ import annotations
 
 import asyncio
+import sys
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -49,14 +51,25 @@ def _list_tools() -> dict[str, Any]:
 
 def test_catalog_maps_to_tools_one_to_one() -> None:
     tools = _list_tools()
-    assert "auth.login" not in tools
-    assert "auth.status" not in tools
-    assert "mcp.serve" not in tools
+    # Bespoke (provider-less) skills must never be advertised - a call would only
+    # ever return an error.
+    for absent in (
+        "auth.login",
+        "auth.logout",
+        "auth.refresh",
+        "auth.status",
+        "doctor",
+        "mail.signature",
+        "mcp.serve",
+        "skills.describe",
+        "skills.list",
+    ):
+        assert absent not in tools, absent
     # Tool name is the skill id verbatim, and every schema is a JSON object.
     for name, tool in tools.items():
         assert tool.input_schema["type"] == "object"
         assert tool.annotations.open_world_hint is True
-        assert "." in name or name in {"doctor"}
+        assert "." in name
 
 
 def test_read_skill_annotations_and_schema() -> None:
@@ -90,6 +103,26 @@ def test_read_round_trip_returns_structured_and_text() -> None:
     assert prov.calendar_today.await_count == 1
 
 
+def test_confirm_only_skills_require_confirm_in_schema() -> None:
+    """The `_CONFIRM_SKILLS` branch of `_needs_confirm`: mutating-but-not-notifying
+    tools whose consent is only satisfiable via the synthetic `confirm`."""
+    tools = _list_tools()
+    for sid in ("mail.auto-reply", "meeting.transcription"):
+        tool = tools[sid]
+        assert "confirm" in tool.input_schema["required"], sid
+        assert tool.meta == {"anthropic/requiresUserInteraction": True}, sid
+
+
+def test_required_yes_skills_expose_confirm_not_a_deadlock() -> None:
+    """mail delete/mark/move are mutates:true, notifies_others:false, `--yes` required.
+    Without a synthetic `confirm` a schema-following client could never call them."""
+    tools = _list_tools()
+    for sid in ("mail.delete", "mail.mark", "mail.move"):
+        schema = tools[sid].input_schema
+        assert "confirm" in schema["required"], sid
+        assert "yes" not in schema["properties"], sid
+
+
 def test_notifying_tool_without_confirm_is_a_domain_error() -> None:
     with patch("blumkin.mcp_server.load_config", return_value=_CFG):
         result = _drive(lambda c: c.call_tool("chat.send", {"with": "Ada", "text": "hi"}))
@@ -97,6 +130,52 @@ def test_notifying_tool_without_confirm_is_a_domain_error() -> None:
     assert result.structured_content["ok"] is False
     assert result.structured_content["error"] == "usage_error"
     assert "--yes is required" in result.structured_content["message"]
+
+
+def test_confirm_true_passes_the_gate_and_is_not_forwarded() -> None:
+    prov = SimpleNamespace(chat_send=AsyncMock(return_value={"sent": True}))
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=_CFG),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        result = _drive(
+            lambda c: c.call_tool("chat.send", {"chat_id": "c1", "text": "hi", "confirm": True})
+        )
+    assert result.is_error is False
+    assert result.structured_content == {"sent": True}
+    prov.chat_send.assert_awaited_once()
+    assert "confirm" not in prov.chat_send.await_args.kwargs
+    assert "yes" not in prov.chat_send.await_args.kwargs
+
+
+def test_non_boolean_confirm_is_rejected_never_a_silent_yes() -> None:
+    prov = SimpleNamespace(chat_send=AsyncMock(return_value={"sent": True}))
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=_CFG),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        result = _drive(
+            lambda c: c.call_tool("chat.send", {"chat_id": "c1", "text": "hi", "confirm": "false"})
+        )
+    assert result.is_error is True
+    assert result.structured_content["error"] == "usage_error"
+    prov.chat_send.assert_not_awaited()
+
+
+def test_auto_reply_on_off_collapse_round_trips_to_enable() -> None:
+    prov = SimpleNamespace(mail_auto_reply=AsyncMock(return_value={"auto_reply": {}}))
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=_CFG),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        _drive(
+            lambda c: c.call_tool(
+                "mail.auto-reply", {"on": True, "message": "brb", "confirm": True}
+            )
+        )
+        assert prov.mail_auto_reply.await_args.kwargs["enable"] is True
+        _drive(lambda c: c.call_tool("mail.auto-reply", {"on": False, "confirm": True}))
+        assert prov.mail_auto_reply.await_args.kwargs["enable"] is False
 
 
 def test_provider_exception_is_classified_into_structured_content() -> None:
@@ -157,24 +236,68 @@ def test_every_exposed_schema_is_a_valid_object_schema() -> None:
         assert set(schema.get("required", [])) <= set(schema["properties"])
 
 
-def test_cli_guard_when_the_mcp_extra_is_absent() -> None:
-    import sys
+@contextmanager
+def _reimport_mcp_server_with(sys_module_overrides: dict[str, Any | None]) -> Any:
+    """Drop the cached ``blumkin.mcp_server`` so the lazy import re-runs its body
+    under the given ``sys.modules`` overrides, then restore everything."""
+    import blumkin
 
+    saved_attr = getattr(blumkin, "mcp_server", None)
+    saved_mod = sys.modules.pop("blumkin.mcp_server", None)
+    if hasattr(blumkin, "mcp_server"):
+        delattr(blumkin, "mcp_server")
+    try:
+        with patch.dict(sys.modules, sys_module_overrides):
+            yield
+    finally:
+        if saved_mod is not None:
+            sys.modules["blumkin.mcp_server"] = saved_mod
+        if saved_attr is not None:
+            setattr(blumkin, "mcp_server", saved_attr)  # noqa: B010
+
+
+def test_cli_guard_when_the_mcp_extra_is_absent() -> None:
     from click.testing import CliRunner
 
-    import blumkin
     from blumkin.cli import main
 
-    # Force a fresh ``from blumkin import mcp_server`` that re-runs the module body
-    # with ``mcp`` unavailable, so the lazy import in the callback raises.
-    saved_attr = getattr(blumkin, "mcp_server", None)
-    with patch.dict(sys.modules, {"mcp": None, "blumkin.mcp_server": None}):
-        if hasattr(blumkin, "mcp_server"):
-            delattr(blumkin, "mcp_server")
-        try:
-            result = CliRunner().invoke(main, ["mcp", "serve"])
-        finally:
-            if saved_attr is not None:
-                setattr(blumkin, "mcp_server", saved_attr)  # noqa: B010
+    # `mcp` and every submodule mcp_server.py imports must be unavailable, so its
+    # module body raises and is re-wrapped as a name=None ModuleNotFoundError.
+    missing: dict[str, Any | None] = dict.fromkeys(
+        ["mcp", "mcp.types", "mcp.server", "mcp.server.lowlevel", "mcp.server.stdio"], None
+    )
+    with _reimport_mcp_server_with(missing):
+        result = CliRunner().invoke(main, ["mcp", "serve"])
     assert result.exit_code == EXIT_USAGE
     assert "blumkin[mcp]" in result.output
+
+
+def test_cli_guard_does_not_swallow_an_unrelated_import_error() -> None:
+    from click.testing import CliRunner
+
+    from blumkin.cli import main
+
+    # A genuinely missing non-`mcp` module (name set, not "mcp"/"mcp.*") is a real
+    # bug - it must propagate, not be reported as a missing optional extra.
+    with _reimport_mcp_server_with({"blumkin.mcp_server": None}):
+        result = CliRunner().invoke(main, ["mcp", "serve"], catch_exceptions=True)
+    assert isinstance(result.exception, ModuleNotFoundError)
+    assert result.exception.name == "blumkin.mcp_server"
+
+
+def test_cli_mcp_serve_honours_the_global_profile() -> None:
+    from click.testing import CliRunner
+
+    captured: dict[str, Any] = {}
+
+    def _fake_serve(**kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    with patch("blumkin.mcp_server.serve", _fake_serve):
+        from blumkin.cli import main
+
+        r1 = CliRunner().invoke(main, ["--profile", "work", "mcp", "serve"])
+        assert r1.exit_code == 0, r1.output
+        assert captured["profile"] == "work"
+        CliRunner().invoke(main, ["--profile", "work", "mcp", "serve", "--profile", "home"])
+        assert captured["profile"] == "home"  # command-level wins
