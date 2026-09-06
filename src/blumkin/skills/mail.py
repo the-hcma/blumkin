@@ -520,7 +520,14 @@ async def mail_move(
         raise ValueError("--to is required")
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    destination = _well_known_folder(label) or label
+    destination = _well_known_folder(label)
+    if destination is None:
+        # Not a well-known name: match a real folder by display name / path (like
+        # `mail list --folder`), so `--to "Receipts"` resolves to its id instead of
+        # being sent verbatim as a destinationId Graph would 400. An unmatched
+        # token is assumed to be a folder id and passed through for Graph to judge.
+        target, well_known, _ = await _resolve_folder_fallback(client, label)
+        destination = target or well_known or label
     body = MovePostRequestBody(destination_id=destination)
 
     async def _apply(mid: str) -> None:

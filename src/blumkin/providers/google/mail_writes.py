@@ -119,9 +119,13 @@ async def mail_move(
     label = to.strip()
     if not label:
         raise ValueError("--to is required")
-    add, dest = _gmail_move_labels(label)
-    body = {"addLabelIds": add, "removeLabelIds": ["INBOX"]}
     service = _gmail_modify_service(config or load_config())
+    add, dest = _gmail_move_labels(service, label)
+    # Gmail "move" = drop INBOX and add the destination label. Keep INBOX only
+    # when the destination *is* INBOX (un-archive), so the modify never adds and
+    # removes the same label in one call.
+    remove = [] if "INBOX" in add else ["INBOX"]
+    body = {"addLabelIds": add, "removeLabelIds": remove}
 
     def _apply(mid: str) -> None:
         execute(service.users().messages().modify(userId="me", id=mid, body=body), num_retries=0)
@@ -131,7 +135,7 @@ async def mail_move(
     return result
 
 
-def _gmail_move_labels(label: str) -> tuple[list[str], str]:
+def _gmail_move_labels(service: Any, label: str) -> tuple[list[str], str]:
     """`--to` -> (labels to add, destination name). `archive` just removes INBOX."""
     key = label.casefold()
     if key in {"archive", "all mail", "allmail"}:
@@ -143,9 +147,22 @@ def _gmail_move_labels(label: str) -> tuple[list[str], str]:
                 f"mail folder {label!r} is not a move target for provider=google"
             )
         return [mapped], mapped
-    # A user label id (Label_NNN) or its name; Gmail modify takes the id, but a
-    # bare name is a common ask - pass it through and let Gmail 400 a bad one.
-    return [label], label
+    if label.startswith("Label_") or label in _GMAIL_SYSTEM_LABELS:
+        return [label], label
+    # A user label name: Gmail modify only takes label ids, so resolve it via
+    # labels.list (case-insensitive), the same ids `mail folders` reports.
+    listing = execute(service.users().labels().list(userId="me"))
+    for entry in listing.get("labels") or []:
+        if str(entry.get("name") or "").casefold() == key:
+            return [str(entry["id"])], str(entry.get("name") or label)
+    raise MailFolderNotFoundError(
+        f"no Gmail label named {label!r}; pass a Label_ id from `blumkin mail folders`"
+    )
+
+
+_GMAIL_SYSTEM_LABELS = frozenset(
+    {"INBOX", "SENT", "TRASH", "DRAFT", "SPAM", "STARRED", "IMPORTANT", "UNREAD"}
+)
 
 
 def _gmail_modify_service(cfg: BlumkinConfig) -> Any:
