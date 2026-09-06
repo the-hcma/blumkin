@@ -101,6 +101,8 @@ def _coerce(value: Any, *, arg: dict[str, Any], tz_name: str | None, config: Blu
         return datetime(day.year, day.month, day.day, tzinfo=_zone(tz_name, config))
     if coerce == "raw":
         return str(value)
+    if coerce == "negate_flag":
+        return not bool(value)
 
     arg_type = arg["type"]
     if arg.get("multiple"):

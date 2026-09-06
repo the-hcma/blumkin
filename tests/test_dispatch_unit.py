@@ -91,7 +91,7 @@ def test_calendar_create_recurrence_and_require_repeat() -> None:
             "count": 3,
             "interval": 1,
             "with": [],
-            "teams": True,
+            "no_teams": False,
             "yes": True,
         },
         provider=prov,
@@ -112,6 +112,25 @@ def test_calendar_create_recurrence_and_require_repeat() -> None:
             },
             provider=_provider("calendar_create"),
         )
+
+
+def test_no_teams_flag_is_negated_into_the_teams_kwarg() -> None:
+    prov = _provider("calendar_create")
+    _run(
+        "calendar.create",
+        {"subject": "hold", "start": "2026-09-22T09:00", "with": [], "no_teams": True, "yes": True},
+        provider=prov,
+    )
+    assert prov.calendar_create.await_args.kwargs["teams"] is False
+
+    prov = _provider("calendar_update")
+    _run("calendar.update", {"event_id": "e1", "no_teams": False, "yes": True}, provider=prov)
+    assert prov.calendar_update.await_args.kwargs["teams"] is True
+
+    # omitted -> not passed, provider keeps its default (leave unchanged)
+    prov = _provider("calendar_update")
+    _run("calendar.update", {"event_id": "e1", "no_teams": None, "yes": True}, provider=prov)
+    assert "teams" not in prov.calendar_update.await_args.kwargs
 
 
 def test_rsvp_zone_precheck_raises_on_bad_zone() -> None:
