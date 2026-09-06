@@ -85,8 +85,12 @@ daemon, and it reuses the CLI's on-disk token cache, so there is no new auth
 surface. `mcp` is an optional extra (`pipx install 'blumkin[mcp]'`); the CLI-only
 verbs (`auth *`, `doctor`, `skills *`, `mail signature`, `mcp serve`) are not
 exposed; every tool whose CLI form needs `--yes` requires a server-enforced
-`confirm: true` argument (the MCP mirror of `--yes`). Superseded reasoning for the old
-"no MCP server in v1" stance: [`PLAN.md`](../PLAN.md) section 6.1.
+`confirm: true` argument (the MCP mirror of `--yes`). `blumkin mcp install` is a
+guided, idempotent registrar for the three clients (`claude mcp add` /
+`copilot mcp add` where available, a JSON config merge for Cursor and for Copilot
+project scope); `blumkin mcp status` shows the
+result. Superseded reasoning for the old "no MCP server in v1" stance:
+[`PLAN.md`](../PLAN.md) section 6.1.
 
 ### D7 - GitHub-native security hardening
 

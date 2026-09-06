@@ -422,41 +422,66 @@ method becomes a typed tool named by its id (`calendar.today`,
 from `skills list --json` and dispatched through the same `run_skill` path the
 CLI uses, so the CLI stays the single source of truth.
 
-It needs the optional extra:
+Running the server needs the optional extra:
 
 ```bash
 pipx install 'blumkin[mcp]'        # or: uv tool install 'blumkin[mcp]'
 ```
 
-Auth is unchanged — run `blumkin auth login` on a TTY once; the server shares the
-same `~/.config/blumkin/` token cache. The host spawns `blumkin mcp serve` as a
-child process and reaps it when the session ends; there is no daemon.
+Auth is unchanged — run `blumkin auth login` on a TTY once; every registered
+server shares the same `~/.config/blumkin/` token cache. The host spawns
+`blumkin mcp serve` as a child process and reaps it when the session ends; there
+is no daemon.
 
-**Claude Code**
+### Register it: `blumkin mcp install`
 
 ```bash
+blumkin mcp install
+```
+
+Detects Claude Code, Cursor, and GitHub Copilot CLI, asks whether to write **user**
+scope (every repo) or **project** scope (this directory), offers the serve
+options, then confirms each client before touching it:
+
+```
+Scope (user = every repo, project = this directory) [user]:
+Restrict to read-only (non-mutating) tools? [y/N]:
+Add blumkin for Claude Code -> claude mcp add (scope: user) [Y/n]:
+Add blumkin for Cursor -> ~/.cursor/mcp.json [Y/n]:
+Add blumkin for GitHub Copilot CLI -> copilot mcp add (scope: user) [Y/n]:
+```
+
+It uses each client's own `mcp add` where it has one — `claude mcp add` at either
+scope, `copilot mcp add` at user scope — and merges the entry into the JSON
+config otherwise (Cursor at either scope; Copilot at project scope → `.mcp.json`),
+leaving any other servers alone. **Re-running is safe** — an entry
+that already matches is reported "already current", a stale one (say, after the
+`blumkin` binary moved) is updated. Non-interactive: `blumkin mcp install --yes
+--scope user` (or `--client cursor`, `--read-only`, `--profile work`,
+`--only calendar --only mail`, `--force`).
+
+`blumkin mcp status` shows where blumkin is registered and with which command.
+
+### Register it by hand
+
+If you'd rather not run the installer:
+
+```bash
+# Claude Code
 claude mcp add --transport stdio blumkin -- blumkin mcp serve
 ```
 
-or in `.mcp.json` (`--scope project` writes this for you):
-
 ```jsonc
+// Cursor — .cursor/mcp.json (project) or ~/.cursor/mcp.json (global)
 { "mcpServers": { "blumkin": { "command": "blumkin", "args": ["mcp", "serve"] } } }
 ```
 
-**Cursor CLI** — `.cursor/mcp.json` (shared with the Cursor IDE):
-
 ```jsonc
-{ "mcpServers": { "blumkin": { "command": "blumkin", "args": ["mcp", "serve"] } } }
-```
-
-**GitHub Copilot CLI** — `~/.copilot/mcp-config.json` (or `copilot mcp add`):
-
-```jsonc
+// GitHub Copilot CLI — ~/.copilot/mcp-config.json (or `copilot mcp add`)
 { "mcpServers": { "blumkin": { "type": "stdio", "command": "blumkin", "args": ["mcp", "serve"], "tools": ["*"] } } }
 ```
 
-Options: `--profile <name>` acts as that profile; `--read-only` exposes only
+Serve options: `--profile <name>` acts as that profile; `--read-only` exposes only
 non-mutating tools; `--only <prefix>` (repeatable) keeps only tools under an id
 prefix, e.g. `blumkin mcp serve --only calendar --only mail`.
 
