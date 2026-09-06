@@ -139,6 +139,26 @@ def test_matches_command_and_missing_required_keys() -> None:
     assert mi._matches(narrowed, copilot, "blumkin") is True
 
 
+@pytest.mark.parametrize("placeholder", ["", "   \n"])
+def test_apply_file_merges_into_an_empty_placeholder_config(
+    home: Path, monkeypatch: pytest.MonkeyPatch, placeholder: str
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    path = cwd / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text(placeholder)  # 0-byte / whitespace-only placeholder (issue #198)
+    path.chmod(0o644)  # a client-dropped placeholder carries default umask perms
+    (plan,) = mi.build_plan(
+        clients=["cursor"], scope="project", binary="blumkin", serve=mi.ServeSpec(), cwd=cwd
+    )
+    assert mi.apply_plan(plan, binary="blumkin") == "added"
+    assert json.loads(path.read_text())["mcpServers"]["blumkin"]["args"] == ["mcp", "serve"]
+    # No content to preserve -> the merged file is created private, not left 0644.
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
 def test_apply_file_preserves_other_servers(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mi.shutil, "which", lambda _n: None)  # no cursor-agent enable
     cwd = home / "repo"
