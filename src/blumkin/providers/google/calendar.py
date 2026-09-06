@@ -634,7 +634,7 @@ def _google_updated_bounds(
     if not was_all_day:
         if start_raw is not None:
             reject_date_only_start(start_raw)
-        if end_raw is not None and "T" not in end_raw and not end_raw.casefold().endswith("z"):
+        if end_raw is not None and "T" not in end_raw.strip():
             raise ValueError(
                 "a date-only --end needs --all-day; pass a time (e.g. 2026-12-24T17:00)"
             )
