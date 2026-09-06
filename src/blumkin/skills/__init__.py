@@ -145,6 +145,9 @@ _ARG_COERCE: dict[tuple[str, str], str] = {
     ("calendar.suggest", "--start"): "local_datetime",
     ("calendar.suggest", "--end"): "local_datetime",
     ("calendar.suggest", "--duration"): "duration",
+    # decline/tentative parse the proposed slot themselves (like create/update start/end).
+    ("calendar.decline", "--propose-time"): "raw",
+    ("calendar.tentative", "--propose-time"): "raw",
     ("mail.inbox", "--since"): "local_datetime",
     ("mail.inbox", "--until"): "local_datetime",
     ("mail.list", "--since"): "local_datetime",
@@ -169,7 +172,14 @@ def _default_param(arg_name: str) -> str:
 
 
 def resolve_arg_param(skill_id: str, arg: dict[str, Any]) -> str | None:
-    """The provider kwarg an arg maps to (``None`` = consumed by a gate/preprocessor)."""
+    """The provider kwarg an arg maps to.
+
+    ``None`` means the value is never handed to a provider method as a direct
+    kwarg: the skill is bespoke (no ``WorkspaceProvider`` method), or a consent
+    gate / dispatch preprocessor consumes the value.
+    """
+    if skill_id in BESPOKE_SKILLS:
+        return None
     name = arg["name"]
     if name == "--yes":
         return None
@@ -1315,8 +1325,11 @@ def _enrich_args() -> None:
     ``tests/test_skills_schema.py`` pins it against the live provider signatures.
     """
     for skill in SKILLS:
+        bespoke = skill.id in BESPOKE_SKILLS
         for arg in skill.args:
             arg["param"] = resolve_arg_param(skill.id, arg)
+            if bespoke:
+                continue  # no provider method - a coerce hint would be meaningless
             coerce = _ARG_COERCE.get((skill.id, arg["name"]))
             if coerce is not None:
                 arg["coerce"] = coerce

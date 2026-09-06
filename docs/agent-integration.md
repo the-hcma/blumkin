@@ -252,10 +252,12 @@ Each arg has `name`, `required`, `type`, and `param`; optionally `coerce`,
 
 `param` is the internal name blumkin binds the value to (so `--from` on
 `mail.list` is `param: "sender"`, `--tz` is `param: "tz_name"`); `null` means the
-value is consumed by a gate or folded into another argument (`calendar view`'s
-`--from` / `--to` become a single `[start, end)` range). Agents driving the CLI
-pass `name`; the MCP server (`blumkin mcp serve`) uses `param`-derived tool
-schemas. The catalog is pinned against the live code so `param` cannot drift.
+value is never passed to a worker method as a direct argument — it is consumed by
+a gate, folded into another argument (`calendar view`'s `--from` / `--to` become
+a single `[start, end)` range), or the command is bespoke CLI-only plumbing
+(`auth *`, `doctor`, `skills *`, `mail signature`, `mcp serve`). Agents driving
+the CLI pass `name`; the MCP server (`blumkin mcp serve`) uses `param`-derived
+tool schemas. The catalog is pinned against the live code so `param` cannot drift.
 
 `name` is normally an option (`--folder`), but may be a positional with no leading
 dash — `skills.describe` takes `skill-id`. Build the command from `cli` plus these
