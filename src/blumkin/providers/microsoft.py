@@ -39,6 +39,7 @@ from blumkin.skills.chat import (
 from blumkin.skills.mail import (
     mail_attachments_download,
     mail_attachments_list,
+    mail_delete,
     mail_delete_draft,
     mail_draft,
     mail_folders,
@@ -46,6 +47,8 @@ from blumkin.skills.mail import (
     mail_get,
     mail_inbox,
     mail_list,
+    mail_mark,
+    mail_move,
     mail_reply,
     mail_search,
     mail_send_draft,
@@ -530,6 +533,28 @@ class MicrosoftWorkspaceProvider:
             no_signature=no_signature,
             config=self._config,
         )
+
+    async def mail_delete(self, *, message_ids: Sequence[str]) -> dict[str, Any]:
+        return await mail_delete(message_ids=message_ids, config=self._config)
+
+    async def mail_mark(
+        self,
+        *,
+        message_ids: Sequence[str],
+        read: bool | None = None,
+        flagged: bool | None = None,
+        importance: str | None = None,
+    ) -> dict[str, Any]:
+        return await mail_mark(
+            message_ids=message_ids,
+            read=read,
+            flagged=flagged,
+            importance=importance,
+            config=self._config,
+        )
+
+    async def mail_move(self, *, message_ids: Sequence[str], to: str) -> dict[str, Any]:
+        return await mail_move(message_ids=message_ids, to=to, config=self._config)
 
     async def mail_search(
         self,

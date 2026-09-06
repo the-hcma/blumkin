@@ -507,6 +507,30 @@ class GoogleWorkspaceProvider:
             config=self._config,
         )
 
+    async def mail_delete(self, *, message_ids: Sequence[str]) -> dict[str, Any]:
+        return await google_mail_writes.mail_delete(message_ids=message_ids, config=self._config)
+
+    async def mail_mark(
+        self,
+        *,
+        message_ids: Sequence[str],
+        read: bool | None = None,
+        flagged: bool | None = None,
+        importance: str | None = None,
+    ) -> dict[str, Any]:
+        return await google_mail_writes.mail_mark(
+            message_ids=message_ids,
+            read=read,
+            flagged=flagged,
+            importance=importance,
+            config=self._config,
+        )
+
+    async def mail_move(self, *, message_ids: Sequence[str], to: str) -> dict[str, Any]:
+        return await google_mail_writes.mail_move(
+            message_ids=message_ids, to=to, config=self._config
+        )
+
     async def mail_search(
         self,
         *,

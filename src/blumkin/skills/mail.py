@@ -6,7 +6,7 @@ import base64
 import binascii
 import html as html_lib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -17,6 +17,9 @@ from kiota_abstractions.serialization.parsable_factory import ParsableFactory
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.email_address import EmailAddress
 from msgraph.generated.models.file_attachment import FileAttachment
+from msgraph.generated.models.followup_flag import FollowupFlag
+from msgraph.generated.models.followup_flag_status import FollowupFlagStatus
+from msgraph.generated.models.importance import Importance
 from msgraph.generated.models.item_body import ItemBody
 from msgraph.generated.models.message import Message
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
@@ -41,6 +44,9 @@ from msgraph.generated.users.item.messages.item.create_reply_all.create_reply_al
 )
 from msgraph.generated.users.item.messages.item.message_item_request_builder import (
     MessageItemRequestBuilder,
+)
+from msgraph.generated.users.item.messages.item.move.move_post_request_body import (
+    MovePostRequestBody,
 )
 from msgraph.generated.users.item.messages.messages_request_builder import (
     MessagesRequestBuilder,
@@ -291,6 +297,20 @@ def format_list_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def format_triage_human(payload: dict[str, Any]) -> list[str]:
+    label, ids = "Marked", []
+    for candidate, word in (("moved", "Moved"), ("marked", "Marked"), ("deleted", "Deleted")):
+        if candidate in payload:
+            label, ids = word, payload.get(candidate) or []
+            break
+    dest = f" -> {payload['to']}" if payload.get("to") else ""
+    lines = [f"{label} {payload.get('count', len(ids))} message(s){dest}:"]
+    lines.extend(f"  • {mid}" for mid in ids)
+    for item in payload.get("skipped") or []:
+        lines.append(f"  • skipped {item.get('id')}: {item.get('reason')}")
+    return lines
+
+
 def format_search_human(payload: dict[str, Any]) -> list[str]:
     items = payload.get("items") or []
     q = sanitize_terminal(str(payload.get("query") or ""))
@@ -438,6 +458,79 @@ async def mail_attachments_download(
             }
         )
     return {"message_id": mid, "saved": saved, "skipped": skipped}
+
+
+_FLAG_STATUS = {True: FollowupFlagStatus.Flagged, False: FollowupFlagStatus.NotFlagged}
+_IMPORTANCE = {"high": Importance.High, "normal": Importance.Normal, "low": Importance.Low}
+
+
+async def mail_delete(
+    *,
+    message_ids: Sequence[str],
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Move one or more messages to Deleted Items (recoverable)."""
+    ids = _clean_message_ids(message_ids)
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    return await _mail_triage_batch(
+        ids, lambda mid: client.me.messages.by_message_id(mid).delete(), key="deleted"
+    )
+
+
+async def mail_mark(
+    *,
+    message_ids: Sequence[str],
+    read: bool | None = None,
+    flagged: bool | None = None,
+    importance: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Set read/unread, the follow-up flag, and/or importance on one or more messages."""
+    ids = _clean_message_ids(message_ids)
+    if read is None and flagged is None and importance is None:
+        raise ValueError("pass at least one of --read/--unread, --flag/--unflag, --importance")
+    imp = None if importance is None else _validate_importance(importance)
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    patch = Message()
+    if read is not None:
+        patch.is_read = read
+    if flagged is not None:
+        patch.flag = FollowupFlag(flag_status=_FLAG_STATUS[flagged])
+    if imp is not None:
+        patch.importance = _IMPORTANCE[imp]
+
+    async def _apply(mid: str) -> None:
+        await client.me.messages.by_message_id(mid).patch(patch)
+
+    return await _mail_triage_batch(ids, _apply, key="marked")
+
+
+async def mail_move(
+    *,
+    message_ids: Sequence[str],
+    to: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Move one or more messages to a folder (well-known name or folder id)."""
+    ids = _clean_message_ids(message_ids)
+    label = to.strip()
+    if not label:
+        raise ValueError("--to is required")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    destination = _well_known_folder(label) or label
+    body = MovePostRequestBody(destination_id=destination)
+
+    async def _apply(mid: str) -> None:
+        moved = await client.me.messages.by_message_id(mid).move.post(body)
+        if moved is None:
+            raise MailMessageNotFoundError(f"message not found: {mid}")
+
+    result = await _mail_triage_batch(ids, _apply, key="moved")
+    result["to"] = destination
+    return result
 
 
 async def mail_delete_draft(
@@ -2116,6 +2209,42 @@ async def _require_message(client: Any, message_id: str) -> None:
     existing = await client.me.messages.by_message_id(message_id).get()
     if existing is None or not existing.id:
         raise MailMessageNotFoundError(f"message not found: {message_id}")
+
+
+def _clean_message_ids(message_ids: Sequence[str]) -> list[str]:
+    ids = [str(m).strip() for m in message_ids if m and str(m).strip()]
+    if not ids:
+        raise ValueError("--id is required")
+    return ids
+
+
+async def _mail_triage_batch(
+    ids: Sequence[str],
+    apply: Callable[[str], Awaitable[None]],
+    *,
+    key: str,
+) -> dict[str, Any]:
+    """Run ``apply`` per id; a single id fails loudly, a batch reports per-message skips."""
+    done: list[str] = []
+    skipped: list[dict[str, str]] = []
+    first_error: Exception | None = None
+    for mid in ids:
+        try:
+            await apply(mid)
+        except ODataError as exc:
+            missing = is_id_lookup_failure(exc)
+            reason = f"message not found: {mid}" if missing else str(exc)
+            if len(ids) == 1:
+                if missing:
+                    raise MailMessageNotFoundError(reason) from exc
+                raise
+            first_error = first_error or exc
+            skipped.append({"id": mid, "reason": reason})
+            continue
+        done.append(mid)
+    if len(ids) > 1 and not done and first_error is not None:
+        raise first_error
+    return {key: done, "count": len(done), "skipped": skipped}
 
 
 def _skip_reason(attachment: Any) -> str:

@@ -21,6 +21,7 @@ from blumkin.providers.google_auth import (
     CHAT_SCOPES,
     GOOGLE_REQUIRED_SCOPES,
     GOOGLE_SCOPES,
+    MAIL_MODIFY_SCOPES,
     MAIL_READ_SCOPES,
     MAIL_WRITE_SCOPES,
     PEOPLE_SCOPES,
@@ -127,6 +128,7 @@ def test_google_scopes_is_the_union_of_every_required_subset() -> None:
         | CHAT_SCOPES
         | MAIL_READ_SCOPES
         | MAIL_WRITE_SCOPES
+        | MAIL_MODIFY_SCOPES
         | PEOPLE_SCOPES
         | directory_readonly
     )

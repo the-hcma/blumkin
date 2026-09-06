@@ -102,6 +102,9 @@ from blumkin.skills.mail import (
 from blumkin.skills.mail import (
     format_thread_human as format_mail_thread_human,
 )
+from blumkin.skills.mail import (
+    format_triage_human as format_mail_triage_human,
+)
 from blumkin.skills.meeting import (
     format_get_human as format_meeting_get_human,
 )
@@ -2866,6 +2869,104 @@ def mail_attachments_download_cmd(
     else:
         emit_lines(format_attachments_download_human(payload))
     raise SystemExit(EXIT_SUCCESS)
+
+
+def _run_mail_triage(
+    ctx: click.Context, *, verb: str, yes: bool, as_json_flag: bool, **kwargs: Any
+) -> None:
+    as_json = _as_json(ctx, as_json_flag)
+    _require_yes(yes=yes, as_json=as_json)
+    try:
+        payload = asyncio.run(getattr(_workspace(), f"mail_{verb}")(**kwargs))
+    except MailMessageNotFoundError as exc:
+        _emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except MailFolderNotFoundError as exc:
+        _emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        _raise_mail_value_error(exc, as_json=as_json)
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_mail_triage_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("delete", epilog=help_text.MAIL_TRIAGE_EPILOG)
+@click.option("--id", "message_ids", multiple=True, required=True, help="Message id (repeatable).")
+@click.option("--yes", "yes", is_flag=True, help="Confirm this mailbox change.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_delete_cmd(
+    ctx: click.Context, message_ids: tuple[str, ...], yes: bool, as_json_flag: bool
+) -> None:
+    """Move one or more messages to Deleted Items / Trash (recoverable). Requires --yes."""
+    _run_mail_triage(
+        ctx, verb="delete", yes=yes, as_json_flag=as_json_flag, message_ids=list(message_ids)
+    )
+
+
+@mail.command("mark", epilog=help_text.MAIL_TRIAGE_EPILOG)
+@click.option("--id", "message_ids", multiple=True, required=True, help="Message id (repeatable).")
+@click.option("--read/--unread", "read", default=None, help="Mark read or unread.")
+@click.option("--flag/--unflag", "flagged", default=None, help="Set or clear the follow-up flag.")
+@click.option(
+    "--importance",
+    default=None,
+    type=click.Choice(MAIL_IMPORTANCE_VALUES, case_sensitive=False),
+    help="Set importance.",
+)
+@click.option("--yes", "yes", is_flag=True, help="Confirm this mailbox change.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_mark_cmd(
+    ctx: click.Context,
+    message_ids: tuple[str, ...],
+    read: bool | None,
+    flagged: bool | None,
+    importance: str | None,
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Set read/unread, the follow-up flag, and/or importance. Requires --yes."""
+    _run_mail_triage(
+        ctx,
+        verb="mark",
+        yes=yes,
+        as_json_flag=as_json_flag,
+        message_ids=list(message_ids),
+        read=read,
+        flagged=flagged,
+        importance=importance,
+    )
+
+
+@mail.command("move", epilog=help_text.MAIL_TRIAGE_EPILOG)
+@click.option("--id", "message_ids", multiple=True, required=True, help="Message id (repeatable).")
+@click.option(
+    "--to",
+    "to",
+    required=True,
+    help="Destination: a well-known name (archive, deleteditems, …), folder id, or Gmail label.",
+)
+@click.option("--yes", "yes", is_flag=True, help="Confirm this mailbox change.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_move_cmd(
+    ctx: click.Context, message_ids: tuple[str, ...], to: str, yes: bool, as_json_flag: bool
+) -> None:
+    """Move one or more messages to a folder (or `archive`). Requires --yes."""
+    _run_mail_triage(
+        ctx,
+        verb="move",
+        yes=yes,
+        as_json_flag=as_json_flag,
+        message_ids=list(message_ids),
+        to=to,
+    )
 
 
 @mail.command("delete-draft", epilog=help_text.MAIL_DELETE_DRAFT_EPILOG)

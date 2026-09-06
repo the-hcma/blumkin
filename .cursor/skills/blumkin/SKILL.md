@@ -14,7 +14,8 @@ With `provider = "google"` in config, supported verbs are calendar
 (`today` / `view` / `freebusy` / `suggest` / `create` / `get` / `list`), mail
 (`inbox` / `list` / `get` / `search` / `thread` / `folders` / `attachments` / `attachments download`),
 mail writes
-(`draft` / `update-draft` / `delete-draft` / `send-draft` / `reply` / `forward`),
+(`draft` / `update-draft` / `delete-draft` / `send-draft` / `reply` / `forward` /
+`move` / `mark` / `delete` - the last three need the `gmail.modify` scope),
 calendar writes (`accept` / `decline` / `tentative` / `cancel` / `update`;
 `--propose-time` is Microsoft-only), `people resolve`, and chat
 (`find` / `last` / `send` / `edit` / `delete` / `attachments`) plus auth. Point `google_oauth_client_file` at the Desktop client JSON (secret
@@ -170,6 +171,15 @@ original's attachments.
      `style=` and decorative borders are often stripped on send; links and headings
      usually survive. Blumkin does not sanitize markup — it passes `--body-type html`
      through unchanged.
+  - `blumkin mail move --id '<id>' --to archive --yes` / `mail mark --id '<id>'
+    [--read/--unread] [--flag/--unflag] [--importance high|normal|low] --yes` /
+    `mail delete --id '<id>' --yes` - triage. `--id` is repeatable; a batch
+    reports the messages it skipped. `delete` is to Deleted Items / Trash
+    (recoverable). `--yes` is a safety confirm (nobody is notified).
+    Microsoft: `Mail.ReadWrite` (already granted). **Google: needs the new
+    `gmail.modify` scope** - until `blumkin auth login` re-consents, these exit 4
+    (`missing_scope`). On Gmail, `--flag` = the STARRED label, `--importance` =
+    IMPORTANT, `--to archive` removes the Inbox label.
   - `blumkin mail reply --id '<message-id>' --body …` (`--all` for reply-all). Use this
     rather than a fresh draft with `RE:` prepended: Graph puts the draft in the original
     conversation and inherits the recipients, so it threads in the recipient's client.
