@@ -102,6 +102,13 @@ def test_graph_mark_direction_branches(monkeypatch) -> None:
     assert patch_body.importance == Importance.Low
 
 
+def test_graph_mark_importance_normal(monkeypatch) -> None:
+    client = _graph(monkeypatch)
+    asyncio.run(mail_mark(message_ids=["m1"], importance="normal"))
+    patch_body = client.me.messages.by_message_id.return_value.patch.await_args.args[0]
+    assert patch_body.importance == Importance.Normal
+
+
 def test_graph_delete_calls_delete(monkeypatch) -> None:
     client = _graph(monkeypatch)
     payload = asyncio.run(mail_delete(message_ids=["m1"]))
@@ -203,6 +210,19 @@ def test_google_mark_direction_branches(tmp_path: Path) -> None:
     body = service.users.return_value.messages.return_value.modify.call_args.kwargs["body"]
     assert set(body["addLabelIds"]) == {"UNREAD", "IMPORTANT"}
     assert set(body["removeLabelIds"]) == {"STARRED"}
+
+
+def test_google_mark_importance_normal(tmp_path: Path) -> None:
+    service = MagicMock()
+    with _google_patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).mail_mark(
+                message_ids=["m1"], importance="normal"
+            )
+        )
+    body = service.users.return_value.messages.return_value.modify.call_args.kwargs["body"]
+    assert "IMPORTANT" not in body["addLabelIds"]
+    assert "IMPORTANT" in body["removeLabelIds"]
 
 
 def test_google_move_to_inbox_keeps_the_inbox_label(tmp_path: Path) -> None:
@@ -336,6 +356,39 @@ def test_cli_triage_missing_scope_routes(monkeypatch) -> None:
         main, ["mail", "move", "--id", "m", "--to", "archive", "--yes", "--json"]
     )
     assert result.exit_code == EXIT_MISSING_SCOPE
+
+
+def test_cli_mark_forwards_options_and_returns_success(monkeypatch) -> None:
+    seen = {}
+
+    async def _mark(**kwargs):
+        seen.update(kwargs)
+        return {"marked": ["m"], "count": 1, "skipped": []}
+
+    monkeypatch.setattr("blumkin.cli._workspace", lambda: SimpleNamespace(mail_mark=_mark))
+    result = CliRunner().invoke(
+        main,
+        [
+            "mail",
+            "mark",
+            "--id",
+            "m",
+            "--read",
+            "--flag",
+            "--importance",
+            "high",
+            "--yes",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    assert seen == {
+        "message_ids": ["m"],
+        "read": True,
+        "flagged": True,
+        "importance": "high",
+    }
+    assert json.loads(result.stdout)["marked"] == ["m"]
 
 
 def test_cli_triage_not_found(monkeypatch) -> None:
