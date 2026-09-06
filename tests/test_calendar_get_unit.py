@@ -221,6 +221,8 @@ _GOOGLE_EVENT = {
     "attendees": [
         {"email": "sam@example.com", "displayName": "Sam", "responseStatus": "tentative"},
         {"email": "dana@example.com", "responseStatus": "declined", "optional": True},
+        {"email": "kim@example.com", "responseStatus": "needsAction"},
+        {"email": "lee@example.com", "responseStatus": "accepted"},
     ],
     "recurrence": ["RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=8"],
 }
@@ -250,10 +252,14 @@ def test_google_calendar_get_full_shape(tmp_path: Path) -> None:
     assert {a["email"]: a["type"] for a in ev["attendees"]} == {
         "sam@example.com": "required",
         "dana@example.com": "optional",
+        "kim@example.com": "required",
+        "lee@example.com": "required",
     }
     assert {a["email"]: a["response"] for a in ev["attendees"]} == {
         "sam@example.com": "tentativelyAccepted",
         "dana@example.com": "declined",
+        "kim@example.com": "notResponded",
+        "lee@example.com": "accepted",
     }
     assert ev["recurrence"] == {
         "freq": "weekly",
@@ -378,6 +384,47 @@ def test_graph_calendar_get_no_end_range_reads_back_never(monkeypatch) -> None:
     _graph_client(monkeypatch, event)
     payload = asyncio.run(calendar_get(event_id="evt-1"))
     assert payload["event"]["recurrence"] == {"freq": "daily", "interval": 3, "ends": "never"}
+
+
+def test_google_calendar_get_open_ended_weekly_reads_back_never(tmp_path: Path) -> None:
+    event = {**_GOOGLE_EVENT, "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO"]}
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = event
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_get(event_id="g-evt")
+        )
+    assert payload["event"]["recurrence"] == {
+        "freq": "weekly",
+        "interval": 1,
+        "days": ["mo"],
+        "ends": "never",
+    }
+
+
+def test_google_calendar_get_monthly_without_bymonthday_recovers_day_from_start(
+    tmp_path: Path,
+) -> None:
+    # recurrence_rrule never emits BYMONTHDAY for a monthly rule (RFC 5545 uses
+    # the DTSTART day), so the readback must recover day_of_month from the start
+    # to match recurrence_payload and the Graph AbsoluteMonthly mapping.
+    event = {
+        **_GOOGLE_EVENT,
+        "start": {"dateTime": "2026-09-15T09:00:00-04:00"},
+        "recurrence": ["RRULE:FREQ=MONTHLY;INTERVAL=1;COUNT=4"],
+    }
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = event
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_get(event_id="g-evt")
+        )
+    assert payload["event"]["recurrence"] == {
+        "freq": "monthly",
+        "interval": 1,
+        "day_of_month": 15,
+        "count": 4,
+    }
 
 
 def test_google_calendar_get_until_readback_uses_local_date(tmp_path: Path) -> None:

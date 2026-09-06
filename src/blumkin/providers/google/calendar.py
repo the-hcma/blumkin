@@ -460,7 +460,9 @@ def _event_detail_to_dict(ev: dict[str, Any], display_tz: ZoneInfo) -> dict[str,
     # a Microsoft-only knob (Graph converts the body server-side).
     detail["body_type"] = "html"
     detail["is_cancelled"] = ev.get("status") == "cancelled"
-    detail["recurrence"] = _rrule_to_payload(ev.get("recurrence"), display_tz)
+    detail["recurrence"] = _rrule_to_payload(
+        ev.get("recurrence"), display_tz, _start_day_of_month(ev)
+    )
     detail["series_master_id"] = ev.get("recurringEventId")
     detail["web_link"] = ev.get("htmlLink")
     return detail
@@ -584,8 +586,28 @@ def _rfc3339(value: datetime) -> str:
     return value.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00", "Z")
 
 
-def _rrule_to_payload(recurrence: list[str] | None, display_tz: ZoneInfo) -> dict[str, Any] | None:
-    """First ``RRULE:`` line of a Google ``recurrence`` -> the ``calendar create`` shape."""
+def _start_day_of_month(ev: Mapping[str, Any]) -> int | None:
+    """Day-of-month of the event's start (``dateTime`` or all-day ``date``)."""
+    start = ev.get("start") or {}
+    raw = start.get("dateTime") or start.get("date")
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(str(raw)[:10]).day
+    except ValueError:
+        return None
+
+
+def _rrule_to_payload(
+    recurrence: list[str] | None, display_tz: ZoneInfo, start_day: int | None = None
+) -> dict[str, Any] | None:
+    """First ``RRULE:`` line of a Google ``recurrence`` -> the ``calendar create`` shape.
+
+    ``start_day`` is the event's own day-of-month: a monthly RRULE this tool
+    writes carries no ``BYMONTHDAY`` (it relies on the RFC 5545 DTSTART default),
+    so the readback recovers ``day_of_month`` from the start to match both
+    ``recurrence_payload`` and the Graph AbsoluteMonthly mapping.
+    """
     for line in recurrence or []:
         if not str(line).upper().startswith("RRULE:"):
             continue
@@ -615,8 +637,10 @@ def _rrule_to_payload(recurrence: list[str] | None, display_tz: ZoneInfo) -> dic
         payload: dict[str, Any] = {"freq": freq, "interval": int(parts.get("INTERVAL") or 1)}
         if freq == "weekly" and by_day:
             payload["days"] = [code.lower() for code in by_day]
-        if freq == "monthly" and by_month_day:
-            payload["day_of_month"] = int(by_month_day)
+        if freq == "monthly":
+            day = int(by_month_day) if by_month_day else start_day
+            if day is not None:
+                payload["day_of_month"] = day
         if "COUNT" in parts:
             payload["count"] = int(parts["COUNT"])
         elif "UNTIL" in parts:
