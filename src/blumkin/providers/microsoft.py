@@ -47,7 +47,9 @@ from blumkin.skills.mail import (
     mail_inbox,
     mail_list,
     mail_reply,
+    mail_search,
     mail_send_draft,
+    mail_thread,
     mail_update_draft,
 )
 from blumkin.skills.meeting import meeting_get, meeting_transcription
@@ -529,8 +531,27 @@ class MicrosoftWorkspaceProvider:
             config=self._config,
         )
 
+    async def mail_search(
+        self,
+        *,
+        query: str,
+        top: int = 25,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, Any]:
+        return await mail_search(
+            query=query, top=top, since=since, until=until, config=self._config
+        )
+
     async def mail_send_draft(self, *, draft_id: str) -> dict[str, Any]:
         return await mail_send_draft(draft_id=draft_id, config=self._config)
+
+    async def mail_thread(
+        self, *, message_id: str, full: bool = False, body_type: str = "text"
+    ) -> dict[str, Any]:
+        return await mail_thread(
+            message_id=message_id, full=full, body_type=body_type, config=self._config
+        )
 
     async def mail_update_draft(
         self,

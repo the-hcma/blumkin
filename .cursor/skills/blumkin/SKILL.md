@@ -12,7 +12,7 @@ Workspace APIs directly when Blumkin covers the job.
 
 With `provider = "google"` in config, supported verbs are calendar
 (`today` / `view` / `freebusy` / `suggest` / `create` / `get` / `list`), mail
-(`inbox` / `list` / `get` / `folders` / `attachments` / `attachments download`),
+(`inbox` / `list` / `get` / `search` / `thread` / `folders` / `attachments` / `attachments download`),
 mail writes
 (`draft` / `update-draft` / `delete-draft` / `send-draft` / `reply` / `forward`),
 calendar writes (`accept` / `decline` / `tentative` / `cancel` / `update`;
@@ -115,6 +115,13 @@ original's attachments.
      `blumkin mail get --id '<message-id>' --json` (one message in full: participants,
      timestamps, attachments, and body — use this instead of listing and filtering
      client-side; `--body-type html` keeps the markup, default `text`)
+     `blumkin mail search --query '<term>' --json` searches the WHOLE mailbox
+     (every folder), relevance-ranked, tagging each hit with its `folder` —
+     prefer this over `mail list --search` (one folder). Google `--query` takes
+     Gmail operators (`from:` / `subject:` / `has:attachment`). `--since` /
+     `--until` filter the returned page locally.
+     `blumkin mail thread --id '<message-id>' --json` lists every message in that
+     conversation, oldest first; `--full` adds each body.
      `blumkin mail folders --json` (folder ids and counts, for custom folders;
      Graph's totals can lag — do not treat `total: 0` as proof a folder is empty;
      use `mail list --folder drafts` or `mail get --id` for existence)

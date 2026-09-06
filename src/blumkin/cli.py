@@ -96,6 +96,12 @@ from blumkin.skills.mail import (
 from blumkin.skills.mail import (
     format_get_human as format_mail_get_human,
 )
+from blumkin.skills.mail import (
+    format_search_human as format_mail_search_human,
+)
+from blumkin.skills.mail import (
+    format_thread_human as format_mail_thread_human,
+)
 from blumkin.skills.meeting import (
     format_get_human as format_meeting_get_human,
 )
@@ -2566,6 +2572,94 @@ def mail_get_cmd(
         emit_json(payload)
     else:
         emit_lines(format_mail_get_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("search", epilog=help_text.MAIL_SEARCH_EPILOG)
+@click.option("--query", "query", required=True, help="Search term (Graph $search / Gmail q=).")
+@click.option("--since", default=None, help="Only messages at or after this local date/time.")
+@click.option("--until", default=None, help="Only messages strictly before this local date/time.")
+@click.option("--top", default=25, show_default=True, type=int, help="Max messages to return.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
+@click.pass_context
+def mail_search_cmd(
+    ctx: click.Context,
+    query: str,
+    since: str | None,
+    until: str | None,
+    top: int,
+    as_json_flag: bool,
+    tz_flag: str | None,
+) -> None:
+    """Search the whole mailbox (every folder), relevance-ranked.
+
+    `mail list --search` only covers one folder; this covers all of them and
+    tags each hit with its `folder`. `--since` / `--until` filter the returned
+    page locally ($search cannot combine with a server-side date filter).
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        since_dt, until_dt = _mail_time_bounds(ctx, tz_flag, since=since, until=until)
+        payload = asyncio.run(
+            _workspace().mail_search(query=query, top=top, since=since_dt, until=until_dt)
+        )
+    except ZoneInfoNotFoundError as exc:
+        _emit_error(
+            error="usage_error",
+            message=f"invalid timezone: {exc}",
+            as_json=as_json,
+            hint="Use an IANA name like America/New_York or UTC (not an abbreviation).",
+        )
+        raise SystemExit(EXIT_USAGE) from exc
+    except ValueError as exc:
+        _raise_mail_value_error(exc, as_json=as_json)
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_mail_search_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@mail.command("thread", epilog=help_text.MAIL_THREAD_EPILOG)
+@click.option("--id", "message_id", required=True, help="Any message id in the conversation.")
+@click.option("--full", "full", is_flag=True, help="Include each message's body.")
+@click.option(
+    "--body-type",
+    "body_type",
+    default="text",
+    show_default=True,
+    type=click.Choice(["html", "text"]),
+    help="Body format when --full (Microsoft converts server-side).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_thread_cmd(
+    ctx: click.Context,
+    message_id: str,
+    full: bool,
+    body_type: str,
+    as_json_flag: bool,
+) -> None:
+    """List every message in the conversation a message belongs to, oldest first."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            _workspace().mail_thread(message_id=message_id, full=full, body_type=body_type)
+        )
+    except MailMessageNotFoundError as exc:
+        _emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        _raise_mail_value_error(exc, as_json=as_json)
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_mail_thread_human(payload))
     raise SystemExit(EXIT_SUCCESS)
 
 
