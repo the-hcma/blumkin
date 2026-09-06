@@ -306,6 +306,99 @@ async def mail_list(
     }
 
 
+async def mail_search(
+    *,
+    query: str,
+    top: int = 25,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Search the whole mailbox with a Gmail ``q=`` query (already mailbox-wide)."""
+    q = query.strip()
+    if not q:
+        raise ValueError("--query is required")
+    if top < 1:
+        raise ValueError("--top must be >= 1")
+    if top > 500:
+        raise ValueError("--top must be <= 500 (Gmail maxResults limit)")
+    if since is not None and until is not None and until <= since:
+        raise ValueError("--until must be after --since")
+    cfg = config or load_config()
+    service = _gmail_service(cfg)
+    gmail_q = _build_gmail_query(
+        search=q, sender=None, since=since, subject=None, unread=False, until=until
+    )
+    listing = execute(service.users().messages().list(userId="me", maxResults=top, q=gmail_q))
+    items: list[dict[str, Any]] = []
+    for ref in listing.get("messages") or []:
+        mid = ref.get("id")
+        if not mid:
+            continue
+        msg = execute(
+            service.users()
+            .messages()
+            .get(userId="me", id=mid, format="metadata", metadataHeaders=_LIST_HEADERS)
+        )
+        item = _message_to_dict(msg)
+        item["folder"] = _folder_from_labels(msg.get("labelIds") or [])
+        items.append(item)
+    return {
+        "query": q,
+        "items": items,
+        "count": len(items),
+        "since": _iso_z(since),
+        "until": _iso_z(until),
+    }
+
+
+async def mail_thread(
+    *,
+    message_id: str,
+    full: bool = False,
+    body_type: str = "text",
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """List every message in the Gmail thread the given message belongs to, oldest first."""
+    mid = message_id.strip()
+    if not mid:
+        raise ValueError("--id is required")
+    wanted = _parse_body_type(body_type)
+    cfg = config or load_config()
+    service = _gmail_service(cfg)
+    try:
+        anchor = execute(service.users().messages().get(userId="me", id=mid, format="minimal"))
+    except HttpError as exc:
+        if _http_not_found(exc):
+            raise MailMessageNotFoundError(f"message not found: {mid}") from exc
+        raise
+    thread_id = anchor.get("threadId")
+    if not thread_id:
+        raise MailMessageNotFoundError(f"message not found: {mid}")
+    fmt = "full" if full else "metadata"
+    kwargs: dict[str, Any] = {"userId": "me", "id": thread_id, "format": fmt}
+    if not full:
+        kwargs["metadataHeaders"] = _LIST_HEADERS
+    thread = execute(service.users().threads().get(**kwargs))
+    items: list[dict[str, Any]] = []
+    for msg in thread.get("messages") or []:
+        item = _message_to_dict(msg)
+        if full:
+            detail = _message_detail(msg, wanted=wanted)
+            item["body"] = detail.get("body")
+            item["body_type"] = detail.get("body_type", wanted)
+        items.append(item)
+    return {"conversation_id": thread_id, "items": items, "count": len(items)}
+
+
+def _folder_from_labels(label_ids: list[str]) -> str | None:
+    for label_id in label_ids:
+        name = _FOLDER_SYSTEM_LABELS.get(label_id)
+        if name:
+            return name
+    return "Archive" if "INBOX" not in label_ids else "Inbox"
+
+
 _FOLDER_LABELS = {
     "archive": None,
     "deleteditems": "TRASH",

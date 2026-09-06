@@ -288,6 +288,36 @@ def format_list_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def format_search_human(payload: dict[str, Any]) -> list[str]:
+    items = payload.get("items") or []
+    q = sanitize_terminal(str(payload.get("query") or ""))
+    lines = [f"search {q!r}: {len(items)} match(es), by relevance"]
+    if not items:
+        lines.append("  (none)")
+        return lines
+    for item in items:
+        stamp = item.get("received") or item.get("created") or "(no date)"
+        who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
+        subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
+        folder = sanitize_terminal(str(item.get("folder") or "?"))
+        lines.append(f"  • {stamp} — {who}: {subject}  [{folder}]")
+    return lines
+
+
+def format_thread_human(payload: dict[str, Any]) -> list[str]:
+    items = payload.get("items") or []
+    lines = [f"conversation {payload.get('conversation_id')}: {len(items)} message(s)"]
+    for item in items:
+        stamp = item.get("received") or item.get("sent") or item.get("created") or "(no date)"
+        who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
+        subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
+        lines.append(f"  • {stamp} — {who}: {subject}")
+        body = item.get("body")
+        if body:
+            lines.extend(f"    {line}" for line in sanitize_terminal(str(body)).splitlines())
+    return lines
+
+
 def format_reply_human(payload: dict[str, Any]) -> list[str]:
     draft = payload.get("draft") or {}
     recipients = sanitize_terminal(str(draft.get("to") or ""))
@@ -795,6 +825,54 @@ async def mail_reply(
     return {"draft": _draft_summary(created, source=mid, kind=kind)}
 
 
+async def mail_search(
+    *,
+    query: str,
+    top: int = 25,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Search the whole mailbox (every folder) with Graph ``$search``.
+
+    ``$search`` cannot be combined with ``$filter`` / ``$orderby``, so ``--since``
+    / ``--until`` are applied locally to the returned page and results come back
+    relevance-ranked.
+    """
+    q = query.strip()
+    if not q:
+        raise ValueError("--query is required")
+    if top < 1:
+        raise ValueError("--top must be >= 1")
+    if since is not None and until is not None and until <= since:
+        raise ValueError("--until must be after --since")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    page = await _get_messages(client, None, top=top, sort=None, criteria=None, search=q)
+    found = [] if page is None else (page.value or [])
+    folder_names: dict[str, str] = {}
+    items: list[dict[str, Any]] = []
+    for msg in found:
+        received = getattr(msg, "received_date_time", None)
+        if since is not None and received is not None and received < since:
+            continue
+        if until is not None and received is not None and received >= until:
+            continue
+        item = _message_to_dict(msg)
+        fid = item.get("parent_folder_id")
+        if fid and fid not in folder_names:
+            folder_names[fid] = await _folder_display_name(client, str(fid)) or str(fid)
+        item["folder"] = folder_names.get(fid) if fid else None
+        items.append(item)
+    return {
+        "query": q,
+        "items": items,
+        "count": len(items),
+        "since": _odata_datetime(since),
+        "until": _odata_datetime(until),
+    }
+
+
 async def mail_send_draft(
     *,
     draft_id: str,
@@ -806,6 +884,66 @@ async def mail_send_draft(
     client = create_graph_client(cfg)
     await client.me.messages.by_message_id(draft_id.strip()).send.post()
     return {"sent": draft_id.strip()}
+
+
+async def mail_thread(
+    *,
+    message_id: str,
+    full: bool = False,
+    body_type: str = "text",
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """List every message in the conversation the given message belongs to, oldest first."""
+    mid = message_id.strip()
+    if not mid:
+        raise ValueError("--id is required")
+    wanted = _parse_body_type(body_type)
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    query = MessageItemRequestBuilder.MessageItemRequestBuilderGetQueryParameters(
+        select=["conversationId"]
+    )
+    try:
+        anchor = await client.me.messages.by_message_id(mid).get(request_config(query))
+    except ODataError as exc:
+        if not is_id_lookup_failure(exc):
+            raise
+        raise MailMessageNotFoundError(f"message not found: {mid}") from exc
+    conversation_id = None if anchor is None else getattr(anchor, "conversation_id", None)
+    if not conversation_id:
+        raise MailMessageNotFoundError(f"message not found: {mid}")
+    escaped = str(conversation_id).replace("'", "''")
+    list_query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+        top=100,
+        filter=f"conversationId eq '{escaped}'",
+        orderby=["receivedDateTime"],
+        select=[
+            "id",
+            "subject",
+            "from",
+            "toRecipients",
+            "conversationId",
+            "createdDateTime",
+            "parentFolderId",
+            "receivedDateTime",
+            "sentDateTime",
+            "isRead",
+            "hasAttachments",
+            "importance",
+            "bodyPreview",
+        ],
+    )
+    page = await client.me.messages.get(request_config(list_query))
+    messages = [] if page is None else (page.value or [])
+    items: list[dict[str, Any]] = []
+    for msg in messages:
+        item = _message_to_dict(msg)
+        if full:
+            detail = await mail_get(message_id=str(item["id"]), body_type=body_type, config=cfg)
+            item["body"] = detail["message"].get("body")
+            item["body_type"] = detail["message"].get("body_type", wanted)
+        items.append(item)
+    return {"conversation_id": conversation_id, "items": items, "count": len(items)}
 
 
 async def mail_update_draft(
@@ -1189,6 +1327,20 @@ async def _collect_mail_folders(
     return truncated
 
 
+async def _folder_display_name(client: Any, folder_id: str) -> str | None:
+    """Best-effort ``displayName`` for a mail folder id (well-known or custom)."""
+    query = MailFoldersRequestBuilder.MailFoldersRequestBuilderGetQueryParameters(
+        select=["displayName", "id"]
+    )
+    try:
+        folder = await client.me.mail_folders.by_mail_folder_id(folder_id).get(
+            request_config(query)
+        )
+    except ODataError:
+        return None
+    return None if folder is None else getattr(folder, "display_name", None)
+
+
 async def _create_draft_from(builder: Any, request: Any, *, message_id: str) -> Any:
     """POST a create-reply/forward action, mapping a rejected id to not-found."""
     try:
@@ -1364,7 +1516,9 @@ async def _get_messages(
             "subject",
             "from",
             "toRecipients",
+            "conversationId",
             "createdDateTime",
+            "parentFolderId",
             "receivedDateTime",
             "sentDateTime",
             "isRead",
@@ -1458,6 +1612,7 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
     sent = getattr(msg, "sent_date_time", None)
     return {
         "body_html": body_html,
+        "conversation_id": getattr(msg, "conversation_id", None),
         "created": str(created) if created else None,
         "body_preview": msg.body_preview,
         "body_text": body_text,
@@ -1467,6 +1622,7 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
         "id": msg.id,
         "importance": getattr(getattr(msg, "importance", None), "value", None),
         "is_read": bool(msg.is_read),
+        "parent_folder_id": getattr(msg, "parent_folder_id", None),
         "received": str(msg.received_date_time) if msg.received_date_time else None,
         "sent": str(sent) if sent else None,
         "subject": msg.subject,

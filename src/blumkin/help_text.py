@@ -579,6 +579,35 @@ Fetches one message in full. Prefer this over listing and filtering client-side
 when you already have the id. Default body type is text.
 """
 
+MAIL_SEARCH_EPILOG = """
+Examples:
+
+\b
+  blumkin mail search --query "renewal from:dana" --json
+  blumkin mail search --query invoice --since 2026-08-01 --until 2026-09-01 --json
+
+Searches the WHOLE mailbox (every folder), relevance-ranked, and tags each hit
+with its `folder`. `mail list --search` only covers one folder. Microsoft uses
+Graph `$search`, Google uses Gmail `q=` (so Gmail operators like `from:` /
+`subject:` / `has:attachment` work there). `$search` cannot combine with a
+server-side date filter, so `--since` / `--until` filter the returned page
+locally. No extra scope.
+"""
+
+MAIL_THREAD_EPILOG = """
+Examples:
+
+\b
+  blumkin mail thread --id AAMk... --json
+  blumkin mail thread --id AAMk... --full --body-type text
+
+Lists every message in the conversation the given message belongs to, oldest
+first, each with the `mail list` summary shape. `--full` adds each body
+(`--body-type` html/text; Microsoft converts server-side, Google returns its
+stored representation). Microsoft resolves the `conversationId` and filters
+`/me/messages`; Google reads the Gmail thread. No extra scope.
+"""
+
 MAIL_INBOX_EPILOG = """
 Examples:
 
