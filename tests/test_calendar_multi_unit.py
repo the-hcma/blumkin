@@ -234,6 +234,30 @@ def test_google_calendar_list_shape(tmp_path: Path) -> None:
     assert payload["calendars"][1]["can_edit"] is False
 
 
+def test_google_exact_id_wins_over_a_name_collision(tmp_path: Path) -> None:
+    # One calendar's id equals another calendar's display name: the exact-id
+    # branch must win, not fall through to name matching.
+    service = _google_service(
+        calendar_items=[
+            {"id": "team@g.calendar.google.com", "summary": "Ops"},
+            {"id": "other@g.calendar.google.com", "summary": "team@g.calendar.google.com"},
+        ]
+    )
+    start = datetime(2026, 9, 1, tzinfo=ZoneInfo(_NY))
+    with _google_patched(service):
+        asyncio.run(
+            google_calendar.calendar_view(
+                start=start,
+                end=start.replace(day=2),
+                calendar="team@g.calendar.google.com",
+                config=_google_cfg(tmp_path),
+            )
+        )
+    assert service.events.return_value.list.call_args.kwargs["calendarId"] == (
+        "team@g.calendar.google.com"
+    )
+
+
 def test_google_view_named_calendar_targets_its_id(tmp_path: Path) -> None:
     service = _google_service(
         calendar_items=[
