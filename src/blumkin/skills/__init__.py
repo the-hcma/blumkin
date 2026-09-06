@@ -26,6 +26,11 @@ SKILL_METHOD_OVERRIDES: dict[str, str] = {
     "mail.attachments": "mail_attachments_list",
 }
 
+# Skills that need the Microsoft `docs_scopes` opt-in (Files.ReadWrite). Google
+# needs no toggle - it has its own `documents` + `drive.file` grant. The gate is
+# applied in the dispatch layer only when the active provider is Microsoft.
+DOCS_SKILLS: frozenset[str] = frozenset({"docs.create"})
+
 # Skills gated on `wo1162425_scopes` (Microsoft add-on grant). `mail.auto-reply` is
 # gated only when it is actually changing a setting - handled in the dispatch layer.
 WO1162425_SKILLS: frozenset[str] = frozenset(
@@ -721,8 +726,8 @@ SKILLS: list[SkillSpec] = [
         cli=["blumkin", "docs", "create"],
         summary=(
             "Author a document from a Markdown (or plain-text) body and store it in the "
-            "user's drive as a real Google Doc. Does not notify anyone. "
-            "(provider = microsoft is not implemented yet.)"
+            "user's drive: a real Google Doc, or a .docx uploaded to OneDrive on "
+            "Microsoft. Does not notify anyone."
         ),
         mutates=True,
         notifies_others=False,

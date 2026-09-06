@@ -54,6 +54,14 @@ BASE_SCOPES = [
     "User.Read",
 ]
 
+# `docs create` uploads a .docx to the user's OneDrive. Off until the tenant
+# grants Files.ReadWrite and the user re-consents (docs_scopes in config.toml) -
+# a separate toggle from files_scopes, which unlocks only chat-file reads
+# (docs/DECISIONS.md D10). Requesting an ungranted scope breaks silent refresh.
+DOCS_SCOPES = [
+    "Files.ReadWrite",
+]
+
 # Teams chat files live in SharePoint/OneDrive, so `chat attachments download` needs a
 # Files scope. Off until the tenant grants it and the user re-consents
 # (files_scopes in config.toml), because requesting an ungranted scope breaks silent refresh.
@@ -164,6 +172,8 @@ def effective_scopes(config: BlumkinConfig | None = None) -> list[str]:
     """Return MSAL scopes for the current config (Phase 4 add-ons optional)."""
     cfg = config or load_config()
     scopes = list(BASE_SCOPES)
+    if cfg.docs_scopes:
+        scopes.extend(DOCS_SCOPES)
     if cfg.files_scopes:
         scopes.extend(FILES_SCOPES)
     if cfg.wo1162425_scopes:
@@ -241,6 +251,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "client_id_configured": bool(cfg.client_id),
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),
+        "docs_scopes": cfg.docs_scopes,
         "files_scopes": cfg.files_scopes,
         "wo1162425_scopes": cfg.wo1162425_scopes,
         "granted_scopes": sorted(granted),

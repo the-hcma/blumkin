@@ -115,6 +115,13 @@ _ARG_PARAM_PINS = {
         "--yes": (None, None),
         "--tz": ("tz_name", None),
     },
+    "docs.create": {
+        "--title": ("title", None),
+        "--body": ("body", None),
+        "--body-file": ("body_file", None),
+        "--format": ("body_format", None),
+        "--folder": ("folder", None),
+    },
 }
 
 

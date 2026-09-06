@@ -22,7 +22,7 @@ One config file, one or more **named profiles** (Microsoft, Google, or both), se
 | `calendar` | `today`, `view`, `freebusy`, `suggest`, `create`, `accept`, `cancel`, `update` |
 | `mail` | `inbox`, `list`, `get`, `folders`, `draft`, `update-draft`, `delete-draft`, `send-draft`, `reply`, `forward`, `signature`, `attachments` (+ `download`) |
 | `chat` (Teams / Google Chat) | `find`, `last`, `send`, `edit`, `delete`, `attachments` (+ `download`) |
-| `docs` | `create` (a Markdown subset → a real Google Doc) |
+| `docs` | `create` (a Markdown subset → a real Google Doc, or a `.docx` in OneDrive) |
 | `meeting` (Microsoft) | `get`, `transcription` |
 | `people` | `resolve` |
 | `mcp` | `serve`, `install`, `status` |

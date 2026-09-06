@@ -19,6 +19,7 @@ from blumkin.config import BlumkinConfig
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills import (
+    DOCS_SKILLS,
     SKILL_METHOD_OVERRIDES,
     WO1162425_SKILLS,
     describe_skill,
@@ -31,6 +32,15 @@ from blumkin.skills.errors import ConsentRequiredError, ScopeAddonDisabledError
 # ``confirm`` boolean onto ``yes`` before calling run_skill.
 _CONSENT_KEYS = ("yes", "confirm")
 
+_DOCS_SCOPES_MESSAGE = (
+    "docs create needs the Files.ReadWrite Graph scope, which is off. It uploads "
+    "a .docx to your OneDrive."
+)
+_DOCS_SCOPES_HINT = (
+    "Set docs_scopes = true in config.toml (once the tenant has granted "
+    "Files.ReadWrite), delete the token cache and auth record, then run "
+    "`blumkin auth login`. On a Google profile no toggle is needed."
+)
 _WO1162425_MESSAGE = (
     "WO1162425 add-on scopes are disabled. Calendar, mail, and chat read "
     "skills work without them; chat write, meeting skills, people resolve, "
@@ -189,6 +199,15 @@ def _consent_mode(skill_id: str, spec_args: list[dict[str, Any]]) -> str:
 def _run_gates(
     skill_id: str, spec_args: list[dict[str, Any]], arguments: dict[str, Any], config: BlumkinConfig
 ) -> None:
+    # docs create needs Files.ReadWrite on Microsoft (docs_scopes opt-in); Google
+    # carries its own grant and needs no toggle.
+    if (
+        skill_id in DOCS_SKILLS
+        and config.provider is ProviderKind.MICROSOFT
+        and not config.docs_scopes
+    ):
+        raise ScopeAddonDisabledError(_DOCS_SCOPES_MESSAGE, hint=_DOCS_SCOPES_HINT)
+
     # wo1162425 add-on scopes (Microsoft only)
     needs_addon = skill_id in WO1162425_SKILLS
     if skill_id == "mail.auto-reply" and _tristate(arguments, "on", "off") is not None:

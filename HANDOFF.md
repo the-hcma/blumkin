@@ -79,6 +79,9 @@ the validation TODO below passes.
 **Runtime gating today:** `wo1162425_scopes` requests only the scopes Blumkin
 actually uses so far (`Chat.ReadWrite`, `OnlineMeetings.ReadWrite`, `People.Read`).
 `files_scopes` remains a separate opt-in for chat attachment download (`Files.Read`).
+`docs_scopes` is a third opt-in: `Files.ReadWrite` for `docs create` (uploads a
+`.docx` to OneDrive). Also needs the Entra grant + re-consent before it works
+live.
 
 - [ ] **TODO (validate live after grant):** add the **new** scopes to the Entra
   client, delete token cache + auth record under the effective config dir
