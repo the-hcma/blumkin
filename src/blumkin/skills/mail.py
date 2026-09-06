@@ -7,20 +7,25 @@ import binascii
 import html as html_lib
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
 from kiota_abstractions.method import Method
 from kiota_abstractions.request_information import RequestInformation
 from kiota_abstractions.serialization.parsable_factory import ParsableFactory
+from msgraph.generated.models.automatic_replies_setting import AutomaticRepliesSetting
+from msgraph.generated.models.automatic_replies_status import AutomaticRepliesStatus
 from msgraph.generated.models.body_type import BodyType
+from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
 from msgraph.generated.models.email_address import EmailAddress
+from msgraph.generated.models.external_audience_scope import ExternalAudienceScope
 from msgraph.generated.models.file_attachment import FileAttachment
 from msgraph.generated.models.followup_flag import FollowupFlag
 from msgraph.generated.models.followup_flag_status import FollowupFlagStatus
 from msgraph.generated.models.importance import Importance
 from msgraph.generated.models.item_body import ItemBody
+from msgraph.generated.models.mailbox_settings import MailboxSettings
 from msgraph.generated.models.message import Message
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.recipient import Recipient
@@ -297,6 +302,23 @@ def format_list_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def format_auto_reply_human(payload: dict[str, Any]) -> list[str]:
+    oof = payload.get("auto_reply") or {}
+    if not oof.get("enabled"):
+        return ["auto-reply: off"]
+    scope = oof.get("scope") or "on"
+    lines = [f"auto-reply: {scope}"]
+    if oof.get("start") or oof.get("end"):
+        lines.append(f"  window: {oof.get('start') or '?'} -> {oof.get('end') or '?'}")
+    lines.append(f"  external: {oof.get('external_audience') or '?'}")
+    for label, key in (("internal", "internal_message"), ("external", "external_message")):
+        body = oof.get(key)
+        if body:
+            first = sanitize_terminal(str(body)).splitlines()[0] if str(body).strip() else ""
+            lines.append(f"  {label}: {first}")
+    return lines
+
+
 def format_triage_human(payload: dict[str, Any]) -> list[str]:
     label, ids = "Marked", []
     for candidate, word in (("moved", "Moved"), ("marked", "Marked"), ("deleted", "Deleted")):
@@ -462,6 +484,115 @@ async def mail_attachments_download(
 
 _FLAG_STATUS = {True: FollowupFlagStatus.Flagged, False: FollowupFlagStatus.NotFlagged}
 _IMPORTANCE = {"high": Importance.High, "normal": Importance.Normal, "low": Importance.Low}
+
+
+_OOF_AUDIENCE = {
+    "none": ExternalAudienceScope.None_,
+    "contacts": ExternalAudienceScope.ContactsOnly,
+    "all": ExternalAudienceScope.All,
+}
+_OOF_AUDIENCE_BACK = {
+    ExternalAudienceScope.None_: "none",
+    ExternalAudienceScope.ContactsOnly: "contacts",
+    ExternalAudienceScope.All: "all",
+}
+
+
+async def mail_auto_reply(
+    *,
+    enable: bool | None = None,
+    message: str | None = None,
+    message_file: str | None = None,
+    external_message: str | None = None,
+    external_audience: str | None = None,
+    start: date | None = None,
+    until: date | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Read (``enable is None``), turn on (``True``), or clear (``False``) the OOF auto-reply.
+
+    Needs ``MailboxSettings.ReadWrite`` (gated on ``wo1162425_scopes``).
+    """
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    if enable is None:
+        settings = await client.me.mailbox_settings.get()
+        current = getattr(settings, "automatic_replies_setting", None)
+        return {"auto_reply": _auto_reply_to_dict(current)}
+    if enable is False:
+        setting = AutomaticRepliesSetting(status=AutomaticRepliesStatus.Disabled)
+    else:
+        body_text = _read_body_arg(message, message_file)
+        if not body_text:
+            raise ValueError("turning auto-reply on needs --message or --message-file")
+        if external_audience is not None and external_audience not in _OOF_AUDIENCE:
+            raise ValueError("--external must be none, contacts, or all")
+        scheduled = start is not None or until is not None
+        tz_name = cfg.default_tz
+        setting = AutomaticRepliesSetting(
+            status=AutomaticRepliesStatus.Scheduled
+            if scheduled
+            else AutomaticRepliesStatus.AlwaysEnabled,
+            internal_reply_message=body_text,
+            external_reply_message=external_message or body_text,
+            external_audience=_OOF_AUDIENCE[external_audience or "all"],
+            scheduled_start_date_time=_oof_dtz(start, tz_name) if start else None,
+            scheduled_end_date_time=_oof_dtz(until, tz_name, end=True) if until else None,
+        )
+    updated = await client.me.mailbox_settings.patch(
+        MailboxSettings(automatic_replies_setting=setting)
+    )
+    applied = getattr(updated, "automatic_replies_setting", setting)
+    return {"auto_reply": _auto_reply_to_dict(applied)}
+
+
+def _oof_dtz(day: date, tz_name: str, *, end: bool = False) -> DateTimeTimeZone:
+    """A calendar date -> local midnight in ``tz_name``. ``end`` makes ``--until`` inclusive.
+
+    An OOF window is expressed in whole days, so the ``--until`` day should be
+    covered in full: the end boundary is local midnight of the *next* day.
+    """
+    boundary = day + timedelta(days=1) if end else day
+    return DateTimeTimeZone(date_time=f"{boundary.isoformat()}T00:00:00", time_zone=tz_name)
+
+
+def _read_body_arg(message: str | None, message_file: str | None) -> str | None:
+    if message is not None and message_file is not None:
+        raise ValueError("pass only one of --message or --message-file")
+    if message_file is not None:
+        try:
+            return Path(message_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValueError(f"cannot read --message-file {message_file}: {exc}") from exc
+    return message
+
+
+def _auto_reply_to_dict(setting: Any) -> dict[str, Any]:
+    status = _enum_value_or_none(getattr(setting, "status", None))
+    audience = getattr(setting, "external_audience", None)
+    return {
+        "enabled": status not in (None, "disabled"),
+        "scope": status,
+        "start": _dtz_iso(getattr(setting, "scheduled_start_date_time", None)),
+        "end": _dtz_iso(getattr(setting, "scheduled_end_date_time", None)),
+        "internal_message": getattr(setting, "internal_reply_message", None),
+        "external_message": getattr(setting, "external_reply_message", None),
+        "external_audience": _OOF_AUDIENCE_BACK.get(audience) if audience is not None else None,
+    }
+
+
+def _enum_value_or_none(member: Any) -> str | None:
+    if member is None:
+        return None
+    return str(getattr(member, "value", member))
+
+
+def _dtz_iso(dtz: Any) -> str | None:
+    raw = getattr(dtz, "date_time", None)
+    if not raw:
+        return None
+    tz = getattr(dtz, "time_zone", None)
+    return f"{raw} {tz}" if tz else str(raw)
 
 
 async def mail_delete(

@@ -605,6 +605,33 @@ these exit 4 (`missing_scope`). `gmail`'s `flag` maps to the STARRED label and
 `importance` to the IMPORTANT label.
 """
 
+MAIL_AUTO_REPLY_EPILOG = """
+Examples:
+
+\b
+  blumkin mail auto-reply --json
+  blumkin mail auto-reply --on --message "Out until Sept 15, back then." --yes
+  blumkin mail auto-reply --on --message-file oof.txt --start 2026-09-10 \\
+    --until 2026-09-15 --external contacts --yes
+  blumkin mail auto-reply --off --yes
+
+With no flags this reads the current setting; passing a change flag
+(`--message`, `--start`, ...) without `--on` / `--off` is a usage error, not a
+silent read. `--on` needs `--message` or `--message-file`; `--off` clears it.
+Both need `--yes`. `--start` / `--until` schedule a window (otherwise it stays
+on until you turn it off); the dates are read in the profile timezone
+(`default_tz`) and `--until` is inclusive - the whole end day is covered.
+`--external` picks who outside your org gets a reply: `all` (default),
+`contacts`, or `none`.
+
+Microsoft splits internal and external bodies - `--external-message` sets a
+separate one; it needs `wo1162425_scopes` (MailboxSettings.ReadWrite). Google
+has a single body (so `--external-message` is rejected); `--external contacts`
+maps to Gmail's `restrictToContacts` and `--external none` to `restrictToDomain`
+(org only). Google needs the NEW `gmail.settings.basic` scope, so until you
+re-run `blumkin auth login` it exits 4 (`missing_scope`).
+"""
+
 MAIL_SEARCH_EPILOG = """
 Examples:
 

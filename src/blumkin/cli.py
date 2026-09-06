@@ -94,6 +94,9 @@ from blumkin.skills.mail import (
     render_mail_signature,
 )
 from blumkin.skills.mail import (
+    format_auto_reply_human as format_mail_auto_reply_human,
+)
+from blumkin.skills.mail import (
     format_get_human as format_mail_get_human,
 )
 from blumkin.skills.mail import (
@@ -468,14 +471,15 @@ def _require_wo1162425_scopes(*, as_json: bool) -> None:
         error="usage_error",
         message=(
             "WO1162425 add-on scopes are disabled. Calendar, mail, and chat read "
-            "skills work without them; chat write, meeting skills, and people resolve "
-            "do not."
+            "skills work without them; chat write, meeting skills, people resolve, "
+            "and mail auto-reply do not."
         ),
         as_json=as_json,
         hint=(
             "Set wo1162425_scopes = true in config.toml once Remedy WO1162425 has "
-            "granted its add-ons (at least Chat.ReadWrite, OnlineMeetings.ReadWrite, "
-            "People.Read; see HANDOFF.md, some asks may still be pending), then delete "
+            "granted its add-ons (at least Chat.ReadWrite, MailboxSettings.ReadWrite, "
+            "OnlineMeetings.ReadWrite, People.Read; see HANDOFF.md, some asks may still "
+            "be pending), then delete "
             "the token cache and auth record and run `blumkin auth login`."
         ),
     )
@@ -2967,6 +2971,117 @@ def mail_move_cmd(
         message_ids=list(message_ids),
         to=to,
     )
+
+
+@mail.command("auto-reply", epilog=help_text.MAIL_AUTO_REPLY_EPILOG)
+@click.option(
+    "--on/--off",
+    "enable",
+    default=None,
+    help="Turn the auto-reply on or off. Omit both to read the current setting.",
+)
+@click.option("--message", "message", default=None, help="Reply body text.")
+@click.option(
+    "--message-file",
+    "message_file",
+    default=None,
+    help="Read the reply body from a file (mutually exclusive with --message).",
+)
+@click.option(
+    "--external-message",
+    "external_message",
+    default=None,
+    help="Separate body for senders outside your org (Microsoft only).",
+)
+@click.option(
+    "--external",
+    "external_audience",
+    default=None,
+    type=click.Choice(["none", "contacts", "all"], case_sensitive=False),
+    help="Who outside your org gets a reply (default: all).",
+)
+@click.option(
+    "--start",
+    "start",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Schedule start date (YYYY-MM-DD).",
+)
+@click.option(
+    "--until",
+    "until",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Schedule end date (YYYY-MM-DD).",
+)
+@click.option("--yes", "yes", is_flag=True, help="Confirm the change (required with --on/--off).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_auto_reply_cmd(
+    ctx: click.Context,
+    enable: bool | None,
+    message: str | None,
+    message_file: str | None,
+    external_message: str | None,
+    external_audience: str | None,
+    start: Any,
+    until: Any,
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Read, set, or clear the automatic-reply / vacation responder (out-of-office).
+
+    With no flags this is a read. `--on` needs `--message` or `--message-file`
+    and `--yes`; `--off` clears it and needs `--yes`. `--start` / `--until`
+    schedule a window. Microsoft needs `wo1162425_scopes` (MailboxSettings.ReadWrite);
+    Google needs the `gmail.settings.basic` scope.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    if enable is None and any(
+        v is not None
+        for v in (message, message_file, external_message, external_audience, start, until)
+    ):
+        _emit_error(
+            error="usage_error",
+            message=(
+                "pass --on to turn the auto-reply on (with --message / --start / ...) "
+                "or --off to clear it"
+            ),
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    if enable is not None:
+        _require_wo1162425_scopes(as_json=as_json)
+        _require_yes(
+            yes=yes, as_json=as_json, reason="This changes your mailbox auto-reply setting."
+        )
+    try:
+        payload = asyncio.run(
+            _workspace().mail_auto_reply(
+                enable=enable,
+                message=message,
+                message_file=message_file,
+                external_message=external_message,
+                external_audience=external_audience,
+                start=start.date() if start is not None else None,
+                until=until.date() if until is not None else None,
+            )
+        )
+    except MailFolderNotFoundError as exc:
+        _emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    except ValueError as exc:
+        _raise_mail_value_error(exc, as_json=as_json)
+    except Exception as exc:
+        _raise_graph_http_error(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(format_mail_auto_reply_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+mail.add_command(mail_auto_reply_cmd, "oof")
 
 
 @mail.command("delete-draft", epilog=help_text.MAIL_DELETE_DRAFT_EPILOG)

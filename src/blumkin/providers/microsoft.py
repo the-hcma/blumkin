@@ -39,6 +39,7 @@ from blumkin.skills.chat import (
 from blumkin.skills.mail import (
     mail_attachments_download,
     mail_attachments_list,
+    mail_auto_reply,
     mail_delete,
     mail_delete_draft,
     mail_draft,
@@ -531,6 +532,28 @@ class MicrosoftWorkspaceProvider:
             cc=cc,
             reply_all=reply_all,
             no_signature=no_signature,
+            config=self._config,
+        )
+
+    async def mail_auto_reply(
+        self,
+        *,
+        enable: bool | None = None,
+        message: str | None = None,
+        message_file: str | None = None,
+        external_message: str | None = None,
+        external_audience: str | None = None,
+        start: date | None = None,
+        until: date | None = None,
+    ) -> dict[str, Any]:
+        return await mail_auto_reply(
+            enable=enable,
+            message=message,
+            message_file=message_file,
+            external_message=external_message,
+            external_audience=external_audience,
+            start=start,
+            until=until,
             config=self._config,
         )
 

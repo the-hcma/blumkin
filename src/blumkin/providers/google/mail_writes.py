@@ -19,12 +19,15 @@ from __future__ import annotations
 import base64
 import html as html_lib
 import mimetypes
+import pathlib
 from collections.abc import Mapping, Sequence
+from datetime import UTC, date, datetime, timedelta
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email.policy import default as _default_policy
 from email.utils import getaddresses
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from googleapiclient.errors import HttpError
 
@@ -37,6 +40,7 @@ from blumkin.providers.google.mail import (
 )
 from blumkin.providers.google_auth import (
     MAIL_MODIFY_SCOPES,
+    MAIL_SETTINGS_SCOPES,
     MAIL_WRITE_SCOPES,
     get_credentials,
 )
@@ -60,6 +64,125 @@ _IMPORTANCE_LABEL_OPS = {
     "normal": ([], ["IMPORTANT"]),
     "low": ([], ["IMPORTANT"]),
 }
+
+
+async def mail_auto_reply(
+    *,
+    enable: bool | None = None,
+    message: str | None = None,
+    message_file: str | None = None,
+    external_message: str | None = None,
+    external_audience: str | None = None,
+    start: date | None = None,
+    until: date | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Read / set / clear the Gmail vacation responder (needs gmail.settings.basic).
+
+    Gmail has one response body (no internal/external split), so
+    ``--external-message`` is not supported here. ``--external`` maps to Gmail's
+    vacation restrictions: ``contacts`` -> ``restrictToContacts``, ``none`` ->
+    ``restrictToDomain`` (org only), ``all`` -> neither.
+    """
+    if external_message is not None:
+        raise ValueError("--external-message is Microsoft-only (Gmail has one response body)")
+    cfg = config or load_config()
+    service = _gmail_settings_service(cfg)
+    current = execute(service.users().settings().getVacation(userId="me"))
+    if enable is None:
+        return {"auto_reply": _vacation_to_dict(current)}
+    if enable is False:
+        # updateVacation replaces the whole resource, so carry the existing body
+        # and restrictions forward - only the enable flag changes.
+        body: dict[str, Any] = {**_vacation_keep(current), "enableAutoReply": False}
+    else:
+        text = _read_body_text(message, message_file)
+        if not text:
+            raise ValueError("turning auto-reply on needs --message or --message-file")
+        if external_audience is not None and external_audience not in {"none", "contacts", "all"}:
+            raise ValueError("--external must be none, contacts, or all")
+        tz = ZoneInfo(cfg.default_tz)
+        # A full-resource write: startTime/endTime are set only when scheduled, so
+        # re-enabling always-on drops any window left over from an earlier schedule.
+        body = {
+            "enableAutoReply": True,
+            "responseBodyPlainText": text,
+            "restrictToContacts": external_audience == "contacts",
+            "restrictToDomain": external_audience == "none",
+        }
+        if start is not None:
+            body["startTime"] = _day_epoch_ms(start, tz)
+        if until is not None:
+            body["endTime"] = _day_epoch_ms(until, tz, end=True)
+    updated = execute(service.users().settings().updateVacation(userId="me", body=body))
+    return {"auto_reply": _vacation_to_dict(updated)}
+
+
+_VACATION_KEEP_KEYS = (
+    "responseSubject",
+    "responseBodyPlainText",
+    "responseBodyHtml",
+    "restrictToContacts",
+    "restrictToDomain",
+    "startTime",
+    "endTime",
+)
+
+
+def _vacation_keep(current: dict[str, Any]) -> dict[str, Any]:
+    return {k: current[k] for k in _VACATION_KEEP_KEYS if k in current}
+
+
+def _day_epoch_ms(day: date, tz: ZoneInfo, *, end: bool = False) -> int:
+    """A calendar date -> local-midnight epoch ms in ``tz``. ``end`` makes ``--until`` inclusive."""
+    boundary = day + timedelta(days=1) if end else day
+    return int(datetime(boundary.year, boundary.month, boundary.day, tzinfo=tz).timestamp() * 1000)
+
+
+def _gmail_settings_service(cfg: BlumkinConfig) -> Any:
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=MAIL_SETTINGS_SCOPES)
+    return build_api_service("gmail", "v1", creds=creds, config=cfg)
+
+
+def _read_body_text(message: str | None, message_file: str | None) -> str | None:
+    if message is not None and message_file is not None:
+        raise ValueError("pass only one of --message or --message-file")
+    if message_file is not None:
+        try:
+            return pathlib.Path(message_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValueError(f"cannot read --message-file {message_file}: {exc}") from exc
+    return message
+
+
+def _vacation_to_dict(vacation: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(vacation.get("enableAutoReply"))
+    scheduled = bool(vacation.get("startTime") or vacation.get("endTime"))
+    body = vacation.get("responseBodyPlainText") or vacation.get("responseBodyHtml")
+    return {
+        "enabled": enabled,
+        "scope": ("scheduled" if scheduled else "alwaysEnabled") if enabled else "disabled",
+        "start": _epoch_ms_iso(vacation.get("startTime")),
+        "end": _epoch_ms_iso(vacation.get("endTime")),
+        "internal_message": body,
+        "external_message": body,
+        "external_audience": (
+            "contacts"
+            if vacation.get("restrictToContacts")
+            else "none"
+            if vacation.get("restrictToDomain")
+            else "all"
+        ),
+    }
+
+
+def _epoch_ms_iso(raw: Any) -> str | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromtimestamp(int(raw) / 1000, tz=UTC).isoformat()
+    except TypeError, ValueError:
+        return None
 
 
 async def mail_delete(

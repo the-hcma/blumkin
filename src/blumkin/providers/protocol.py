@@ -253,6 +253,18 @@ class WorkspaceProvider(Protocol):
 
     async def mail_move(self, *, message_ids: Sequence[str], to: str) -> dict[str, Any]: ...
 
+    async def mail_auto_reply(
+        self,
+        *,
+        enable: bool | None = None,
+        message: str | None = None,
+        message_file: str | None = None,
+        external_message: str | None = None,
+        external_audience: str | None = None,
+        start: date | None = None,
+        until: date | None = None,
+    ) -> dict[str, Any]: ...
+
     async def mail_inbox(
         self,
         *,

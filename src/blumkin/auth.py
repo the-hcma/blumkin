@@ -86,6 +86,7 @@ class SecretWriteError(OSError):
 # actually request at runtime belong here.
 WO1162425_SCOPES = [
     "Chat.ReadWrite",
+    "MailboxSettings.ReadWrite",
     "OnlineMeetings.ReadWrite",
     "People.Read",
 ]

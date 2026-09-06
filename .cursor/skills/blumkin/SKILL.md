@@ -182,6 +182,14 @@ original's attachments.
     IMPORTANT, `--to archive` removes the Inbox label. `--to` also takes a folder
     display name (Microsoft matches your folder tree; Google resolves a Gmail
     label name to its id) or a raw folder / `Label_` id from `mail folders`.
+  - `blumkin mail auto-reply` (alias `mail oof`) - read, set, or clear the
+    automatic-reply / vacation responder. No flags = read. `--on --message '…'
+    --yes` turns it on (`--message-file` reads a file instead); `--off --yes`
+    clears it. `--start` / `--until` (YYYY-MM-DD) schedule a window. `--external
+    all|contacts|none` picks who outside your org gets a reply. Microsoft splits
+    internal/external bodies (`--external-message`) and needs `wo1162425_scopes`
+    (MailboxSettings.ReadWrite); **Google has one body and needs the new
+    `gmail.settings.basic` scope** - re-run `blumkin auth login` or it exits 4.
   - `blumkin mail reply --id '<message-id>' --body …` (`--all` for reply-all). Use this
     rather than a fresh draft with `RE:` prepended: Graph puts the draft in the original
     conversation and inherits the recipients, so it threads in the recipient's client.
