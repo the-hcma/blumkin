@@ -592,8 +592,12 @@ Examples:
 `move` / `mark` / `delete` change mailbox state but notify no one, so `--yes` is
 a safety confirm, not a notify gate. `--id` is repeatable; a batch reports each
 message it skipped rather than aborting. `delete` goes to Deleted Items / Gmail
-Trash (recoverable). `move --to archive` just removes the Inbox label; other
-targets are a well-known name, a folder id, or a Gmail label.
+Trash (recoverable). `move --to archive` just removes the Inbox label. Other
+targets: a well-known name (`deleteditems`, `sentitems`, ...), a folder id, or a
+folder display name. Microsoft matches the name against your folder tree and
+falls back to treating an unmatched token as a folder id; Google resolves a
+Gmail label name to its id (an unmatched label name is `not_found`, exit 5) or
+takes a `Label_` id from `mail folders` directly.
 
 Microsoft: covered by `Mail.ReadWrite` (already granted). Google: needs
 `gmail.modify` - a NEW scope. Until you re-run `blumkin auth login` and grant it,

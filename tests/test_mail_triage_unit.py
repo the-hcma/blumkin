@@ -24,6 +24,7 @@ from blumkin.providers.google import mail_writes as google_mail_writes
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.mail import (
+    MailFolderNotFoundError,
     MailMessageNotFoundError,
     format_triage_human,
     mail_delete,
@@ -78,6 +79,27 @@ def test_graph_move_resolves_well_known_and_returns_to(monkeypatch) -> None:
     body = client.me.messages.by_message_id.return_value.move.post.await_args.args[0]
     assert body.destination_id == "archive"
     assert payload == {"moved": ["m1"], "count": 1, "skipped": [], "to": "archive"}
+
+
+def test_graph_move_resolves_a_display_name_to_a_folder_id(monkeypatch) -> None:
+    client = _graph(monkeypatch)
+    monkeypatch.setattr(
+        "blumkin.skills.mail._resolve_folder_fallback",
+        AsyncMock(return_value=("AAMkFOLDERID", None, False)),
+    )
+    payload = asyncio.run(mail_move(message_ids=["m1"], to="Receipts"))
+    body = client.me.messages.by_message_id.return_value.move.post.await_args.args[0]
+    assert body.destination_id == "AAMkFOLDERID"
+    assert payload["to"] == "AAMkFOLDERID"
+
+
+def test_graph_mark_direction_branches(monkeypatch) -> None:
+    client = _graph(monkeypatch)
+    asyncio.run(mail_mark(message_ids=["m1"], read=False, flagged=False, importance="low"))
+    patch_body = client.me.messages.by_message_id.return_value.patch.await_args.args[0]
+    assert patch_body.is_read is False
+    assert patch_body.flag.flag_status == FollowupFlagStatus.NotFlagged
+    assert patch_body.importance == Importance.Low
 
 
 def test_graph_delete_calls_delete(monkeypatch) -> None:
@@ -166,6 +188,80 @@ def test_google_mark_maps_flag_and_importance(tmp_path: Path) -> None:
     body = service.users.return_value.messages.return_value.modify.call_args.kwargs["body"]
     assert set(body["addLabelIds"]) == {"STARRED"}
     assert set(body["removeLabelIds"]) == {"UNREAD", "IMPORTANT"}
+
+
+def test_google_mark_direction_branches(tmp_path: Path) -> None:
+    service = MagicMock()
+    with _google_patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).mail_mark(
+                message_ids=["m1"], read=False, flagged=False, importance="high"
+            )
+        )
+    body = service.users.return_value.messages.return_value.modify.call_args.kwargs["body"]
+    assert set(body["addLabelIds"]) == {"UNREAD", "IMPORTANT"}
+    assert set(body["removeLabelIds"]) == {"STARRED"}
+
+
+def test_google_move_to_inbox_keeps_the_inbox_label(tmp_path: Path) -> None:
+    service = MagicMock()
+    with _google_patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).mail_move(message_ids=["m1"], to="inbox")
+        )
+    body = service.users.return_value.messages.return_value.modify.call_args.kwargs["body"]
+    assert body == {"addLabelIds": ["INBOX"], "removeLabelIds": []}
+
+
+def test_google_move_resolves_a_label_name_to_its_id(tmp_path: Path) -> None:
+    service = MagicMock()
+    service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+        "labels": [{"id": "Label_42", "name": "Receipts"}]
+    }
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).mail_move(
+                message_ids=["m1"], to="receipts"
+            )
+        )
+    body = service.users.return_value.messages.return_value.modify.call_args.kwargs["body"]
+    assert body == {"addLabelIds": ["Label_42"], "removeLabelIds": ["INBOX"]}
+    assert payload["to"] == "Receipts"
+
+
+def test_google_move_unknown_label_name_is_not_found(tmp_path: Path) -> None:
+    service = MagicMock()
+    service.users.return_value.labels.return_value.list.return_value.execute.return_value = {
+        "labels": [{"id": "Label_1", "name": "Work"}]
+    }
+    with _google_patched(service), pytest.raises(MailFolderNotFoundError):
+        asyncio.run(
+            google_mail_writes.mail_move(
+                message_ids=["m1"], to="Nope", config=_google_cfg(tmp_path)
+            )
+        )
+
+
+def test_google_triage_batch_skips_and_propagates_total_failure(tmp_path: Path) -> None:
+    service = MagicMock()
+    modify = service.users.return_value.messages.return_value.modify.return_value
+    modify.execute.side_effect = [None, HttpError(httplib2.Response({"status": 404}), b"gone")]
+    with _google_patched(service):
+        payload = asyncio.run(
+            google_mail_writes.mail_move(
+                message_ids=["ok", "gone"], to="archive", config=_google_cfg(tmp_path)
+            )
+        )
+    assert payload["moved"] == ["ok"]
+    assert payload["skipped"] == [{"id": "gone", "reason": "message not found: gone"}]
+
+    modify.execute.side_effect = HttpError(httplib2.Response({"status": 500}), b"boom")
+    with _google_patched(service), pytest.raises(HttpError):
+        asyncio.run(
+            google_mail_writes.mail_move(
+                message_ids=["a", "b"], to="archive", config=_google_cfg(tmp_path)
+            )
+        )
 
 
 def test_google_delete_trashes(tmp_path: Path) -> None:

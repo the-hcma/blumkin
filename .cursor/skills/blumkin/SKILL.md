@@ -179,7 +179,9 @@ original's attachments.
     Microsoft: `Mail.ReadWrite` (already granted). **Google: needs the new
     `gmail.modify` scope** - until `blumkin auth login` re-consents, these exit 4
     (`missing_scope`). On Gmail, `--flag` = the STARRED label, `--importance` =
-    IMPORTANT, `--to archive` removes the Inbox label.
+    IMPORTANT, `--to archive` removes the Inbox label. `--to` also takes a folder
+    display name (Microsoft matches your folder tree; Google resolves a Gmail
+    label name to its id) or a raw folder / `Label_` id from `mail folders`.
   - `blumkin mail reply --id '<message-id>' --body …` (`--all` for reply-all). Use this
     rather than a fresh draft with `RE:` prepended: Graph puts the draft in the original
     conversation and inherits the recipients, so it threads in the recipient's client.
