@@ -23,6 +23,7 @@ from blumkin.providers.kind import ProviderKind
 from blumkin.skills.calendar_writes import (
     Recurrence,
     calendar_create,
+    format_create_human,
     recurrence_rrule,
     resolve_event_body,
 )
@@ -57,8 +58,8 @@ def test_resolve_event_body_missing_file() -> None:
 # --------------------------------------------------------------------------- Graph
 
 
-def _graph_client(monkeypatch) -> MagicMock:
-    created = SimpleNamespace(
+def _graph_client(monkeypatch, *, created: SimpleNamespace | None = None) -> MagicMock:
+    created = created or SimpleNamespace(
         id="evt",
         subject="x",
         start=None,
@@ -173,6 +174,39 @@ def test_graph_create_all_day_never_attaches_teams(monkeypatch) -> None:
     assert posted.online_meeting_provider is None
 
 
+def test_graph_create_all_day_human_echo_says_all_day(monkeypatch) -> None:
+    created = SimpleNamespace(
+        id="evt",
+        subject="OOO",
+        start=SimpleNamespace(
+            date_time="2026-12-24T00:00:00.0000000", time_zone="America/New_York"
+        ),
+        end=SimpleNamespace(date_time="2026-12-27T00:00:00.0000000", time_zone="America/New_York"),
+        is_all_day=True,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=None,
+    )
+    client = _graph_client(monkeypatch, created=created)
+    result = asyncio.run(
+        calendar_create(
+            subject="OOO",
+            with_emails=[],
+            start_raw="2026-12-24",
+            all_day=True,
+            duration="3d",
+            tz_name=_NY,
+        )
+    )
+    assert client.me.events.post.await_args is not None
+    assert result["event"]["is_all_day"] is True
+    line = format_create_human(result)[0]
+    assert "all day" in line
+    assert "00:00" not in line
+
+
 # ------------------------------------------------------------------------- recurrence
 
 
@@ -260,7 +294,7 @@ def test_google_create_all_day(tmp_path: Path) -> None:
         get_credentials=MagicMock(return_value=MagicMock()),
         build_api_service=MagicMock(return_value=service),
     ):
-        asyncio.run(
+        result = asyncio.run(
             GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_create(
                 subject="OOO",
                 with_emails=[],
@@ -275,6 +309,9 @@ def test_google_create_all_day(tmp_path: Path) -> None:
     assert date.fromisoformat(body["end"]["date"]) - date.fromisoformat(body["start"]["date"]) == (
         date(2026, 12, 27) - date(2026, 12, 24)
     )
+    assert result["event"]["is_all_day"] is True
+    echo = format_create_human(result)[0]
+    assert "all day" in echo and "00:00" not in echo
 
 
 def test_google_create_optional_only_still_notifies(tmp_path: Path) -> None:

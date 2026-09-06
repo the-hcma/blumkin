@@ -271,10 +271,17 @@ def format_cancel_human(payload: dict[str, Any]) -> list[str]:
     return [f"Cancelled event {payload.get('cancelled')!r}"]
 
 
+def _format_when(event: dict[str, Any]) -> str:
+    """Human ``when`` for a created/updated event: ``all day`` or ``start -> end``."""
+    if event.get("is_all_day"):
+        return "all day"
+    return f"{event.get('start')} → {event.get('end')}"
+
+
 def format_create_human(payload: dict[str, Any]) -> list[str]:
     event = payload.get("event") or {}
     subject = sanitize_terminal(str(event.get("subject") or "(no subject)"))
-    when = f"{event.get('start')} → {event.get('end')}"
+    when = _format_when(event)
     lines = [f"Created: {subject!r} ({when})"]
     recurrence = payload.get("recurrence")
     if recurrence:
