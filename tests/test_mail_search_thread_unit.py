@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -95,6 +96,25 @@ def test_graph_search_rejects_empty_query(monkeypatch) -> None:
     _graph(monkeypatch, messages_get_return=SimpleNamespace(value=[]))
     with pytest.raises(ValueError, match="--query is required"):
         asyncio.run(mail_search(query="   "))
+
+
+def test_graph_search_rejects_a_double_quote(monkeypatch) -> None:
+    _graph(monkeypatch, messages_get_return=SimpleNamespace(value=[]))
+    with pytest.raises(ValueError, match="double quote"):
+        asyncio.run(mail_search(query='subject:"quarterly report"'))
+
+
+def test_graph_search_drops_null_dated_messages_when_a_bound_is_set(monkeypatch) -> None:
+    # A $search hit from Drafts has no receivedDateTime; it must not pass both bounds.
+    draft = _msg("draft", subject="draft")
+    draft.received_date_time = None
+    draft.sent_date_time = None
+    draft.created_date_time = None
+    keep = _msg("keep", subject="keep")
+    keep.received_date_time = datetime(2026, 8, 15, tzinfo=UTC)
+    _graph(monkeypatch, messages_get_return=SimpleNamespace(value=[draft, keep]))
+    payload = asyncio.run(mail_search(query="x", until=datetime(2026, 9, 1, tzinfo=UTC)))
+    assert [i["id"] for i in payload["items"]] == ["keep"]
 
 
 # --------------------------------------------------------------------------- Graph thread
@@ -273,6 +293,48 @@ def test_google_thread_reads_the_gmail_thread(tmp_path: Path) -> None:
     assert payload["conversation_id"] == "t9"
     assert [i["id"] for i in payload["items"]] == ["a", "b"]
     assert users.threads.return_value.get.call_args.kwargs["id"] == "t9"
+
+
+def test_google_search_dated_query_and_truncation(tmp_path: Path) -> None:
+    service = MagicMock()
+    users = service.users.return_value
+    users.messages.return_value.list.return_value.execute.return_value = {
+        "messages": [{"id": "m1"}],
+        "nextPageToken": "more",
+    }
+    users.messages.return_value.get.return_value.execute.return_value = _gmsg(
+        "m1", subject="invoice", labels=["INBOX"]
+    )
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).mail_search(
+                query="invoice",
+                since=datetime(2026, 8, 1, tzinfo=UTC),
+                until=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        )
+    q = users.messages.return_value.list.call_args.kwargs["q"]
+    assert "after:" in q and "before:" in q
+    assert payload["complete"] is False  # nextPageToken => truncated
+
+
+def test_google_thread_full_extracts_each_body(tmp_path: Path) -> None:
+    service = MagicMock()
+    users = service.users.return_value
+    users.messages.return_value.get.return_value.execute.return_value = {"threadId": "t9"}
+    full_msg = _gmsg("a", subject="hi", labels=["INBOX"], thread="t9")
+    full_msg["payload"]["mimeType"] = "text/plain"
+    full_msg["payload"]["body"] = {"data": base64.urlsafe_b64encode(b"the full body text").decode()}
+    users.threads.return_value.get.return_value.execute.return_value = {"messages": [full_msg]}
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).mail_thread(
+                message_id="a", full=True, body_type="text"
+            )
+        )
+    assert users.threads.return_value.get.call_args.kwargs["format"] == "full"
+    assert payload["items"][0]["body"] == "the full body text"
+    assert payload["items"][0]["body_type"] == "text"
 
 
 def test_google_thread_missing_message_is_not_found(tmp_path: Path) -> None:

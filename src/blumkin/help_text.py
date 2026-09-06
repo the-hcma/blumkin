@@ -592,7 +592,10 @@ Graph `$search`, Google uses Gmail `q=` (so Gmail operators like `from:` /
 `subject:` / `has:attachment` work there). Graph `$search` cannot combine with a
 server-side date filter, so with `--since` / `--until` it over-fetches a
 relevance window and filters locally - `complete` is then `null` (a match
-outside the window cannot be ruled out). No extra scope.
+outside the window cannot be ruled out), and a hit with no timestamp (a draft)
+is dropped rather than passed. Graph `$search` has no escape for a `"` inside
+the query, so a quoted phrase is rejected on Microsoft (it works on Gmail
+`q=`). No extra scope.
 """
 
 MAIL_THREAD_EPILOG = """

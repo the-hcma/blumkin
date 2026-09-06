@@ -847,6 +847,10 @@ async def mail_search(
     q = query.strip()
     if not q:
         raise ValueError("--query is required")
+    if '"' in q:
+        # Graph wraps this as $search="<q>" with no escape for an inner quote
+        # (same limit _validate_search enforces for `mail list --search`).
+        raise ValueError("--query cannot contain a double quote")
     if top < 1:
         raise ValueError("--top must be >= 1")
     if since is not None and until is not None and until <= since:
@@ -860,10 +864,20 @@ async def mail_search(
     folder_names: dict[str, str] = {}
     items: list[dict[str, Any]] = []
     for msg in found:
-        received = getattr(msg, "received_date_time", None)
-        if since is not None and received is not None and received < since:
+        # $search matches Drafts / outbox copies too, and those have a null
+        # receivedDateTime. Fall back to sent, then created; if a bound is set and
+        # the message has no timestamp at all, it cannot be placed in the window
+        # so drop it rather than let it pass both bounds.
+        stamp = (
+            getattr(msg, "received_date_time", None)
+            or getattr(msg, "sent_date_time", None)
+            or getattr(msg, "created_date_time", None)
+        )
+        if dated and stamp is None:
             continue
-        if until is not None and received is not None and received >= until:
+        if since is not None and stamp is not None and stamp < since:
+            continue
+        if until is not None and stamp is not None and stamp >= until:
             continue
         item = _message_to_dict(msg)
         fid = item.get("parent_folder_id")
