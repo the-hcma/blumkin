@@ -12,6 +12,35 @@ die() {
   exit 1
 }
 
+# Retry a command with linear backoff until it succeeds or the time budget runs
+# out. `release_is_available()` already polls PyPI/the simple index with backoff;
+# the install path needs the same resilience because `uv` / `pip` resolve through
+# their own index cache and a different CDN edge, so they can still see a stale
+# "no such version" for a beat after the poll passed (issue #199). Callers pass a
+# cache-busting flag (uv `--refresh`, `PIP_NO_CACHE_DIR=1`) so a cached negative
+# lookup does not stick across attempts.
+retry_with_backoff() {
+  local -r budget_s="$1"
+  local -r label="$2"
+  shift 2
+
+  local -r max_attempts=5
+  local attempt
+  local -r deadline=$((SECONDS + budget_s))
+  for attempt in $(seq 1 "$max_attempts"); do
+    if "$@"; then
+      return 0
+    fi
+    # No message or sleep after the last attempt - the next line is `die`.
+    ((attempt < max_attempts)) || break
+    ((SECONDS < deadline)) || break
+    printf 'verify-pypi-release: %s attempt %d failed, retrying in %ds\n' \
+      "$label" "$attempt" "$((attempt * 15))" >&2
+    sleep "$((attempt * 15))"
+  done
+  die "could not ${label} after retries (PyPI/CDN propagation skew?)"
+}
+
 release_is_available() {
   local -r version="$1"
   local -r json_file="$2"
@@ -84,7 +113,8 @@ main() {
   fi
 
   timeout 120 uv venv --python 3.14 "$venv_dir"
-  timeout 180 uv pip install \
+  retry_with_backoff 300 "install ${package}==${version}" \
+    timeout 180 uv pip install --refresh \
     --python "${venv_dir}/bin/python" \
     "${package}==${version}"
   bin_dir="${venv_dir}/bin"
@@ -135,7 +165,9 @@ verify_pipx_install() {
   pipx_home="${temp_root}/pipx-home"
   pipx_bin_dir="${temp_root}/pipx-bin"
   mkdir -p "$pipx_home" "$pipx_bin_dir"
-  timeout 180 env HOME="$pipx_uv_home" PIPX_HOME="$pipx_home" PIPX_BIN_DIR="$pipx_bin_dir" \
+  retry_with_backoff 300 "pipx install ${package}==${version}" \
+    timeout 180 env HOME="$pipx_uv_home" PIPX_HOME="$pipx_home" PIPX_BIN_DIR="$pipx_bin_dir" \
+    PIP_NO_CACHE_DIR=1 \
     "$pipx_bin" install --python "$python_bin" "${package}==${version}"
 
   version_output="$(
