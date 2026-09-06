@@ -282,6 +282,25 @@ def test_google_unknown_calendar_raises(tmp_path: Path) -> None:
         )
 
 
+def test_google_ambiguous_calendar_name_raises(tmp_path: Path) -> None:
+    service = _google_service(
+        calendar_items=[
+            {"id": "a@g.calendar.google.com", "summary": "Team"},
+            {"id": "b@g.calendar.google.com", "summary": "team"},
+        ]
+    )
+    start = datetime(2026, 9, 1, tzinfo=ZoneInfo(_NY))
+    with _google_patched(service), pytest.raises(CalendarAmbiguousError):
+        asyncio.run(
+            google_calendar.calendar_view(
+                start=start,
+                end=start.replace(day=2),
+                calendar="Team",
+                config=_google_cfg(tmp_path),
+            )
+        )
+
+
 def test_google_list_owner_is_null_no_address_available(tmp_path: Path) -> None:
     service = _google_service(
         calendar_items=[{"id": "primary", "summary": "Me", "primary": True, "accessRole": "owner"}]
