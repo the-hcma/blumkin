@@ -592,7 +592,9 @@ def _calendar_list_entry_to_dict(item: dict[str, Any]) -> dict[str, Any]:
         "name": item.get("summaryOverride") or item.get("summary"),
         "is_default": bool(item.get("primary")),
         "can_edit": role in {"owner", "writer"},
-        "owner": item.get("id") if role == "owner" else None,
+        # Gmail's calendarList carries no owner mailbox address; Graph's `owner`
+        # is one, so return None here rather than an id that is not an address.
+        "owner": None,
         "color": item.get("backgroundColor"),
     }
 
@@ -607,7 +609,7 @@ def _resolve_calendar_id(service: Any, calendar: str | None) -> str:
     if not wanted:
         return "primary"
     items = execute(service.calendarList().list()).get("items") or []
-    if any(i.get("id") == wanted or (wanted == "primary" and i.get("primary")) for i in items):
+    if any(i.get("id") == wanted for i in items):
         return wanted
     matches = [
         i
@@ -616,10 +618,14 @@ def _resolve_calendar_id(service: Any, calendar: str | None) -> str:
     ]
     if len(matches) == 1:
         return str(matches[0]["id"])
-    if not matches:
-        raise CalendarNotFoundError(f"no calendar named {calendar!r}")
-    names = ", ".join(sorted({str(i.get("summary")) for i in matches}))
-    raise CalendarAmbiguousError(f"{calendar!r} matches more than one calendar: {names}")
+    if len(matches) > 1:
+        names = ", ".join(sorted({str(i.get("summary")) for i in matches}))
+        raise CalendarAmbiguousError(f"{calendar!r} matches more than one calendar: {names}")
+    # No id or name match: `primary` is the API alias for the default calendar,
+    # but only when no calendar is actually named that (fail-closed otherwise).
+    if wanted.casefold() == "primary":
+        return "primary"
+    raise CalendarNotFoundError(f"no calendar named {calendar!r}")
 
 
 def _rsvp_one(service: Any, event_id: str, status: str, comment: str | None = None) -> None:

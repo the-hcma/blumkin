@@ -242,6 +242,104 @@ def test_google_unknown_calendar_raises(tmp_path: Path) -> None:
         )
 
 
+def test_google_list_owner_is_null_no_address_available(tmp_path: Path) -> None:
+    service = _google_service(
+        calendar_items=[{"id": "primary", "summary": "Me", "primary": True, "accessRole": "owner"}]
+    )
+    with _google_patched(service):
+        payload = asyncio.run(GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_list())
+    assert payload["calendars"][0]["owner"] is None  # Graph-shape parity: an address or None
+
+
+def test_google_primary_keyword_falls_back_when_no_such_calendar(tmp_path: Path) -> None:
+    service = _google_service(
+        calendar_items=[{"id": "me@example.com", "summary": "Me", "primary": True}]
+    )
+    start = datetime(2026, 9, 1, tzinfo=ZoneInfo(_NY))
+    with _google_patched(service):
+        asyncio.run(
+            google_calendar.calendar_view(
+                start=start,
+                end=start.replace(day=2),
+                calendar="primary",
+                config=_google_cfg(tmp_path),
+            )
+        )
+    assert service.events.return_value.list.call_args.kwargs["calendarId"] == "primary"
+
+
+def test_google_real_primary_named_calendar_wins_over_the_keyword(tmp_path: Path) -> None:
+    service = _google_service(
+        calendar_items=[
+            {"id": "me@example.com", "summary": "Me", "primary": True},
+            {"id": "p@group.calendar.google.com", "summary": "Primary", "accessRole": "writer"},
+        ]
+    )
+    start = datetime(2026, 9, 1, tzinfo=ZoneInfo(_NY))
+    with _google_patched(service):
+        asyncio.run(
+            google_calendar.calendar_view(
+                start=start,
+                end=start.replace(day=2),
+                calendar="primary",
+                config=_google_cfg(tmp_path),
+            )
+        )
+    assert service.events.return_value.list.call_args.kwargs["calendarId"] == (
+        "p@group.calendar.google.com"
+    )
+
+
+# --------------------------------------------------------------- write verbs + --calendar
+
+
+def test_graph_cancel_targets_the_named_calendar(monkeypatch) -> None:
+    from blumkin.skills.calendar_writes import calendar_cancel
+
+    client = MagicMock()
+    client.me.calendars.get = AsyncMock(
+        return_value=SimpleNamespace(value=[_graph_calendar("TEAM", "Team")])
+    )
+    cancel = client.me.calendars.by_calendar_id.return_value.events.by_event_id.return_value.cancel
+    cancel.post = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz=_NY, client_id="x"),
+    )
+    asyncio.run(calendar_cancel(event_id="e1", calendar="Team"))
+    client.me.calendars.by_calendar_id.assert_called_once_with("TEAM")
+    cancel.post.assert_awaited_once()
+
+
+def test_google_create_inserts_into_the_named_calendar(tmp_path: Path) -> None:
+    service = _google_service(
+        calendar_items=[
+            {"id": "primary", "summary": "Me", "primary": True},
+            {"id": "team@g.calendar.google.com", "summary": "Team", "accessRole": "writer"},
+        ]
+    )
+    service.events.return_value.insert.return_value.execute.return_value = {
+        "id": "g",
+        "summary": "x",
+        "start": {"dateTime": "2026-09-22T09:00:00-04:00"},
+        "end": {"dateTime": "2026-09-22T10:00:00-04:00"},
+    }
+    with _google_patched(service):
+        asyncio.run(
+            google_calendar.calendar_create(
+                subject="x",
+                with_emails=[],
+                start_raw="2026-09-22T09:00",
+                calendar="Team",
+                config=_google_cfg(tmp_path),
+            )
+        )
+    assert service.events.return_value.insert.call_args.kwargs["calendarId"] == (
+        "team@g.calendar.google.com"
+    )
+
+
 # --------------------------------------------------------------------------- formatter / CLI
 
 
