@@ -46,6 +46,7 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.5",
 ]
+mcp = ["mcp>=2.1"]
 
 [project.scripts]
 blumkin = "blumkin.cli:main"
@@ -83,4 +84,5 @@ dev = [
     "pyright>=1.1.411",
     "pytest>=9.1.1",
     "ruff>=0.16.5",
+    "mcp>=2.1",
 ]

@@ -122,6 +122,9 @@ def _coerce(value: Any, *, arg: dict[str, Any], tz_name: str | None, config: Blu
 
 
 def _pp_calendar_create(kwargs: dict[str, Any], raw: dict[str, Any], config: BlumkinConfig) -> None:
+    # `--with` is optional in the catalog but `calendar_create(with_emails)` has no
+    # default; the CLI always passes `[]` for a solo hold, so match that over MCP.
+    kwargs.setdefault("with_emails", [])
     repeat = raw.get("repeat")
     count, days, until = raw.get("count"), raw.get("days"), raw.get("until")
     raw_interval = raw.get("interval")

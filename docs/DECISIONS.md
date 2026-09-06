@@ -73,10 +73,20 @@ Stacking backend is `gh-stack` (`.github/stacking-tool`), not Graphite. Keeps
 each layer of a change independently reviewable. See
 [`.cursor/rules/stacking-tool.mdc`](../.cursor/rules/stacking-tool.mdc).
 
-### D6 - No MCP server in v1
+### D6 - MCP via a thin stdio adapter; CLI stays the source of truth
 
-Agents shell out to `blumkin --json`; there is no MCP server. Reasoning:
-[`PLAN.md`](../PLAN.md) section 6.1.
+`blumkin mcp serve` ([#113](https://github.com/the-hcma/blumkin/issues/113))
+exposes every provider-backed skill as a typed MCP tool, generated from the same
+catalog the CLI publishes and dispatched through the same `run_skill` /
+`classify_exception` path - no second Graph implementation and no drift surface.
+It is an ephemeral stdio process the host spawns and reaps per session (Claude
+Code, Cursor CLI, GitHub Copilot CLI are all MCP-native stdio clients now), not a
+daemon, and it reuses the CLI's on-disk token cache, so there is no new auth
+surface. `mcp` is an optional extra (`pipx install 'blumkin[mcp]'`); the CLI-only
+verbs (`auth *`, `doctor`, `skills *`, `mail signature`, `mcp serve`) are not
+exposed; every tool whose CLI form needs `--yes` requires a server-enforced
+`confirm: true` argument (the MCP mirror of `--yes`). Superseded reasoning for the old
+"no MCP server in v1" stance: [`PLAN.md`](../PLAN.md) section 6.1.
 
 ### D7 - GitHub-native security hardening
 

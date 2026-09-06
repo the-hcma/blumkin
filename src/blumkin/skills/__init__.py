@@ -49,6 +49,7 @@ BESPOKE_SKILLS: frozenset[str] = frozenset(
         "auth.status",
         "doctor",
         "mail.signature",
+        "mcp.serve",
         "skills.describe",
         "skills.list",
     }
@@ -1235,6 +1236,19 @@ SKILLS: list[SkillSpec] = [
             {"name": "--body", "required": False, "type": "string"},
             {"name": "--body-file", "required": False, "type": "path"},
             {"name": "--body-type", "required": False, "type": "enum", "values": ["text", "html"]},
+        ],
+    ),
+    SkillSpec(
+        id="mcp.serve",
+        cli=["blumkin", "mcp", "serve"],
+        summary="Run blumkin as a Model Context Protocol stdio server for MCP-aware clients",
+        mutates=False,
+        notifies_others=False,
+        scopes=[],
+        args=[
+            {"name": "--profile", "required": False, "type": "string"},
+            {"name": "--read-only", "required": False, "type": "flag"},
+            {"name": "--only", "required": False, "type": "string", "multiple": True},
         ],
     ),
     SkillSpec(
