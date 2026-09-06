@@ -60,17 +60,59 @@ class GoogleWorkspaceProvider:
         *,
         event_id: str | None = None,
         today_pending: bool = False,
+        comment: str | None = None,
         tz_name: str | None = None,
     ) -> dict[str, Any]:
         return await google_calendar.calendar_accept(
             event_id=event_id,
             today_pending=today_pending,
+            comment=comment,
             tz_name=tz_name,
             config=self._config,
         )
 
     async def calendar_cancel(self, *, event_id: str) -> dict[str, Any]:
         return await google_calendar.calendar_cancel(event_id=event_id, config=self._config)
+
+    async def calendar_decline(
+        self,
+        *,
+        event_id: str | None = None,
+        today_pending: bool = False,
+        comment: str | None = None,
+        propose_start: str | None = None,
+        propose_duration: str | None = None,
+        tz_name: str | None = None,
+    ) -> dict[str, Any]:
+        return await google_calendar.calendar_decline(
+            event_id=event_id,
+            today_pending=today_pending,
+            comment=comment,
+            propose_start=propose_start,
+            propose_duration=propose_duration,
+            tz_name=tz_name,
+            config=self._config,
+        )
+
+    async def calendar_tentative(
+        self,
+        *,
+        event_id: str | None = None,
+        today_pending: bool = False,
+        comment: str | None = None,
+        propose_start: str | None = None,
+        propose_duration: str | None = None,
+        tz_name: str | None = None,
+    ) -> dict[str, Any]:
+        return await google_calendar.calendar_tentative(
+            event_id=event_id,
+            today_pending=today_pending,
+            comment=comment,
+            propose_start=propose_start,
+            propose_duration=propose_duration,
+            tz_name=tz_name,
+            config=self._config,
+        )
 
     async def calendar_create(
         self,

@@ -90,9 +90,34 @@ Examples:
 \b
   # Accept everything not yet responded to for today
   blumkin calendar accept --today-pending --yes
+\b
+  # Accept with a note to the organizer
+  blumkin calendar accept --event-id AAMk... --comment "on it" --yes
 
 Sends a response to each organizer, so `--yes` is required. Get event ids from
-`blumkin calendar today --json`.
+`blumkin calendar today --json`. To say no or maybe, use `calendar decline` /
+`calendar tentative`.
+"""
+
+CALENDAR_DECLINE_EPILOG = """
+Examples:
+
+\b
+  # Decline one invitation, with a reason
+  blumkin calendar decline --event-id AAMk... --comment "clashes with the board call" --yes
+\b
+  # Tentatively accept everything pending for today
+  blumkin calendar tentative --today-pending --yes
+\b
+  # Decline and propose another time (Microsoft only)
+  blumkin calendar decline --event-id AAMk... \\
+    --propose-time 2026-09-02T15:00 --propose-duration 45m --yes
+
+Sends a response to each organizer, so `--yes` is required. `--comment` reaches
+the organizer. `--propose-time` / `--propose-duration` work on Microsoft only
+(Google Calendar has no propose-new-time - the command fails closed there);
+they need a single `--event-id`. `--today-pending` batches like
+`calendar accept`, reporting any events it had to skip.
 """
 
 CALENDAR_CANCEL_EPILOG = """

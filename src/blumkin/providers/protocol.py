@@ -35,10 +35,33 @@ class WorkspaceProvider(Protocol):
         *,
         event_id: str | None = None,
         today_pending: bool = False,
+        comment: str | None = None,
         tz_name: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def calendar_cancel(self, *, event_id: str) -> dict[str, Any]: ...
+
+    async def calendar_decline(
+        self,
+        *,
+        event_id: str | None = None,
+        today_pending: bool = False,
+        comment: str | None = None,
+        propose_start: str | None = None,
+        propose_duration: str | None = None,
+        tz_name: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def calendar_tentative(
+        self,
+        *,
+        event_id: str | None = None,
+        today_pending: bool = False,
+        comment: str | None = None,
+        propose_start: str | None = None,
+        propose_duration: str | None = None,
+        tz_name: str | None = None,
+    ) -> dict[str, Any]: ...
 
     async def calendar_create(
         self,

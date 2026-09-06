@@ -24,11 +24,18 @@ from msgraph.generated.models.recurrence_pattern import RecurrencePattern
 from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
 from msgraph.generated.models.recurrence_range import RecurrenceRange
 from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
+from msgraph.generated.models.time_slot import TimeSlot
 from msgraph.generated.users.item.events.item.accept.accept_post_request_body import (
     AcceptPostRequestBody,
 )
 from msgraph.generated.users.item.events.item.cancel.cancel_post_request_body import (
     CancelPostRequestBody,
+)
+from msgraph.generated.users.item.events.item.decline.decline_post_request_body import (
+    DeclinePostRequestBody,
+)
+from msgraph.generated.users.item.events.item.tentatively_accept.tentatively_accept_post_request_body import (  # noqa: E501
+    TentativelyAcceptPostRequestBody,
 )
 
 from blumkin.config import BlumkinConfig, load_config
@@ -99,29 +106,77 @@ _WEEKDAY_BY_TOKEN = {
 }
 
 
+# RSVP action -> (result key, human label). One table so accept / decline /
+# tentative stay in lockstep across the skill, the formatter, and the catalog.
+_RSVP_LABELS: dict[str, tuple[str, str]] = {
+    "accept": ("accepted", "Accepted"),
+    "decline": ("declined", "Declined"),
+    "tentative": ("tentative", "Marked tentative on"),
+}
+
+
 async def calendar_accept(
     *,
     event_id: str | None = None,
     today_pending: bool = False,
+    comment: str | None = None,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    if today_pending == bool(event_id):
-        raise ValueError("exactly one of --event-id or --today-pending is required")
-    cfg = config or load_config()
-    client = create_graph_client(cfg)
-    if today_pending:
-        tz = ZoneInfo(tz_name or cfg.default_tz)
-        payload = await calendar_today(tz_name=str(tz), config=cfg)
-        event_ids = [
-            str(item["id"]) for item in payload["items"] if item.get("id") and _needs_accept(item)
-        ]
-    else:
-        event_ids = [str(event_id)]
-    body = AcceptPostRequestBody(send_response=True)
-    for eid in event_ids:
-        await client.me.events.by_event_id(eid).accept.post(body)
-    return {"accepted": event_ids, "count": len(event_ids)}
+    return await _calendar_rsvp(
+        "accept",
+        event_id=event_id,
+        today_pending=today_pending,
+        comment=comment,
+        propose_start=None,
+        propose_duration=None,
+        tz_name=tz_name,
+        config=config,
+    )
+
+
+async def calendar_decline(
+    *,
+    event_id: str | None = None,
+    today_pending: bool = False,
+    comment: str | None = None,
+    propose_start: str | None = None,
+    propose_duration: str | None = None,
+    tz_name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    return await _calendar_rsvp(
+        "decline",
+        event_id=event_id,
+        today_pending=today_pending,
+        comment=comment,
+        propose_start=propose_start,
+        propose_duration=propose_duration,
+        tz_name=tz_name,
+        config=config,
+    )
+
+
+async def calendar_tentative(
+    *,
+    event_id: str | None = None,
+    today_pending: bool = False,
+    comment: str | None = None,
+    propose_start: str | None = None,
+    propose_duration: str | None = None,
+    tz_name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    return await _calendar_rsvp(
+        "tentative",
+        event_id=event_id,
+        today_pending=today_pending,
+        comment=comment,
+        propose_start=propose_start,
+        propose_duration=propose_duration,
+        tz_name=tz_name,
+        config=config,
+    )
 
 
 async def calendar_cancel(
@@ -347,9 +402,13 @@ async def calendar_update(
     return {"event": _event_to_dict(updated, tz)}
 
 
-def format_accept_human(payload: dict[str, Any]) -> list[str]:
-    ids = payload.get("accepted") or []
-    lines = [f"Accepted {payload.get('count', len(ids))} event(s):"] + [f"  • {eid}" for eid in ids]
+def format_rsvp_human(payload: dict[str, Any]) -> list[str]:
+    label, ids = "Accepted", payload.get("accepted") or []
+    for result_key, result_label in _RSVP_LABELS.values():
+        if result_key in payload:
+            label, ids = result_label, payload.get(result_key) or []
+            break
+    lines = [f"{label} {payload.get('count', len(ids))} event(s):"] + [f"  • {eid}" for eid in ids]
     # A batch that quietly left events behind is worse than one that says so; the
     # --json payload already carries this, and the default path must not drop it.
     for item in payload.get("skipped") or []:
@@ -753,3 +812,108 @@ def _needs_accept(item: dict[str, Any]) -> bool:
         return False
     response = (item.get("response") or "").lower()
     return "notresponded" in response or response in {"", "none"}
+
+
+async def _calendar_rsvp(
+    action: str,
+    *,
+    event_id: str | None,
+    today_pending: bool,
+    comment: str | None,
+    propose_start: str | None,
+    propose_duration: str | None,
+    tz_name: str | None,
+    config: BlumkinConfig | None,
+) -> dict[str, Any]:
+    """Send one RSVP (or a today-pending batch) to the organizer(s) via Graph."""
+    if today_pending == bool(event_id):
+        raise ValueError("exactly one of --event-id or --today-pending is required")
+    # An explicitly-passed empty --propose-time is a mistake, not "no proposal";
+    # normalize so the guards below (and the caller) don't silently drop it.
+    if propose_start is not None and not propose_start.strip():
+        raise ValueError("--propose-time cannot be empty")
+    if (propose_start or propose_duration) and action == "accept":
+        raise ValueError("--propose-time only works with `calendar decline` / `calendar tentative`")
+    if propose_duration and not propose_start:
+        raise ValueError("--propose-duration needs --propose-time")
+    if propose_start and today_pending:
+        raise ValueError("--propose-time needs a single --event-id, not --today-pending")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    # Only the today-pending scan and --propose-time need a timezone; resolving it
+    # unconditionally would break a single --event-id RSVP on a profile with no
+    # default_tz and no --tz (that path never touched a clock before).
+    if today_pending:
+        tz = ZoneInfo(tz_name or cfg.default_tz)
+        payload = await calendar_today(tz_name=str(tz), config=cfg)
+        event_ids = [
+            str(item["id"]) for item in payload["items"] if item.get("id") and _needs_accept(item)
+        ]
+    else:
+        event_ids = [str(event_id)]
+    proposed = (
+        _proposed_time_slot(propose_start, propose_duration, ZoneInfo(tz_name or cfg.default_tz))
+        if propose_start
+        else None
+    )
+    key, _label = _RSVP_LABELS[action]
+    done: list[str] = []
+    skipped: list[dict[str, str]] = []
+    first_error: Exception | None = None
+    for eid in event_ids:
+        try:
+            await _graph_rsvp_one(client, eid, action, comment, proposed)
+        except ODataError as exc:
+            reason = f"event not found: {eid}" if is_id_lookup_failure(exc) else str(exc)
+            if not today_pending:
+                if is_id_lookup_failure(exc):
+                    raise CalendarEventNotFoundError(reason) from exc
+                raise
+            first_error = first_error or exc
+            skipped.append({"id": eid, "reason": reason})
+            continue
+        except Exception as exc:  # noqa: BLE001 - a batch must always report
+            if not today_pending:
+                raise
+            first_error = first_error or exc
+            skipped.append({"id": eid, "reason": str(exc)})
+            continue
+        done.append(eid)
+    if event_ids and not done and first_error is not None:
+        # Every event failed: a systemic problem (auth, scope, outage), not a
+        # per-event quirk. Let it propagate so the exit code still signals it,
+        # rather than reporting an exit-0 "success" that responded to nothing.
+        raise first_error
+    return {key: done, "count": len(done), "skipped": skipped}
+
+
+async def _graph_rsvp_one(
+    client: Any, event_id: str, action: str, comment: str | None, proposed: TimeSlot | None
+) -> None:
+    builder = client.me.events.by_event_id(event_id)
+    if action == "accept":
+        await builder.accept.post(AcceptPostRequestBody(comment=comment, send_response=True))
+    elif action == "decline":
+        await builder.decline.post(
+            DeclinePostRequestBody(comment=comment, proposed_new_time=proposed, send_response=True)
+        )
+    else:
+        await builder.tentatively_accept.post(
+            TentativelyAcceptPostRequestBody(
+                comment=comment, proposed_new_time=proposed, send_response=True
+            )
+        )
+
+
+def _proposed_time_slot(start_raw: str, duration_raw: str | None, tz: ZoneInfo) -> TimeSlot:
+    """``--propose-time`` / ``--propose-duration`` -> a Graph ``timeSlot`` (Microsoft only)."""
+    # A bare date would silently propose a midnight slot; require a time, like
+    # every other timed-input path in this module.
+    if "T" not in start_raw.strip():
+        raise ValueError("--propose-time needs a time, e.g. 2026-09-02T15:00")
+    delta = parse_duration(duration_raw or _DEFAULT_DURATION)
+    if delta <= timedelta(0):
+        raise ValueError("--propose-duration must be positive")
+    start = parse_local_datetime(start_raw, tz)
+    end = (start.astimezone(UTC) + delta).astimezone(tz)
+    return TimeSlot(start=_to_graph_dtz(start), end=_to_graph_dtz(end))
