@@ -9,12 +9,24 @@ from kiota_abstractions.headers_collection import HeadersCollection
 from kiota_authentication_azure.azure_identity_authentication_provider import (
     AzureIdentityAuthenticationProvider,
 )
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.graph_request_adapter import GraphRequestAdapter, options
 from msgraph.graph_service_client import GraphServiceClient
 from msgraph_core import GraphClientFactory
 
 from blumkin.auth import create_credential, effective_scopes
 from blumkin.config import BlumkinConfig, load_config
+
+# Graph's id-shaped complaints: "that id does not name anything", not "your query
+# was malformed". A bare 400 is not enough - Graph also 400s a --top over its cap.
+_ID_LOOKUP_ERROR_CODES = frozenset(
+    {
+        "errorfoldernotfound",
+        "errorinvalididmalformed",
+        "erroritemnotfound",
+        "resourcenotfound",
+    }
+)
 
 
 def create_graph_client(
@@ -33,6 +45,18 @@ def create_graph_client(
     auth_provider = AzureIdentityAuthenticationProvider(cred, scopes=scopes)
     adapter = GraphRequestAdapter(auth_provider, client=http_client)
     return GraphServiceClient(request_adapter=adapter)
+
+
+def is_id_lookup_failure(exc: ODataError) -> bool:
+    """True when Graph rejected an id in the request path rather than the query.
+
+    Lets callers turn a bad ``--id`` / ``--event-id`` into a clean ``not_found``
+    instead of a generic Graph error, without mistaking a query-level 400 for a
+    missing resource.
+    """
+    status = getattr(exc, "response_status_code", None)
+    code = str(getattr(getattr(exc, "error", None), "code", "") or "").casefold()
+    return code in _ID_LOOKUP_ERROR_CODES or status == 404
 
 
 def request_config(

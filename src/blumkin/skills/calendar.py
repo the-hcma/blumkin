@@ -7,16 +7,27 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
+from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
 from msgraph.generated.users.item.calendar.calendar_view.calendar_view_request_builder import (
     CalendarViewRequestBuilder,
 )
 from msgraph.generated.users.item.calendar.get_schedule.get_schedule_post_request_body import (
     GetSchedulePostRequestBody,
 )
+from msgraph.generated.users.item.events.item.event_item_request_builder import (
+    EventItemRequestBuilder,
+)
 
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.graph import create_graph_client, request_config
+from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
+from blumkin.output import sanitize_terminal
 from blumkin.skills.freebusy_suggest import collect_busy_intervals, raise_if_schedule_errors
+
+
+class CalendarEventNotFoundError(Exception):
+    """No event matched the given id."""
 
 
 async def calendar_freebusy(
@@ -51,6 +62,54 @@ async def calendar_freebusy(
         "start": start.isoformat(),
         "timezone": tz_name,
     }
+
+
+async def calendar_get(
+    *,
+    event_id: str,
+    body_type: str = "text",
+    tz_name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Read one event in full - body, per-attendee responses, recurrence, join URL."""
+    eid = event_id.strip()
+    if not eid:
+        raise ValueError("--event-id is required")
+    wanted = _parse_event_body_type(body_type)
+    cfg = config or load_config()
+    tz = ZoneInfo(tz_name or cfg.default_tz)
+    client = create_graph_client(cfg)
+    query = EventItemRequestBuilder.EventItemRequestBuilderGetQueryParameters(
+        select=[
+            "attendees",
+            "body",
+            "end",
+            "id",
+            "isAllDay",
+            "isCancelled",
+            "isOrganizer",
+            "location",
+            "onlineMeeting",
+            "organizer",
+            "recurrence",
+            "responseStatus",
+            "seriesMasterId",
+            "start",
+            "subject",
+            "type",
+            "webLink",
+        ],
+    )
+    headers = {"Prefer": f'outlook.body-content-type="{wanted}"'}
+    try:
+        event = await client.me.events.by_event_id(eid).get(request_config(query, headers=headers))
+    except ODataError as exc:
+        if not is_id_lookup_failure(exc):
+            raise
+        raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
+    if event is None or not event.id:
+        raise CalendarEventNotFoundError(f"event not found: {eid}")
+    return {"event": _event_detail_to_dict(event, tz, wanted)}
 
 
 async def calendar_suggest(
@@ -202,6 +261,38 @@ def find_mutual_free_slots(
     return slots
 
 
+def format_calendar_get_human(payload: dict[str, Any]) -> list[str]:
+    ev = payload.get("event") or {}
+    subject = sanitize_terminal(str(ev.get("subject") or "(no subject)"))
+    when = "all day" if ev.get("is_all_day") else f"{ev.get('start')} → {ev.get('end')}"
+    lines = [f"{subject}  ({when}, {ev.get('timezone')})"]
+    if ev.get("is_cancelled"):
+        lines.append("  [cancelled]")
+    if ev.get("location"):
+        lines.append(f"  location: {sanitize_terminal(str(ev['location']))}")
+    org = ev.get("organizer") or {}
+    if org.get("email"):
+        who = _clean(org.get("name") or org["email"])
+        lines.append(f"  organizer: {who} <{_clean(org['email'])}>")
+    if ev.get("response"):
+        lines.append(f"  your response: {_clean(ev['response'])}")
+    recurrence = ev.get("recurrence")
+    if recurrence:
+        lines.append(f"  repeats: {format_recurrence(recurrence)}")
+    for att in ev.get("attendees") or []:
+        # An external organizer controls these display names / addresses.
+        who = _clean(att.get("name") or att.get("email") or "(unknown)")
+        response = _clean(att.get("response") or "no response")
+        lines.append(f"  • {who} — {response} ({_clean(att.get('type'))})")
+    if ev.get("online_join_url"):
+        lines.append(f"  join: {sanitize_terminal(str(ev['online_join_url']))}")
+    if ev.get("body"):
+        lines.append("  ---")
+        lines.extend(f"  {line}" for line in sanitize_terminal(str(ev["body"])).splitlines())
+    lines.append(f"  id={ev.get('id')}")
+    return lines
+
+
 def format_freebusy_human(payload: dict[str, Any]) -> list[str]:
     lines = [f"Free/busy ({payload['start']} → {payload['end']}, {payload['timezone']})"]
     if not payload["items"]:
@@ -213,6 +304,29 @@ def format_freebusy_human(payload: dict[str, Any]) -> list[str]:
         for slot in item.get("busy") or []:
             lines.append(f"      busy {slot['start']} → {slot['end']} ({slot.get('status')})")
     return lines
+
+
+def format_recurrence(recurrence: dict[str, Any]) -> str:
+    """One-line human summary of a ``recurrence_payload`` dict."""
+    freq = str(recurrence.get("freq") or "?")
+    if freq == "other":
+        # A rule the normalized schema cannot express; show it verbatim rather
+        # than asserting a bound (a bounded "other" series has its COUNT/UNTIL
+        # only in `raw`).
+        return f"custom ({recurrence.get('raw') or 'unrecognized rule'})"
+    interval = int(recurrence.get("interval") or 1)
+    unit = {"daily": "day", "monthly": "month", "weekly": "week"}.get(freq, freq)
+    text = freq if interval == 1 else f"every {interval} {unit}s"
+    days = recurrence.get("days")
+    if days:
+        text += " on " + ", ".join(days)
+    if recurrence.get("count") is not None:
+        text += f", {recurrence['count']} times"
+    elif recurrence.get("until"):
+        text += f" until {recurrence['until']}"
+    else:
+        text += ", no end"
+    return text
 
 
 def format_suggest_human(payload: dict[str, Any]) -> list[str]:
@@ -452,6 +566,38 @@ def _advance_past_window(
     return range_end
 
 
+# Graph DayOfWeek label -> RRULE two-letter code, so a read renders recurrence in
+# the same shape ``calendar create --json`` emits.
+_DOW_TO_CODE = {
+    "friday": "fr",
+    "monday": "mo",
+    "saturday": "sa",
+    "sunday": "su",
+    "thursday": "th",
+    "tuesday": "tu",
+    "wednesday": "we",
+}
+# Only the patterns the normalized recurrence schema can express. RelativeMonthly
+# ("2nd Wednesday"), AbsoluteYearly, etc. fall through to freq="other" + raw so
+# the selector is not silently dropped.
+_GRAPH_PATTERN_TO_FREQ = {
+    RecurrencePatternType.AbsoluteMonthly: "monthly",
+    RecurrencePatternType.Daily: "daily",
+    RecurrencePatternType.Weekly: "weekly",
+}
+
+
+def _attendee_to_dict(attendee: Any) -> dict[str, Any]:
+    email = getattr(attendee, "email_address", None)
+    status = getattr(attendee, "status", None)
+    return {
+        "email": getattr(email, "address", None),
+        "name": getattr(email, "name", None),
+        "response": _enum_value(status.response) if status and status.response else None,
+        "type": _enum_value(getattr(attendee, "type", None)),
+    }
+
+
 def _busy_slot_to_dict(item: Any, display_tz: ZoneInfo) -> dict[str, Any]:
     status = None
     if getattr(item, "status", None) is not None:
@@ -461,6 +607,37 @@ def _busy_slot_to_dict(item: Any, display_tz: ZoneInfo) -> dict[str, Any]:
         "start": _graph_dt_to_iso(item.start, display_tz),
         "status": status,
     }
+
+
+def _clean(value: Any) -> str:
+    """Terminal-safe rendering of a possibly attacker-controlled string."""
+    return sanitize_terminal(str(value)) if value is not None else ""
+
+
+def _enum_value(member: Any) -> str | None:
+    """Wire vocabulary for a kiota enum member (``AttendeeType.Required`` -> ``required``).
+
+    On a real Graph event these fields are ``msgraph-sdk`` enum members whose
+    ``str()`` is class-prefixed; ``.value`` is the plain string the Google
+    provider and the JSON contract use. Plain-string fixtures pass through.
+    """
+    if member is None:
+        return None
+    return str(getattr(member, "value", member))
+
+
+def _event_detail_to_dict(ev: Any, display_tz: ZoneInfo, body_type: str) -> dict[str, Any]:
+    """Full event shape: the ``_event_to_dict`` base plus body, attendees, recurrence."""
+    detail = _event_to_dict(ev, display_tz)
+    body = getattr(ev, "body", None)
+    detail["attendees"] = [_attendee_to_dict(a) for a in (getattr(ev, "attendees", None) or [])]
+    detail["body"] = getattr(body, "content", None)
+    detail["body_type"] = body_type
+    detail["is_cancelled"] = bool(getattr(ev, "is_cancelled", False))
+    detail["recurrence"] = _graph_recurrence_to_payload(getattr(ev, "recurrence", None))
+    detail["series_master_id"] = getattr(ev, "series_master_id", None)
+    detail["web_link"] = getattr(ev, "web_link", None)
+    return detail
 
 
 def _event_to_dict(ev: Any, display_tz: ZoneInfo) -> dict[str, Any]:
@@ -476,7 +653,7 @@ def _event_to_dict(ev: Any, display_tz: ZoneInfo) -> dict[str, Any]:
         location = ev.location.display_name
     response = None
     if ev.response_status and ev.response_status.response:
-        response = str(ev.response_status.response)
+        response = _enum_value(ev.response_status.response)
     online = None
     if ev.online_meeting and getattr(ev.online_meeting, "join_url", None):
         online = ev.online_meeting.join_url
@@ -550,6 +727,33 @@ def _graph_dt_to_iso(value: Any, display_tz: ZoneInfo) -> str | None:
     return dt.astimezone(display_tz).isoformat()
 
 
+def _graph_recurrence_to_payload(recurrence: Any) -> dict[str, Any] | None:
+    """Graph ``patternedRecurrence`` -> the ``calendar create --json`` recurrence shape."""
+    pattern = getattr(recurrence, "pattern", None)
+    if pattern is None:
+        return None
+    freq = _GRAPH_PATTERN_TO_FREQ.get(pattern.type)
+    if freq is None:
+        return {"freq": "other", "raw": str(pattern.type)}
+    payload: dict[str, Any] = {"freq": freq, "interval": pattern.interval or 1}
+    if freq == "weekly" and pattern.days_of_week:
+        payload["days"] = [
+            code
+            for day in pattern.days_of_week
+            if (code := _DOW_TO_CODE.get(str(getattr(day, "value", day)).lower())) is not None
+        ]
+    if freq == "monthly" and getattr(pattern, "day_of_month", None):
+        payload["day_of_month"] = pattern.day_of_month
+    rng = getattr(recurrence, "range", None)
+    if rng is not None and rng.type == RecurrenceRangeType.Numbered and rng.number_of_occurrences:
+        payload["count"] = rng.number_of_occurrences
+    elif rng is not None and rng.type == RecurrenceRangeType.EndDate and rng.end_date:
+        payload["until"] = rng.end_date.isoformat()
+    else:
+        payload["ends"] = "never"
+    return payload
+
+
 def _merge_intervals(
     intervals: list[tuple[datetime, datetime]],
 ) -> list[tuple[datetime, datetime]]:
@@ -587,6 +791,13 @@ def _parse_day_window(raw: str) -> tuple[time, time]:
     if end <= start:
         raise ValueError("--window end must be after start")
     return start, end
+
+
+def _parse_event_body_type(raw: str) -> str:
+    label = raw.strip().lower()
+    if label not in {"html", "text"}:
+        raise ValueError("--body-type must be 'text' or 'html'")
+    return label
 
 
 def _parse_clock(raw: str, *, flag: str) -> time:

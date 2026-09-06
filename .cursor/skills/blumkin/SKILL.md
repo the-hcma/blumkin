@@ -57,7 +57,10 @@ original's attachments.
 4. Reads (prefer `--json`):
    - Calendar: `blumkin calendar today --json`,
      `blumkin calendar view --from YYYY-MM-DD --to YYYY-MM-DD --json`
-     (half-open `[from,to)`), `blumkin calendar freebusy --with email --start … --end … --json`
+     (half-open `[from,to)`),
+     `blumkin calendar get --event-id '<id>' --json` (one event in full: body,
+     every attendee + their response, recurrence, join URL, `series_master_id`),
+     `blumkin calendar freebusy --with email --start … --end … --json`
      Freebusy `--json` items include `timezone` and `working_hours` when Graph returns
      them (from the attendee's mailbox settings via getSchedule — no extra scope).
      Before `calendar create` with a cross-zone or external attendee, run freebusy first,
