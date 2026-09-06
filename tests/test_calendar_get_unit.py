@@ -386,6 +386,45 @@ def test_graph_calendar_get_no_end_range_reads_back_never(monkeypatch) -> None:
     assert payload["event"]["recurrence"] == {"freq": "daily", "interval": 3, "ends": "never"}
 
 
+def test_graph_calendar_get_non_recurring_event(monkeypatch) -> None:
+    event = _graph_event()
+    event.recurrence = None
+    _graph_client(monkeypatch, event)
+    payload = asyncio.run(calendar_get(event_id="evt-1", tz_name="America/New_York"))
+    assert payload["event"]["recurrence"] is None
+    assert not any("repeats:" in line for line in format_calendar_get_human(payload))
+
+
+def test_google_calendar_get_non_recurring_event(tmp_path: Path) -> None:
+    event = {k: v for k, v in _GOOGLE_EVENT.items() if k != "recurrence"}
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = event
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_get(event_id="g-evt")
+        )
+    assert payload["event"]["recurrence"] is None
+    assert not any("repeats:" in line for line in format_calendar_get_human(payload))
+
+
+def test_google_calendar_get_weekly_without_byday_recovers_days_from_start(tmp_path: Path) -> None:
+    # 2026-09-21 is a Monday; recurrence_rrule omits BYDAY when --days matches the
+    # DTSTART weekday, so the readback recovers days to match the create echo.
+    event = {**_GOOGLE_EVENT, "recurrence": ["RRULE:FREQ=WEEKLY;INTERVAL=1;COUNT=4"]}
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = event
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_get(event_id="g-evt")
+        )
+    assert payload["event"]["recurrence"] == {
+        "freq": "weekly",
+        "interval": 1,
+        "days": ["mo"],
+        "count": 4,
+    }
+
+
 def test_google_calendar_get_open_ended_weekly_reads_back_never(tmp_path: Path) -> None:
     event = {**_GOOGLE_EVENT, "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO"]}
     service = MagicMock()

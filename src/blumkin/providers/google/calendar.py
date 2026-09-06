@@ -36,7 +36,8 @@ from blumkin.skills.freebusy_suggest import collect_busy_intervals, raise_if_sch
 
 _RRULE_FREQ = {"DAILY": "daily", "MONTHLY": "monthly", "WEEKLY": "weekly"}
 # Plain RRULE weekday codes; a prefixed form ("2WE") is an ordinal we cannot model.
-_RRULE_WEEKDAY_CODES = frozenset({"MO", "TU", "WE", "TH", "FR", "SA", "SU"})
+_RRULE_WEEKDAYS = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")  # index == date.weekday()
+_RRULE_WEEKDAY_CODES = frozenset(_RRULE_WEEKDAYS)
 
 # Google responseStatus -> the Graph vocabulary _needs_accept and the --json
 # contract already speak, so both providers answer `response` the same way.
@@ -460,9 +461,7 @@ def _event_detail_to_dict(ev: dict[str, Any], display_tz: ZoneInfo) -> dict[str,
     # a Microsoft-only knob (Graph converts the body server-side).
     detail["body_type"] = "html"
     detail["is_cancelled"] = ev.get("status") == "cancelled"
-    detail["recurrence"] = _rrule_to_payload(
-        ev.get("recurrence"), display_tz, _start_day_of_month(ev)
-    )
+    detail["recurrence"] = _rrule_to_payload(ev.get("recurrence"), display_tz, _start_date(ev))
     detail["series_master_id"] = ev.get("recurringEventId")
     detail["web_link"] = ev.get("htmlLink")
     return detail
@@ -586,27 +585,27 @@ def _rfc3339(value: datetime) -> str:
     return value.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00", "Z")
 
 
-def _start_day_of_month(ev: Mapping[str, Any]) -> int | None:
-    """Day-of-month of the event's start (``dateTime`` or all-day ``date``)."""
+def _start_date(ev: Mapping[str, Any]) -> date | None:
+    """Calendar date of the event's start (``dateTime`` or all-day ``date``)."""
     start = ev.get("start") or {}
     raw = start.get("dateTime") or start.get("date")
     if not raw:
         return None
     try:
-        return date.fromisoformat(str(raw)[:10]).day
+        return date.fromisoformat(str(raw)[:10])
     except ValueError:
         return None
 
 
 def _rrule_to_payload(
-    recurrence: list[str] | None, display_tz: ZoneInfo, start_day: int | None = None
+    recurrence: list[str] | None, display_tz: ZoneInfo, start: date | None = None
 ) -> dict[str, Any] | None:
     """First ``RRULE:`` line of a Google ``recurrence`` -> the ``calendar create`` shape.
 
-    ``start_day`` is the event's own day-of-month: a monthly RRULE this tool
-    writes carries no ``BYMONTHDAY`` (it relies on the RFC 5545 DTSTART default),
-    so the readback recovers ``day_of_month`` from the start to match both
-    ``recurrence_payload`` and the Graph AbsoluteMonthly mapping.
+    ``start`` is the event's own start date. A monthly/weekly RRULE this tool
+    writes omits ``BYMONTHDAY`` / ``BYDAY`` when the value equals the RFC 5545
+    DTSTART default, so the readback recovers ``day_of_month`` / ``days`` from the
+    start to match both ``recurrence_payload`` and the Graph pattern mapping.
     """
     for line in recurrence or []:
         if not str(line).upper().startswith("RRULE:"):
@@ -635,10 +634,12 @@ def _rrule_to_payload(
         if by_month_day and not by_month_day.isdigit():
             return {"freq": "other", "raw": str(line)}
         payload: dict[str, Any] = {"freq": freq, "interval": int(parts.get("INTERVAL") or 1)}
-        if freq == "weekly" and by_day:
-            payload["days"] = [code.lower() for code in by_day]
+        if freq == "weekly":
+            codes = by_day or ([_RRULE_WEEKDAYS[start.weekday()]] if start else [])
+            if codes:
+                payload["days"] = [code.lower() for code in codes]
         if freq == "monthly":
-            day = int(by_month_day) if by_month_day else start_day
+            day = int(by_month_day) if by_month_day else (start.day if start else None)
             if day is not None:
                 payload["day_of_month"] = day
         if "COUNT" in parts:
