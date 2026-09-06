@@ -221,7 +221,21 @@ Returns the full event: body/agenda, every attendee with their response, the
 recurrence (same shape `calendar create --json` emits), the online-meeting join
 URL, and `series_master_id` when it is one instance of a recurring series.
 Read-only. `--body-type` is Microsoft-only (Graph converts server-side); Google
-returns its single stored description, which may contain HTML.
+returns its single stored description, which may contain HTML. `--calendar
+NAME|ID` reads from a non-default calendar (see `calendar list`).
+"""
+
+CALENDAR_LIST_EPILOG = """
+Example:
+
+\b
+  blumkin calendar list --json
+
+Lists every calendar the account can see: `id`, `name`, `is_default`,
+`can_edit`, `owner`, `color`. Pass a `name` or `id` from here to `--calendar` on
+`calendar today` / `view` / `get` / `create` / `update` / `cancel` to target a
+non-default calendar (an ambiguous name is a usage error - use the id).
+Read-only, no extra scope.
 """
 
 CALENDAR_FREEBUSY_EPILOG = """

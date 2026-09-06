@@ -44,6 +44,7 @@ from blumkin.output import sanitize_terminal
 from blumkin.skills.calendar import (
     CalendarEventNotFoundError,
     _event_to_dict,
+    _graph_events_builder,
     _to_graph_dtz,
     calendar_today,
     format_recurrence,
@@ -182,13 +183,15 @@ async def calendar_tentative(
 async def calendar_cancel(
     *,
     event_id: str,
+    calendar: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     if not event_id.strip():
         raise ValueError("--event-id is required")
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    await client.me.events.by_event_id(event_id).cancel.post(CancelPostRequestBody())
+    events = await _graph_events_builder(client, calendar)
+    await events.by_event_id(event_id).cancel.post(CancelPostRequestBody())
     return {"cancelled": event_id}
 
 
@@ -201,6 +204,7 @@ async def calendar_create(
     body: str | None = None,
     body_file: str | None = None,
     body_type: str = "text",
+    calendar: str | None = None,
     duration: str | None = None,
     location: str | None = None,
     optional_emails: list[str] | None = None,
@@ -258,14 +262,15 @@ async def calendar_create(
         event.is_online_meeting = True
         event.online_meeting_provider = OnlineMeetingProviderType.TeamsForBusiness
     client = create_graph_client(cfg)
-    created = await client.me.events.post(event)
+    events = await _graph_events_builder(client, calendar)
+    created = await events.post(event)
     if created is None:
         raise RuntimeError("Graph returned no event from create")
     if teams and not _event_join_url(created):
         # Same async provisioning race calendar_update handles after PATCH.
         if not created.id:
             raise RuntimeError("Graph returned no event id from create")
-        created = await client.me.events.by_event_id(created.id).get()
+        created = await events.by_event_id(created.id).get()
         if created is None or not created.id:
             raise RuntimeError("Graph returned no event after create re-fetch")
         if not _event_join_url(created):
@@ -287,6 +292,7 @@ async def calendar_update(
     body: str | None = None,
     body_file: str | None = None,
     body_type: str = "text",
+    calendar: str | None = None,
     duration: str | None = None,
     end_raw: str | None = None,
     location: str | None = None,
@@ -315,13 +321,14 @@ async def calendar_update(
     if body is not None or body_file is not None:
         body_content, graph_body_type = resolve_event_body(body, body_file, body_type)
     client = create_graph_client(cfg)
+    events = await _graph_events_builder(client, calendar)
 
     changes_time = start_raw is not None or end_raw is not None or duration is not None
     need_existing = changes_time or all_day is not None
     existing = None
     if need_existing:
         try:
-            existing = await client.me.events.by_event_id(eid).get(
+            existing = await events.by_event_id(eid).get(
                 request_config(headers={"Prefer": 'outlook.timezone="UTC"'})
             )
         except ODataError as exc:
@@ -374,7 +381,7 @@ async def calendar_update(
         )
 
     try:
-        updated = await client.me.events.by_event_id(eid).patch(patch)
+        updated = await events.by_event_id(eid).patch(patch)
     except ODataError as exc:
         # A subject/body-only edit skips the pre-edit GET, so the PATCH is where a
         # gone or malformed-id event first surfaces - map it the same way.
@@ -382,7 +389,7 @@ async def calendar_update(
             raise
         raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
     if updated is None:
-        updated = await client.me.events.by_event_id(eid).get()
+        updated = await events.by_event_id(eid).get()
     if updated is None or not updated.id:
         raise CalendarEventNotFoundError(f"event not found: {eid}")
     if teams is True and not _event_join_url(updated):
@@ -390,7 +397,7 @@ async def calendar_update(
         # 204) response can precede onlineMeeting.joinUrl. Re-GET once, then fail
         # loudly - the same guard calendar_create keeps - rather than report a
         # join-less success an agent would trust.
-        updated = await client.me.events.by_event_id(eid).get()
+        updated = await events.by_event_id(eid).get()
         if updated is None or not updated.id:
             raise CalendarEventNotFoundError(f"event not found: {eid}")
         if not _event_join_url(updated):
