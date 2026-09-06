@@ -837,6 +837,39 @@ CLI form needs `--yes` require a `confirm: true` argument the server enforces.
 tools under that id prefix.
 """
 
+MCP_INSTALL_EPILOG = """
+Example:
+
+\b
+  blumkin mcp install                       # detect clients, ask, confirm each
+  blumkin mcp install --scope user          # every repo (default when asked)
+  blumkin mcp install --client cursor --read-only --scope project
+  blumkin mcp install --yes --scope user    # non-interactive; needs --scope
+
+Detects Claude Code, Cursor, and GitHub Copilot CLI. For Claude and Copilot
+(user scope) it calls the client's own `mcp add`; for Cursor and for project
+scope it merges the entry into the JSON config, leaving any other servers alone.
+Re-running is safe: an entry that already matches is reported "already current",
+a stale one is updated. `--force` rewrites even a matching entry.
+
+Auth is unchanged - run `blumkin auth login` on a TTY once; every registered
+server shares that token cache. The `mcp` extra (`pipx install 'blumkin[mcp]'`)
+is needed to *run* the server, not to install it here.
+"""
+
+MCP_STATUS_EPILOG = """
+Example:
+
+\b
+  blumkin mcp status
+  blumkin mcp status --json
+
+Lists which agent CLIs are detected and, for each place `blumkin` is registered
+(user or project scope), the exact command and args recorded there. A note flags
+a registration whose command does not resolve to this blumkin (a stale path
+after a reinstall - re-run `blumkin mcp install`).
+"""
+
 MEETING_EPILOG = """
 Examples:
 

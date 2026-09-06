@@ -71,6 +71,12 @@ uv tool install -e .        # editable; `blumkin` now points at the checkout
 `blumkin --version` reports the checkout's commit, and `blumkin upgrade` will
 say it is running from a source checkout and leave the tree alone.
 
+To expose every skill as a typed **MCP tool** for MCP-aware agents, install the
+`mcp` extra (`pipx install 'blumkin[mcp]'`) and run **`blumkin mcp install`** — a
+guided setup that registers `blumkin mcp serve` with Claude Code, Cursor, and the
+GitHub Copilot CLI, confirming each. See
+[`docs/agent-integration.md`](./docs/agent-integration.md#mcp-server).
+
 To use blumkin from agent sessions in **other** repos (Cursor personal skill, or
 Copilot CLI instructions), see [`docs/agent-integration.md`](./docs/agent-integration.md).
 For cutting a release, see [`docs/RELEASING.md`](./docs/RELEASING.md).

@@ -6,6 +6,7 @@ import asyncio
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -2966,11 +2967,13 @@ def mail_update_draft_cmd(
 
 @main.group("mcp", epilog=help_text.MCP_EPILOG)
 def mcp_group() -> None:
-    """Run blumkin as a Model Context Protocol server for MCP-aware agent clients.
+    """Run and register blumkin as a Model Context Protocol server.
 
-    Every skill becomes a typed MCP tool dispatched through the same `run_skill`
-    path the CLI uses, so the CLI stays the source of truth. Needs the optional
-    `mcp` extra: `pipx install 'blumkin[mcp]'`.
+    `install` registers `blumkin mcp serve` with your agent CLIs (Claude Code,
+    Cursor, GitHub Copilot CLI), `status` shows where it is registered, and
+    `serve` is the stdio server itself. Every skill becomes a typed MCP tool
+    dispatched through the same `run_skill` path the CLI uses. Running the server
+    needs the optional `mcp` extra: `pipx install 'blumkin[mcp]'`.
     """
 
 
@@ -3009,6 +3012,229 @@ def mcp_serve_cmd(
         if isinstance(raw, str) and raw.strip():
             profile = raw.strip()
     mcp_server.serve(profile=profile, read_only=read_only, only=tuple(only))
+
+
+@mcp_group.command("install", epilog=help_text.MCP_INSTALL_EPILOG)
+@click.option(
+    "--client",
+    "clients",
+    multiple=True,
+    type=click.Choice(["claude", "cursor", "copilot"]),
+    help="Limit to these clients (repeatable). Default: every one detected.",
+)
+@click.option(
+    "--scope",
+    type=click.Choice(["user", "project"]),
+    default=None,
+    help="user = every repo (~/.claude.json, ~/.copilot, ~/.cursor); "
+    "project = this directory (.mcp.json, .cursor/mcp.json). Prompted if omitted.",
+)
+@click.option("--profile", "profile", default=None, help="Bake `--profile NAME` into the server.")
+@click.option(
+    "--read-only", "read_only", is_flag=True, help="Register a server with no mutating tools."
+)
+@click.option("--only", "only", multiple=True, help="Register `--only PREFIX` (repeatable).")
+@click.option(
+    "--yes", "yes", is_flag=True, help="Apply without the per-client prompt (needs --scope)."
+)
+@click.option(
+    "--force", "force", is_flag=True, help="Re-write an entry even if it already matches."
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mcp_install_cmd(
+    ctx: click.Context,
+    clients: tuple[str, ...],
+    scope: str | None,
+    profile: str | None,
+    read_only: bool,
+    only: tuple[str, ...],
+    yes: bool,
+    force: bool,
+    as_json_flag: bool,
+) -> None:
+    """Register `blumkin mcp serve` with your agent CLIs, confirming each one.
+
+    Detects Claude Code, Cursor, and GitHub Copilot CLI and adds blumkin to each
+    - via its own `mcp add` where it has one, else a direct config merge. Safe to
+    re-run: an entry that already matches is left alone, a stale one is updated.
+    """
+    from blumkin import mcp_install as mi
+
+    as_json = _as_json(ctx, as_json_flag)
+    interactive = sys.stdin.isatty() and sys.stdout.isatty() and not yes
+
+    targets = list(clients) or sorted(mi.detect())
+    if not targets:
+        _emit_error(
+            error="usage_error",
+            message="no supported agent CLI found (Claude Code, Cursor, GitHub Copilot CLI)",
+            as_json=as_json,
+            hint="Install one, or pass --client NAME to target it once its config dir exists.",
+        )
+        raise SystemExit(EXIT_USAGE)
+
+    if scope is None:
+        if not interactive:
+            _emit_error(
+                error="usage_error",
+                message="--scope is required without a TTY (or with --yes)",
+                as_json=as_json,
+                hint="Pass --scope user or --scope project.",
+            )
+            raise SystemExit(EXIT_USAGE)
+        scope = click.prompt(
+            "Scope (user = every repo, project = this directory)",
+            type=click.Choice(["user", "project"]),
+            default="user",
+        )
+
+    if profile is None and isinstance(ctx.obj, dict):
+        raw = ctx.obj.get("profile")
+        if isinstance(raw, str) and raw.strip():
+            profile = raw.strip()
+
+    if interactive and not (read_only or only or profile):
+        read_only = click.confirm("Restrict to read-only (non-mutating) tools?", default=False)
+        raw_only = click.prompt(
+            "Limit to skill families (space-separated prefixes, blank = all)",
+            default="",
+            show_default=False,
+        ).strip()
+        only = tuple(raw_only.split()) if raw_only else ()
+
+    serve = mi.ServeSpec(profile=profile, read_only=read_only, only=tuple(only))
+    binary, on_path = mi.resolve_binary()
+    if not on_path and not as_json:
+        click.echo(f"note: `blumkin` is not on PATH - registering {binary}", err=True)
+    scope_val: mi.Scope = "project" if scope == "project" else "user"
+    plans = mi.build_plan(
+        clients=targets, scope=scope_val, binary=binary, serve=serve, cwd=Path.cwd()
+    )
+
+    results: list[dict[str, Any]] = []
+    any_failed = False
+    for plan in plans:
+        should = plan.action != "unchanged" or force
+        if should and interactive:
+            verb = {"add": "Add", "update": "Update"}.get(plan.action, "Re-write")
+            suffix = "" if plan.detected else " [not detected on this machine]"
+            should = click.confirm(
+                f"{verb} blumkin for {plan.label} -> {plan.target}{suffix}",
+                default=plan.detected,
+            )
+        if not should:
+            outcome = "unchanged" if plan.action == "unchanged" else "skipped"
+            detail = ""
+        else:
+            try:
+                outcome = mi.apply_plan(plan, binary=binary, force=force)
+                detail = ""
+            except mi.McpInstallError as exc:
+                any_failed = True
+                outcome = "failed"
+                detail = str(exc)
+                if not as_json:
+                    click.echo(f"  {plan.label}: {exc}", err=True)
+                    if exc.hint:
+                        click.echo(f"    hint: {exc.hint}", err=True)
+        results.append(
+            {
+                "client": plan.client,
+                "label": plan.label,
+                "scope": plan.scope,
+                "detected": plan.detected,
+                "target": plan.target,
+                "action": outcome,
+                "detail": detail,
+            }
+        )
+
+    payload = {
+        "ok": not any_failed,
+        "binary": binary,
+        "on_path": on_path,
+        "scope": scope_val,
+        "serve": ["blumkin", *serve.args()],
+        "clients": results,
+    }
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(_format_mcp_install_human(payload))
+    raise SystemExit(EXIT_OTHER if any_failed else EXIT_SUCCESS)
+
+
+@mcp_group.command("status", epilog=help_text.MCP_STATUS_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mcp_status_cmd(ctx: click.Context, as_json_flag: bool) -> None:
+    """Show which agent CLIs have `blumkin mcp serve` registered, and with what command."""
+    from blumkin import mcp_install as mi
+
+    as_json = _as_json(ctx, as_json_flag)
+    binary, on_path = mi.resolve_binary()
+    detected = mi.detect()
+    registrations: list[dict[str, Any]] = []
+    scopes: tuple[mi.Scope, ...] = ("user", "project")
+    for client in mi.CLIENTS:
+        for scope in scopes:
+            current = mi.current_entry(client, scope, Path.cwd())
+            if current is None:
+                continue
+            command = str(current.get("command", ""))
+            registrations.append(
+                {
+                    "client": client,
+                    "label": mi._LABELS[client],
+                    "scope": scope,
+                    "config": str(mi.config_path(client, scope, Path.cwd())),
+                    "command": command,
+                    "args": list(current.get("args") or []),
+                    "resolves_to_blumkin": Path(command).name == Path(binary).name,
+                }
+            )
+    payload = {
+        "ok": True,
+        "binary": binary,
+        "on_path": on_path,
+        "detected": sorted(detected),
+        "registrations": registrations,
+    }
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(_format_mcp_status_human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+def _format_mcp_install_human(payload: dict[str, Any]) -> list[str]:
+    lines = [f"server: {' '.join(payload['serve'])}  (scope: {payload['scope']})"]
+    for row in payload["clients"]:
+        mark = {
+            "added": "added",
+            "updated": "updated",
+            "unchanged": "already current",
+            "skipped": "skipped",
+            "failed": "FAILED",
+        }.get(row["action"], row["action"])
+        lines.append(f"  {row['label']}: {mark} -> {row['target']}")
+    if not payload["ok"]:
+        lines.append("one or more clients failed - see the errors above")
+    return lines
+
+
+def _format_mcp_status_human(payload: dict[str, Any]) -> list[str]:
+    detected = ", ".join(payload["detected"]) or "none"
+    lines = [f"detected clients: {detected}", f"blumkin binary: {payload['binary']}"]
+    if not payload["registrations"]:
+        lines.append("no client has blumkin registered - run `blumkin mcp install`")
+        return lines
+    for row in payload["registrations"]:
+        cmd = " ".join([row["command"], *row["args"]])
+        stale = "" if row["resolves_to_blumkin"] else "  (command does not resolve to this blumkin)"
+        lines.append(f"  {row['label']} ({row['scope']}): {cmd}{stale}")
+    return lines
 
 
 @main.group(epilog=help_text.MEETING_EPILOG)
