@@ -7,7 +7,7 @@ import binascii
 import html as html_lib
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -528,6 +528,7 @@ async def mail_auto_reply(
         if external_audience is not None and external_audience not in _OOF_AUDIENCE:
             raise ValueError("--external must be none, contacts, or all")
         scheduled = start is not None or until is not None
+        tz_name = cfg.default_tz
         setting = AutomaticRepliesSetting(
             status=AutomaticRepliesStatus.Scheduled
             if scheduled
@@ -535,8 +536,8 @@ async def mail_auto_reply(
             internal_reply_message=body_text,
             external_reply_message=external_message or body_text,
             external_audience=_OOF_AUDIENCE[external_audience or "all"],
-            scheduled_start_date_time=_oof_dtz(start) if start else None,
-            scheduled_end_date_time=_oof_dtz(until) if until else None,
+            scheduled_start_date_time=_oof_dtz(start, tz_name) if start else None,
+            scheduled_end_date_time=_oof_dtz(until, tz_name, end=True) if until else None,
         )
     updated = await client.me.mailbox_settings.patch(
         MailboxSettings(automatic_replies_setting=setting)
@@ -545,8 +546,14 @@ async def mail_auto_reply(
     return {"auto_reply": _auto_reply_to_dict(applied)}
 
 
-def _oof_dtz(day: date) -> DateTimeTimeZone:
-    return DateTimeTimeZone(date_time=f"{day.isoformat()}T00:00:00", time_zone="UTC")
+def _oof_dtz(day: date, tz_name: str, *, end: bool = False) -> DateTimeTimeZone:
+    """A calendar date -> local midnight in ``tz_name``. ``end`` makes ``--until`` inclusive.
+
+    An OOF window is expressed in whole days, so the ``--until`` day should be
+    covered in full: the end boundary is local midnight of the *next* day.
+    """
+    boundary = day + timedelta(days=1) if end else day
+    return DateTimeTimeZone(date_time=f"{boundary.isoformat()}T00:00:00", time_zone=tz_name)
 
 
 def _read_body_arg(message: str | None, message_file: str | None) -> str | None:
@@ -582,7 +589,10 @@ def _enum_value_or_none(member: Any) -> str | None:
 
 def _dtz_iso(dtz: Any) -> str | None:
     raw = getattr(dtz, "date_time", None)
-    return str(raw) if raw else None
+    if not raw:
+        return None
+    tz = getattr(dtz, "time_zone", None)
+    return f"{raw} {tz}" if tz else str(raw)
 
 
 async def mail_delete(

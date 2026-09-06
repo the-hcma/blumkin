@@ -3037,6 +3037,19 @@ def mail_auto_reply_cmd(
     Google needs the `gmail.settings.basic` scope.
     """
     as_json = _as_json(ctx, as_json_flag)
+    if enable is None and any(
+        v is not None
+        for v in (message, message_file, external_message, external_audience, start, until)
+    ):
+        _emit_error(
+            error="usage_error",
+            message=(
+                "pass --on to turn the auto-reply on (with --message / --start / ...) "
+                "or --off to clear it"
+            ),
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
     if enable is not None:
         _require_wo1162425_scopes(as_json=as_json)
         _require_yes(

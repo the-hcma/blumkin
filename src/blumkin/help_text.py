@@ -615,10 +615,14 @@ Examples:
     --until 2026-09-15 --external contacts --yes
   blumkin mail auto-reply --off --yes
 
-With no flags this reads the current setting. `--on` needs `--message` or
-`--message-file`; `--off` clears it. Both need `--yes`. `--start` / `--until`
-schedule a window (otherwise it stays on until you turn it off). `--external`
-picks who outside your org gets a reply: `all` (default), `contacts`, or `none`.
+With no flags this reads the current setting; passing a change flag
+(`--message`, `--start`, ...) without `--on` / `--off` is a usage error, not a
+silent read. `--on` needs `--message` or `--message-file`; `--off` clears it.
+Both need `--yes`. `--start` / `--until` schedule a window (otherwise it stays
+on until you turn it off); the dates are read in the profile timezone
+(`default_tz`) and `--until` is inclusive - the whole end day is covered.
+`--external` picks who outside your org gets a reply: `all` (default),
+`contacts`, or `none`.
 
 Microsoft splits internal and external bodies - `--external-message` sets a
 separate one; it needs `wo1162425_scopes` (MailboxSettings.ReadWrite). Google

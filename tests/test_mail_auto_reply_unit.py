@@ -96,8 +96,26 @@ def test_graph_scheduled_window_and_separate_external(monkeypatch) -> None:
     assert setting.internal_reply_message == "internal"
     assert setting.external_reply_message == "external"
     assert setting.external_audience == ExternalAudienceScope.None_
+    # Boundaries resolve in the profile tz (UTC here); --until is inclusive, so the
+    # end boundary is local midnight of the day after 2026-09-15.
     assert setting.scheduled_start_date_time.date_time == "2026-09-10T00:00:00"
-    assert setting.scheduled_end_date_time.date_time == "2026-09-15T00:00:00"
+    assert setting.scheduled_start_date_time.time_zone == "UTC"
+    assert setting.scheduled_end_date_time.date_time == "2026-09-16T00:00:00"
+
+
+def test_graph_scheduled_window_resolves_the_profile_tz(monkeypatch) -> None:
+    client = _graph(monkeypatch)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="America/Los_Angeles", client_id="x"),
+    )
+    asyncio.run(
+        mail_auto_reply(enable=True, message="x", start=date(2026, 9, 10), until=date(2026, 9, 15))
+    )
+    setting = client.me.mailbox_settings.patch.await_args.args[0].automatic_replies_setting
+    assert setting.scheduled_start_date_time.time_zone == "America/Los_Angeles"
+    assert setting.scheduled_end_date_time.time_zone == "America/Los_Angeles"
+    assert setting.scheduled_end_date_time.date_time == "2026-09-16T00:00:00"
 
 
 def test_graph_turn_off(monkeypatch) -> None:
@@ -212,6 +230,50 @@ def test_google_turn_on_with_window(tmp_path: Path) -> None:
     assert body["startTime"] == 1788998400000
 
 
+def test_google_turn_off_keeps_the_existing_body(tmp_path: Path) -> None:
+    service = MagicMock()
+    _vacation_call(service).getVacation.return_value.execute.return_value = {
+        "enableAutoReply": True,
+        "responseBodyPlainText": "away",
+        "restrictToContacts": True,
+        "startTime": "1788998400000",
+    }
+    _vacation_call(service).updateVacation.return_value.execute.return_value = {
+        "enableAutoReply": False,
+        "responseBodyPlainText": "away",
+    }
+    with _google_patched(service):
+        asyncio.run(GoogleWorkspaceProvider(_google_cfg(tmp_path)).mail_auto_reply(enable=False))
+    body = _vacation_call(service).updateVacation.call_args.kwargs["body"]
+    assert body == {
+        "enableAutoReply": False,
+        "responseBodyPlainText": "away",
+        "restrictToContacts": True,
+        "startTime": "1788998400000",
+    }
+
+
+def test_google_turn_on_always_on_drops_a_stale_window(tmp_path: Path) -> None:
+    service = MagicMock()
+    _vacation_call(service).getVacation.return_value.execute.return_value = {
+        "enableAutoReply": True,
+        "startTime": "1788998400000",
+        "endTime": "1789000000000",
+    }
+    _vacation_call(service).updateVacation.return_value.execute.return_value = {
+        "enableAutoReply": True,
+        "responseBodyPlainText": "back later",
+    }
+    with _google_patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).mail_auto_reply(
+                enable=True, message="back later"
+            )
+        )
+    body = _vacation_call(service).updateVacation.call_args.kwargs["body"]
+    assert "startTime" not in body and "endTime" not in body
+
+
 def test_google_rejects_external_message(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Microsoft-only"):
         asyncio.run(
@@ -285,6 +347,23 @@ def test_cli_change_without_yes_exits_usage(monkeypatch) -> None:
     _wo1162425_on(monkeypatch)
     result = CliRunner().invoke(main, ["mail", "auto-reply", "--off", "--json"])
     assert result.exit_code == EXIT_USAGE
+
+
+def test_cli_change_flags_without_on_off_is_usage(monkeypatch) -> None:
+    # A composed "turn on" command that forgot --on must not silently do a read.
+    called = False
+
+    async def _read(**_kwargs):
+        nonlocal called
+        called = True
+        return {"auto_reply": {"enabled": False}}
+
+    monkeypatch.setattr("blumkin.cli._workspace", lambda: SimpleNamespace(mail_auto_reply=_read))
+    result = CliRunner().invoke(
+        main, ["mail", "auto-reply", "--message", "OOO until 9/20", "--yes", "--json"]
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert called is False
 
 
 def test_cli_read_path_needs_no_yes(monkeypatch) -> None:

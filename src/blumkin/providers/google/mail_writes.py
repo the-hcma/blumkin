@@ -21,12 +21,13 @@ import html as html_lib
 import mimetypes
 import pathlib
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email.policy import default as _default_policy
 from email.utils import getaddresses
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from googleapiclient.errors import HttpError
 
@@ -87,17 +88,22 @@ async def mail_auto_reply(
         raise ValueError("--external-message is Microsoft-only (Gmail has one response body)")
     cfg = config or load_config()
     service = _gmail_settings_service(cfg)
+    current = execute(service.users().settings().getVacation(userId="me"))
     if enable is None:
-        vacation = execute(service.users().settings().getVacation(userId="me"))
-        return {"auto_reply": _vacation_to_dict(vacation)}
+        return {"auto_reply": _vacation_to_dict(current)}
     if enable is False:
-        body: dict[str, Any] = {"enableAutoReply": False}
+        # updateVacation replaces the whole resource, so carry the existing body
+        # and restrictions forward - only the enable flag changes.
+        body: dict[str, Any] = {**_vacation_keep(current), "enableAutoReply": False}
     else:
         text = _read_body_text(message, message_file)
         if not text:
             raise ValueError("turning auto-reply on needs --message or --message-file")
         if external_audience is not None and external_audience not in {"none", "contacts", "all"}:
             raise ValueError("--external must be none, contacts, or all")
+        tz = ZoneInfo(cfg.default_tz)
+        # A full-resource write: startTime/endTime are set only when scheduled, so
+        # re-enabling always-on drops any window left over from an earlier schedule.
         body = {
             "enableAutoReply": True,
             "responseBodyPlainText": text,
@@ -105,15 +111,32 @@ async def mail_auto_reply(
             "restrictToDomain": external_audience == "none",
         }
         if start is not None:
-            body["startTime"] = _day_epoch_ms(start)
+            body["startTime"] = _day_epoch_ms(start, tz)
         if until is not None:
-            body["endTime"] = _day_epoch_ms(until)
+            body["endTime"] = _day_epoch_ms(until, tz, end=True)
     updated = execute(service.users().settings().updateVacation(userId="me", body=body))
     return {"auto_reply": _vacation_to_dict(updated)}
 
 
-def _day_epoch_ms(day: date) -> int:
-    return int(datetime(day.year, day.month, day.day, tzinfo=UTC).timestamp() * 1000)
+_VACATION_KEEP_KEYS = (
+    "responseSubject",
+    "responseBodyPlainText",
+    "responseBodyHtml",
+    "restrictToContacts",
+    "restrictToDomain",
+    "startTime",
+    "endTime",
+)
+
+
+def _vacation_keep(current: dict[str, Any]) -> dict[str, Any]:
+    return {k: current[k] for k in _VACATION_KEEP_KEYS if k in current}
+
+
+def _day_epoch_ms(day: date, tz: ZoneInfo, *, end: bool = False) -> int:
+    """A calendar date -> local-midnight epoch ms in ``tz``. ``end`` makes ``--until`` inclusive."""
+    boundary = day + timedelta(days=1) if end else day
+    return int(datetime(boundary.year, boundary.month, boundary.day, tzinfo=tz).timestamp() * 1000)
 
 
 def _gmail_settings_service(cfg: BlumkinConfig) -> Any:
