@@ -494,6 +494,43 @@ def test_google_calendar_get_missing_id_raises_not_found(tmp_path: Path, status:
         )
 
 
+@pytest.mark.parametrize("status", [400, 403, 429])
+def test_google_calendar_get_other_http_error_propagates(tmp_path: Path, status: int) -> None:
+    # A permission / quota / bad-request error must not be swallowed as not_found.
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.side_effect = HttpError(
+        httplib2.Response({"status": status}), b"nope"
+    )
+    with _google_patched(service), pytest.raises(HttpError):
+        asyncio.run(google_calendar.calendar_get(event_id="g-evt", config=_google_cfg(tmp_path)))
+
+
+def test_google_calendar_get_all_day_series_full_shape(tmp_path: Path) -> None:
+    # All-day + a BYDAY-less/BYMONTHDAY-less RRULE exercises the date-only arms of
+    # _google_dt_to_iso, _start_date, and the DTSTART-default recovery.
+    event = {
+        **_GOOGLE_EVENT,
+        "start": {"date": "2026-09-21"},  # Monday
+        "end": {"date": "2026-09-22"},
+        "recurrence": ["RRULE:FREQ=WEEKLY;INTERVAL=1;COUNT=6"],
+    }
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = event
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_get(event_id="g-evt")
+        )
+    ev = payload["event"]
+    assert ev["is_all_day"] is True
+    assert ev["start"].startswith("2026-09-21")
+    assert ev["recurrence"] == {
+        "freq": "weekly",
+        "interval": 1,
+        "days": ["mo"],
+        "count": 6,
+    }
+
+
 def test_format_recurrence_other_shows_the_raw_rule_not_no_end() -> None:
     out = format_recurrence({"freq": "other", "raw": "RRULE:FREQ=MONTHLY;BYDAY=2WE;COUNT=12"})
     assert "no end" not in out
