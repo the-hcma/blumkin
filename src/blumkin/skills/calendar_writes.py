@@ -456,8 +456,9 @@ def reject_date_only_start(start_raw: str) -> None:
     Without this a forgotten ``--all-day`` silently books a zero-dark timed
     meeting at 00:00 instead of the all-day hold the date implies.
     """
-    text = start_raw.strip()
-    if "T" not in text and not text.casefold().endswith("z"):
+    # Any legitimate timed start carries a "T" (2026-12-24T09:00[Z]); a bare
+    # date, with or without a trailing UTC marker, is a forgotten --all-day.
+    if "T" not in start_raw.strip():
         raise ValueError(
             "a date-only --start needs --all-day; "
             "pass a time (e.g. 2026-12-24T09:00) for a timed event"

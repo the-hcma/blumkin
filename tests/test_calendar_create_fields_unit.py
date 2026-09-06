@@ -142,14 +142,15 @@ def test_graph_create_all_day_rejects(monkeypatch, kwargs: dict, match: str) -> 
         )
 
 
-def test_graph_create_rejects_date_only_start_without_all_day(monkeypatch) -> None:
+@pytest.mark.parametrize("start", ["2026-12-24", "2026-12-24Z", " 2026-12-24 "])
+def test_graph_create_rejects_date_only_start_without_all_day(monkeypatch, start: str) -> None:
     _graph_client(monkeypatch)
     with pytest.raises(ValueError, match="needs --all-day"):
         asyncio.run(
             calendar_create(
                 subject="OOO",
                 with_emails=[],
-                start_raw="2026-12-24",
+                start_raw=start,
                 teams=False,
                 tz_name=_NY,
             )
@@ -222,6 +223,26 @@ def test_recurrence_rrule_timed_until_stays_a_utc_timestamp() -> None:
     rec = Recurrence(freq="daily", until=date(2026, 12, 31))
     start = datetime(2026, 1, 5, 9, 0, tzinfo=ZoneInfo(_NY))
     assert recurrence_rrule(rec, start) == ["RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20270101T045959Z"]
+
+
+def test_graph_create_all_day_series_request_shape(monkeypatch) -> None:
+    client = _graph_client(monkeypatch)
+    asyncio.run(
+        calendar_create(
+            subject="Weekday hold",
+            with_emails=[],
+            start_raw="2026-12-24",
+            all_day=True,
+            recurrence=Recurrence(freq="daily", until=date(2027, 1, 2)),
+            tz_name=_NY,
+        )
+    )
+    posted = client.me.events.post.await_args.args[0]
+    assert posted.is_all_day is True
+    assert posted.start.date_time == "2026-12-24T00:00:00"
+    assert posted.end.date_time == "2026-12-25T00:00:00"
+    assert posted.recurrence.range.start_date == date(2026, 12, 24)
+    assert posted.recurrence.range.end_date == date(2027, 1, 2)
 
 
 # --------------------------------------------------------------------------- Google
