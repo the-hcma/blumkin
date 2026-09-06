@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 from googleapiclient.errors import HttpError
 from msgraph.generated.models.attendee_type import AttendeeType
+from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
@@ -94,6 +95,7 @@ def test_graph_update_subject_location_body_and_with(monkeypatch) -> None:
     assert patched.subject == "New title"
     assert patched.location.display_name == "Room 7"
     assert patched.body.content == "Fresh agenda"
+    assert patched.body.content_type == BodyType.Html  # --body-type html locked
     assert [a.email_address.address for a in patched.attendees] == ["sam@example.com"]
     assert patched.attendees[0].type == AttendeeType.Required
     client.me.events.by_event_id.return_value.get.assert_not_awaited()  # no time change
