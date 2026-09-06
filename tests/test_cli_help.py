@@ -33,6 +33,7 @@ GROUP_PATHS = [
     ("calendar",),
     ("chat",),
     ("mail",),
+    ("mcp",),
     ("meeting",),
     ("people",),
     ("profiles",),

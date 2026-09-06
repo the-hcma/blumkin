@@ -32,7 +32,7 @@ Agent (Cursor / Copilot / Claude / …)
 
 - Hosting a Teams bot / Bot Framework messaging endpoint  
 - App-only Graph (`Mail.Send` application, `Calendars.ReadWrite.All`, …)  
-- Full MCP server as the **primary** integration (optional thin wrapper later only)  
+- Full MCP server that re-implements Graph as the **primary** integration (the shipped `blumkin mcp serve` is a thin adapter over the CLI's `run_skill` path, not a second surface)  
 - GUI / TUI  
 - Multi-tenant SaaS  
 
@@ -308,31 +308,29 @@ Full integration guidance (skill vs MCP, Cursor / Copilot CLIs): **§6**.
 | Approach | What it is | Pros | Cons |
 |----------|------------|------|------|
 | **Agent Skill** (+ shell) | Markdown skill (`SKILL.md`) teaches *when/how* to invoke `blumkin … --json` | One implementation (the CLI); works anywhere with a shell; easy to version in-repo or personal skills dir; matches how both CLIs already run tools | Model must follow instructions; discovery = skill + `skills list` |
-| **MCP server** | Process exposing tools over MCP; each Blumkin verb ≈ a tool | Native tool schemas in MCP-aware UIs; structured args without parsing `--help` | Second surface to maintain; another process/lifecycle; still needs auth/cache; Cursor/Copilot CLI shell path is already enough for v1 |
+| **MCP server** | `blumkin mcp serve` (stdio): each skill ≈ a typed tool, generated from the catalog and dispatched through the same `run_skill` path the CLI uses | Native tool schemas in MCP-aware clients; structured args without parsing `--help`; no drift (one execution path, one error taxonomy) | Optional `[mcp]` extra; host spawns an extra stdio process per session |
 
-**Decision for v1: Skill + shell, not MCP.**
+**Decision (issue #113): ship both — the Agent Skill *and* a thin stdio MCP adapter.**
 
-Reasons:
-1. Blumkin **is** already the tool surface (`skills list --json` is the catalog).  
-2. **Cursor Agent CLI** and **Copilot CLI** both excel at running shell commands; a skill that says “prefer `blumkin`” is the lightest glue.  
-3. MCP duplicates every command and drifts unless it only shells to Blumkin (then MCP is pure overhead for CLI-first agents).  
-4. Auth (browser / Keychain / token files) fits a local CLI better than a long-lived MCP daemon in early versions.
-
-**Optional later (Phase 5+):** a **thin MCP adapter** that only wraps `blumkin … --json` if an IDE/UI wants MCP tool cards — same CLI remains source of truth.
+The MCP adapter is not a second surface: `blumkin mcp serve` derives its tools
+1:1 from `skills_catalog()` and calls the same `run_skill` / `classify_exception`
+seam the CLI callbacks call, so there is no second Graph implementation and
+nothing to drift. It is an ephemeral stdio process the host spawns and reaps per
+session (Claude Code, Cursor CLI, GitHub Copilot CLI are all MCP-native stdio
+clients now) — not a daemon — and it reuses the CLI's on-disk token cache, so
+there is no new auth surface. `auth login` stays CLI-only (no browser from
+stdio); notifying tools require a server-enforced `confirm: true` argument (the
+MCP mirror of `--yes`). `--read-only` / `--only <prefix>` narrow the tool set.
 
 ```text
-Preferred (v1):
-
-  Copilot CLI / Cursor Agent CLI
-       │  (reads Blumkin skill / instructions)
-       ▼
-  shell: blumkin calendar today --json
-       ▼
-  Graph (delegated)
-
-Optional later:
-
-  MCP host  →  blumkin-mcp  →  shell/exec blumkin … --json  →  Graph
+  Claude Code / Cursor CLI / Copilot CLI
+       │
+       ├─ shell: blumkin calendar today --json   (Agent Skill path)
+       │
+       └─ stdio JSON-RPC: blumkin mcp serve      (MCP path)
+              │
+              ▼
+         run_skill()  ──►  provider (delegated Graph / Google)
 ```
 
 ### 6.2 Cursor Agent CLI
@@ -389,7 +387,7 @@ Auth stays **on the machine** where the Copilot CLI runs (same token cache as Cu
 | `.cursor/skills/blumkin/SKILL.md` (project) | 5 ✅ |
 | Optional install notes: personal skill symlink / copy to `~/.cursor/skills/` | 5 ✅ |
 | Copilot instructions snippet in `docs/agent-integration.md` | 5 ✅ |
-| MCP adapter (optional, shells to CLI only) | later if needed |
+| `blumkin mcp serve` — stdio MCP adapter over `run_skill` (issue #113) | shipped |
 
 ### 6.5 Anti-patterns
 
@@ -518,7 +516,7 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 - [x] Freeze `skills list --json` schema — [`docs/agent-integration.md`](./docs/agent-integration.md), pinned by `tests/test_skills_schema.py`  
 - [x] Ship `.cursor/skills/blumkin/SKILL.md` (shell-first; see §6)  
 - [x] Document personal `~/.cursor/skills/blumkin/` install + Copilot CLI custom-instructions snippet — [`docs/agent-integration.md`](./docs/agent-integration.md)  
-- **No MCP in v1**; optional thin MCP wrapper later if a host needs it  
+- [x] `blumkin mcp serve` — stdio MCP adapter over `run_skill` (issue #113); see §6.1  
 
 ---
 
@@ -541,7 +539,7 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 3. **Migrate private Graph lab:** leave as lab until Blumkin Phase 2–3, then archive?  
 4. **Default duration** for `calendar create` if `--duration` omitted (propose `30m`)?  
 5. **Skill install:** project-only (`.cursor/skills/blumkin`) vs also document personal `~/.cursor/skills/` for Copilot/Cursor across all repos?  
-6. **MCP later:** skip until a concrete host requires it, or stub a no-op adapter early?  
+6. ~~**MCP later:** skip until a concrete host requires it?~~ Resolved (issue #113): shipped `blumkin mcp serve` as a thin stdio adapter over `run_skill`.  
 
 ---
 

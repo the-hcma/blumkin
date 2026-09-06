@@ -487,6 +487,7 @@ _CONSENT = {
     "mail.send-draft": (True, True),
     "mail.thread": (False, False),
     "mail.update-draft": (True, False),
+    "mcp.serve": (False, False),
     "meeting.get": (False, False),
     "meeting.transcription": (True, False),
     "people.resolve": (False, False),

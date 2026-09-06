@@ -3,9 +3,10 @@
 How coding agents reach blumkin, and what they can rely on.
 
 The integration is deliberately thin: blumkin is a CLI with a stable `--json`
-contract, and agents run it through the shell tool they already have. There is no
-MCP server in v1 — see [`PLAN.md` §6.1](../PLAN.md) for why, and §6 for the
-broader design.
+contract, and agents run it through the shell tool they already have. There is
+also an optional stdio MCP adapter (`blumkin mcp serve`, see [MCP
+server](#mcp-server) below) that exposes each skill as a typed tool over the same
+execution path — see [`PLAN.md` §6.1](../PLAN.md) for the design.
 
 ```text
 Cursor / Copilot CLI / Claude
@@ -408,6 +409,63 @@ what "fields may be added" has to mean if it is to be true.
 Argument names and types are pinned in full for the skills quoted in this guide,
 and checked for shape everywhere else, which is why `args` promises stability per
 argument rather than a frozen list.
+
+---
+
+## MCP server
+
+`blumkin mcp serve` runs a stdio [Model Context
+Protocol](https://modelcontextprotocol.io) server: every skill except `auth
+login` becomes a typed tool named by its id (`calendar.today`, `mail.send-draft`,
+…). Tools are generated from `skills list --json` and dispatched through the same
+`run_skill` path the CLI uses, so the CLI stays the single source of truth.
+
+It needs the optional extra:
+
+```bash
+pipx install 'blumkin[mcp]'        # or: uv tool install 'blumkin[mcp]'
+```
+
+Auth is unchanged — run `blumkin auth login` on a TTY once; the server shares the
+same `~/.config/blumkin/` token cache. The host spawns `blumkin mcp serve` as a
+child process and reaps it when the session ends; there is no daemon.
+
+**Claude Code**
+
+```bash
+claude mcp add --transport stdio blumkin -- blumkin mcp serve
+```
+
+or in `.mcp.json` (`--scope project` writes this for you):
+
+```jsonc
+{ "mcpServers": { "blumkin": { "command": "blumkin", "args": ["mcp", "serve"] } } }
+```
+
+**Cursor CLI** — `.cursor/mcp.json` (shared with the Cursor IDE):
+
+```jsonc
+{ "mcpServers": { "blumkin": { "command": "blumkin", "args": ["mcp", "serve"] } } }
+```
+
+**GitHub Copilot CLI** — `~/.copilot/mcp-config.json` (or `copilot mcp add`):
+
+```jsonc
+{ "mcpServers": { "blumkin": { "type": "stdio", "command": "blumkin", "args": ["mcp", "serve"], "tools": ["*"] } } }
+```
+
+Options: `--profile <name>` acts as that profile; `--read-only` exposes only
+non-mutating tools; `--only <prefix>` (repeatable) keeps only tools under an id
+prefix, e.g. `blumkin mcp serve --only calendar --only mail`.
+
+Tools that notify people or change a shared setting (calendar RSVP/create/cancel,
+`chat.send`, `mail.send-draft`/`forward`, `mail.auto-reply`,
+`meeting.transcription`) carry a **required `confirm: true`** argument the server
+enforces — the MCP mirror of the CLI's `--yes` gate. `readOnlyHint` /
+`destructiveHint` annotations and `anthropic/requiresUserInteraction` metadata
+are set so MCP clients can prompt appropriately.
+
+v1 is stdio only. A loopback HTTP transport is a later option if a host needs it.
 
 ---
 

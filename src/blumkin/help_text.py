@@ -804,6 +804,38 @@ Notes:
 Per-command help: blumkin COMMAND --help (e.g. blumkin calendar create --help).
 """
 
+MCP_EPILOG = """
+Run blumkin as a Model Context Protocol stdio server, so MCP-aware agents call
+each skill as a typed tool instead of shelling out and parsing --help.
+
+Example:
+
+\b
+  claude mcp add --transport stdio blumkin -- blumkin mcp serve
+  # or in .cursor/mcp.json / ~/.copilot/mcp-config.json:
+  #   { "command": "blumkin", "args": ["mcp", "serve"] }
+
+Needs the optional `mcp` extra: `pipx install 'blumkin[mcp]'` (or
+`uv tool install 'blumkin[mcp]'`). Auth stays a CLI step - run `blumkin auth
+login` on a TTY once; the server shares the same token cache.
+"""
+
+MCP_SERVE_EPILOG = """
+Example:
+
+\b
+  blumkin mcp serve
+  blumkin mcp serve --profile work --read-only
+  blumkin mcp serve --only calendar --only mail
+
+Blocks, speaking JSON-RPC on stdin/stdout, until the client disconnects (the
+host spawns and reaps it per session - there is no daemon). Every skill except
+`auth login` is exposed as a tool named by its id; tools that notify people or
+change a shared setting require a `confirm: true` argument the server enforces.
+`--read-only` drops every mutating tool; `--only PREFIX` (repeatable) keeps only
+tools under that id prefix.
+"""
+
 MEETING_EPILOG = """
 Examples:
 

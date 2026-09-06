@@ -2964,6 +2964,41 @@ def mail_update_draft_cmd(
     )
 
 
+@main.group("mcp", epilog=help_text.MCP_EPILOG)
+def mcp_group() -> None:
+    """Run blumkin as a Model Context Protocol server for MCP-aware agent clients.
+
+    Every skill becomes a typed MCP tool dispatched through the same `run_skill`
+    path the CLI uses, so the CLI stays the source of truth. Needs the optional
+    `mcp` extra: `pipx install 'blumkin[mcp]'`.
+    """
+
+
+@mcp_group.command("serve", epilog=help_text.MCP_SERVE_EPILOG)
+@click.option("--profile", "profile", default=None, help="Profile name or tag to act as.")
+@click.option("--read-only", "read_only", is_flag=True, help="Expose only non-mutating skills.")
+@click.option(
+    "--only",
+    "only",
+    multiple=True,
+    help="Expose only skills under this id prefix (repeatable, e.g. --only calendar).",
+)
+def mcp_serve_cmd(profile: str | None, read_only: bool, only: tuple[str, ...]) -> None:
+    """Start the stdio MCP server. Blocks until the client disconnects."""
+    try:
+        from blumkin import mcp_server
+    except ModuleNotFoundError as exc:
+        _emit_error(
+            error="usage_error",
+            message="the MCP server needs the optional `mcp` dependency",
+            as_json=_cli_as_json(),
+            hint="Install it with `pipx install 'blumkin[mcp]'` "
+            "(or `uv tool install 'blumkin[mcp]'`), then retry.",
+        )
+        raise SystemExit(EXIT_USAGE) from exc
+    mcp_server.serve(profile=profile, read_only=read_only, only=tuple(only))
+
+
 @main.group(epilog=help_text.MEETING_EPILOG)
 def meeting() -> None:
     """Inspect and configure the online meeting on an event you organize.
