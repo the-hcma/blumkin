@@ -587,14 +587,14 @@ def _all_day_span_days(
     end_raw: str | None,
     duration: str | None,
     old_span_days: int | None,
-    all_day: bool | None,
 ) -> int:
     """Whole-day length of an all-day event edit.
 
     Precedence: an explicit ``--end`` date (exclusive, matching Google's all-day
     end-date semantics), then a whole-day ``--duration``, then the event's
-    current span for a move that keeps ``--all-day`` (``all_day is None``), else
-    a single day.
+    current span (``old_span_days`` is only set when the event was already
+    all-day, so a genuine timed->all-day conversion still falls through), else a
+    single day.
     """
     if end_raw is not None:
         if "T" in end_raw:
@@ -608,7 +608,7 @@ def _all_day_span_days(
         if delta < timedelta(days=1) or delta % timedelta(days=1):
             raise ValueError("--all-day --duration must be whole days, e.g. 1d, 3d")
         return delta.days
-    if all_day is None and old_span_days:
+    if old_span_days:
         return max(1, old_span_days)
     return 1
 
@@ -662,7 +662,7 @@ def _updated_bounds(
             if was_all_day and old_start_date and old_end_date
             else None
         )
-        days = _all_day_span_days(first, end_raw, duration, old_span_days, all_day)
+        days = _all_day_span_days(first, end_raw, duration, old_span_days)
         start_dt = datetime.combine(first, datetime.min.time(), tzinfo=tz)
         return start_dt, start_dt + timedelta(days=days), True if all_day is not None else None
 

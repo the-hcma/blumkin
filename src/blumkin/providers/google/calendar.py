@@ -625,7 +625,7 @@ def _google_updated_bounds(
             date.fromisoformat(start_raw.strip()) if start_raw is not None else prev_start.date()
         )
         old_span_days = (prev_end.date() - prev_start.date()).days if was_all_day else None
-        days = _all_day_span_days(first, end_raw, duration, old_span_days, all_day)
+        days = _all_day_span_days(first, end_raw, duration, old_span_days)
         start_dt = datetime.combine(first, time(), tzinfo=tz)
         return start_dt, start_dt + timedelta(days=days), True
 

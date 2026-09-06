@@ -157,6 +157,52 @@ def test_graph_update_all_day_start_alone_keeps_span(monkeypatch) -> None:
     assert patched.end.date_time == "2026-10-08T00:00:00"  # 3-day span preserved
 
 
+def _timed_existing() -> SimpleNamespace:
+    # Graph serializes under Prefer: outlook.timezone="UTC"; 17:00Z == 13:00 EDT.
+    return SimpleNamespace(
+        id="evt-1",
+        is_all_day=False,
+        start=_dtz("2026-09-21T17:00:00"),
+        end=_dtz("2026-09-21T18:00:00"),
+    )
+
+
+def test_graph_update_all_day_explicit_flag_keeps_multiday_span(monkeypatch) -> None:
+    # `--all-day` passed explicitly on an already-all-day 3-day event + a move
+    # must not collapse it to one day.
+    client = _graph_client(monkeypatch, existing=_all_day_existing("2026-09-21", "2026-09-24"))
+    asyncio.run(
+        calendar_update(event_id="evt-1", all_day=True, start_raw="2026-10-05", tz_name=_NY)
+    )
+    patched = _posted(client)
+    assert patched.start.date_time == "2026-10-05T00:00:00"
+    assert patched.end.date_time == "2026-10-08T00:00:00"
+
+
+def test_graph_update_end_keeps_start_sets_new_end(monkeypatch) -> None:
+    client = _graph_client(monkeypatch, existing=_timed_existing())
+    asyncio.run(calendar_update(event_id="evt-1", end_raw="2026-09-21T16:00", tz_name=_NY))
+    patched = _posted(client)
+    assert patched.start.date_time == "2026-09-21T13:00:00"  # unchanged (17:00Z -> 13:00 EDT)
+    assert patched.end.date_time == "2026-09-21T16:00:00"
+
+
+def test_graph_update_start_plus_duration_sets_end(monkeypatch) -> None:
+    client = _graph_client(monkeypatch, existing=_timed_existing())
+    asyncio.run(
+        calendar_update(event_id="evt-1", start_raw="2026-09-23T10:00", duration="45m", tz_name=_NY)
+    )
+    patched = _posted(client)
+    assert patched.start.date_time == "2026-09-23T10:00:00"
+    assert patched.end.date_time == "2026-09-23T10:45:00"
+
+
+def test_graph_update_end_before_start_raises(monkeypatch) -> None:
+    _graph_client(monkeypatch, existing=_timed_existing())  # existing start 13:00 EDT
+    with pytest.raises(ValueError, match="event end must be after start"):
+        asyncio.run(calendar_update(event_id="evt-1", end_raw="2026-09-21T11:00", tz_name=_NY))
+
+
 def test_graph_update_convert_from_all_day_keeps_date(monkeypatch) -> None:
     client = _graph_client(monkeypatch, existing=_all_day_existing("2026-09-21", "2026-09-22"))
     asyncio.run(calendar_update(event_id="evt-1", all_day=False, tz_name=_NY))
@@ -360,6 +406,39 @@ def test_google_update_missing_event(tmp_path: Path) -> None:
         asyncio.run(
             google_calendar.calendar_update(
                 event_id="evt-1", subject="x", config=_google_cfg(tmp_path)
+            )
+        )
+
+
+def test_google_update_start_plus_duration_sets_end(tmp_path: Path) -> None:
+    existing = {
+        "id": "evt-1",
+        "start": {"dateTime": "2026-09-21T13:00:00-04:00"},
+        "end": {"dateTime": "2026-09-21T14:00:00-04:00"},
+    }
+    service = _google_service(existing)
+    with _google_patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_update(
+                event_id="evt-1", start_raw="2026-09-23T10:00", duration="45m"
+            )
+        )
+    body = service.events.return_value.patch.call_args.kwargs["body"]
+    assert body["start"]["dateTime"].startswith("2026-09-23T10:00:00")
+    assert body["end"]["dateTime"].startswith("2026-09-23T10:45:00")
+
+
+def test_google_update_end_before_start_raises(tmp_path: Path) -> None:
+    existing = {
+        "id": "evt-1",
+        "start": {"dateTime": "2026-09-21T13:00:00-04:00"},
+        "end": {"dateTime": "2026-09-21T14:00:00-04:00"},
+    }
+    service = _google_service(existing)
+    with _google_patched(service), pytest.raises(ValueError, match="event end must be after start"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_update(
+                event_id="evt-1", end_raw="2026-09-21T12:00"
             )
         )
 
