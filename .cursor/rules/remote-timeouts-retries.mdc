@@ -42,6 +42,15 @@ indefinitely and must not retry without a bound.
   retry/timeout policy on new code.
 - **CI / live tests:** hermetic tests mock remotes; live tests still inherit
   timeouts (no infinite waits).
+- **GitHub API from agent flows:** never run a bare `gh api`, or a paginated /
+  looped `gh` read or write, directly in a triage / review flow.
+  Route every such call through `scripts/gh-api` (resolved from
+  `${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}`) so primary **and**
+  secondary rate-limit backoff (`Retry-After` / `X-RateLimit-Reset`,
+  `NOTE: GITHUB_RATE_LIMIT_*`, exit `125` on quota-intact fail-fast) is
+  automatic — the same logic `wait-for-agent-review` already uses. Interactive
+  `gh` (`auth`, prompts, `--web`) is exempt; `scripts/gh-api -- …` opts a
+  non-listed subcommand in. See repository-helpers#608.
 
 ## Anti-patterns
 
