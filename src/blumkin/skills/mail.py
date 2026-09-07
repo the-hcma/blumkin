@@ -69,8 +69,14 @@ from blumkin.attachments import (
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.output import sanitize_terminal
+from blumkin.skills.docs import parse_body as _parse_doc_body
+from blumkin.skills.docs import render_email_html as _render_email_html
 
 MailBodyType = Literal["html", "text"]
+# What --body-type accepts when *composing* a message. "markdown" is rendered to
+# HTML on the wire (see resolve_mail_body); "text" / "html" pass through verbatim.
+MailComposeType = Literal["markdown", "html", "text"]
+_DEFAULT_COMPOSE_TYPE = "markdown"
 
 
 class MailAttachError(Exception):
@@ -710,7 +716,7 @@ async def mail_draft(
     bcc: str | Sequence[str] = (),
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = "text",
+    body_type: str = _DEFAULT_COMPOSE_TYPE,
     cc: str | Sequence[str] = (),
     config: BlumkinConfig | None = None,
     no_signature: bool = False,
@@ -734,7 +740,7 @@ async def mail_draft(
     client = create_graph_client(cfg)
     message = Message(
         bcc_recipients=_recipient_models(bcc_addrs) or None,
-        body=ItemBody(content_type=graph_body_type, content=content),
+        body=_compose_item_body(graph_body_type, content),
         cc_recipients=_recipient_models(cc_addrs) or None,
         subject=subject.strip(),
         to_recipients=_recipient_models(to_addrs),
@@ -791,7 +797,7 @@ async def mail_forward(
     to: str,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = "text",
+    body_type: str = _DEFAULT_COMPOSE_TYPE,
     bcc: str | Sequence[str] | None = None,
     cc: str | Sequence[str] | None = None,
     config: BlumkinConfig | None = None,
@@ -1025,7 +1031,7 @@ async def mail_reply(
     message_id: str,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = "text",
+    body_type: str = _DEFAULT_COMPOSE_TYPE,
     bcc: str | Sequence[str] | None = None,
     cc: str | Sequence[str] | None = None,
     reply_all: bool = False,
@@ -1227,7 +1233,7 @@ async def mail_update_draft(
     subject: str | None = None,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = "text",
+    body_type: str = _DEFAULT_COMPOSE_TYPE,
     cc: str | Sequence[str] | None = None,
     keep_quoted: bool = False,
     no_signature: bool = False,
@@ -1301,7 +1307,7 @@ async def mail_update_draft(
             raise ValueError("--subject must be non-empty when provided")
         patch.subject = subject.strip()
     if content is not None and graph_body_type is not None:
-        patch.body = ItemBody(content_type=graph_body_type, content=content)
+        patch.body = _compose_item_body(graph_body_type, content)
     if to_addrs is not None:
         patch.to_recipients = _recipient_models(to_addrs)
     if cc_addrs is not None:
@@ -1400,15 +1406,19 @@ def resolve_mail_body(
     *,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = "text",
+    body_type: str = _DEFAULT_COMPOSE_TYPE,
 ) -> tuple[str, MailBodyType, BodyType]:
-    """Resolve --body / --body-file and --body-type into content for Graph."""
+    """Resolve --body / --body-file and --body-type into wire content + type.
+
+    ``markdown`` (the default) is rendered to an HTML fragment here, so callers
+    downstream only ever deal with ``html`` / ``text`` - a Markdown body reads as
+    a formatted message in Gmail and Outlook instead of one collapsed line.
+    """
     has_body = body is not None
     has_file = body_file is not None
     if has_body == has_file:
         raise ValueError("exactly one of --body or --body-file is required")
-    label = _parse_body_type(body_type)
-    graph_type = BodyType.Html if label == "html" else BodyType.Text
+    compose = _parse_compose_body_type(body_type)
     if has_file:
         path = Path(str(body_file))
         try:
@@ -1417,7 +1427,27 @@ def resolve_mail_body(
             raise MailBodyFileError(f"cannot read --body-file {path}: {exc}") from exc
     else:
         content = str(body)
-    return content, label, graph_type
+    if compose == "markdown":
+        return render_markdown_email(content), "html", BodyType.Html
+    graph_type = BodyType.Html if compose == "html" else BodyType.Text
+    return content, compose, graph_type
+
+
+def render_markdown_email(markdown: str) -> str:
+    """Render an authored Markdown body to the HTML fragment that goes on the wire."""
+    return _render_email_html(_parse_doc_body(markdown, body_format="markdown"))
+
+
+def _compose_item_body(graph_body_type: BodyType, content: str) -> ItemBody:
+    """Build the Graph body, forcing CRLF on a text body.
+
+    Graph's text -> HTML conversion (what every client actually renders) treats
+    CRLF as the line delimiter; a bare-LF body comes back with its line breaks
+    collapsed. HTML bodies carry their breaks in the markup, so leave them alone.
+    """
+    if graph_body_type == BodyType.Text:
+        content = content.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+    return ItemBody(content_type=graph_body_type, content=content)
 
 
 _FOLDER_PAGE_SIZE = 100
@@ -1968,6 +1998,13 @@ def _parse_body_type(raw: str) -> MailBodyType:
     return label  # type: ignore[return-value]
 
 
+def _parse_compose_body_type(raw: str) -> MailComposeType:
+    label = raw.strip().lower()
+    if label not in {"markdown", "html", "text"}:
+        raise ValueError("--body-type must be 'markdown', 'text', or 'html'")
+    return label  # type: ignore[return-value]
+
+
 def _participants(recipients: Any) -> list[dict[str, Any]]:
     people: list[dict[str, Any]] = []
     for recipient in recipients or []:
@@ -2130,7 +2167,9 @@ def _resolve_comment(
     """
     cfg = config or load_config()
     if body is None and body_file is None:
-        label = _parse_body_type(body_type)
+        # Nothing to render - markdown and html both give an HTML signature so it
+        # matches the HTML quoted original the draft is joined onto.
+        label: MailBodyType = "text" if _parse_compose_body_type(body_type) == "text" else "html"
         content = append_mail_signature("", body_type=label, config=cfg, no_signature=no_signature)
         if not content:
             return ""

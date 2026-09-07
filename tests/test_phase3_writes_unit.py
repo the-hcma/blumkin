@@ -615,7 +615,7 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
         "blumkin.skills.mail.load_config",
         lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
     )
-    saved = asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello"))
+    saved = asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", body_type="text"))
     assert saved["draft"]["id"] == "draft-1"
     assert saved["draft"]["body_type"] == "text"
     post_await = client.me.messages.post.await_args
@@ -673,6 +673,7 @@ def test_mail_draft_html_and_body_file(tmp_path, monkeypatch) -> None:
             to="a@b.com",
             subject="TextFile",
             body_file=str(text_path),
+            body_type="text",
         )
     )
     text_await = client.me.messages.post.await_args
@@ -718,7 +719,7 @@ def test_resolve_mail_body_mutual_exclusion() -> None:
     with pytest.raises(ValueError, match="exactly one"):
         resolve_mail_body(body="x", body_file="y")
     with pytest.raises(ValueError, match="body-type"):
-        resolve_mail_body(body="x", body_type="markdown")
+        resolve_mail_body(body="x", body_type="richtext")
 
 
 def test_resolve_mail_body_oserror_propagates(tmp_path, monkeypatch) -> None:

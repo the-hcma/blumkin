@@ -134,12 +134,22 @@ def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
         wo1162425_scopes=False,
     )
 
-    asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", config=cfg))
+    asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", body_type="text", config=cfg))
     posted = client.me.messages.post.await_args
     assert posted is not None
-    assert posted.args[0].body.content == "Hello\n\nAda"
+    # A text body is sent to Graph with CRLF so Outlook keeps the line breaks.
+    assert posted.args[0].body.content == "Hello\r\n\r\nAda"
 
-    asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", config=cfg, no_signature=True))
+    asyncio.run(
+        mail_draft(
+            to="a@b.com",
+            subject="Hi",
+            body="Hello",
+            body_type="text",
+            config=cfg,
+            no_signature=True,
+        )
+    )
     posted = client.me.messages.post.await_args
     assert posted is not None
     assert posted.args[0].body.content == "Hello"

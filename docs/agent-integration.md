@@ -513,6 +513,9 @@ v1 is stdio only. A loopback HTTP transport is a later option if a host needs it
   `ambiguous: true`
 - Inventing colored HTML mail signatures per draft (use `[mail.signature]` /
   `--no-signature` instead)
+- Hand-writing HTML for a mail body — `mail draft` / `reply` / `forward` take
+  Markdown by default and render it to HTML; pass `--body-type text` only when a
+  literal plain-text body is wanted
 - Re-login looping on exit `1` / `secret_write_failed` instead of fixing the
   config path
 - Opening a second Graph client when `chat attachments download` returns

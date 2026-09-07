@@ -101,7 +101,9 @@ def test_mail_forward_sends_the_comment_and_recipient(monkeypatch) -> None:
     item = client.me.messages.by_message_id.return_value
     item.create_forward.post = AsyncMock(return_value=_draft("FW: Quarterly sync"))
 
-    payload = asyncio.run(mail_forward(message_id="msg-1", to="sam@example.com", body="FYI"))
+    payload = asyncio.run(
+        mail_forward(message_id="msg-1", to="sam@example.com", body="FYI", body_type="text")
+    )
 
     request = _posted(item.create_forward.post)
     assert request.comment == "FYI"
@@ -141,7 +143,7 @@ def test_mail_reply_creates_a_draft_through_graph(monkeypatch) -> None:
     item.create_reply.post = AsyncMock(return_value=draft)
     item.get = AsyncMock(return_value=draft)
 
-    payload = asyncio.run(mail_reply(message_id="msg-1", body="Thanks"))
+    payload = asyncio.run(mail_reply(message_id="msg-1", body="Thanks", body_type="text"))
 
     assert _posted(item.create_reply.post).comment == "Thanks"
     draft_out = payload["draft"]
@@ -173,7 +175,7 @@ def test_mail_reply_escapes_text_comments_for_the_html_draft(monkeypatch) -> Non
     item = client.me.messages.by_message_id.return_value
     item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
 
-    asyncio.run(mail_reply(message_id="msg-1", body="see <5 and 6> for details"))
+    asyncio.run(mail_reply(message_id="msg-1", body="see <5 and 6> for details", body_type="text"))
 
     assert _posted(item.create_reply.post).comment == "see &lt;5 and 6&gt; for details"
 
@@ -208,7 +210,7 @@ def test_mail_reply_lets_other_graph_errors_through(monkeypatch) -> None:
 
 def test_mail_reply_rejects_a_bad_body_type() -> None:
     with pytest.raises(ValueError, match="--body-type"):
-        asyncio.run(mail_reply(message_id="msg-1", body_type="markdown"))
+        asyncio.run(mail_reply(message_id="msg-1", body_type="richtext"))
 
 
 def test_mail_reply_rejects_an_empty_id() -> None:
@@ -372,7 +374,7 @@ def test_mail_reply_appends_signature_and_converts_newlines(monkeypatch) -> None
     item = client.me.messages.by_message_id.return_value
     item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
 
-    asyncio.run(mail_reply(message_id="msg-1", body="line1\nline2"))
+    asyncio.run(mail_reply(message_id="msg-1", body="line1\nline2", body_type="text"))
 
     assert _posted(item.create_reply.post).comment == "line1<br>line2<br><br>Ada"
 
@@ -384,7 +386,11 @@ def test_mail_reply_signature_only_empty_body(monkeypatch) -> None:
 
     asyncio.run(mail_reply(message_id="msg-1"))
 
-    assert _posted(item.create_reply.post).comment == "Ada"
+    # Empty-body reply on the markdown default: signature renders as HTML to match
+    # the HTML quoted original the draft is joined onto.
+    assert _posted(item.create_reply.post).comment == (
+        '<span style="color:#003366;font-weight:bold">Ada</span>'
+    )
 
 
 def test_mail_reply_no_signature_skips_config(monkeypatch) -> None:
@@ -392,7 +398,7 @@ def test_mail_reply_no_signature_skips_config(monkeypatch) -> None:
     item = client.me.messages.by_message_id.return_value
     item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
 
-    asyncio.run(mail_reply(message_id="msg-1", body="Thanks", no_signature=True))
+    asyncio.run(mail_reply(message_id="msg-1", body="Thanks", body_type="text", no_signature=True))
 
     assert _posted(item.create_reply.post).comment == "Thanks"
 
