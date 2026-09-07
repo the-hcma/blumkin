@@ -20,6 +20,7 @@ from blumkin.providers.google_auth import (
     CHAT_READ_SCOPES,
     CHAT_SCOPES,
     DOCS_SCOPES,
+    DRIVE_SCOPES,
     GOOGLE_REQUIRED_SCOPES,
     GOOGLE_SCOPES,
     MAIL_MODIFY_SCOPES,
@@ -129,6 +130,7 @@ def test_google_scopes_is_the_union_of_every_required_subset() -> None:
         CALENDAR_SCOPES
         | CHAT_SCOPES
         | DOCS_SCOPES
+        | DRIVE_SCOPES
         | MAIL_READ_SCOPES
         | MAIL_WRITE_SCOPES
         | MAIL_MODIFY_SCOPES
@@ -141,6 +143,7 @@ def test_google_scopes_is_the_union_of_every_required_subset() -> None:
     assert CALENDAR_READ_SCOPES.issubset(CALENDAR_SCOPES)
     assert CHAT_READ_SCOPES.issubset(CHAT_SCOPES)
     assert DOCS_SCOPES.issubset(GOOGLE_REQUIRED_SCOPES)
+    assert DRIVE_SCOPES.issubset(GOOGLE_REQUIRED_SCOPES)
 
 
 def test_interactive_consent_forces_prompt_immediately_when_grant_already_insufficient(

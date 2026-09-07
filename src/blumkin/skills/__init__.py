@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from blumkin.skills.drive import DRIVE_SKILLS as DRIVE_SKILLS
 from blumkin.version import get_build_info
 
 
@@ -112,6 +113,9 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("calendar.create", "--days"): None,
     # docs create: --format selects the body parser (markdown | text).
     ("docs.create", "--format"): "body_format",
+    # drive: --id is an item id (--folder-id / --folder / --query / --order / --top
+    # map by the default transform).
+    ("drive.get", "--id"): "item_id",
     # mail: --from is a sender substring, not a range bound.
     ("mail.inbox", "--from"): "sender",
     ("mail.list", "--from"): "sender",
@@ -769,6 +773,63 @@ SKILLS: list[SkillSpec] = [
         notifies_others=False,
         scopes=[],
         args=[],
+    ),
+    SkillSpec(
+        id="drive.get",
+        cli=["blumkin", "drive", "get"],
+        summary=(
+            "Read one drive item's metadata (owners, parents, timestamps, web_url, "
+            "export formats). OneDrive on Microsoft."
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Files.Read"],
+        args=[{"name": "--id", "required": True, "type": "string"}],
+    ),
+    SkillSpec(
+        id="drive.list",
+        cli=["blumkin", "drive", "list"],
+        summary=(
+            "List a drive folder or search it (Google Drive / OneDrive). No --folder* "
+            "lists the drive root; --query is a name / full-text substring."
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Files.Read"],
+        args=[
+            {
+                "name": "--folder-id",
+                "required": False,
+                "type": "string",
+                "note": "at most one of --folder-id or --folder",
+            },
+            {
+                "name": "--folder",
+                "required": False,
+                "type": "string",
+                "note": "native path on Microsoft; best-effort name walk on Google "
+                "(ambiguous segment -> usage_error) - prefer --folder-id there",
+            },
+            {
+                "name": "--query",
+                "required": False,
+                "type": "string",
+                "note": "name / full-text substring; scoped to --folder* when given",
+            },
+            {
+                "name": "--order",
+                "required": False,
+                "type": "enum",
+                "values": ["modified", "name"],
+                "note": "default modified (newest first)",
+            },
+            {
+                "name": "--top",
+                "required": False,
+                "type": "int",
+                "note": "max items; default 50, 0 = no cap (follows every page)",
+            },
+        ],
     ),
     SkillSpec(
         id="mail.attachments",

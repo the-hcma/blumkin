@@ -503,6 +503,48 @@ reports which scope set is active. Exit 3 (auth_required) lists the problems to
 fix (usually: run `blumkin auth login`).
 """
 
+DRIVE_EPILOG = """
+Read and organize your drive:
+
+\b
+  blumkin drive list --folder "Language Classes/Portuguese Classes" --json
+  blumkin drive get --id 1a2b3c... --json
+
+Provider-neutral verbs; help text names OneDrive on the Microsoft side. Reads
+need `docs_scopes = true` on `provider = "microsoft"` (Files.ReadWrite - the same
+grant `docs create` uses; there is no separate drive toggle). On
+`provider = "google"` re-run `blumkin auth login` once to consent to `drive`.
+"""
+
+DRIVE_LIST_EPILOG = """
+Examples:
+
+\b
+  # A folder by native path (Microsoft) or best-effort name walk (Google)
+  blumkin drive list --folder "Reports/2026" --json
+\b
+  # A folder by id (unambiguous on both providers)
+  blumkin drive list --folder-id 1a2b3c... --order name --json
+\b
+  # Search a folder (or the whole drive with no --folder*)
+  blumkin drive list --query "portuguese vocab" --top 20 --json
+
+`--json` items have a stable cross-provider shape: `{ id, name, mime_type, kind,
+size, modified, web_url, parent_id, provider }` where `kind` is one of
+file / folder / doc / sheet / slides. `--top 0` follows every page.
+"""
+
+DRIVE_GET_EPILOG = """
+Examples:
+
+\b
+  blumkin drive get --id 1a2b3c... --json
+
+Full metadata for one item: owners, parents, timestamps, `web_url`, and the
+export formats available (`drive export`, coming next). Ids come from
+`blumkin drive list`.
+"""
+
 MAIL_ATTACHMENTS_DOWNLOAD_EPILOG = """
 Examples:
 

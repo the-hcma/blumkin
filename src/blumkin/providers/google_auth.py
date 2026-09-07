@@ -87,6 +87,18 @@ DOCS_SCOPES = frozenset(
     }
 )
 
+# The `drive` skill area (list / get / download / export / read, and mkdir / move
+# / rename) needs full read+write to the user's Drive so it can target folders the
+# user made by hand - `drive.file` only ever sees blumkin's own files, and
+# `drive.readonly` cannot rewrite a file's `parents`. Unlike Microsoft (gated
+# behind the `docs_scopes` toggle), Google widens its standard scope set and
+# re-prompts consent on the next `blumkin auth login`, like any added scope.
+DRIVE_SCOPES = frozenset(
+    {
+        "https://www.googleapis.com/auth/drive",
+    }
+)
+
 # The default `get_credentials(..., required_scopes=None)` gate, and status_dict's
 # missing_scopes: the union of every scope some command actually requires - unlike
 # GOOGLE_SCOPES, this excludes directory.readonly (required by no single command,
@@ -104,6 +116,7 @@ GOOGLE_REQUIRED_SCOPES = frozenset(
         "https://www.googleapis.com/auth/chat.spaces.readonly",
         "https://www.googleapis.com/auth/contacts.readonly",
         "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/gmail.compose",
         "https://www.googleapis.com/auth/gmail.modify",
@@ -124,6 +137,7 @@ GOOGLE_SCOPES = frozenset(
         "https://www.googleapis.com/auth/contacts.readonly",
         "https://www.googleapis.com/auth/directory.readonly",
         "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/gmail.compose",
         "https://www.googleapis.com/auth/gmail.modify",

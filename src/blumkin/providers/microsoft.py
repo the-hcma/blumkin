@@ -9,7 +9,7 @@ from typing import Any
 
 from blumkin.auth import create_credential, logout, refresh_silent, save_token_cache, status_dict
 from blumkin.config import BlumkinConfig
-from blumkin.providers import microsoft_docs
+from blumkin.providers import microsoft_docs, microsoft_drive
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.calendar import (
     calendar_freebusy,
@@ -393,6 +393,27 @@ class MicrosoftWorkspaceProvider:
             body_file=body_file,
             body_format=body_format,
             folder=folder,
+            config=self._config,
+        )
+
+    async def drive_get(self, *, item_id: str) -> dict[str, Any]:
+        return await microsoft_drive.drive_get(item_id=item_id, config=self._config)
+
+    async def drive_list(
+        self,
+        *,
+        folder_id: str | None = None,
+        folder: str | None = None,
+        query: str | None = None,
+        order: str = "modified",
+        top: int = 50,
+    ) -> dict[str, Any]:
+        return await microsoft_drive.drive_list(
+            folder_id=folder_id,
+            folder=folder,
+            query=query,
+            order=order,
+            top=top,
             config=self._config,
         )
 

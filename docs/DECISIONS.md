@@ -176,3 +176,38 @@ uploaded `.docx`. Standing calls for phases 1-2:
   grant for existing configs and break their MSAL silent refresh until
   re-consent. Same pattern as `wo1162425_scopes`.
 - **`docs export` is deferred** to a fast-follow issue (phase 3).
+
+### D11 - `drive` skill area: scope and provider-asymmetry choices ([#208](https://github.com/the-hcma/blumkin/issues/208) / [#212](https://github.com/the-hcma/blumkin/issues/212))
+
+The `drive` area is the read side (`list` / `get` / `download` / `export` /
+`read`, #208) and the organize side (`mkdir` / `move` / `rename`, #212). One
+provider module per backend (`providers/google/drive.py`,
+`providers/microsoft_drive.py`), shared shape in `skills/drive.py`.
+
+- **No new config toggle.** #194's `docs create` established one gated broad
+  scope per provider; `drive` reuses it rather than adding a third knob.
+  - **Google: the full `drive` scope**, folded into `GOOGLE_SCOPES` /
+    `GOOGLE_REQUIRED_SCOPES`. `drive.file` (D10) only ever sees blumkin's own
+    files, and `drive.readonly` cannot rewrite `parents` (needed by #212), so
+    one scope covers the whole area. Adding it re-prompts consent on the next
+    `blumkin auth login` (standard Google behaviour for any added scope).
+    Supersedes D10's "broad `drive` is not worth it" for this area - reading a
+    Doc the user shares and filing next to it *is* the point here.
+  - **Microsoft: reuse the `docs_scopes` toggle** (`Files.ReadWrite`). Every
+    `drive.*` skill - read and write - is gated on it in the dispatch layer,
+    mirroring `docs.create` (`EXIT_MISSING_SCOPE` when off). No new toggle, no
+    new consent beyond what `docs create` already needs.
+- **`drive read` (Google Doc -> Markdown text) is Google-only.** `documents.get`
+  gives a structured body to flatten (the inverse of `docs create`); Graph has
+  no Word content API, so Microsoft `drive read` raises a clear
+  `not supported for provider=microsoft` (same pattern as Meet transcription,
+  D8). `drive export` on Microsoft is PDF-only (Graph limitation).
+- **`drive export` absorbs the deferred `docs export`** (D10 / #194 OQ5). One
+  `drive export`, no `docs`-specific variant.
+- **All three write verbs (`mkdir` / `move` / `rename`) require `--yes` /
+  `confirm`** even though none notifies anyone - a mis-aimed reparent is
+  annoying to undo, and the friction is cheap. They are hidden from
+  `blumkin mcp serve --read-only`.
+- **`docs create --folder` targets pre-existing folders** once the `drive` scope
+  is present (path resolve + create-then-move), not just blumkin-made top-level
+  folders. `docs update --folder` is #211.
