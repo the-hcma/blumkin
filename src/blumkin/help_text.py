@@ -462,6 +462,35 @@ Open a new shell afterwards. The script calls back into `blumkin` at completion
 time via the _BLUMKIN_COMPLETE env var, so keep `blumkin` on PATH.
 """
 
+DOCS_CREATE_EPILOG = """
+Examples:
+
+\b
+  # Short single-line body (a heading and a sentence)
+  blumkin docs create --title "Kickoff note" \\
+    --body "# Kickoff. First meeting is Monday at 10." --json
+\b
+  # Multi-line Markdown - use --body-file (a shell-quoted --body keeps \\n literal)
+  blumkin docs create --title "Weekly status" --body-file ./status.md \\
+    --folder "Status reports" --json
+
+Creates a real Google Doc from the body (`provider = "microsoft"` is not
+implemented yet). No `--yes` - nobody is notified. The Markdown subset is
+headings, bold / italic / code / links, bullet and numbered lists, fenced code,
+rules, and simple tables; anything else renders as plain text. Use ASCII
+hyphens, not em dashes.
+"""
+
+DOCS_EPILOG = """
+Author a document and store it in your drive:
+
+\b
+  blumkin docs create --title "..." --body-file ./brief.md --json
+
+One authoring format (a Markdown subset). The backend is a native Google Doc
+(`provider = "microsoft"` is not implemented yet).
+"""
+
 DOCTOR_EPILOG = """
 Examples:
 

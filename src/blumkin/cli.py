@@ -60,6 +60,7 @@ from blumkin.skills.chat import (
     format_send_human,
 )
 from blumkin.skills.dispatch import run_skill
+from blumkin.skills.docs import format_docs_create_human
 from blumkin.skills.errors import ErrorInfo, classify_exception
 from blumkin.skills.mail import (
     MAIL_IMPORTANCE_VALUES,
@@ -3252,6 +3253,71 @@ def _format_mcp_status_human(payload: dict[str, Any]) -> list[str]:
         stale = "" if row["resolves_to_blumkin"] else "  (command does not resolve to this blumkin)"
         lines.append(f"  {row['label']} ({row['scope']}): {cmd}{stale}")
     return lines
+
+
+@main.group(epilog=help_text.DOCS_EPILOG)
+def docs() -> None:
+    """Author a document and store it in your drive.
+
+    The body is a Markdown subset; the backend is a native Google Doc.
+    `provider = "microsoft"` is not implemented yet.
+    """
+
+
+@docs.command("create", epilog=help_text.DOCS_CREATE_EPILOG)
+@click.option("--title", required=True, help="Document title / file name.")
+@click.option(
+    "--body", default=None, help="Authored content (mutually exclusive with --body-file)."
+)
+@click.option(
+    "--body-file",
+    "body_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    help="Read the content from a UTF-8 file (under 1 MB).",
+)
+@click.option(
+    "--format",
+    "body_format",
+    default="markdown",
+    show_default=True,
+    type=click.Choice(["markdown", "text"], case_sensitive=False),
+    help="How --body is parsed.",
+)
+@click.option(
+    "--folder",
+    default=None,
+    help="Destination folder name (created if absent); drive root if omitted.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def docs_create_cmd(
+    ctx: click.Context,
+    title: str,
+    body: str | None,
+    body_file: str | None,
+    body_format: str,
+    folder: str | None,
+    as_json_flag: bool,
+) -> None:
+    """Create a document from a Markdown (or plain-text) body.
+
+    Does not notify anyone, so no `--yes`. Pass exactly one of `--body` or
+    `--body-file`. Use ASCII hyphens in the body, not em dashes.
+    """
+    _dispatch(
+        ctx,
+        "docs.create",
+        {
+            "title": title,
+            "body": body,
+            "body_file": body_file,
+            "format": body_format,
+            "folder": folder,
+        },
+        human=format_docs_create_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @main.group(epilog=help_text.MEETING_EPILOG)

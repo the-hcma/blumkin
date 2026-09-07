@@ -10,6 +10,7 @@ from blumkin.config import BlumkinConfig
 from blumkin.providers import google_auth
 from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google import chat as google_chat
+from blumkin.providers.google import docs as google_docs
 from blumkin.providers.google import mail as google_mail
 from blumkin.providers.google import mail_writes as google_mail_writes
 from blumkin.providers.google import people as google_people
@@ -341,6 +342,24 @@ class GoogleWorkspaceProvider:
     ) -> dict[str, Any]:
         return await google_chat.chat_send(
             text=text, with_name=with_name, chat_id=chat_id, config=self._config
+        )
+
+    async def docs_create(
+        self,
+        *,
+        title: str,
+        body: str | None = None,
+        body_file: str | None = None,
+        body_format: str = "markdown",
+        folder: str | None = None,
+    ) -> dict[str, Any]:
+        return await google_docs.docs_create(
+            title=title,
+            body=body,
+            body_file=body_file,
+            body_format=body_format,
+            folder=folder,
+            config=self._config,
         )
 
     @property

@@ -397,6 +397,7 @@ _ARG_COERCE_VALUES = {
 
 _ENUM_VALUES = {
     ("calendar.create", "--body-type"): ["html", "text"],
+    ("docs.create", "--format"): ["markdown", "text"],
     ("calendar.create", "--repeat"): ["daily", "weekly", "monthly"],
     ("calendar.update", "--body-type"): ["html", "text"],
     ("calendar.get", "--body-type"): ["html", "text"],
@@ -467,6 +468,7 @@ _CONSENT = {
     "chat.find": (False, False),
     "chat.last": (False, False),
     "chat.send": (True, True),
+    "docs.create": (True, False),
     "doctor": (False, False),
     "mail.attachments": (False, False),
     "mail.attachments.download": (False, False),

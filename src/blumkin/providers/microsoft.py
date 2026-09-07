@@ -377,6 +377,20 @@ class MicrosoftWorkspaceProvider:
     ) -> dict[str, Any]:
         return await chat_send(text=text, with_name=with_name, chat_id=chat_id, config=self._config)
 
+    async def docs_create(
+        self,
+        *,
+        title: str,
+        body: str | None = None,
+        body_file: str | None = None,
+        body_format: str = "markdown",
+        folder: str | None = None,
+    ) -> dict[str, Any]:
+        raise ValueError(
+            "docs create is not supported for provider=microsoft yet "
+            "(Word authoring via python-docx + Graph upload lands in issue #194 phase 2)"
+        )
+
     async def mail_attachments_download(
         self,
         *,
