@@ -14,6 +14,7 @@ issue #194 phase 4 for native tables).
 
 from __future__ import annotations
 
+import html as _html
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -214,6 +215,84 @@ def read_body(body: str | None, body_file: str | None) -> str:
     if len(text.encode("utf-8")) > MAX_BODY_BYTES:
         raise DocBodyError(f"--body is larger than {MAX_BODY_BYTES} bytes")
     return text
+
+
+_SAFE_LINK_SCHEME = re.compile(r"(?i)^(?:https?:|mailto:|tel:)")
+
+
+def _span_to_html(span: DocSpan) -> str:
+    text = _html.escape(span.text)
+    if span.code:
+        text = f"<code>{text}</code>"
+    else:
+        if span.bold:
+            text = f"<strong>{text}</strong>"
+        if span.italic:
+            text = f"<em>{text}</em>"
+    if span.link and _SAFE_LINK_SCHEME.match(span.link):
+        text = f'<a href="{_html.escape(span.link, quote=True)}">{text}</a>'
+    return text
+
+
+def spans_to_html(spans: tuple[DocSpan, ...]) -> str:
+    return "".join(_span_to_html(span) for span in spans)
+
+
+def _table_to_html(rows: tuple[tuple[tuple[DocSpan, ...], ...], ...]) -> str:
+    if not rows:
+        return ""
+    header, *body = rows
+    cells = "".join(f"<th>{spans_to_html(cell)}</th>" for cell in header)
+    out = [f"<thead><tr>{cells}</tr></thead>"]
+    if body:
+        rows_html = "".join(
+            "<tr>" + "".join(f"<td>{spans_to_html(cell)}</td>" for cell in row) + "</tr>"
+            for row in body
+        )
+        out.append(f"<tbody>{rows_html}</tbody>")
+    return f"<table>{''.join(out)}</table>"
+
+
+def render_email_html(blocks: list[DocBlock]) -> str:
+    """Render parsed blocks as a self-contained HTML fragment for an email body.
+
+    Semantic tags only, no stylesheet - Gmail and Outlook both render bare
+    ``<p>`` / ``<ul>`` / ``<strong>`` cleanly, and an inline style block is what
+    gets stripped. Lists use one nesting level, matching :func:`parse_markdown`.
+    """
+    out: list[str] = []
+    open_lists: list[str] = []
+
+    def close_to(depth: int) -> None:
+        while len(open_lists) > depth:
+            out.append(f"</{open_lists.pop()}>")
+
+    for block in blocks:
+        if block.kind in ("bullet", "number"):
+            tag = "ul" if block.kind == "bullet" else "ol"
+            depth = 2 if block.level else 1
+            if len(open_lists) >= depth and open_lists[depth - 1] != tag:
+                close_to(depth - 1)
+            close_to(depth)
+            while len(open_lists) < depth:
+                out.append(f"<{tag}>")
+                open_lists.append(tag)
+            out.append(f"<li>{spans_to_html(block.spans)}</li>")
+            continue
+        close_to(0)
+        if block.kind == "heading":
+            level = min(max(block.level, 1), 6)
+            out.append(f"<h{level}>{spans_to_html(block.spans)}</h{level}>")
+        elif block.kind == "paragraph":
+            out.append(f"<p>{spans_to_html(block.spans)}</p>")
+        elif block.kind == "code":
+            out.append(f"<pre><code>{_html.escape(block.code_text)}</code></pre>")
+        elif block.kind == "rule":
+            out.append("<hr>")
+        elif block.kind == "table":
+            out.append(_table_to_html(block.rows))
+    close_to(0)
+    return "".join(out)
 
 
 def table_to_text(rows: tuple[tuple[tuple[DocSpan, ...], ...], ...]) -> str:

@@ -47,12 +47,14 @@ from blumkin.providers.google_auth import (
 )
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.mail import (
+    _DEFAULT_COMPOSE_TYPE,
     MailDraftNotFoundError,
     MailFolderNotFoundError,
     MailMessageNotFoundError,
     _clean_message_ids,
     _merge_addresses,
     _parse_addresses,
+    _parse_compose_body_type,
     _read_attachment,
     _validate_importance,
     append_mail_signature,
@@ -359,7 +361,7 @@ async def mail_draft(
     bcc: str | Sequence[str] = (),
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = "text",
+    body_type: str = _DEFAULT_COMPOSE_TYPE,
     cc: str | Sequence[str] = (),
     config: BlumkinConfig | None = None,
     no_signature: bool = False,
@@ -414,7 +416,7 @@ async def mail_forward(
     to: str,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = "text",
+    body_type: str = _DEFAULT_COMPOSE_TYPE,
     bcc: str | Sequence[str] | None = None,
     cc: str | Sequence[str] | None = None,
     config: BlumkinConfig | None = None,
@@ -434,7 +436,7 @@ async def mail_forward(
     original = _get_message(service, mid)
     detail = _message_detail(original, wanted="text")
     comment = _comment_text(
-        body=body, body_file=body_file, label=label, config=cfg, no_signature=no_signature
+        body=body, body_file=body_file, body_type=body_type, config=cfg, no_signature=no_signature
     )
     content = _join_sections(comment, _quote_for_forward(detail, label), label)
     message = _build_message(
@@ -471,7 +473,7 @@ async def mail_reply(
     message_id: str,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = "text",
+    body_type: str = _DEFAULT_COMPOSE_TYPE,
     bcc: str | Sequence[str] | None = None,
     cc: str | Sequence[str] | None = None,
     reply_all: bool = False,
@@ -515,7 +517,7 @@ async def mail_reply(
 
     subject = _prefixed_subject(detail.get("subject"), "Re:")
     comment = _comment_text(
-        body=body, body_file=body_file, label=label, config=cfg, no_signature=no_signature
+        body=body, body_file=body_file, body_type=body_type, config=cfg, no_signature=no_signature
     )
     content = _join_sections(comment, _quote_for_reply(detail, label), label)
     message = _build_message(
@@ -579,7 +581,7 @@ async def mail_update_draft(
     subject: str | None = None,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = "text",
+    body_type: str = _DEFAULT_COMPOSE_TYPE,
     cc: str | Sequence[str] | None = None,
     keep_quoted: bool = False,
     no_signature: bool = False,
@@ -713,10 +715,9 @@ def _attachment_refs(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
 
 
 def _body_label(raw: str) -> str:
-    label = raw.strip().lower()
-    if label not in {"html", "text"}:
-        raise ValueError("--body-type must be 'text' or 'html'")
-    return label
+    """Effective type for quoting / joining the reply: markdown and html both
+    produce an HTML lead, so the quoted original has to be HTML too."""
+    return "text" if _parse_compose_body_type(raw) == "text" else "html"
 
 
 def _build_message(
@@ -758,14 +759,24 @@ def _comment_text(
     *,
     body: str | None,
     body_file: str | None,
-    label: str,
+    body_type: str,
     config: BlumkinConfig,
     no_signature: bool,
 ) -> str:
-    """Resolve the optional reply/forward lead text, with the signature appended."""
+    """Resolve the optional reply/forward lead text, with the signature appended.
+
+    ``body_type`` is the raw ``--body-type`` (``markdown`` / ``html`` / ``text``);
+    ``resolve_mail_body`` renders a Markdown lead to HTML before it is joined to
+    the quoted original.
+    """
     if body is None and body_file is None:
+        # Nothing to render - markdown/html both give an HTML signature to match
+        # the HTML quoted original (see _body_label).
+        label = _body_label(body_type)
         return append_mail_signature("", body_type=label, config=config, no_signature=no_signature)
-    content, resolved_label, _ = resolve_mail_body(body=body, body_file=body_file, body_type=label)
+    content, resolved_label, _ = resolve_mail_body(
+        body=body, body_file=body_file, body_type=body_type
+    )
     return append_mail_signature(
         content, body_type=resolved_label, config=config, no_signature=no_signature
     )
