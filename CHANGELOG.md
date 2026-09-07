@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.3.0...blumkin-v0.4.0) (2026-09-07)
+
+
+### Features
+
+* **docs:** docs create on Google - author a Doc from a Markdown subset ([#202](https://github.com/the-hcma/blumkin/issues/202)) ([b91493b](https://github.com/the-hcma/blumkin/commit/b91493b9da37a13684e47cfa70aa142a5f263166))
+* **docs:** docs create on Microsoft - .docx via python-docx + Graph upload ([#203](https://github.com/the-hcma/blumkin/issues/203)) ([32b4a90](https://github.com/the-hcma/blumkin/commit/32b4a906bc4ff096df19bed1684c31cf17ce48d0))
+
+
+### Bug Fixes
+
+* **ci:** retry the verify-pypi-release install step past CDN propagation skew ([#201](https://github.com/the-hcma/blumkin/issues/201)) ([59c12f9](https://github.com/the-hcma/blumkin/commit/59c12f94df840dfcb7b417f6d55bc9f07dcfbd01))
+* **mcp:** treat an empty mcp.json placeholder as {}, not malformed ([#200](https://github.com/the-hcma/blumkin/issues/200)) ([2e1a946](https://github.com/the-hcma/blumkin/commit/2e1a9465091aeed69a98e391c9a7fbf1ebf43c1e))
+
 ## [0.3.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.2.1...blumkin-v0.3.0) (2026-09-06)
 
 
