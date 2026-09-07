@@ -734,7 +734,7 @@ async def mail_draft(
     client = create_graph_client(cfg)
     message = Message(
         bcc_recipients=_recipient_models(bcc_addrs) or None,
-        body=ItemBody(content_type=graph_body_type, content=content),
+        body=_compose_item_body(graph_body_type, content),
         cc_recipients=_recipient_models(cc_addrs) or None,
         subject=subject.strip(),
         to_recipients=_recipient_models(to_addrs),
@@ -1301,7 +1301,7 @@ async def mail_update_draft(
             raise ValueError("--subject must be non-empty when provided")
         patch.subject = subject.strip()
     if content is not None and graph_body_type is not None:
-        patch.body = ItemBody(content_type=graph_body_type, content=content)
+        patch.body = _compose_item_body(graph_body_type, content)
     if to_addrs is not None:
         patch.to_recipients = _recipient_models(to_addrs)
     if cc_addrs is not None:
@@ -1418,6 +1418,18 @@ def resolve_mail_body(
     else:
         content = str(body)
     return content, label, graph_type
+
+
+def _compose_item_body(graph_body_type: BodyType, content: str) -> ItemBody:
+    """Build the Graph body, forcing CRLF on a text body.
+
+    Graph's text -> HTML conversion (what every client actually renders) treats
+    CRLF as the line delimiter; a bare-LF body comes back with its line breaks
+    collapsed. HTML bodies carry their breaks in the markup, so leave them alone.
+    """
+    if graph_body_type == BodyType.Text:
+        content = content.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+    return ItemBody(content_type=graph_body_type, content=content)
 
 
 _FOLDER_PAGE_SIZE = 100
