@@ -52,9 +52,9 @@ from blumkin.skills.mail import (
     MailFolderNotFoundError,
     MailMessageNotFoundError,
     _clean_message_ids,
+    _compose_wire_label,
     _merge_addresses,
     _parse_addresses,
-    _parse_compose_body_type,
     _read_attachment,
     _validate_importance,
     append_mail_signature,
@@ -717,7 +717,7 @@ def _attachment_refs(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
 def _body_label(raw: str) -> str:
     """Effective type for quoting / joining the reply: markdown and html both
     produce an HTML lead, so the quoted original has to be HTML too."""
-    return "text" if _parse_compose_body_type(raw) == "text" else "html"
+    return _compose_wire_label(raw)
 
 
 def _build_message(

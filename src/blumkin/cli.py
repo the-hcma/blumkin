@@ -2711,7 +2711,7 @@ def mail_draft_cmd(
     "--body-type",
     default="markdown",
     show_default=True,
-    type=click.Choice(["markdown", "text", "html"]),
+    type=click.Choice(["markdown", "text", "html"], case_sensitive=False),
     help="How --body is authored. markdown renders to HTML on the wire.",
 )
 @click.option(
@@ -2777,7 +2777,7 @@ def mail_forward_cmd(
     "--body-type",
     default="markdown",
     show_default=True,
-    type=click.Choice(["markdown", "text", "html"]),
+    type=click.Choice(["markdown", "text", "html"], case_sensitive=False),
     help="How --body is authored. markdown renders to HTML on the wire.",
 )
 @click.option(

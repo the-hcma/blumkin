@@ -64,28 +64,40 @@ def format_docs_create_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
-def parse_body(body: str, *, body_format: str = "markdown") -> list[DocBlock]:
-    """Parse authored content into blocks. ``body_format`` is ``markdown`` or ``text``."""
+def parse_body(
+    body: str, *, body_format: str = "markdown", hard_breaks: bool = False
+) -> list[DocBlock]:
+    """Parse authored content into blocks. ``body_format`` is ``markdown`` or ``text``.
+
+    ``hard_breaks`` (markdown only) keeps a single newline inside a paragraph as a
+    real break instead of folding it into a space - matches how a hand-typed
+    email body is expected to render.
+    """
     fmt = body_format.strip().lower()
     if fmt == "text":
         return _parse_plain_text(body)
     if fmt == "markdown":
-        return parse_markdown(body)
+        return parse_markdown(body, hard_breaks=hard_breaks)
     raise DocBodyError(f"unknown --format {body_format!r} (expected markdown or text)")
 
 
-def parse_markdown(source: str) -> list[DocBlock]:
-    """Parse the supported Markdown subset into a block list."""
+def parse_markdown(source: str, *, hard_breaks: bool = False) -> list[DocBlock]:
+    """Parse the supported Markdown subset into a block list.
+
+    ``hard_breaks`` joins the lines of a paragraph with ``\\n`` (rendered as
+    ``<br>``) rather than a space; see :func:`parse_body`.
+    """
     lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     blocks: list[DocBlock] = []
     para: list[str] = []
     index = 0
     total = len(lines)
+    para_sep = "\n" if hard_breaks else " "
 
     def flush_paragraph() -> None:
         if not para:
             return
-        text = " ".join(part.strip() for part in para).strip()
+        text = para_sep.join(part.strip() for part in para).strip()
         para.clear()
         if text:
             blocks.append(DocBlock(kind="paragraph", spans=parse_inline(text)))
@@ -217,82 +229,68 @@ def read_body(body: str | None, body_file: str | None) -> str:
     return text
 
 
-_SAFE_LINK_SCHEME = re.compile(r"(?i)^(?:https?:|mailto:|tel:)")
-
-
-def _span_to_html(span: DocSpan) -> str:
-    text = _html.escape(span.text)
-    if span.code:
-        text = f"<code>{text}</code>"
-    else:
-        if span.bold:
-            text = f"<strong>{text}</strong>"
-        if span.italic:
-            text = f"<em>{text}</em>"
-    if span.link and _SAFE_LINK_SCHEME.match(span.link):
-        text = f'<a href="{_html.escape(span.link, quote=True)}">{text}</a>'
-    return text
-
-
-def spans_to_html(spans: tuple[DocSpan, ...]) -> str:
-    return "".join(_span_to_html(span) for span in spans)
-
-
-def _table_to_html(rows: tuple[tuple[tuple[DocSpan, ...], ...], ...]) -> str:
-    if not rows:
-        return ""
-    header, *body = rows
-    cells = "".join(f"<th>{spans_to_html(cell)}</th>" for cell in header)
-    out = [f"<thead><tr>{cells}</tr></thead>"]
-    if body:
-        rows_html = "".join(
-            "<tr>" + "".join(f"<td>{spans_to_html(cell)}</td>" for cell in row) + "</tr>"
-            for row in body
-        )
-        out.append(f"<tbody>{rows_html}</tbody>")
-    return f"<table>{''.join(out)}</table>"
-
-
 def render_email_html(blocks: list[DocBlock]) -> str:
     """Render parsed blocks as a self-contained HTML fragment for an email body.
 
     Semantic tags only, no stylesheet - Gmail and Outlook both render bare
     ``<p>`` / ``<ul>`` / ``<strong>`` cleanly, and an inline style block is what
-    gets stripped. Lists use one nesting level, matching :func:`parse_markdown`.
+    gets stripped. A single newline inside a paragraph (kept only when
+    :func:`parse_markdown` is called with ``hard_breaks=True``, as
+    ``render_markdown_email`` does for mail) becomes ``<br>`` so a hand-typed
+    multi-line note keeps its line breaks. One list nesting level, with the
+    nested list placed inside the parent ``<li>``.
     """
     out: list[str] = []
-    open_lists: list[str] = []
+    stack: list[list] = []  # [tag, li_open] per open <ul>/<ol>
 
-    def close_to(depth: int) -> None:
-        while len(open_lists) > depth:
-            out.append(f"</{open_lists.pop()}>")
+    def end_li() -> None:
+        if stack and stack[-1][1]:
+            out.append("</li>")
+            stack[-1][1] = False
+
+    def close_lists(keep: int) -> None:
+        while len(stack) > keep:
+            end_li()
+            out.append(f"</{stack.pop()[0]}>")
+        end_li()
 
     for block in blocks:
         if block.kind in ("bullet", "number"):
             tag = "ul" if block.kind == "bullet" else "ol"
             depth = 2 if block.level else 1
-            if len(open_lists) >= depth and open_lists[depth - 1] != tag:
-                close_to(depth - 1)
-            close_to(depth)
-            while len(open_lists) < depth:
-                out.append(f"<{tag}>")
-                open_lists.append(tag)
-            out.append(f"<li>{spans_to_html(block.spans)}</li>")
+            if len(stack) >= depth and stack[depth - 1][0] != tag:
+                close_lists(depth - 1)
+            if len(stack) >= depth:
+                close_lists(depth)  # sibling item: close deeper lists and the trailing <li>
+            while len(stack) < depth:
+                out.append(f"<{tag}>")  # deeper: opens inside the parent's still-open <li>
+                stack.append([tag, False])
+            out.append(f"<li>{spans_to_html(block.spans)}")
+            stack[-1][1] = True
             continue
-        close_to(0)
+        close_lists(0)
         if block.kind == "heading":
             level = min(max(block.level, 1), 6)
             out.append(f"<h{level}>{spans_to_html(block.spans)}</h{level}>")
         elif block.kind == "paragraph":
-            out.append(f"<p>{spans_to_html(block.spans)}</p>")
+            para = spans_to_html(block.spans).replace("\n", "<br>")
+            out.append(f"<p>{para}</p>")
         elif block.kind == "code":
             out.append(f"<pre><code>{_html.escape(block.code_text)}</code></pre>")
         elif block.kind == "rule":
             out.append("<hr>")
         elif block.kind == "table":
             out.append(_table_to_html(block.rows))
-    close_to(0)
+    close_lists(0)
     return "".join(out)
+
+
+def spans_to_html(spans: tuple[DocSpan, ...]) -> str:
+    return "".join(_span_to_html(span) for span in spans)
+
+
+def spans_to_text(spans: tuple[DocSpan, ...]) -> str:
+    return "".join(span.text for span in spans)
 
 
 def table_to_text(rows: tuple[tuple[tuple[DocSpan, ...], ...], ...]) -> str:
@@ -313,10 +311,6 @@ def table_to_text(rows: tuple[tuple[tuple[DocSpan, ...], ...], ...]) -> str:
     return "\n".join(lines)
 
 
-def spans_to_text(spans: tuple[DocSpan, ...]) -> str:
-    return "".join(span.text for span in spans)
-
-
 _HEADING_RE = re.compile(r"(#{1,6})\s+(.*)")
 _INLINE_RE = re.compile(
     r"(?P<code>`(?P<codet>[^`]+)`)"
@@ -329,6 +323,7 @@ _INLINE_RE = re.compile(
 )
 _LIST_RE = re.compile(r"(\s*)([-*+]|\d+[.)])\s+(.*)")
 _RULE_RE = re.compile(r"(-{3,}|\*{3,}|_{3,})")
+_SAFE_LINK_SCHEME = re.compile(r"(?i)^(?:https?:|mailto:|tel:)")
 
 
 def _coalesce(spans: list[DocSpan]) -> tuple[DocSpan, ...]:
@@ -370,6 +365,20 @@ def _parse_plain_text(source: str) -> list[DocBlock]:
     return blocks
 
 
+def _span_to_html(span: DocSpan) -> str:
+    text = _html.escape(span.text)
+    if span.code:
+        text = f"<code>{text}</code>"
+    else:
+        if span.bold:
+            text = f"<strong>{text}</strong>"
+        if span.italic:
+            text = f"<em>{text}</em>"
+    if span.link and _SAFE_LINK_SCHEME.match(span.link):
+        text = f'<a href="{_html.escape(span.link, quote=True)}">{text}</a>'
+    return text
+
+
 def _split_table_row(line: str) -> list[str]:
     return [cell.strip() for cell in _split_table_row_raw(line)]
 
@@ -381,3 +390,18 @@ def _split_table_row_raw(line: str) -> list[str]:
     if trimmed.endswith("|"):
         trimmed = trimmed[:-1]
     return trimmed.split("|")
+
+
+def _table_to_html(rows: tuple[tuple[tuple[DocSpan, ...], ...], ...]) -> str:
+    if not rows:
+        return ""
+    header, *body = rows
+    cells = "".join(f"<th>{spans_to_html(cell)}</th>" for cell in header)
+    out = [f"<thead><tr>{cells}</tr></thead>"]
+    if body:
+        rows_html = "".join(
+            "<tr>" + "".join(f"<td>{spans_to_html(cell)}</td>" for cell in row) + "</tr>"
+            for row in body
+        )
+        out.append(f"<tbody>{rows_html}</tbody>")
+    return f"<table>{''.join(out)}</table>"

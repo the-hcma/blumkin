@@ -31,6 +31,18 @@ def test_render_markdown_email_covers_the_common_constructs() -> None:
     assert "\n" not in html  # single fragment, no stray newlines
 
 
+def test_render_markdown_email_keeps_single_newlines_as_breaks() -> None:
+    # A hand-typed multi-line note: the old --body-type text default turned each
+    # \n into <br>; the markdown default must not silently reflow it to one line.
+    html = render_markdown_email("Thanks!\nWill review by Friday.\n\nSecond para.")
+    assert html == "<p>Thanks!<br>Will review by Friday.</p><p>Second para.</p>"
+
+
+def test_render_markdown_email_nests_a_sublist_inside_its_parent_li() -> None:
+    html = render_markdown_email("- a\n  - b\n- c")
+    assert html == "<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>"
+
+
 def test_render_markdown_email_escapes_html_and_unsafe_links() -> None:
     out = render_markdown_email("a <script> tag & a [click](javascript:evil) link")
     assert "<script>" not in out

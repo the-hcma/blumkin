@@ -1434,8 +1434,14 @@ def resolve_mail_body(
 
 
 def render_markdown_email(markdown: str) -> str:
-    """Render an authored Markdown body to the HTML fragment that goes on the wire."""
-    return _render_email_html(_parse_doc_body(markdown, body_format="markdown"))
+    """Render an authored Markdown body to the HTML fragment that goes on the wire.
+
+    ``hard_breaks=True``: a lone newline in a hand-typed body is a real line
+    break, not a space - the old ``--body-type text`` default converted ``\\n``
+    to ``<br>``, and dropping that on the markdown default would silently reflow
+    multi-line notes.
+    """
+    return _render_email_html(_parse_doc_body(markdown, body_format="markdown", hard_breaks=True))
 
 
 def _compose_item_body(graph_body_type: BodyType, content: str) -> ItemBody:
@@ -1991,6 +1997,15 @@ def _parse_addresses(
     return addresses
 
 
+def _compose_wire_label(raw: str) -> MailBodyType:
+    """The html/text label a compose ``--body-type`` resolves to on the wire.
+
+    Single source of truth for "markdown and html both go out as HTML; only text
+    stays text" - used for signature rendering and reply/forward quoting.
+    """
+    return "text" if _parse_compose_body_type(raw) == "text" else "html"
+
+
 def _parse_body_type(raw: str) -> MailBodyType:
     label = raw.strip().lower()
     if label not in {"html", "text"}:
@@ -2169,7 +2184,7 @@ def _resolve_comment(
     if body is None and body_file is None:
         # Nothing to render - markdown and html both give an HTML signature so it
         # matches the HTML quoted original the draft is joined onto.
-        label: MailBodyType = "text" if _parse_compose_body_type(body_type) == "text" else "html"
+        label = _compose_wire_label(body_type)
         content = append_mail_signature("", body_type=label, config=cfg, no_signature=no_signature)
         if not content:
             return ""

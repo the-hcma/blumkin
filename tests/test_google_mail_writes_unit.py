@@ -77,6 +77,25 @@ def test_mail_draft_html_adds_alternative(tmp_path: Path) -> None:
     assert "Hello there" in _content(sent, "plain")
 
 
+def test_mail_draft_markdown_plain_alternative_is_readable(tmp_path: Path) -> None:
+    # The markdown default renders HTML; the text/plain alternative must not
+    # collapse the list into "cliffwindow".
+    service = _service(create_result={"id": "d"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com", subject="Asks", body="Two things:\n\n1. cliff\n2. window"
+            )
+        )
+    sent = _sent_message(service, "create")
+    assert _content(sent, "html").strip() == (
+        "<p>Two things:</p><ol><li>cliff</li><li>window</li></ol>"
+    )
+    plain = _content(sent, "plain").replace("\r\n", "\n")
+    assert "cliff\nwindow" in plain
+    assert "cliffwindow" not in plain
+
+
 def test_mail_draft_attaches_file(tmp_path: Path) -> None:
     attachment = tmp_path / "note.txt"
     attachment.write_text("payload bytes")
