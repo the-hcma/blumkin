@@ -723,6 +723,44 @@ def test_mail_reply_quoted_original_uses_crlf(tmp_path: Path) -> None:
     assert b"> line a\r\n> line b" in body
 
 
+def test_mail_forward_quoted_block_uses_crlf(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(
+            subject="Doc", sender="Ada <ada@example.com>", body="orig one\norig two"
+        ),
+        create_result={"id": "d", "message": {"threadId": "t"}},
+    )
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_forward(
+                message_id="m-1", to="dana@example.com", body="fyi\n\nsee below", body_type="text"
+            )
+        )
+    body = _raw_bytes(service, "create")
+    assert b"\n" not in body[body.index(b"\r\n\r\n") + 4 :].replace(b"\r\n", b"")
+    assert b"orig one\r\norig two" in body
+
+
+def test_mail_update_draft_body_replace_serialized_with_crlf(tmp_path: Path) -> None:
+    # update-draft is the round-trip case: the stored raw is parsed under
+    # policy.default and the body re-added via set_content before _raw re-serializes.
+    service = _service(
+        get_result=_raw_draft(subject="S", to="a@example.com", body="old body"),
+        update_result={"id": "d"},
+    )
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d", body="new one\n\nnew two\nnew three", body_type="text"
+            )
+        )
+    raw = _raw_bytes(service, "update")
+    body = raw[raw.index(b"\r\n\r\n") + 4 :]
+    assert b"\r\r" not in raw
+    assert b"\n" not in body.replace(b"\r\n", b"")
+    assert b"new one\r\n\r\nnew two\r\nnew three" in body
+
+
 def _cfg(config_dir: Path, *, signature: MailSignatureConfig | None = None) -> BlumkinConfig:
     oauth = config_dir / "desktop-client.json"
     if not oauth.is_file():
