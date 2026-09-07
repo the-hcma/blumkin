@@ -146,6 +146,14 @@ def config_path(client: str, scope: Scope, cwd: Path) -> Path | None:
     return None
 
 
+def _file_text(path: Path) -> str:
+    """Best-effort UTF-8 read; an unreadable file counts as empty here."""
+    try:
+        return path.read_text("utf-8")
+    except OSError:
+        return ""
+
+
 def _load_json(path: Path | None) -> dict[str, Any]:
     """Lenient read for planning: a missing *or* unreadable file is ``{}``.
 
@@ -165,7 +173,13 @@ def _read_config(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        loaded = json.loads(path.read_text("utf-8"))
+        text = path.read_text("utf-8")
+        if not text.strip():
+            # A 0-byte or whitespace-only file (some clients leave one behind as a
+            # placeholder) has no content to clobber - treat it like an absent
+            # file and merge into it, same as `_load_json` (issue #198).
+            return {}
+        loaded = json.loads(text)
     except (OSError, ValueError) as exc:
         raise McpInstallError(
             f"{path} is not valid JSON",
@@ -366,14 +380,17 @@ def _apply_file(plan: ClientPlan) -> str:
         data["mcpServers"] = servers
     servers["blumkin"] = plan.desired
     body = json.dumps(data, indent=2) + "\n"
-    existed = target.is_file()
+    # Keep a locked-down existing file's mode, but an empty / whitespace-only
+    # placeholder (which `_read_config` already treats as absent) has no mode
+    # worth preserving - create it private, like a fresh file (issue #198 review).
+    preserve_mode = target.is_file() and bool(_file_text(target).strip())
     tmp = target.with_name(f".{target.name}.blumkin-{os.getpid()}")
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(body, "utf-8")
         # MCP configs can hold `env` credentials (ours and other servers'), so do
         # not widen a locked-down file, and create a new one private.
-        if existed:
+        if preserve_mode:
             shutil.copymode(target, tmp)
         else:
             tmp.chmod(0o600)
