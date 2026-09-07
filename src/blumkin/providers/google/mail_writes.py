@@ -24,6 +24,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from email.message import EmailMessage
 from email.parser import BytesParser
+from email.policy import SMTP as _smtp_policy
 from email.policy import default as _default_policy
 from email.utils import getaddresses
 from typing import Any
@@ -915,7 +916,12 @@ def _quote_for_reply(detail: Mapping[str, Any], label: str) -> str:
 
 
 def _raw(message: EmailMessage) -> str:
-    return base64.urlsafe_b64encode(message.as_bytes()).decode()
+    # Gmail parses this `raw` field as an RFC 5322 message, whose line ending is CRLF.
+    # EmailMessage is built under email.policy.default (linesep "\n"); serialized with
+    # that policy the body goes out LF-only, which Gmail accepts but then renders with
+    # every line break collapsed. policy.SMTP is policy.default with linesep "\r\n"
+    # (the content managers already normalize any stray CR the caller passed in).
+    return base64.urlsafe_b64encode(message.as_bytes(policy=_smtp_policy)).decode()
 
 
 def _replace_body(message: EmailMessage, content: str, body_type: str) -> None:

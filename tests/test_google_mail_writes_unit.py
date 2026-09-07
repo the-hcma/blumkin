@@ -41,6 +41,7 @@ def test_mail_draft_builds_rfc822_and_skill_payload(tmp_path: Path) -> None:
                 cc="c@example.com",
                 subject="Renewal",
                 body="Please review - thanks.",
+                body_type="text",
             )
         )
     assert payload["draft"] == {
@@ -455,7 +456,9 @@ def test_mail_reply_threads_with_original_and_sets_headers(tmp_path: Path) -> No
     )
     with _patched(service):
         payload = asyncio.run(
-            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(message_id="m-1", body="On it.")
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(
+                message_id="m-1", body="On it.", body_type="text"
+            )
         )
     draft = payload["draft"]
     assert draft["kind"] == "reply"
@@ -663,6 +666,61 @@ def test_mail_update_draft_reasserts_threadid(tmp_path: Path) -> None:
         )
     body = service.users.return_value.drafts.return_value.update.call_args.kwargs["body"]
     assert body["message"]["threadId"] == "thread-77"
+
+
+def _raw_bytes(service: MagicMock, verb: str) -> bytes:
+    call = getattr(service.users.return_value.drafts.return_value, verb).call_args
+    raw = call.kwargs["body"]["message"]["raw"]
+    return base64.urlsafe_b64decode(raw.encode() + b"=" * (-len(raw) % 4))
+
+
+def test_mail_draft_body_serialized_with_crlf(tmp_path: Path) -> None:
+    service = _service(create_result={"id": "draft-1"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com",
+                subject="Notes",
+                body="para one\n\npara two\n1. first\n2. second",
+                body_type="text",
+            )
+        )
+    raw = _raw_bytes(service, "create")
+    body = raw[raw.index(b"\r\n\r\n") + 4 :]
+    # Gmail only honours CRLF line breaks; a bare LF anywhere in the body is the bug.
+    assert b"\n" not in body.replace(b"\r\n", b"")
+    assert b"para one\r\n\r\npara two\r\n1. first\r\n2. second" in body
+
+
+def test_mail_draft_crlf_input_does_not_double(tmp_path: Path) -> None:
+    service = _service(create_result={"id": "draft-1"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com", subject="S", body="one\r\ntwo\rthree", body_type="text"
+            )
+        )
+    body = _raw_bytes(service, "create")
+    assert b"\r\r" not in body
+    assert b"one\r\ntwo\r\nthree" in body
+
+
+def test_mail_reply_quoted_original_uses_crlf(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(
+            subject="Q", sender="Ada <ada@example.com>", body="line a\nline b"
+        ),
+        create_result={"id": "draft-1"},
+    )
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(
+                message_id="m-1", body="my reply\n\nsecond para", body_type="text"
+            )
+        )
+    body = _raw_bytes(service, "create")
+    assert b"\n" not in body[body.index(b"\r\n\r\n") + 4 :].replace(b"\r\n", b"")
+    assert b"> line a\r\n> line b" in body
 
 
 def _cfg(config_dir: Path, *, signature: MailSignatureConfig | None = None) -> BlumkinConfig:
