@@ -474,11 +474,11 @@ Examples:
   blumkin docs create --title "Weekly status" --body-file ./status.md \\
     --folder "Status reports" --json
 
-Creates a real Google Doc from the body (`provider = "microsoft"` is not
-implemented yet). No `--yes` - nobody is notified. The Markdown subset is
-headings, bold / italic / code / links, bullet and numbered lists, fenced code,
-rules, and simple tables; anything else renders as plain text. Use ASCII
-hyphens, not em dashes.
+Creates a real Google Doc on `provider = "google"`; a `.docx` uploaded to your
+OneDrive on `provider = "microsoft"`. No `--yes` - nobody is notified. The
+Markdown subset is headings, bold / italic / code / links, bullet and numbered
+lists, fenced code, rules, and simple tables; anything else renders as plain
+text. Use ASCII hyphens, not em dashes.
 """
 
 DOCS_EPILOG = """
@@ -487,8 +487,8 @@ Author a document and store it in your drive:
 \b
   blumkin docs create --title "..." --body-file ./brief.md --json
 
-One authoring format (a Markdown subset). The backend is a native Google Doc
-(`provider = "microsoft"` is not implemented yet).
+One authoring format (a Markdown subset) across both providers; the backend is a
+native Google Doc, or a `.docx` uploaded to OneDrive.
 """
 
 DOCTOR_EPILOG = """

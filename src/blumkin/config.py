@@ -31,6 +31,11 @@ class BlumkinConfig:
     tags: tuple[str, ...]
     tenant_id: str
     wo1162425_scopes: bool
+    # Opt-in Microsoft add-on: Files.ReadWrite for `docs create` (uploads a .docx
+    # to OneDrive). Separate from files_scopes, which only unlocks chat-file
+    # *reads* - see docs/DECISIONS.md D10. Defaulted so existing construction
+    # sites (and configs) do not have to name it.
+    docs_scopes: bool = False
 
     @property
     def auth_record_path(self) -> Path:
@@ -152,6 +157,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         client_id=client_id,
         config_dir=directory,
         default_tz=string_values.get("default_tz", "").strip(),
+        docs_scopes=_docs_scopes_enabled(table),
         email=string_values.get("email", "").strip(),
         files_scopes=_files_scopes_enabled(table),
         google_oauth_client_file=google_oauth_client_file,
@@ -273,6 +279,14 @@ def _configured_default_name(
     if default_name is not None and default_name in tables:
         return default_name
     return None
+
+
+def _docs_scopes_enabled(file_data: dict[str, Any]) -> bool:
+    if "docs_scopes" in file_data:
+        coerced = _coerce_bool(file_data["docs_scopes"])
+        if coerced is not None:
+            return coerced
+    return False
 
 
 def _files_scopes_enabled(file_data: dict[str, Any]) -> bool:

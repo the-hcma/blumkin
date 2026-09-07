@@ -3259,8 +3259,9 @@ def _format_mcp_status_human(payload: dict[str, Any]) -> list[str]:
 def docs() -> None:
     """Author a document and store it in your drive.
 
-    The body is a Markdown subset; the backend is a native Google Doc.
-    `provider = "microsoft"` is not implemented yet.
+    One authoring format across providers - a Markdown subset. The backend is a
+    native Google Doc (`provider = "google"`) or a `.docx` uploaded to OneDrive
+    (`provider = "microsoft"`).
     """
 
 

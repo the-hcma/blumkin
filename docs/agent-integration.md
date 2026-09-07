@@ -289,12 +289,15 @@ failure path.
 | 4 | `missing_scope` | A scope is unavailable — the tenant has not granted it, or `files_scopes` is off |
 | 5 | `not_found` | The named thing does not exist |
 
-The two config opt-ins do **not** share an exit code, so do not treat "opt-in is
+The config opt-ins do **not** share an exit code, so do not treat "opt-in is
 off" as a single condition:
 
 - `wo1162425_scopes` off — chat write, meeting commands, and `people resolve`
   exit **2** with `usage_error`. (`calendar create` Teams meetings use
   Calendars.ReadWrite only and do not require this flag.)
+- `docs_scopes` off (Microsoft only) — `docs create` exits **2** with
+  `usage_error`; it needs `Files.ReadWrite` to upload the `.docx`. On a Google
+  profile `docs create` needs no opt-in.
 - `people resolve` ambiguous — also exit **2**, but **stdout** carries
   `ok: false`, `ambiguous: true`, and the candidate list (no stderr
   `usage_error` envelope). Branch on `ok` / `ambiguous` before treating exit 2

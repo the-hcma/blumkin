@@ -4,13 +4,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from blumkin.auth import BASE_SCOPES, FILES_SCOPES, WO1162425_SCOPES, effective_scopes
+from blumkin.auth import (
+    BASE_SCOPES,
+    DOCS_SCOPES,
+    FILES_SCOPES,
+    WO1162425_SCOPES,
+    effective_scopes,
+)
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.providers.kind import ProviderKind
 
 
+def test_docs_scopes_from_toml_and_off_by_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
+    assert load_config().docs_scopes is False
+    (tmp_path / "config.toml").write_text('client_id = "abc"\ndocs_scopes = true\n')
+    assert load_config().docs_scopes is True
+
+
 def test_effective_scopes_default_excludes_phase4() -> None:
     assert effective_scopes(_cfg(wo1162425_scopes=False)) == BASE_SCOPES
+
+
+def test_effective_scopes_docs_opt_in() -> None:
+    assert effective_scopes(_cfg(wo1162425_scopes=False, docs_scopes=True)) == [
+        *BASE_SCOPES,
+        *DOCS_SCOPES,
+    ]
+    assert DOCS_SCOPES == ["Files.ReadWrite"]
 
 
 def test_effective_scopes_enabled_includes_phase4() -> None:
@@ -62,11 +84,14 @@ def test_scope_env_vars_do_not_override_toml(tmp_path: Path, monkeypatch) -> Non
     assert cfg.wo1162425_scopes is True
 
 
-def _cfg(*, wo1162425_scopes: bool, files_scopes: bool = False) -> BlumkinConfig:
+def _cfg(
+    *, wo1162425_scopes: bool, files_scopes: bool = False, docs_scopes: bool = False
+) -> BlumkinConfig:
     return BlumkinConfig(
         client_id="abc",
         config_dir=Path("unused"),
         default_tz="UTC",
+        docs_scopes=docs_scopes,
         email="",
         files_scopes=files_scopes,
         google_oauth_client_file=None,

@@ -9,6 +9,7 @@ from typing import Any
 
 from blumkin.auth import create_credential, logout, refresh_silent, save_token_cache, status_dict
 from blumkin.config import BlumkinConfig
+from blumkin.providers import microsoft_docs
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.calendar import (
     calendar_freebusy,
@@ -386,9 +387,13 @@ class MicrosoftWorkspaceProvider:
         body_format: str = "markdown",
         folder: str | None = None,
     ) -> dict[str, Any]:
-        raise ValueError(
-            "docs create is not supported for provider=microsoft yet "
-            "(Word authoring via python-docx + Graph upload lands in issue #194 phase 2)"
+        return await microsoft_docs.docs_create(
+            title=title,
+            body=body,
+            body_file=body_file,
+            body_format=body_format,
+            folder=folder,
+            config=self._config,
         )
 
     async def mail_attachments_download(
