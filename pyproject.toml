@@ -38,7 +38,7 @@ dependencies = [
     "httplib2>=0.32.0",
     "msal>=1.38.0",
     "msgraph-sdk>=1.61.0",
-    "python-docx>=1.1.2",
+    "python-docx>=1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -47,7 +47,7 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.5",
 ]
-mcp = ["mcp>=2.1"]
+mcp = ["mcp>=2.1.1"]
 
 [project.scripts]
 blumkin = "blumkin.cli:main"
@@ -85,5 +85,5 @@ dev = [
     "pyright>=1.1.411",
     "pytest>=9.1.1",
     "ruff>=0.16.5",
-    "mcp>=2.1",
+    "mcp>=2.1.1",
 ]

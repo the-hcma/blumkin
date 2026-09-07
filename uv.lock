@@ -2,6 +2,8 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
+[options]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -184,19 +186,19 @@ requires-dist = [
     { name = "google-auth-httplib2", specifier = ">=0.4.2" },
     { name = "google-auth-oauthlib", specifier = ">=1.4.1" },
     { name = "httplib2", specifier = ">=0.32.0" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.1" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.1.1" },
     { name = "msal", specifier = ">=1.38.0" },
     { name = "msgraph-sdk", specifier = ">=1.61.0" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.411" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
-    { name = "python-docx", specifier = ">=1.1.2" },
+    { name = "python-docx", specifier = ">=1.2.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.5" },
 ]
 provides-extras = ["dev", "mcp"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mcp", specifier = ">=2.1" },
+    { name = "mcp", specifier = ">=2.1.1" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.5" },
