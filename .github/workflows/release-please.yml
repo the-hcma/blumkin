@@ -28,9 +28,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The default GITHUB_TOKEN cannot open PRs org-wide since the D7 Actions
+      # hardening (repository-helpers#588 turned off "Allow GitHub Actions to
+      # create and approve pull requests"). Mint a Conveyor App token instead —
+      # org vars.CONVEYOR_APP_ID + secrets.CONVEYOR_PRIVATE_KEY, repo-scoped at
+      # runtime. See repository-helpers#607 and the-hcma/conveyor#1.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: conveyor-token
+        with:
+          app-id: ${{ vars.CONVEYOR_APP_ID }}
+          private-key: ${{ secrets.CONVEYOR_PRIVATE_KEY }}
+
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
         with:
+          token: ${{ steps.conveyor-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 

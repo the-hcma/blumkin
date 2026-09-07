@@ -29,6 +29,21 @@ subjects conventional, and keep the repo's `squash_merge_commit_message` setting
 as `BLANK` so repeated PR-body commit lines do not become duplicate changelog
 entries.
 
+## Release-PR authoring: the Conveyor App
+
+The `Release Please` job mints a token from the **Conveyor GitHub App**
+(`actions/create-github-app-token`) and hands it to `release-please-action`,
+because the default `GITHUB_TOKEN` can no longer open pull requests org-wide
+(the D7 Actions hardening, repository-helpers#588). The credentials are
+org-level and already configured — nothing per-repo to set:
+
+- `vars.CONVEYOR_APP_ID` (Actions variable, all repos)
+- `secrets.CONVEYOR_PRIVATE_KEY` (org secret, all repos)
+
+The minted token is scoped to `blumkin` only at runtime. The release PR is
+therefore authored by the Conveyor app (`conveyorx[bot]`). If the App key is
+rotated, only the org secret changes — see the-hcma/conveyor#1.
+
 ## Trusted publisher setup (one time)
 
 An operator must configure both sides before the first publish. No PyPI API
