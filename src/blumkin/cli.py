@@ -61,7 +61,13 @@ from blumkin.skills.chat import (
 )
 from blumkin.skills.dispatch import run_skill
 from blumkin.skills.docs import format_docs_create_human
-from blumkin.skills.drive import format_drive_get_human, format_drive_list_human
+from blumkin.skills.drive import (
+    format_drive_download_human,
+    format_drive_export_human,
+    format_drive_get_human,
+    format_drive_list_human,
+    format_drive_read_human,
+)
 from blumkin.skills.errors import ErrorInfo, classify_exception
 from blumkin.skills.mail import (
     MAIL_IMPORTANCE_VALUES,
@@ -3338,10 +3344,10 @@ def docs_create_cmd(
 def drive() -> None:
     """Read and organize your drive (Google Drive / OneDrive).
 
-    Read side: `list`, `get`. On `provider = "microsoft"` these need
-    `docs_scopes = true` (Files.ReadWrite - the same grant `docs create` uses).
-    On `provider = "google"` the `drive` scope is requested at `blumkin auth
-    login`; re-consent once after upgrading.
+    Read side: `list`, `get`, `download`, `export`, `read`. On
+    `provider = "microsoft"` these need `docs_scopes = true` (Files.ReadWrite -
+    the same grant `docs create` uses). On `provider = "google"` the `drive`
+    scope is requested at `blumkin auth login`; re-consent once after upgrading.
     """
 
 
@@ -3399,6 +3405,66 @@ def drive_get_cmd(ctx: click.Context, item_id: str, as_json_flag: bool) -> None:
         "drive.get",
         {"id": item_id},
         human=format_drive_get_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@drive.command("download", epilog=help_text.DRIVE_DOWNLOAD_EPILOG)
+@click.option("--id", "item_id", required=True, help="Drive item id (from a listing).")
+@click.option(
+    "--out",
+    required=True,
+    type=click.Path(path_type=str),
+    help="Destination file or directory (on the host running the skill).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def drive_download_cmd(ctx: click.Context, item_id: str, out: str, as_json_flag: bool) -> None:
+    """Download a drive file's raw bytes. Google-native docs -> use `drive export`."""
+    _dispatch(
+        ctx,
+        "drive.download",
+        {"id": item_id, "out": out},
+        human=format_drive_download_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@drive.command("export", epilog=help_text.DRIVE_EXPORT_EPILOG)
+@click.option("--id", "item_id", required=True, help="Drive item id (from a listing).")
+@click.option(
+    "--to",
+    required=True,
+    type=click.Path(path_type=str),
+    help="Target file; the extension selects the format (pdf/txt/html/csv/docx/xlsx/pptx).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def drive_export_cmd(ctx: click.Context, item_id: str, to: str, as_json_flag: bool) -> None:
+    """Export a native doc (Google Doc / Sheet / Slides, or an Office file) to a file.
+
+    Microsoft honours `pdf` only.
+    """
+    _dispatch(
+        ctx,
+        "drive.export",
+        {"id": item_id, "to": to},
+        human=format_drive_export_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@drive.command("read", epilog=help_text.DRIVE_READ_EPILOG)
+@click.option("--id", "item_id", required=True, help="Google Doc id (from a listing).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def drive_read_cmd(ctx: click.Context, item_id: str, as_json_flag: bool) -> None:
+    """Read a Google Doc as flattened Markdown text. Google only."""
+    _dispatch(
+        ctx,
+        "drive.read",
+        {"id": item_id},
+        human=format_drive_read_human,
         as_json_flag=as_json_flag,
     )
 

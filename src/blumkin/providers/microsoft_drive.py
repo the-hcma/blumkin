@@ -1,4 +1,4 @@
-"""Microsoft OneDrive `drive` skills: list / get (read side, issue #208).
+"""Microsoft OneDrive `drive` skills: list / get / download / export (#208).
 
 Graph addresses items by id (``/me/drive/items/{id}``) or by a native path
 (``/me/drive/root:/A/B``). Path segments and the search literal are
@@ -21,12 +21,18 @@ from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.drive_item_collection_response import DriveItemCollectionResponse
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
+from blumkin.attachments import resolve_single_download_dest
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client
 from blumkin.skills.drive import (
+    DriveDownloadError,
+    DriveExportError,
     DriveFolderNotFoundError,
     DriveItemNotFoundError,
+    DriveReadUnsupportedError,
+    export_mime,
     normalize_order,
+    resolve_export_dest,
     split_path,
     validate_folder_selector,
 )
@@ -35,13 +41,64 @@ from blumkin.skills.drive import (
 # `?%24…` query string is literal (same trick as microsoft_docs `_UPLOAD_URL`).
 _CHILDREN_BY_ID_BASE = "https://graph.microsoft.com/v1.0/me/drive/items/{id}/children"
 _CHILDREN_ROOT_BASE = "https://graph.microsoft.com/v1.0/me/drive/root/children"
+_CONTENT_URL = "https://graph.microsoft.com/v1.0/me/drive/items/{id}/content"
 _ERROR_MAP: dict[str, type[ParsableFactory]] = {"4XX": ODataError, "5XX": ODataError}
+_EXPORT_URL = "https://graph.microsoft.com/v1.0/me/drive/items/{id}/content?format=pdf"
 _ITEM_BY_ID_URL = "https://graph.microsoft.com/v1.0/me/drive/items/{id}"
 _ITEM_BY_PATH_URL = "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}"
 _OFFICE_KIND = {"docx": "doc", "doc": "doc", "xlsx": "sheet", "xls": "sheet", "pptx": "slides"}
 _ORDER_FIELD = {"modified": "lastModifiedDateTime desc", "name": "name"}
 _PAGE = 200
 _SEARCH_BASE = "https://graph.microsoft.com/v1.0/me/drive/root/search(q='{+q}')"
+
+
+async def drive_download(
+    *, item_id: str, out: str, config: BlumkinConfig | None = None
+) -> dict[str, Any]:
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    item = await _send_item(client, _ITEM_BY_ID_URL, {"id": item_id}, missing=item_id)
+    if item.folder is not None:
+        raise DriveDownloadError(
+            f"{item.name!r} is a folder - list it with `drive list --folder-id {item_id}`"
+        )
+    data = await _send_bytes(client, _CONTENT_URL, {"id": item_id}, missing=item_id)
+    dest = resolve_single_download_dest(out, item.name or item_id)
+    dest.write_bytes(data)
+    return {
+        "id": item_id,
+        "name": item.name,
+        "bytes": len(data),
+        "saved_path": str(dest.resolve()),
+        "provider": "microsoft",
+    }
+
+
+async def drive_export(
+    *, item_id: str, to: str, config: BlumkinConfig | None = None
+) -> dict[str, Any]:
+    ext, _mime = export_mime(to)
+    if ext != "pdf":
+        raise DriveExportError(
+            f"OneDrive / Graph can only export Office files to PDF (got --to {to!r}); "
+            "pull the raw file with `drive download`"
+        )
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    item = await _send_item(client, _ITEM_BY_ID_URL, {"id": item_id}, missing=item_id)
+    if item.folder is not None:
+        raise DriveExportError(f"{item.name!r} is a folder - nothing to export")
+    data = await _send_bytes(client, _EXPORT_URL, {"id": item_id}, missing=item_id)
+    dest = resolve_export_dest(to)
+    dest.write_bytes(data)
+    return {
+        "id": item_id,
+        "name": item.name,
+        "format": "pdf",
+        "bytes": len(data),
+        "saved_path": str(dest.resolve()),
+        "provider": "microsoft",
+    }
 
 
 async def drive_get(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
@@ -91,6 +148,14 @@ async def drive_list(
         "items": items,
         "query": {"folder": folder, "folder_id": folder_id, "text": query or None},
     }
+
+
+async def drive_read(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
+    raise DriveReadUnsupportedError(
+        "drive read is not supported for provider=microsoft (Graph has no Word "
+        "content API; see docs/DECISIONS.md D11). Use `drive export --to out.pdf` "
+        "or open the file in a browser."
+    )
 
 
 def _encoded_path(path: str) -> str:
@@ -179,6 +244,34 @@ async def _search(client: Any, needle: str, top: int) -> list[DriveItem]:
     return out
 
 
+async def _send_bytes(client: Any, url: str, params: dict[str, str], *, missing: str) -> bytes:
+    request_info = RequestInformation(Method.GET, url, params)
+    try:
+        result = await client.request_adapter.send_primitive_async(
+            request_info, "bytes", _ERROR_MAP
+        )
+    except ODataError as exc:
+        if _status(exc) == 404:
+            raise DriveItemNotFoundError(f"no drive item with id {missing!r}") from exc
+        raise
+    if result is None:
+        raise DriveItemNotFoundError(f"Graph returned no content for {missing!r}")
+    return bytes(result)
+
+
+async def _send_item(client: Any, url: str, params: dict[str, str], *, missing: str) -> DriveItem:
+    request_info = RequestInformation(Method.GET, url, params)
+    try:
+        item = await client.request_adapter.send_async(request_info, DriveItem, _ERROR_MAP)
+    except ODataError as exc:
+        if _status(exc) == 404:
+            raise DriveItemNotFoundError(f"no drive item with id {missing!r}") from exc
+        raise
+    if item is None:
+        raise DriveItemNotFoundError(f"no drive item with id {missing!r}")
+    return item
+
+
 def _kind(item: DriveItem) -> str:
     if item.folder is not None:
         return "folder"
@@ -193,19 +286,6 @@ def _owners(item: DriveItem) -> list[dict[str, Any]]:
     if user is None:
         return []
     return [{"name": user.display_name, "email": getattr(user, "additional_data", {}).get("email")}]
-
-
-async def _send_item(client: Any, url: str, params: dict[str, str], *, missing: str) -> DriveItem:
-    request_info = RequestInformation(Method.GET, url, params)
-    try:
-        item = await client.request_adapter.send_async(request_info, DriveItem, _ERROR_MAP)
-    except ODataError as exc:
-        if _status(exc) == 404:
-            raise DriveItemNotFoundError(f"no drive item with id {missing!r}") from exc
-        raise
-    if item is None:
-        raise DriveItemNotFoundError(f"no drive item with id {missing!r}")
-    return item
 
 
 def _status(exc: ODataError) -> int | None:

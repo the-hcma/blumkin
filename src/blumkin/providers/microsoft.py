@@ -396,8 +396,17 @@ class MicrosoftWorkspaceProvider:
             config=self._config,
         )
 
+    async def drive_download(self, *, item_id: str, out: str) -> dict[str, Any]:
+        return await microsoft_drive.drive_download(item_id=item_id, out=out, config=self._config)
+
+    async def drive_export(self, *, item_id: str, to: str) -> dict[str, Any]:
+        return await microsoft_drive.drive_export(item_id=item_id, to=to, config=self._config)
+
     async def drive_get(self, *, item_id: str) -> dict[str, Any]:
         return await microsoft_drive.drive_get(item_id=item_id, config=self._config)
+
+    async def drive_read(self, *, item_id: str) -> dict[str, Any]:
+        return await microsoft_drive.drive_read(item_id=item_id, config=self._config)
 
     async def drive_list(
         self,

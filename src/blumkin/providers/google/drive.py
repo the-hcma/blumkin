@@ -12,14 +12,20 @@ from typing import Any
 
 from googleapiclient.errors import HttpError
 
+from blumkin.attachments import resolve_single_download_dest
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google_auth import DRIVE_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.drive import (
+    GOOGLE_NATIVE_MIMES,
+    DriveDownloadError,
     DriveFolderAmbiguousError,
     DriveFolderNotFoundError,
     DriveItemNotFoundError,
+    export_mime,
+    flatten_google_doc,
     normalize_order,
+    resolve_export_dest,
     split_path,
     validate_folder_selector,
 )
@@ -39,6 +45,69 @@ _LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLi
 _ORDER_BY = {"modified": "modifiedTime desc", "name": "name_natural"}
 # files.list caps pageSize at 1000; keep headroom under --top 0 (unbounded) walks.
 _PAGE_SIZE = 200
+
+
+async def drive_download(
+    *, item_id: str, out: str, config: BlumkinConfig | None = None
+) -> dict[str, Any]:
+    cfg = config or load_config()
+    service = _drive_service(cfg)
+    try:
+        meta = execute(service.files().get(fileId=item_id, fields="id,name,mimeType,size"))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    if meta.get("mimeType") in GOOGLE_NATIVE_MIMES:
+        raise DriveDownloadError(
+            f"{meta.get('name')!r} is a Google-native {meta['mimeType'].split('.')[-1]} - "
+            "it has no raw bytes; use `drive export` instead"
+        )
+    data = bytes(execute(service.files().get_media(fileId=item_id)))
+    dest = resolve_single_download_dest(out, meta.get("name") or item_id)
+    dest.write_bytes(data)
+    return {
+        "id": item_id,
+        "name": meta.get("name"),
+        "bytes": len(data),
+        "saved_path": str(dest.resolve()),
+        "provider": "google",
+    }
+
+
+async def drive_export(
+    *, item_id: str, to: str, config: BlumkinConfig | None = None
+) -> dict[str, Any]:
+    _ext, mime = export_mime(to)
+    cfg = config or load_config()
+    service = _drive_service(cfg)
+    try:
+        meta = execute(service.files().get(fileId=item_id, fields="id,name,mimeType"))
+        data = bytes(execute(service.files().export_media(fileId=item_id, mimeType=mime)))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    dest = resolve_export_dest(to)
+    dest.write_bytes(data)
+    return {
+        "id": item_id,
+        "name": meta.get("name"),
+        "format": _ext,
+        "bytes": len(data),
+        "saved_path": str(dest.resolve()),
+        "provider": "google",
+    }
+
+
+async def drive_read(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
+    cfg = config or load_config()
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=DRIVE_SCOPES)
+    docs = build_api_service("docs", "v1", creds=creds, config=cfg)
+    try:
+        document = execute(docs.documents().get(documentId=item_id))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    return {
+        "item": {"id": item_id, "name": document.get("title"), "provider": "google"},
+        "markdown": flatten_google_doc(document),
+    }
 
 
 async def drive_get(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
