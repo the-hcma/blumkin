@@ -66,7 +66,10 @@ from blumkin.skills.drive import (
     format_drive_export_human,
     format_drive_get_human,
     format_drive_list_human,
+    format_drive_mkdir_human,
+    format_drive_move_human,
     format_drive_read_human,
+    format_drive_rename_human,
 )
 from blumkin.skills.errors import ErrorInfo, classify_exception
 from blumkin.skills.mail import (
@@ -3344,10 +3347,11 @@ def docs_create_cmd(
 def drive() -> None:
     """Read and organize your drive (Google Drive / OneDrive).
 
-    Read side: `list`, `get`, `download`, `export`, `read`. On
-    `provider = "microsoft"` these need `docs_scopes = true` (Files.ReadWrite -
-    the same grant `docs create` uses). On `provider = "google"` the `drive`
-    scope is requested at `blumkin auth login`; re-consent once after upgrading.
+    Read: `list`, `get`, `download`, `export`, `read`. Organize: `mkdir`,
+    `move`, `rename` (each needs `--yes`). On `provider = "microsoft"` these
+    need `docs_scopes = true` (Files.ReadWrite - the same grant `docs create`
+    uses). On `provider = "google"` the `drive` scope is requested at `blumkin
+    auth login`; re-consent once after upgrading.
     """
 
 
@@ -3465,6 +3469,78 @@ def drive_read_cmd(ctx: click.Context, item_id: str, as_json_flag: bool) -> None
         "drive.read",
         {"id": item_id},
         human=format_drive_read_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@drive.command("mkdir", epilog=help_text.DRIVE_MKDIR_EPILOG)
+@click.option("--path", required=True, help="Folder path; missing parents are created.")
+@click.option("--yes", "yes", is_flag=True, help="Required: this changes your drive.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def drive_mkdir_cmd(ctx: click.Context, path: str, yes: bool, as_json_flag: bool) -> None:
+    """Create a folder (mkdir -p). No-op if it already exists."""
+    _dispatch(
+        ctx,
+        "drive.mkdir",
+        {"path": path, "yes": yes},
+        human=format_drive_mkdir_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@drive.command("move", epilog=help_text.DRIVE_MOVE_EPILOG)
+@click.option("--id", "item_id", required=True, help="Id of the file or folder to move.")
+@click.option("--to", "to", default=None, help="Destination folder path (one of --to / --to-id).")
+@click.option(
+    "--to-id", "to_id", default=None, help="Destination folder id (one of --to / --to-id)."
+)
+@click.option(
+    "--make-parents", "make_parents", is_flag=True, help="Create --to if it does not exist."
+)
+@click.option("--yes", "yes", is_flag=True, help="Required: this changes your drive.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def drive_move_cmd(
+    ctx: click.Context,
+    item_id: str,
+    to: str | None,
+    to_id: str | None,
+    make_parents: bool,
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Reparent a file or folder. id / URL / sharing are unchanged."""
+    _dispatch(
+        ctx,
+        "drive.move",
+        {
+            "id": item_id,
+            "to": to,
+            "to_id": to_id,
+            "make_parents": make_parents,
+            "yes": yes,
+        },
+        human=format_drive_move_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@drive.command("rename", epilog=help_text.DRIVE_RENAME_EPILOG)
+@click.option("--id", "item_id", required=True, help="Id of the file or folder to rename.")
+@click.option("--name", required=True, help="New name.")
+@click.option("--yes", "yes", is_flag=True, help="Required: this changes your drive.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def drive_rename_cmd(
+    ctx: click.Context, item_id: str, name: str, yes: bool, as_json_flag: bool
+) -> None:
+    """Rename a file or folder in place."""
+    _dispatch(
+        ctx,
+        "drive.rename",
+        {"id": item_id, "name": name, "yes": yes},
+        human=format_drive_rename_human,
         as_json_flag=as_json_flag,
     )
 

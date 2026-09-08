@@ -32,6 +32,7 @@ from blumkin.skills.drive import (
     resolve_export_dest,
     split_path,
     validate_folder_selector,
+    validate_move_selector,
 )
 
 _FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -185,7 +186,7 @@ async def drive_list(
 
     parent = folder_id
     if parent is None and folder:
-        parent = _resolve_folder_path(service, folder)
+        parent, _ = _resolve_folder_path(service, folder)
 
     clauses = ["trashed = false"]
     if parent:
@@ -199,6 +200,85 @@ async def drive_list(
         "items": [_to_item(entry) for entry in items],
         "query": {"folder": folder, "folder_id": folder_id, "text": query or None},
     }
+
+
+async def drive_mkdir(*, path: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
+    if not split_path(path):
+        raise ValueError("--path must have at least one folder name")
+    cfg = config or load_config()
+    service = _drive_service(cfg)
+    # Probe first so a no-op reports created=False without a write.
+    try:
+        existing_id, existing = _resolve_folder_path(service, path)
+        created = False
+        folder = existing
+        folder_id = existing_id
+    except DriveFolderNotFoundError:
+        folder_id, folder = _resolve_folder_path(service, path, create=True)
+        created = True
+    return {
+        "ok": True,
+        "created": created,
+        "folder": {
+            "id": folder_id,
+            "name": folder.get("name") or split_path(path)[-1],
+            "path": "/".join(split_path(path)),
+            "web_url": folder.get("webViewLink"),
+            "provider": "google",
+        },
+    }
+
+
+async def drive_move(
+    *,
+    item_id: str,
+    dest_folder_id: str | None = None,
+    dest_path: str | None = None,
+    make_parents: bool = False,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    validate_move_selector(dest_path, dest_folder_id)
+    cfg = config or load_config()
+    service = _drive_service(cfg)
+    if dest_folder_id:
+        target = dest_folder_id
+    else:
+        assert dest_path is not None
+        try:
+            target, _ = _resolve_folder_path(service, dest_path, create=make_parents)
+        except DriveFolderNotFoundError as exc:
+            raise DriveFolderNotFoundError(
+                f"{exc} - pass --make-parents to create {dest_path!r}"
+            ) from exc
+    try:
+        current = execute(service.files().get(fileId=item_id, fields="id,name,parents"))
+        moved = execute(
+            service.files().update(
+                fileId=item_id,
+                addParents=target,
+                removeParents=",".join(current.get("parents") or []),
+                fields=_GET_FIELDS,
+            )
+        )
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    return {"ok": True, "item": _to_item(moved), "moved_to": target}
+
+
+async def drive_rename(
+    *, item_id: str, name: str, config: BlumkinConfig | None = None
+) -> dict[str, Any]:
+    if not name.strip():
+        raise ValueError("--name must not be empty")
+    cfg = config or load_config()
+    service = _drive_service(cfg)
+    try:
+        renamed = execute(
+            service.files().update(fileId=item_id, body={"name": name.strip()}, fields=_GET_FIELDS)
+        )
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    return {"ok": True, "item": _to_item(renamed)}
 
 
 _EXPORT_EXT = {
@@ -246,27 +326,45 @@ def _quote(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def _resolve_folder_path(service: Any, path: str) -> str:
+def _resolve_folder_path(
+    service: Any, path: str, *, create: bool = False
+) -> tuple[str, dict[str, Any]]:
+    """Walk ``path`` from ``root`` a segment at a time; return ``(folder_id, last_folder)``.
+
+    ``last_folder`` is the raw ``files`` resource for the final segment (empty for
+    the drive root). With ``create`` a missing segment is created (``mkdir -p``);
+    without it a missing segment raises :class:`DriveFolderNotFoundError`.
+    """
     parent = "root"
+    last: dict[str, Any] = {}
     for segment in split_path(path):
         q = (
             f"{_quote(parent)} in parents and name = {_quote(segment)} "
             f"and mimeType = {_quote(_FOLDER_MIME)} and trashed = false"
         )
-        found = execute(service.files().list(q=q, fields="files(id,name)", pageSize=2)).get(
-            "files", []
-        )
-        if not found:
-            raise DriveFolderNotFoundError(
-                f"no folder {segment!r} under {path!r} (Drive has no real paths; try --folder-id)"
-            )
+        found = execute(
+            service.files().list(q=q, fields="files(id,name,webViewLink)", pageSize=2)
+        ).get("files", [])
         if len(found) > 1:
             raise DriveFolderAmbiguousError(
                 f"folder segment {segment!r} in {path!r} matches {len(found)} folders; "
                 "pass --folder-id instead"
             )
-        parent = found[0]["id"]
-    return parent
+        if found:
+            last = found[0]
+        elif create:
+            last = execute(
+                service.files().create(
+                    body={"name": segment, "mimeType": _FOLDER_MIME, "parents": [parent]},
+                    fields="id,name,webViewLink",
+                )
+            )
+        else:
+            raise DriveFolderNotFoundError(
+                f"no folder {segment!r} under {path!r} (Drive has no real paths; try --folder-id)"
+            )
+        parent = last["id"]
+    return parent, last
 
 
 def _to_item(entry: dict[str, Any]) -> dict[str, Any]:

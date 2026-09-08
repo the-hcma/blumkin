@@ -499,11 +499,14 @@ prefix, e.g. `blumkin mcp serve --only calendar --only mail`.
 Every tool whose CLI form requires `--yes` carries a **required `confirm: true`**
 argument the server enforces — the MCP mirror of the `--yes` gate. That is the
 notifying skills (calendar RSVP/create/cancel, `chat.send`, `mail.send-draft`),
-the `mail.delete` / `mail.mark` / `mail.move` safety confirms, and the
+the `mail.delete` / `mail.mark` / `mail.move` safety confirms, the
+`drive.mkdir` / `drive.move` / `drive.rename` writes, and the
 `mail.auto-reply` / `meeting.transcription` setting changes. Those tools also
 carry `anthropic/requiresUserInteraction` metadata, and every tool sets
 `readOnlyHint` / `destructiveHint`, so MCP clients can prompt appropriately.
-(`mail.forward` only drafts a forward, so it needs no confirm.)
+(`mail.forward` only drafts a forward, so it needs no confirm.) The three
+`drive` write verbs are also hidden under `--read-only`; the read verbs
+(`drive.list` / `.get` / `.download` / `.export` / `.read`) stay visible.
 
 v1 is stdio only. A loopback HTTP transport is a later option if a host needs it.
 

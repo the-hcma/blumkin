@@ -118,7 +118,11 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("drive.download", "--id"): "item_id",
     ("drive.export", "--id"): "item_id",
     ("drive.get", "--id"): "item_id",
+    ("drive.move", "--id"): "item_id",
+    ("drive.move", "--to"): "dest_path",
+    ("drive.move", "--to-id"): "dest_folder_id",
     ("drive.read", "--id"): "item_id",
+    ("drive.rename", "--id"): "item_id",
     # mail: --from is a sender substring, not a range bound.
     ("mail.inbox", "--from"): "sender",
     ("mail.list", "--from"): "sender",
@@ -872,6 +876,59 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="drive.mkdir",
+        cli=["blumkin", "drive", "mkdir"],
+        summary=(
+            "Create a folder (mkdir -p: missing parents too). No-op if it exists. "
+            "OneDrive on Microsoft."
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=["Files.ReadWrite"],
+        args=[
+            {
+                "name": "--path",
+                "required": True,
+                "type": "string",
+                "note": "folder path; intermediate folders are created",
+            },
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
+        id="drive.move",
+        cli=["blumkin", "drive", "move"],
+        summary=(
+            "Reparent a file or folder into another folder (exactly one of --to / "
+            "--to-id). id / URL / sharing are unchanged."
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=["Files.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string"},
+            {
+                "name": "--to",
+                "required": False,
+                "type": "string",
+                "note": "destination folder path (exactly one of --to / --to-id)",
+            },
+            {
+                "name": "--to-id",
+                "required": False,
+                "type": "string",
+                "note": "destination folder id (exactly one of --to / --to-id)",
+            },
+            {
+                "name": "--make-parents",
+                "required": False,
+                "type": "flag",
+                "note": "create --to if it does not exist (mkdir -p)",
+            },
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
         id="drive.read",
         cli=["blumkin", "drive", "read"],
         summary=(
@@ -883,6 +940,19 @@ SKILLS: list[SkillSpec] = [
         notifies_others=False,
         scopes=["Files.ReadWrite"],
         args=[{"name": "--id", "required": True, "type": "string"}],
+    ),
+    SkillSpec(
+        id="drive.rename",
+        cli=["blumkin", "drive", "rename"],
+        summary="Rename a file or folder in place (id / URL / sharing unchanged).",
+        mutates=True,
+        notifies_others=False,
+        scopes=["Files.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string"},
+            {"name": "--name", "required": True, "type": "string"},
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
     ),
     SkillSpec(
         id="mail.attachments",

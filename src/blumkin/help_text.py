@@ -585,6 +585,40 @@ italic / code / links, bullet and numbered lists). `provider = "google"` only -
 on Microsoft this is exit 2 (`usage_error`); use `drive export --to out.pdf`.
 """
 
+DRIVE_MKDIR_EPILOG = """
+Examples:
+
+\b
+  blumkin drive mkdir --path "Reports/2026/Q3" --yes --json
+
+`mkdir -p` semantics: missing intermediate folders are created. If the folder
+already exists it is a no-op (`created: false`). Requires `--yes`.
+"""
+
+DRIVE_MOVE_EPILOG = """
+Examples:
+
+\b
+  # Into an existing folder, by path
+  blumkin drive move --id 1a2b3c... --to "Language Classes/Portuguese Classes" --yes
+\b
+  # Into a folder by id, creating the path if needed
+  blumkin drive move --id 1a2b3c... --to "Archive/2026" --make-parents --yes --json
+
+Reparents a file or folder; its id, URL, and sharing do not change. Pass exactly
+one of `--to` (a path) or `--to-id` (a folder id). A `--to` path that does not
+exist is exit 2 unless `--make-parents` is given. Requires `--yes`.
+"""
+
+DRIVE_RENAME_EPILOG = """
+Examples:
+
+\b
+  blumkin drive rename --id 1a2b3c... --name "Portuguese vocab - week 4" --yes
+
+Renames in place - id, URL, and sharing are unchanged. Requires `--yes`.
+"""
+
 MAIL_ATTACHMENTS_DOWNLOAD_EPILOG = """
 Examples:
 
