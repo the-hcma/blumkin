@@ -77,12 +77,15 @@ CHAT_SCOPES = frozenset(
     }
 )
 
-# docs_create authors a real Google Doc (documents) and files it under a folder
-# (drive.file - deliberately the narrow scope: it only ever sees files blumkin
-# itself created, never the rest of the user's Drive).
+# docs_create authors a real Google Doc (documents) and files it under a folder.
+# `drive` (not just `drive.file`) so `--folder` can target a folder the user made
+# by hand - `drive.file` only ever sees blumkin's own files (see D11). `drive.file`
+# stays in the set so a doc blumkin created is still reachable without the broad
+# grant on older consents.
 DOCS_SCOPES = frozenset(
     {
         "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/drive.file",
     }
 )

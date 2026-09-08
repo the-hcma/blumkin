@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from blumkin.config import BlumkinConfig, load_config
+from blumkin.providers.google.drive import resolve_folder_path
 from blumkin.providers.google_auth import DOCS_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.docs import DocBlock, DocSpan, parse_body, read_body, table_to_text
@@ -20,7 +21,6 @@ _CODE_FONT = "Roboto Mono"
 # An OptionalColor: the {"color": {...}} wrapper is required by the Docs schema
 # (same shape as borderBottom.color below).
 _CODE_SHADE = {"color": {"rgbColor": {"red": 0.95, "green": 0.95, "blue": 0.95}}}
-_FOLDER_MIME = "application/vnd.google-apps.folder"
 _HEADING_STYLES = {
     1: "HEADING_1",
     2: "HEADING_2",
@@ -116,21 +116,13 @@ def _block_text(block: DocBlock) -> str:
 
 
 def _move_to_folder(drive: Any, *, document_id: str, folder_name: str) -> None:
-    query = f"mimeType = '{_FOLDER_MIME}' and name = {_escape(folder_name)} and trashed = false"
-    # A failed lookup must propagate: swallowing it (treating an error as "no such
-    # folder") would silently create a duplicate folder on a transient 429/5xx,
-    # and this name lookup is the only dedupe for --folder.
-    found = execute(drive.files().list(q=query, fields="files(id)", pageSize=1)).get("files", [])
-    if found:
-        folder_id = found[0]["id"]
-    else:
-        created = execute(
-            drive.files().create(body={"name": folder_name, "mimeType": _FOLDER_MIME}, fields="id")
-        )
-        folder_id = created["id"]
+    # `--folder` is a path now (the `drive` scope, D11 / #212): walk it from root
+    # and create missing segments. `resolve_folder_path` raises on an ambiguous
+    # segment rather than guessing, and a lookup failure propagates rather than
+    # silently minting a duplicate on a transient 429/5xx.
+    folder_id, _ = resolve_folder_path(drive, folder_name, create=True)
     # documents.create drops the doc in the Drive root; removeParents="root" moves
-    # it rather than adding a second parent (both are blumkin-created, so drive.file
-    # permits it) - otherwise the doc shows in both root and the folder.
+    # it rather than adding a second parent - otherwise the doc shows in both.
     execute(
         drive.files().update(
             fileId=document_id,
@@ -232,10 +224,6 @@ def _style_requests(block: DocBlock, start: int, end: int) -> list[dict[str, Any
             requests.append(styled)
         span_start = span_end
     return requests
-
-
-def _escape(value: str) -> str:
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def _spans_text(spans: tuple[DocSpan, ...]) -> str:

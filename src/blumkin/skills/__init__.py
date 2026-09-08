@@ -768,7 +768,8 @@ SKILLS: list[SkillSpec] = [
                 "name": "--folder",
                 "required": False,
                 "type": "string",
-                "note": "destination folder name (created if absent); drive root if omitted",
+                "note": "destination folder path (existing or created, e.g. "
+                "'Language Classes/Portuguese Classes'); drive root if omitted",
             },
         ],
     ),
