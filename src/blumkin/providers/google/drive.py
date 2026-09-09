@@ -167,7 +167,7 @@ async def drive_list(
 
     parent = folder_id
     if parent is None and folder:
-        parent, _ = _resolve_folder_path(service, folder)
+        parent, _ = resolve_folder_path(service, folder)
 
     clauses = ["trashed = false"]
     if parent:
@@ -199,12 +199,12 @@ async def drive_mkdir(*, path: str, config: BlumkinConfig | None = None) -> dict
     service = _drive_service(cfg)
     # Probe first so a no-op reports created=False without a write.
     try:
-        existing_id, existing = _resolve_folder_path(service, path)
+        existing_id, existing = resolve_folder_path(service, path)
         created = False
         folder = existing
         folder_id = existing_id
     except DriveFolderNotFoundError:
-        folder_id, folder = _resolve_folder_path(service, path, create=True)
+        folder_id, folder = resolve_folder_path(service, path, create=True)
         created = True
     return {
         "ok": True,
@@ -263,7 +263,7 @@ async def drive_move(
         # already exist when the source is a folder, so nothing is left behind.
         create = make_parents and not source_is_folder
         try:
-            target, _ = _resolve_folder_path(service, dest_p, create=create)
+            target, _ = resolve_folder_path(service, dest_p, create=create)
         except DriveFolderNotFoundError as exc:
             hint = (
                 "create the destination first when moving a folder"
@@ -403,7 +403,7 @@ def _validate_dest_folder_id(service: Any, folder_id: str) -> str:
     return folder_id
 
 
-def _resolve_folder_path(
+def resolve_folder_path(
     service: Any, path: str, *, create: bool = False
 ) -> tuple[str, dict[str, Any]]:
     """Walk ``path`` from ``root`` a segment at a time; return ``(folder_id, last_folder)``.

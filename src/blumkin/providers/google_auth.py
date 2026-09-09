@@ -78,14 +78,20 @@ CHAT_SCOPES = frozenset(
 )
 
 # docs_create authors a real Google Doc (documents) and files it under a folder
-# (drive.file - deliberately the narrow scope: it only ever sees files blumkin
-# itself created, never the rest of the user's Drive).
+# blumkin made (drive.file - narrow, only ever sees blumkin's own files). A
+# root-level `docs create` needs nothing more. `docs create --folder <path>`
+# targeting a *pre-existing* folder additionally needs the full `drive` scope
+# (DOCS_FOLDER_SCOPES below); the fail-fast gate widens only when a folder is
+# passed, so a `{documents, drive.file}` grant keeps working for the common case.
 DOCS_SCOPES = frozenset(
     {
         "https://www.googleapis.com/auth/documents",
         "https://www.googleapis.com/auth/drive.file",
     }
 )
+
+# `docs create --folder <path>` resolving a folder the user made by hand (see D11).
+DOCS_FOLDER_SCOPES = DOCS_SCOPES | {"https://www.googleapis.com/auth/drive"}
 
 # The `drive` skill area (list / get / download / export / read, and mkdir / move
 # / rename) needs full read+write to the user's Drive so it can target folders the

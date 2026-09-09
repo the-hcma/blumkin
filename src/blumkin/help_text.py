@@ -472,13 +472,18 @@ Examples:
 \b
   # Multi-line Markdown - use --body-file (a shell-quoted --body keeps \\n literal)
   blumkin docs create --title "Weekly status" --body-file ./status.md \\
-    --folder "Status reports" --json
+    --folder "Language Classes/Portuguese Classes" --json
 
 Creates a real Google Doc on `provider = "google"`; a `.docx` uploaded to your
-OneDrive on `provider = "microsoft"`. No `--yes` - nobody is notified. The
-Markdown subset is headings, bold / italic / code / links, bullet and numbered
-lists, fenced code, rules, and simple tables; anything else renders as plain
-text. Use ASCII hyphens, not em dashes.
+OneDrive on `provider = "microsoft"`. No `--yes` - nobody is notified.
+
+`--folder` is a path: an existing folder (including one you made by hand) or one
+created on the spot, intermediate folders included. An ambiguous segment on
+Google is exit 2 - pass the folder id via `blumkin drive move` instead.
+
+The Markdown subset is headings, bold / italic / code / links, bullet and
+numbered lists, fenced code, rules, and simple tables; anything else renders as
+plain text. Use ASCII hyphens, not em dashes.
 """
 
 DOCS_EPILOG = """

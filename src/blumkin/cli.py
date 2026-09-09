@@ -3310,7 +3310,7 @@ def docs() -> None:
 @click.option(
     "--folder",
     default=None,
-    help="Destination folder name (created if absent); drive root if omitted.",
+    help="Destination folder path - existing or created (mkdir -p); drive root if omitted.",
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context

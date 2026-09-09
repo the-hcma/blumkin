@@ -2,9 +2,9 @@
 
 ``documents.create`` makes an empty doc; one ``documents.batchUpdate`` then
 inserts the whole body as text and styles it by absolute index (headings, bold /
-italic / code / links, lists, fenced code, rules). ``--folder`` is created (or
-reused, if this tool made it before) via the ``drive.file`` scope, which only
-ever sees files blumkin itself created.
+italic / code / links, lists, fenced code, rules). ``--folder`` is a path: an
+existing folder (needs the broad ``drive`` scope, ``DOCS_FOLDER_SCOPES``) or one
+created on the spot; a root-level doc needs only ``{documents, drive.file}``.
 """
 
 from __future__ import annotations
@@ -12,7 +12,8 @@ from __future__ import annotations
 from typing import Any
 
 from blumkin.config import BlumkinConfig, load_config
-from blumkin.providers.google_auth import DOCS_SCOPES, get_credentials
+from blumkin.providers.google.drive import resolve_folder_path
+from blumkin.providers.google_auth import DOCS_FOLDER_SCOPES, DOCS_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.docs import DocBlock, DocSpan, parse_body, read_body, table_to_text
 
@@ -20,7 +21,6 @@ _CODE_FONT = "Roboto Mono"
 # An OptionalColor: the {"color": {...}} wrapper is required by the Docs schema
 # (same shape as borderBottom.color below).
 _CODE_SHADE = {"color": {"rgbColor": {"red": 0.95, "green": 0.95, "blue": 0.95}}}
-_FOLDER_MIME = "application/vnd.google-apps.folder"
 _HEADING_STYLES = {
     1: "HEADING_1",
     2: "HEADING_2",
@@ -47,7 +47,20 @@ async def docs_create(
     cfg = config or load_config()
     blocks = parse_body(read_body(body, body_file), body_format=body_format)
 
-    creds = get_credentials(cfg, allow_interactive=False, required_scopes=DOCS_SCOPES)
+    folder_name = folder.strip() if folder else None
+    # Only `--folder <path>` needs the broad `drive` scope; a root-level doc runs
+    # fine on the narrow {documents, drive.file} grant.
+    required = DOCS_FOLDER_SCOPES if folder_name else DOCS_SCOPES
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=required)
+
+    # Resolve --folder BEFORE minting the doc, so an ambiguous / missing segment
+    # is a side-effect-free usage_error instead of orphaning an authored doc in
+    # the Drive root (which every MCP retry would then multiply).
+    folder_id: str | None = None
+    if folder_name:
+        drive = build_api_service("drive", "v3", creds=creds, config=cfg)
+        folder_id, _ = resolve_folder_path(drive, folder_name, create=True)
+
     docs = build_api_service("docs", "v1", creds=creds, config=cfg)
     document = execute(docs.documents().create(body={"title": title.strip()}))
     document_id = str(document["documentId"])
@@ -56,10 +69,8 @@ async def docs_create(
     if requests:
         execute(docs.documents().batchUpdate(documentId=document_id, body={"requests": requests}))
 
-    folder_name = folder.strip() if folder else None
-    if folder_name:
-        drive = build_api_service("drive", "v3", creds=creds, config=cfg)
-        _move_to_folder(drive, document_id=document_id, folder_name=folder_name)
+    if folder_id is not None:
+        _reparent(drive, document_id=document_id, folder_id=folder_id)
 
     return {
         "document": {
@@ -115,22 +126,9 @@ def _block_text(block: DocBlock) -> str:
     return f"{_spans_text(block.spans)}\n"
 
 
-def _move_to_folder(drive: Any, *, document_id: str, folder_name: str) -> None:
-    query = f"mimeType = '{_FOLDER_MIME}' and name = {_escape(folder_name)} and trashed = false"
-    # A failed lookup must propagate: swallowing it (treating an error as "no such
-    # folder") would silently create a duplicate folder on a transient 429/5xx,
-    # and this name lookup is the only dedupe for --folder.
-    found = execute(drive.files().list(q=query, fields="files(id)", pageSize=1)).get("files", [])
-    if found:
-        folder_id = found[0]["id"]
-    else:
-        created = execute(
-            drive.files().create(body={"name": folder_name, "mimeType": _FOLDER_MIME}, fields="id")
-        )
-        folder_id = created["id"]
+def _reparent(drive: Any, *, document_id: str, folder_id: str) -> None:
     # documents.create drops the doc in the Drive root; removeParents="root" moves
-    # it rather than adding a second parent (both are blumkin-created, so drive.file
-    # permits it) - otherwise the doc shows in both root and the folder.
+    # it rather than adding a second parent - otherwise the doc shows in both.
     execute(
         drive.files().update(
             fileId=document_id,
@@ -232,10 +230,6 @@ def _style_requests(block: DocBlock, start: int, end: int) -> list[dict[str, Any
             requests.append(styled)
         span_start = span_end
     return requests
-
-
-def _escape(value: str) -> str:
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def _spans_text(spans: tuple[DocSpan, ...]) -> str:
