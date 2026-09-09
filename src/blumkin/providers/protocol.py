@@ -407,3 +407,12 @@ class WorkspaceProvider(Protocol):
         email: str | None = None,
         top: int = 10,
     ) -> dict[str, Any]: ...
+
+    async def probe_mail_signature(self) -> bool | None:
+        """Detect whether the mail client auto-inserts its own signature.
+
+        ``True`` / ``False`` when known; ``None`` when the probe could not run.
+        Not a skill - called from ``auth login`` / ``doctor`` to keep
+        ``append_mail_signature`` from double-signing drafts.
+        """
+        ...

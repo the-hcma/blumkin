@@ -712,6 +712,11 @@ class GoogleWorkspaceProvider:
             name=name, email=email, top=top, config=self._config
         )
 
+    async def probe_mail_signature(self) -> bool | None:
+        # Gmail's send-as signature is not auto-inserted into API-created drafts,
+        # so blumkin's [mail.signature] is the only one in play - never suppress it.
+        return False
+
     def _meeting_unsupported(self, op: str) -> dict[str, Any]:
         # Deliberate, not a TODO: Meet REST + transcript scopes are out of scope
         # for the parity milestone (docs/DECISIONS.md D8).

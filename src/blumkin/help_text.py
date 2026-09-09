@@ -938,6 +938,14 @@ Prints the rendered [mail.signature] for the active profile - the same markup
 the drafting verbs append - so you can add it to a body you are composing
 yourself without hand-rebuilding the styling from config. Read-only; empty when
 no signature is configured or it is disabled.
+
+Double-signature guard: Outlook (desktop / web) can be set to auto-insert its
+own signature on new mail and replies, and Graph exposes no API for that
+setting. `blumkin auth login` and `blumkin doctor` probe for it (create a
+throwaway draft, read it back, delete it). When it is on, blumkin stops
+appending [mail.signature] to drafts and this command reports `suppressed: true`
+- otherwise a draft blumkin leaves in the mailbox is signed twice once Outlook
+touches it. Re-run `blumkin doctor` after changing the Outlook setting.
 """
 
 MAIL_UPDATE_DRAFT_EPILOG = """

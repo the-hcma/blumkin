@@ -54,6 +54,10 @@ class BlumkinConfig:
         return self.profile_dir / "google_token.json"
 
     @property
+    def mail_signature_state_path(self) -> Path:
+        return self.profile_dir / "mail_signature_state.json"
+
+    @property
     def profile_dir(self) -> Path:
         if self.legacy_flat:
             return self.config_dir

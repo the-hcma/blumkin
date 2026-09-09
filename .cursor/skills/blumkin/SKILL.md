@@ -281,6 +281,11 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
   When `enabled = true`, `mail draft`, `mail reply`, and `mail forward` append the
   rendered signature (HTML or plain text matching `--body-type`). Pass
   `--no-signature` to skip. Do not invent signature markup in the agent session.
+  If `auth login` / `doctor` detect that Outlook itself auto-inserts a signature
+  (Graph has no API for that setting, so blumkin probes with a throwaway draft),
+  blumkin stops appending `[mail.signature]` to drafts so the message is not
+  signed twice; `blumkin mail signature --json` reports `suppressed: true`. Re-run
+  `blumkin doctor` after changing the Outlook setting.
 - **WO1162425 add-on scopes (off by default):** `wo1162425_scopes = true` in
   `config.toml` after Remedy WO1162425 grants its add-ons (runtime requests
   `Chat.ReadWrite`, `OnlineMeetings.ReadWrite`, `People.Read`; full augmented ask

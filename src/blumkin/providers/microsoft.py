@@ -9,7 +9,7 @@ from typing import Any
 
 from blumkin.auth import create_credential, logout, refresh_silent, save_token_cache, status_dict
 from blumkin.config import BlumkinConfig
-from blumkin.providers import microsoft_docs, microsoft_drive
+from blumkin.providers import microsoft_docs, microsoft_drive, microsoft_mail_probe
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.calendar import (
     calendar_freebusy,
@@ -734,3 +734,6 @@ class MicrosoftWorkspaceProvider:
         top: int = 10,
     ) -> dict[str, Any]:
         return await people_resolve(name=name, email=email, top=top, config=self._config)
+
+    async def probe_mail_signature(self) -> bool | None:
+        return await microsoft_mail_probe.probe_outlook_signature(config=self._config)
