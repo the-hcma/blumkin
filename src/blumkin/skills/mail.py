@@ -538,12 +538,15 @@ async def mail_auto_reply(
         # default_tz is a free-form, unvalidated config string; fall back so a
         # scheduled OOF window never ships an empty/garbage IANA name to Graph.
         tz_name = _oof_zone_name(cfg.default_tz) if scheduled else cfg.default_tz
+        internal_html = _oof_html(body_text)
         setting = AutomaticRepliesSetting(
             status=AutomaticRepliesStatus.Scheduled
             if scheduled
             else AutomaticRepliesStatus.AlwaysEnabled,
-            internal_reply_message=body_text,
-            external_reply_message=external_message or body_text,
+            internal_reply_message=internal_html,
+            external_reply_message=_oof_html(external_message)
+            if external_message is not None
+            else internal_html,
             external_audience=_OOF_AUDIENCE[external_audience or "all"],
             scheduled_start_date_time=_oof_dtz(start, tz_name) if start else None,
             scheduled_end_date_time=_oof_dtz(until, tz_name, end=True) if until else None,
@@ -563,6 +566,26 @@ def _oof_dtz(day: date, tz_name: str, *, end: bool = False) -> DateTimeTimeZone:
     """
     boundary = day + timedelta(days=1) if end else day
     return DateTimeTimeZone(date_time=f"{boundary.isoformat()}T00:00:00", time_zone=tz_name)
+
+
+def _oof_html(text: str) -> str:
+    """A plain-text automatic-reply message -> the HTML Exchange actually stores.
+
+    Graph renders ``internal/externalReplyMessage`` as HTML, so a bare-``\\n``
+    body arrives in Outlook as one run-on paragraph. Escape the text and turn
+    newlines into ``<br>`` so the line breaks survive.
+    """
+    escaped = html_lib.escape(text)
+    return escaped.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
+
+
+def _oof_text(value: str | None) -> str | None:
+    """The stored HTML automatic-reply message -> plain text for display / JSON."""
+    if not value:
+        return value
+    text = re.sub(r"(?i)<br\s*/?>", "\n", value)
+    text = re.sub(r"(?s)<[^>]+>", "", text)
+    return html_lib.unescape(text).strip()
 
 
 def _oof_zone_name(tz_name: str) -> str:
@@ -593,8 +616,8 @@ def _auto_reply_to_dict(setting: Any) -> dict[str, Any]:
         "scope": status,
         "start": _dtz_iso(getattr(setting, "scheduled_start_date_time", None)),
         "end": _dtz_iso(getattr(setting, "scheduled_end_date_time", None)),
-        "internal_message": getattr(setting, "internal_reply_message", None),
-        "external_message": getattr(setting, "external_reply_message", None),
+        "internal_message": _oof_text(getattr(setting, "internal_reply_message", None)),
+        "external_message": _oof_text(getattr(setting, "external_reply_message", None)),
         "external_audience": _OOF_AUDIENCE_BACK.get(audience) if audience is not None else None,
     }
 

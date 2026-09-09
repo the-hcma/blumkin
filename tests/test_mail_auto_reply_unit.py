@@ -149,6 +149,55 @@ def test_graph_reads_the_body_file(monkeypatch, tmp_path: Path) -> None:
     assert setting.internal_reply_message == "away, see you soon"
 
 
+def test_graph_multiline_message_keeps_line_breaks_as_html(monkeypatch) -> None:
+    # Exchange renders the OOF message as HTML; a bare-LF body would collapse.
+    client = _graph(monkeypatch)
+    msg = "Out until Monday.\nContact Sam <sam@x.io> for urgent."
+    payload = asyncio.run(mail_auto_reply(enable=True, message=msg))
+    setting = client.me.mailbox_settings.patch.await_args.args[0].automatic_replies_setting
+    assert setting.internal_reply_message == (
+        "Out until Monday.<br>Contact Sam &lt;sam@x.io&gt; for urgent."
+    )
+    assert setting.external_reply_message == setting.internal_reply_message
+    # Round-trips back to plain text on read.
+    assert payload["auto_reply"]["internal_message"] == (
+        "Out until Monday.\nContact Sam <sam@x.io> for urgent."
+    )
+
+
+def test_graph_external_message_is_escaped_independently(monkeypatch) -> None:
+    client = _graph(monkeypatch)
+    asyncio.run(
+        mail_auto_reply(
+            enable=True,
+            message="internal\nline",
+            external_message="external\nline & more",
+        )
+    )
+    setting = client.me.mailbox_settings.patch.await_args.args[0].automatic_replies_setting
+    assert setting.internal_reply_message == "internal<br>line"
+    assert setting.external_reply_message == "external<br>line &amp; more"
+
+
+def test_graph_read_flattens_stored_html_to_text(monkeypatch) -> None:
+    client = _graph(monkeypatch)
+    client.me.mailbox_settings.get = AsyncMock(
+        return_value=SimpleNamespace(
+            automatic_replies_setting=SimpleNamespace(
+                status=AutomaticRepliesStatus.AlwaysEnabled,
+                internal_reply_message="<html><body>line one<br>line two</body></html>",
+                external_reply_message="brb &amp; away",
+                external_audience=ExternalAudienceScope.All,
+                scheduled_start_date_time=None,
+                scheduled_end_date_time=None,
+            )
+        )
+    )
+    payload = asyncio.run(mail_auto_reply())
+    assert payload["auto_reply"]["internal_message"] == "line one\nline two"
+    assert payload["auto_reply"]["external_message"] == "brb & away"
+
+
 # --------------------------------------------------------------------------- Google
 
 
