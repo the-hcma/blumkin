@@ -63,7 +63,7 @@ Microsoft work and Google personal). Agents must not guess which mailbox to use.
    profile's name and a *different* profile's tag is ambiguous (`@tag` is
    tag-only).
 
-Safe discovery keys only (`name`, `provider`, `tags`, `default_tz`,
+Safe discovery keys only (`name`, `provider`, `email`, `tags`, `default_tz`,
 `auth_present`, `is_default`, plus envelope `count` / `default_profile`). Never
 read `config.toml` or token files for secrets.
 
@@ -502,9 +502,9 @@ Without `--profile`, the server picks the account **per tool call**:
 
 - **Two or more profiles** in `config.toml` → every provider-backed tool gains a
   **required `profile`** string argument (`enum` of the configured names). A call
-  without it fails closed (`usage_error`, exit 2) rather than guessing. The
-  server also exposes a read-only **`profiles.list`** tool (name, provider,
-  email, tags, default) and sets `InitializeResult.instructions` telling the
+  without it fails closed with a `usage_error` tool-call error result rather than
+  guessing. The server also exposes a read-only **`profiles.list`** tool (name,
+  provider, email, tags, default) and sets `InitializeResult.instructions` telling the
   agent to **ask the user** which account when the request is ambiguous (e.g.
   "email my sister" with both a work and a personal profile) — never fall back to
   the default.
