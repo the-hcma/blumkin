@@ -372,6 +372,24 @@ class GoogleWorkspaceProvider:
     async def drive_get(self, *, item_id: str) -> dict[str, Any]:
         return await google_drive.drive_get(item_id=item_id, config=self._config)
 
+    async def drive_list(
+        self,
+        *,
+        folder_id: str | None = None,
+        folder: str | None = None,
+        query: str | None = None,
+        order: str = "modified",
+        top: int = 50,
+    ) -> dict[str, Any]:
+        return await google_drive.drive_list(
+            folder_id=folder_id,
+            folder=folder,
+            query=query,
+            order=order,
+            top=top,
+            config=self._config,
+        )
+
     async def drive_mkdir(self, *, path: str) -> dict[str, Any]:
         return await google_drive.drive_mkdir(path=path, config=self._config)
 
@@ -396,24 +414,6 @@ class GoogleWorkspaceProvider:
 
     async def drive_rename(self, *, item_id: str, name: str) -> dict[str, Any]:
         return await google_drive.drive_rename(item_id=item_id, name=name, config=self._config)
-
-    async def drive_list(
-        self,
-        *,
-        folder_id: str | None = None,
-        folder: str | None = None,
-        query: str | None = None,
-        order: str = "modified",
-        top: int = 50,
-    ) -> dict[str, Any]:
-        return await google_drive.drive_list(
-            folder_id=folder_id,
-            folder=folder,
-            query=query,
-            order=order,
-            top=top,
-            config=self._config,
-        )
 
     @property
     def kind(self) -> ProviderKind:

@@ -602,7 +602,7 @@ Examples:
   # Into an existing folder, by path
   blumkin drive move --id 1a2b3c... --to "Language Classes/Portuguese Classes" --yes
 \b
-  # Into a folder by id, creating the path if needed
+  # Into a folder by path, creating missing parents
   blumkin drive move --id 1a2b3c... --to "Archive/2026" --make-parents --yes --json
 
 Reparents a file or folder; its id, URL, and sharing do not change. Pass exactly

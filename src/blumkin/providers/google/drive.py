@@ -50,6 +50,11 @@ _LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLi
 _ORDER_BY = {"modified": "modifiedTime desc", "name": "name_natural"}
 # files.list caps pageSize at 1000; keep headroom under --top 0 (unbounded) walks.
 _PAGE_SIZE = 200
+# Drive v3 hides Shared Drive items unless these are set. blumkin does not manage
+# Shared Drives (create *into* one - #212 non-goal), but read / move / rename of a
+# file the user already has in one should not silently 404.
+_SHARED: dict[str, Any] = {"supportsAllDrives": True}
+_SHARED_LIST: dict[str, Any] = {"supportsAllDrives": True, "includeItemsFromAllDrives": True}
 
 
 async def drive_download(
@@ -58,7 +63,9 @@ async def drive_download(
     cfg = config or load_config()
     service = _drive_service(cfg)
     try:
-        meta = execute(service.files().get(fileId=item_id, fields="id,name,mimeType,size"))
+        meta = execute(
+            service.files().get(fileId=item_id, fields="id,name,mimeType,size", **_SHARED)
+        )
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc
     mime = meta.get("mimeType") or ""
@@ -94,7 +101,9 @@ async def drive_export(
     cfg = config or load_config()
     service = _drive_service(cfg)
     try:
-        meta = execute(service.files().get(fileId=item_id, fields="id,name,mimeType,exportLinks"))
+        meta = execute(
+            service.files().get(fileId=item_id, fields="id,name,mimeType,exportLinks", **_SHARED)
+        )
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc
     available = set(meta.get("exportLinks") or {})
@@ -124,39 +133,11 @@ async def drive_export(
     }
 
 
-async def drive_read(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
-    cfg = config or load_config()
-    creds = get_credentials(cfg, allow_interactive=False, required_scopes=DRIVE_SCOPES)
-    # Gate on the Drive mimeType first: `documents.get` on a Sheet / Slides /
-    # folder id 400s, which would surface as a misleading not_found / graph_error
-    # instead of the usage_error the sibling verbs give.
-    drive = build_api_service("drive", "v3", creds=creds, config=cfg)
-    try:
-        meta = execute(drive.files().get(fileId=item_id, fields="id,name,mimeType"))
-    except HttpError as exc:
-        raise _translate(exc, item_id=item_id) from exc
-    if meta.get("mimeType") != "application/vnd.google-apps.document":
-        kind = _KINDS.get(meta.get("mimeType", ""), "file")
-        raise DriveReadUnsupportedError(
-            f"{meta.get('name')!r} is a {kind}, not a Google Doc - `drive read` only "
-            "flattens Docs; use `drive export` or `drive get`"
-        )
-    docs = build_api_service("docs", "v1", creds=creds, config=cfg)
-    try:
-        document = execute(docs.documents().get(documentId=item_id))
-    except HttpError as exc:
-        raise _translate(exc, item_id=item_id) from exc
-    return {
-        "item": {"id": item_id, "name": document.get("title"), "provider": "google"},
-        "markdown": flatten_google_doc(document),
-    }
-
-
 async def drive_get(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
     cfg = config or load_config()
     service = _drive_service(cfg)
     try:
-        item = execute(service.files().get(fileId=item_id, fields=_GET_FIELDS))
+        item = execute(service.files().get(fileId=item_id, fields=_GET_FIELDS, **_SHARED))
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc
     payload = _to_item(item)
@@ -237,36 +218,75 @@ async def drive_move(
     make_parents: bool = False,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    validate_move_selector(dest_path, dest_folder_id)
+    dest_id = (dest_folder_id or "").strip() or None
+    dest_p = (dest_path or "").strip() or None
+    validate_move_selector(dest_p, dest_id)
     cfg = config or load_config()
     service = _drive_service(cfg)
-    if dest_folder_id:
-        target = dest_folder_id
+
+    # Validate the source item first, so a failed move (bad --id, even with
+    # --make-parents) is a true no-op and never leaves stray folders behind.
+    try:
+        current = execute(service.files().get(fileId=item_id, fields="id,name,parents", **_SHARED))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+
+    if dest_id is not None:
+        target = _validate_dest_folder_id(service, dest_id)
     else:
-        assert dest_path is not None
-        if not split_path(dest_path):
+        assert dest_p is not None
+        if not split_path(dest_p):
             raise ValueError("--to must name a folder, not the drive root")
         try:
-            target, _ = _resolve_folder_path(service, dest_path, create=make_parents)
+            target, _ = _resolve_folder_path(service, dest_p, create=make_parents)
         except DriveFolderNotFoundError as exc:
             # A missing --to without --make-parents is a usage error (exit 2), not
             # a bare not_found - the operator can create it or pass --to-id.
             raise ValueError(
-                f"{exc} - pass --make-parents to create {dest_path!r}, or --to-id"
+                f"{exc} - pass --make-parents to create {dest_p!r}, or --to-id"
             ) from exc
+
     try:
-        current = execute(service.files().get(fileId=item_id, fields="id,name,parents"))
         moved = execute(
             service.files().update(
                 fileId=item_id,
                 addParents=target,
                 removeParents=",".join(current.get("parents") or []),
                 fields=_GET_FIELDS,
+                **_SHARED,
             )
         )
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc
     return {"ok": True, "item": _to_item(moved), "moved_to": target}
+
+
+async def drive_read(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
+    cfg = config or load_config()
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=DRIVE_SCOPES)
+    # Gate on the Drive mimeType first: `documents.get` on a Sheet / Slides /
+    # folder id 400s, which would surface as a misleading not_found / graph_error
+    # instead of the usage_error the sibling verbs give.
+    drive = build_api_service("drive", "v3", creds=creds, config=cfg)
+    try:
+        meta = execute(drive.files().get(fileId=item_id, fields="id,name,mimeType", **_SHARED))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    if meta.get("mimeType") != "application/vnd.google-apps.document":
+        kind = _KINDS.get(meta.get("mimeType", ""), "file")
+        raise DriveReadUnsupportedError(
+            f"{meta.get('name')!r} is a {kind}, not a Google Doc - `drive read` only "
+            "flattens Docs; use `drive export` or `drive get`"
+        )
+    docs = build_api_service("docs", "v1", creds=creds, config=cfg)
+    try:
+        document = execute(docs.documents().get(documentId=item_id))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    return {
+        "item": {"id": item_id, "name": document.get("title"), "provider": "google"},
+        "markdown": flatten_google_doc(document),
+    }
 
 
 async def drive_rename(
@@ -278,7 +298,9 @@ async def drive_rename(
     service = _drive_service(cfg)
     try:
         renamed = execute(
-            service.files().update(fileId=item_id, body={"name": name.strip()}, fields=_GET_FIELDS)
+            service.files().update(
+                fileId=item_id, body={"name": name.strip()}, fields=_GET_FIELDS, **_SHARED
+            )
         )
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc
@@ -316,6 +338,7 @@ def _list_all(service: Any, *, q: str, order_by: str, top: int) -> list[dict[str
                 pageSize=remaining,
                 fields=_LIST_FIELDS,
                 pageToken=page_token,
+                **_SHARED_LIST,
             )
         )
         out.extend(response.get("files") or [])
@@ -328,6 +351,17 @@ def _list_all(service: Any, *, q: str, order_by: str, top: int) -> list[dict[str
 def _quote(value: str) -> str:
     """Escape a value for the Drive query language (single-quoted literal)."""
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def _validate_dest_folder_id(service: Any, folder_id: str) -> str:
+    """`--to-id` must name an existing folder; anything else is a usage error (exit 2)."""
+    try:
+        meta = execute(service.files().get(fileId=folder_id, fields="id,mimeType", **_SHARED))
+    except HttpError as exc:
+        raise ValueError(f"--to-id {folder_id!r} does not name a drive item") from exc
+    if meta.get("mimeType") != _FOLDER_MIME:
+        raise ValueError(f"--to-id {folder_id!r} is not a folder")
+    return folder_id
 
 
 def _resolve_folder_path(
@@ -347,7 +381,9 @@ def _resolve_folder_path(
             f"and mimeType = {_quote(_FOLDER_MIME)} and trashed = false"
         )
         found = execute(
-            service.files().list(q=q, fields="files(id,name,webViewLink)", pageSize=2)
+            service.files().list(
+                q=q, fields="files(id,name,webViewLink)", pageSize=2, **_SHARED_LIST
+            )
         ).get("files", [])
         if len(found) > 1:
             raise DriveFolderAmbiguousError(
@@ -361,6 +397,7 @@ def _resolve_folder_path(
                 service.files().create(
                     body={"name": segment, "mimeType": _FOLDER_MIME, "parents": [parent]},
                     fields="id,name,webViewLink",
+                    **_SHARED,
                 )
             )
         else:

@@ -185,23 +185,30 @@ async def drive_move(
     make_parents: bool = False,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    validate_move_selector(dest_path, dest_folder_id)
+    dest_id = (dest_folder_id or "").strip() or None
+    dest_p = (dest_path or "").strip() or None
+    validate_move_selector(dest_p, dest_id)
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    if dest_folder_id:
-        target = dest_folder_id
+
+    # Validate the source item first, so a failed move (bad --id, even with
+    # --make-parents) never creates stray folders.
+    await _send_item(client, _ITEM_BY_ID_URL, {"id": item_id}, missing=item_id)
+
+    if dest_id is not None:
+        target = dest_id
     else:
-        assert dest_path is not None
-        segments = split_path(dest_path)
+        assert dest_p is not None
+        segments = split_path(dest_p)
         if not segments:
             raise ValueError("--to must name a folder, not the drive root")
         folder = await _get_item_by_path(client, segments)
         if folder is not None and folder.folder is None:
-            raise ValueError(f"--to {dest_path!r} is a file, not a folder")
+            raise ValueError(f"--to {dest_p!r} is a file, not a folder")
         if folder is None:
             if not make_parents:
                 raise ValueError(
-                    f"no folder at {dest_path!r} - pass --make-parents to create it, "
+                    f"no folder at {dest_p!r} - pass --make-parents to create it, "
                     "or --to-id with a folder id"
                 )
             folder = await _mkdir_p(client, segments)
@@ -324,8 +331,10 @@ async def _mkdir_p(client: Any, segments: list[str]) -> DriveItem:
                 raise DriveFolderNotFoundError(f"{'/'.join(current)!r} is a file, not a folder")
             leaf = existing
         else:
+            # `conflictBehavior=replace` is not documented for POST /children (it
+            # applies to copy/upload), so use the default `fail` and treat a lost
+            # race (409) as "already there" by re-reading - keeps mkdir -p idempotent.
             body = DriveItem(name=segment, folder=Folder())
-            body.additional_data = {"@microsoft.graph.conflictBehavior": "replace"}
             if parent:
                 post = RequestInformation(
                     Method.POST, _CHILD_OF_PATH_URL, {"path": _encoded_path(parent)}
@@ -333,7 +342,16 @@ async def _mkdir_p(client: Any, segments: list[str]) -> DriveItem:
             else:
                 post = RequestInformation(Method.POST, _CHILDREN_ROOT_URL, {})
             post.set_content_from_parsable(client.request_adapter, "application/json", body)
-            leaf = await client.request_adapter.send_async(post, DriveItem, _ERROR_MAP)
+            try:
+                leaf = await client.request_adapter.send_async(post, DriveItem, _ERROR_MAP)
+            except ODataError as exc:
+                if _status(exc) != 409:
+                    raise
+                leaf = await _get_item_by_path(client, current)
+                if leaf is None or leaf.folder is None:
+                    raise DriveFolderNotFoundError(
+                        f"{'/'.join(current)!r} is a file, not a folder"
+                    ) from exc
         parent = current
     assert leaf is not None
     return leaf

@@ -9,18 +9,21 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from googleapiclient.errors import HttpError
 
 from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.exit_codes import EXIT_USAGE
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
 from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
 from blumkin.skills.dispatch import run_skill
 from blumkin.skills.drive import (
     DriveFolderNotFoundError,
+    DriveItemNotFoundError,
     DriveSelectorError,
     validate_move_selector,
 )
-from blumkin.skills.errors import ConsentRequiredError
+from blumkin.skills.errors import ConsentRequiredError, classify_exception
 
 _GOOGLE_MOD = "blumkin.providers.google.drive"
 _MS_MOD = "blumkin.providers.microsoft_drive"
@@ -132,10 +135,29 @@ def test_google_mkdir_noop_when_exists(tmp_path: Path) -> None:
     service.files.return_value.create.assert_not_called()
 
 
+_FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
+def _google_get_by_id(rows: dict[str, dict[str, Any]]) -> Any:
+    """`files().get(fileId=...)` -> a request whose .execute() returns rows[fileId]."""
+
+    def _get(*, fileId: str, **_kw: Any) -> Any:  # noqa: N803 - Google API kwarg name
+        req = MagicMock()
+        req.execute.return_value = rows[fileId]
+        return req
+
+    return _get
+
+
 def test_google_move_reparents(tmp_path: Path) -> None:
     service = MagicMock()
     files = service.files.return_value
-    files.get.return_value.execute.return_value = {"id": "f1", "name": "doc", "parents": ["old"]}
+    files.get.side_effect = _google_get_by_id(
+        {
+            "f1": {"id": "f1", "name": "doc", "parents": ["old"]},
+            "dest": {"id": "dest", "mimeType": _FOLDER_MIME},
+        }
+    )
     files.update.return_value.execute.return_value = {
         "id": "f1",
         "name": "doc",
@@ -150,7 +172,39 @@ def test_google_move_reparents(tmp_path: Path) -> None:
         )
     kw = files.update.call_args.kwargs
     assert kw["addParents"] == "dest" and kw["removeParents"] == "old"
+    assert kw["supportsAllDrives"] is True
     assert payload["moved_to"] == "dest" and payload["item"]["parent_id"] == "dest"
+
+
+def test_google_move_to_id_must_be_a_folder(tmp_path: Path) -> None:
+    service = MagicMock()
+    service.files.return_value.get.side_effect = _google_get_by_id(
+        {
+            "f1": {"id": "f1", "parents": ["old"]},
+            "notfolder": {"id": "notfolder", "mimeType": "text/plain"},
+        }
+    )
+    with _google_patched(service), pytest.raises(ValueError) as exc:
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_move(
+                item_id="f1", dest_folder_id="notfolder"
+            )
+        )
+    assert not isinstance(exc.value, LookupError)
+    service.files.return_value.update.assert_not_called()
+
+
+def test_google_move_validates_source_before_creating_parents(tmp_path: Path) -> None:
+    service = MagicMock()
+    resp = SimpleNamespace(status=404, reason="Not Found")
+    service.files.return_value.get.side_effect = HttpError(resp, b"nope")
+    with _google_patched(service), pytest.raises(DriveItemNotFoundError):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_move(
+                item_id="ghost", dest_path="New/Chain", make_parents=True
+            )
+        )
+    service.files.return_value.create.assert_not_called()  # no stray folders
 
 
 def test_google_move_missing_dest_path_is_usage_error(tmp_path: Path) -> None:
@@ -174,20 +228,15 @@ def test_google_move_to_drive_root_is_refused(tmp_path: Path) -> None:
 
 
 def test_move_missing_dest_classifies_as_usage_error(tmp_path: Path) -> None:
-    from blumkin.exit_codes import EXIT_USAGE
-    from blumkin.skills.errors import classify_exception
-
     service = MagicMock()
     service.files.return_value.list.return_value.execute.return_value = {"files": []}
-    with _google_patched(service):
-        try:
-            asyncio.run(
-                GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_move(
-                    item_id="f1", dest_path="Nope"
-                )
+    with _google_patched(service), pytest.raises(ValueError) as exc:
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_move(
+                item_id="f1", dest_path="Nope"
             )
-        except Exception as exc:  # noqa: BLE001
-            assert classify_exception(exc).exit_code == EXIT_USAGE
+        )
+    assert classify_exception(exc.value).exit_code == EXIT_USAGE
 
 
 def test_google_rename(tmp_path: Path) -> None:
@@ -210,38 +259,62 @@ def test_google_rename(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- Microsoft
 
 
-def _ms_client(*, path_items: dict[str, Any] | None = None, patched: Any = None) -> MagicMock:
+def _ms_item(item_id: str, name: str, *, folder: bool) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=item_id,
+        name=name,
+        web_url="u",
+        size=1,
+        file=None if folder else SimpleNamespace(mime_type="text/plain"),
+        folder=SimpleNamespace(child_count=0) if folder else None,
+        last_modified_date_time=None,
+        parent_reference=SimpleNamespace(id="p", path=""),
+        created_by=None,
+        last_modified_by=None,
+    )
+
+
+def _ms_folder(item_id: str, name: str) -> SimpleNamespace:
+    return _ms_item(item_id, name, folder=True)
+
+
+def _ms_file(item_id: str, name: str) -> SimpleNamespace:
+    return _ms_item(item_id, name, folder=False)
+
+
+def _ms_client(
+    *, by_id: dict[str, Any] | None = None, path_items: dict[str, Any] | None = None
+) -> MagicMock:
+    """Routes by URL template: `/items/{id}` -> by_id, `/root:/{+path}` -> path_items,
+    POST -> a canned new folder. `client.patched` records every `_patch_item` call."""
     client = MagicMock()
+    by_id = by_id or {}
     path_items = path_items or {}
     sent: list[Any] = []
 
     async def send_async(ri: Any, _f: Any, _e: Any) -> Any:
         sent.append(ri)
-        if ri.http_method.name == "PATCH":
-            return patched
+        tmpl = ri.url_template
         if ri.http_method.name == "POST":
-            return SimpleNamespace(id="new-folder", name="leaf", web_url="u")
-        # GET by path
-        return path_items.get(ri.path_parameters.get("path"))
+            return SimpleNamespace(id="new-folder", name="leaf", web_url="u", folder=object())
+        if "root:/{+path}" in tmpl:
+            return path_items.get(ri.path_parameters.get("path"))
+        return by_id.get(ri.path_parameters.get("id"))
 
     client.request_adapter.send_async = AsyncMock(side_effect=send_async)
     client.sent = sent
+    client.patched = []
     return client
 
 
 def _ms_run(client: MagicMock, monkeypatch: pytest.MonkeyPatch, method: str, **kw: Any):
+    async def spy_patch(_client: Any, item_id: str, patch: Any) -> Any:
+        client.patched.append((item_id, patch))
+        return _ms_item(item_id, patch.name or "doc", folder=False)
+
     monkeypatch.setattr(f"{_MS_MOD}.create_graph_client", lambda _c: client)
+    monkeypatch.setattr(f"{_MS_MOD}._patch_item", spy_patch)
     return asyncio.run(getattr(MicrosoftWorkspaceProvider(_ms_cfg()), method)(**kw))
-
-
-def _ms_folder(item_id: str, name: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=item_id, name=name, web_url="u", folder=SimpleNamespace(child_count=0)
-    )
-
-
-def _ms_file(item_id: str, name: str) -> SimpleNamespace:
-    return SimpleNamespace(id=item_id, name=name, web_url="u", folder=None)
 
 
 def test_ms_mkdir_creates_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -264,64 +337,70 @@ def test_ms_mkdir_refuses_a_file_in_the_slot(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_ms_move_to_a_file_path_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _ms_client(path_items={"Reports": _ms_file("f", "Reports")})
+    client = _ms_client(
+        by_id={"x": _ms_file("x", "src")}, path_items={"Reports": _ms_file("f", "R")}
+    )
     with pytest.raises(ValueError) as exc:
         _ms_run(client, monkeypatch, "drive_move", item_id="x", dest_path="Reports")
     assert not isinstance(exc.value, LookupError)
 
 
 def test_ms_move_patches_parent_reference(monkeypatch: pytest.MonkeyPatch) -> None:
-    patched = SimpleNamespace(
-        id="f1",
-        name="doc",
-        file=SimpleNamespace(mime_type="text/plain"),
-        folder=None,
-        size=1,
-        last_modified_date_time=None,
-        web_url="u",
-        parent_reference=SimpleNamespace(id="dest", path=""),
-        created_by=None,
-        last_modified_by=None,
-    )
-    client = _ms_client(patched=patched)
+    client = _ms_client(by_id={"f1": _ms_file("f1", "doc")})
     payload = _ms_run(client, monkeypatch, "drive_move", item_id="f1", dest_folder_id="dest")
-    patch_ri = next(ri for ri in client.sent if ri.http_method.name == "PATCH")
-    assert patch_ri.path_parameters["id"] == "f1"
+    (item_id, patch) = client.patched[0]
+    assert item_id == "f1"
+    assert patch.parent_reference is not None and patch.parent_reference.id == "dest"
     assert payload["moved_to"] == "dest"
 
 
+def test_ms_move_validates_source_before_creating_parents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Bad --id + --make-parents must not create the destination chain.
+    client = _ms_client(by_id={}, path_items={})
+    with pytest.raises(DriveItemNotFoundError):
+        _ms_run(
+            client,
+            monkeypatch,
+            "drive_move",
+            item_id="ghost",
+            dest_path="New/Chain",
+            make_parents=True,
+        )
+    assert not [ri for ri in client.sent if ri.http_method.name == "POST"]
+
+
 def test_ms_move_missing_dest_is_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _ms_client(path_items={})
+    client = _ms_client(by_id={"f1": _ms_file("f1", "src")}, path_items={})
     with pytest.raises(ValueError) as exc:
         _ms_run(client, monkeypatch, "drive_move", item_id="f1", dest_path="Nope")
     assert not isinstance(exc.value, LookupError)  # usage_error (2), not not_found (5)
 
 
 def test_ms_rename(monkeypatch: pytest.MonkeyPatch) -> None:
-    patched = SimpleNamespace(
-        id="f1",
-        name="renamed",
-        file=SimpleNamespace(mime_type="text/plain"),
-        folder=None,
-        size=1,
-        last_modified_date_time=None,
-        web_url="u",
-        parent_reference=None,
-        created_by=None,
-        last_modified_by=None,
-    )
-    payload = _ms_run(
-        _ms_client(patched=patched), monkeypatch, "drive_rename", item_id="f1", name="renamed"
-    )
+    client = _ms_client()
+    payload = _ms_run(client, monkeypatch, "drive_rename", item_id="f1", name="renamed")
+    (item_id, patch) = client.patched[0]
+    assert item_id == "f1" and patch.name == "renamed" and patch.parent_reference is None
     assert payload["item"]["name"] == "renamed"
 
 
 # --------------------------------------------------------------------------- dispatch / consent
 
 
-def test_write_verbs_require_yes() -> None:
+@pytest.mark.parametrize(
+    ("skill", "args"),
+    [
+        ("drive.mkdir", {"path": "A"}),
+        ("drive.move", {"id": "x", "to": "A/B"}),
+        ("drive.rename", {"id": "x", "name": "y"}),
+    ],
+)
+def test_write_verbs_require_yes(skill: str, args: dict[str, Any]) -> None:
+    # The gate is spec-driven (per-SkillSpec `--yes required`), so assert all three.
     with pytest.raises(ConsentRequiredError):
-        asyncio.run(run_skill("drive.rename", {"id": "x", "name": "y"}, config=_ms_cfg()))
+        asyncio.run(run_skill(skill, args, config=_ms_cfg()))
 
 
 def test_move_to_xor_to_id_is_usage_error() -> None:
