@@ -295,9 +295,9 @@ off" as a single condition:
 - `wo1162425_scopes` off — chat write, meeting commands, and `people resolve`
   exit **2** with `usage_error`. (`calendar create` Teams meetings use
   Calendars.ReadWrite only and do not require this flag.)
-- `docs_scopes` off (Microsoft only) — `docs create` **and every `drive *`
-  verb** exit **2** with `usage_error`; they need `Files.ReadWrite` (there is no
-  separate drive toggle). On a Google profile these need no opt-in, but the
+- `docs_scopes` off (Microsoft only) — `docs create`, `docs update`, **and
+  every `drive *` verb** exit **2** with `usage_error`; they need
+  `Files.ReadWrite` (there is no separate drive toggle). On a Google profile these need no opt-in, but the
   first call after upgrading prompts a one-time re-consent for the `drive`
   scope (`blumkin auth login`).
 - `drive read` is **Google only** — on `provider = "microsoft"` it exits **2**

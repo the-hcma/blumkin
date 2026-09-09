@@ -30,7 +30,7 @@ SKILL_METHOD_OVERRIDES: dict[str, str] = {
 # Skills that need the Microsoft `docs_scopes` opt-in (Files.ReadWrite). Google
 # needs no toggle - it has its own `documents` + `drive.file` grant. The gate is
 # applied in the dispatch layer only when the active provider is Microsoft.
-DOCS_SKILLS: frozenset[str] = frozenset({"docs.create"})
+DOCS_SKILLS: frozenset[str] = frozenset({"docs.create", "docs.update"})
 
 # Skills gated on `wo1162425_scopes` (Microsoft add-on grant). `mail.auto-reply` is
 # gated only when it is actually changing a setting - handled in the dispatch layer.
@@ -111,8 +111,10 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("calendar.create", "--until"): None,
     ("calendar.create", "--count"): None,
     ("calendar.create", "--days"): None,
-    # docs create: --format selects the body parser (markdown | text).
+    # docs create / update: --format selects the body parser (markdown | text).
     ("docs.create", "--format"): "body_format",
+    ("docs.update", "--format"): "body_format",
+    ("docs.update", "--id"): "document_id",
     # drive: --id is an item id (--folder-id / --folder / --query / --order / --top
     # / --out / --to map by the default transform).
     ("drive.download", "--id"): "item_id",
@@ -770,6 +772,53 @@ SKILLS: list[SkillSpec] = [
                 "type": "string",
                 "note": "destination folder path (existing or created, e.g. "
                 "'Language Classes/Portuguese Classes'); drive root if omitted",
+            },
+        ],
+    ),
+    SkillSpec(
+        id="docs.update",
+        cli=["blumkin", "docs", "update"],
+        summary=(
+            "Re-render an existing blumkin-created document in place - rename it, "
+            "replace its whole body, or both - keeping its id, URL, and sharing. A "
+            "body update overwrites any manual edits made in the document. Does not "
+            "notify anyone."
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=["Files.ReadWrite"],
+        args=[
+            {
+                "name": "--id",
+                "required": True,
+                "type": "string",
+                "note": "a document this blumkin install created (tracked locally); "
+                "any other id is not_found (exit 5)",
+            },
+            {
+                "name": "--title",
+                "required": False,
+                "type": "string",
+                "note": "rename the file; unchanged if omitted",
+            },
+            {
+                "name": "--body",
+                "required": False,
+                "type": "string",
+                "note": "at most one of --body or --body-file; replaces the entire body",
+            },
+            {
+                "name": "--body-file",
+                "required": False,
+                "type": "path",
+                "note": "at most one of --body or --body-file; UTF-8, under 1 MB",
+            },
+            {
+                "name": "--format",
+                "required": False,
+                "type": "enum",
+                "values": ["markdown", "text"],
+                "note": "how --body is parsed; default markdown",
             },
         ],
     ),

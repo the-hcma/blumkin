@@ -28,8 +28,19 @@ from msgraph.generated.models.folder import Folder
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.config import BlumkinConfig, load_config
+from blumkin.created_docs import is_blumkin_created_doc, record_created_doc
 from blumkin.graph import create_graph_client
-from blumkin.skills.docs import DocBlock, DocSpan, parse_body, read_body, table_to_text
+from blumkin.skills.docs import (
+    DocBlock,
+    DocSpan,
+    parse_body,
+    read_body,
+    read_update_body,
+    require_docs_update_target,
+    strip_docx_suffix,
+    table_to_text,
+)
+from blumkin.skills.drive import DriveItemNotFoundError
 
 
 async def docs_create(
@@ -47,7 +58,7 @@ async def docs_create(
     cfg = config or load_config()
     blocks = parse_body(read_body(body, body_file), body_format=body_format)
 
-    name = f"{_safe_segment(title, fallback='document')}.docx"
+    name = _docx_name(title)
     folder_name = _safe_folder(folder)
     item_path = f"{folder_name}/{name}" if folder_name else name
 
@@ -62,6 +73,7 @@ async def docs_create(
     if item is None:
         raise RuntimeError("Graph returned no DriveItem for the uploaded document")
 
+    record_created_doc(cfg, item.id or "")
     return {
         "document": {
             "id": item.id,
@@ -74,12 +86,77 @@ async def docs_create(
     }
 
 
+async def docs_update(
+    *,
+    document_id: str,
+    title: str | None = None,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_format: str = "markdown",
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Re-render a .docx blumkin uploaded: rename the DriveItem, replace its bytes, or both.
+
+    Graph has no partial Word update, so a body change rebuilds the whole ``.docx``
+    from the new content (``python-docx``, same as ``docs create``) and
+    ``PUT``s it to the same DriveItem - id, URL, and permissions are unchanged.
+
+    Refuses an id this blumkin install did not upload: ``Files.ReadWrite`` covers
+    the whole drive, so without the local ``docs create`` record ``--id`` alone
+    could point at (and overwrite the bytes of) any file the account owns. A
+    document created on another machine is not updatable here - open it in the
+    browser.
+    """
+    doc_id = document_id.strip()
+    if not doc_id:
+        raise ValueError("--id is required")
+    new_title = require_docs_update_target(title=title, body=body, body_file=body_file)
+    raw_body = read_update_body(body, body_file)
+    blocks = parse_body(raw_body, body_format=body_format) if raw_body is not None else None
+
+    cfg = config or load_config()
+    if not is_blumkin_created_doc(cfg, doc_id):
+        raise DriveItemNotFoundError(
+            f"no document with id {doc_id!r} was created by this blumkin - `docs update` "
+            "only touches documents this install uploaded (open others in the browser)"
+        )
+    client = create_graph_client(cfg)
+    item = await _get_item_by_id(client, doc_id)
+    # Defence in depth against a stale / hand-edited record: only ever rewrite a
+    # .docx (what `docs create` uploads), never some other file at that id.
+    if blocks is not None and not (item.name or "").lower().endswith(".docx"):
+        raise DriveItemNotFoundError(
+            f"item {doc_id!r} is not a .docx uploaded by `docs create` ({item.name!r})"
+        )
+
+    if blocks is not None:
+        put_info = RequestInformation(Method.PUT, _CONTENT_BY_ID_URL, {"id": doc_id})
+        put_info.set_stream_content(_render_docx(blocks), _DOCX_MIME)
+        item = await client.request_adapter.send_async(put_info, DriveItem, _ERROR_MAP) or item
+
+    if new_title is not None:
+        item = await _rename_item(client, doc_id, _docx_name(new_title)) or item
+
+    return {
+        "document": {
+            "id": doc_id,
+            "name": item.name,
+            "web_url": item.web_url,
+            "provider": "microsoft",
+            "format": "docx",
+            "folder": None,
+        }
+    }
+
+
 _CHILDREN_ROOT_URL = "https://graph.microsoft.com/v1.0/me/drive/root/children"
 _CHILDREN_URL = "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}:/children"
 _CODE_FONT = "Consolas"
+_CONTENT_BY_ID_URL = "https://graph.microsoft.com/v1.0/me/drive/items/{id}/content"
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _ERROR_MAP: dict[str, type[ParsableFactory]] = {"4XX": ODataError, "5XX": ODataError}
 _HYPERLINK_COLOR = "0563C1"
+_ITEM_BY_ID_URL = "https://graph.microsoft.com/v1.0/me/drive/items/{id}"
 _ITEM_URL = "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}"
 # Bullet lists keep the built-in Word style (no shared counter to fight); numbered
 # lists render their marker as literal text - see `_render_block`.
@@ -140,6 +217,11 @@ def _add_runs(paragraph: Paragraph, spans: tuple[DocSpan, ...]) -> None:
             run.font.name = _CODE_FONT
 
 
+def _docx_name(title: str) -> str:
+    """OneDrive-safe ``<title>.docx``, without doubling an extension the title carries."""
+    return f"{_safe_segment(strip_docx_suffix(title), fallback='document')}.docx"
+
+
 async def _ensure_folder(client: Any, folder_path: str) -> None:
     """Create each segment of ``folder_path`` under the drive root if it is missing."""
     parent = ""
@@ -169,6 +251,22 @@ async def _ensure_folder(client: Any, folder_path: str) -> None:
             )
             await client.request_adapter.send_async(post_info, DriveItem, _ERROR_MAP)
         parent = current
+
+
+async def _get_item_by_id(client: Any, item_id: str) -> DriveItem:
+    """``GET /me/drive/items/{id}`` - a 404 becomes ``DriveItemNotFoundError`` (exit 5)."""
+    get_info = RequestInformation(Method.GET, _ITEM_BY_ID_URL, {"id": item_id})
+    try:
+        item = await client.request_adapter.send_async(get_info, DriveItem, _ERROR_MAP)
+    except ODataError as exc:
+        if _status_code(exc) == 404:
+            raise DriveItemNotFoundError(
+                f"no document with id {item_id!r} (blumkin can only update docs it created)"
+            ) from exc
+        raise
+    if item is None:
+        raise DriveItemNotFoundError(f"no document with id {item_id!r}")
+    return item
 
 
 def _render_block(document: DocxDocument, block: DocBlock, *, ordinal: int) -> None:
@@ -220,6 +318,15 @@ def _render_docx(blocks: list[DocBlock]) -> bytes:
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+
+
+async def _rename_item(client: Any, item_id: str, name: str) -> DriveItem | None:
+    """``PATCH /me/drive/items/{id}`` with a new ``name`` (already ``.docx``-suffixed)."""
+    patch = DriveItem()
+    patch.name = name
+    patch_info = RequestInformation(Method.PATCH, _ITEM_BY_ID_URL, {"id": item_id})
+    patch_info.set_content_from_parsable(client.request_adapter, "application/json", patch)
+    return await client.request_adapter.send_async(patch_info, DriveItem, _ERROR_MAP)
 
 
 def _safe_folder(folder: str | None) -> str | None:

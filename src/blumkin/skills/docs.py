@@ -64,6 +64,15 @@ def format_docs_create_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def format_docs_update_human(payload: dict[str, Any]) -> list[str]:
+    document = payload.get("document") or {}
+    return [
+        f"Document updated: {document.get('name')!r} ({document.get('format')})",
+        f"  id={document.get('id')}",
+        f"  {document.get('web_url')}",
+    ]
+
+
 def parse_body(
     body: str, *, body_format: str = "markdown", hard_breaks: bool = False
 ) -> list[DocBlock]:
@@ -229,6 +238,20 @@ def read_body(body: str | None, body_file: str | None) -> str:
     return text
 
 
+def read_update_body(body: str | None, body_file: str | None) -> str | None:
+    """Resolve an optional new body for ``docs update``.
+
+    ``None`` when neither ``--body`` nor ``--body-file`` was given; otherwise the
+    resolved text (exactly one source, same size / encoding limits as
+    :func:`read_body`).
+    """
+    if body is not None and body_file is not None:
+        raise DocBodyError("pass --body or --body-file, not both")
+    if body is None and body_file is None:
+        return None
+    return read_body(body, body_file)
+
+
 def render_email_html(blocks: list[DocBlock]) -> str:
     """Render parsed blocks as a self-contained HTML fragment for an email body.
 
@@ -285,12 +308,39 @@ def render_email_html(blocks: list[DocBlock]) -> str:
     return "".join(out)
 
 
+def require_docs_update_target(
+    *, title: str | None, body: str | None, body_file: str | None
+) -> str | None:
+    """Validate that ``docs update`` was handed something to change.
+
+    Returns the new title (stripped) or ``None`` to leave the name alone. A blank
+    ``--title`` is a usage error - a document cannot be renamed to nothing.
+    """
+    new_title = title.strip() if title is not None else None
+    if title is not None and not new_title:
+        raise DocBodyError("--title must not be blank")
+    if new_title is None and body is None and body_file is None:
+        raise DocBodyError("docs update needs at least one of --title, --body, or --body-file")
+    return new_title
+
+
 def spans_to_html(spans: tuple[DocSpan, ...]) -> str:
     return "".join(_span_to_html(span) for span in spans)
 
 
 def spans_to_text(spans: tuple[DocSpan, ...]) -> str:
     return "".join(span.text for span in spans)
+
+
+def strip_docx_suffix(name: str) -> str:
+    """Drop one trailing ``.docx`` from a title.
+
+    ``--title`` is documented as the file name, so a user retitling a
+    blumkin-created ``.docx`` naturally passes the visible ``Foo.docx``; without
+    this the Microsoft backend would then re-append and store ``Foo.docx.docx``.
+    """
+    trimmed = name[:-5] if name.lower().endswith(".docx") else name
+    return trimmed or name
 
 
 def table_to_text(rows: tuple[tuple[tuple[DocSpan, ...], ...], ...]) -> str:

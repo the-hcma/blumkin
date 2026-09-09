@@ -60,7 +60,7 @@ from blumkin.skills.chat import (
     format_send_human,
 )
 from blumkin.skills.dispatch import run_skill
-from blumkin.skills.docs import format_docs_create_human
+from blumkin.skills.docs import format_docs_create_human, format_docs_update_human
 from blumkin.skills.drive import (
     format_drive_download_human,
     format_drive_export_human,
@@ -3339,6 +3339,62 @@ def docs_create_cmd(
             "folder": folder,
         },
         human=format_docs_create_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@docs.command("update", epilog=help_text.DOCS_UPDATE_EPILOG)
+@click.option("--id", "document_id", required=True, help="Id of a document blumkin created.")
+@click.option("--title", default=None, help="New file name (leave off to keep the current one).")
+@click.option(
+    "--body",
+    default=None,
+    help="New content; replaces the whole body (mutually exclusive with --body-file).",
+)
+@click.option(
+    "--body-file",
+    "body_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    help="Read the new content from a UTF-8 file (under 1 MB).",
+)
+@click.option(
+    "--format",
+    "body_format",
+    default="markdown",
+    show_default=True,
+    type=click.Choice(["markdown", "text"], case_sensitive=False),
+    help="How --body is parsed.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def docs_update_cmd(
+    ctx: click.Context,
+    document_id: str,
+    title: str | None,
+    body: str | None,
+    body_file: str | None,
+    body_format: str,
+    as_json_flag: bool,
+) -> None:
+    """Re-render an existing blumkin-created document in place.
+
+    Pass at least one of `--title`, `--body`, or `--body-file`. `--body` replaces
+    the entire body - any manual edits made in the document since it was created
+    are overwritten. Keeps the id, URL, and sharing. Does not notify anyone, so no
+    `--yes`. Use ASCII hyphens in the body, not em dashes.
+    """
+    _dispatch(
+        ctx,
+        "docs.update",
+        {
+            "id": document_id,
+            "title": title,
+            "body": body,
+            "body_file": body_file,
+            "format": body_format,
+        },
+        human=format_docs_update_human,
         as_json_flag=as_json_flag,
     )
 

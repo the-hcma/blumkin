@@ -15,9 +15,13 @@ from kiota_abstractions.method import Method
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.created_docs import is_blumkin_created_doc, record_created_doc
+from blumkin.providers import microsoft_docs as _md
 from blumkin.providers.kind import ProviderKind
 from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
 from blumkin.skills.dispatch import run_skill
+from blumkin.skills.docs import DocBodyError
+from blumkin.skills.drive import DriveItemNotFoundError
 from blumkin.skills.errors import ScopeAddonDisabledError
 
 _MOD = "blumkin.providers.microsoft_docs"
@@ -26,12 +30,25 @@ _UPLOADED = SimpleNamespace(
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_created_docs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the `docs create` ownership record out of the repo (default cfg dir is fake)."""
+    monkeypatch.setattr(
+        BlumkinConfig,
+        "created_docs_path",
+        property(lambda _self: tmp_path / "created_docs.json"),
+    )
+
+
 def _cfg(
-    *, provider: ProviderKind = ProviderKind.MICROSOFT, docs_scopes: bool = True
+    *,
+    provider: ProviderKind = ProviderKind.MICROSOFT,
+    docs_scopes: bool = True,
+    config_dir: Path = Path("unused"),
 ) -> BlumkinConfig:
     return BlumkinConfig(
         client_id="abc",
-        config_dir=Path("unused"),
+        config_dir=config_dir,
         default_tz="UTC",
         docs_scopes=docs_scopes,
         email="",
@@ -228,3 +245,171 @@ def test_docs_create_uploads_a_real_docx(monkeypatch: pytest.MonkeyPatch) -> Non
     document = Document(io.BytesIO(bytes(upload.content)))
     assert document.paragraphs[0].text == "Brief"
     assert _style_names(document)[0] == "Heading 1"
+
+
+# --------------------------------------------------------------------------- docs update
+
+
+def _update_client(*, missing: bool = False, patch_name: str = "Renamed.docx") -> MagicMock:
+    client = MagicMock()
+    calls: list[Any] = []
+
+    async def send_async(request_info: Any, _factory: Any, _error_map: Any) -> Any:
+        calls.append(request_info)
+        if request_info.http_method == Method.GET:
+            if missing:
+                err = ODataError()
+                err.response_status_code = 404
+                raise err
+            return SimpleNamespace(id="01ABC", name="Brief.docx", web_url="https://od/Brief.docx")
+        if request_info.http_method == Method.PATCH:
+            return SimpleNamespace(id="01ABC", name=patch_name, web_url="https://od/renamed")
+        return SimpleNamespace(id="01ABC", name="Brief.docx", web_url="https://od/Brief.docx")
+
+    client.request_adapter.send_async = AsyncMock(side_effect=send_async)
+    client.calls = calls
+    return client
+
+
+def _cfg_with_doc(doc_id: str = "01ABC") -> BlumkinConfig:
+    cfg = _cfg()
+    record_created_doc(cfg, doc_id)
+    return cfg
+
+
+def _run_update(
+    client: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    rename_spy: list[tuple[str, str]] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    monkeypatch.setattr(f"{_MOD}.create_graph_client", lambda _cfg: client)
+    if rename_spy is not None:
+        real = _md._rename_item
+
+        async def spy(c: Any, item_id: str, name: str) -> Any:
+            rename_spy.append((item_id, name))
+            return await real(c, item_id, name)
+
+        monkeypatch.setattr(_md, "_rename_item", spy)
+    return asyncio.run(MicrosoftWorkspaceProvider(_cfg_with_doc()).docs_update(**kwargs))
+
+
+def test_docs_update_replaces_bytes_via_put_content(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _update_client()
+    payload = _run_update(client, monkeypatch, document_id="01ABC", body="# New\n\nbody")
+    methods = [c.http_method for c in client.calls]
+    assert methods == [Method.GET, Method.PUT]
+    (put,) = [c for c in client.calls if c.http_method == Method.PUT]
+    assert put.url_template.endswith("/items/{id}/content")
+    assert put.path_parameters["id"] == "01ABC"
+    assert Document(io.BytesIO(bytes(put.content))).paragraphs[0].text == "New"
+    assert payload["document"] == {
+        "id": "01ABC",
+        "name": "Brief.docx",
+        "web_url": "https://od/Brief.docx",
+        "provider": "microsoft",
+        "format": "docx",
+        "folder": None,
+    }
+
+
+def test_docs_update_renames_via_patch_with_a_sanitized_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _update_client(patch_name="Q3 plan.docx")
+    spy: list[tuple[str, str]] = []
+    payload = _run_update(
+        client, monkeypatch, rename_spy=spy, document_id="01ABC", title="Q3: plan?"
+    )
+    assert [c.http_method for c in client.calls] == [Method.GET, Method.PATCH]
+    # The real production name string, not the mock's canned return value.
+    assert spy == [("01ABC", "Q3 plan.docx")]
+    assert payload["document"]["name"] == "Q3 plan.docx"
+
+
+def test_docs_update_title_and_body_together(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _update_client()
+    _run_update(client, monkeypatch, document_id="01ABC", title="Q3", body="hi")
+    assert [c.http_method for c in client.calls] == [Method.GET, Method.PUT, Method.PATCH]
+
+
+def test_docs_update_does_not_double_a_docx_suffix_in_the_title(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    spy: list[tuple[str, str]] = []
+    _run_update(_update_client(), monkeypatch, rename_spy=spy, document_id="01ABC", title="Q3.docx")
+    assert spy == [("01ABC", "Q3.docx")]  # not "Q3.docx.docx"
+
+
+def test_docs_update_reads_a_body_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    src = tmp_path / "body.md"
+    src.write_text("# From a file\n\nfile body text", encoding="utf-8")
+    client = _update_client()
+    _run_update(client, monkeypatch, document_id="01ABC", body_file=str(src))
+    (put,) = [c for c in client.calls if c.http_method == Method.PUT]
+    texts = [p.text for p in Document(io.BytesIO(bytes(put.content))).paragraphs]
+    assert "From a file" in texts and "file body text" in texts
+
+
+def test_docs_update_needs_a_change(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    with pytest.raises(DocBodyError, match="at least one of"):
+        _run_update(_update_client(), monkeypatch, document_id="01ABC")
+
+
+def test_docs_update_id_deleted_since_creation_is_not_found(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with pytest.raises(DriveItemNotFoundError):
+        _run_update(_update_client(missing=True), monkeypatch, document_id="01ABC", body="hi")
+
+
+def test_docs_update_refuses_a_doc_this_install_did_not_create(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _update_client()
+    monkeypatch.setattr(f"{_MOD}.create_graph_client", lambda _cfg: client)
+    with pytest.raises(DriveItemNotFoundError, match="created by this blumkin"):
+        asyncio.run(
+            MicrosoftWorkspaceProvider(_cfg()).docs_update(document_id="0xFOREIGN", body="clobber")
+        )
+    assert client.calls == []  # bailed before any Graph call - nothing overwritten
+
+
+def test_docs_update_refuses_to_rewrite_a_non_docx_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Even a recorded id must resolve to a .docx before its bytes are replaced."""
+    client = _update_client()
+
+    async def send_async(request_info: Any, _f: Any, _e: Any) -> Any:
+        client.calls.append(request_info)
+        if request_info.http_method == Method.GET:
+            return SimpleNamespace(id="01ABC", name="notes.txt", web_url="https://od/notes.txt")
+        raise AssertionError("must not write to a non-docx item")
+
+    client.request_adapter.send_async = AsyncMock(side_effect=send_async)
+    with pytest.raises(DriveItemNotFoundError, match="not a .docx"):
+        _run_update(client, monkeypatch, document_id="01ABC", body="clobber")
+
+
+def test_docs_create_records_the_new_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = _client()
+    monkeypatch.setattr(f"{_MOD}.create_graph_client", lambda _cfg: client)
+    asyncio.run(MicrosoftWorkspaceProvider(_cfg()).docs_create(title="T", body="x"))
+    assert is_blumkin_created_doc(_cfg(), "01ABC")
+
+
+def test_docs_update_on_microsoft_needs_the_docs_scopes_toggle() -> None:
+    with pytest.raises(ScopeAddonDisabledError, match="Files.ReadWrite"):
+        asyncio.run(
+            run_skill(
+                "docs.update",
+                {"id": "01ABC", "body": "x"},
+                config=_cfg(docs_scopes=False),
+                provider=MicrosoftWorkspaceProvider(_cfg(docs_scopes=False)),
+            )
+        )

@@ -206,6 +206,16 @@ class WorkspaceProvider(Protocol):
         folder: str | None = None,
     ) -> dict[str, Any]: ...
 
+    async def docs_update(
+        self,
+        *,
+        document_id: str,
+        title: str | None = None,
+        body: str | None = None,
+        body_file: str | None = None,
+        body_format: str = "markdown",
+    ) -> dict[str, Any]: ...
+
     async def drive_download(self, *, item_id: str, out: str) -> dict[str, Any]: ...
 
     async def drive_export(self, *, item_id: str, to: str) -> dict[str, Any]: ...

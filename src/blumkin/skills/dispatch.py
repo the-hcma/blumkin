@@ -34,8 +34,8 @@ from blumkin.skills.errors import ConsentRequiredError, ScopeAddonDisabledError
 _CONSENT_KEYS = ("yes", "confirm")
 
 _DOCS_SCOPES_MESSAGE = (
-    "docs create needs the Files.ReadWrite Graph scope, which is off. It uploads "
-    "a .docx to your OneDrive."
+    "docs create / docs update need the Files.ReadWrite Graph scope, which is off. "
+    "They read and write a .docx in your OneDrive."
 )
 _DOCS_SCOPES_HINT = (
     "Set docs_scopes = true in config.toml (once the tenant has granted "
@@ -209,8 +209,8 @@ def _consent_mode(skill_id: str, spec_args: list[dict[str, Any]]) -> str:
 def _run_gates(
     skill_id: str, spec_args: list[dict[str, Any]], arguments: dict[str, Any], config: BlumkinConfig
 ) -> None:
-    # docs create needs Files.ReadWrite on Microsoft (docs_scopes opt-in); Google
-    # carries its own grant and needs no toggle.
+    # docs create / update need Files.ReadWrite on Microsoft (docs_scopes opt-in);
+    # Google carries its own grant and needs no toggle.
     if (
         skill_id in DOCS_SKILLS
         and config.provider is ProviderKind.MICROSOFT
