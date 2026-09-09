@@ -227,7 +227,9 @@ async def drive_move(
                     f"no folder at {dest_p!r} - create the destination first when moving a folder"
                 )
             folder = await _mkdir_p(client, segments)
-        target = folder.id or ""
+        if not folder.id:
+            raise DriveFolderNotFoundError(f"no folder id resolved for {dest_p!r}")
+        target = folder.id
     if source_is_folder and target == item_id:
         raise ValueError("a folder cannot be moved into itself")
     patch = DriveItem(parent_reference=ItemReference(id=target))
