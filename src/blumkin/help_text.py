@@ -509,8 +509,13 @@ Read and organize your drive:
 \b
   blumkin drive list --folder "Language Classes/Portuguese Classes" --json
   blumkin drive get --id 1a2b3c... --json
+  blumkin drive read --id 1a2b3c... --json
+  blumkin drive export --id 1a2b3c... --to ./doc.pdf
 
-Provider-neutral verbs; help text names OneDrive on the Microsoft side. Reads
+A Google Doc reads back as Markdown; other files export to PDF (and more, on
+Google).
+
+Provider-neutral verbs; help text names OneDrive on the Microsoft side. These
 need `docs_scopes = true` on `provider = "microsoft"` (Files.ReadWrite - the same
 grant `docs create` uses; there is no separate drive toggle). On
 `provider = "google"` re-run `blumkin auth login` once to consent to `drive`.
@@ -541,8 +546,43 @@ Examples:
   blumkin drive get --id 1a2b3c... --json
 
 Full metadata for one item: owners, parents, timestamps, `web_url`, and the
-export formats available (`drive export`, coming next). Ids come from
-`blumkin drive list`.
+export formats available (`drive export`). Ids come from `blumkin drive list`.
+"""
+
+DRIVE_DOWNLOAD_EPILOG = """
+Examples:
+
+\b
+  blumkin drive download --id 1a2b3c... --out ./report.xlsx
+  blumkin drive download --id 1a2b3c... --out ./drive-files/
+
+`--out` is a file (refuses to overwrite) or a directory (keeps the drive name).
+Google-native docs (Docs / Sheets / Slides) have no raw bytes - exit 2 with a
+pointer to `drive export`. `--out` is a path on the host running the skill.
+"""
+
+DRIVE_EXPORT_EPILOG = """
+Examples:
+
+\b
+  blumkin drive export --id 1a2b3c... --to ./vocab.pdf
+  blumkin drive export --id 1a2b3c... --to ./vocab.txt --json
+
+The `--to` extension selects the format. Google exports Docs / Sheets / Slides to
+pdf / txt / html / csv / docx / xlsx / pptx; Microsoft (OneDrive) honours `pdf`
+only - any other extension is exit 2. `--to` is a path on the host running the
+skill and must not already exist.
+"""
+
+DRIVE_READ_EPILOG = """
+Examples:
+
+\b
+  blumkin drive read --id 1a2b3c... --json
+
+Flattens a Google Doc to the `docs create` Markdown subset (headings, bold /
+italic / code / links, bullet and numbered lists). `provider = "google"` only -
+on Microsoft this is exit 2 (`usage_error`); use `drive export --to out.pdf`.
 """
 
 MAIL_ATTACHMENTS_DOWNLOAD_EPILOG = """

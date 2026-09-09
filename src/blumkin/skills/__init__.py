@@ -114,8 +114,11 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     # docs create: --format selects the body parser (markdown | text).
     ("docs.create", "--format"): "body_format",
     # drive: --id is an item id (--folder-id / --folder / --query / --order / --top
-    # map by the default transform).
+    # / --out / --to map by the default transform).
+    ("drive.download", "--id"): "item_id",
+    ("drive.export", "--id"): "item_id",
     ("drive.get", "--id"): "item_id",
+    ("drive.read", "--id"): "item_id",
     # mail: --from is a sender substring, not a range bound.
     ("mail.inbox", "--from"): "sender",
     ("mail.list", "--from"): "sender",
@@ -775,6 +778,43 @@ SKILLS: list[SkillSpec] = [
         args=[],
     ),
     SkillSpec(
+        id="drive.download",
+        cli=["blumkin", "drive", "download"],
+        summary=(
+            "Download a drive file's raw bytes to --out (a file or a directory). "
+            "Google-native docs are refused - use `drive export`. --out is a path "
+            "on the host running the skill."
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Files.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string"},
+            {"name": "--out", "required": True, "type": "path", "note": "file or directory"},
+        ],
+    ),
+    SkillSpec(
+        id="drive.export",
+        cli=["blumkin", "drive", "export"],
+        summary=(
+            "Export a native doc to --to, MIME chosen from the extension "
+            "(pdf/txt/html/csv/docx/xlsx/pptx on Google; pdf only on Microsoft). "
+            "--to is a file path on the host running the skill."
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Files.ReadWrite"],
+        args=[
+            {"name": "--id", "required": True, "type": "string"},
+            {
+                "name": "--to",
+                "required": True,
+                "type": "path",
+                "note": "target file; extension selects the format",
+            },
+        ],
+    ),
+    SkillSpec(
         id="drive.get",
         cli=["blumkin", "drive", "get"],
         summary=(
@@ -830,6 +870,19 @@ SKILLS: list[SkillSpec] = [
                 "note": "max items; default 50, 0 = no cap (follows every page)",
             },
         ],
+    ),
+    SkillSpec(
+        id="drive.read",
+        cli=["blumkin", "drive", "read"],
+        summary=(
+            "Read a Google Doc as flattened Markdown text (the inverse of docs "
+            "create). Google only - fails closed on Microsoft (Graph has no Word "
+            "content API)."
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Files.ReadWrite"],
+        args=[{"name": "--id", "required": True, "type": "string"}],
     ),
     SkillSpec(
         id="mail.attachments",

@@ -206,6 +206,10 @@ class WorkspaceProvider(Protocol):
         folder: str | None = None,
     ) -> dict[str, Any]: ...
 
+    async def drive_download(self, *, item_id: str, out: str) -> dict[str, Any]: ...
+
+    async def drive_export(self, *, item_id: str, to: str) -> dict[str, Any]: ...
+
     async def drive_get(self, *, item_id: str) -> dict[str, Any]: ...
 
     async def drive_list(
@@ -217,6 +221,8 @@ class WorkspaceProvider(Protocol):
         order: str = "modified",
         top: int = 50,
     ) -> dict[str, Any]: ...
+
+    async def drive_read(self, *, item_id: str) -> dict[str, Any]: ...
 
     async def mail_attachments_download(
         self,

@@ -1,9 +1,11 @@
-"""Google Drive `drive` skills: list / get (read side, issue #208).
+"""Google Drive `drive` skills: list / get / download / export / read (issue #208).
 
 One ``drive`` v3 discovery client, built on the shared timed + retrying transport.
 Google has no real paths - a ``--folder`` path is resolved by walking from
 ``root`` and matching folder names one segment at a time; an ambiguous segment
-raises rather than guessing.
+raises rather than guessing. Every verb gates on the item's Drive ``mimeType``
+before hitting a type-specific API, so a listable-but-wrong-kind id is a clean
+``usage_error``, not a raw Docs / media 400.
 """
 
 from __future__ import annotations
@@ -12,14 +14,22 @@ from typing import Any
 
 from googleapiclient.errors import HttpError
 
+from blumkin.attachments import resolve_single_download_dest
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google_auth import DRIVE_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.drive import (
+    GOOGLE_NATIVE_MIMES,
+    DriveDownloadError,
+    DriveExportError,
     DriveFolderAmbiguousError,
     DriveFolderNotFoundError,
     DriveItemNotFoundError,
+    DriveReadUnsupportedError,
+    export_mime,
+    flatten_google_doc,
     normalize_order,
+    resolve_export_dest,
     split_path,
     validate_folder_selector,
 )
@@ -39,6 +49,106 @@ _LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLi
 _ORDER_BY = {"modified": "modifiedTime desc", "name": "name_natural"}
 # files.list caps pageSize at 1000; keep headroom under --top 0 (unbounded) walks.
 _PAGE_SIZE = 200
+
+
+async def drive_download(
+    *, item_id: str, out: str, config: BlumkinConfig | None = None
+) -> dict[str, Any]:
+    cfg = config or load_config()
+    service = _drive_service(cfg)
+    try:
+        meta = execute(service.files().get(fileId=item_id, fields="id,name,mimeType,size"))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    mime = meta.get("mimeType") or ""
+    if mime.startswith("application/vnd.google-apps."):
+        # Folders, shortcuts, Forms, Sites, Apps Script, and Docs/Sheets/Slides all
+        # lack a raw byte stream. Only the last three have an export path.
+        kind = mime.rsplit(".", 1)[-1]
+        hint = (
+            "use `drive export`"
+            if mime in GOOGLE_NATIVE_MIMES
+            else "it has no downloadable content"
+        )
+        raise DriveDownloadError(f"{meta.get('name')!r} is a Google-native {kind} - {hint}")
+    try:
+        data = bytes(execute(service.files().get_media(fileId=item_id)))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    dest = resolve_single_download_dest(out, meta.get("name") or item_id)
+    dest.write_bytes(data)
+    return {
+        "id": item_id,
+        "name": meta.get("name"),
+        "bytes": len(data),
+        "saved_path": str(dest.resolve()),
+        "provider": "google",
+    }
+
+
+async def drive_export(
+    *, item_id: str, to: str, config: BlumkinConfig | None = None
+) -> dict[str, Any]:
+    _ext, mime = export_mime(to)
+    cfg = config or load_config()
+    service = _drive_service(cfg)
+    try:
+        meta = execute(service.files().get(fileId=item_id, fields="id,name,mimeType,exportLinks"))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    available = set(meta.get("exportLinks") or {})
+    if not available:
+        raise DriveExportError(
+            f"{meta.get('name')!r} is not a Google-native document - use `drive download` "
+            "for its raw bytes"
+        )
+    if mime not in available:
+        formats = ", ".join(sorted(_EXPORT_EXT[m] for m in available if m in _EXPORT_EXT))
+        raise DriveExportError(
+            f"{meta.get('name')!r} cannot export to {_ext} - available: {formats or '(none)'}"
+        )
+    try:
+        data = bytes(execute(service.files().export_media(fileId=item_id, mimeType=mime)))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    dest = resolve_export_dest(to)
+    dest.write_bytes(data)
+    return {
+        "id": item_id,
+        "name": meta.get("name"),
+        "format": _ext,
+        "bytes": len(data),
+        "saved_path": str(dest.resolve()),
+        "provider": "google",
+    }
+
+
+async def drive_read(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
+    cfg = config or load_config()
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=DRIVE_SCOPES)
+    # Gate on the Drive mimeType first: `documents.get` on a Sheet / Slides /
+    # folder id 400s, which would surface as a misleading not_found / graph_error
+    # instead of the usage_error the sibling verbs give.
+    drive = build_api_service("drive", "v3", creds=creds, config=cfg)
+    try:
+        meta = execute(drive.files().get(fileId=item_id, fields="id,name,mimeType"))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    if meta.get("mimeType") != "application/vnd.google-apps.document":
+        kind = _KINDS.get(meta.get("mimeType", ""), "file")
+        raise DriveReadUnsupportedError(
+            f"{meta.get('name')!r} is a {kind}, not a Google Doc - `drive read` only "
+            "flattens Docs; use `drive export` or `drive get`"
+        )
+    docs = build_api_service("docs", "v1", creds=creds, config=cfg)
+    try:
+        document = execute(docs.documents().get(documentId=item_id))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    return {
+        "item": {"id": item_id, "name": document.get("title"), "provider": "google"},
+        "markdown": flatten_google_doc(document),
+    }
 
 
 async def drive_get(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:

@@ -300,6 +300,12 @@ off" as a single condition:
   separate drive toggle). On a Google profile these need no opt-in, but the
   first call after upgrading prompts a one-time re-consent for the `drive`
   scope (`blumkin auth login`).
+- `drive read` is **Google only** — on `provider = "microsoft"` it exits **2**
+  (Graph has no Word content API; use `drive export --to out.pdf`). `drive
+  export` on Microsoft accepts `--to *.pdf` only; any other extension is exit 2.
+  `drive download` refuses any Google-native type (folder, shortcut, Doc,
+  Sheet, …) with exit 2; `drive export` refuses a format the item's
+  `exportLinks` do not offer (also exit 2) rather than failing mid-download.
 - `people resolve` ambiguous — also exit **2**, but **stdout** carries
   `ok: false`, `ambiguous: true`, and the candidate list (no stderr
   `usage_error` envelope). Branch on `ok` / `ambiguous` before treating exit 2
