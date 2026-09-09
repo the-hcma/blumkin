@@ -176,7 +176,16 @@ async def drive_list(
     if needle:
         clauses.append(f"(name contains {_quote(needle)} or fullText contains {_quote(needle)})")
 
-    items = _list_all(service, q=" and ".join(clauses), order_by=_ORDER_BY[order_key], top=top)
+    # Only reach into Shared Drives when the listing is scoped to a folder (which
+    # may itself live in one). An unscoped root list stays My Drive - pulling in
+    # every file from every Shared Drive would silently widen the verb.
+    items = _list_all(
+        service,
+        q=" and ".join(clauses),
+        order_by=_ORDER_BY[order_key],
+        top=top,
+        all_drives=parent is not None,
+    )
     return {
         "items": [_to_item(entry) for entry in items],
         "query": {"folder": folder, "folder_id": folder_id, "text": query or None},
@@ -227,7 +236,9 @@ async def drive_move(
     # Validate the source item first, so a failed move (bad --id, even with
     # --make-parents) is a true no-op and never leaves stray folders behind.
     try:
-        current = execute(service.files().get(fileId=item_id, fields="id,name,parents", **_SHARED))
+        current = execute(
+            service.files().get(fileId=item_id, fields="id,name,mimeType,parents", **_SHARED)
+        )
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc
     parents = current.get("parents") or []
@@ -239,6 +250,7 @@ async def drive_move(
             f"{current.get('name')!r} is in {len(parents)} folders at once - move it in "
             "the Drive web UI so the right copy is affected"
         )
+    source_is_folder = current.get("mimeType") == _FOLDER_MIME
 
     if dest_id is not None:
         target = _validate_dest_folder_id(service, dest_id)
@@ -246,14 +258,21 @@ async def drive_move(
         assert dest_p is not None
         if not split_path(dest_p):
             raise ValueError("--to must name a folder, not the drive root")
+        # Moving a folder into a path that would be created under it (F -> F/Sub)
+        # creates the chain and then fails the move. Require the destination to
+        # already exist when the source is a folder, so nothing is left behind.
+        create = make_parents and not source_is_folder
         try:
-            target, _ = _resolve_folder_path(service, dest_p, create=make_parents)
+            target, _ = _resolve_folder_path(service, dest_p, create=create)
         except DriveFolderNotFoundError as exc:
-            # A missing --to without --make-parents is a usage error (exit 2), not
-            # a bare not_found - the operator can create it or pass --to-id.
-            raise ValueError(
-                f"{exc} - pass --make-parents to create {dest_p!r}, or --to-id"
-            ) from exc
+            hint = (
+                "create the destination first when moving a folder"
+                if source_is_folder and make_parents
+                else f"pass --make-parents to create {dest_p!r}, or --to-id"
+            )
+            raise ValueError(f"{exc} - {hint}") from exc
+    if source_is_folder and target == item_id:
+        raise ValueError("a folder cannot be moved into itself")
 
     try:
         moved = execute(
@@ -332,8 +351,15 @@ def _drive_service(cfg: BlumkinConfig) -> Any:
     return build_api_service("drive", "v3", creds=creds, config=cfg)
 
 
-def _list_all(service: Any, *, q: str, order_by: str, top: int) -> list[dict[str, Any]]:
-    """Page ``files.list`` until ``top`` items (``top <= 0`` = every page)."""
+def _list_all(
+    service: Any, *, q: str, order_by: str, top: int, all_drives: bool
+) -> list[dict[str, Any]]:
+    """Page ``files.list`` until ``top`` items (``top <= 0`` = every page).
+
+    ``all_drives`` folds Shared Drive items into the results - only set it for a
+    folder-scoped listing, never the unfiltered My Drive root.
+    """
+    shared = _SHARED_LIST if all_drives else _SHARED
     out: list[dict[str, Any]] = []
     page_token: str | None = None
     while True:
@@ -347,7 +373,7 @@ def _list_all(service: Any, *, q: str, order_by: str, top: int) -> list[dict[str
                 pageSize=remaining,
                 fields=_LIST_FIELDS,
                 pageToken=page_token,
-                **_SHARED_LIST,
+                **shared,
             )
         )
         out.extend(response.get("files") or [])

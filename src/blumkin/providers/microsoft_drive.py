@@ -193,7 +193,8 @@ async def drive_move(
 
     # Validate the source item first, so a failed move (bad --id, even with
     # --make-parents) never creates stray folders.
-    await _send_item(client, _ITEM_BY_ID_URL, {"id": item_id}, missing=item_id)
+    src = await _send_item(client, _ITEM_BY_ID_URL, {"id": item_id}, missing=item_id)
+    source_is_folder = src.folder is not None
 
     if dest_id is not None:
         # Mirror the --to path branch (and the Google backend): reject a typo'd or
@@ -219,8 +220,16 @@ async def drive_move(
                     f"no folder at {dest_p!r} - pass --make-parents to create it, "
                     "or --to-id with a folder id"
                 )
+            if source_is_folder:
+                # Creating the chain could land it under the folder being moved
+                # (F -> F/Sub), then Graph 400s the move - stray folders left.
+                raise ValueError(
+                    f"no folder at {dest_p!r} - create the destination first when moving a folder"
+                )
             folder = await _mkdir_p(client, segments)
         target = folder.id or ""
+    if source_is_folder and target == item_id:
+        raise ValueError("a folder cannot be moved into itself")
     patch = DriveItem(parent_reference=ItemReference(id=target))
     moved = await _patch_item(client, item_id, patch)
     return {"ok": True, "item": _to_item(moved), "moved_to": target}

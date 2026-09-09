@@ -122,6 +122,31 @@ def test_google_mkdir_creates_missing_segments(tmp_path: Path) -> None:
         )
     assert payload["created"] is True
     assert payload["folder"]["id"] == "idB" and payload["folder"]["path"] == "A/B"
+    # B must be created under the resolved id of A, not "root", and A is not re-created.
+    assert files.create.call_count == 1
+    assert files.create.call_args.kwargs["body"]["parents"] == ["idA"]
+
+
+def test_google_mkdir_deep_create_from_empty(tmp_path: Path) -> None:
+    service = MagicMock()
+    files = service.files.return_value
+    # Probe: A missing. Create walk: A missing -> create idA; B missing -> create idB.
+    files.list.return_value.execute.side_effect = [
+        {"files": []},  # probe: A
+        {"files": []},  # create walk: A
+        {"files": []},  # create walk: B
+    ]
+    files.create.return_value.execute.side_effect = [
+        {"id": "idA", "name": "A", "webViewLink": "u"},
+        {"id": "idB", "name": "B", "webViewLink": "u"},
+    ]
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_mkdir(path="A/B")
+        )
+    assert payload["created"] is True and payload["folder"]["id"] == "idB"
+    bodies = [c.kwargs["body"] for c in files.create.call_args_list]
+    assert bodies[0]["parents"] == ["root"] and bodies[1]["parents"] == ["idA"]
 
 
 def test_google_mkdir_noop_when_exists(tmp_path: Path) -> None:
@@ -192,6 +217,78 @@ def test_google_move_to_id_must_be_a_folder(tmp_path: Path) -> None:
         )
     assert not isinstance(exc.value, LookupError)
     service.files.return_value.update.assert_not_called()
+
+
+def test_google_move_into_existing_path(tmp_path: Path) -> None:
+    service = MagicMock()
+    files = service.files.return_value
+    files.get.side_effect = _google_get_by_id(
+        {"f1": {"id": "f1", "name": "doc", "mimeType": "text/plain", "parents": ["old"]}}
+    )
+    # Resolve "A/B": both segments exist.
+    files.list.return_value.execute.side_effect = [
+        {"files": [{"id": "idA", "name": "A"}]},
+        {"files": [{"id": "idB", "name": "B"}]},
+    ]
+    files.update.return_value.execute.return_value = {
+        "id": "f1",
+        "name": "doc",
+        "mimeType": "text/plain",
+        "parents": ["idB"],
+    }
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_move(item_id="f1", dest_path="A/B")
+        )
+    kw = files.update.call_args.kwargs
+    assert kw["addParents"] == "idB" and kw["removeParents"] == "old"
+    assert payload["moved_to"] == "idB"
+    files.create.assert_not_called()
+
+
+def test_google_move_make_parents_creates_the_chain(tmp_path: Path) -> None:
+    service = MagicMock()
+    files = service.files.return_value
+    files.get.side_effect = _google_get_by_id(
+        {"f1": {"id": "f1", "name": "doc", "mimeType": "text/plain", "parents": ["old"]}}
+    )
+    files.list.return_value.execute.side_effect = [
+        {"files": [{"id": "idA", "name": "A"}]},  # A exists
+        {"files": []},  # B missing -> create
+    ]
+    files.create.return_value.execute.return_value = {"id": "idB", "name": "B", "webViewLink": "u"}
+    files.update.return_value.execute.return_value = {
+        "id": "f1",
+        "name": "doc",
+        "mimeType": "text/plain",
+        "parents": ["idB"],
+    }
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_move(
+                item_id="f1", dest_path="A/B", make_parents=True
+            )
+        )
+    assert files.create.call_args.kwargs["body"]["parents"] == ["idA"]
+    assert files.update.call_args.kwargs["addParents"] == "idB"  # the *created* leaf id
+    assert payload["moved_to"] == "idB"
+
+
+def test_google_move_folder_into_its_own_subtree_is_refused(tmp_path: Path) -> None:
+    service = MagicMock()
+    service.files.return_value.get.side_effect = _google_get_by_id(
+        {"F": {"id": "F", "name": "F", "mimeType": _FOLDER_MIME, "parents": ["root"]}}
+    )
+    service.files.return_value.list.return_value.execute.return_value = {
+        "files": [{"id": "F", "name": "F"}]
+    }
+    with _google_patched(service), pytest.raises(ValueError):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_move(
+                item_id="F", dest_path="F/Sub", make_parents=True
+            )
+        )
+    service.files.return_value.create.assert_not_called()  # nothing created
 
 
 def test_google_move_refuses_a_multi_parent_item(tmp_path: Path) -> None:
@@ -339,7 +436,9 @@ def _ms_client(
         sent.append(ri)
         tmpl = ri.url_template
         if ri.http_method.name == "POST":
-            return SimpleNamespace(id="new-folder", name="leaf", web_url="u", folder=object())
+            # id encodes where it was created, so tests can assert the parent.
+            under = ri.path_parameters.get("path", "<root>")
+            return SimpleNamespace(id=f"new:{under}", name="leaf", web_url="u", folder=object())
         if "root:/{+path}" in tmpl:
             return path_items.get(ri.path_parameters.get("path"))
         return by_id.get(ri.path_parameters.get("id"))
@@ -364,7 +463,20 @@ def test_ms_mkdir_creates_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _ms_client(path_items={"A": _ms_folder("idA", "A")})
     payload = _ms_run(client, monkeypatch, "drive_mkdir", path="A/B")
     assert payload["created"] is True
-    assert any(ri.http_method.name == "POST" for ri in client.sent)
+    posts = [ri for ri in client.sent if ri.http_method.name == "POST"]
+    # Exactly one POST - for B - and it targets A's children, not the drive root.
+    assert len(posts) == 1
+    assert "root:/{+path}:/children" in posts[0].url_template
+    assert posts[0].path_parameters["path"] == "A"
+
+
+def test_ms_mkdir_deep_create_from_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _ms_client(path_items={})  # nothing exists
+    payload = _ms_run(client, monkeypatch, "drive_mkdir", path="A/B/C")
+    assert payload["created"] is True
+    posts = [ri for ri in client.sent if ri.http_method.name == "POST"]
+    assert [p.path_parameters.get("path", "<root>") for p in posts] == ["<root>", "A", "A/B"]
+    assert client.sent and payload["folder"]["id"] == "new:A/B"  # leaf created under A/B
 
 
 def test_ms_mkdir_noop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -395,6 +507,43 @@ def test_ms_move_patches_parent_reference(monkeypatch: pytest.MonkeyPatch) -> No
     assert item_id == "f1"
     assert patch.parent_reference is not None and patch.parent_reference.id == "dest"
     assert payload["moved_to"] == "dest"
+
+
+def test_ms_move_into_existing_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _ms_client(
+        by_id={"f1": _ms_file("f1", "doc")}, path_items={"A/B": _ms_folder("idB", "B")}
+    )
+    payload = _ms_run(client, monkeypatch, "drive_move", item_id="f1", dest_path="A/B")
+    (item_id, patch) = client.patched[0]
+    assert item_id == "f1" and patch.parent_reference.id == "idB"
+    assert payload["moved_to"] == "idB"
+    assert not [ri for ri in client.sent if ri.http_method.name == "POST"]
+
+
+def test_ms_move_make_parents_creates_and_targets_the_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _ms_client(
+        by_id={"f1": _ms_file("f1", "doc")}, path_items={"A": _ms_folder("idA", "A")}
+    )
+    payload = _ms_run(
+        client, monkeypatch, "drive_move", item_id="f1", dest_path="A/B", make_parents=True
+    )
+    posts = [ri for ri in client.sent if ri.http_method.name == "POST"]
+    assert len(posts) == 1 and posts[0].path_parameters["path"] == "A"  # B under A
+    (_id, patch) = client.patched[0]
+    assert patch.parent_reference.id == "new:A" and payload["moved_to"] == "new:A"
+
+
+def test_ms_move_folder_into_its_own_subtree_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _ms_client(by_id={"F": _ms_folder("F", "F")}, path_items={})
+    with pytest.raises(ValueError):
+        _ms_run(
+            client, monkeypatch, "drive_move", item_id="F", dest_path="F/Sub", make_parents=True
+        )
+    assert not [ri for ri in client.sent if ri.http_method.name == "POST"]
 
 
 def test_ms_move_to_id_must_be_an_existing_folder(monkeypatch: pytest.MonkeyPatch) -> None:
