@@ -194,6 +194,43 @@ def test_google_move_to_id_must_be_a_folder(tmp_path: Path) -> None:
     service.files.return_value.update.assert_not_called()
 
 
+def test_google_move_refuses_a_multi_parent_item(tmp_path: Path) -> None:
+    service = MagicMock()
+    service.files.return_value.get.side_effect = _google_get_by_id(
+        {"f1": {"id": "f1", "name": "legacy", "parents": ["A", "B"]}}
+    )
+    with _google_patched(service), pytest.raises(ValueError) as exc:
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_move(
+                item_id="f1", dest_folder_id="C"
+            )
+        )
+    assert not isinstance(exc.value, LookupError)
+    service.files.return_value.update.assert_not_called()  # visibility elsewhere unchanged
+
+
+def test_google_validate_dest_folder_id_propagates_non_404(tmp_path: Path) -> None:
+    service = MagicMock()
+    resp = SimpleNamespace(status=503, reason="Service Unavailable")
+
+    def _get(*, fileId: str, **_kw: Any) -> Any:  # noqa: N803
+        if fileId == "f1":
+            req = MagicMock()
+            req.execute.return_value = {"id": "f1", "parents": ["old"]}
+            return req
+        raise HttpError(resp, b"busy")
+
+    service.files.return_value.get.side_effect = _get
+    with _google_patched(service), pytest.raises(Exception) as exc:  # noqa: PT011
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_move(
+                item_id="f1", dest_folder_id="valid-but-backend-down"
+            )
+        )
+    # A 5xx must NOT be reported as a usage error about the id.
+    assert not isinstance(exc.value, ValueError)
+
+
 def test_google_move_validates_source_before_creating_parents(tmp_path: Path) -> None:
     service = MagicMock()
     resp = SimpleNamespace(status=404, reason="Not Found")
@@ -257,6 +294,12 @@ def test_google_rename(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- Microsoft
+
+
+def _odata_error(status: int) -> Exception:
+    from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+
+    return ODataError(response_status_code=status)
 
 
 def _ms_item(item_id: str, name: str, *, folder: bool) -> SimpleNamespace:
@@ -346,12 +389,49 @@ def test_ms_move_to_a_file_path_is_refused(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_ms_move_patches_parent_reference(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _ms_client(by_id={"f1": _ms_file("f1", "doc")})
+    client = _ms_client(by_id={"f1": _ms_file("f1", "doc"), "dest": _ms_folder("dest", "Dest")})
     payload = _ms_run(client, monkeypatch, "drive_move", item_id="f1", dest_folder_id="dest")
     (item_id, patch) = client.patched[0]
     assert item_id == "f1"
     assert patch.parent_reference is not None and patch.parent_reference.id == "dest"
     assert payload["moved_to"] == "dest"
+
+
+def test_ms_move_to_id_must_be_an_existing_folder(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A file id or a missing id passed as --to-id is a usage error, not a raw PATCH 400.
+    client = _ms_client(by_id={"f1": _ms_file("f1", "doc"), "afile": _ms_file("afile", "x.txt")})
+    with pytest.raises(ValueError) as exc:
+        _ms_run(client, monkeypatch, "drive_move", item_id="f1", dest_folder_id="afile")
+    assert not isinstance(exc.value, LookupError) and not client.patched
+
+    client2 = _ms_client(by_id={"f1": _ms_file("f1", "doc")})
+    with pytest.raises(ValueError):
+        _ms_run(client2, monkeypatch, "drive_move", item_id="f1", dest_folder_id="ghost")
+
+
+def test_ms_mkdir_survives_a_lost_race_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    # First POST loses the race; the re-read then finds the concurrently-made folder.
+    client = MagicMock()
+    client.sent = []
+    client.patched = []
+    state = {"posted": False}
+
+    async def send_async(ri: Any, _f: Any, _e: Any) -> Any:
+        client.sent.append(ri)
+        if ri.http_method.name == "POST":
+            state["posted"] = True
+            raise _odata_error(409)
+        # GET by path: "A" always exists; "A/B" appears only after the POST attempt.
+        path = ri.path_parameters.get("path")
+        if path == "A":
+            return _ms_folder("idA", "A")
+        if path == "A/B" and state["posted"]:
+            return _ms_folder("idAB", "B")
+        return None
+
+    client.request_adapter.send_async = AsyncMock(side_effect=send_async)
+    payload = _ms_run(client, monkeypatch, "drive_mkdir", path="A/B")
+    assert payload["created"] is True and payload["folder"]["id"] == "idAB"
 
 
 def test_ms_move_validates_source_before_creating_parents(

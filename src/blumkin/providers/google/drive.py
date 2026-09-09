@@ -230,6 +230,15 @@ async def drive_move(
         current = execute(service.files().get(fileId=item_id, fields="id,name,parents", **_SHARED))
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc
+    parents = current.get("parents") or []
+    if len(parents) > 1:
+        # Legacy multi-parent item: removing it from *all* parents (Google's move
+        # needs the exact parent being left, which the id-only input cannot name)
+        # would change visibility in folders shared with other people.
+        raise ValueError(
+            f"{current.get('name')!r} is in {len(parents)} folders at once - move it in "
+            "the Drive web UI so the right copy is affected"
+        )
 
     if dest_id is not None:
         target = _validate_dest_folder_id(service, dest_id)
@@ -251,7 +260,7 @@ async def drive_move(
             service.files().update(
                 fileId=item_id,
                 addParents=target,
-                removeParents=",".join(current.get("parents") or []),
+                removeParents=",".join(parents),
                 fields=_GET_FIELDS,
                 **_SHARED,
             )
@@ -354,11 +363,15 @@ def _quote(value: str) -> str:
 
 
 def _validate_dest_folder_id(service: Any, folder_id: str) -> str:
-    """`--to-id` must name an existing folder; anything else is a usage error (exit 2)."""
+    """`--to-id` must name an existing folder; a missing / non-folder id is a usage
+    error (exit 2). A transient 429/5xx or a 403 propagates unchanged."""
     try:
         meta = execute(service.files().get(fileId=folder_id, fields="id,mimeType", **_SHARED))
     except HttpError as exc:
-        raise ValueError(f"--to-id {folder_id!r} does not name a drive item") from exc
+        translated = _translate(exc, item_id=folder_id)
+        if isinstance(translated, DriveItemNotFoundError):
+            raise ValueError(f"--to-id {folder_id!r} does not name a drive item") from exc
+        raise translated from exc
     if meta.get("mimeType") != _FOLDER_MIME:
         raise ValueError(f"--to-id {folder_id!r} is not a folder")
     return folder_id

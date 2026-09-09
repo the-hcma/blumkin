@@ -196,6 +196,14 @@ async def drive_move(
     await _send_item(client, _ITEM_BY_ID_URL, {"id": item_id}, missing=item_id)
 
     if dest_id is not None:
+        # Mirror the --to path branch (and the Google backend): reject a typo'd or
+        # non-folder id up front instead of letting Graph 400 the PATCH.
+        try:
+            dest = await _send_item(client, _ITEM_BY_ID_URL, {"id": dest_id}, missing=dest_id)
+        except DriveItemNotFoundError as exc:
+            raise ValueError(f"--to-id {dest_id!r} does not name a drive item") from exc
+        if dest.folder is None:
+            raise ValueError(f"--to-id {dest_id!r} is not a folder")
         target = dest_id
     else:
         assert dest_p is not None
