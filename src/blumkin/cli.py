@@ -61,6 +61,7 @@ from blumkin.skills.chat import (
 )
 from blumkin.skills.dispatch import run_skill
 from blumkin.skills.docs import format_docs_create_human
+from blumkin.skills.drive import format_drive_get_human, format_drive_list_human
 from blumkin.skills.errors import ErrorInfo, classify_exception
 from blumkin.skills.mail import (
     MAIL_IMPORTANCE_VALUES,
@@ -3329,6 +3330,75 @@ def docs_create_cmd(
             "folder": folder,
         },
         human=format_docs_create_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@main.group(epilog=help_text.DRIVE_EPILOG)
+def drive() -> None:
+    """Read and organize your drive (Google Drive / OneDrive).
+
+    Read side: `list`, `get`. On `provider = "microsoft"` these need
+    `docs_scopes = true` (Files.ReadWrite - the same grant `docs create` uses).
+    On `provider = "google"` the `drive` scope is requested at `blumkin auth
+    login`; re-consent once after upgrading.
+    """
+
+
+@drive.command("list", epilog=help_text.DRIVE_LIST_EPILOG)
+@click.option("--folder-id", "folder_id", default=None, help="Folder id to list (from a listing).")
+@click.option(
+    "--folder",
+    default=None,
+    help="Folder path. Native on Microsoft; best-effort on Google (prefer --folder-id).",
+)
+@click.option("--query", default=None, help="Name / full-text substring to search for.")
+@click.option(
+    "--order",
+    default="modified",
+    show_default=True,
+    type=click.Choice(["modified", "name"], case_sensitive=False),
+    help="Sort order.",
+)
+@click.option("--top", default=None, type=int, help="Max items (default 50; 0 = no cap).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def drive_list_cmd(
+    ctx: click.Context,
+    folder_id: str | None,
+    folder: str | None,
+    query: str | None,
+    order: str,
+    top: int | None,
+    as_json_flag: bool,
+) -> None:
+    """List a drive folder, or search it with --query."""
+    _dispatch(
+        ctx,
+        "drive.list",
+        {
+            "folder_id": folder_id,
+            "folder": folder,
+            "query": query,
+            "order": order,
+            "top": top,
+        },
+        human=format_drive_list_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@drive.command("get", epilog=help_text.DRIVE_GET_EPILOG)
+@click.option("--id", "item_id", required=True, help="Drive item id (from a listing).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def drive_get_cmd(ctx: click.Context, item_id: str, as_json_flag: bool) -> None:
+    """Read one drive item's metadata."""
+    _dispatch(
+        ctx,
+        "drive.get",
+        {"id": item_id},
+        human=format_drive_get_human,
         as_json_flag=as_json_flag,
     )
 

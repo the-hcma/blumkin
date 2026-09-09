@@ -20,6 +20,7 @@ from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills import (
     DOCS_SKILLS,
+    DRIVE_SKILLS,
     SKILL_METHOD_OVERRIDES,
     WO1162425_SKILLS,
     describe_skill,
@@ -37,6 +38,15 @@ _DOCS_SCOPES_MESSAGE = (
     "a .docx to your OneDrive."
 )
 _DOCS_SCOPES_HINT = (
+    "Set docs_scopes = true in config.toml (once the tenant has granted "
+    "Files.ReadWrite), delete the token cache and auth record, then run "
+    "`blumkin auth login`. On a Google profile no toggle is needed."
+)
+_DRIVE_SCOPES_MESSAGE = (
+    "drive skills need the Files.ReadWrite Graph scope on Microsoft, which is off "
+    "(the same grant docs create uses - there is no separate drive toggle)."
+)
+_DRIVE_SCOPES_HINT = (
     "Set docs_scopes = true in config.toml (once the tenant has granted "
     "Files.ReadWrite), delete the token cache and auth record, then run "
     "`blumkin auth login`. On a Google profile no toggle is needed."
@@ -207,6 +217,15 @@ def _run_gates(
         and not config.docs_scopes
     ):
         raise ScopeAddonDisabledError(_DOCS_SCOPES_MESSAGE, hint=_DOCS_SCOPES_HINT)
+
+    # drive skills reuse the same Microsoft grant (Files.ReadWrite via docs_scopes);
+    # Google carries `drive` in its standard scope set (fail-fast in get_credentials).
+    if (
+        skill_id in DRIVE_SKILLS
+        and config.provider is ProviderKind.MICROSOFT
+        and not config.docs_scopes
+    ):
+        raise ScopeAddonDisabledError(_DRIVE_SCOPES_MESSAGE, hint=_DRIVE_SCOPES_HINT)
 
     # wo1162425 add-on scopes (Microsoft only)
     needs_addon = skill_id in WO1162425_SKILLS

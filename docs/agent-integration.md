@@ -295,9 +295,11 @@ off" as a single condition:
 - `wo1162425_scopes` off — chat write, meeting commands, and `people resolve`
   exit **2** with `usage_error`. (`calendar create` Teams meetings use
   Calendars.ReadWrite only and do not require this flag.)
-- `docs_scopes` off (Microsoft only) — `docs create` exits **2** with
-  `usage_error`; it needs `Files.ReadWrite` to upload the `.docx`. On a Google
-  profile `docs create` needs no opt-in.
+- `docs_scopes` off (Microsoft only) — `docs create` **and every `drive *`
+  verb** exit **2** with `usage_error`; they need `Files.ReadWrite` (there is no
+  separate drive toggle). On a Google profile these need no opt-in, but the
+  first call after upgrading prompts a one-time re-consent for the `drive`
+  scope (`blumkin auth login`).
 - `people resolve` ambiguous — also exit **2**, but **stdout** carries
   `ok: false`, `ambiguous: true`, and the candidate list (no stderr
   `usage_error` envelope). Branch on `ok` / `ambiguous` before treating exit 2

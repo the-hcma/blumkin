@@ -11,6 +11,7 @@ from blumkin.providers import google_auth
 from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google import chat as google_chat
 from blumkin.providers.google import docs as google_docs
+from blumkin.providers.google import drive as google_drive
 from blumkin.providers.google import mail as google_mail
 from blumkin.providers.google import mail_writes as google_mail_writes
 from blumkin.providers.google import people as google_people
@@ -359,6 +360,27 @@ class GoogleWorkspaceProvider:
             body_file=body_file,
             body_format=body_format,
             folder=folder,
+            config=self._config,
+        )
+
+    async def drive_get(self, *, item_id: str) -> dict[str, Any]:
+        return await google_drive.drive_get(item_id=item_id, config=self._config)
+
+    async def drive_list(
+        self,
+        *,
+        folder_id: str | None = None,
+        folder: str | None = None,
+        query: str | None = None,
+        order: str = "modified",
+        top: int = 50,
+    ) -> dict[str, Any]:
+        return await google_drive.drive_list(
+            folder_id=folder_id,
+            folder=folder,
+            query=query,
+            order=order,
+            top=top,
             config=self._config,
         )
 
