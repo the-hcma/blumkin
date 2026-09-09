@@ -19,6 +19,7 @@ from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.drive import (
     GOOGLE_NATIVE_MIMES,
     DriveDownloadError,
+    DriveExportError,
     DriveFolderAmbiguousError,
     DriveFolderNotFoundError,
     DriveItemNotFoundError,
@@ -56,12 +57,21 @@ async def drive_download(
         meta = execute(service.files().get(fileId=item_id, fields="id,name,mimeType,size"))
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc
-    if meta.get("mimeType") in GOOGLE_NATIVE_MIMES:
-        raise DriveDownloadError(
-            f"{meta.get('name')!r} is a Google-native {meta['mimeType'].split('.')[-1]} - "
-            "it has no raw bytes; use `drive export` instead"
+    mime = meta.get("mimeType") or ""
+    if mime.startswith("application/vnd.google-apps."):
+        # Folders, shortcuts, Forms, Sites, Apps Script, and Docs/Sheets/Slides all
+        # lack a raw byte stream. Only the last three have an export path.
+        kind = mime.rsplit(".", 1)[-1]
+        hint = (
+            "use `drive export`"
+            if mime in GOOGLE_NATIVE_MIMES
+            else "it has no downloadable content"
         )
-    data = bytes(execute(service.files().get_media(fileId=item_id)))
+        raise DriveDownloadError(f"{meta.get('name')!r} is a Google-native {kind} - {hint}")
+    try:
+        data = bytes(execute(service.files().get_media(fileId=item_id)))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
     dest = resolve_single_download_dest(out, meta.get("name") or item_id)
     dest.write_bytes(data)
     return {
@@ -80,7 +90,21 @@ async def drive_export(
     cfg = config or load_config()
     service = _drive_service(cfg)
     try:
-        meta = execute(service.files().get(fileId=item_id, fields="id,name,mimeType"))
+        meta = execute(service.files().get(fileId=item_id, fields="id,name,mimeType,exportLinks"))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    available = set(meta.get("exportLinks") or {})
+    if not available:
+        raise DriveExportError(
+            f"{meta.get('name')!r} is not a Google-native document - use `drive download` "
+            "for its raw bytes"
+        )
+    if mime not in available:
+        formats = ", ".join(sorted(_EXPORT_EXT[m] for m in available if m in _EXPORT_EXT))
+        raise DriveExportError(
+            f"{meta.get('name')!r} cannot export to {_ext} - available: {formats or '(none)'}"
+        )
+    try:
         data = bytes(execute(service.files().export_media(fileId=item_id, mimeType=mime)))
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc

@@ -101,6 +101,13 @@ def test_flatten_google_doc_empty() -> None:
     assert flatten_google_doc({"body": {"content": []}}) == ""
 
 
+def test_format_drive_read_human_strips_control_chars() -> None:
+    from blumkin.skills.drive import format_drive_read_human
+
+    lines = format_drive_read_human({"markdown": "safe\x1b[2Krewritten\nsecond\x07line"})
+    assert lines == ["safe[2Krewritten", "secondline"]
+
+
 # --------------------------------------------------------------------------- config
 
 
@@ -147,14 +154,15 @@ def _ms_cfg() -> BlumkinConfig:
 # --------------------------------------------------------------------------- Google backend
 
 
-def _google_service(*, mime: str = "application/pdf") -> MagicMock:
+def _google_service(
+    *, mime: str = "application/pdf", export_links: dict[str, str] | None = None
+) -> MagicMock:
     service = MagicMock()
     files = service.files.return_value
-    files.get.return_value.execute.return_value = {
-        "id": "d1",
-        "name": "report.pdf",
-        "mimeType": mime,
-    }
+    meta: dict[str, Any] = {"id": "d1", "name": "report.pdf", "mimeType": mime}
+    if export_links is not None:
+        meta["exportLinks"] = export_links
+    files.get.return_value.execute.return_value = meta
     files.get_media.return_value.execute.return_value = b"RAW-BYTES"
     files.export_media.return_value.execute.return_value = b"PDF-BYTES"
     service.documents.return_value.get.return_value.execute.return_value = {
@@ -162,6 +170,14 @@ def _google_service(*, mime: str = "application/pdf") -> MagicMock:
         "body": {"content": [{"paragraph": {"elements": [{"textRun": {"content": "hi\n"}}]}}]},
     }
     return service
+
+
+_DOC_EXPORT_LINKS = {
+    "application/pdf": "u",
+    "text/plain": "u",
+    "text/csv": "u",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "u",
+}
 
 
 def _google_patched(service: MagicMock):
@@ -184,18 +200,29 @@ def test_google_drive_download_writes_bytes(tmp_path: Path) -> None:
     assert payload["bytes"] == 9 and payload["provider"] == "google"
 
 
-def test_google_drive_download_refuses_native_doc(tmp_path: Path) -> None:
-    svc = _google_service(mime="application/vnd.google-apps.document")
+@pytest.mark.parametrize(
+    "mime",
+    [
+        "application/vnd.google-apps.document",
+        "application/vnd.google-apps.folder",
+        "application/vnd.google-apps.script",
+    ],
+)
+def test_google_drive_download_refuses_native_types(tmp_path: Path, mime: str) -> None:
+    svc = _google_service(mime=mime)
     with _google_patched(svc), pytest.raises(DriveDownloadError):
         asyncio.run(
             GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_download(
                 item_id="d1", out=str(tmp_path / "x")
             )
         )
+    svc.files.return_value.get_media.assert_not_called()
 
 
 def test_google_drive_export_picks_mime_from_extension(tmp_path: Path) -> None:
-    svc = _google_service()
+    svc = _google_service(
+        mime="application/vnd.google-apps.document", export_links=_DOC_EXPORT_LINKS
+    )
     with _google_patched(svc):
         payload = asyncio.run(
             GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_export(
@@ -205,6 +232,30 @@ def test_google_drive_export_picks_mime_from_extension(tmp_path: Path) -> None:
     assert svc.files.return_value.export_media.call_args.kwargs["mimeType"] == "text/csv"
     assert payload["format"] == "csv"
     assert (tmp_path / "out.csv").read_bytes() == b"PDF-BYTES"
+
+
+def test_google_drive_export_rejects_unavailable_format(tmp_path: Path) -> None:
+    svc = _google_service(
+        mime="application/vnd.google-apps.document", export_links=_DOC_EXPORT_LINKS
+    )
+    with _google_patched(svc), pytest.raises(DriveExportError):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_export(
+                item_id="d1",
+                to=str(tmp_path / "out.xlsx"),  # not in a Doc's export links
+            )
+        )
+    svc.files.return_value.export_media.assert_not_called()
+
+
+def test_google_drive_export_rejects_non_native_file(tmp_path: Path) -> None:
+    svc = _google_service(mime="application/pdf")  # no exportLinks
+    with _google_patched(svc), pytest.raises(DriveExportError):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_export(
+                item_id="d1", to=str(tmp_path / "out.pdf")
+            )
+        )
 
 
 def test_google_drive_read_returns_markdown(tmp_path: Path) -> None:
@@ -239,7 +290,7 @@ def _ms_run(client: MagicMock, monkeypatch: pytest.MonkeyPatch, method: str, **k
 
 
 def test_ms_drive_download_writes_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    item = SimpleNamespace(name="Report.docx")
+    item = SimpleNamespace(name="Report.docx", folder=None)
     payload = _ms_run(
         _ms_client(item=item, content=b"DOCX"),
         monkeypatch,
@@ -251,8 +302,30 @@ def test_ms_drive_download_writes_bytes(tmp_path: Path, monkeypatch: pytest.Monk
     assert payload["provider"] == "microsoft"
 
 
+def test_ms_drive_download_refuses_a_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = SimpleNamespace(name="Reports", folder=SimpleNamespace(child_count=3))
+    client = _ms_client(item=folder)
+    with pytest.raises(DriveDownloadError):
+        _ms_run(client, monkeypatch, "drive_download", item_id="f1", out=str(tmp_path))
+    client.request_adapter.send_primitive_async.assert_not_called()
+
+
+def test_ms_drive_export_refuses_a_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    folder = SimpleNamespace(name="Reports", folder=SimpleNamespace(child_count=3))
+    with pytest.raises(DriveExportError):
+        _ms_run(
+            _ms_client(item=folder),
+            monkeypatch,
+            "drive_export",
+            item_id="f1",
+            to=str(tmp_path / "r.pdf"),
+        )
+
+
 def test_ms_drive_export_pdf_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    item = SimpleNamespace(name="Report.docx")
+    item = SimpleNamespace(name="Report.docx", folder=None)
     payload = _ms_run(
         _ms_client(item=item, content=b"%PDF"),
         monkeypatch,

@@ -14,6 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
+from blumkin.output import sanitize_terminal
+
 # Every `drive.*` skill id. The dispatch layer gates the whole set on the
 # Microsoft `docs_scopes` toggle (Files.ReadWrite) - the same grant `docs create`
 # already needs; Google carries `drive` in its standard scope set.
@@ -136,7 +138,9 @@ def format_drive_get_human(payload: dict[str, Any]) -> list[str]:
 
 
 def format_drive_read_human(payload: dict[str, Any]) -> list[str]:
-    lines: list[str] = str(payload.get("markdown") or "").splitlines()
+    # A shared Doc is remote content from the same trust boundary as a mail body
+    # or Teams message - strip control chars before it reaches the terminal.
+    lines: list[str] = sanitize_terminal(str(payload.get("markdown") or "")).splitlines()
     return lines or ["(empty document)"]
 
 
