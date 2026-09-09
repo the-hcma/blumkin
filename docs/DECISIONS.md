@@ -195,8 +195,11 @@ provider module per backend (`providers/google/drive.py`,
     Doc the user shares and filing next to it *is* the point here.
   - **Microsoft: reuse the `docs_scopes` toggle** (`Files.ReadWrite`). Every
     `drive.*` skill - read and write - is gated on it in the dispatch layer,
-    mirroring `docs.create` (`EXIT_MISSING_SCOPE` when off). No new toggle, no
-    new consent beyond what `docs create` already needs.
+    mirroring `docs.create`: toggle off is a `ScopeAddonDisabledError` ->
+    `usage_error` / **exit 2** (like `wo1162425_scopes`), not the `exit 4`
+    `missing_scope` reserved for a genuinely ungranted OAuth scope (e.g. the
+    Google `drive` scope after upgrading). No new toggle, no new consent beyond
+    what `docs create` already needs.
 - **`drive read` (Google Doc -> Markdown text) is Google-only.** `documents.get`
   gives a structured body to flatten (the inverse of `docs create`); Graph has
   no Word content API, so Microsoft `drive read` raises a clear

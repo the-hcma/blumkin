@@ -290,17 +290,19 @@ def _ms_item(
     )
 
 
-def _ms_client(pages: list[Any] | None = None, item: Any = None) -> MagicMock:
+def _ms_client(pages: list[Any] | None = None, item: Any = None, by_path: Any = None) -> MagicMock:
+    """`item` answers a GET /items/{id}; `by_path` answers a GET /root:/{+path};
+    everything else pops `pages` (a collection response)."""
     client = MagicMock()
     calls: list[Any] = []
     queue = list(pages or [])
 
-    async def send_async(request_info: Any, factory: Any, _err: Any) -> Any:
+    async def send_async(request_info: Any, _factory: Any, _err: Any) -> Any:
         calls.append(request_info)
-        if (
-            "items/{id}" in request_info.url_template
-            and "children" not in request_info.url_template
-        ):
+        tmpl = request_info.url_template
+        if "root:/{+path}" in tmpl and "children" not in tmpl:
+            return by_path
+        if "items/{id}" in tmpl and "children" not in tmpl:
             return item
         return queue.pop(0) if queue else SimpleNamespace(value=[], odata_next_link=None)
 
@@ -333,23 +335,56 @@ def test_ms_drive_list_children_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "items/{id}/children" in client.calls[0].url_template
 
 
-def test_ms_drive_list_root_and_top(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ms_drive_list_root_caps_top_server_side(monkeypatch: pytest.MonkeyPatch) -> None:
     page = SimpleNamespace(
-        value=[_ms_item(item_id=f"x{i}", name=f"f{i}.txt") for i in range(4)],
-        odata_next_link=None,
+        value=[_ms_item(item_id=f"x{i}", name=f"f{i}.txt") for i in range(2)],
+        odata_next_link="more",
     )
     client = _ms_client(pages=[page])
     payload = _ms_run(client, monkeypatch, _ms_cfg(), "drive_list", top=2)
     assert len(payload["items"]) == 2
-    assert client.calls[0].url_template.endswith("me/drive/root/children?%24top=200")
+    url = client.calls[0].url_template
+    assert url.startswith("https://graph.microsoft.com/v1.0/me/drive/root/children?")
+    assert "%24top=2" in url and "%24orderby=lastModifiedDateTime" in url
+    assert len(client.calls) == 1  # stopped paging once top was reached
 
 
-def test_ms_drive_list_search(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ms_drive_list_search_escapes_apostrophe(monkeypatch: pytest.MonkeyPatch) -> None:
     page = SimpleNamespace(value=[_ms_item(item_id="d1", name="vocab.docx")], odata_next_link=None)
     client = _ms_client(pages=[page])
-    _ms_run(client, monkeypatch, _ms_cfg(), "drive_list", query="vocab")
+    _ms_run(client, monkeypatch, _ms_cfg(), "drive_list", query="what's new")
     assert "search(q='{+q}')" in client.calls[0].url_template
-    assert client.calls[0].path_parameters["q"] == "vocab"
+    assert client.calls[0].path_parameters["q"] == "what''s new"
+
+
+def test_ms_drive_list_query_in_folder_is_exact_not_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved = _ms_item(item_id="reports-id", name="Reports", folder=True)
+    hits = SimpleNamespace(
+        value=[
+            _ms_item(item_id="a", name="a.txt", parent_id="reports-id"),
+            _ms_item(item_id="b", name="b.txt", parent_id="archive-reports-id"),  # /Archive/Reports
+        ],
+        odata_next_link=None,
+    )
+    client = _ms_client(pages=[hits], by_path=resolved)
+    payload = _ms_run(client, monkeypatch, _ms_cfg(), "drive_list", folder="Reports", query="x")
+    assert [i["id"] for i in payload["items"]] == ["a"]
+
+
+def test_ms_drive_list_folder_path_is_percent_encoded(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _ms_client(pages=[], by_path=_ms_item(item_id="q1", name="Q#1", folder=True))
+    _ms_run(client, monkeypatch, _ms_cfg(), "drive_list", folder="Q#1")
+    resolve_call = next(c for c in client.calls if "root:/{+path}" in c.url_template)
+    assert resolve_call.path_parameters["path"] == "Q%231"
+
+
+def test_ms_drive_list_folder_that_is_a_file_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    a_file = _ms_item(item_id="f", name="Reports")  # folder=False
+    client = _ms_client(by_path=a_file)
+    with pytest.raises(DriveFolderNotFoundError):
+        _ms_run(client, monkeypatch, _ms_cfg(), "drive_list", folder="Reports")
 
 
 def test_ms_drive_list_follows_next_link(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -391,6 +426,18 @@ def test_ms_drive_get_maps_and_404(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_drive_skills_gated_on_docs_scopes_for_microsoft() -> None:
     with pytest.raises(ScopeAddonDisabledError):
         asyncio.run(run_skill("drive.list", {}, config=_ms_cfg(docs_scopes=False)))
+
+
+def test_drive_catalog_scopes_match_the_docs_scopes_gate() -> None:
+    """Every DRIVE_SKILLS entry is gated on docs_scopes (Files.ReadWrite), so its
+    published `scopes` must say Files.ReadWrite - not the weaker Files.Read."""
+    from blumkin.skills import DRIVE_SKILLS, describe_skill
+
+    for sid in DRIVE_SKILLS:
+        spec = describe_skill(sid)
+        assert spec is not None
+        assert "Files.ReadWrite" in spec.scopes, sid
+        assert "Files.Read" not in spec.scopes, sid
 
 
 def test_drive_get_arg_maps_to_item_id(monkeypatch: pytest.MonkeyPatch) -> None:

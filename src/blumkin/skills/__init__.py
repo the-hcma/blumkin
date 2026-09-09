@@ -783,7 +783,7 @@ SKILLS: list[SkillSpec] = [
         ),
         mutates=False,
         notifies_others=False,
-        scopes=["Files.Read"],
+        scopes=["Files.ReadWrite"],
         args=[{"name": "--id", "required": True, "type": "string"}],
     ),
     SkillSpec(
@@ -795,7 +795,7 @@ SKILLS: list[SkillSpec] = [
         ),
         mutates=False,
         notifies_others=False,
-        scopes=["Files.Read"],
+        scopes=["Files.ReadWrite"],
         args=[
             {
                 "name": "--folder-id",

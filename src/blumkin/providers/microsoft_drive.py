@@ -1,14 +1,18 @@
 """Microsoft OneDrive `drive` skills: list / get (read side, issue #208).
 
 Graph addresses items by id (``/me/drive/items/{id}``) or by a native path
-(``/me/drive/root:/A/B``), so ``--folder`` needs no name-walk here. Raw
-``RequestInformation`` calls (same style as ``microsoft_docs``) keep the
-dependency surface identical to the rest of the Graph backend.
+(``/me/drive/root:/A/B``). Path segments and the search literal are
+percent-/OData-escaped before templating - kiota's ``{+…}`` reserved expansion
+would otherwise let a ``#`` truncate the request or an apostrophe unbalance
+``search(q='…')``. Raw ``RequestInformation`` calls (same style as
+``microsoft_docs``) keep the dependency surface identical to the rest of the
+Graph backend.
 """
 
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 from kiota_abstractions.method import Method
 from kiota_abstractions.request_information import RequestInformation
@@ -23,24 +27,27 @@ from blumkin.skills.drive import (
     DriveFolderNotFoundError,
     DriveItemNotFoundError,
     normalize_order,
+    split_path,
     validate_folder_selector,
 )
 
-_CHILDREN_BY_ID_URL = "https://graph.microsoft.com/v1.0/me/drive/items/{id}/children?%24top=200"
-_CHILDREN_BY_PATH_URL = (
-    "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}:/children?%24top=200"
-)
-_CHILDREN_ROOT_URL = "https://graph.microsoft.com/v1.0/me/drive/root/children?%24top=200"
+# RFC 6570 templates: `{id}` / `{+path}` / `{+q}` are filled by kiota; the
+# `?%24…` query string is literal (same trick as microsoft_docs `_UPLOAD_URL`).
+_CHILDREN_BY_ID_BASE = "https://graph.microsoft.com/v1.0/me/drive/items/{id}/children"
+_CHILDREN_ROOT_BASE = "https://graph.microsoft.com/v1.0/me/drive/root/children"
 _ERROR_MAP: dict[str, type[ParsableFactory]] = {"4XX": ODataError, "5XX": ODataError}
 _ITEM_BY_ID_URL = "https://graph.microsoft.com/v1.0/me/drive/items/{id}"
+_ITEM_BY_PATH_URL = "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}"
 _OFFICE_KIND = {"docx": "doc", "doc": "doc", "xlsx": "sheet", "xls": "sheet", "pptx": "slides"}
-_SEARCH_URL = "https://graph.microsoft.com/v1.0/me/drive/root/search(q='{+q}')?%24top=200"
+_ORDER_FIELD = {"modified": "lastModifiedDateTime desc", "name": "name"}
+_PAGE = 200
+_SEARCH_BASE = "https://graph.microsoft.com/v1.0/me/drive/root/search(q='{+q}')"
 
 
 async def drive_get(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    item = await _send_item(client, Method.GET, _ITEM_BY_ID_URL, {"id": item_id}, missing=item_id)
+    item = await _send_item(client, _ITEM_BY_ID_URL, {"id": item_id}, missing=item_id)
     payload = _to_item(item)
     payload["owners"] = _owners(item)
     # Office docs on OneDrive export to PDF only (Graph limitation).
@@ -62,21 +69,22 @@ async def drive_list(
     cfg = config or load_config()
     client = create_graph_client(cfg)
 
+    scope_id = folder_id
+    if folder is not None:
+        scope_id = _require_id(await _resolve_folder(client, folder), folder)
+
     needle = (query or "").strip()
     if needle:
-        url, params = _SEARCH_URL, {"q": needle}
-    elif folder_id:
-        url, params = _CHILDREN_BY_ID_URL, {"id": folder_id}
-    elif folder:
-        url, params = _CHILDREN_BY_PATH_URL, {"path": folder.strip("/")}
+        entries = await _search(client, needle, 0 if scope_id else top)
+        if scope_id:
+            entries = [e for e in entries if _parent_id(e) == scope_id]
+        entries.sort(key=_entry_sort(order_key), reverse=(order_key == "modified"))
+    elif scope_id:
+        entries = await _children(client, _CHILDREN_BY_ID_BASE, {"id": scope_id}, order_key, top)
     else:
-        url, params = _CHILDREN_ROOT_URL, {}
+        entries = await _children(client, _CHILDREN_ROOT_BASE, {}, order_key, top)
 
-    entries = await _collect(client, url, params)
-    if needle and (folder_id or folder):
-        entries = [e for e in entries if _under(e, folder_id=folder_id, folder=folder)]
     items = [_to_item(entry) for entry in entries]
-    items.sort(key=_SORTERS[order_key], reverse=(order_key == "modified"))
     if top > 0:
         items = items[:top]
     return {
@@ -85,34 +93,89 @@ async def drive_list(
     }
 
 
-_SORTERS = {
-    "modified": lambda item: item.get("modified") or "",
-    "name": lambda item: (item.get("name") or "").casefold(),
-}
+def _encoded_path(path: str) -> str:
+    """Percent-encode each segment (so ``#`` / ``?`` cannot truncate) but keep ``/``."""
+    return "/".join(quote(segment, safe="") for segment in split_path(path))
 
 
-async def _collect(client: Any, url: str, params: dict[str, str]) -> list[DriveItem]:
-    """Follow ``@odata.nextLink`` from the first page onward."""
+def _entry_sort(order_key: str) -> Any:
+    if order_key == "name":
+        return lambda item: (item.name or "").casefold()
+    return lambda item: (
+        item.last_modified_date_time.isoformat() if item.last_modified_date_time else ""
+    )
+
+
+def _parent_id(entry: DriveItem) -> str | None:
+    return entry.parent_reference.id if entry.parent_reference is not None else None
+
+
+def _require_id(item: DriveItem | None, label: str) -> str:
+    if item is None or item.folder is None or not item.id:
+        raise DriveFolderNotFoundError(f"no folder at {label!r}")
+    return item.id
+
+
+async def _children(
+    client: Any, base: str, params: dict[str, str], order_key: str, top: int
+) -> list[DriveItem]:
+    """List a folder's children, ordered and capped server-side; stop paging at ``top``."""
+    page_size = _PAGE if top <= 0 else min(_PAGE, top)
+    url = f"{base}?%24top={page_size}&%24orderby={quote(_ORDER_FIELD[order_key])}"
     out: list[DriveItem] = []
     request_info = RequestInformation(Method.GET, url, params)
     while True:
-        try:
-            page = await client.request_adapter.send_async(
-                request_info, DriveItemCollectionResponse, _ERROR_MAP
-            )
-        except ODataError as exc:
-            if _status(exc) == 404:
-                raise DriveFolderNotFoundError(
-                    f"no folder at {params.get('path') or params.get('id') or 'root'!r}"
-                ) from exc
-            raise
+        page = await _get_page(client, request_info)
         if page is None:
             break
         out.extend(page.value or [])
-        nxt = page.odata_next_link
-        if not nxt:
+        if (top > 0 and len(out) >= top) or not page.odata_next_link:
             break
-        request_info = RequestInformation(Method.GET, nxt, {})
+        request_info = RequestInformation(Method.GET, page.odata_next_link, {})
+    return out
+
+
+async def _get_page(
+    client: Any, request_info: RequestInformation
+) -> DriveItemCollectionResponse | None:
+    try:
+        return await client.request_adapter.send_async(
+            request_info, DriveItemCollectionResponse, _ERROR_MAP
+        )
+    except ODataError as exc:
+        if _status(exc) == 404:
+            raise DriveFolderNotFoundError("no such folder") from exc
+        raise
+
+
+async def _resolve_folder(client: Any, folder: str) -> DriveItem | None:
+    if not split_path(folder):
+        return None
+    request_info = RequestInformation(
+        Method.GET, _ITEM_BY_PATH_URL, {"path": _encoded_path(folder)}
+    )
+    try:
+        return await client.request_adapter.send_async(request_info, DriveItem, _ERROR_MAP)
+    except ODataError as exc:
+        if _status(exc) == 404:
+            return None
+        raise
+
+
+async def _search(client: Any, needle: str, top: int) -> list[DriveItem]:
+    # OData string literal: an apostrophe is doubled; kiota `{+q}` then leaves it
+    # inside search(q='…') without re-encoding the slashes a query may contain.
+    url = _SEARCH_BASE if top <= 0 else f"{_SEARCH_BASE}?%24top={min(_PAGE, top)}"
+    out: list[DriveItem] = []
+    request_info = RequestInformation(Method.GET, url, {"q": needle.replace("'", "''")})
+    while True:
+        page = await _get_page(client, request_info)
+        if page is None:
+            break
+        out.extend(page.value or [])
+        if (top > 0 and len(out) >= top) or not page.odata_next_link:
+            break
+        request_info = RequestInformation(Method.GET, page.odata_next_link, {})
     return out
 
 
@@ -132,10 +195,8 @@ def _owners(item: DriveItem) -> list[dict[str, Any]]:
     return [{"name": user.display_name, "email": getattr(user, "additional_data", {}).get("email")}]
 
 
-async def _send_item(
-    client: Any, method: Method, url: str, params: dict[str, str], *, missing: str
-) -> DriveItem:
-    request_info = RequestInformation(method, url, params)
+async def _send_item(client: Any, url: str, params: dict[str, str], *, missing: str) -> DriveItem:
+    request_info = RequestInformation(Method.GET, url, params)
     try:
         item = await client.request_adapter.send_async(request_info, DriveItem, _ERROR_MAP)
     except ODataError as exc:
@@ -166,13 +227,3 @@ def _to_item(item: DriveItem) -> dict[str, Any]:
         "parent_id": parent.id if parent is not None else None,
         "provider": "microsoft",
     }
-
-
-def _under(entry: DriveItem, *, folder_id: str | None, folder: str | None) -> bool:
-    parent = entry.parent_reference
-    if parent is None:
-        return False
-    if folder_id:
-        return parent.id == folder_id
-    path = (parent.path or "").split("root:", 1)[-1].strip("/")
-    return path.endswith((folder or "").strip("/"))
