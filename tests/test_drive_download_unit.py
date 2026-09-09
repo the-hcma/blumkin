@@ -138,6 +138,22 @@ def test_flatten_google_doc_preserves_hard_line_breaks() -> None:
     assert flatten_google_doc(doc) == "line one\nline two\n"
 
 
+def test_flatten_google_doc_hard_break_at_a_style_boundary() -> None:
+    # The break ends the *bold* run; the next run is plain -> two runs, and the
+    # trailing "\n" of the non-final run must not be stripped.
+    doc = {
+        "body": {
+            "content": [
+                _para(
+                    {"content": "bold\n", "textStyle": {"bold": True}},
+                    {"content": "plain\n", "textStyle": {}},
+                )
+            ]
+        }
+    }
+    assert flatten_google_doc(doc) == "**bold**\nplain\n"
+
+
 def test_flatten_google_doc_heading_flattens_a_hard_break() -> None:
     doc = {
         "body": {

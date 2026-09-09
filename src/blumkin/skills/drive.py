@@ -196,10 +196,11 @@ _HEADING_LEVEL = {f"HEADING_{n}": n for n in range(1, 7)}
 
 
 def _inline_markdown(text_run: dict[str, Any]) -> str:
-    # A run's content carries the paragraph-terminating "\n" (and any trailing
-    # Shift+Enter breaks); those belong to the paragraph, not this run. Interior
-    # "\n" are hard line breaks - keep them so words do not glue together.
-    content = (text_run.get("content") or "").rstrip("\n")
+    # Keep every "\n" here. Only the paragraph's *final* run ends with the
+    # paragraph terminator; a "\n" that ends a non-final run (a Shift+Enter break
+    # at a style boundary) or sits inside a run is a hard line break and must
+    # survive. `_paragraph_markdown` trims the one trailing terminator.
+    content = text_run.get("content") or ""
     if not content:
         return ""
     stripped = content.strip()
