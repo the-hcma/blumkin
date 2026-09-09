@@ -222,7 +222,20 @@ class WorkspaceProvider(Protocol):
         top: int = 50,
     ) -> dict[str, Any]: ...
 
+    async def drive_mkdir(self, *, path: str) -> dict[str, Any]: ...
+
+    async def drive_move(
+        self,
+        *,
+        item_id: str,
+        dest_folder_id: str | None = None,
+        dest_path: str | None = None,
+        make_parents: bool = False,
+    ) -> dict[str, Any]: ...
+
     async def drive_read(self, *, item_id: str) -> dict[str, Any]: ...
+
+    async def drive_rename(self, *, item_id: str, name: str) -> dict[str, Any]: ...
 
     async def mail_attachments_download(
         self,

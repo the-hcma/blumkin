@@ -25,7 +25,10 @@ DRIVE_SKILLS: frozenset[str] = frozenset(
         "drive.export",
         "drive.get",
         "drive.list",
+        "drive.mkdir",
+        "drive.move",
         "drive.read",
+        "drive.rename",
     }
 )
 
@@ -137,13 +140,6 @@ def format_drive_get_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
-def format_drive_read_human(payload: dict[str, Any]) -> list[str]:
-    # A shared Doc is remote content from the same trust boundary as a mail body
-    # or Teams message - strip control chars before it reaches the terminal.
-    lines: list[str] = sanitize_terminal(str(payload.get("markdown") or "")).splitlines()
-    return lines or ["(empty document)"]
-
-
 def format_drive_list_human(payload: dict[str, Any]) -> list[str]:
     items = payload.get("items") or []
     if not items:
@@ -153,6 +149,32 @@ def format_drive_list_human(payload: dict[str, Any]) -> list[str]:
         size = "" if item.get("size") is None else f"  {item['size']}b"
         lines.append(f"  [{item.get('kind'):>6}] {item.get('name')}{size}  id={item.get('id')}")
     return lines
+
+
+def format_drive_mkdir_human(payload: dict[str, Any]) -> list[str]:
+    folder = payload.get("folder") or {}
+    verb = "exists" if payload.get("created") is False else "created"
+    lines = [f"Folder {verb}: {folder.get('path')!r}", f"  id={folder.get('id')}"]
+    if folder.get("web_url"):
+        lines.append(f"  {folder['web_url']}")
+    return lines
+
+
+def format_drive_move_human(payload: dict[str, Any]) -> list[str]:
+    item = payload.get("item") or {}
+    return [f"Moved {item.get('name')!r} (id={item.get('id')}) to folder {payload.get('moved_to')}"]
+
+
+def format_drive_read_human(payload: dict[str, Any]) -> list[str]:
+    # A shared Doc is remote content from the same trust boundary as a mail body
+    # or Teams message - strip control chars before it reaches the terminal.
+    lines: list[str] = sanitize_terminal(str(payload.get("markdown") or "")).splitlines()
+    return lines or ["(empty document)"]
+
+
+def format_drive_rename_human(payload: dict[str, Any]) -> list[str]:
+    item = payload.get("item") or {}
+    return [f"Renamed to {item.get('name')!r} (id={item.get('id')}; url unchanged)"]
 
 
 def flatten_google_doc(document: dict[str, Any]) -> str:
@@ -261,3 +283,11 @@ def validate_folder_selector(folder: str | None, folder_id: str | None) -> None:
     """`drive list` takes at most one of ``--folder`` / ``--folder-id``."""
     if folder is not None and folder_id is not None:
         raise DriveSelectorError("pass at most one of --folder or --folder-id, not both")
+
+
+def validate_move_selector(dest_path: str | None, dest_folder_id: str | None) -> None:
+    """`drive move` takes exactly one of ``--to`` / ``--to-id`` (a blank value counts as absent)."""
+    has_path = bool((dest_path or "").strip())
+    has_id = bool((dest_folder_id or "").strip())
+    if has_path == has_id:
+        raise DriveSelectorError("pass exactly one of --to or --to-id (and it must not be blank)")

@@ -191,8 +191,29 @@ def test_google_drive_list_scopes_and_query(tmp_path: Path) -> None:
             )
         )
     assert get_creds.call_args.kwargs["required_scopes"] is DRIVE_SCOPES
-    q = service.files.return_value.list.call_args.kwargs["q"]
+    kw = service.files.return_value.list.call_args.kwargs
+    q = kw["q"]
     assert "'folder-1' in parents" in q and "name contains 'vocab'" in q and "trashed = false" in q
+    # Folder-scoped list reaches into Shared Drives.
+    assert kw["supportsAllDrives"] is True and kw["includeItemsFromAllDrives"] is True
+
+
+def test_google_drive_list_root_stays_my_drive(tmp_path: Path) -> None:
+    service = _google_service()
+    with _google_patched(service):
+        asyncio.run(GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_list())
+    kw = service.files.return_value.list.call_args.kwargs
+    assert "in parents" not in kw["q"]
+    # An unscoped root list must NOT fold in every Shared Drive.
+    assert kw["supportsAllDrives"] is True
+    assert "includeItemsFromAllDrives" not in kw
+
+
+def test_google_drive_get_carries_supports_all_drives(tmp_path: Path) -> None:
+    service = _google_service()
+    with _google_patched(service):
+        asyncio.run(GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_get(item_id="d1"))
+    assert service.files.return_value.get.call_args.kwargs["supportsAllDrives"] is True
 
 
 def test_google_drive_list_folder_path_walk(tmp_path: Path) -> None:

@@ -405,9 +405,6 @@ class MicrosoftWorkspaceProvider:
     async def drive_get(self, *, item_id: str) -> dict[str, Any]:
         return await microsoft_drive.drive_get(item_id=item_id, config=self._config)
 
-    async def drive_read(self, *, item_id: str) -> dict[str, Any]:
-        return await microsoft_drive.drive_read(item_id=item_id, config=self._config)
-
     async def drive_list(
         self,
         *,
@@ -425,6 +422,31 @@ class MicrosoftWorkspaceProvider:
             top=top,
             config=self._config,
         )
+
+    async def drive_mkdir(self, *, path: str) -> dict[str, Any]:
+        return await microsoft_drive.drive_mkdir(path=path, config=self._config)
+
+    async def drive_move(
+        self,
+        *,
+        item_id: str,
+        dest_folder_id: str | None = None,
+        dest_path: str | None = None,
+        make_parents: bool = False,
+    ) -> dict[str, Any]:
+        return await microsoft_drive.drive_move(
+            item_id=item_id,
+            dest_folder_id=dest_folder_id,
+            dest_path=dest_path,
+            make_parents=make_parents,
+            config=self._config,
+        )
+
+    async def drive_read(self, *, item_id: str) -> dict[str, Any]:
+        return await microsoft_drive.drive_read(item_id=item_id, config=self._config)
+
+    async def drive_rename(self, *, item_id: str, name: str) -> dict[str, Any]:
+        return await microsoft_drive.drive_rename(item_id=item_id, name=name, config=self._config)
 
     async def mail_attachments_download(
         self,
