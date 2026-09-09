@@ -20,6 +20,7 @@ from blumkin.skills.docs import (
     parse_body,
     parse_markdown,
     read_body,
+    render_email_html,
     table_to_text,
 )
 
@@ -100,6 +101,28 @@ def test_plain_text_format_splits_on_blank_lines_only() -> None:
     blocks = parse_body("# not a heading\nsame para\n\nsecond para", body_format="text")
     assert [b.kind for b in blocks] == ["paragraph", "paragraph"]
     assert blocks[0].spans == (DocSpan("# not a heading same para"),)
+
+
+def test_render_email_html_maps_blocks_to_semantic_tags() -> None:
+    html = render_email_html(
+        parse_markdown(
+            "## Heading\n\nA para.\n\n- x\n- y\n\n1. one\n2. two\n\n```\ncode()\n```\n\n---"
+        )
+    )
+    assert html == (
+        "<h2>Heading</h2><p>A para.</p>"
+        "<ul><li>x</li><li>y</li></ul>"
+        "<ol><li>one</li><li>two</li></ol>"
+        "<pre><code>code()</code></pre><hr>"
+    )
+
+
+def test_render_email_html_renders_tables_with_a_header_row() -> None:
+    table = render_email_html(parse_markdown("| A | B |\n|---|---|\n| 1 | 2 |"))
+    assert table == (
+        "<table><thead><tr><th>A</th><th>B</th></tr></thead>"
+        "<tbody><tr><td>1</td><td>2</td></tr></tbody></table>"
+    )
 
 
 def test_parse_body_rejects_an_unknown_format() -> None:

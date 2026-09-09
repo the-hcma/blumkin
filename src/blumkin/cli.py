@@ -2641,10 +2641,10 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
 @click.option(
     "--body-type",
     "body_type",
-    default="text",
+    default="markdown",
     show_default=True,
-    type=click.Choice(["text", "html"], case_sensitive=False),
-    help="Body content type.",
+    type=click.Choice(["markdown", "text", "html"], case_sensitive=False),
+    help="How --body is authored. markdown renders to HTML on the wire.",
 )
 @click.option(
     "--no-signature",
@@ -2707,7 +2707,13 @@ def mail_draft_cmd(
 )
 @click.option("--body", default=None, help="Text to add above the forwarded message.")
 @click.option("--body-file", default=None, help="Read the added text from a file.")
-@click.option("--body-type", default="text", show_default=True, type=click.Choice(["html", "text"]))
+@click.option(
+    "--body-type",
+    default="markdown",
+    show_default=True,
+    type=click.Choice(["markdown", "text", "html"], case_sensitive=False),
+    help="How --body is authored. markdown renders to HTML on the wire.",
+)
 @click.option(
     "--no-signature",
     "no_signature",
@@ -2767,7 +2773,13 @@ def mail_forward_cmd(
 )
 @click.option("--body", default=None, help="Reply text; omit for an empty draft.")
 @click.option("--body-file", default=None, help="Read the reply text from a file.")
-@click.option("--body-type", default="text", show_default=True, type=click.Choice(["html", "text"]))
+@click.option(
+    "--body-type",
+    default="markdown",
+    show_default=True,
+    type=click.Choice(["markdown", "text", "html"], case_sensitive=False),
+    help="How --body is authored. markdown renders to HTML on the wire.",
+)
 @click.option(
     "--no-signature",
     "no_signature",
@@ -2906,10 +2918,10 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
 @click.option(
     "--body-type",
     "body_type",
-    default="text",
+    default="markdown",
     show_default=True,
-    type=click.Choice(["text", "html"], case_sensitive=False),
-    help="Body content type when updating body.",
+    type=click.Choice(["markdown", "text", "html"], case_sensitive=False),
+    help="How --body is authored. markdown renders to HTML on the wire.",
 )
 @click.option(
     "--keep-quoted",

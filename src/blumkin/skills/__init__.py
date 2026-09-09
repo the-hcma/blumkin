@@ -917,7 +917,13 @@ SKILLS: list[SkillSpec] = [
                 "type": "path",
                 "note": "exactly one of --body or --body-file",
             },
-            {"name": "--body-type", "required": False, "type": "enum", "values": ["text", "html"]},
+            {
+                "name": "--body-type",
+                "required": False,
+                "type": "enum",
+                "values": ["markdown", "text", "html"],
+                "note": "how --body is authored; default markdown, rendered to HTML on the wire",
+            },
             {
                 "name": "--no-signature",
                 "required": False,
@@ -967,7 +973,13 @@ SKILLS: list[SkillSpec] = [
                 "note": "at most one of --body or --body-file; omit for an empty draft",
             },
             {"name": "--body-file", "required": False, "type": "path"},
-            {"name": "--body-type", "required": False, "type": "enum", "values": ["html", "text"]},
+            {
+                "name": "--body-type",
+                "required": False,
+                "type": "enum",
+                "values": ["markdown", "text", "html"],
+                "note": "how --body is authored; default markdown, rendered to HTML on the wire",
+            },
             {
                 "name": "--no-signature",
                 "required": False,
@@ -1162,7 +1174,13 @@ SKILLS: list[SkillSpec] = [
                 "note": "at most one of --body or --body-file; omit for an empty draft",
             },
             {"name": "--body-file", "required": False, "type": "path"},
-            {"name": "--body-type", "required": False, "type": "enum", "values": ["html", "text"]},
+            {
+                "name": "--body-type",
+                "required": False,
+                "type": "enum",
+                "values": ["markdown", "text", "html"],
+                "note": "how --body is authored; default markdown, rendered to HTML on the wire",
+            },
             {
                 "name": "--no-signature",
                 "required": False,
@@ -1282,7 +1300,13 @@ SKILLS: list[SkillSpec] = [
             },
             {"name": "--body", "required": False, "type": "string"},
             {"name": "--body-file", "required": False, "type": "path"},
-            {"name": "--body-type", "required": False, "type": "enum", "values": ["text", "html"]},
+            {
+                "name": "--body-type",
+                "required": False,
+                "type": "enum",
+                "values": ["markdown", "text", "html"],
+                "note": "how --body is authored; default markdown, rendered to HTML on the wire",
+            },
         ],
     ),
     SkillSpec(

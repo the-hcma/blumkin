@@ -77,6 +77,42 @@ def test_mail_draft_html_adds_alternative(tmp_path: Path) -> None:
     assert "Hello there" in _content(sent, "plain")
 
 
+def test_mail_draft_defaults_to_markdown_rendered_as_html(tmp_path: Path) -> None:
+    # No --body-type: the Gmail path must render markdown to HTML on the wire and
+    # report body_type "html", and the text/plain alternative must not collapse
+    # the list into "cliffwindow".
+    service = _service(create_result={"id": "d"})
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com", subject="Asks", body="Two things:\n\n1. cliff\n2. window"
+            )
+        )
+    assert payload["draft"]["body_type"] == "html"
+    sent = _sent_message(service, "create")
+    assert _content(sent, "html").strip() == (
+        "<p>Two things:</p><ol><li>cliff</li><li>window</li></ol>"
+    )
+    plain = _content(sent, "plain").replace("\r\n", "\n")
+    assert "cliff\nwindow" in plain
+    assert "cliffwindow" not in plain
+
+
+def test_mail_reply_empty_body_appends_html_signature(tmp_path: Path) -> None:
+    # Empty-body reply on the markdown default: the signature renders as HTML to
+    # match the HTML quoted original (the Gmail counterpart of the Graph case).
+    service = _service(
+        message_result=_full_message(subject="Q", sender="Ada <ada@example.com>"),
+        create_result={"id": "d"},
+    )
+    cfg = _cfg(tmp_path, signature=MailSignatureConfig(enabled=True, name="Ada Lovelace"))
+    with _patched(service):
+        asyncio.run(GoogleWorkspaceProvider(cfg).mail_reply(message_id="m-1"))
+    html = _content(_sent_message(service, "create"), "html")
+    assert "font-weight:bold" in html
+    assert "Ada Lovelace" in html
+
+
 def test_mail_draft_attaches_file(tmp_path: Path) -> None:
     attachment = tmp_path / "note.txt"
     attachment.write_text("payload bytes")

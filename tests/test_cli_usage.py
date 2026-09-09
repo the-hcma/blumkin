@@ -942,7 +942,7 @@ def test_mail_reply_needs_no_yes_because_it_only_drafts(monkeypatch) -> None:
         "bcc": None,
         "body": "Thanks",
         "body_file": None,
-        "body_type": "text",
+        "body_type": "markdown",
         "cc": None,
         "message_id": "msg-1",
         "no_signature": False,

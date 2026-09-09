@@ -157,3 +157,22 @@ def test_update_draft_without_keep_quoted_still_drops_the_thread(
 ) -> None:
     provider = _update_draft_via_cli(tmp_path, monkeypatch, ["--id", "d1", "--body", "fresh text"])
     assert 'id="divRplyFwdMsg"' not in provider.sent_body.content
+
+
+def test_update_draft_keep_quoted_escapes_a_text_head_and_coerces_to_html(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # --body-type text + --keep-quoted: the text head must be HTML-escaped and the
+    # whole body coerced to HTML so the markup tail is not shown literally. The
+    # markdown default renders to HTML on its own, so this branch is only live
+    # for an explicit text body.
+    provider = _update_draft_via_cli(
+        tmp_path,
+        monkeypatch,
+        ["--id", "d1", "--body", "see <5 and 6>", "--body-type", "text", "--keep-quoted"],
+    )
+    content = provider.sent_body.content
+    assert "see &lt;5 and 6&gt;" in content
+    assert "see <5 and 6>" not in content
+    assert 'id="divRplyFwdMsg"' in content
+    assert provider.sent_body.content_type.name.lower() == "html"

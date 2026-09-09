@@ -587,9 +587,13 @@ def _header_map(msg: dict[str, Any]) -> dict[str, str]:
 def _html_to_text(value: str) -> str:
     text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", "", value)
     text = re.sub(r"(?i)<br\s*/?>", "\n", text)
-    text = re.sub(r"(?i)</p>", "\n", text)
+    # Block-level ends -> a newline, so a rendered Markdown body (headings, list
+    # items, table rows) reads as lines in the text/plain alternative instead of
+    # one run-together string.
+    text = re.sub(r"(?i)</(p|li|h[1-6]|tr|blockquote|pre|div)>|<hr\s*/?>", "\n", text)
     text = re.sub(r"(?s)<.*?>", "", text)
-    return html_lib.unescape(text).strip()
+    text = html_lib.unescape(text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _http_not_found(exc: HttpError) -> bool:

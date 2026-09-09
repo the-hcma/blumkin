@@ -541,17 +541,20 @@ MAIL_DRAFT_EPILOG = """
 Examples:
 
 \b
-  # Plain-text draft to two people
+  # Markdown draft to two people (the default: bold, lists, links all render)
   blumkin mail draft --to sam@example.com --to dana@example.com \\
-    --subject "Notes from today" --body "Recap attached. Let me know if I missed anything."
+    --subject "Notes from today" --body-file ./recap.md
 \b
-  # HTML body from a file, with an attachment, skipping the config signature
+  # Raw HTML body from a file, with an attachment, skipping the config signature
   blumkin mail draft --to sam@example.com --subject "Q3 deck" \\
     --body-file ./note.html --body-type html --attach ./q3.pdf --no-signature
 
-Creates the draft only; send it with `mail send-draft --id ... --yes`. `--to` /
-`--cc` / `--bcc` repeat or take comma-separated lists. Keep attachments under
-2 MB each. Use ASCII hyphens in the body, not em dashes.
+Creates the draft only; send it with `mail send-draft --id ... --yes`. `--body`
+is authored as Markdown by default and rendered to HTML on the wire, so the
+message keeps its structure in Gmail and Outlook; pass `--body-type text` for a
+literal plain-text body. `--to` / `--cc` / `--bcc` repeat or take comma-separated
+lists. Keep attachments under 2 MB each. Use ASCII hyphens in the body, not em
+dashes.
 """
 
 MAIL_EPILOG = """
@@ -593,8 +596,9 @@ Example:
     --body "Forwarding for your records - see the thread below."
 
 Creates a forward draft (does not send). Pass `--body` on create; filling it in
-later with `mail update-draft --body` replaces the quoted original. `--cc` /
-`--bcc` on create merge with inherited recipients.
+later with `mail update-draft --body` replaces the quoted original. `--body` is
+Markdown by default, rendered to HTML (use `--body-type text` for plain). `--cc`
+/ `--bcc` on create merge with inherited recipients.
 """
 
 MAIL_GET_EPILOG = """
@@ -751,8 +755,9 @@ Examples:
 
 Prefer this over a fresh draft with "RE:" - Graph keeps it in the original
 conversation and inherits recipients. Draft only; send with `mail send-draft
---yes`. Pass `--body` on create; a later `mail update-draft --body` drops the
-quoted original.
+--yes`. Pass `--body` on create (Markdown by default, rendered to HTML above the
+quoted thread; `--body-type text` for plain); a later `mail update-draft --body`
+drops the quoted original.
 """
 
 MAIL_SEND_DRAFT_EPILOG = """

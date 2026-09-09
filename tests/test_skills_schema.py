@@ -410,8 +410,8 @@ _ENUM_VALUES = {
     ("calendar.get", "--body-type"): ["html", "text"],
     ("calendar.suggest", "--treat-tentative"): ["busy", "free"],
     ("mail.auto-reply", "--external"): ["none", "contacts", "all"],
-    ("mail.draft", "--body-type"): ["text", "html"],
-    ("mail.forward", "--body-type"): ["html", "text"],
+    ("mail.draft", "--body-type"): ["markdown", "text", "html"],
+    ("mail.forward", "--body-type"): ["markdown", "text", "html"],
     ("mail.get", "--body-type"): ["html", "text"],
     ("mail.thread", "--body-type"): ["html", "text"],
     ("mail.inbox", "--importance"): ["high", "normal", "low"],
@@ -419,8 +419,8 @@ _ENUM_VALUES = {
     ("mail.list", "--importance"): ["high", "normal", "low"],
     ("mail.signature", "--body-type"): ["html", "text"],
     ("mail.list", "--orderby"): ["created", "received", "sent"],
-    ("mail.reply", "--body-type"): ["html", "text"],
-    ("mail.update-draft", "--body-type"): ["text", "html"],
+    ("mail.reply", "--body-type"): ["markdown", "text", "html"],
+    ("mail.update-draft", "--body-type"): ["markdown", "text", "html"],
 }
 
 
