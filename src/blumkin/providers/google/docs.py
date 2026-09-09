@@ -2,9 +2,9 @@
 
 ``documents.create`` makes an empty doc; one ``documents.batchUpdate`` then
 inserts the whole body as text and styles it by absolute index (headings, bold /
-italic / code / links, lists, fenced code, rules). ``--folder`` is created (or
-reused, if this tool made it before) via the ``drive.file`` scope, which only
-ever sees files blumkin itself created.
+italic / code / links, lists, fenced code, rules). ``--folder`` is a path: an
+existing folder (needs the broad ``drive`` scope, ``DOCS_FOLDER_SCOPES``) or one
+created on the spot; a root-level doc needs only ``{documents, drive.file}``.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Any
 
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google.drive import resolve_folder_path
-from blumkin.providers.google_auth import DOCS_SCOPES, get_credentials
+from blumkin.providers.google_auth import DOCS_FOLDER_SCOPES, DOCS_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.docs import DocBlock, DocSpan, parse_body, read_body, table_to_text
 
@@ -47,7 +47,11 @@ async def docs_create(
     cfg = config or load_config()
     blocks = parse_body(read_body(body, body_file), body_format=body_format)
 
-    creds = get_credentials(cfg, allow_interactive=False, required_scopes=DOCS_SCOPES)
+    folder_name = folder.strip() if folder else None
+    # Only `--folder <path>` needs the broad `drive` scope; a root-level doc runs
+    # fine on the narrow {documents, drive.file} grant.
+    required = DOCS_FOLDER_SCOPES if folder_name else DOCS_SCOPES
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=required)
     docs = build_api_service("docs", "v1", creds=creds, config=cfg)
     document = execute(docs.documents().create(body={"title": title.strip()}))
     document_id = str(document["documentId"])
@@ -56,7 +60,6 @@ async def docs_create(
     if requests:
         execute(docs.documents().batchUpdate(documentId=document_id, body={"requests": requests}))
 
-    folder_name = folder.strip() if folder else None
     if folder_name:
         drive = build_api_service("drive", "v3", creds=creds, config=cfg)
         _move_to_folder(drive, document_id=document_id, folder_name=folder_name)
