@@ -24,6 +24,11 @@ from blumkin.exit_codes import (
     EXIT_SUCCESS,
     EXIT_USAGE,
 )
+from blumkin.mail_signature_state import (
+    clear_signature_state,
+    load_signature_state,
+    record_signature_state,
+)
 from blumkin.output import emit_error, emit_json, emit_lines
 from blumkin.pipx_install import PIPX_UPGRADE_TIMEOUT_S, pipx_blumkin_path
 from blumkin.providers import get_provider
@@ -353,6 +358,21 @@ def _workspace(config: BlumkinConfig | None = None) -> WorkspaceProvider:
         raise SystemExit(EXIT_USAGE) from exc
 
 
+def _refresh_signature_probe(config: BlumkinConfig) -> None:
+    """Best-effort: detect whether the mail client auto-signs, and cache the answer.
+
+    Run from ``auth login`` / ``doctor``. Any failure - the probe (no Mail scope,
+    offline, Graph error) or the state write (read-only / full config dir) -
+    leaves the cached state untouched and must never break an otherwise
+    successful login, so the whole thing is swallowed.
+    """
+    try:
+        detected = asyncio.run(_workspace(config).probe_mail_signature())
+        record_signature_state(config, detected=detected)
+    except Exception:
+        return
+
+
 def _fail(exc: BaseException, *, as_json: bool) -> NoReturn:
     """Classify any exception and turn it into the documented envelope + exit code."""
     info: ErrorInfo = classify_exception(exc)
@@ -531,12 +551,29 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         _emit_error(error="auth_required", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_AUTH) from exc
     populated = _populate_profile_email_once()
+    cfg = _load_config()
+    _refresh_signature_probe(cfg)
+    signature_state = load_signature_state(cfg)
     if as_json:
-        emit_json({"ok": True, "email_written": populated, "status": _auth_status_payload()})
+        emit_json(
+            {
+                "ok": True,
+                "email_written": populated,
+                "outlook_signature_detected": signature_state.detected,
+                "status": _auth_status_payload(),
+            }
+        )
     else:
         emit_lines(["Signed in. Token cache written under ~/.config/blumkin/."])
         if populated:
             emit_lines([f"Recorded account email in config.toml: {populated}"])
+        if signature_state.suppresses_signature:
+            emit_lines(
+                [
+                    "Outlook adds its own signature for this account - blumkin will "
+                    "not append [mail.signature] to drafts (avoids a double signature)."
+                ]
+            )
 
 
 @auth.command("logout", epilog=help_text.AUTH_LOGOUT_EPILOG)
@@ -548,7 +585,9 @@ def auth_logout(ctx: click.Context, as_json_flag: bool) -> None:
     The next Graph call needs a fresh `auth login`.
     """
     as_json = _as_json(ctx, as_json_flag)
-    _workspace().auth_logout()
+    cfg = _load_config()
+    _workspace(cfg).auth_logout()
+    clear_signature_state(cfg)
     if as_json:
         emit_json({"ok": True})
     else:
@@ -988,6 +1027,17 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
                 f"config.toml email is {cfg.email!r} but this profile is signed in as "
                 f"{live!r}; update config.toml if the account really changed"
             )
+    # Re-probe the mail-client auto-signature (the Outlook setting Graph does not
+    # expose) so a change since login is picked up. Best-effort; needs a working
+    # auth cache, so skip it when the checks above already found auth problems.
+    if not problems:
+        _refresh_signature_probe(cfg)
+    signature_state = load_signature_state(cfg)
+    if signature_state.suppresses_signature:
+        warnings.append(
+            "this account's mail client auto-inserts its own signature - blumkin is "
+            "not appending [mail.signature] to drafts to avoid a double signature"
+        )
     build = build_status_fields()
     payload = {
         "ok": not problems,
@@ -995,6 +1045,11 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         "wo1162425_scopes": cfg.wo1162425_scopes,
         "problems": problems,
         "warnings": warnings,
+        "mail_signature": {
+            "configured": cfg.mail_signature.enabled,
+            "outlook_signature_detected": signature_state.detected,
+            "suppressed": signature_state.suppresses_signature and cfg.mail_signature.enabled,
+        },
         "status": status,
         "skills": [s["id"] for s in skills_catalog()["skills"]],
     }
@@ -2852,6 +2907,10 @@ def mail_signature_cmd(ctx: click.Context, body_type: str, as_json_flag: bool) -
     Read-only. Use it to append the exact configured sign-off to a body you are
     composing yourself, instead of hand-reconstructing the markup. Empty output
     means the profile has no signature configured (or it is disabled).
+
+    If `auth login` / `doctor` detected that your mail client (Outlook) already
+    auto-inserts a signature, blumkin stops appending [mail.signature] to drafts
+    to avoid a double signature; this command reports that as `suppressed`.
     """
     as_json = _as_json(ctx, as_json_flag)
     cfg = _load_config()
@@ -2860,17 +2919,28 @@ def mail_signature_cmd(ctx: click.Context, body_type: str, as_json_flag: bool) -
     except ValueError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
+    state = load_signature_state(cfg)
+    suppressed = state.suppresses_signature and cfg.mail_signature.enabled
     if as_json:
         emit_json(
             {
                 "ok": True,
                 "body_type": body_type.lower(),
                 "enabled": cfg.mail_signature.enabled,
+                "outlook_signature_detected": state.detected,
                 "signature": rendered,
+                "suppressed": suppressed,
             }
         )
     else:
         emit_lines([rendered] if rendered else ["(no signature configured)"])
+        if suppressed:
+            emit_lines(
+                [
+                    "note: not appended to drafts - your mail client auto-inserts "
+                    "its own signature (run `blumkin doctor` to re-check)"
+                ]
+            )
     raise SystemExit(EXIT_SUCCESS)
 
 

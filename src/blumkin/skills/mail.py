@@ -68,6 +68,7 @@ from blumkin.attachments import (
 )
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
+from blumkin.mail_signature_state import load_signature_state
 from blumkin.output import sanitize_terminal
 from blumkin.skills.docs import parse_body as _parse_doc_body
 from blumkin.skills.docs import render_email_html as _render_email_html
@@ -131,9 +132,17 @@ def append_mail_signature(
     config: BlumkinConfig,
     no_signature: bool = False,
 ) -> str:
-    """Append the configured signature when enabled and not opted out."""
+    """Append the configured signature when enabled and not opted out.
+
+    Also stands down when a login-time probe found that Outlook itself
+    auto-inserts a signature for this account (see
+    :mod:`blumkin.mail_signature_state`) - otherwise a draft blumkin leaves in
+    the mailbox ends up double-signed once Outlook's compose pipeline touches it.
+    """
     signature = getattr(config, "mail_signature", None)
     if no_signature or signature is None or not signature.enabled:
+        return content
+    if load_signature_state(config).suppresses_signature:
         return content
     rendered = render_mail_signature(signature, body_type=body_type)
     if not rendered:

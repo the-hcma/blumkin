@@ -523,7 +523,9 @@ v1 is stdio only. A loopback HTTP transport is a later option if a host needs it
   as a people directory — use `blumkin people resolve` and ask the user when
   `ambiguous: true`
 - Inventing colored HTML mail signatures per draft (use `[mail.signature]` /
-  `--no-signature` instead)
+  `--no-signature` instead). If `mail signature --json` shows `suppressed: true`,
+  the account's Outlook adds its own signature and blumkin is deliberately not
+  appending `[mail.signature]` — do not force it back in.
 - Hand-writing HTML for a mail body — `mail draft` / `reply` / `forward` take
   Markdown by default and render it to HTML; pass `--body-type text` only when a
   literal plain-text body is wanted

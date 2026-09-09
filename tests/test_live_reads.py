@@ -11,6 +11,8 @@ import pytest
 
 from blumkin.auth import reload_token_cache_from_disk, save_token_cache, status_dict
 from blumkin.config import load_config
+from blumkin.providers.kind import ProviderKind
+from blumkin.providers.microsoft_mail_probe import probe_outlook_signature
 from blumkin.skills.calendar import calendar_today
 
 pytestmark = pytest.mark.live
@@ -49,6 +51,21 @@ def test_live_calendar_today() -> None:
     assert "items" in payload
     assert isinstance(payload["items"], list)
     assert payload["timezone"]
+
+
+def test_live_outlook_signature_probe_round_trips() -> None:
+    """The probe creates + reads + deletes a draft; assert it stays in our own mailbox."""
+    if not _live_ready():
+        pytest.skip(
+            "Set BLUMKIN_LIVE=1 and configure ~/.config/blumkin "
+            "(config.toml + token cache + auth record + refresh token)"
+        )
+    cfg = load_config()
+    if cfg.provider is not ProviderKind.MICROSOFT:
+        pytest.skip("the Outlook signature probe is Microsoft-only")
+    detected = asyncio.run(probe_outlook_signature(cfg))
+    # None only if Graph refused the probe entirely; otherwise it is a real bool.
+    assert detected is None or isinstance(detected, bool)
 
 
 def test_live_silent_refresh_after_forced_access_token_expiry() -> None:

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
+from blumkin.mail_signature_state import record_signature_state
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.mail import append_mail_signature, mail_draft, render_mail_signature
 
@@ -110,6 +111,22 @@ def test_append_mail_signature_disabled_is_noop(tmp_path: Path, monkeypatch) -> 
     cfg = load_config()
     assert cfg.mail_signature.enabled is False
     assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello"
+
+
+def test_append_mail_signature_stands_down_when_outlook_auto_signs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        'client_id = "abc"\n[mail.signature]\nenabled = true\nname = "Ada"\n'
+    )
+    cfg = load_config()
+    assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello\n\nAda"
+    record_signature_state(cfg, detected=True)
+    assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello"
+    # A negative probe result does not suppress.
+    record_signature_state(cfg, detected=False)
+    assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello\n\nAda"
 
 
 def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
