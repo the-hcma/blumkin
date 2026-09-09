@@ -778,6 +778,10 @@ on until you turn it off); the dates are read in the profile timezone
 `--external` picks who outside your org gets a reply: `all` (default),
 `contacts`, or `none`.
 
+The message is authored as plain text; on Microsoft its newlines are converted
+to `<br>` (Exchange stores the OOF body as HTML), so a multi-line
+`--message-file` keeps its line breaks in Outlook.
+
 Microsoft splits internal and external bodies - `--external-message` sets a
 separate one; it needs `wo1162425_scopes` (MailboxSettings.ReadWrite). Google
 has a single body (so `--external-message` is rejected); `--external contacts`

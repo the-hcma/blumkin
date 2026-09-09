@@ -526,11 +526,12 @@ async def mail_auto_reply(
         settings = await client.me.mailbox_settings.get()
         current = getattr(settings, "automatic_replies_setting", None)
         return {"auto_reply": _auto_reply_to_dict(current)}
+    authored: tuple[str, str] | None = None
     if enable is False:
         setting = AutomaticRepliesSetting(status=AutomaticRepliesStatus.Disabled)
     else:
         body_text = _read_body_arg(message, message_file)
-        if not body_text:
+        if not body_text or not body_text.strip():
             raise ValueError("turning auto-reply on needs --message or --message-file")
         if external_audience is not None and external_audience not in _OOF_AUDIENCE:
             raise ValueError("--external must be none, contacts, or all")
@@ -538,12 +539,22 @@ async def mail_auto_reply(
         # default_tz is a free-form, unvalidated config string; fall back so a
         # scheduled OOF window never ships an empty/garbage IANA name to Graph.
         tz_name = _oof_zone_name(cfg.default_tz) if scheduled else cfg.default_tz
+        # Exchange stores/renders the OOF body as HTML - keep the authored line
+        # breaks. An absent or blank --external-message falls back to the internal
+        # body (same emptiness test as the internal guard above).
+        internal_plain = _oof_plain(body_text)
+        external_plain = (
+            _oof_plain(external_message)
+            if external_message and external_message.strip()
+            else internal_plain
+        )
+        authored = (internal_plain, external_plain)
         setting = AutomaticRepliesSetting(
             status=AutomaticRepliesStatus.Scheduled
             if scheduled
             else AutomaticRepliesStatus.AlwaysEnabled,
-            internal_reply_message=body_text,
-            external_reply_message=external_message or body_text,
+            internal_reply_message=_oof_html(internal_plain),
+            external_reply_message=_oof_html(external_plain),
             external_audience=_OOF_AUDIENCE[external_audience or "all"],
             scheduled_start_date_time=_oof_dtz(start, tz_name) if start else None,
             scheduled_end_date_time=_oof_dtz(until, tz_name, end=True) if until else None,
@@ -552,7 +563,12 @@ async def mail_auto_reply(
         MailboxSettings(automatic_replies_setting=setting)
     )
     applied = getattr(updated, "automatic_replies_setting", setting)
-    return {"auto_reply": _auto_reply_to_dict(applied)}
+    result = _auto_reply_to_dict(applied)
+    if authored is not None:
+        # Echo the plain text the user authored, not the HTML just stored -
+        # re-feeding a round-tripped body to --message would double-escape it.
+        result["internal_message"], result["external_message"] = authored
+    return {"auto_reply": result}
 
 
 def _oof_dtz(day: date, tz_name: str, *, end: bool = False) -> DateTimeTimeZone:
@@ -563,6 +579,30 @@ def _oof_dtz(day: date, tz_name: str, *, end: bool = False) -> DateTimeTimeZone:
     """
     boundary = day + timedelta(days=1) if end else day
     return DateTimeTimeZone(date_time=f"{boundary.isoformat()}T00:00:00", time_zone=tz_name)
+
+
+def _oof_plain(text: str) -> str:
+    """Authored OOF text, newline- and whitespace-normalized.
+
+    This is what a write echoes back (``_oof_html`` starts from the same value),
+    so ``read -> tweak -> re-set`` a body without it drifting.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _oof_html(text: str) -> str:
+    """A plain-text automatic-reply message -> the HTML Exchange actually stores.
+
+    Graph renders ``internal/externalReplyMessage`` as HTML, so a bare-``\\n``
+    body arrives in Outlook as one run-on paragraph. Escape the text and turn
+    newlines into ``<br>`` so the line breaks survive.
+
+    The no-arg *read* path is deliberately not the inverse: an OOF set outside
+    blumkin (Outlook stores a full HTML document) is returned verbatim rather
+    than lossily un-HTML'd. A write echoes the authored plain text instead (see
+    ``mail_auto_reply``), so only a foreign body ever reads back as markup.
+    """
+    return html_lib.escape(_oof_plain(text)).replace("\n", "<br>")
 
 
 def _oof_zone_name(tz_name: str) -> str:
