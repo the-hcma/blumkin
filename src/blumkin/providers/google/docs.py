@@ -52,6 +52,15 @@ async def docs_create(
     # fine on the narrow {documents, drive.file} grant.
     required = DOCS_FOLDER_SCOPES if folder_name else DOCS_SCOPES
     creds = get_credentials(cfg, allow_interactive=False, required_scopes=required)
+
+    # Resolve --folder BEFORE minting the doc, so an ambiguous / missing segment
+    # is a side-effect-free usage_error instead of orphaning an authored doc in
+    # the Drive root (which every MCP retry would then multiply).
+    folder_id: str | None = None
+    if folder_name:
+        drive = build_api_service("drive", "v3", creds=creds, config=cfg)
+        folder_id, _ = resolve_folder_path(drive, folder_name, create=True)
+
     docs = build_api_service("docs", "v1", creds=creds, config=cfg)
     document = execute(docs.documents().create(body={"title": title.strip()}))
     document_id = str(document["documentId"])
@@ -60,9 +69,8 @@ async def docs_create(
     if requests:
         execute(docs.documents().batchUpdate(documentId=document_id, body={"requests": requests}))
 
-    if folder_name:
-        drive = build_api_service("drive", "v3", creds=creds, config=cfg)
-        _move_to_folder(drive, document_id=document_id, folder_name=folder_name)
+    if folder_id is not None:
+        _reparent(drive, document_id=document_id, folder_id=folder_id)
 
     return {
         "document": {
@@ -118,12 +126,7 @@ def _block_text(block: DocBlock) -> str:
     return f"{_spans_text(block.spans)}\n"
 
 
-def _move_to_folder(drive: Any, *, document_id: str, folder_name: str) -> None:
-    # `--folder` is a path now (the `drive` scope, D11 / #212): walk it from root
-    # and create missing segments. `resolve_folder_path` raises on an ambiguous
-    # segment rather than guessing, and a lookup failure propagates rather than
-    # silently minting a duplicate on a transient 429/5xx.
-    folder_id, _ = resolve_folder_path(drive, folder_name, create=True)
+def _reparent(drive: Any, *, document_id: str, folder_id: str) -> None:
     # documents.create drops the doc in the Drive root; removeParents="root" moves
     # it rather than adding a second parent - otherwise the doc shows in both.
     execute(

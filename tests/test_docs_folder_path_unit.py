@@ -106,7 +106,7 @@ def test_folder_docs_create_creates_missing_segments(tmp_path: Path) -> None:
     assert payload["document"]["folder"] == "Language Classes/Portuguese Classes"
 
 
-def test_folder_docs_create_ambiguous_segment_propagates(tmp_path: Path) -> None:
+def test_folder_docs_create_ambiguous_segment_is_side_effect_free(tmp_path: Path) -> None:
     service = _docs_service()
     service.files.return_value.list.return_value.execute.return_value = {
         "files": [{"id": "a", "name": "Reports"}, {"id": "b", "name": "Reports"}]
@@ -115,7 +115,10 @@ def test_folder_docs_create_ambiguous_segment_propagates(tmp_path: Path) -> None
         _run_google_docs_create(
             service, _google_cfg(tmp_path), title="T", body="hi", folder="Reports"
         )
-    # The doc was minted in Drive root before the move failed; it was never reparented.
+    # The folder is resolved BEFORE the doc is minted, so an ambiguous --folder
+    # leaves nothing behind for an MCP retry to multiply.
+    service.documents.return_value.create.assert_not_called()
+    service.files.return_value.create.assert_not_called()
     service.files.return_value.update.assert_not_called()
 
 
