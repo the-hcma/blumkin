@@ -62,9 +62,13 @@ def test_dumb_terminal_disables_hyperlinks(monkeypatch: pytest.MonkeyPatch) -> N
     assert hyperlink("label", _URL, stream=_Tty()) == f"label ({_URL})"
 
 
-def test_a_url_with_a_control_char_never_emits_an_escape() -> None:
+def test_a_url_with_a_control_char_neither_emits_nor_passes_through_an_escape() -> None:
     poisoned = f"{_URL}\x1b]0;pwned\x07"
-    assert hyperlink("label", poisoned, stream=_Tty()) == f"label ({poisoned})"
+    out = hyperlink("label", poisoned, stream=_Tty())
+    # Falls back to plain text, and the control bytes are stripped from it too -
+    # the fallback is printed straight to the terminal.
+    assert out == f"label ({_URL}]0;pwned)"
+    assert "\x1b" not in out and "\x07" not in out
 
 
 def test_a_hostile_label_cannot_break_out_of_the_escape() -> None:

@@ -61,16 +61,19 @@ def hyperlink(label: str, url: str, *, stream: TextIO | None = None) -> str:
     is ``never``, under ``NO_COLOR`` / ``TERM=dumb``, or when ``url`` carries a
     control character that would break out of the escape sequence.
 
-    ``label`` is often remote content (a Drive item or document name), so control
-    chars are stripped from it before it is embedded - a name containing the OSC
-    terminator must not retarget or escape the hyperlink.
+    Both ``label`` and ``url`` are stripped of C0/C1 control chars before use -
+    ``label`` is often remote content (a Drive item or document name), and the
+    plain fallback is printed straight to the terminal - so neither can retarget
+    or escape the hyperlink, or run an escape sequence when printed raw.
 
     Never call this on a string headed for ``--json`` output - JSON payloads keep
     the raw URL string.
     """
     label = sanitize_terminal(label)
+    control_in_url = bool(_CONTROL_RE.search(url))
+    url = sanitize_terminal(url)
     plain = url if label == url else f"{label} ({url})"
-    if _CONTROL_RE.search(url) or not _hyperlinks_enabled(stream):
+    if control_in_url or not _hyperlinks_enabled(stream):
         return plain
     esc = "\x1b"
     return f"{esc}]8;;{url}{esc}\\{label}{esc}]8;;{esc}\\"
