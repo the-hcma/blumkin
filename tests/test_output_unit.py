@@ -67,6 +67,18 @@ def test_a_url_with_a_control_char_never_emits_an_escape() -> None:
     assert hyperlink("label", poisoned, stream=_Tty()) == f"label ({poisoned})"
 
 
+def test_a_hostile_label_cannot_break_out_of_the_escape() -> None:
+    # A remote Drive/doc name carrying the OSC terminator + a new hyperlink.
+    hostile = "report\x1b\\\x1b]8;;https://evil.example\x1b\\click"
+    out = hyperlink(hostile, _URL, stream=_Tty())
+    assert out.startswith(f"\x1b]8;;{_URL}\x1b\\")
+    assert out.endswith("\x1b]8;;\x1b\\")
+    assert out.count("\x1b") == 4  # only the helper's own escapes; none from the label
+    assert "evil.example" in out  # survives as literal, harmless text
+    # Plain fallback is clean too.
+    assert "\x1b" not in hyperlink(hostile, _URL, stream=_NotTty())
+
+
 def test_a_placeholder_url_round_trips_through_str_format() -> None:
     template = hyperlink("Google authorization page", "{url}", stream=_Tty())
     assert template.format(url=_URL) == (
