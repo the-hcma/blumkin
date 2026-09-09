@@ -193,6 +193,8 @@ async def drive_move(
     else:
         assert dest_path is not None
         segments = split_path(dest_path)
+        if not segments:
+            raise ValueError("--to must name a folder, not the drive root")
         folder = await _get_item_by_path(client, segments)
         if folder is not None and folder.folder is None:
             raise ValueError(f"--to {dest_path!r} is a file, not a folder")

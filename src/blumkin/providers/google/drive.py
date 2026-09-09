@@ -244,11 +244,15 @@ async def drive_move(
         target = dest_folder_id
     else:
         assert dest_path is not None
+        if not split_path(dest_path):
+            raise ValueError("--to must name a folder, not the drive root")
         try:
             target, _ = _resolve_folder_path(service, dest_path, create=make_parents)
         except DriveFolderNotFoundError as exc:
-            raise DriveFolderNotFoundError(
-                f"{exc} - pass --make-parents to create {dest_path!r}"
+            # A missing --to without --make-parents is a usage error (exit 2), not
+            # a bare not_found - the operator can create it or pass --to-id.
+            raise ValueError(
+                f"{exc} - pass --make-parents to create {dest_path!r}, or --to-id"
             ) from exc
     try:
         current = execute(service.files().get(fileId=item_id, fields="id,name,parents"))

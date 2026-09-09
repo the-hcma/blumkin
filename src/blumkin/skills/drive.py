@@ -267,9 +267,11 @@ def validate_folder_selector(folder: str | None, folder_id: str | None) -> None:
 
 
 def validate_move_selector(dest_path: str | None, dest_folder_id: str | None) -> None:
-    """`drive move` takes exactly one of ``--to`` / ``--to-id``."""
-    if (dest_path is None) == (dest_folder_id is None):
-        raise DriveSelectorError("pass exactly one of --to or --to-id")
+    """`drive move` takes exactly one of ``--to`` / ``--to-id`` (a blank value counts as absent)."""
+    has_path = bool((dest_path or "").strip())
+    has_id = bool((dest_folder_id or "").strip())
+    if has_path == has_id:
+        raise DriveSelectorError("pass exactly one of --to or --to-id (and it must not be blank)")
 
 
 def format_drive_mkdir_human(payload: dict[str, Any]) -> list[str]:
