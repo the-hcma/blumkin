@@ -6,7 +6,7 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import httplib2
 import pytest
@@ -868,8 +868,13 @@ def test_get_credentials_runs_browser_when_scopes_are_incomplete(tmp_path: Path)
         google_auth.get_credentials(cfg, allow_interactive=True)
 
     flow.run_local_server.assert_called_once_with(
-        port=0, authorization_url_params={"prompt": "consent"}
+        port=0,
+        authorization_url_params={"prompt": "consent"},
+        authorization_prompt_message=ANY,
     )
+    # The consent prompt keeps the library's `{url}` placeholder so the long
+    # authorization URL can render as an OSC 8 hyperlink on a TTY (#233).
+    assert "{url}" in flow.run_local_server.call_args.kwargs["authorization_prompt_message"]
 
 
 def test_load_credentials_prefers_oauth_file_client_secret(tmp_path: Path) -> None:

@@ -23,7 +23,7 @@ from blumkin.auth import (
     interactive_auth_allowed,
 )
 from blumkin.config import BlumkinConfig, google_oauth_installed_client, load_config
-from blumkin.output import emit_warning
+from blumkin.output import emit_warning, hyperlink
 from blumkin.providers.google_http import refresh_request
 from blumkin.providers.kind import ProviderConfigError
 
@@ -345,6 +345,18 @@ def _classify_refresh_error(exc: BaseException) -> AuthRequiredError | AuthTrans
     )
 
 
+def _authorization_prompt_message() -> str:
+    """The line ``run_local_server`` prints before opening the browser.
+
+    ``google_auth_oauthlib`` substitutes ``{url}`` with the (very long) consent
+    URL; wrap that placeholder in an OSC 8 hyperlink so a capable terminal shows
+    a short click target instead of a dozen wrapped rows. Falls back to the plain
+    URL off a TTY (see :func:`blumkin.output.hyperlink`).
+    """
+    link = hyperlink("Google authorization page", "{url}")
+    return f"Opening your browser to authorize blumkin. If it does not open, visit:\n  {link}"
+
+
 def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
     """Build InstalledAppFlow client config from the Desktop download JSON.
 
@@ -392,7 +404,11 @@ def _consent_once(cfg: BlumkinConfig, *, force_consent: bool) -> Credentials:
     """Run the browser consent flow exactly once; let a partial-grant Warning propagate."""
     flow = InstalledAppFlow.from_client_config(_client_config(cfg), scopes=sorted(GOOGLE_SCOPES))
     url_params = {"prompt": "consent"} if force_consent else None
-    creds = flow.run_local_server(port=0, authorization_url_params=url_params)
+    creds = flow.run_local_server(
+        port=0,
+        authorization_url_params=url_params,
+        authorization_prompt_message=_authorization_prompt_message(),
+    )
     if not isinstance(creds, Credentials):
         raise TypeError("expected google.oauth2.credentials.Credentials from InstalledAppFlow")
     return creds

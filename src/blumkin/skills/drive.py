@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from blumkin.output import sanitize_terminal
+from blumkin.output import hyperlink, sanitize_terminal
 
 # Every `drive.*` skill id. The dispatch layer gates the whole set on the
 # Microsoft `docs_scopes` toggle (Files.ReadWrite) - the same grant `docs create`
@@ -133,7 +133,7 @@ def format_drive_get_human(payload: dict[str, Any]) -> list[str]:
     if item.get("parent_id"):
         lines.append(f"  parent: {item['parent_id']}")
     if item.get("web_url"):
-        lines.append(f"  {item['web_url']}")
+        lines.append(f"  {_drive_weblink(item)}")
     exports = item.get("export_formats") or []
     if exports:
         lines.append(f"  export: {', '.join(exports)}")
@@ -156,7 +156,7 @@ def format_drive_mkdir_human(payload: dict[str, Any]) -> list[str]:
     verb = "exists" if payload.get("created") is False else "created"
     lines = [f"Folder {verb}: {folder.get('path')!r}", f"  id={folder.get('id')}"]
     if folder.get("web_url"):
-        lines.append(f"  {folder['web_url']}")
+        lines.append(f"  {_drive_weblink(folder, label=str(folder.get('path') or ''))}")
     return lines
 
 
@@ -215,6 +215,13 @@ def normalize_order(order: str | None) -> str:
 
 
 _HEADING_LEVEL = {f"HEADING_{n}": n for n in range(1, 7)}
+
+
+def _drive_weblink(item: dict[str, Any], *, label: str = "") -> str:
+    """A drive item's web URL as an OSC 8 hyperlink (plain URL off a TTY)."""
+    url = str(item.get("web_url") or "")
+    text = (label or str(item.get("name") or "")).strip()
+    return hyperlink(text or url, url) if url else url
 
 
 def _inline_markdown(text_run: dict[str, Any]) -> str:

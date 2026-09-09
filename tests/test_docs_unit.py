@@ -622,7 +622,8 @@ def test_format_docs_update_human_reads_cleanly() -> None:
         }
     )
     assert lines[0] == "Document updated: 'Brief' (gdoc)"
-    assert lines[-1].endswith("/d1/edit")
+    # Off a TTY the web URL stays plain (label + parenthesised address); see #233.
+    assert lines[-1] == "  Brief (https://docs.google.com/document/d/d1/edit)"
 
 
 def test_format_docs_create_human_reads_cleanly() -> None:
@@ -639,4 +640,4 @@ def test_format_docs_create_human_reads_cleanly() -> None:
     )
     assert lines[0] == "Document created: 'Brief' (gdoc)"
     assert "  folder: Briefs" in lines
-    assert lines[-1].endswith("/d1/edit")
+    assert lines[-1] == "  Brief (https://docs.google.com/document/d/d1/edit)"

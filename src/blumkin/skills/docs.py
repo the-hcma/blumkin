@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from blumkin.output import hyperlink
+
 DocBlockKind = Literal["heading", "paragraph", "bullet", "number", "code", "rule", "table"]
 
 # A whole authored document is held in memory (and, for Microsoft, turned into an
@@ -60,7 +62,7 @@ def format_docs_create_human(payload: dict[str, Any]) -> list[str]:
     if document.get("folder"):
         lines.append(f"  folder: {document['folder']}")
     lines.append(f"  id={document.get('id')}")
-    lines.append(f"  {document.get('web_url')}")
+    lines.append(f"  {_doc_weblink(document)}")
     return lines
 
 
@@ -69,7 +71,7 @@ def format_docs_update_human(payload: dict[str, Any]) -> list[str]:
     return [
         f"Document updated: {document.get('name')!r} ({document.get('format')})",
         f"  id={document.get('id')}",
-        f"  {document.get('web_url')}",
+        f"  {_doc_weblink(document)}",
     ]
 
 
@@ -399,6 +401,13 @@ def _coalesce(spans: list[DocSpan]) -> tuple[DocSpan, ...]:
         else:
             merged.append(span)
     return tuple(merged)
+
+
+def _doc_weblink(document: dict[str, Any]) -> str:
+    """The document's web URL as an OSC 8 hyperlink (plain URL off a TTY)."""
+    url = str(document.get("web_url") or "")
+    name = str(document.get("name") or "").strip()
+    return hyperlink(name or url, url) if url else url
 
 
 def _is_table_separator(line: str) -> bool:
