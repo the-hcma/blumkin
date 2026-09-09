@@ -171,7 +171,7 @@ async def drive_mkdir(*, path: str, config: BlumkinConfig | None = None) -> dict
     if existing is not None:
         # A same-named *file* occupies the slot - OneDrive forbids a folder next to it.
         if existing.folder is None:
-            raise DriveFolderNotFoundError(f"{'/'.join(segments)!r} is a file, not a folder")
+            raise ValueError(f"{'/'.join(segments)!r} is a file, not a folder")
         return _mkdir_payload(existing, segments, created=False)
     folder = await _mkdir_p(client, segments)
     return _mkdir_payload(folder, segments, created=True)
@@ -345,7 +345,7 @@ async def _mkdir_p(client: Any, segments: list[str]) -> DriveItem:
         existing = await _get_item_by_path(client, current)
         if existing is not None:
             if existing.folder is None:
-                raise DriveFolderNotFoundError(f"{'/'.join(current)!r} is a file, not a folder")
+                raise ValueError(f"{'/'.join(current)!r} is a file, not a folder")
             leaf = existing
         else:
             # `conflictBehavior=replace` is not documented for POST /children (it
@@ -366,9 +366,7 @@ async def _mkdir_p(client: Any, segments: list[str]) -> DriveItem:
                     raise
                 leaf = await _get_item_by_path(client, current)
                 if leaf is None or leaf.folder is None:
-                    raise DriveFolderNotFoundError(
-                        f"{'/'.join(current)!r} is a file, not a folder"
-                    ) from exc
+                    raise ValueError(f"{'/'.join(current)!r} is a file, not a folder") from exc
         parent = current
     assert leaf is not None
     return leaf

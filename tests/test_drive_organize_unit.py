@@ -18,7 +18,6 @@ from blumkin.providers.kind import ProviderKind
 from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
 from blumkin.skills.dispatch import run_skill
 from blumkin.skills.drive import (
-    DriveFolderNotFoundError,
     DriveItemNotFoundError,
     DriveSelectorError,
     validate_move_selector,
@@ -487,8 +486,19 @@ def test_ms_mkdir_noop(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_ms_mkdir_refuses_a_file_in_the_slot(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _ms_client(path_items={"A/B": _ms_file("f", "B")})
-    with pytest.raises(DriveFolderNotFoundError):
+    with pytest.raises(ValueError) as exc:  # usage_error (2), not not_found (5)
         _ms_run(client, monkeypatch, "drive_mkdir", path="A/B")
+    assert not isinstance(exc.value, LookupError)
+
+
+def test_ms_move_make_parents_with_a_file_intermediate_is_usage_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `--to A/B --make-parents` where A is a file: exit 2 like the other file-in-slot cases.
+    client = _ms_client(by_id={"f1": _ms_file("f1", "doc")}, path_items={"A": _ms_file("a", "A")})
+    with pytest.raises(ValueError) as exc:
+        _ms_run(client, monkeypatch, "drive_move", item_id="f1", dest_path="A/B", make_parents=True)
+    assert not isinstance(exc.value, LookupError)
 
 
 def test_ms_move_to_a_file_path_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
