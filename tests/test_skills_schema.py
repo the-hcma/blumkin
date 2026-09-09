@@ -122,6 +122,13 @@ _ARG_PARAM_PINS = {
         "--format": ("body_format", None),
         "--folder": ("folder", None),
     },
+    "docs.update": {
+        "--id": ("document_id", None),
+        "--title": ("title", None),
+        "--body": ("body", None),
+        "--body-file": ("body_file", None),
+        "--format": ("body_format", None),
+    },
 }
 
 
@@ -405,6 +412,7 @@ _ARG_COERCE_VALUES = {
 _ENUM_VALUES = {
     ("calendar.create", "--body-type"): ["html", "text"],
     ("docs.create", "--format"): ["markdown", "text"],
+    ("docs.update", "--format"): ["markdown", "text"],
     ("drive.list", "--order"): ["modified", "name"],
     ("calendar.create", "--repeat"): ["daily", "weekly", "monthly"],
     ("calendar.update", "--body-type"): ["html", "text"],
@@ -477,6 +485,7 @@ _CONSENT = {
     "chat.last": (False, False),
     "chat.send": (True, True),
     "docs.create": (True, False),
+    "docs.update": (True, False),
     "doctor": (False, False),
     "drive.download": (False, False),
     "drive.export": (False, False),

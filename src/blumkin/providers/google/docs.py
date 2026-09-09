@@ -11,11 +11,25 @@ from __future__ import annotations
 
 from typing import Any
 
+from googleapiclient.errors import HttpError
+
 from blumkin.config import BlumkinConfig, load_config
+from blumkin.created_docs import is_blumkin_created_doc, record_created_doc
 from blumkin.providers.google.drive import resolve_folder_path
 from blumkin.providers.google_auth import DOCS_FOLDER_SCOPES, DOCS_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
-from blumkin.skills.docs import DocBlock, DocSpan, parse_body, read_body, table_to_text
+from blumkin.skills.docs import (
+    DocBlock,
+    DocBodyError,
+    DocSpan,
+    parse_body,
+    read_body,
+    read_update_body,
+    require_docs_update_target,
+    strip_docx_suffix,
+    table_to_text,
+)
+from blumkin.skills.drive import DriveItemNotFoundError
 
 _CODE_FONT = "Roboto Mono"
 # An OptionalColor: the {"color": {...}} wrapper is required by the Docs schema
@@ -72,6 +86,7 @@ async def docs_create(
     if folder_id is not None:
         _reparent(drive, document_id=document_id, folder_id=folder_id)
 
+    record_created_doc(cfg, document_id)
     return {
         "document": {
             "id": document_id,
@@ -80,6 +95,97 @@ async def docs_create(
             "provider": "google",
             "format": "gdoc",
             "folder": folder_name,
+        }
+    }
+
+
+async def docs_update(
+    *,
+    document_id: str,
+    title: str | None = None,
+    body: str | None = None,
+    body_file: str | None = None,
+    body_format: str = "markdown",
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Re-render an existing Google Doc in place: rename it, replace its body, or both.
+
+    The id, URL, and sharing are untouched - a content update is a
+    ``deleteContentRange`` over the whole body followed by the same insert / style
+    pipeline ``docs create`` uses, so document-level named styles survive.
+
+    Refuses an id this blumkin install did not create: the ``documents`` scope is
+    user-wide, so without the check ``--id`` alone could point at (and clobber)
+    any doc the account can edit. The check is the local ``docs create`` record,
+    or - Google only - a ``drive.file`` lookup that still 404s for foreign docs.
+    """
+    doc_id = document_id.strip()
+    if not doc_id:
+        raise ValueError("--id is required")
+    new_title = require_docs_update_target(title=title, body=body, body_file=body_file)
+    raw_body = read_update_body(body, body_file)
+    blocks = parse_body(raw_body, body_format=body_format) if raw_body is not None else None
+
+    cfg = config or load_config()
+    # Rename and the ownership probe both use the narrow drive.file grant, which
+    # only ever sees docs this tool created - no need for the broad `drive` scope.
+    creds = get_credentials(cfg, allow_interactive=False, required_scopes=DOCS_SCOPES)
+    docs = build_api_service("docs", "v1", creds=creds, config=cfg)
+    drive = build_api_service("drive", "v3", creds=creds, config=cfg)
+
+    unrecorded = not is_blumkin_created_doc(cfg, doc_id)
+    if unrecorded:
+        try:
+            # drive.file 404s here for a doc blumkin did not create or open.
+            execute(drive.files().get(fileId=doc_id, fields="id"))
+        except HttpError as exc:
+            raise _translate_http(exc, document_id=doc_id) from exc
+
+    try:
+        document = execute(docs.documents().get(documentId=doc_id, includeTabsContent=True))
+    except HttpError as exc:
+        raise _translate_http(exc, document_id=doc_id) from exc
+
+    if blocks is not None and len(document.get("tabs") or []) > 1:
+        # The legacy top-level `body` this pipeline edits is only the first tab, so
+        # a whole-body replace would silently leave the other tabs untouched.
+        raise DocBodyError(
+            f"document {doc_id!r} has multiple tabs; `docs update --body` replaces only the "
+            "first one - edit a multi-tab document in the browser"
+        )
+
+    if blocks is not None:
+        requests: list[dict[str, Any]] = []
+        end_index = _body_end_index(document)
+        if end_index > 2:
+            requests.append(
+                {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index - 1}}}
+            )
+        requests.extend(_batch_requests(blocks))
+        if requests:
+            execute(docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}))
+
+    if new_title is not None:
+        new_title = strip_docx_suffix(new_title)
+        try:
+            execute(drive.files().update(fileId=doc_id, body={"name": new_title}))
+        except HttpError as exc:
+            raise _translate_http(exc, document_id=doc_id) from exc
+
+    if unrecorded:
+        # Record only now that every write has actually landed - the drive.file
+        # probe alone also passes for folders / deleted docs this app made, and a
+        # bad id in created_docs.json would then skip the probe forever.
+        record_created_doc(cfg, doc_id)
+
+    return {
+        "document": {
+            "id": doc_id,
+            "name": new_title or document.get("title"),
+            "web_url": f"https://docs.google.com/document/d/{doc_id}/edit",
+            "provider": "google",
+            "format": "gdoc",
+            "folder": None,
         }
     }
 
@@ -124,6 +230,14 @@ def _block_text(block: DocBlock) -> str:
         # strips them - the documented way to nest without a separate request.
         return f"{'\t' * block.level}{_spans_text(block.spans)}\n"
     return f"{_spans_text(block.spans)}\n"
+
+
+def _body_end_index(document: dict[str, Any]) -> int:
+    """The document's final content index (``documents.get`` ``body.content[-1].endIndex``)."""
+    content = ((document.get("body") or {}).get("content")) or []
+    if not content:
+        return 2
+    return int(content[-1].get("endIndex", 2))
 
 
 def _reparent(drive: Any, *, document_id: str, folder_id: str) -> None:
@@ -234,6 +348,21 @@ def _style_requests(block: DocBlock, start: int, end: int) -> list[dict[str, Any
 
 def _spans_text(spans: tuple[DocSpan, ...]) -> str:
     return "".join(span.text for span in spans)
+
+
+def _translate_http(exc: HttpError, *, document_id: str) -> Exception:
+    """A 404 from Docs / Drive means the id is wrong or the doc is not one we can see."""
+    resp = getattr(exc, "resp", None)
+    status = getattr(exc, "status_code", None) or getattr(resp, "status", None)
+    try:
+        code = int(status) if status is not None else None
+    except TypeError, ValueError:
+        code = None
+    if code == 404:
+        return DriveItemNotFoundError(
+            f"no document with id {document_id!r} (blumkin can only update docs it created)"
+        )
+    return exc
 
 
 def _utf16_len(text: str) -> int:

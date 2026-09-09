@@ -491,9 +491,41 @@ Author a document and store it in your drive:
 
 \b
   blumkin docs create --title "..." --body-file ./brief.md --json
+  blumkin docs update --id 1AbC... --body-file ./brief-v2.md --json
 
 One authoring format (a Markdown subset) across both providers; the backend is a
-native Google Doc, or a `.docx` uploaded to OneDrive.
+native Google Doc, or a `.docx` uploaded to OneDrive. `update` re-renders a doc
+this tool created in place - same id, URL, and sharing.
+"""
+
+DOCS_UPDATE_EPILOG = """
+Examples:
+
+\b
+  # Rename only
+  blumkin docs update --id 1AbC... --title "Kickoff note (final)" --json
+\b
+  # Replace the whole body from a file
+  blumkin docs update --id 1AbC... --body-file ./status-v2.md --json
+\b
+  # Rename and re-render in one call
+  blumkin docs update --id 1AbC... --title "Q3 status" --body-file ./q3.md --json
+
+Updates a doc this tool created: a real Google Doc on `provider = "google"`, the
+uploaded `.docx` on `provider = "microsoft"`. The id, URL, and sharing are
+unchanged. No `--yes` - nobody is notified.
+
+Pass at least one of `--title`, `--body`, or `--body-file`. `--body` replaces the
+*entire* body (no partial or range edits) - any manual edits made in the document
+since it was created are overwritten.
+
+`--id` must be a document this blumkin install created: `docs create` records the
+id locally, and `docs update` refuses anything else with exit 5 (not_found) - the
+Graph / Google Docs write scopes cover more than blumkin's own files, so this
+guard is what stops a stray `--id` from clobbering another document. A doc
+created on a different machine is only updatable on Google (a `drive.file` lookup
+still recognises it); on Microsoft, open it in the browser. Use ASCII hyphens,
+not em dashes.
 """
 
 DOCTOR_EPILOG = """

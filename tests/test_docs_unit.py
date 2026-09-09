@@ -10,6 +10,7 @@ import pytest
 from googleapiclient.errors import HttpError
 
 from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.created_docs import is_blumkin_created_doc, record_created_doc
 from blumkin.providers.google_auth import DOCS_SCOPES
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
@@ -17,12 +18,15 @@ from blumkin.skills.docs import (
     DocBodyError,
     DocSpan,
     format_docs_create_human,
+    format_docs_update_human,
     parse_body,
     parse_markdown,
     read_body,
     render_email_html,
+    strip_docx_suffix,
     table_to_text,
 )
+from blumkin.skills.drive import DriveItemNotFoundError
 
 _DOCS_MOD = "blumkin.providers.google.docs"
 
@@ -151,6 +155,14 @@ def test_read_body_rejects_an_oversize_body() -> None:
         read_body("x" * 1_000_001, None)
 
 
+def test_strip_docx_suffix() -> None:
+    assert strip_docx_suffix("Q3.docx") == "Q3"
+    assert strip_docx_suffix("Q3.DOCX") == "Q3"
+    assert strip_docx_suffix("Q3") == "Q3"
+    assert strip_docx_suffix("notes.docx.docx") == "notes.docx"
+    assert strip_docx_suffix(".docx") == ".docx"  # nothing left - keep as-is
+
+
 # --------------------------------------------------------------------------- google backend
 
 
@@ -180,9 +192,14 @@ def _service() -> MagicMock:
     documents = service.documents.return_value
     documents.create.return_value.execute.return_value = {"documentId": "doc-123"}
     documents.batchUpdate.return_value.execute.return_value = {}
+    documents.get.return_value.execute.return_value = {
+        "title": "Old title",
+        "body": {"content": [{"endIndex": 1}, {"endIndex": 42}]},
+    }
     files = service.files.return_value
     files.list.return_value.execute.return_value = {"files": []}
     files.create.return_value.execute.return_value = {"id": "folder-1"}
+    files.get.return_value.execute.return_value = {"id": "doc-123"}
     files.update.return_value.execute.return_value = {"id": "doc-123"}
     return service
 
@@ -388,6 +405,224 @@ def test_docs_create_propagates_a_folder_lookup_failure(tmp_path: Path) -> None:
 def test_docs_create_rejects_a_blank_title(tmp_path: Path) -> None:
     with _patched(_service()), pytest.raises(ValueError, match="title"):
         asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).docs_create(title="  ", body="x"))
+
+
+def test_docs_update_replaces_the_body_then_renames(tmp_path: Path) -> None:
+    service = _service()
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(
+                document_id="doc-123", title="New title", body="# New\n\nbody"
+            )
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    assert requests[0] == {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 41}}}
+    assert any("insertText" in r for r in requests)
+    assert service.files.return_value.update.call_args.kwargs == {
+        "fileId": "doc-123",
+        "body": {"name": "New title"},
+    }
+    assert payload["document"] == {
+        "id": "doc-123",
+        "name": "New title",
+        "web_url": "https://docs.google.com/document/d/doc-123/edit",
+        "provider": "google",
+        "format": "gdoc",
+        "folder": None,
+    }
+
+
+def test_docs_update_body_only_keeps_the_existing_name(tmp_path: Path) -> None:
+    service = _service()
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", body="hi")
+        )
+    service.files.return_value.update.assert_not_called()
+    assert payload["document"]["name"] == "Old title"
+
+
+def test_docs_update_title_only_skips_the_batch_update(tmp_path: Path) -> None:
+    service = _service()
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", title="X")
+        )
+    service.documents.return_value.batchUpdate.assert_not_called()
+    service.files.return_value.update.assert_called_once()
+
+
+def test_docs_update_on_an_empty_doc_skips_the_delete(tmp_path: Path) -> None:
+    service = _service()
+    service.documents.return_value.get.return_value.execute.return_value = {
+        "title": "Empty",
+        "body": {"content": [{"endIndex": 2}]},
+    }
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", body="hi")
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    assert not any("deleteContentRange" in r for r in requests)
+
+
+def test_docs_update_refuses_a_multi_tab_document(tmp_path: Path) -> None:
+    service = _service()
+    service.documents.return_value.get.return_value.execute.return_value = {
+        "title": "Multi",
+        "tabs": [{"tabId": "t1"}, {"tabId": "t2"}],
+        "body": {"content": [{"endIndex": 1}, {"endIndex": 42}]},
+    }
+    with _patched(service), pytest.raises(DocBodyError, match="multiple tabs"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", body="hi")
+        )
+    service.documents.return_value.batchUpdate.assert_not_called()
+
+
+def test_docs_update_allows_a_multi_tab_document_for_a_rename_only(tmp_path: Path) -> None:
+    service = _service()
+    service.documents.return_value.get.return_value.execute.return_value = {
+        "title": "Multi",
+        "tabs": [{"tabId": "t1"}, {"tabId": "t2"}],
+        "body": {"content": [{"endIndex": 42}]},
+    }
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", title="New")
+        )
+    service.files.return_value.update.assert_called_once()
+
+
+def test_docs_update_needs_at_least_one_target(tmp_path: Path) -> None:
+    with _patched(_service()), pytest.raises(DocBodyError, match="at least one of"):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123"))
+
+
+def test_docs_update_rejects_a_blank_title(tmp_path: Path) -> None:
+    with _patched(_service()), pytest.raises(DocBodyError, match="blank"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", title="  ")
+        )
+
+
+def test_docs_update_rejects_both_body_sources(tmp_path: Path) -> None:
+    with _patched(_service()), pytest.raises(DocBodyError, match="not both"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(
+                document_id="doc-123", body="a", body_file="/tmp/x"
+            )
+        )
+
+
+def test_docs_update_refuses_a_doc_this_install_did_not_create(tmp_path: Path) -> None:
+    """The drive.file probe 404s for a foreign doc; body must never be touched."""
+    service = _service()
+    resp = type("Resp", (), {"status": 404, "reason": "Not Found"})()
+    service.files.return_value.get.return_value.execute.side_effect = HttpError(resp, b"nope")
+    with _patched(service), pytest.raises(DriveItemNotFoundError):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="0xFOREIGN", body="x")
+        )
+    service.documents.return_value.batchUpdate.assert_not_called()
+
+
+def test_docs_update_accepts_a_doc_the_drive_file_grant_can_still_see(tmp_path: Path) -> None:
+    """Cross-machine case on Google: not in the local record, but drive.file finds it."""
+    service = _service()
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", body="hi")
+        )
+    service.files.return_value.get.assert_called_once()
+    service.documents.return_value.batchUpdate.assert_called_once()
+    # Recorded, so the probe is skipped next time.
+    assert is_blumkin_created_doc(_cfg(tmp_path), "doc-123")
+
+
+def test_docs_create_records_the_new_doc_id(tmp_path: Path) -> None:
+    with _patched(_service()):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).docs_create(title="Brief", body="hi"))
+    cfg = _cfg(tmp_path)
+    assert is_blumkin_created_doc(cfg, "doc-123")
+
+
+def test_docs_update_id_deleted_since_creation_is_not_found(tmp_path: Path) -> None:
+    service = _service()
+    cfg = _cfg(tmp_path)
+    record_created_doc(cfg, "doc-123")
+    resp = type("Resp", (), {"status": 404, "reason": "Not Found"})()
+    service.documents.return_value.get.return_value.execute.side_effect = HttpError(resp, b"nope")
+    with _patched(service), pytest.raises(DriveItemNotFoundError):
+        asyncio.run(GoogleWorkspaceProvider(cfg).docs_update(document_id="doc-123", body="hi"))
+
+
+def test_docs_update_does_not_record_a_probe_visible_id_that_fails_to_update(
+    tmp_path: Path,
+) -> None:
+    """A folder id passes the drive.file probe but 404s at documents.get - never record it."""
+    service = _service()
+    cfg = _cfg(tmp_path)
+    resp = type("Resp", (), {"status": 404, "reason": "Not Found"})()
+    service.documents.return_value.get.return_value.execute.side_effect = HttpError(resp, b"nope")
+    with _patched(service), pytest.raises(DriveItemNotFoundError):
+        asyncio.run(GoogleWorkspaceProvider(cfg).docs_update(document_id="folder-id", body="hi"))
+    assert not is_blumkin_created_doc(cfg, "folder-id")
+
+
+def test_docs_update_strips_a_docx_suffix_from_a_google_rename(tmp_path: Path) -> None:
+    service = _service()
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(
+                document_id="doc-123", title="Q3.docx"
+            )
+        )
+    assert service.files.return_value.update.call_args.kwargs["body"] == {"name": "Q3"}
+
+
+def test_docs_update_reads_a_body_file(tmp_path: Path) -> None:
+    src = tmp_path / "body.md"
+    src.write_text("# From a file\n\nfile body text", encoding="utf-8")
+    service = _service()
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(
+                document_id="doc-123", body_file=str(src)
+            )
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    inserted = next(r["insertText"]["text"] for r in requests if "insertText" in r)
+    assert "From a file" in inserted and "file body text" in inserted
+
+
+def test_docs_update_gates_on_the_narrow_docs_scopes_subset(tmp_path: Path) -> None:
+    get_creds = MagicMock(return_value=MagicMock())
+    with patch.multiple(
+        _DOCS_MOD,
+        get_credentials=get_creds,
+        build_api_service=MagicMock(return_value=_service()),
+        execute=MagicMock(side_effect=lambda request, **_kw: request.execute()),
+    ):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", title="X")
+        )
+    assert get_creds.call_args.kwargs["required_scopes"] is DOCS_SCOPES
+
+
+def test_format_docs_update_human_reads_cleanly() -> None:
+    lines = format_docs_update_human(
+        {
+            "document": {
+                "name": "Brief",
+                "format": "gdoc",
+                "id": "d1",
+                "web_url": "https://docs.google.com/document/d/d1/edit",
+            }
+        }
+    )
+    assert lines[0] == "Document updated: 'Brief' (gdoc)"
+    assert lines[-1].endswith("/d1/edit")
 
 
 def test_format_docs_create_human_reads_cleanly() -> None:

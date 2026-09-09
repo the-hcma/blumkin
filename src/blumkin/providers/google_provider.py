@@ -363,6 +363,24 @@ class GoogleWorkspaceProvider:
             config=self._config,
         )
 
+    async def docs_update(
+        self,
+        *,
+        document_id: str,
+        title: str | None = None,
+        body: str | None = None,
+        body_file: str | None = None,
+        body_format: str = "markdown",
+    ) -> dict[str, Any]:
+        return await google_docs.docs_update(
+            document_id=document_id,
+            title=title,
+            body=body,
+            body_file=body_file,
+            body_format=body_format,
+            config=self._config,
+        )
+
     async def drive_download(self, *, item_id: str, out: str) -> dict[str, Any]:
         return await google_drive.drive_download(item_id=item_id, out=out, config=self._config)
 
