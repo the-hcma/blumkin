@@ -1034,6 +1034,14 @@ worker method is exposed as a tool named by its id; the CLI-only verbs (`auth
 CLI form needs `--yes` require a `confirm: true` argument the server enforces.
 `--read-only` drops every mutating tool; `--only PREFIX` (repeatable) keeps only
 tools under that id prefix.
+
+Accounts: without `--profile`, a server with two or more configured profiles
+requires a `profile` argument on every tool call (and exposes a read-only
+`profiles.list` tool plus guidance to ask the user when the account is
+ambiguous); with one profile it is optional. `--profile NAME` pins the server to
+one account and drops the `profile` argument. `--read-only` / `--only` stay
+server-scoped - for "personal read-only, work read-write" run a second pinned
+`mcp serve --profile personal --read-only` alongside.
 """
 
 MCP_INSTALL_EPILOG = """

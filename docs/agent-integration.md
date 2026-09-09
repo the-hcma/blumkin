@@ -496,6 +496,31 @@ Serve options: `--profile <name>` acts as that profile; `--read-only` exposes on
 non-mutating tools; `--only <prefix>` (repeatable) keeps only tools under an id
 prefix, e.g. `blumkin mcp serve --only calendar --only mail`.
 
+### Choosing the account per call
+
+Without `--profile`, the server picks the account **per tool call**:
+
+- **Two or more profiles** in `config.toml` → every provider-backed tool gains a
+  **required `profile`** string argument (`enum` of the configured names). A call
+  without it fails closed (`usage_error`, exit 2) rather than guessing. The
+  server also exposes a read-only **`profiles.list`** tool (name, provider,
+  email, tags, default) and sets `InitializeResult.instructions` telling the
+  agent to **ask the user** which account when the request is ambiguous (e.g.
+  "email my sister" with both a work and a personal profile) — never fall back to
+  the default.
+- **Exactly one profile** → `profile` is omitted from the schema; the single
+  account is used.
+- **`--profile <name>`** pins the server to one account, drops `profile` from
+  every schema, and rejects an inbound `profile` argument.
+
+A provider/verb combination with no backend for the chosen account (e.g.
+`drive.read` on a Microsoft profile) fails at call time with a `usage_error`
+naming the reason, not a generic 404/500.
+
+`--read-only` / `--only` stay **server-scoped**. For "personal is read-only, work
+is read-write", run a second pinned server:
+`blumkin mcp serve --profile personal --read-only` alongside the shared one.
+
 Every tool whose CLI form requires `--yes` carries a **required `confirm: true`**
 argument the server enforces — the MCP mirror of the `--yes` gate. That is the
 notifying skills (calendar RSVP/create/cancel, `chat.send`, `mail.send-draft`),

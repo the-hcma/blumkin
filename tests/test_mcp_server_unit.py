@@ -317,3 +317,145 @@ def test_cli_mcp_serve_honours_the_global_profile() -> None:
         assert captured["profile"] == "work"
         CliRunner().invoke(main, ["--profile", "work", "mcp", "serve", "--profile", "home"])
         assert captured["profile"] == "home"  # command-level wins
+
+
+# ------------------------------------------------------------------ per-call profile (#227)
+
+_TWO_PROFILES = [
+    {
+        "name": "personal",
+        "provider": "google",
+        "email": "me@gmail.com",
+        "tags": [],
+        "is_default": False,
+    },
+    {
+        "name": "work",
+        "provider": "microsoft",
+        "email": "me@corp.com",
+        "tags": ["corp"],
+        "is_default": True,
+    },
+]
+
+
+@contextmanager
+def _profiles(items: list[dict[str, Any]]) -> Any:
+    with patch("blumkin.mcp_server.list_profiles", return_value=items):
+        yield
+
+
+def test_multi_account_schema_requires_profile_and_exposes_profiles_list() -> None:
+    tools = {tool.name: tool for tool in build_tools(profiles=_TWO_PROFILES)}
+    schema = tools["calendar.today"].input_schema
+    assert schema["properties"]["profile"]["enum"] == ["personal", "work"]
+    assert "profile" in schema["required"]
+    assert "ask them" in schema["properties"]["profile"]["description"]
+    profiles_list = tools["profiles.list"]
+    assert profiles_list.input_schema["properties"] == {}
+    assert profiles_list.annotations is not None
+    assert profiles_list.annotations.read_only_hint is True
+
+
+def test_single_account_and_pinned_servers_have_no_profile_arg() -> None:
+    single = {tool.name: tool for tool in build_tools(profiles=_TWO_PROFILES[:1])}
+    pinned = {tool.name: tool for tool in build_tools(profiles=_TWO_PROFILES, pinned=True)}
+    assert "profile" not in single["calendar.today"].input_schema["properties"]
+    assert "profile" not in pinned["calendar.today"].input_schema["properties"]
+
+
+def test_multi_account_call_without_profile_is_a_usage_error_listing_names() -> None:
+    with _profiles(_TWO_PROFILES):
+        result = _drive(lambda c: c.call_tool("calendar.today", {}))
+    assert result.is_error is True
+    assert result.structured_content["error"] == "usage_error"
+    assert "personal" in result.structured_content["message"]
+    assert "work" in result.structured_content["message"]
+
+
+def test_multi_account_call_with_profile_loads_that_config_and_strips_the_arg() -> None:
+    prov = SimpleNamespace(calendar_today=AsyncMock(return_value={"events": []}))
+    captured: dict[str, Any] = {}
+
+    def _fake_load_config(*, profile: str | None = None) -> Any:
+        captured["profile"] = profile
+        return _CFG
+
+    with (
+        _profiles(_TWO_PROFILES),
+        patch("blumkin.mcp_server.load_config", side_effect=_fake_load_config),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        result = _drive(lambda c: c.call_tool("calendar.today", {"profile": "work"}))
+    assert result.is_error is False
+    assert captured["profile"] == "work"
+    assert "profile" not in prov.calendar_today.await_args.kwargs
+
+
+def test_pinned_server_rejects_an_explicit_profile_argument() -> None:
+    with _profiles(_TWO_PROFILES):
+        server = build_server(profile="work")
+        result = _drive_server(
+            server, lambda c: c.call_tool("calendar.today", {"profile": "personal"})
+        )
+    assert result.is_error is True
+    assert result.structured_content["error"] == "usage_error"
+    assert "pinned" in result.structured_content["message"]
+
+
+def test_profiles_list_tool_returns_the_safe_summary() -> None:
+    with _profiles(_TWO_PROFILES):
+        result = _drive(lambda c: c.call_tool("profiles.list", {}))
+    assert result.is_error is False
+    body = result.structured_content
+    assert [p["name"] for p in body["profiles"]] == ["personal", "work"]
+    assert body["profiles"][1] == {
+        "name": "work",
+        "provider": "microsoft",
+        "email": "me@corp.com",
+        "tags": ["corp"],
+        "is_default": True,
+    }
+    assert body["pinned_profile"] is None
+
+
+def test_server_instructions_name_every_profile_and_say_to_ask() -> None:
+    with _profiles(_TWO_PROFILES):
+        instructions = build_server().instructions
+    assert instructions is not None
+    assert "personal" in instructions
+    assert "work" in instructions
+    assert "ask them which account" in instructions
+
+
+def test_pinned_server_instructions_name_the_pin() -> None:
+    with _profiles(_TWO_PROFILES):
+        instructions = build_server(profile="work").instructions
+    assert instructions is not None
+    assert "pinned to profile 'work'" in instructions
+
+
+def test_provider_capability_mismatch_surfaces_as_usage_error() -> None:
+    """A verb with no backend for the selected provider must fail at call time with
+    a usage_error, never a bare 500 (issue #227 point 4). The provider's own
+    "not supported for provider=X" ValueError already classifies that way; this
+    pins it for the per-call `profile` path."""
+    prov = SimpleNamespace(
+        drive_read=AsyncMock(
+            side_effect=ValueError("drive read is not supported for provider=microsoft")
+        )
+    )
+    cfg = SimpleNamespace(
+        default_tz="UTC", provider=ProviderKind.MICROSOFT, wo1162425_scopes=True, docs_scopes=True
+    )
+    with (
+        _profiles(_TWO_PROFILES),
+        patch("blumkin.mcp_server.load_config", return_value=cfg),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        result = _drive(
+            lambda c: c.call_tool("drive.read", {"item_id": "01ABC", "profile": "work"})
+        )
+    assert result.is_error is True
+    assert result.structured_content["error"] == "usage_error"
+    assert "not supported" in result.structured_content["message"]
