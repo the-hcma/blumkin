@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.5.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.4.0...blumkin-v0.5.0) (2026-09-09)
+
+
+### Features
+
+* **docs:** docs create --folder targets pre-existing folders ([#212](https://github.com/the-hcma/blumkin/issues/212)) ([#224](https://github.com/the-hcma/blumkin/issues/224)) ([10dd675](https://github.com/the-hcma/blumkin/commit/10dd67553c2a03fc3d755bca25968a787d180e76))
+* **docs:** docs update re-renders a blumkin-created doc in place ([#211](https://github.com/the-hcma/blumkin/issues/211)) ([#228](https://github.com/the-hcma/blumkin/issues/228)) ([123a436](https://github.com/the-hcma/blumkin/commit/123a436700f7c6ee3ab5c19a7d9247cf3e81931a))
+* **drive:** drive download / export / read ([#208](https://github.com/the-hcma/blumkin/issues/208)) ([#222](https://github.com/the-hcma/blumkin/issues/222)) ([74d9832](https://github.com/the-hcma/blumkin/commit/74d98328414393e09e69a1f1d5ed58e91da0ead7))
+* **drive:** drive list / get read side + scope plumbing ([#208](https://github.com/the-hcma/blumkin/issues/208)) ([#221](https://github.com/the-hcma/blumkin/issues/221)) ([22f5789](https://github.com/the-hcma/blumkin/commit/22f57894daf3d31ccd3f5305e837ff6de9074ac0))
+* **drive:** drive mkdir / move / rename organize verbs ([#212](https://github.com/the-hcma/blumkin/issues/212)) ([#223](https://github.com/the-hcma/blumkin/issues/223)) ([f24dff3](https://github.com/the-hcma/blumkin/commit/f24dff35098c7fd4d012714022e26f80381dfa59))
+* **mail:** author bodies as Markdown by default, render to HTML on the wire ([#217](https://github.com/the-hcma/blumkin/issues/217)) ([f919f55](https://github.com/the-hcma/blumkin/commit/f919f55af48b03b0c8825a89386e6bfff11b18b7))
+* **mail:** detect Outlook's own auto-signature and stop double-signing ([#219](https://github.com/the-hcma/blumkin/issues/219)) ([#229](https://github.com/the-hcma/blumkin/issues/229)) ([0a108b8](https://github.com/the-hcma/blumkin/commit/0a108b86caeae53da8368a113030ef73835e23f4))
+
+
+### Bug Fixes
+
+* **mail:** keep line breaks in a Microsoft auto-reply message ([#226](https://github.com/the-hcma/blumkin/issues/226)) ([50f214c](https://github.com/the-hcma/blumkin/commit/50f214c713d4bdfcdb76876826b8455794983a42))
+* **mail:** serialize drafts with CRLF so line breaks survive send ([#216](https://github.com/the-hcma/blumkin/issues/216)) ([4a49956](https://github.com/the-hcma/blumkin/commit/4a499568eeaa8f132e6fda94b4ff7d63d78bd9d4))
+
+
+### Documentation
+
+* **rules:** adopt dedicated github-api-throttle rule (repository-helpers[#608](https://github.com/the-hcma/blumkin/issues/608)) ([#220](https://github.com/the-hcma/blumkin/issues/220)) ([cc023b3](https://github.com/the-hcma/blumkin/commit/cc023b323e9acf2541ef6b9c80ac917a75be4980))
+* **rules:** route ad-hoc gh through scripts/gh-api (repository-helpers[#608](https://github.com/the-hcma/blumkin/issues/608)) ([#214](https://github.com/the-hcma/blumkin/issues/214)) ([271d5ae](https://github.com/the-hcma/blumkin/commit/271d5ae3ea88fdcd55852593e333e402fb88a6ce))
+
 ## [0.4.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.3.0...blumkin-v0.4.0) (2026-09-07)
 
 
