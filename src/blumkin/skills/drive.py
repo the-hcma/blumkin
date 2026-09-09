@@ -196,7 +196,10 @@ _HEADING_LEVEL = {f"HEADING_{n}": n for n in range(1, 7)}
 
 
 def _inline_markdown(text_run: dict[str, Any]) -> str:
-    content = (text_run.get("content") or "").replace("\n", "")
+    # A run's content carries the paragraph-terminating "\n" (and any trailing
+    # Shift+Enter breaks); those belong to the paragraph, not this run. Interior
+    # "\n" are hard line breaks - keep them so words do not glue together.
+    content = (text_run.get("content") or "").rstrip("\n")
     if not content:
         return ""
     stripped = content.strip()
@@ -206,16 +209,19 @@ def _inline_markdown(text_run: dict[str, Any]) -> str:
     lead = content[: len(content) - len(content.lstrip())]
     trail = content[len(content.rstrip()) :]
     body = stripped
+    styled = False
     if style.get("weightedFontFamily", {}).get("fontFamily", "") in _CODE_FONTS:
-        body = f"`{body}`"
+        body, styled = f"`{body}`", True
     else:
         if style.get("bold"):
-            body = f"**{body}**"
+            body, styled = f"**{body}**", True
         if style.get("italic"):
-            body = f"*{body}*"
+            body, styled = f"*{body}*", True
     link = (style.get("link") or {}).get("url")
     if link:
-        body = f"[{body}]({link})"
+        body, styled = f"[{body}]({link})", True
+    if styled and "\n" in body:
+        body = body.replace("\n", " ")  # inline markup cannot span a line break
     return f"{lead}{body}{trail}"
 
 
@@ -226,8 +232,9 @@ def _paragraph_markdown(paragraph: dict[str, Any], lists: dict[str, Any]) -> str
         if el.get("textRun") is not None
     ).strip()
     named = (paragraph.get("paragraphStyle") or {}).get("namedStyleType", "")
-    if named in _HEADING_LEVEL and runs:
-        return f"{'#' * _HEADING_LEVEL[named]} {runs}"
+    one_line = " ".join(runs.split("\n"))  # headings / list items are single-line
+    if named in _HEADING_LEVEL and one_line:
+        return f"{'#' * _HEADING_LEVEL[named]} {one_line}"
     bullet = paragraph.get("bullet")
     if bullet is not None:
         level = int(bullet.get("nestingLevel") or 0)
@@ -237,7 +244,7 @@ def _paragraph_markdown(paragraph: dict[str, Any], lists: dict[str, Any]) -> str
             .get("glyphType", "")
         )
         marker = "1." if any(g in glyph for g in ("DECIMAL", "ALPHA", "ROMAN")) else "-"
-        return f"{'  ' * level}{marker} {runs}"
+        return f"{'  ' * level}{marker} {one_line}"
     return runs
 
 

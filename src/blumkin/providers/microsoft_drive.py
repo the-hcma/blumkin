@@ -86,8 +86,14 @@ async def drive_export(
     cfg = config or load_config()
     client = create_graph_client(cfg)
     item = await _send_item(client, _ITEM_BY_ID_URL, {"id": item_id}, missing=item_id)
-    if item.folder is not None:
-        raise DriveExportError(f"{item.name!r} is a folder - nothing to export")
+    if _kind(item) not in ("doc", "sheet", "slides"):
+        # Graph's ?format=pdf converts Office files only (matches `drive get`'s
+        # export_formats gate) - anything else 400s mid-download.
+        what = "a folder" if item.folder is not None else f"a {_kind(item)}"
+        raise DriveExportError(
+            f"{item.name!r} is {what} - Graph only exports Word/Excel/PowerPoint to PDF; "
+            "use `drive download` for its raw bytes"
+        )
     data = await _send_bytes(client, _EXPORT_URL, {"id": item_id}, missing=item_id)
     dest = resolve_export_dest(to)
     dest.write_bytes(data)

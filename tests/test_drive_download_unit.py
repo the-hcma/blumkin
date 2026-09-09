@@ -101,6 +101,52 @@ def test_flatten_google_doc_empty() -> None:
     assert flatten_google_doc({"body": {"content": []}}) == ""
 
 
+def _para(*runs: dict[str, Any], style: str = "NORMAL_TEXT") -> dict[str, Any]:
+    return {
+        "paragraph": {
+            "paragraphStyle": {"namedStyleType": style},
+            "elements": [{"textRun": r} for r in runs],
+        }
+    }
+
+
+def test_flatten_google_doc_inline_styles() -> None:
+    doc = {
+        "body": {
+            "content": [
+                _para(
+                    {"content": "an ", "textStyle": {}},
+                    {"content": "em", "textStyle": {"italic": True}},
+                    {"content": " and ", "textStyle": {}},
+                    {
+                        "content": "mono",
+                        "textStyle": {"weightedFontFamily": {"fontFamily": "Roboto Mono"}},
+                    },
+                    {"content": " and ", "textStyle": {}},
+                    {"content": "both", "textStyle": {"bold": True, "italic": True}},
+                    {"content": "\n", "textStyle": {}},
+                ),
+            ]
+        }
+    }
+    assert flatten_google_doc(doc) == "an *em* and `mono` and ***both***\n"
+
+
+def test_flatten_google_doc_preserves_hard_line_breaks() -> None:
+    # A Shift+Enter break is an interior "\n" in one contiguous run.
+    doc = {"body": {"content": [_para({"content": "line one\nline two\n", "textStyle": {}})]}}
+    assert flatten_google_doc(doc) == "line one\nline two\n"
+
+
+def test_flatten_google_doc_heading_flattens_a_hard_break() -> None:
+    doc = {
+        "body": {
+            "content": [_para({"content": "Title\nsub\n", "textStyle": {}}, style="HEADING_1")]
+        }
+    }
+    assert flatten_google_doc(doc) == "# Title sub\n"
+
+
 def test_format_drive_read_human_strips_control_chars() -> None:
     from blumkin.skills.drive import format_drive_read_human
 
@@ -272,11 +318,13 @@ def test_google_drive_read_returns_markdown(tmp_path: Path) -> None:
 
 def _ms_client(*, item: Any, content: bytes = b"BYTES") -> MagicMock:
     client = MagicMock()
+    client.content_urls = []
 
     async def send_async(_ri: Any, _f: Any, _e: Any) -> Any:
         return item
 
-    async def send_primitive_async(_ri: Any, _t: Any, _e: Any) -> Any:
+    async def send_primitive_async(ri: Any, _t: Any, _e: Any) -> Any:
+        client.content_urls.append(ri.url_template)
         return content
 
     client.request_adapter.send_async = AsyncMock(side_effect=send_async)
@@ -291,15 +339,12 @@ def _ms_run(client: MagicMock, monkeypatch: pytest.MonkeyPatch, method: str, **k
 
 def test_ms_drive_download_writes_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     item = SimpleNamespace(name="Report.docx", folder=None)
-    payload = _ms_run(
-        _ms_client(item=item, content=b"DOCX"),
-        monkeypatch,
-        "drive_download",
-        item_id="d1",
-        out=str(tmp_path),
-    )
+    client = _ms_client(item=item, content=b"DOCX")
+    payload = _ms_run(client, monkeypatch, "drive_download", item_id="d1", out=str(tmp_path))
     assert (tmp_path / "Report.docx").read_bytes() == b"DOCX"
     assert payload["provider"] == "microsoft"
+    # A dropped endpoint would silently write raw bytes to the wrong place.
+    assert client.content_urls == ["https://graph.microsoft.com/v1.0/me/drive/items/{id}/content"]
 
 
 def test_ms_drive_download_refuses_a_folder(
@@ -326,14 +371,12 @@ def test_ms_drive_export_refuses_a_folder(tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_ms_drive_export_pdf_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     item = SimpleNamespace(name="Report.docx", folder=None)
-    payload = _ms_run(
-        _ms_client(item=item, content=b"%PDF"),
-        monkeypatch,
-        "drive_export",
-        item_id="d1",
-        to=str(tmp_path / "r.pdf"),
-    )
+    client = _ms_client(item=item, content=b"%PDF")
+    payload = _ms_run(client, monkeypatch, "drive_export", item_id="d1", to=str(tmp_path / "r.pdf"))
     assert payload["format"] == "pdf"
+    assert client.content_urls == [
+        "https://graph.microsoft.com/v1.0/me/drive/items/{id}/content?format=pdf"
+    ]
     with pytest.raises(DriveExportError):
         _ms_run(
             _ms_client(item=item),
@@ -342,6 +385,17 @@ def test_ms_drive_export_pdf_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             item_id="d1",
             to=str(tmp_path / "r.txt"),
         )
+
+
+def test_ms_drive_export_refuses_a_non_office_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A plain .txt (kind "file") cannot go through Graph's Office->PDF converter.
+    plain = SimpleNamespace(name="notes.txt", folder=None)
+    client = _ms_client(item=plain)
+    with pytest.raises(DriveExportError):
+        _ms_run(client, monkeypatch, "drive_export", item_id="d1", to=str(tmp_path / "notes.pdf"))
+    assert client.content_urls == []  # never hit Graph /content
 
 
 def test_ms_drive_read_unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
