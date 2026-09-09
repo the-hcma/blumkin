@@ -149,6 +149,16 @@ def test_graph_reads_the_body_file(monkeypatch, tmp_path: Path) -> None:
     assert setting.internal_reply_message == "away, see you soon"
 
 
+def test_oof_html_escapes_and_normalizes_every_newline_style() -> None:
+    from blumkin.skills.mail import _oof_html
+
+    assert _oof_html("a\r\nb") == "a<br>b"
+    assert _oof_html("a\rb") == "a<br>b"
+    assert _oof_html("a\nb") == "a<br>b"
+    assert _oof_html("keep <this> & that") == "keep &lt;this&gt; &amp; that"
+    assert _oof_html("  trailing\nblank\n\n") == "trailing<br>blank"
+
+
 def test_graph_multiline_message_keeps_line_breaks_as_html(monkeypatch) -> None:
     # Exchange renders the OOF message as HTML; a bare-LF body would collapse.
     client = _graph(monkeypatch)
@@ -159,10 +169,32 @@ def test_graph_multiline_message_keeps_line_breaks_as_html(monkeypatch) -> None:
         "Out until Monday.<br>Contact Sam &lt;sam@x.io&gt; for urgent."
     )
     assert setting.external_reply_message == setting.internal_reply_message
-    # Round-trips back to plain text on read.
-    assert payload["auto_reply"]["internal_message"] == (
-        "Out until Monday.\nContact Sam <sam@x.io> for urgent."
+    # The write echoes the authored plain text, not the stored HTML - so
+    # re-feeding it to --message does not double-escape.
+    assert payload["auto_reply"]["internal_message"] == msg
+    assert payload["auto_reply"]["external_message"] == msg
+
+
+def test_graph_authored_message_survives_a_read_tweak_reset_round_trip(monkeypatch) -> None:
+    client = _graph(monkeypatch)
+    first = asyncio.run(mail_auto_reply(enable=True, message="line one\nline two"))
+    # A script pipes the echoed message straight back into another --on.
+    again = asyncio.run(
+        mail_auto_reply(enable=True, message=first["auto_reply"]["internal_message"])
     )
+    setting = client.me.mailbox_settings.patch.await_args.args[0].automatic_replies_setting
+    assert setting.internal_reply_message == "line one<br>line two"  # not line one&lt;br&gt;
+    assert again["auto_reply"]["internal_message"] == "line one\nline two"
+
+
+def test_graph_message_file_trailing_newline_is_dropped(monkeypatch, tmp_path: Path) -> None:
+    client = _graph(monkeypatch)
+    body_file = tmp_path / "oof.txt"
+    body_file.write_text("Away until the 9th.\nBack then.\n")
+    asyncio.run(mail_auto_reply(enable=True, message_file=str(body_file)))
+    setting = client.me.mailbox_settings.patch.await_args.args[0].automatic_replies_setting
+    # Trailing newline -> no trailing <br>.
+    assert setting.internal_reply_message == "Away until the 9th.<br>Back then."
 
 
 def test_graph_external_message_is_escaped_independently(monkeypatch) -> None:
@@ -179,14 +211,32 @@ def test_graph_external_message_is_escaped_independently(monkeypatch) -> None:
     assert setting.external_reply_message == "external<br>line &amp; more"
 
 
-def test_graph_read_flattens_stored_html_to_text(monkeypatch) -> None:
+@pytest.mark.parametrize("ext", ["", "   ", "\n\n"])
+def test_graph_blank_external_message_falls_back_to_the_internal_body(monkeypatch, ext) -> None:
     client = _graph(monkeypatch)
+    payload = asyncio.run(mail_auto_reply(enable=True, message="Out today", external_message=ext))
+    setting = client.me.mailbox_settings.patch.await_args.args[0].automatic_replies_setting
+    assert setting.external_reply_message == "Out today"
+    assert payload["auto_reply"]["external_message"] == "Out today"
+
+
+def test_graph_whitespace_only_message_is_rejected(monkeypatch) -> None:
+    _graph(monkeypatch)
+    with pytest.raises(ValueError, match="needs --message"):
+        asyncio.run(mail_auto_reply(enable=True, message="   \n  "))
+
+
+def test_graph_read_returns_the_stored_body_verbatim(monkeypatch) -> None:
+    # Read is not the inverse of write: an OOF set in Outlook is a full HTML
+    # document, and un-HTML'ing it would eat angle-bracketed text / glue lines.
+    client = _graph(monkeypatch)
+    stored = "<html><body><div>Line one.</div><div>Line two.</div></body></html>"
     client.me.mailbox_settings.get = AsyncMock(
         return_value=SimpleNamespace(
             automatic_replies_setting=SimpleNamespace(
                 status=AutomaticRepliesStatus.AlwaysEnabled,
-                internal_reply_message="<html><body>line one<br>line two</body></html>",
-                external_reply_message="brb &amp; away",
+                internal_reply_message=stored,
+                external_reply_message="Contact Dana <dana@x.io> if urgent",
                 external_audience=ExternalAudienceScope.All,
                 scheduled_start_date_time=None,
                 scheduled_end_date_time=None,
@@ -194,8 +244,8 @@ def test_graph_read_flattens_stored_html_to_text(monkeypatch) -> None:
         )
     )
     payload = asyncio.run(mail_auto_reply())
-    assert payload["auto_reply"]["internal_message"] == "line one\nline two"
-    assert payload["auto_reply"]["external_message"] == "brb & away"
+    assert payload["auto_reply"]["internal_message"] == stored
+    assert payload["auto_reply"]["external_message"] == "Contact Dana <dana@x.io> if urgent"
 
 
 # --------------------------------------------------------------------------- Google
