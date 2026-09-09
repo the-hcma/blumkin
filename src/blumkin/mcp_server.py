@@ -15,6 +15,7 @@ skill, plus ``mail delete`` / ``mark`` / ``move`` and the ``mail.auto-reply`` /
 from __future__ import annotations
 
 import json
+import tomllib
 from typing import Any
 
 from blumkin.config import list_profiles, load_config
@@ -197,7 +198,7 @@ def _effective_profile(
     """Resolve the account for one call. Raises :class:`ValueError` (-> usage_error)
     when the client must choose and did not, or sent one to a pinned server."""
     if pinned_name is not None:
-        if requested is not None and requested != pinned_name:
+        if requested is not None:
             raise ValueError(
                 f"this server is pinned to profile {pinned_name!r}; remove the `profile` argument"
             )
@@ -328,9 +329,12 @@ def _profiles_list_tool() -> types.Tool:
 
 
 def _safe_list_profiles() -> list[dict[str, Any]]:
+    """Configured profiles for schema generation, or ``[]`` if the config cannot be
+    read. A malformed / unreadable ``config.toml`` must not stop the server from
+    starting - the per-call ``load_config`` still surfaces the error in-band."""
     try:
         return list_profiles()
-    except ProviderConfigError:
+    except OSError, ProviderConfigError, tomllib.TOMLDecodeError:
         return []
 
 

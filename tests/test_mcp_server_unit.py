@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import tomllib
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -392,15 +393,33 @@ def test_multi_account_call_with_profile_loads_that_config_and_strips_the_arg() 
     assert "profile" not in prov.calendar_today.await_args.kwargs
 
 
-def test_pinned_server_rejects_an_explicit_profile_argument() -> None:
-    with _profiles(_TWO_PROFILES):
-        server = build_server(profile="work")
-        result = _drive_server(
-            server, lambda c: c.call_tool("calendar.today", {"profile": "personal"})
-        )
-    assert result.is_error is True
-    assert result.structured_content["error"] == "usage_error"
-    assert "pinned" in result.structured_content["message"]
+def test_pinned_server_rejects_any_explicit_profile_argument() -> None:
+    # Rejected whether it names a different account or the pin itself - the arg is
+    # not in the pinned schema at all.
+    for sent in ("personal", "work"):
+        with _profiles(_TWO_PROFILES):
+            server = build_server(profile="work")
+            result = _drive_server(
+                server, lambda c, s=sent: c.call_tool("calendar.today", {"profile": s})
+            )
+        assert result.is_error is True, sent
+        assert result.structured_content["error"] == "usage_error"
+        assert "pinned" in result.structured_content["message"]
+
+
+def test_unreadable_config_does_not_stop_the_server_from_starting() -> None:
+    """A malformed config.toml raises TOMLDecodeError from list_profiles; the
+    server must still build (schema falls back to no `profile` arg)."""
+    with patch(
+        "blumkin.mcp_server.list_profiles",
+        side_effect=tomllib.TOMLDecodeError("bad toml", "x", 0),
+    ):
+        server = build_server()
+        tools = _drive_server(server, lambda c: c.list_tools())
+    names = {tool.name for tool in tools.tools}
+    assert "calendar.today" in names
+    today = next(t for t in tools.tools if t.name == "calendar.today")
+    assert "profile" not in today.input_schema["properties"]
 
 
 def test_profiles_list_tool_returns_the_safe_summary() -> None:
