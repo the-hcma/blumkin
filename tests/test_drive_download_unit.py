@@ -305,12 +305,21 @@ def test_google_drive_export_rejects_non_native_file(tmp_path: Path) -> None:
 
 
 def test_google_drive_read_returns_markdown(tmp_path: Path) -> None:
-    with _google_patched(_google_service()):
+    svc = _google_service(mime="application/vnd.google-apps.document")
+    with _google_patched(svc):
         payload = asyncio.run(
             GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_read(item_id="d1")
         )
     assert payload["markdown"] == "hi\n"
     assert payload["item"] == {"id": "d1", "name": "Doc", "provider": "google"}
+
+
+def test_google_drive_read_refuses_a_non_doc(tmp_path: Path) -> None:
+    # A Sheet / Slides / folder id is listable but is not a Google Doc.
+    svc = _google_service(mime="application/vnd.google-apps.spreadsheet")
+    with _google_patched(svc), pytest.raises(DriveReadUnsupportedError):
+        asyncio.run(GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_read(item_id="d1"))
+    svc.documents.return_value.get.assert_not_called()
 
 
 # --------------------------------------------------------------------------- Microsoft backend

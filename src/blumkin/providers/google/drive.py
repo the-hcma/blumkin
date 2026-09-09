@@ -1,9 +1,11 @@
-"""Google Drive `drive` skills: list / get (read side, issue #208).
+"""Google Drive `drive` skills: list / get / download / export / read (issue #208).
 
 One ``drive`` v3 discovery client, built on the shared timed + retrying transport.
 Google has no real paths - a ``--folder`` path is resolved by walking from
 ``root`` and matching folder names one segment at a time; an ambiguous segment
-raises rather than guessing.
+raises rather than guessing. Every verb gates on the item's Drive ``mimeType``
+before hitting a type-specific API, so a listable-but-wrong-kind id is a clean
+``usage_error``, not a raw Docs / media 400.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from blumkin.skills.drive import (
     DriveFolderAmbiguousError,
     DriveFolderNotFoundError,
     DriveItemNotFoundError,
+    DriveReadUnsupportedError,
     export_mime,
     flatten_google_doc,
     normalize_order,
@@ -123,6 +126,20 @@ async def drive_export(
 async def drive_read(*, item_id: str, config: BlumkinConfig | None = None) -> dict[str, Any]:
     cfg = config or load_config()
     creds = get_credentials(cfg, allow_interactive=False, required_scopes=DRIVE_SCOPES)
+    # Gate on the Drive mimeType first: `documents.get` on a Sheet / Slides /
+    # folder id 400s, which would surface as a misleading not_found / graph_error
+    # instead of the usage_error the sibling verbs give.
+    drive = build_api_service("drive", "v3", creds=creds, config=cfg)
+    try:
+        meta = execute(drive.files().get(fileId=item_id, fields="id,name,mimeType"))
+    except HttpError as exc:
+        raise _translate(exc, item_id=item_id) from exc
+    if meta.get("mimeType") != "application/vnd.google-apps.document":
+        kind = _KINDS.get(meta.get("mimeType", ""), "file")
+        raise DriveReadUnsupportedError(
+            f"{meta.get('name')!r} is a {kind}, not a Google Doc - `drive read` only "
+            "flattens Docs; use `drive export` or `drive get`"
+        )
     docs = build_api_service("docs", "v1", creds=creds, config=cfg)
     try:
         document = execute(docs.documents().get(documentId=item_id))
