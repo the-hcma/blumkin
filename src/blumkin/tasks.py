@@ -167,6 +167,7 @@ def _parse(path: Path) -> Task:
     prompt: list[str] = []
     title = ""
     in_prompt = False
+    saw_blockquote = False
     for raw in text.splitlines():
         line = raw.rstrip()
         stripped = line.strip()
@@ -174,6 +175,7 @@ def _parse(path: Path) -> Task:
             # The prompt is the `>` blockquote only. Blank lines inside it are
             # kept (paragraph breaks); the first non-blank, non-`>` line ends it.
             if stripped.startswith(">"):
+                saw_blockquote = True
                 prompt.append(stripped[1:].removeprefix(" "))
             elif not stripped:
                 prompt.append("")
@@ -192,8 +194,8 @@ def _parse(path: Path) -> Task:
             if lowered.startswith("**prompt:**"):
                 in_prompt = True
     name = path.stem
-    if not prompt:
-        emit_warning(f"{path}: no `**Prompt:**` block")
+    if not saw_blockquote:
+        emit_warning(f"{path}: no `**Prompt:**` blockquote")
     return Task(
         conflict=False,
         input=fields.get("input", ""),

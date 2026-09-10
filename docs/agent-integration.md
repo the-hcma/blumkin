@@ -22,9 +22,9 @@ Microsoft Graph (delegated, cached auth)
 ## Prerequisite: `blumkin` on `PATH`
 
 Every integration below assumes the binary resolves and the machine is signed in.
-Agents invoke `blumkin`, never `uv run blumkin`. (The exception is `people
-context`, which reads a local markdown file and needs no `auth login`, no
-network, and no provider.)
+Agents invoke `blumkin`, never `uv run blumkin`. (The exceptions are the
+operator-config read skills — `people context`, `tasks list`, `tasks show` — which
+read local markdown files and need no `auth login`, no network, and no provider.)
 
 ```bash
 pipx install blumkin && pipx ensurepath   # no clone needed

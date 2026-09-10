@@ -132,7 +132,16 @@ def test_missing_prompt_block_warns_but_still_lists(tmp_path, monkeypatch, capsy
     listed = asyncio.run(tasks_list(config=cfg))
     assert [t["name"] for t in listed["tasks"]] == ["broken"]
     assert asyncio.run(tasks_show(config=cfg, name="broken"))["task"]["prompt"] == ""
-    assert "no `**Prompt:**` block" in capsys.readouterr().err
+    assert "no `**Prompt:**` blockquote" in capsys.readouterr().err
+
+
+def test_prompt_header_with_no_blockquote_warns(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks" / "wk.md").write_text(
+        "**Prompt:**\n\nplain prose, no blockquote\n", encoding="utf-8"
+    )
+    assert asyncio.run(tasks_show(config=cfg, name="wk"))["task"]["prompt"] == ""
+    assert "no `**Prompt:**` blockquote" in capsys.readouterr().err
 
 
 def test_missing_tasks_dir_is_empty_not_an_error(tmp_path, monkeypatch) -> None:
