@@ -22,9 +22,9 @@ Microsoft Graph (delegated, cached auth)
 ## Prerequisite: `blumkin` on `PATH`
 
 Every integration below assumes the binary resolves and the machine is signed in.
-Agents invoke `blumkin`, never `uv run blumkin`. (The exception is `people
-context`, which reads a local markdown file and needs no `auth login`, no
-network, and no provider.)
+Agents invoke `blumkin`, never `uv run blumkin`. (The exceptions are the
+operator-config read skills — `people context`, `tasks list`, `tasks show` — which
+read local markdown files and need no `auth login`, no network, and no provider.)
 
 ```bash
 pipx install blumkin && pipx ensurepath   # no clone needed
@@ -73,11 +73,16 @@ Legacy single-file layouts (flat keys, no `[profiles.*]`) appear as one profile
 named `default`. Separate directories via `BLUMKIN_CONFIG_DIR` still work but are
 no longer the preferred multi-account setup.
 
-Optional **operator-context files** (`email-context.md`, and later
-`task-templates.md`) follow the same per-profile shape: a `<config-dir>/<file>`
-base, merged with the active profile's `profiles/<name>/<file>`. `people.context`
-surfaces the merged result and flags cross-file conflicts. See
+Optional **operator-context files** (`email-context.md`, `tasks/<name>.md`)
+follow the same per-profile shape: a `<config-dir>` base, merged with the active
+profile's `profiles/<name>/…`. `people.context` / `tasks list` surface the merged
+result and flag cross-file conflicts. See
 [`operator-config.md`](./operator-config.md).
+
+For a recurring job, an agent should: `tasks list --json` → match the request to
+a template's `trigger` → **confirm the pick with the user** → `tasks show --name
+<it> --json` → run the returned `prompt` (fetching any input via `mail` / `drive`
+itself). blumkin selects nothing and runs no model.
 
 ---
 

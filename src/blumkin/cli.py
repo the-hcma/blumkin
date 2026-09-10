@@ -124,6 +124,7 @@ from blumkin.skills.meeting import (
 )
 from blumkin.skills.meeting import format_transcription_human
 from blumkin.skills.people import format_resolve_human
+from blumkin.tasks import format_tasks_list_human, format_tasks_show_human
 from blumkin.version import (
     build_info,
     build_status_fields,
@@ -3997,6 +3998,48 @@ def people_resolve_cmd(
         as_json_flag=as_json_flag,
         is_failure=lambda payload: bool(payload.get("ambiguous")),
         fail_exit=EXIT_USAGE,
+    )
+
+
+@main.group(epilog=help_text.TASKS_EPILOG)
+def tasks() -> None:
+    """Named reusable prompt templates from `~/.config/blumkin/tasks/*.md`.
+
+    Read-only, no network, no auth. blumkin surfaces the templates; you (or an
+    agent) match the request to a `Trigger:` line, confirm the pick, and run the
+    `Prompt:` block. blumkin ships no matcher and never calls a model.
+    """
+
+
+@tasks.command("list", epilog=help_text.TASKS_LIST_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def tasks_list_cmd(ctx: click.Context, as_json_flag: bool) -> None:
+    """List every template: name, title, trigger, input, output (not the prompt).
+
+    Empty output means no `tasks/` directory. The active profile's
+    `profiles/<name>/tasks/` is merged on top of the config-dir one; a template
+    that differs between the two is flagged (`conflict: true`).
+    """
+    _dispatch_local(ctx, "tasks.list", {}, human=format_tasks_list_human, as_json_flag=as_json_flag)
+
+
+@tasks.command("show", epilog=help_text.TASKS_SHOW_EPILOG)
+@click.option("--name", "name", required=True, help="Template name (a unique prefix works).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def tasks_show_cmd(ctx: click.Context, name: str, as_json_flag: bool) -> None:
+    """Show one template in full, including its `Prompt:` block.
+
+    Unknown name exits 5 (not_found); an ambiguous prefix exits 2 (usage_error)
+    with the candidates; a template that conflicts across the two dirs exits 2.
+    """
+    _dispatch_local(
+        ctx,
+        "tasks.show",
+        {"name": name},
+        human=format_tasks_show_human,
+        as_json_flag=as_json_flag,
     )
 
 

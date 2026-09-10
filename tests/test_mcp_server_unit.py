@@ -503,3 +503,29 @@ def test_config_skill_people_context_is_a_tool_and_needs_no_provider(tmp_path) -
             result = _drive(lambda c: c.call_tool("people.context", {"profile": "work"}))
     assert result.is_error is False
     assert [x["name"] for x in result.structured_content["contacts"]] == ["Sam"]
+
+
+def test_config_skill_tasks_are_tools_and_dispatch_locally(tmp_path) -> None:
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "weekly.md").write_text(
+        "# Weekly\n**Trigger:** wk\n\n**Prompt:**\n\n> do it\n", encoding="utf-8"
+    )
+    cfg = SimpleNamespace(
+        config_dir=tmp_path,
+        profile_dir=tmp_path / "profiles" / "work",
+        profile="work",
+        default_tz="UTC",
+        provider=ProviderKind.MICROSOFT,
+        wo1162425_scopes=True,
+    )
+    with _profiles(_TWO_PROFILES):
+        tools = {t.name: t for t in build_tools(profiles=_TWO_PROFILES)}
+        assert {"tasks.list", "tasks.show"} <= set(tools)
+        assert "profile" in tools["tasks.show"].input_schema["required"]
+        with patch("blumkin.mcp_server.load_config", return_value=cfg):
+            listed = _drive(lambda c: c.call_tool("tasks.list", {"profile": "work"}))
+            shown = _drive(
+                lambda c: c.call_tool("tasks.show", {"name": "weekly", "profile": "work"})
+            )
+    assert [t["name"] for t in listed.structured_content["tasks"]] == ["weekly"]
+    assert shown.structured_content["task"]["prompt"] == "do it"

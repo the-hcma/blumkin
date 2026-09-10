@@ -1201,6 +1201,26 @@ Examples:
 a `notifies_others` flag per skill. Prefer `--json` in agent sessions.
 """
 
+TASKS_EPILOG = """
+Examples:
+
+\b
+  blumkin tasks list --json
+  blumkin tasks show --name weekly-report --json
+
+One markdown file per template under `~/.config/blumkin/tasks/` (or
+`$BLUMKIN_CONFIG_DIR/tasks/`); the active profile's `profiles/<name>/tasks/` is
+read too and their entries combined. Each file: an optional `# Title` line,
+`**Trigger:**` / `**Input:**` / `**Output:**` fields, and a `**Prompt:**` block
+written as a `>` blockquote. blumkin never writes these files, never matches a
+trigger for you, and never runs a model - it surfaces the text. See
+docs/operator-config.md.
+"""
+
+TASKS_LIST_EPILOG = TASKS_EPILOG
+
+TASKS_SHOW_EPILOG = TASKS_EPILOG
+
 UPGRADE_EPILOG = """
 Examples:
 
