@@ -195,6 +195,15 @@ def test_people_context_handler_filters_by_name_or_alias(tmp_path, monkeypatch) 
         payload = asyncio.run(people_context(config=cfg, name=needle))
         assert [c["name"] for c in payload["contacts"]] == ["Sam"], needle
     assert asyncio.run(people_context(config=cfg, name="nobody"))["contacts"] == []
+    # pin the full contact dict - agents read every one of these keys (SKILL.md)
+    assert asyncio.run(people_context(config=cfg, name="Sam"))["contacts"][0] == {
+        "aliases": ["sammy", "S"],
+        "conflict": False,
+        "email": "sam@example.com",
+        "name": "Sam",
+        "notes": "Colleague on Foo.",
+        "sources": [str(tmp_path / "email-context.md")],
+    }
 
 
 def test_a_utf8_bom_header_still_parses(tmp_path, monkeypatch) -> None:
