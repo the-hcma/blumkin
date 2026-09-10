@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from blumkin.cli import main
 from blumkin.config import load_config
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_USAGE
 from blumkin.skills.errors import classify_exception
@@ -156,6 +159,22 @@ def test_errors_classify_to_the_documented_exit_codes() -> None:
     assert classify_exception(TaskNotFoundError("x")).exit_code == EXIT_NOT_FOUND
     assert classify_exception(TaskAmbiguousError("x")).exit_code == EXIT_USAGE
     assert classify_exception(TaskConflictError("x")).exit_code == EXIT_USAGE
+
+
+def test_cli_tasks_runs_with_no_auth_or_provider(tmp_path, monkeypatch) -> None:
+    _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks" / "weekly-report.md").write_text(_REPORT, encoding="utf-8")
+    runner = CliRunner()
+    listed = runner.invoke(main, ["tasks", "list", "--json"], obj={})
+    assert listed.exit_code == 0, listed.output
+    assert [t["name"] for t in json.loads(listed.stdout)["tasks"]] == ["weekly-report"]
+    shown = runner.invoke(main, ["tasks", "show", "--name", "weekly", "--json"], obj={})
+    assert shown.exit_code == 0
+    assert json.loads(shown.stdout)["task"]["prompt"].startswith("Summarise")
+    missing = runner.invoke(main, ["tasks", "show", "--name", "nope", "--json"], obj={})
+    assert missing.exit_code == EXIT_NOT_FOUND
+    no_name = runner.invoke(main, ["tasks", "show", "--json"], obj={})
+    assert no_name.exit_code == EXIT_USAGE
 
 
 def test_human_list_formatter() -> None:
