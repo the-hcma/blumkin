@@ -24,13 +24,25 @@ from blumkin.exit_codes import (
     EXIT_SUCCESS,
     EXIT_USAGE,
 )
+from blumkin.install_method import (
+    METHOD_EDITABLE_PIPX,
+    METHOD_EDITABLE_UV,
+    METHOD_PIPX,
+    METHOD_SOURCE_CHECKOUT,
+    METHOD_UNMANAGED,
+    METHOD_UV_TOOL,
+    Install,
+    detect_install,
+    metadata_stale,
+    suggested_commands,
+    upgrade_steps,
+)
 from blumkin.mail_signature_state import (
     clear_signature_state,
     load_signature_state,
     record_signature_state,
 )
 from blumkin.output import emit_error, emit_json, emit_lines
-from blumkin.pipx_install import PIPX_UPGRADE_TIMEOUT_S, pipx_blumkin_path
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
@@ -115,7 +127,6 @@ from blumkin.version import (
     build_info,
     build_status_fields,
     build_version,
-    is_source_checkout,
     running_command_path,
 )
 
@@ -157,8 +168,9 @@ _DEFAULT_HINTS: dict[str, str] = {
         "grant. Wait a moment and retry the same command."
     ),
     "upgrade_failed": (
-        "Run `pipx upgrade blumkin` directly for the full output. If blumkin was not "
-        "installed with pipx, use `pipx install blumkin` (see docs/RELEASING.md)."
+        "Run the failing command directly for the full output. `blumkin upgrade` "
+        "picks pipx / uv tool / a checkout reinstall to match how blumkin is "
+        "installed; `blumkin doctor` reports the detected method."
     ),
     "usage_error": "See `blumkin COMMAND --help` for the accepted arguments and examples.",
 }
@@ -172,6 +184,19 @@ _MISSING_SCOPE_HINT = (
     '"Select all") on the consent screen - the message above lists exactly '
     "which scopes are missing."
 )
+
+_INSTALL_METHOD_LABELS: dict[str, str] = {
+    METHOD_EDITABLE_PIPX: "editable pipx install (-e <path>)",
+    METHOD_EDITABLE_UV: "editable uv tool install (-e <path>)",
+    METHOD_PIPX: "pipx",
+    METHOD_SOURCE_CHECKOUT: "source checkout (not tool-managed)",
+    METHOD_UNMANAGED: "not package-managed (plain venv or system)",
+    METHOD_UV_TOOL: "uv tool",
+}
+
+# One `git pull` / `pipx|uv` step in `blumkin upgrade`. A cold reinstall builds
+# no wheels (blumkin is pure Python) but still resolves and downloads deps.
+_UPGRADE_STEP_TIMEOUT_S = 300
 
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
@@ -283,17 +308,85 @@ def _provider_config_hint(message: str) -> str | None:
     return None
 
 
+def _checkout_lines(checkout: Any) -> list[str]:
+    if checkout.behind_origin is None:
+        origin = "origin comparison unavailable"
+    elif checkout.behind_origin == 0:
+        origin = "up to date with origin"
+    else:
+        count = checkout.behind_origin
+        origin = f"{count} commit{'' if count == 1 else 's'} behind origin"
+    if checkout.dirty is None:
+        dirty = "status unknown"
+    else:
+        dirty = "uncommitted changes" if checkout.dirty else "clean"
+    return [
+        f"checkout: {checkout.path}",
+        f"          branch {checkout.branch or '(detached)'}, {origin}, {dirty}",
+    ]
+
+
+def _editable_upgrade_steps(install: Install, *, as_json: bool) -> list[list[str]]:
+    """`upgrade_steps` with each leading command resolved to an absolute path.
+
+    Same source list as `suggested_commands` (both from `upgrade_steps`), so the
+    printed / `action_taken` text and the argv actually run cannot diverge.
+    """
+    return [
+        [_require_manager(step[0], as_json=as_json), *step[1:]] for step in upgrade_steps(install)
+    ]
+
+
+def _emit_upgrade_result(
+    install: Install,
+    *,
+    action_taken: str | None,
+    after: str | None,
+    as_json: bool,
+    before: str | None,
+    running_build: str,
+    running_path: Path,
+    stale: tuple[str, str] | None,
+) -> None:
+    if as_json:
+        emit_json(
+            {
+                "ok": True,
+                "action_taken": action_taken,
+                "checkout": install.checkout.as_dict() if install.checkout is not None else None,
+                "from": before,
+                "install_method": install.method,
+                "managed_path": (
+                    str(install.managed_path) if install.managed_path is not None else None
+                ),
+                "manager": install.manager,
+                "metadata_stale": stale is not None,
+                "running_from": {"build": running_build, "path": str(running_path)},
+                "suggested_commands": suggested_commands(install),
+                "to": after,
+            }
+        )
+        return
+    emit_lines(
+        _upgrade_human_lines(
+            install, action_taken=action_taken, after=after, before=before, stale=stale
+        )
+    )
+
+
 def _raise_chat_attachment_error(exc: BaseException, *, as_json: bool) -> NoReturn:
     """Kept for tests that call it directly; delegates to the shared classifier."""
     _fail(exc, as_json=as_json)
 
 
-def _read_pipx_version(executable: Path) -> str | None:
+def _read_app_version(executable: Path) -> str | None:
     """Return ``<executable> --version`` as ``<version> (<commit>)``, or None.
 
     The first line of ``blumkin --version`` is ``blumkin <version> (<commit>)``;
     the ``blumkin `` prefix is stripped so the value compares directly against
-    :func:`blumkin.version.build_version` (the from/to pair in ``upgrade``).
+    :func:`blumkin.version.build_version` (the from/to pair in ``upgrade``). The
+    executable is re-run on disk, so it reflects a just-applied upgrade even
+    though the calling process is still the old build.
     """
     try:
         completed = subprocess.run(
@@ -312,6 +405,95 @@ def _read_pipx_version(executable: Path) -> str | None:
     if not first:
         return None
     return first.removeprefix("blumkin ").strip() or first
+
+
+def _require_manager(name: str, *, as_json: bool) -> str:
+    """Resolve `name` on PATH or exit `upgrade_failed` - the install needs it."""
+    found = shutil.which(name)
+    if found is None:
+        _emit_error(
+            error="upgrade_failed",
+            message=f"`{name}` is not on PATH",
+            as_json=as_json,
+            hint=f"`blumkin upgrade` needs `{name}` for this install - install it and retry.",
+        )
+        raise SystemExit(EXIT_OTHER)
+    return found
+
+
+def _run_upgrade_command(cmd: list[str], *, as_json: bool, timeout: int) -> None:
+    """Run one upgrade step; emit an error and exit non-zero on any failure."""
+    printable = " ".join(cmd)
+    try:
+        completed = subprocess.run(
+            cmd, capture_output=True, check=False, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired as exc:
+        _emit_error(
+            error="timeout",
+            message=f"`{printable}` timed out",
+            as_json=as_json,
+            hint=f"Run `{printable}` directly to see where it hangs.",
+        )
+        raise SystemExit(EXIT_OTHER) from exc
+    except OSError as exc:
+        _emit_error(
+            error="upgrade_failed",
+            message=f"could not run `{printable}`: {exc}",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_OTHER) from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        _emit_error(
+            error="upgrade_failed",
+            message=f"`{printable}` failed",
+            as_json=as_json,
+            hint=detail or f"Run `{printable}` directly for the full output.",
+        )
+        raise SystemExit(EXIT_OTHER)
+
+
+def _upgrade_human_lines(
+    install: Install,
+    *,
+    action_taken: str | None,
+    after: str | None,
+    before: str | None,
+    stale: tuple[str, str] | None,
+) -> list[str]:
+    lines = [f"install: {_INSTALL_METHOD_LABELS.get(install.method, install.method)}"]
+    if install.managed_path is not None:
+        lines.append(f"         {install.managed_path}")
+    if install.checkout is not None:
+        lines.extend(_checkout_lines(install.checkout))
+    if stale is not None:
+        lines.append(
+            f"note: installed metadata ({stale[0]}) is stale vs the checkout ({stale[1]}) - "
+            "reinstall to re-bake it"
+        )
+
+    if install.method == METHOD_UNMANAGED:
+        lines.append("blumkin upgrade: not package-managed - nothing to upgrade here.")
+        lines.append(
+            "  install a managed copy:  uv tool install blumkin  (or  pipx install blumkin)"
+        )
+        return lines
+
+    if action_taken is None and install.checkout is not None:
+        lines.append(
+            "blumkin upgrade: an editable / source install is not advanced by a package "
+            "upgrade. Run:"
+        )
+        lines.extend(f"  {command}" for command in suggested_commands(install))
+        lines.append("  (or re-run `blumkin upgrade --yes` to run them now)")
+        return lines
+
+    if action_taken is not None:
+        lines.append(f"ran:  {action_taken}")
+    lines.append(f"from: {before or '(unknown)'}")
+    lines.append(f"to:   {after or '(run `blumkin --version` to confirm)'}")
+    return lines
 
 
 def _require_wo1162425_scopes(*, as_json: bool) -> None:
@@ -1039,12 +1221,28 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
             "not appending [mail.signature] to drafts to avoid a double signature"
         )
     build = build_status_fields()
+    install = detect_install()
+    stale = metadata_stale(install.checkout.path) if install.checkout is not None else None
+    if stale is not None:
+        reinstall = next(iter(suggested_commands(install)[1:]), "reinstall from the checkout")
+        warnings.append(
+            f"installed metadata ({stale[0]}) is stale vs the checkout ({stale[1]}) - a "
+            f"`git pull` did not re-bake it; run: {reinstall}"
+        )
     payload = {
         "ok": not problems,
         "build": build,
         "wo1162425_scopes": cfg.wo1162425_scopes,
         "problems": problems,
         "warnings": warnings,
+        "install": {
+            "checkout": install.checkout.as_dict() if install.checkout is not None else None,
+            "managed_path": (
+                str(install.managed_path) if install.managed_path is not None else None
+            ),
+            "metadata_stale": stale is not None,
+            "method": install.method,
+        },
         "mail_signature": {
             "configured": cfg.mail_signature.enabled,
             "outlook_signature_detected": signature_state.detected,
@@ -1058,6 +1256,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
     else:
         emit_lines([f"ok: {payload['ok']}"])
         emit_lines([f"build: {build['build_version']} ({build['build_commit']})"])
+        emit_lines([f"install: {install.method}"])
         emit_lines([f"running_from: {build['running_from']}"])
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
@@ -1072,103 +1271,84 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
 
 @main.command(epilog=help_text.UPGRADE_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--yes",
+    "yes",
+    is_flag=True,
+    help="Run the upgrade commands (an editable / source checkout needs this).",
+)
 @click.pass_context
-def upgrade(ctx: click.Context, as_json_flag: bool) -> None:
-    """Upgrade the pipx install of blumkin, reporting the pipx app's build before and after.
+def upgrade(ctx: click.Context, as_json_flag: bool, yes: bool) -> None:
+    """Upgrade blumkin the way it was installed - pipx, uv tool, or an editable checkout.
 
-    Wraps `pipx upgrade blumkin`. `from:` / `to:` are always the pipx app's own
-    version and commit - bare `pipx upgrade` cannot tell you that, and cannot
-    tell you PATH still resolves to a dev checkout, so an upgrade can look like a
-    no-op. When you run this from a checkout, the checkout is reported separately.
+    Detects the install method rather than assuming pipx: `pipx upgrade blumkin`
+    for a pipx app, `uv tool upgrade blumkin` for a uv tool, and for an editable
+    `-e <path>` install (or a bare source checkout) the git pull + `--force`
+    reinstall that a package "upgrade" cannot do - printed to run yourself, or
+    run for you with `--yes`. An unmanaged install is reported, not touched.
+
+    `--json` carries `install_method`, `managed_path`, `checkout`,
+    `metadata_stale`, `action_taken`, and `suggested_commands`.
     """
     as_json = _as_json(ctx, as_json_flag)
     running_build = build_version()
     running_path = running_command_path()
-    source_checkout = is_source_checkout()
+    install = detect_install()
+    before = _read_app_version(install.managed_path) if install.managed_path is not None else None
+    stale = metadata_stale(install.checkout.path) if install.checkout is not None else None
 
-    pipx = shutil.which("pipx")
-    if pipx is None:
-        _emit_error(
-            error="upgrade_failed",
-            message="pipx is not on PATH",
+    action_taken: str | None = None
+    if install.method == METHOD_UNMANAGED:
+        _emit_upgrade_result(
+            install,
             as_json=as_json,
-            hint="Install pipx and `pipx install blumkin` (see docs/RELEASING.md), then retry.",
-        )
-        raise SystemExit(EXIT_OTHER)
-
-    pipx_app = pipx_blumkin_path(pipx_bin=pipx)
-    before = _read_pipx_version(pipx_app) if pipx_app is not None else None
-
-    try:
-        completed = subprocess.run(
-            [pipx, "upgrade", "blumkin"],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=PIPX_UPGRADE_TIMEOUT_S,
-        )
-    except subprocess.TimeoutExpired as exc:
-        _emit_error(
-            error="timeout",
-            message="`pipx upgrade blumkin` timed out",
-            as_json=as_json,
-            hint="Run `pipx upgrade blumkin` directly to see where it hangs.",
-        )
-        raise SystemExit(EXIT_OTHER) from exc
-    except OSError as exc:
-        _emit_error(error="upgrade_failed", message=f"could not run pipx: {exc}", as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
-        _emit_error(
-            error="upgrade_failed",
-            message="`pipx upgrade blumkin` failed",
-            as_json=as_json,
-            hint=detail or "Run `pipx upgrade blumkin` directly for the full output.",
-        )
-        raise SystemExit(EXIT_OTHER)
-
-    pipx_app = pipx_blumkin_path(pipx_bin=pipx) or pipx_app
-    after = _read_pipx_version(pipx_app) if pipx_app is not None else None
-
-    if as_json:
-        emit_json(
-            {
-                "ok": True,
-                "pipx_app": {
-                    "path": str(pipx_app) if pipx_app is not None else None,
-                    "before": before,
-                    "after": after,
-                },
-                "running_from": {"build": running_build, "path": str(running_path)},
-                "source_checkout": source_checkout,
-            }
+            action_taken=None,
+            after=before,
+            before=before,
+            running_build=running_build,
+            running_path=running_path,
+            stale=stale,
         )
         return
 
-    # `from:` is the pipx app's own pre-upgrade build - the same value as
-    # pipx_app.before in --json, never a stand-in from the running process
-    # (which may be a different install entirely).
-    if before is not None:
-        lines = [f"from: {before}"]
-    elif pipx_app is not None:
-        lines = ["from: (could not read the pipx app before upgrading)"]
+    if install.checkout is not None:
+        if not yes:
+            _emit_upgrade_result(
+                install,
+                as_json=as_json,
+                action_taken=None,
+                after=before,
+                before=before,
+                running_build=running_build,
+                running_path=running_path,
+                stale=stale,
+            )
+            return
+        for step in _editable_upgrade_steps(install, as_json=as_json):
+            _run_upgrade_command(step, as_json=as_json, timeout=_UPGRADE_STEP_TIMEOUT_S)
+        action_taken = " && ".join(suggested_commands(install))
     else:
-        lines = ["from: (no pipx install of blumkin found)"]
-    if after is not None:
-        lines.append(f"to:   {after}")
-    elif pipx_app is not None:
-        lines.append(f"to:   run `{pipx_app} --version` to confirm")
-    else:
-        lines.append("to:   run `blumkin --version` to confirm")
-    if pipx_app is not None:
-        lines.append(f"      {pipx_app}")
-    if source_checkout:
-        lines.append(
-            f"note: you ran the source checkout ({running_build}) at {running_path}; "
-            "pipx upgrade changed the pipx app above, not this tree"
+        manager_bin = _require_manager(install.manager or "", as_json=as_json)
+        step = (
+            [manager_bin, "upgrade", "blumkin"]
+            if install.manager == "pipx"
+            else [manager_bin, "tool", "upgrade", "blumkin"]
         )
-    emit_lines(lines)
+        _run_upgrade_command(step, as_json=as_json, timeout=_UPGRADE_STEP_TIMEOUT_S)
+        action_taken = f"{install.manager} {' '.join(step[1:])}"
+
+    after = _read_app_version(install.managed_path) if install.managed_path is not None else None
+    stale = metadata_stale(install.checkout.path) if install.checkout is not None else None
+    _emit_upgrade_result(
+        install,
+        as_json=as_json,
+        action_taken=action_taken,
+        after=after,
+        before=before,
+        running_build=running_build,
+        running_path=running_path,
+        stale=stale,
+    )
 
 
 @main.group(epilog=help_text.CALENDAR_EPILOG)

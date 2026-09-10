@@ -27,7 +27,7 @@ One config file, one or more **named profiles** (Microsoft, Google, or both), se
 | `people` | `resolve` |
 | `mcp` | `serve`, `install`, `status` |
 
-Plus `blumkin doctor` (setup check), `skills` / `profiles` (discovery), `upgrade` (self-update over pipx), and `completion`.
+Plus `blumkin doctor` (setup check), `skills` / `profiles` (discovery), `upgrade` (self-update via pipx / uv tool / an editable checkout), and `completion`.
 
 Reads work with the base scope set. Anything that reaches another person (mail send, calendar invite, chat message) needs an explicit `--yes`. Google support is at near-parity with Microsoft — the **Google Workspace** section below has the exact verb list and the handful of provider differences.
 
@@ -59,9 +59,13 @@ makes sure that is on `PATH`.
 blumkin upgrade
 ```
 
-Wraps `pipx upgrade blumkin` and prints the version and commit you were on and
-the one you moved to — bare `pipx upgrade` cannot tell you whether `PATH` still
-resolves to a dev checkout.
+Detects how `blumkin` is installed and acts to match: `pipx upgrade blumkin` for
+a pipx app, `uv tool upgrade blumkin` for a uv tool, and for an editable
+`-e <path>` install (or a bare source checkout) the `git pull --ff-only` plus
+`--force` reinstall a package upgrade cannot do — printed to run yourself, or run
+for you with `blumkin upgrade --yes`. `from:` / `to:` are the on-disk
+`blumkin --version` before and after; an unmanaged install is reported, not
+touched.
 
 ### From a clone (developing blumkin)
 
@@ -70,8 +74,10 @@ uv sync --group dev
 uv tool install -e .        # editable; `blumkin` now points at the checkout
 ```
 
-`blumkin --version` reports the checkout's commit, and `blumkin upgrade` will
-say it is running from a source checkout and leave the tree alone.
+`blumkin --version` reports the checkout's commit. `blumkin upgrade` recognises
+the editable install and prints (or, with `--yes`, runs) `git pull --ff-only`
+followed by `uv tool install -e . --force` to re-bake the metadata; `blumkin
+doctor` warns when a pull left the installed version stale.
 
 To expose every skill as a typed **MCP tool** for MCP-aware agents, install the
 `mcp` extra (`pipx install 'blumkin[mcp]'`) and run **`blumkin mcp install`** — a

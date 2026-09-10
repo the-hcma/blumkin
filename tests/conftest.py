@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 
@@ -24,3 +26,29 @@ def _isolate_default_blumkin_config(
         encoding="utf-8",
     )
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(root))
+
+
+@pytest.fixture(autouse=True)
+def _stub_install_detection(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep `blumkin doctor` / `upgrade` off real `pipx` / `git` subprocesses.
+
+    `detect_install` shells out to `pipx list --json` and `git`; every command
+    that reports build state calls it. Tests that exercise detection itself use
+    `blumkin.install_method` directly (untouched here) or override
+    `blumkin.cli.detect_install` with their own fixture.
+    """
+    if request.node.get_closest_marker("live") is not None:
+        return
+    from blumkin import cli, install_method
+
+    monkeypatch.setattr(
+        cli,
+        "detect_install",
+        lambda **_kwargs: install_method.Install(
+            checkout=None,
+            managed_path=Path("/usr/bin/blumkin"),
+            method=install_method.METHOD_UNMANAGED,
+        ),
+    )
