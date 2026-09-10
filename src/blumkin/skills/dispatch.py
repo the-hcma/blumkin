@@ -16,9 +16,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from blumkin.config import BlumkinConfig
+from blumkin.contacts import people_context
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills import (
+    CONFIG_SKILLS,
     DOCS_SKILLS,
     DRIVE_SKILLS,
     SKILL_METHOD_OVERRIDES,
@@ -193,6 +195,12 @@ _PREPROCESSORS: dict[str, Callable[[dict[str, Any], dict[str, Any], BlumkinConfi
     "mail.auto-reply": _pp_auto_reply,
 }
 
+# CONFIG_SKILLS handlers: async, take the resolved kwargs plus `config`, touch no
+# provider. Keyed by skill id.
+_CONFIG_HANDLERS: dict[str, Callable[..., Any]] = {
+    "people.context": people_context,
+}
+
 
 # --------------------------------------------------------------------------- gates
 
@@ -285,6 +293,9 @@ async def run_skill(
     preprocess = _PREPROCESSORS.get(skill_id)
     if preprocess is not None:
         preprocess(kwargs, arguments, config)
+
+    if skill_id in CONFIG_SKILLS:
+        return await _CONFIG_HANDLERS[skill_id](config=config, **kwargs)
 
     prov = provider if provider is not None else get_provider(config)
     method = getattr(prov, skill_method_name(skill_id))

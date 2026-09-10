@@ -71,6 +71,12 @@ Legacy single-file layouts (flat keys, no `[profiles.*]`) appear as one profile
 named `default`. Separate directories via `BLUMKIN_CONFIG_DIR` still work but are
 no longer the preferred multi-account setup.
 
+Optional **operator-context files** (`email-context.md`, and later
+`task-templates.md`) follow the same per-profile shape: a `<config-dir>/<file>`
+base, merged with the active profile's `profiles/<name>/<file>`. `people.context`
+surfaces the merged result and flags cross-file conflicts. See
+[`operator-config.md`](./operator-config.md).
+
 ---
 
 ## Cursor
@@ -545,8 +551,11 @@ v1 is stdio only. A loopback HTTP transport is a later option if a host needs it
 - Putting client ids or secrets in a skill or instructions file
 - Running a `notifies_others` skill to test something
 - Inventing SMTP addresses from display names, or probing `calendar freebusy`
-  as a people directory — use `blumkin people resolve` and ask the user when
-  `ambiguous: true`
+  as a people directory — call `blumkin people context` (the operator's
+  `email-context.md`) and/or `blumkin people resolve` (Graph directory),
+  **confirm the address with the user**, then pass the real email. blumkin does
+  not turn a name into an address for you — `--to` / `--cc` / `--with` are
+  email-only. Ask the user when `ambiguous: true` or `conflict: true`.
 - Inventing colored HTML mail signatures per draft (use `[mail.signature]` /
   `--no-signature` instead). If `mail signature --json` shows `suppressed: true`,
   the account's Outlook adds its own signature and blumkin is deliberately not

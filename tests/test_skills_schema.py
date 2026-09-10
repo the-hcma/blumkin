@@ -26,8 +26,14 @@ from blumkin.exit_codes import (
     EXIT_USAGE,
 )
 from blumkin.providers.protocol import WorkspaceProvider
-from blumkin.skills import BESPOKE_SKILLS, SKILL_METHOD_OVERRIDES, skills_catalog
+from blumkin.skills import (
+    BESPOKE_SKILLS,
+    CONFIG_SKILLS,
+    SKILL_METHOD_OVERRIDES,
+    skills_catalog,
+)
 from blumkin.skills.chat import ChatAttachmentScopeError
+from blumkin.skills.dispatch import _CONFIG_HANDLERS
 
 
 def test_arg_objects_match_the_documented_shape() -> None:
@@ -55,10 +61,16 @@ def test_every_catalog_arg_maps_to_a_real_provider_kwarg() -> None:
         sid = skill["id"]
         if sid in BESPOKE_SKILLS:
             continue
-        method: str = SKILL_METHOD_OVERRIDES.get(sid) or sid.replace(".", "_").replace("-", "_")
-        fn = getattr(WorkspaceProvider, method, None)
-        assert fn is not None, f"{sid}: no provider method {method}"
-        kwargs = {p for p in inspect.signature(fn).parameters if p != "self"}
+        if sid in CONFIG_SKILLS:
+            method = _CONFIG_HANDLERS[sid].__name__
+            kwargs = {
+                p for p in inspect.signature(_CONFIG_HANDLERS[sid]).parameters if p != "config"
+            }
+        else:
+            method = SKILL_METHOD_OVERRIDES.get(sid) or sid.replace(".", "_").replace("-", "_")
+            fn = getattr(WorkspaceProvider, method, None)
+            assert fn is not None, f"{sid}: no provider method {method}"
+            kwargs = {p for p in inspect.signature(fn).parameters if p != "self"}
         for arg in skill["args"]:
             param = arg["param"]
             if param is None:  # consumed by the consent gate or a preprocessor
@@ -517,6 +529,7 @@ _CONSENT = {
     "mcp.serve": (False, False),
     "meeting.get": (False, False),
     "meeting.transcription": (True, False),
+    "people.context": (False, False),
     "people.resolve": (False, False),
     "skills.describe": (False, False),
     "skills.list": (False, False),

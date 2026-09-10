@@ -45,6 +45,12 @@ WO1162425_SKILLS: frozenset[str] = frozenset(
     }
 )
 
+# Skills backed by an operator markdown file in the config dir, not a
+# `WorkspaceProvider` method. `run_skill` routes these to a local handler (no
+# token, no network); they are NOT in `BESPOKE_SKILLS`, so their args get normal
+# `param` enrichment and the MCP server exposes them like any read skill.
+CONFIG_SKILLS: frozenset[str] = frozenset({"people.context"})
+
 # Skills with no `WorkspaceProvider` method - the CLI keeps a bespoke callback and
 # the MCP server does not expose them.
 BESPOKE_SKILLS: frozenset[str] = frozenset(
@@ -1585,6 +1591,25 @@ SKILLS: list[SkillSpec] = [
                 "required": False,
                 "type": "flag",
                 "note": "required with --enable",
+            },
+        ],
+    ),
+    SkillSpec(
+        id="people.context",
+        cli=["blumkin", "people", "context"],
+        summary=(
+            "List the operator's ~/.config/blumkin/email-context.md contacts "
+            "(name, aliases, email, notes) - read-only, no network"
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=[],
+        args=[
+            {
+                "name": "--name",
+                "required": False,
+                "type": "string",
+                "note": "filter to one contact by name or alias",
             },
         ],
     ),

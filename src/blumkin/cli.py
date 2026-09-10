@@ -16,6 +16,7 @@ from click.shell_completion import get_completion_class
 from blumkin import help_text
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
 from blumkin.config import BlumkinConfig, list_profiles, load_config, set_profile_email
+from blumkin.contacts import format_people_context_human
 from blumkin.exit_codes import (
     EXIT_AUTH,
     EXIT_MISSING_SCOPE,
@@ -576,6 +577,28 @@ def _dispatch(
         payload = asyncio.run(
             run_skill(skill_id, arguments, config=_load_config(), provider=_workspace())
         )
+    except Exception as exc:  # noqa: BLE001 - classify_exception owns the taxonomy
+        _fail(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(human(payload))
+    raise SystemExit(EXIT_SUCCESS)
+
+
+def _dispatch_local(
+    ctx: click.Context,
+    skill_id: str,
+    arguments: dict[str, Any],
+    *,
+    human: Any,
+    as_json_flag: bool,
+) -> NoReturn:
+    """Like :func:`_dispatch` for a `CONFIG_SKILLS` id - reads an operator file,
+    needs no provider, so no auth setup is required to run it."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(run_skill(skill_id, arguments, config=_load_config()))
     except Exception as exc:  # noqa: BLE001 - classify_exception owns the taxonomy
         _fail(exc, as_json=as_json)
     if as_json:
@@ -3908,11 +3931,35 @@ def meeting_transcription_cmd(
 
 @main.group(epilog=help_text.PEOPLE_EPILOG)
 def people() -> None:
-    """Resolve a name to an email address before you invite or message someone.
+    """Look up who you mean before you invite or message someone.
 
-    Needs `wo1162425_scopes = true` (People.Read). Fail-closed: never guess
-    when more than one person matches.
+    `context` reads your local `email-context.md`; `resolve` searches the Graph
+    directory (needs `wo1162425_scopes` + People.Read). Both fail closed - never
+    guess when more than one person matches.
     """
+
+
+@people.command("context", epilog=help_text.PEOPLE_CONTEXT_EPILOG)
+@click.option("--name", "name", default=None, help="Filter to one contact by name or alias.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def people_context_cmd(ctx: click.Context, name: str | None, as_json_flag: bool) -> None:
+    """List the contacts in `~/.config/blumkin/email-context.md` (name, aliases,
+    email, notes).
+
+    Read-only, no network, no auth needed. Blumkin does not turn a name into an
+    address itself - use this to look one up, then pass the real email to
+    `mail draft` / `calendar create`. Empty output means no `email-context.md`
+    (or nothing matched `--name`). The active profile's
+    `profiles/<name>/email-context.md` is merged on top of the config-dir file.
+    """
+    _dispatch_local(
+        ctx,
+        "people.context",
+        {"name": name},
+        human=format_people_context_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @people.command("resolve", epilog=help_text.PEOPLE_RESOLVE_EPILOG)

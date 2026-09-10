@@ -1135,6 +1135,22 @@ Fail-closed: zero matches exits 5 (not_found); more than one exits 2 with
 
 PEOPLE_RESOLVE_EPILOG = PEOPLE_EPILOG
 
+PEOPLE_CONTEXT_EPILOG = """
+Examples:
+
+\b
+  blumkin people context --json
+  blumkin people context --name Sam --json
+
+Lists `~/.config/blumkin/email-context.md` (or
+`$BLUMKIN_CONFIG_DIR/email-context.md`); the active profile's
+`profiles/<name>/email-context.md` is merged on top. Both a markdown table
+(`| Name | Aliases | Email | Notes |`) and bullet rows
+(`- Sam (sammy) <sam@example.com> - note`) are read. Blumkin never writes the
+file and never substitutes a name for an address on its own - look one up here,
+then pass the real email. See docs/operator-config.md.
+"""
+
 PROFILES_EPILOG = """
 Examples:
 
