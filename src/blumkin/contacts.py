@@ -186,6 +186,9 @@ def _absorb(accs: list[_Acc], row: _Row, src: str) -> None:
 def _bullet_line(line: str, path: Path) -> _Row | None:
     match = _BULLET_RE.match(line)
     if match is None:
+        # `_parse` only reaches here for a `- ` / `* ` / `+ ` line, i.e. one the
+        # operator meant as a contact entry - tell them it did not parse.
+        emit_warning(f"{path}: could not parse bullet entry, skipped: {line}")
         return None
     email = match["email"].strip()
     name = match["name"].strip()

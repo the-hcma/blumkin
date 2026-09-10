@@ -136,6 +136,31 @@ def test_a_bullet_with_no_name_is_skipped(tmp_path, monkeypatch) -> None:
     assert [c.name for c in load_context(cfg)] == ["Sam"]
 
 
+def test_a_malformed_bullet_warns_instead_of_vanishing(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "email-context.md").write_text(
+        "- Sam - colleague (address forgotten)\n- Alex <alex@example.com>\n", encoding="utf-8"
+    )
+    assert [c.name for c in load_context(cfg)] == ["Alex"]
+    assert "could not parse bullet entry" in capsys.readouterr().err
+
+
+def test_identical_notes_across_files_merge_without_a_conflict(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "email-context.md").write_text(
+        "- Sam <sam@example.com> - my manager\n", encoding="utf-8"
+    )
+    prof = tmp_path / "profiles" / "work"
+    prof.mkdir(parents=True)
+    (prof / "email-context.md").write_text(
+        "- Sam <sam@example.com> - my manager\n", encoding="utf-8"
+    )
+    (sam,) = load_context(cfg)
+    assert sam.conflict is False
+    assert sam.notes == "my manager"
+    assert len(sam.sources) == 2
+
+
 def test_a_second_table_header_is_re_detected(tmp_path, monkeypatch) -> None:
     cfg = _cfg(tmp_path, monkeypatch, profile="work")
     (tmp_path / "email-context.md").write_text(
