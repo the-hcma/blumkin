@@ -144,6 +144,12 @@ original's attachments.
      `blumkin chat attachments --with "Name" --latest --json` (newest message carrying files)
      `blumkin chat attachments download --chat-id '<chat-id>' --message-id '<message-id>' --attachment-id '<id>' --out ./file.docx`
      `blumkin chat attachments download --with "Name" --latest --all --out ./downloads/`
+   - Task templates (recurring jobs): `blumkin tasks list --json`. Match the
+     user's request to a template's `trigger`, **confirm the pick with the
+     user**, then `blumkin tasks show --name <it> --json` and run the returned
+     `prompt` yourself against the input it implies (fetch that input with the
+     `mail` / `drive` reads above). blumkin picks nothing and runs no model. A
+     template with `conflict: true` has clashing copies — ask the user.
 5. Writes (require `--yes` when they notify others):
    - `blumkin calendar accept --event-id '<id>' [--comment TEXT] --yes`
    - `blumkin calendar decline --event-id '<id>' [--comment TEXT] --yes` /

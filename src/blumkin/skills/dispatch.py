@@ -30,11 +30,14 @@ from blumkin.skills import (
 from blumkin.skills.calendar import parse_local_datetime
 from blumkin.skills.calendar_writes import parse_duration, parse_recurrence
 from blumkin.skills.errors import ConsentRequiredError, ScopeAddonDisabledError
+from blumkin.tasks import tasks_list, tasks_show
 
 # CONFIG_SKILLS handlers: async, take the resolved kwargs plus `config`, touch no
 # provider. Keyed by skill id.
 _CONFIG_HANDLERS: dict[str, Callable[..., Any]] = {
     "people.context": people_context,
+    "tasks.list": tasks_list,
+    "tasks.show": tasks_show,
 }
 
 # Either key satisfies the notify gate. The MCP server maps its synthetic

@@ -65,7 +65,7 @@ BESPOKE_SKILLS: frozenset[str] = frozenset(
 # `WorkspaceProvider` method. `run_skill` routes these to a local handler (no
 # token, no network); they are NOT in `BESPOKE_SKILLS`, so their args get normal
 # `param` enrichment and the MCP server exposes them like any read skill.
-CONFIG_SKILLS: frozenset[str] = frozenset({"people.context"})
+CONFIG_SKILLS: frozenset[str] = frozenset({"people.context", "tasks.list", "tasks.show"})
 
 # (skill id, catalog arg name) -> provider kwarg. Only listed where it differs from
 # the default `name.lstrip("-").replace("-", "_")`. `None` means the value is consumed
@@ -1657,6 +1657,34 @@ SKILLS: list[SkillSpec] = [
         notifies_others=False,
         scopes=[],
         args=[],
+    ),
+    SkillSpec(
+        id="tasks.list",
+        cli=["blumkin", "tasks", "list"],
+        summary=(
+            "List the operator's ~/.config/blumkin/tasks/*.md prompt templates "
+            "(name, title, trigger, input, output) - read-only, no network"
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=[],
+        args=[],
+    ),
+    SkillSpec(
+        id="tasks.show",
+        cli=["blumkin", "tasks", "show"],
+        summary="Show one prompt template in full, including its Prompt: block",
+        mutates=False,
+        notifies_others=False,
+        scopes=[],
+        args=[
+            {
+                "name": "--name",
+                "required": True,
+                "type": "string",
+                "note": "template name; a unique prefix is accepted",
+            },
+        ],
     ),
 ]
 

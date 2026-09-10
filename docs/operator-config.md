@@ -5,12 +5,10 @@ more of *your* context. They live next to `config.toml` and the token cache, are
 **never written or committed by blumkin**, and are absent by default — nothing
 here changes behaviour until you add a file.
 
-| File | Purpose | Skill |
-|------|---------|-------|
+| File / dir | Purpose | Skill |
+|------------|---------|-------|
 | `email-context.md` | name / alias → address + relationship notes | `blumkin people context` |
-
-> `task-templates.md` (named reusable prompts) is planned — see
-> [#209](https://github.com/the-hcma/blumkin/issues/209).
+| `tasks/<name>.md` | named reusable prompt templates | `blumkin tasks list` / `tasks show` |
 
 ## Location and precedence
 
@@ -76,3 +74,39 @@ and relationship context lives ("my manager", "prefers bullet points", "kids —
 keep it playful") so an agent can pick the right register without you
 re-explaining each time. It is **not** a secret store — addresses and free text
 only.
+
+## `tasks/<name>.md`
+
+One markdown file per template under `tasks/`, so each is easy to diff and
+share. The filename stem is the template name (`tasks/weekly-report.md` →
+`weekly-report`). `<config-dir>/tasks/` is merged with the active profile's
+`profiles/<name>/tasks/`; a template that exists in both with **different**
+content is flagged (`conflict: true`) and `tasks show` refuses it until you
+reconcile.
+
+```markdown
+# Weekly status report
+
+**Trigger:** "weekly report", "status update"
+**Input:** the latest thread in the Reports folder
+**Output:** five bullets, mailed to the team
+
+**Prompt:**
+
+> Summarise the input as exactly five bullets, most important first.
+> Keep each bullet under 20 words.
+```
+
+- The leading `# Title` line is optional (defaults to the name).
+- `**Trigger:**`, `**Input:**`, `**Output:**` are one-line fields, all optional.
+- Everything in the `>` blockquote after `**Prompt:**` is the prompt body.
+- A file with no `**Prompt:**` block still lists, with a warning.
+
+### `Trigger:` is a hint, not a matcher
+
+blumkin does **nothing** with `Trigger:` beyond showing it. `tasks list` gives an
+agent the triggers; the agent matches the user's request to one, **confirms the
+choice with the user**, calls `tasks show --name <it>`, and runs the prompt
+itself against whatever input the request implies. blumkin never selects a
+template, never resolves the input, and never calls a model.
+
