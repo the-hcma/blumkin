@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.5.0...blumkin-v0.6.0) (2026-09-10)
+
+
+### Features
+
+* **cli:** render long URLs as OSC 8 terminal hyperlinks ([#233](https://github.com/the-hcma/blumkin/issues/233)) ([#234](https://github.com/the-hcma/blumkin/issues/234)) ([bd38cd4](https://github.com/the-hcma/blumkin/commit/bd38cd434625bec0f00f60428ecd140c79bbb4fe))
+* **mcp:** per-call `profile` argument to choose the blumkin account ([#227](https://github.com/the-hcma/blumkin/issues/227)) ([#235](https://github.com/the-hcma/blumkin/issues/235)) ([4a9ea60](https://github.com/the-hcma/blumkin/commit/4a9ea600f907e9a1b110685b7f50eee7c32c278f))
+
 ## [0.5.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.4.0...blumkin-v0.5.0) (2026-09-09)
 
 
