@@ -227,10 +227,14 @@ context without a provider round-trip. See `docs/operator-config.md`.
   network). The CLI dispatches it through a provider-less `_dispatch_local`, so
   no auth setup is needed to run it. `#207` builds the lane (`people.context`);
   `#209` adds `tasks.*`.
-- **Files are per-profile, merged.** `<config-dir>/<file>` is the base; the
-  active profile's `profiles/<name>/<file>` merges on top. A same-key /
-  different-value clash is **flagged** (`conflict: true` + both source paths),
-  never silently resolved - blumkin does not edit the files.
+- **Files are per-profile; entries are combined.** `<config-dir>/<file>` and the
+  active profile's `profiles/<name>/<file>` are both read. Entries for one key
+  that agree are merged; a clash (different address, or two different non-empty
+  notes / a title-only difference for a template) is **not** merged - every
+  variant is surfaced flagged `conflict: true` with its own `sources`, and the
+  fail-closed verb (`tasks show`) refuses it. blumkin never picks one or edits
+  the files. The files are also in `.gitignore` so a config dir inside a working
+  tree is not committed by accident.
 - **`email-context.md` does not drive recipient resolution.** `--to` / `--cc` /
   `--with` stay email-only. `people.context` is a lookup surface; the *agent*
   fuzzy-matches a name against it, confirms the address with the user, then

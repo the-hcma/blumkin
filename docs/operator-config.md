@@ -14,20 +14,23 @@ here changes behaviour until you add a file.
 
 ## Location and precedence
 
-Each file is looked up in two places and **merged**, config-dir first as the
-base, then the active profile's copy on top:
+Each file is looked up in two places and their entries **combined**:
 
 1. `$BLUMKIN_CONFIG_DIR/<file>` (else `~/.config/blumkin/<file>`)
 2. `<config-dir>/profiles/<active-profile>/<file>`
 
-A legacy flat config (no `[profiles.*]`) makes those the same path. When the same
-key appears in both files with **different** values, the merged entry is flagged
-(`conflict: true`, both source paths) — blumkin never silently picks one; you
-reconcile the files.
+A legacy flat config (no `[profiles.*]`) makes those the same path.
 
-Keep these under version control in your own **private** dotfiles repo if you
-want history — do not commit them here (they are in `.gitignore` with the rest of
-`~/.config/blumkin/`).
+Entries for the same key that **agree** (an address matches; a note fills a blank
+or is identical) are merged into one. Entries that **clash** — a different
+address, or two different non-empty notes for one name — are **not** merged:
+blumkin surfaces each, every one flagged `conflict: true` with its own `sources`,
+so you (or an agent) can see both and reconcile the files. blumkin never picks
+one and never edits the files.
+
+`email-context.md` is in this repo's `.gitignore`, so a config dir that happens
+to sit inside a working tree will not have it committed by accident. Keep it
+under version control in your own **private** dotfiles repo if you want history.
 
 ## `email-context.md`
 

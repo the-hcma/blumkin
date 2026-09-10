@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from blumkin.cli import main
 from blumkin.config import load_config
 from blumkin.contacts import (
     format_people_context_human,
@@ -70,20 +73,74 @@ def test_table_and_bullet_mix_in_one_file(tmp_path, monkeypatch) -> None:
     assert {c.name for c in load_context(cfg)} == {"Sam", "Alex", "Dana", "Robin"}
 
 
-def test_profile_file_merges_over_config_dir_and_flags_conflicts(tmp_path, monkeypatch) -> None:
+def test_profile_file_combines_and_a_matching_entry_merges(tmp_path, monkeypatch) -> None:
     cfg = _cfg(tmp_path, monkeypatch, profile="work")
-    (tmp_path / "email-context.md").write_text(_TABLE, encoding="utf-8")
+    (tmp_path / "email-context.md").write_text(
+        "| Name | Email | Notes |\n|---|---|---|\n| Sam | sam@example.com | |\n", encoding="utf-8"
+    )
     prof = tmp_path / "profiles" / "work"
     prof.mkdir(parents=True)
     (prof / "email-context.md").write_text(
-        "- Sam <sam@work.example.com> - a different Sam\n- Kai <kai@example.com> - new\n",
+        "- Sam (sammy) <sam@example.com> - keep it formal\n- Kai <kai@example.com> - new\n",
         encoding="utf-8",
     )
     by_name = {c.name: c for c in load_context(cfg)}
-    assert set(by_name) == {"Sam", "Alex", "Kai"}
-    assert by_name["Sam"].conflict is True
+    assert set(by_name) == {"Sam", "Kai"}
+    # same address, base note blank -> merged, profile note fills, no conflict
+    assert by_name["Sam"].email == "sam@example.com"
+    assert by_name["Sam"].notes == "keep it formal"
+    assert by_name["Sam"].aliases == ("sammy",)
+    assert by_name["Sam"].conflict is False
     assert len(by_name["Sam"].sources) == 2
-    assert by_name["Kai"].conflict is False
+
+
+def test_different_address_keeps_both_variants_flagged(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "email-context.md").write_text(
+        "- Sam <sam@personal.example.com> - my brother\n", encoding="utf-8"
+    )
+    prof = tmp_path / "profiles" / "work"
+    prof.mkdir(parents=True)
+    (prof / "email-context.md").write_text(
+        "- Sam <sam@work.example.com> - teammate\n", encoding="utf-8"
+    )
+    sams = [c for c in load_context(cfg) if c.name == "Sam"]
+    assert {c.email for c in sams} == {"sam@personal.example.com", "sam@work.example.com"}
+    assert all(c.conflict for c in sams)
+    assert [c.sources for c in sams] == [
+        (str(tmp_path / "email-context.md"),),
+        (str(prof / "email-context.md"),),
+    ]
+
+
+def test_same_address_different_notes_is_flagged(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "email-context.md").write_text("- Sam <s@example.com> - note A\n", encoding="utf-8")
+    prof = tmp_path / "profiles" / "work"
+    prof.mkdir(parents=True)
+    (prof / "email-context.md").write_text("- Sam <s@example.com> - note B\n", encoding="utf-8")
+    (sam,) = [c for c in load_context(cfg) if c.name == "Sam"]
+    assert sam.conflict is True
+    assert len(sam.sources) == 2
+
+
+def test_a_second_table_header_is_re_detected(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "email-context.md").write_text(
+        "| Name | Aliases | Email |\n|---|---|---|\n| Sam | s | sam@example.com |\n\n"
+        "| Name | Email |\n|---|---|\n| Ana | ana@example.com |\n",
+        encoding="utf-8",
+    )
+    assert {c.name for c in load_context(cfg)} == {"Sam", "Ana"}
+
+
+def test_a_non_utf8_file_degrades_instead_of_crashing(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "email-context.md").write_bytes(
+        "- Jos\xe9 <jose@example.com> - amigo\n".encode("cp1252")
+    )
+    (jose,) = load_context(cfg)
+    assert jose.email == "jose@example.com"
 
 
 def test_locate_operator_files_dedupes_a_legacy_flat_config(tmp_path, monkeypatch) -> None:
@@ -107,6 +164,19 @@ def test_missing_file_is_an_empty_list_not_an_error(tmp_path, monkeypatch) -> No
     cfg = _cfg(tmp_path, monkeypatch, profile="work")
     payload = asyncio.run(people_context(config=cfg))
     assert payload == {"ok": True, "contacts": []}
+
+
+def test_cli_people_context_runs_with_no_auth_or_provider(tmp_path, monkeypatch) -> None:
+    _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "email-context.md").write_text(_TABLE, encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(main, ["people", "context", "--json"], obj={})
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert {c["name"] for c in payload["contacts"]} == {"Sam", "Alex"}
+    filtered = runner.invoke(main, ["people", "context", "--name", "sammy", "--json"], obj={})
+    assert [c["name"] for c in json.loads(filtered.stdout)["contacts"]] == ["Sam"]
 
 
 def test_human_formatter_shows_aliases_notes_and_conflicts() -> None:

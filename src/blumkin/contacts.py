@@ -1,8 +1,9 @@
 """``email-context.md`` - operator-curated name/alias -> address + notes.
 
-An optional plain-markdown file in the config dir (and, merged on top, the active
-profile's subdir). blumkin never writes it. It is consumed only by the
-``people.context`` read skill: recipient resolution is the agent's job - it
+An optional plain-markdown file in the config dir; the active profile's copy
+(``profiles/<name>/email-context.md``) is read too and their entries combined.
+blumkin never writes it. It is consumed only by the ``people.context`` read
+skill: recipient resolution is the agent's job - it
 fuzzy-matches this data, confirms the address with the user, then calls
 mail/calendar with a real SMTP address. blumkin does no name -> address
 substitution of its own.
@@ -31,8 +32,10 @@ CONTEXT_FILENAME = "email-context.md"
 
 @dataclass(frozen=True, slots=True)
 class Contact:
-    """One merged entry. ``sources`` lists every file it came from; ``conflict`` is
-    set when the same name/alias carried a different address across files."""
+    """One resolved entry. ``sources`` lists every file it came from; ``conflict``
+    is set when this name has more than one variant (a different address, or two
+    different non-empty notes) - the caller should show all and let the operator
+    reconcile, never pick one."""
 
     aliases: tuple[str, ...]
     conflict: bool
@@ -58,12 +61,33 @@ def format_people_context_human(payload: dict[str, Any]) -> list[str]:
 
 
 def load_context(config: BlumkinConfig) -> list[Contact]:
-    """Every contact, config-dir file first then the profile file merged on top."""
-    merged: dict[str, Contact] = {}
+    """Every contact from the config-dir file merged with the active profile's file.
+
+    Rows for one name that agree (same address; notes fill a blank or match) are
+    merged. Rows that clash - a different address, or two different non-empty
+    notes - are kept as **separate** entries, all flagged ``conflict: true`` so
+    the caller can show both and the operator can reconcile the files. blumkin
+    never picks one.
+    """
+    variants: dict[str, list[_Acc]] = {}
     for path in locate_operator_files(config, CONTEXT_FILENAME):
         for row in _parse(path):
-            _merge(merged, row, path)
-    return sorted(merged.values(), key=lambda contact: contact.name.lower())
+            _absorb(variants.setdefault(row.name.lower(), []), row, str(path))
+    contacts: list[Contact] = []
+    for accs in variants.values():
+        clash = len(accs) > 1
+        contacts.extend(
+            Contact(
+                aliases=tuple(acc.aliases),
+                conflict=clash or acc.note_clash,
+                email=acc.email,
+                name=acc.name,
+                notes=acc.notes,
+                sources=tuple(acc.sources),
+            )
+            for acc in accs
+        )
+    return sorted(contacts, key=lambda contact: (contact.name.lower(), contact.email.lower()))
 
 
 def locate_operator_files(config: BlumkinConfig, filename: str) -> list[Path]:
@@ -105,6 +129,18 @@ async def people_context(*, config: BlumkinConfig, name: str | None = None) -> d
     }
 
 
+@dataclass(slots=True)
+class _Acc:
+    """A mutable accumulator for one (name, address) while merging files."""
+
+    aliases: list[str]
+    email: str
+    name: str
+    note_clash: bool
+    notes: str
+    sources: list[str]
+
+
 @dataclass(frozen=True, slots=True)
 class _Row:
     aliases: tuple[str, ...]
@@ -124,6 +160,29 @@ _BULLET_RE = re.compile(
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+def _absorb(accs: list[_Acc], row: _Row, src: str) -> None:
+    for acc in accs:
+        if acc.email.lower() != row.email.lower():
+            continue
+        acc.aliases = list(dict.fromkeys((*acc.aliases, *row.aliases)))
+        acc.sources.append(src)
+        if not acc.notes:
+            acc.notes = row.notes
+        elif row.notes and row.notes != acc.notes:
+            acc.note_clash = True
+        return
+    accs.append(
+        _Acc(
+            aliases=list(row.aliases),
+            email=row.email,
+            name=row.name,
+            note_clash=False,
+            notes=row.notes,
+            sources=[src],
+        )
+    )
+
+
 def _bullet_line(line: str, path: Path) -> _Row | None:
     match = _BULLET_RE.match(line)
     if match is None:
@@ -140,34 +199,11 @@ def _bullet_line(line: str, path: Path) -> _Row | None:
     )
 
 
-def _merge(merged: dict[str, Contact], row: _Row, path: Path) -> None:
-    key = row.name.lower()
-    src = str(path)
-    existing = merged.get(key)
-    if existing is None:
-        merged[key] = Contact(
-            aliases=row.aliases,
-            conflict=False,
-            email=row.email,
-            name=row.name,
-            notes=row.notes,
-            sources=(src,),
-        )
-        return
-    same_email = existing.email.lower() == row.email.lower()
-    merged[key] = Contact(
-        aliases=tuple(dict.fromkeys((*existing.aliases, *row.aliases))),
-        conflict=existing.conflict or not same_email,
-        email=existing.email,
-        name=existing.name,
-        notes=existing.notes or row.notes,
-        sources=(*existing.sources, src),
-    )
-
-
 def _parse(path: Path) -> list[_Row]:
     try:
-        text = path.read_text(encoding="utf-8")
+        # errors="replace": a notes cell saved as cp1252/UTF-16 must degrade to a
+        # warning-and-skip like a malformed row, not blow up the whole skill.
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         emit_warning(f"could not read {path}: {exc}")
         return []
@@ -200,9 +236,12 @@ def _table_line(
     if all(set(cell) <= set("-: ") for cell in cells):
         return header, None  # |---|---| divider
     lowered = [cell.lower() for cell in cells]
+    # A row that names both columns and holds no address is a (possibly second)
+    # header - re-detect it so a later table with different columns is not parsed
+    # with the first table's indices.
+    if {"name", "email"} <= set(lowered) and not any("@" in cell for cell in cells):
+        return {col: i for i, col in enumerate(lowered)}, None
     if header is None:
-        if "name" in lowered and "email" in lowered:
-            return {col: i for i, col in enumerate(lowered)}, None
         emit_warning(f"{path}: table row before a Name|Email header, skipped: {line}")
         return None, None
     name = cells[header["name"]].strip() if header["name"] < len(cells) else ""
