@@ -48,6 +48,7 @@ from blumkin.skills.mail import (
     MailFolderNotFoundError,
     MailMessageNotFoundError,
 )
+from blumkin.tasks import TaskAmbiguousError, TaskConflictError
 
 # Overrides the Microsoft/Graph-only ``missing_scope`` default hint: a plain
 # MissingScopeError is provider-neutral (issue #133).
@@ -106,6 +107,12 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
     # 0. typed gate exceptions from the dispatch layer
     if isinstance(exc, ConsentRequiredError | ScopeAddonDisabledError):
         return ErrorInfo("usage_error", EXIT_USAGE, str(exc), exc.hint)
+
+    # Task-template errors carry operator text (`--name`, template names, file
+    # paths) - classify by type, before the ValueError message heuristics below
+    # could re-read that text as `auth_required`.
+    if isinstance(exc, TaskAmbiguousError | TaskConflictError):
+        return ErrorInfo("usage_error", EXIT_USAGE, str(exc))
 
     # ZoneInfoNotFoundError subclasses KeyError/LookupError, so it must be
     # classified before the generic LookupError branch below.

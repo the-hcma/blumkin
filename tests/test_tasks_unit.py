@@ -176,6 +176,11 @@ def test_errors_classify_to_the_documented_exit_codes() -> None:
     assert classify_exception(TaskNotFoundError("x")).exit_code == EXIT_NOT_FOUND
     assert classify_exception(TaskAmbiguousError("x")).exit_code == EXIT_USAGE
     assert classify_exception(TaskConflictError("x")).exit_code == EXIT_USAGE
+    # operator text ("Missing", "client_id" in a template name / path) must not
+    # be re-read as auth_required by the ValueError message heuristics.
+    for msg in ("'Missing' matches 2 templates: Missing-a, Missing-b", "client_id.md vs x.md"):
+        assert classify_exception(TaskAmbiguousError(msg)).slug == "usage_error"
+        assert classify_exception(TaskConflictError(msg)).slug == "usage_error"
 
 
 def test_cli_tasks_runs_with_no_auth_or_provider(tmp_path, monkeypatch) -> None:
