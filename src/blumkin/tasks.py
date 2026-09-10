@@ -60,11 +60,12 @@ def format_tasks_list_human(payload: dict[str, Any]) -> list[str]:
         return ["(no templates - no tasks/ directory, or it is empty)"]
     lines: list[str] = []
     for task in tasks:
-        flag = "  ! conflicting copies" if task.get("conflict") else ""
-        lines.append(sanitize_terminal(f"{task['name']} - {task['title']}{flag}"))
+        lines.append(sanitize_terminal(f"{task['name']} - {task['title']}"))
         for label in ("trigger", "input", "output"):
             if task.get(label):
                 lines.append(sanitize_terminal(f"  {label}: {task[label]}"))
+        if task.get("conflict"):
+            lines.append(f"  ! conflicting copies across: {', '.join(task.get('sources', []))}")
     return lines
 
 
@@ -101,6 +102,7 @@ async def tasks_list(*, config: BlumkinConfig) -> dict[str, Any]:
                 "input": task.input,
                 "name": task.name,
                 "output": task.output,
+                "sources": list(task.sources),
                 "title": task.title,
                 "trigger": task.trigger,
             }
@@ -131,14 +133,15 @@ def _merge(merged: dict[str, Task], parsed: Task) -> None:
     if existing is None:
         merged[parsed.name] = parsed
         return
-    same = (existing.prompt, existing.trigger, existing.input, existing.output) == (
-        parsed.prompt,
+    same = (existing.title, existing.trigger, existing.input, existing.output, existing.prompt) == (
+        parsed.title,
         parsed.trigger,
         parsed.input,
         parsed.output,
+        parsed.prompt,
     )
     merged[parsed.name] = Task(
-        conflict=not same,
+        conflict=existing.conflict or not same,
         input=parsed.input,
         name=parsed.name,
         output=parsed.output,
@@ -151,7 +154,7 @@ def _merge(merged: dict[str, Task], parsed: Task) -> None:
 
 def _parse(path: Path) -> Task:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         emit_warning(f"could not read {path}: {exc}")
         text = ""
@@ -196,6 +199,8 @@ def _parse(path: Path) -> Task:
 
 def _select(tasks: list[Task], name: str) -> Task:
     needle = name.strip()
+    if not needle:
+        raise TaskNotFoundError("--name is required (a template name or a unique prefix)")
     exact = [task for task in tasks if task.name == needle]
     matches = exact or [task for task in tasks if task.name.startswith(needle)]
     if not matches:

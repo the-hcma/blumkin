@@ -79,10 +79,10 @@ only.
 
 One markdown file per template under `tasks/`, so each is easy to diff and
 share. The filename stem is the template name (`tasks/weekly-report.md` →
-`weekly-report`). `<config-dir>/tasks/` is merged with the active profile's
-`profiles/<name>/tasks/`; a template that exists in both with **different**
-content is flagged (`conflict: true`) and `tasks show` refuses it until you
-reconcile.
+`weekly-report`). `<config-dir>/tasks/` and the active profile's `profiles/<name>/tasks/` are both
+read. A template that exists in both with any **different** field - title,
+trigger, input, output, or prompt - is flagged `conflict: true` (with both
+`sources`), and `tasks show` refuses it until you reconcile.
 
 ```markdown
 # Weekly status report
