@@ -47,7 +47,7 @@ def _cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, profile: str | None
     return load_config(profile=profile)
 
 
-def test_table_rows_parse_and_bad_emails_are_dropped(tmp_path, monkeypatch) -> None:
+def test_table_rows_parse_and_bad_emails_are_dropped(tmp_path, monkeypatch, capsys) -> None:
     cfg = _cfg(tmp_path, monkeypatch, profile="work")
     (tmp_path / "email-context.md").write_text(_TABLE, encoding="utf-8")
     names = {c.name: c for c in load_context(cfg)}
@@ -55,9 +55,12 @@ def test_table_rows_parse_and_bad_emails_are_dropped(tmp_path, monkeypatch) -> N
     assert names["Sam"].aliases == ("sammy", "S")
     assert names["Sam"].email == "sam@example.com"
     assert names["Alex"].notes == "Friend."
+    # the operator is told which row was dropped and why
+    err = capsys.readouterr().err
+    assert "warning:" in err and "'Bad'" in err
 
 
-def test_bullet_rows_parse(tmp_path, monkeypatch) -> None:
+def test_bullet_rows_parse(tmp_path, monkeypatch, capsys) -> None:
     cfg = _cfg(tmp_path, monkeypatch, profile="work")
     (tmp_path / "email-context.md").write_text(_BULLET, encoding="utf-8")
     names = {c.name: c for c in load_context(cfg)}
@@ -65,6 +68,7 @@ def test_bullet_rows_parse(tmp_path, monkeypatch) -> None:
     assert names["Dana"].aliases == ("dee",)
     assert names["Dana"].notes == "manager"
     assert names["Robin"].notes == ""
+    assert "warning:" in capsys.readouterr().err  # the `Nope <also-bad>` line
 
 
 def test_table_and_bullet_mix_in_one_file(tmp_path, monkeypatch) -> None:
