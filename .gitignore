@@ -21,3 +21,7 @@ client_secret*.json
 credentials*.json
 *.pem
 config.toml
+
+# Operator-context files — personal names / addresses / notes. Live under
+# ~/.config/blumkin/ (or $BLUMKIN_CONFIG_DIR), never in this repo.
+email-context.md

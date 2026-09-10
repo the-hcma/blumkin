@@ -478,3 +478,28 @@ def test_provider_capability_mismatch_surfaces_as_usage_error() -> None:
     assert result.is_error is True
     assert result.structured_content["error"] == "usage_error"
     assert "not supported" in result.structured_content["message"]
+
+
+def test_config_skill_people_context_is_a_tool_and_needs_no_provider(tmp_path) -> None:
+    """`people.context` (CONFIG_SKILLS) is auto-exposed like a read skill, takes the
+    `profile` arg under a multi-profile config, and dispatches with no provider."""
+    (tmp_path / "email-context.md").write_text(
+        "- Sam <sam@example.com> - colleague\n", encoding="utf-8"
+    )
+    cfg = SimpleNamespace(
+        config_dir=tmp_path,
+        profile_dir=tmp_path / "profiles" / "work",
+        profile="work",
+        default_tz="UTC",
+        provider=ProviderKind.MICROSOFT,
+        wo1162425_scopes=True,
+    )
+    with _profiles(_TWO_PROFILES):
+        tools = {t.name: t for t in build_tools(profiles=_TWO_PROFILES)}
+        assert "profile" in tools["people.context"].input_schema["required"]
+        assert tools["people.context"].annotations is not None
+        assert tools["people.context"].annotations.read_only_hint is True
+        with patch("blumkin.mcp_server.load_config", return_value=cfg):
+            result = _drive(lambda c: c.call_tool("people.context", {"profile": "work"}))
+    assert result.is_error is False
+    assert [x["name"] for x in result.structured_content["contacts"]] == ["Sam"]

@@ -80,9 +80,19 @@ original's attachments.
      mutual-free starts from the union of busy intervals. Include the organizer in
      `--with` when they must be free too. Clip with `--window` / organizer `--tz`;
      do **not** rewrite times into an attendee's zone. Do **not** use freebusy as a
-     people directory (guessing SMTP addresses via `--with`). Resolve names first
-     with `blumkin people resolve --name "Display Name" --json` (or `--email`).
-   - People: `blumkin people resolve --name "Display Name" --json`
+     people directory (guessing SMTP addresses via `--with`). Resolve names first.
+   - People (names -> address): blumkin never turns a name into an address for
+     you; `--to` / `--cc` / `--with` are email-only.
+     1. `blumkin people context --json` — the operator's `email-context.md`
+        (name, aliases, email, notes). Fuzzy-match the user's phrasing against
+        it yourself. An entry with `conflict: true` has clashing copies across
+        files — ask the user, do not pick one.
+     2. If nothing fits, `blumkin people resolve --name "Display Name" --json`
+        (Graph directory, Microsoft only, needs `wo1162425_scopes`).
+     3. **Confirm the concrete recipient(s) with the user** ("draft to Sam —
+        sam@example.com?") before you compose or invite.
+     4. Call `mail draft` / `calendar create` with the real address.
+   - People (Graph search): `blumkin people resolve --name "Display Name" --json`
      (optional `--email` for reverse / exact filter). Requires
      `wo1162425_scopes` + Graph `People.Read` (on the augmented WO1162425 ask;
      **not granted yet** as of 2026-08 — leave the flag off until Identity

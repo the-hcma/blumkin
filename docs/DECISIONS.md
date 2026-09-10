@@ -214,3 +214,31 @@ provider module per backend (`providers/google/drive.py`,
 - **`docs create --folder` targets pre-existing folders** once the `drive` scope
   is present (path resolve + create-then-move), not just blumkin-made top-level
   folders. `docs update --folder` is #211.
+
+### D12 - operator-context files and the config-skill lane ([#207](https://github.com/the-hcma/blumkin/issues/207) / [#209](https://github.com/the-hcma/blumkin/issues/209))
+
+Optional plain-markdown files under `~/.config/blumkin/` give blumkin operator
+context without a provider round-trip. See `docs/operator-config.md`.
+
+- **`CONFIG_SKILLS`** - a skill backed by such a file, not a `WorkspaceProvider`
+  method. It is *not* in `BESPOKE_SKILLS`, so its args get normal `param`
+  enrichment and the MCP adapter exposes it like any read skill; `run_skill`
+  routes the id to a local handler before `get_provider()` (no token, no
+  network). The CLI dispatches it through a provider-less `_dispatch_local`, so
+  no auth setup is needed to run it. `#207` builds the lane (`people.context`);
+  `#209` adds `tasks.*`.
+- **Files are per-profile; entries are combined.** `<config-dir>/<file>` and the
+  active profile's `profiles/<name>/<file>` are both read. Entries for one key
+  that agree are merged; a clash (different address, or two different non-empty
+  notes / a title-only difference for a template) is **not** merged - every
+  variant is surfaced flagged `conflict: true` with its own `sources`, and the
+  fail-closed verb (`tasks show`) refuses it. blumkin never picks one or edits
+  the files. The files are also in `.gitignore` so a config dir inside a working
+  tree is not committed by accident.
+- **`email-context.md` does not drive recipient resolution.** `--to` / `--cc` /
+  `--with` stay email-only. `people.context` is a lookup surface; the *agent*
+  fuzzy-matches a name against it, confirms the address with the user, then
+  calls the skill with a real SMTP address. Same "blumkin is the deterministic
+  tool surface, the model does the ambiguous interpretation" split as `#209`'s
+  trigger matching. Explicit Graph directory search stays `blumkin people
+  resolve`.
