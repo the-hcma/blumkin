@@ -166,10 +166,14 @@ def _parse(path: Path) -> Task:
         line = raw.rstrip()
         stripped = line.strip()
         if in_prompt:
+            # The prompt is the `>` blockquote only. Blank lines inside it are
+            # kept (paragraph breaks); the first non-blank, non-`>` line ends it.
             if stripped.startswith(">"):
                 prompt.append(stripped[1:].removeprefix(" "))
-            elif stripped:
-                prompt.append(stripped)
+            elif not stripped:
+                prompt.append("")
+            else:
+                in_prompt = False
             continue
         if not title and stripped.startswith("#"):
             title = stripped.lstrip("#").strip()

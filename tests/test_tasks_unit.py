@@ -86,6 +86,26 @@ def test_show_name_matching_exact_prefix_ambiguous_missing(tmp_path, monkeypatch
             asyncio.run(tasks_show(config=cfg, name=empty))
 
 
+def test_an_exact_name_wins_over_a_longer_one_it_prefixes(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    for stem in ("weekly", "weekly-report"):
+        (tmp_path / "tasks" / f"{stem}.md").write_text(
+            f"**Prompt:**\n\n> {stem}\n", encoding="utf-8"
+        )
+    assert asyncio.run(tasks_show(config=cfg, name="weekly"))["task"]["name"] == "weekly"
+
+
+def test_prompt_stops_at_the_first_non_blockquote_line(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks" / "wk.md").write_text(
+        "**Prompt:**\n\n> do the thing\n>\n> and this\n\nNotes: not part of the prompt.\n",
+        encoding="utf-8",
+    )
+    assert asyncio.run(tasks_show(config=cfg, name="wk"))["task"]["prompt"] == (
+        "do the thing\n\nand this"
+    )
+
+
 def test_missing_prompt_block_warns_but_still_lists(tmp_path, monkeypatch, capsys) -> None:
     cfg = _cfg(tmp_path, monkeypatch)
     (tmp_path / "tasks" / "broken.md").write_text("**Trigger:** x\n", encoding="utf-8")
