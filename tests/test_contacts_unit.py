@@ -113,15 +113,23 @@ def test_different_address_keeps_both_variants_flagged(tmp_path, monkeypatch) ->
     ]
 
 
-def test_same_address_different_notes_is_flagged(tmp_path, monkeypatch) -> None:
+def test_same_address_different_notes_keeps_both_variants(tmp_path, monkeypatch) -> None:
     cfg = _cfg(tmp_path, monkeypatch, profile="work")
     (tmp_path / "email-context.md").write_text("- Sam <s@example.com> - note A\n", encoding="utf-8")
     prof = tmp_path / "profiles" / "work"
     prof.mkdir(parents=True)
     (prof / "email-context.md").write_text("- Sam <s@example.com> - note B\n", encoding="utf-8")
-    (sam,) = [c for c in load_context(cfg) if c.name == "Sam"]
-    assert sam.conflict is True
-    assert len(sam.sources) == 2
+    sams = [c for c in load_context(cfg) if c.name == "Sam"]
+    assert {c.notes for c in sams} == {"note A", "note B"}
+    assert all(c.conflict for c in sams)
+
+
+def test_a_bullet_with_no_name_is_skipped(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "email-context.md").write_text(
+        "-  <nobody@example.com> - ghost\n- Sam <sam@example.com>\n", encoding="utf-8"
+    )
+    assert [c.name for c in load_context(cfg)] == ["Sam"]
 
 
 def test_a_second_table_header_is_re_detected(tmp_path, monkeypatch) -> None:

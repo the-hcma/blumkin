@@ -45,12 +45,6 @@ WO1162425_SKILLS: frozenset[str] = frozenset(
     }
 )
 
-# Skills backed by an operator markdown file in the config dir, not a
-# `WorkspaceProvider` method. `run_skill` routes these to a local handler (no
-# token, no network); they are NOT in `BESPOKE_SKILLS`, so their args get normal
-# `param` enrichment and the MCP server exposes them like any read skill.
-CONFIG_SKILLS: frozenset[str] = frozenset({"people.context"})
-
 # Skills with no `WorkspaceProvider` method - the CLI keeps a bespoke callback and
 # the MCP server does not expose them.
 BESPOKE_SKILLS: frozenset[str] = frozenset(
@@ -66,6 +60,12 @@ BESPOKE_SKILLS: frozenset[str] = frozenset(
         "skills.list",
     }
 )
+
+# Skills backed by an operator markdown file in the config dir, not a
+# `WorkspaceProvider` method. `run_skill` routes these to a local handler (no
+# token, no network); they are NOT in `BESPOKE_SKILLS`, so their args get normal
+# `param` enrichment and the MCP server exposes them like any read skill.
+CONFIG_SKILLS: frozenset[str] = frozenset({"people.context"})
 
 # (skill id, catalog arg name) -> provider kwarg. Only listed where it differs from
 # the default `name.lstrip("-").replace("-", "_")`. `None` means the value is consumed

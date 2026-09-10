@@ -33,6 +33,12 @@ from blumkin.skills.errors import ConsentRequiredError, ScopeAddonDisabledError
 
 # Either key satisfies the notify gate. The MCP server maps its synthetic
 # ``confirm`` boolean onto ``yes`` before calling run_skill.
+# CONFIG_SKILLS handlers: async, take the resolved kwargs plus `config`, touch no
+# provider. Keyed by skill id.
+_CONFIG_HANDLERS: dict[str, Callable[..., Any]] = {
+    "people.context": people_context,
+}
+
 _CONSENT_KEYS = ("yes", "confirm")
 
 _DOCS_SCOPES_MESSAGE = (
@@ -193,12 +199,6 @@ _PREPROCESSORS: dict[str, Callable[[dict[str, Any], dict[str, Any], BlumkinConfi
     "calendar.decline": _pp_rsvp,
     "calendar.tentative": _pp_rsvp,
     "mail.auto-reply": _pp_auto_reply,
-}
-
-# CONFIG_SKILLS handlers: async, take the resolved kwargs plus `config`, touch no
-# provider. Keyed by skill id.
-_CONFIG_HANDLERS: dict[str, Callable[..., Any]] = {
-    "people.context": people_context,
 }
 
 

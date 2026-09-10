@@ -79,7 +79,7 @@ def load_context(config: BlumkinConfig) -> list[Contact]:
         contacts.extend(
             Contact(
                 aliases=tuple(acc.aliases),
-                conflict=clash or acc.note_clash,
+                conflict=clash,
                 email=acc.email,
                 name=acc.name,
                 notes=acc.notes,
@@ -136,7 +136,6 @@ class _Acc:
     aliases: list[str]
     email: str
     name: str
-    note_clash: bool
     notes: str
     sources: list[str]
 
@@ -162,21 +161,22 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 def _absorb(accs: list[_Acc], row: _Row, src: str) -> None:
     for acc in accs:
+        # Same address and no note clash (one side blank, or identical) -> merge.
+        # A different address, or two different non-empty notes, is a separate
+        # variant so `people.context` can return both.
         if acc.email.lower() != row.email.lower():
             continue
+        if acc.notes and row.notes and acc.notes != row.notes:
+            continue
         acc.aliases = list(dict.fromkeys((*acc.aliases, *row.aliases)))
+        acc.notes = acc.notes or row.notes
         acc.sources.append(src)
-        if not acc.notes:
-            acc.notes = row.notes
-        elif row.notes and row.notes != acc.notes:
-            acc.note_clash = True
         return
     accs.append(
         _Acc(
             aliases=list(row.aliases),
             email=row.email,
             name=row.name,
-            note_clash=False,
             notes=row.notes,
             sources=[src],
         )
@@ -188,13 +188,17 @@ def _bullet_line(line: str, path: Path) -> _Row | None:
     if match is None:
         return None
     email = match["email"].strip()
+    name = match["name"].strip()
+    if not name:
+        emit_warning(f"{path}: bullet entry has no name, skipped: {line}")
+        return None
     if not _EMAIL_RE.match(email):
-        emit_warning(f"{path}: bullet entry has no valid email, skipped: {line}")
+        emit_warning(f"{path}: bullet entry for {name!r} has no valid email, skipped")
         return None
     return _Row(
         aliases=_split_aliases(match["aliases"] or ""),
         email=email,
-        name=match["name"].strip(),
+        name=name,
         notes=(match["notes"] or "").strip(),
     )
 
