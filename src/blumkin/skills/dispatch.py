@@ -31,14 +31,14 @@ from blumkin.skills.calendar import parse_local_datetime
 from blumkin.skills.calendar_writes import parse_duration, parse_recurrence
 from blumkin.skills.errors import ConsentRequiredError, ScopeAddonDisabledError
 
-# Either key satisfies the notify gate. The MCP server maps its synthetic
-# ``confirm`` boolean onto ``yes`` before calling run_skill.
 # CONFIG_SKILLS handlers: async, take the resolved kwargs plus `config`, touch no
 # provider. Keyed by skill id.
 _CONFIG_HANDLERS: dict[str, Callable[..., Any]] = {
     "people.context": people_context,
 }
 
+# Either key satisfies the notify gate. The MCP server maps its synthetic
+# ``confirm`` boolean onto ``yes`` before calling run_skill.
 _CONSENT_KEYS = ("yes", "confirm")
 
 _DOCS_SCOPES_MESSAGE = (
