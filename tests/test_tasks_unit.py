@@ -63,6 +63,23 @@ def test_parse_fields_title_and_prompt_blockquote(tmp_path, monkeypatch) -> None
     )
 
 
+def test_title_defaults_to_the_filename_stem(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks" / "weekly-report.md").write_text(
+        "**Trigger:** wk\n\n**Prompt:**\n\n> body\n", encoding="utf-8"
+    )
+    assert asyncio.run(tasks_list(config=cfg))["tasks"][0]["title"] == "weekly-report"
+
+
+def test_a_utf8_bom_first_line_is_not_eaten(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks" / "wk.md").write_bytes(
+        "# Weekly report\n**Prompt:**\n\n> body\n".encode("utf-8-sig")
+    )
+    (task,) = asyncio.run(tasks_list(config=cfg))["tasks"]
+    assert task["title"] == "Weekly report"
+
+
 def test_list_omits_prompt_show_includes_it(tmp_path, monkeypatch) -> None:
     cfg = _cfg(tmp_path, monkeypatch)
     (tmp_path / "tasks" / "weekly-report.md").write_text(_REPORT, encoding="utf-8")

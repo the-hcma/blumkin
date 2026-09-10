@@ -154,10 +154,15 @@ def _merge(merged: dict[str, Task], parsed: Task) -> None:
 
 def _parse(path: Path) -> Task:
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        # utf-8-sig strips a BOM (Windows editors add one, and U+FEFF is not
+        # whitespace so it would eat the first line); errors="replace" keeps a
+        # non-UTF-8 file from aborting, with a warning.
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as exc:
         emit_warning(f"could not read {path}: {exc}")
         text = ""
+    if "�" in text:
+        emit_warning(f"{path}: not valid UTF-8; some characters were replaced")
     fields: dict[str, str] = {}
     prompt: list[str] = []
     title = ""
