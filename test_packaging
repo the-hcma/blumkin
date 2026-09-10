@@ -146,12 +146,14 @@ fi
 
 echo "Installed pipx packaging smoke passed"
 
-# `blumkin upgrade` round-trip against PyPI (issue #143). The block above installs
-# the freshly built wheel; here we install the *second-newest* published release
-# into a second, custom PIPX_BIN_DIR, run `blumkin upgrade` (which shells
-# `pipx upgrade blumkin`), and assert it moved to the newest published release and
-# reported the pipx app under that custom bin dir. Needs >=2 published releases, so
-# this is a no-op skip from the first release and real from the second onward.
+# `blumkin upgrade` round-trip against PyPI (issue #143 / #239). The block above
+# installs the freshly built wheel; here we install the *second-newest* published
+# release into a second, custom PIPX_BIN_DIR, run its `blumkin upgrade`, and
+# assert it moved to the newest published release and reported the managed path
+# under that custom bin dir. The binary under test is the previous release, so
+# the check tolerates both the old `pipx_app` JSON shape and the
+# install-method-aware shape. Needs >=2 published releases, so this is a no-op
+# skip from the first release and real from the second onward.
 echo "Checking the blumkin upgrade round-trip against PyPI..."
 roundtrip_home="$temp_root/pipx-roundtrip-home"
 roundtrip_bin_dir="$temp_root/pipx-roundtrip-bin"
@@ -212,21 +214,25 @@ import sys
 
 data = json.load(open(sys.argv[1]))
 prev_version, latest_version = sys.argv[2], sys.argv[3]
+# The binary under test is the *previously published* release, so tolerate both
+# JSON shapes: <=0.6.0 nested `pipx_app.{before,after,path}`, and the
+# install-method-aware shape from #239 (`from` / `to` / `managed_path`, plus
+# `install_method == "pipx"` once a release ships it).
 app = data.get("pipx_app") or {}
-# before/after are non-None only because pipx_blumkin_path found the app via the
-# custom $PIPX_BIN_DIR - the sole place blumkin is installed in this run - so this
-# also exercises the PIPX_BIN_DIR override branch of _pipx_bin_dirs live.
-assert data.get("ok") is True, data
-assert app.get("before") and app.get("after"), f"upgrade did not read both builds: {app}"
-assert app["before"] != app["after"], f"upgrade was a no-op: {app}"
-assert app["before"].split()[0] == prev_version, app
-assert app["after"].split()[0] == latest_version, app
-# A non-null path means pipx_blumkin_path found the app via the custom
-# $PIPX_BIN_DIR (nothing is installed anywhere else in this run).
-assert app.get("path"), app
+before = data.get("from") or app.get("before")
+after = data.get("to") or app.get("after")
+managed = data.get("managed_path") or app.get("path") or ""
 running = (data.get("running_from") or {}).get("path") or ""
-assert "pipx-roundtrip-bin" in running, f"not invoked from the custom bin dir: {running}"
-print(f"upgrade round-trip: {app['before']} -> {app['after']}")
+assert data.get("ok") is True, data
+assert before and after, f"upgrade did not read both builds: {data}"
+assert before != after, f"upgrade was a no-op: {data}"
+assert before.split()[0] == prev_version, data
+assert after.split()[0] == latest_version, data
+assert "pipx-roundtrip" in managed or "pipx-roundtrip" in running, data
+if "install_method" in data:  # new shape - a release has shipped #239
+    assert data["install_method"] == "pipx", data
+    assert data.get("action_taken") == "pipx upgrade blumkin", data
+print(f"upgrade round-trip: {before} -> {after}")
 PY
   "$roundtrip_bin_dir/blumkin" --help >/dev/null
   echo "blumkin upgrade round-trip passed"

@@ -538,6 +538,11 @@ Examples:
 Checks that the client id is set, the token cache / auth record exist, and
 reports which scope set is active. Exit 3 (auth_required) lists the problems to
 fix (usually: run `blumkin auth login`).
+
+`install:` reports the detected install method (pipx / uv-tool / an editable
+`-e` checkout / unmanaged). A warning fires when the baked `.dist-info` version
+is behind the checkout's `pyproject.toml` - a `git pull` without a reinstall;
+`blumkin upgrade` prints the fix.
 """
 
 DRIVE_EPILOG = """
@@ -1185,10 +1190,21 @@ Examples:
 
 \b
   blumkin upgrade
+  blumkin upgrade --yes
   blumkin upgrade --json
 
-Wraps `pipx upgrade blumkin`. `from:` / `to:` are the pipx app's version and
-commit before and after. Run from a source checkout it upgrades the pipx app and
-reports the checkout separately, leaving the tree alone. Exit 1
-(`upgrade_failed`) means pipx is missing or `pipx upgrade` exited non-zero.
+Detects how blumkin is installed and acts to match:
+
+\b
+  pipx (from PyPI)       -> pipx upgrade blumkin
+  uv tool (from PyPI)    -> uv tool upgrade blumkin
+  editable -e <path>     -> git pull --ff-only + a --force tool reinstall
+  source checkout (uv)   -> git pull --ff-only + uv sync
+  unmanaged venv/system  -> reported, not touched
+
+An editable / source install prints those commands; `--yes` runs them. `from:` /
+`to:` are the on-disk `blumkin --version` before and after. `--json` adds
+`install_method`, `managed_path`, `checkout`, `metadata_stale`, `action_taken`,
+and `suggested_commands`. Exit 1 (`upgrade_failed`) means a step exited non-zero
+or a needed tool (pipx / uv / git) is missing.
 """

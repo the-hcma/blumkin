@@ -64,15 +64,19 @@ Move to a newer release with:
 blumkin upgrade
 ```
 
-which wraps `pipx upgrade blumkin` and prints the version and commit you moved
-from and to. Bare `pipx upgrade blumkin` also works but cannot tell you whether
-`PATH` still resolves to a dev checkout.
+which detects the install method (pipx here) and shells `pipx upgrade blumkin`,
+printing the version and commit you moved from and to. `blumkin upgrade` also
+handles a `uv tool` install (`uv tool upgrade blumkin`) and an editable
+`-e <path>` checkout (git pull + `--force` reinstall, printed or run with
+`--yes`); an unmanaged install is reported, not touched.
 
 From the second published release onward, `test_packaging` (CI *Packaging smoke*)
 also runs the real round-trip: `pipx install` the second-newest published
-release into a custom `PIPX_BIN_DIR`, `blumkin upgrade`, and assert it moved to
-the newest release and reported the pipx app under that bin dir (issue #143).
-The `pipx.ini` / `PIPX_HOME` custom-bin-dir fallback stays unit-only.
+release into a custom `PIPX_BIN_DIR`, run *its* `blumkin upgrade`, and assert it
+moved to the newest release with the managed path under that bin dir (issues
+#143 / #239). The check tolerates both JSON shapes since the binary under test
+is the previous release; the `install_method == "pipx"` assertion only fires
+once a release ships #239.
 
 The editable dev install (`uv tool install -e .` from a clone) stays the path
 for working on blumkin itself.
