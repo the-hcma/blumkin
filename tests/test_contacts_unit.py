@@ -154,10 +154,18 @@ def test_locate_operator_files_dedupes_a_legacy_flat_config(tmp_path, monkeypatc
 def test_people_context_handler_filters_by_name_or_alias(tmp_path, monkeypatch) -> None:
     cfg = _cfg(tmp_path, monkeypatch, profile="work")
     (tmp_path / "email-context.md").write_text(_TABLE, encoding="utf-8")
-    payload = asyncio.run(people_context(config=cfg, name="sammy"))
-    assert payload["ok"] is True
-    assert [c["name"] for c in payload["contacts"]] == ["Sam"]
+    for needle in ("sammy", "Sam", "SAM"):
+        payload = asyncio.run(people_context(config=cfg, name=needle))
+        assert [c["name"] for c in payload["contacts"]] == ["Sam"], needle
     assert asyncio.run(people_context(config=cfg, name="nobody"))["contacts"] == []
+
+
+def test_a_utf8_bom_header_still_parses(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "email-context.md").write_bytes(
+        b"\xef\xbb\xbf| Name | Email |\n|---|---|\n| Sam | sam@example.com |\n"
+    )
+    assert [c.name for c in load_context(cfg)] == ["Sam"]
 
 
 def test_missing_file_is_an_empty_list_not_an_error(tmp_path, monkeypatch) -> None:

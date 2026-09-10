@@ -201,12 +201,17 @@ def _bullet_line(line: str, path: Path) -> _Row | None:
 
 def _parse(path: Path) -> list[_Row]:
     try:
-        # errors="replace": a notes cell saved as cp1252/UTF-16 must degrade to a
-        # warning-and-skip like a malformed row, not blow up the whole skill.
-        text = path.read_text(encoding="utf-8", errors="replace")
+        # utf-8-sig strips a BOM (Windows editors add one, and U+FEFF is not
+        # whitespace so it would break the first header row). errors="replace"
+        # keeps a cp1252/UTF-16 file from aborting the whole skill; a byte it had
+        # to replace is warned about, and any row that ends up malformed is
+        # skipped with its own warning.
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as exc:
         emit_warning(f"could not read {path}: {exc}")
         return []
+    if "�" in text:
+        emit_warning(f"{path}: not valid UTF-8; some characters were replaced")
     rows: list[_Row] = []
     header: dict[str, int] | None = None
     for raw in text.splitlines():
