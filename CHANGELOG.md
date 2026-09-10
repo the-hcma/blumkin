@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.6.0...blumkin-v0.7.0) (2026-09-10)
+
+
+### Features
+
+* **cli:** make `upgrade` install-method aware (pipx / uv tool / editable) ([#240](https://github.com/the-hcma/blumkin/issues/240)) ([16fd715](https://github.com/the-hcma/blumkin/commit/16fd715db7c07bc96dc1392bcba98bffaa84789e))
+* **people:** people.context reads ~/.config/blumkin/email-context.md ([#207](https://github.com/the-hcma/blumkin/issues/207)) ([#241](https://github.com/the-hcma/blumkin/issues/241)) ([dc9a2b4](https://github.com/the-hcma/blumkin/commit/dc9a2b4ab4f5fc686c1988eb94f34c2a41147c30))
+* **tasks:** tasks.list / tasks.show read ~/.config/blumkin/tasks/*.md ([#209](https://github.com/the-hcma/blumkin/issues/209)) ([#242](https://github.com/the-hcma/blumkin/issues/242)) ([4780c68](https://github.com/the-hcma/blumkin/commit/4780c68085bae004b559e7469bf4f5066f8d316e))
+
 ## [0.6.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.5.0...blumkin-v0.6.0) (2026-09-10)
 
 
