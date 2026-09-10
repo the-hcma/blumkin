@@ -231,6 +231,11 @@ def test_cli_people_context_runs_with_no_auth_or_provider(tmp_path, monkeypatch)
     assert {c["name"] for c in payload["contacts"]} == {"Sam", "Alex"}
     filtered = runner.invoke(main, ["people", "context", "--name", "sammy", "--json"], obj={})
     assert [c["name"] for c in json.loads(filtered.stdout)["contacts"]] == ["Sam"]
+    # the human path: _dispatch_local -> emit_lines(format_people_context_human)
+    human = runner.invoke(main, ["people", "context", "--name", "Sam"], obj={})
+    assert human.exit_code == 0
+    assert "Sam (sammy, S) <sam@example.com>" in human.stdout
+    assert "  Colleague on Foo." in human.stdout
 
 
 def test_human_formatter_shows_aliases_notes_and_conflicts() -> None:
