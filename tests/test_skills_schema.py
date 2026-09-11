@@ -117,6 +117,7 @@ _ARG_PARAM_PINS = {
         "--to": ("end", "local_midnight"),
         "--calendar": ("calendar", None),
         "--tz": (None, None),
+        "--fields": (None, "list"),
     },
     "calendar.decline": {
         "--event-id": ("event_id", None),
@@ -391,6 +392,7 @@ _ARG_SIGNATURES = {
         ("--has-attachments", False, "flag"),
         ("--top", False, "int"),
         ("--tz", False, "iana_tz"),
+        ("--fields", False, "string"),
     ],
     "skills.describe": [("skill-id", True, "string")],
 }

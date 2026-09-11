@@ -154,6 +154,14 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("mail.auto-reply", "--external"): "external_audience",
     ("mail.auto-reply", "--on"): None,
     ("mail.auto-reply", "--off"): None,
+    # --fields: never passed to the provider; the dispatch post-processor reads
+    # `arguments["fields"]` directly and filters the returned items.
+    ("calendar.freebusy", "--fields"): None,
+    ("calendar.view", "--fields"): None,
+    ("mail.inbox", "--fields"): None,
+    ("mail.list", "--fields"): None,
+    ("mail.search", "--fields"): None,
+    ("mail.thread", "--fields"): None,
 }
 
 # (skill id, catalog arg name) -> a coercion the dispatch layer applies on top of the
@@ -191,6 +199,12 @@ _ARG_COERCE: dict[tuple[str, str], str] = {
     ("mail.delete", "--id"): "list",
     ("mail.mark", "--id"): "list",
     ("mail.move", "--id"): "list",
+    ("calendar.freebusy", "--fields"): "list",
+    ("calendar.view", "--fields"): "list",
+    ("mail.inbox", "--fields"): "list",
+    ("mail.list", "--fields"): "list",
+    ("mail.search", "--fields"): "list",
+    ("mail.thread", "--fields"): "list",
 }
 
 
@@ -402,6 +416,13 @@ SKILLS: list[SkillSpec] = [
             {"name": "--start", "required": True, "type": "datetime"},
             {"name": "--end", "required": True, "type": "datetime"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+            {
+                "name": "--fields",
+                "required": False,
+                "type": "string",
+                "multiple": True,
+                "note": "repeatable or comma-separated; restrict each item to only these fields",
+            },
         ],
     ),
     SkillSpec(
@@ -553,6 +574,13 @@ SKILLS: list[SkillSpec] = [
             {"name": "--to", "required": True, "type": "date"},
             {"name": "--calendar", "required": False, "type": "string"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+            {
+                "name": "--fields",
+                "required": False,
+                "type": "string",
+                "multiple": True,
+                "note": "repeatable or comma-separated; restrict each item to only these fields",
+            },
         ],
     ),
     SkillSpec(
@@ -1287,6 +1315,13 @@ SKILLS: list[SkillSpec] = [
             },
             {"name": "--top", "required": False, "type": "int"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+            {
+                "name": "--fields",
+                "required": False,
+                "type": "string",
+                "multiple": True,
+                "note": "repeatable or comma-separated; restrict each item to only these fields",
+            },
         ],
     ),
     SkillSpec(
@@ -1338,6 +1373,13 @@ SKILLS: list[SkillSpec] = [
             },
             {"name": "--top", "required": False, "type": "int"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+            {
+                "name": "--fields",
+                "required": False,
+                "type": "string",
+                "multiple": True,
+                "note": "repeatable or comma-separated; restrict each item to only these fields",
+            },
         ],
     ),
     SkillSpec(
@@ -1452,6 +1494,13 @@ SKILLS: list[SkillSpec] = [
             {"name": "--until", "required": False, "type": "datetime"},
             {"name": "--top", "required": False, "type": "int", "note": "default 25"},
             {"name": "--tz", "required": False, "type": "iana_tz"},
+            {
+                "name": "--fields",
+                "required": False,
+                "type": "string",
+                "multiple": True,
+                "note": "repeatable or comma-separated; restrict each item to only these fields",
+            },
         ],
     ),
     SkillSpec(
@@ -1499,6 +1548,13 @@ SKILLS: list[SkillSpec] = [
                 "type": "enum",
                 "values": ["html", "text"],
                 "note": "with --full; defaults to text",
+            },
+            {
+                "name": "--fields",
+                "required": False,
+                "type": "string",
+                "multiple": True,
+                "note": "repeatable or comma-separated; restrict each item to only these fields",
             },
         ],
     ),

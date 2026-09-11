@@ -1450,6 +1450,13 @@ def calendar_today_cmd(
 @click.option(
     "--calendar", "calendar", default=None, help="Calendar name or id (default: primary)."
 )
+@click.option(
+    "--fields",
+    "fields",
+    multiple=True,
+    default=(),
+    help="Restrict each item to only these fields; repeatable or comma-separated.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
@@ -1458,6 +1465,7 @@ def calendar_view_cmd(
     from_day: Any,
     to_day: Any,
     calendar: str | None,
+    fields: tuple[str, ...],
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
@@ -1469,7 +1477,13 @@ def calendar_view_cmd(
     _dispatch(
         ctx,
         "calendar.view",
-        {"from": from_day, "to": to_day, "calendar": calendar, "tz": _tz_name(ctx, tz_flag)},
+        {
+            "from": from_day,
+            "to": to_day,
+            "calendar": calendar,
+            "fields": list(fields),
+            "tz": _tz_name(ctx, tz_flag),
+        },
         human=format_view_human,
         as_json_flag=as_json_flag,
     )
@@ -1547,6 +1561,13 @@ def calendar_list_cmd(ctx: click.Context, as_json_flag: bool) -> None:
     required=True,
     help="Local window end, YYYY-MM-DDTHH:MM.",
 )
+@click.option(
+    "--fields",
+    "fields",
+    multiple=True,
+    default=(),
+    help="Restrict each item to only these fields; repeatable or comma-separated.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
@@ -1555,6 +1576,7 @@ def calendar_freebusy_cmd(
     with_emails: tuple[str, ...],
     start_raw: str,
     end_raw: str,
+    fields: tuple[str, ...],
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
@@ -1571,6 +1593,7 @@ def calendar_freebusy_cmd(
             "with": list(with_emails),
             "start": start_raw,
             "end": end_raw,
+            "fields": list(fields),
             "tz": _tz_name(ctx, tz_flag),
         },
         human=format_freebusy_human,
@@ -2387,6 +2410,13 @@ def mail() -> None:
     help="Only messages with a file attachment (server-side).",
 )
 @click.option("--top", default=10, show_default=True, type=int, help="Max messages to return.")
+@click.option(
+    "--fields",
+    "fields",
+    multiple=True,
+    default=(),
+    help="Restrict each item to only these fields; repeatable or comma-separated.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
@@ -2401,6 +2431,7 @@ def mail_inbox_cmd(
     importance: str | None,
     has_attachments: bool,
     top: int,
+    fields: tuple[str, ...],
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
@@ -2425,6 +2456,7 @@ def mail_inbox_cmd(
             "importance": importance,
             "has_attachments": has_attachments,
             "top": top,
+            "fields": list(fields),
             "tz": _tz_name(ctx, tz_flag),
         },
         human=format_inbox_human,
@@ -2479,6 +2511,13 @@ def mail_get_cmd(
 @click.option("--since", default=None, help="Only messages at or after this local date/time.")
 @click.option("--until", default=None, help="Only messages strictly before this local date/time.")
 @click.option("--top", default=25, show_default=True, type=int, help="Max messages to return.")
+@click.option(
+    "--fields",
+    "fields",
+    multiple=True,
+    default=(),
+    help="Restrict each item to only these fields; repeatable or comma-separated.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
@@ -2488,6 +2527,7 @@ def mail_search_cmd(
     since: str | None,
     until: str | None,
     top: int,
+    fields: tuple[str, ...],
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
@@ -2500,7 +2540,14 @@ def mail_search_cmd(
     _dispatch(
         ctx,
         "mail.search",
-        {"query": query, "since": since, "until": until, "top": top, "tz": _tz_name(ctx, tz_flag)},
+        {
+            "query": query,
+            "since": since,
+            "until": until,
+            "top": top,
+            "fields": list(fields),
+            "tz": _tz_name(ctx, tz_flag),
+        },
         human=format_mail_search_human,
         as_json_flag=as_json_flag,
     )
@@ -2517,6 +2564,13 @@ def mail_search_cmd(
     type=click.Choice(["html", "text"]),
     help="Body format when --full (Microsoft converts server-side).",
 )
+@click.option(
+    "--fields",
+    "fields",
+    multiple=True,
+    default=(),
+    help="Restrict each item to only these fields; repeatable or comma-separated.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def mail_thread_cmd(
@@ -2524,13 +2578,14 @@ def mail_thread_cmd(
     message_id: str,
     full: bool,
     body_type: str,
+    fields: tuple[str, ...],
     as_json_flag: bool,
 ) -> None:
     """List every message in the conversation a message belongs to, oldest first."""
     _dispatch(
         ctx,
         "mail.thread",
-        {"id": message_id, "full": full, "body_type": body_type},
+        {"id": message_id, "full": full, "body_type": body_type, "fields": list(fields)},
         human=format_mail_thread_human,
         as_json_flag=as_json_flag,
     )
@@ -2582,6 +2637,13 @@ def mail_thread_cmd(
     help="Only messages with a file attachment (server-side).",
 )
 @click.option("--top", default=10, show_default=True, type=int, help="Max messages to return.")
+@click.option(
+    "--fields",
+    "fields",
+    multiple=True,
+    default=(),
+    help="Restrict each item to only these fields; repeatable or comma-separated.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.pass_context
@@ -2598,6 +2660,7 @@ def mail_list_cmd(
     importance: str | None,
     has_attachments: bool,
     top: int,
+    fields: tuple[str, ...],
     as_json_flag: bool,
     tz_flag: str | None,
 ) -> None:
@@ -2622,6 +2685,7 @@ def mail_list_cmd(
             "importance": importance,
             "has_attachments": has_attachments,
             "top": top,
+            "fields": list(fields),
             "tz": _tz_name(ctx, tz_flag),
         },
         human=format_list_human,

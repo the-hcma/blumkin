@@ -82,6 +82,14 @@ _YES_HINT_TRANSCRIPTION = (
     "This changes a meeting setting (allowTranscription). Re-run the command with --yes to confirm."
 )
 
+# Skill ids whose payload shape is `{"items": [...], ...}` with per-item
+# `body_preview` - the six read/list/search skills issue #257 targets. Both
+# `--fields` and the default body_preview truncation apply only to these.
+_ITEMS_SKILLS: frozenset[str] = frozenset(
+    {"calendar.freebusy", "calendar.view", "mail.inbox", "mail.list", "mail.search", "mail.thread"}
+)
+_BODY_PREVIEW_TRUNCATE_LEN = 150
+
 
 def _argkey(name: str) -> str:
     return name.lstrip("-").replace("-", "_")
@@ -310,4 +318,63 @@ async def run_skill(
 
     prov = provider if provider is not None else get_provider(config)
     method = getattr(prov, skill_method_name(skill_id))
-    return await method(**kwargs)
+    payload = await method(**kwargs)
+    return _postprocess_items(skill_id, payload, arguments)
+
+
+# --------------------------------------------------------------------------- postprocessing
+
+
+def _filter_fields(payload: dict[str, Any], fields: list[str]) -> dict[str, Any]:
+    """Narrow each ``payload["items"]`` dict to just ``fields``, in request order.
+
+    Raises ``ValueError`` (a usage error, same as any other dispatch-layer
+    ``ValueError``) naming the valid keys when a requested field does not exist
+    on the first item - there is nothing sensible to return for a typo'd name,
+    and failing loud beats silently dropping it.
+    """
+    items = payload.get("items")
+    if not items:
+        return payload
+    valid = set(items[0])
+    unknown = [name for name in fields if name not in valid]
+    if unknown:
+        raise ValueError(f"unknown --fields value(s) {unknown!r}; valid fields are {sorted(valid)}")
+    narrowed = [{name: item.get(name) for name in fields} for item in items]
+    return {**payload, "items": narrowed}
+
+
+def _postprocess_items(
+    skill_id: str, payload: dict[str, Any], arguments: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply the issue #257 list/search shrink: unconditional truncation, then
+    optional ``--fields`` narrowing. No-op for any skill outside `_ITEMS_SKILLS`
+    or any payload without an ``items`` list.
+    """
+    if skill_id not in _ITEMS_SKILLS or not isinstance(payload.get("items"), list):
+        return payload
+    payload = _truncate_body_previews(payload)
+    fields = _as_list(arguments.get("fields"))
+    if fields:
+        payload = _filter_fields(payload, fields)
+    return payload
+
+
+def _truncate_body_previews(payload: dict[str, Any]) -> dict[str, Any]:
+    """Cap each item's ``body_preview`` at ``_BODY_PREVIEW_TRUNCATE_LEN`` chars.
+
+    Unconditional - runs whether or not ``--fields`` was passed - because a long
+    ``body_preview`` is the actual byte-hog issue #257 reports, independent of
+    field selection. Only ``body_preview`` is touched; ``mail.get`` / ``mail.thread
+    --full``'s full ``body`` is out of scope.
+    """
+    items = payload.get("items")
+    if not items:
+        return payload
+    truncated = []
+    for item in items:
+        preview = item.get("body_preview")
+        if isinstance(preview, str) and len(preview) > _BODY_PREVIEW_TRUNCATE_LEN:
+            item = {**item, "body_preview": preview[:_BODY_PREVIEW_TRUNCATE_LEN] + "..."}
+        truncated.append(item)
+    return {**payload, "items": truncated}

@@ -29,6 +29,12 @@ def _run(skill_id: str, args: dict[str, Any], *, config: Any = _MS, provider: An
     asyncio.run(run_skill(skill_id, args, config=config, provider=provider))
 
 
+def _run_payload(
+    skill_id: str, args: dict[str, Any], *, config: Any = _MS, provider: Any
+) -> dict[str, Any]:
+    return asyncio.run(run_skill(skill_id, args, config=config, provider=provider))
+
+
 def test_method_name_resolution_including_overrides() -> None:
     assert skill_method_name("calendar.today") == "calendar_today"
     assert skill_method_name("mail.auto-reply") == "mail_auto_reply"
@@ -278,3 +284,152 @@ def test_wo1162425_gate_runs_before_consent() -> None:
             config=_MS_NO_ADDON,
             provider=_provider("chat_send"),
         )
+
+
+# --------------------------------------------------------------------------- issue #257
+
+
+def _items_payload(*items: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    return {"items": list(items), **extra}
+
+
+def _items_provider(method_name: str, payload: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(**{method_name: AsyncMock(return_value=payload)})
+
+
+def test_postprocess_truncates_a_long_body_preview_by_default() -> None:
+    long_preview = "x" * 500
+    payload = _items_payload({"subject": "s", "body_preview": long_preview})
+    result = _run_payload("mail.list", {"top": 10}, provider=_items_provider("mail_list", payload))
+    preview = result["items"][0]["body_preview"]
+    assert preview == "x" * 150 + "..."
+    assert len(preview) == 153
+
+
+def test_postprocess_does_not_truncate_a_short_body_preview() -> None:
+    payload = _items_payload({"subject": "s", "body_preview": "short preview"})
+    result = _run_payload("mail.list", {"top": 10}, provider=_items_provider("mail_list", payload))
+    assert result["items"][0]["body_preview"] == "short preview"
+
+
+def test_postprocess_fields_narrows_items_to_exactly_the_requested_keys() -> None:
+    payload = _items_payload(
+        {
+            "created": "2026-01-01",
+            "from_email": "a@x.com",
+            "subject": "s",
+            "body_preview": "p",
+            "id": "m1",
+            "to_email": "b@x.com",
+        },
+        count=1,
+        folder="inbox",
+    )
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["subject", "from_email"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert set(result["items"][0]) == {"subject", "from_email"}
+    assert result["items"][0] == {"subject": "s", "from_email": "a@x.com"}
+    assert result["count"] == 1
+    assert result["folder"] == "inbox"
+
+
+def test_postprocess_fields_preserves_requested_order_per_item() -> None:
+    payload = _items_payload({"subject": "s", "from_email": "a@x.com"})
+    forward = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["subject", "from_email"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    reverse = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["from_email", "subject"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert list(forward["items"][0]) == ["subject", "from_email"]
+    assert list(reverse["items"][0]) == ["from_email", "subject"]
+
+
+def test_postprocess_unknown_field_raises_usage_shaped_value_error() -> None:
+    payload = _items_payload({"subject": "s", "from_email": "a@x.com"})
+    with pytest.raises(ValueError, match="bogus_field") as exc:
+        _run_payload(
+            "mail.list",
+            {"top": 10, "fields": ["bogus_field"]},
+            provider=_items_provider("mail_list", payload),
+        )
+    assert "subject" in str(exc.value)
+    assert "from_email" in str(exc.value)
+
+
+def test_postprocess_fields_is_a_noop_on_an_empty_items_list() -> None:
+    payload = _items_payload(count=0)
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["subject"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert result["items"] == []
+
+
+def test_postprocess_fields_accepts_comma_separated_string() -> None:
+    payload = _items_payload({"subject": "s", "from_email": "a@x.com", "id": "m1"})
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": "subject,from_email"},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert set(result["items"][0]) == {"subject", "from_email"}
+
+
+@pytest.mark.parametrize(
+    ("skill_id", "method_name", "arguments"),
+    [
+        (
+            "calendar.freebusy",
+            "calendar_freebusy",
+            {"with": ["a@x.com"], "start": "2026-09-01T09:00", "end": "2026-09-01T18:00"},
+        ),
+        ("calendar.view", "calendar_view", {"from": "2026-09-01", "to": "2026-09-08"}),
+        ("mail.inbox", "mail_inbox", {}),
+        ("mail.list", "mail_list", {"top": 10}),
+        ("mail.search", "mail_search", {"query": "q"}),
+        ("mail.thread", "mail_thread", {"id": "m1"}),
+    ],
+)
+def test_postprocess_applies_to_all_six_items_skills(
+    skill_id: str, method_name: str, arguments: dict[str, Any]
+) -> None:
+    long_preview = "y" * 200
+    if skill_id == "calendar.freebusy":
+        # A schedule item has no body_preview key at all - must be a clean no-op,
+        # not an error.
+        item = {"email": "a@x.com"}
+    else:
+        item = {"subject": "s", "body_preview": long_preview}
+    payload = _items_payload(item)
+    result = _run_payload(skill_id, arguments, provider=_items_provider(method_name, payload))
+    if skill_id == "calendar.freebusy":
+        assert result["items"][0] == item
+    else:
+        assert result["items"][0]["body_preview"] == "y" * 150 + "..."
+
+
+def test_postprocess_is_a_noop_for_skills_outside_items_skills() -> None:
+    result = _run_payload("calendar.today", {}, provider=_provider("calendar_today"))
+    assert result == {"ok": True}
+
+
+def test_postprocess_truncation_and_fields_compose() -> None:
+    long_preview = "z" * 300
+    payload = _items_payload({"subject": "s", "body_preview": long_preview, "id": "m1"})
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["body_preview", "subject"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    item = result["items"][0]
+    assert set(item) == {"body_preview", "subject"}
+    assert item["body_preview"] == "z" * 150 + "..."
