@@ -29,6 +29,12 @@ def _run(skill_id: str, args: dict[str, Any], *, config: Any = _MS, provider: An
     asyncio.run(run_skill(skill_id, args, config=config, provider=provider))
 
 
+def _run_payload(
+    skill_id: str, args: dict[str, Any], *, config: Any = _MS, provider: Any
+) -> dict[str, Any]:
+    return asyncio.run(run_skill(skill_id, args, config=config, provider=provider))
+
+
 def test_method_name_resolution_including_overrides() -> None:
     assert skill_method_name("calendar.today") == "calendar_today"
     assert skill_method_name("mail.auto-reply") == "mail_auto_reply"
@@ -102,6 +108,22 @@ def test_mail_draft_attach_does_not_split_a_comma_in_the_filename() -> None:
     assert kwargs["attach"] == ["/tmp/Q3, final.pdf"]
 
 
+def test_mail_draft_attach_preserves_an_empty_element_for_the_loud_failure() -> None:
+    # Review follow-up: an empty/whitespace-only --attach element must reach
+    # mail_draft as an empty string, not be silently dropped - the provider's
+    # _read_attachment(""), not dispatch, is what turns it into a loud
+    # MailAttachError ("not a directory"). Silently dropping it here would send
+    # the message with no attachment and exit 0 instead of failing.
+    prov = _provider("mail_draft")
+    _run(
+        "mail.draft",
+        {"to": ["a@x.com"], "subject": "s", "attach": [""]},
+        provider=prov,
+    )
+    kwargs = prov.mail_draft.await_args.kwargs
+    assert kwargs["attach"] == [""]
+
+
 def test_mail_draft_attach_list_of_paths_is_untouched() -> None:
     # A schema-following MCP client sends an array, not a string - each element is
     # already a whole path and must not be re-split on commas either.
@@ -129,6 +151,29 @@ def test_calendar_suggest_with_still_splits_a_comma_separated_string() -> None:
         "calendar.suggest",
         {
             "with": "a@x.com, b@y.com",
+            "start": "2026-09-01T09:00",
+            "end": "2026-09-01T18:00",
+            "duration": "45m",
+        },
+        provider=prov,
+    )
+    kwargs = prov.calendar_suggest.await_args.kwargs
+    assert kwargs["with_emails"] == ["a@x.com", "b@y.com"]
+
+
+def test_calendar_suggest_with_splits_a_comma_inside_one_list_element() -> None:
+    # Review follow-up on #259: the CLI array shape (a real list, e.g. `--with`
+    # passed once with an embedded comma, or the MCP array-with-one-joined-string
+    # shape) must split the same way the bare MCP string does above - this is the
+    # `coerce: "list"` contract every comma-splitting `multiple` arg shares
+    # (--to, --cc, --id, --with, --optional), not something specific to --fields.
+    # A bare email address never legitimately contains a literal comma, so
+    # splitting here is always the intended outcome for this field.
+    prov = _provider("calendar_suggest")
+    _run(
+        "calendar.suggest",
+        {
+            "with": ["a@x.com, b@y.com"],
             "start": "2026-09-01T09:00",
             "end": "2026-09-01T18:00",
             "duration": "45m",
@@ -278,3 +323,248 @@ def test_wo1162425_gate_runs_before_consent() -> None:
             config=_MS_NO_ADDON,
             provider=_provider("chat_send"),
         )
+
+
+# --------------------------------------------------------------------------- issue #257
+
+
+def _items_payload(*items: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    return {"items": list(items), **extra}
+
+
+def _items_provider(method_name: str, payload: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(**{method_name: AsyncMock(return_value=payload)})
+
+
+def test_postprocess_truncates_a_long_body_preview_by_default() -> None:
+    long_preview = "x" * 500
+    payload = _items_payload({"subject": "s", "body_preview": long_preview})
+    result = _run_payload("mail.list", {"top": 10}, provider=_items_provider("mail_list", payload))
+    preview = result["items"][0]["body_preview"]
+    assert preview == "x" * 150 + "..."
+    assert len(preview) == 153
+
+
+def test_postprocess_does_not_truncate_a_short_body_preview() -> None:
+    payload = _items_payload({"subject": "s", "body_preview": "short preview"})
+    result = _run_payload("mail.list", {"top": 10}, provider=_items_provider("mail_list", payload))
+    assert result["items"][0]["body_preview"] == "short preview"
+
+
+def test_postprocess_truncation_boundary_is_exact() -> None:
+    # Review follow-up: every other truncation test used a preview far longer
+    # than 150 chars (or far shorter), so a `>` -> `>=` typo at the cutoff would
+    # not have failed anything. Pin exactly-150 (unchanged, no ellipsis) and
+    # exactly-151 (truncated) directly.
+    at_limit = _items_payload({"subject": "s", "body_preview": "x" * 150})
+    over_limit = _items_payload({"subject": "s", "body_preview": "x" * 151})
+    at_result = _run_payload(
+        "mail.list", {"top": 10}, provider=_items_provider("mail_list", at_limit)
+    )
+    over_result = _run_payload(
+        "mail.list", {"top": 10}, provider=_items_provider("mail_list", over_limit)
+    )
+    assert at_result["items"][0]["body_preview"] == "x" * 150
+    assert over_result["items"][0]["body_preview"] == "x" * 150 + "..."
+
+
+def test_postprocess_fields_narrows_items_to_exactly_the_requested_keys() -> None:
+    payload = _items_payload(
+        {
+            "created": "2026-01-01",
+            "from_email": "a@x.com",
+            "subject": "s",
+            "body_preview": "p",
+            "id": "m1",
+            "to_email": "b@x.com",
+        },
+        count=1,
+        folder="inbox",
+    )
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["subject", "from_email"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert set(result["items"][0]) == {"subject", "from_email"}
+    assert result["items"][0] == {"subject": "s", "from_email": "a@x.com"}
+    assert result["count"] == 1
+    assert result["folder"] == "inbox"
+
+
+def test_postprocess_fields_preserves_requested_order_per_item() -> None:
+    payload = _items_payload({"subject": "s", "from_email": "a@x.com"})
+    forward = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["subject", "from_email"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    reverse = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["from_email", "subject"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert list(forward["items"][0]) == ["subject", "from_email"]
+    assert list(reverse["items"][0]) == ["from_email", "subject"]
+
+
+def test_postprocess_unknown_field_raises_usage_shaped_value_error() -> None:
+    payload = _items_payload({"subject": "s", "from_email": "a@x.com"})
+    with pytest.raises(ValueError, match="bogus_field") as exc:
+        _run_payload(
+            "mail.list",
+            {"top": 10, "fields": ["bogus_field"]},
+            provider=_items_provider("mail_list", payload),
+        )
+    assert "subject" in str(exc.value)
+    assert "from_email" in str(exc.value)
+
+
+def test_postprocess_fields_is_a_noop_on_an_empty_items_list() -> None:
+    payload = _items_payload(count=0)
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["subject"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert result["items"] == []
+
+
+def test_postprocess_fields_accepts_comma_separated_string() -> None:
+    # The MCP shape: a bare comma-joined string.
+    payload = _items_payload({"subject": "s", "from_email": "a@x.com", "id": "m1"})
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": "subject,from_email"},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert set(result["items"][0]) == {"subject", "from_email"}
+
+
+def test_postprocess_fields_accepts_the_cli_repeatable_shape() -> None:
+    # Review follow-up (blocker): Click's `multiple=True` never splits on commas
+    # itself, so a single `--fields a,b` CLI invocation arrives as a *list*
+    # containing one comma-joined string (["a,b"]), not the two-element list a
+    # bare MCP string would produce. Previously only the MCP shape was tested,
+    # which hid that this list form fell straight through `_as_list` unsplit and
+    # was then rejected by `_filter_fields` as one unknown field.
+    payload = _items_payload({"subject": "s", "from_email": "a@x.com", "id": "m1"})
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["subject,from_email"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert set(result["items"][0]) == {"subject", "from_email"}
+
+    # The other CLI form: two separate --fields flags, already a real two-element
+    # list with no embedded commas - must keep working unchanged.
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["subject", "from_email"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert set(result["items"][0]) == {"subject", "from_email"}
+
+
+def test_postprocess_fields_validates_against_the_union_of_item_keys() -> None:
+    # Review follow-up: mail.thread --full adds body/body_type to every item, but
+    # only when --full was passed - validating against items[0] alone is
+    # incidentally correct only because that key happens to be uniform within one
+    # response. Pin the union explicitly with items that legitimately differ.
+    payload = _items_payload(
+        {"subject": "s1", "id": "m1"},
+        {"subject": "s2", "id": "m2", "folder": "inbox"},
+    )
+    result = _run_payload(
+        "mail.search",
+        {"query": "q", "fields": ["folder"]},
+        provider=_items_provider("mail_search", payload),
+    )
+    assert result["items"][0] == {"folder": None}
+    assert result["items"][1] == {"folder": "inbox"}
+
+
+@pytest.mark.parametrize(
+    ("skill_id", "method_name", "arguments"),
+    [
+        (
+            "calendar.freebusy",
+            "calendar_freebusy",
+            {"with": ["a@x.com"], "start": "2026-09-01T09:00", "end": "2026-09-01T18:00"},
+        ),
+        ("calendar.view", "calendar_view", {"from": "2026-09-01", "to": "2026-09-08"}),
+        ("mail.inbox", "mail_inbox", {}),
+        ("mail.list", "mail_list", {"top": 10}),
+        ("mail.search", "mail_search", {"query": "q"}),
+        ("mail.thread", "mail_thread", {"id": "m1"}),
+    ],
+)
+def test_postprocess_applies_to_all_six_items_skills(
+    skill_id: str, method_name: str, arguments: dict[str, Any]
+) -> None:
+    long_preview = "y" * 200
+    if skill_id == "calendar.freebusy":
+        # A schedule item has no body_preview key at all - must be a clean no-op,
+        # not an error.
+        item = {"email": "a@x.com"}
+    else:
+        item = {"subject": "s", "body_preview": long_preview}
+    payload = _items_payload(item)
+    result = _run_payload(skill_id, arguments, provider=_items_provider(method_name, payload))
+    if skill_id == "calendar.freebusy":
+        assert result["items"][0] == item
+    else:
+        assert result["items"][0]["body_preview"] == "y" * 150 + "..."
+
+
+def test_postprocess_mail_thread_full_body_survives_truncation_and_fields() -> None:
+    # Review follow-up: mail.thread is the one skill in _ITEMS_SKILLS whose items
+    # gain a full `body`/`body_type` when `--full` is passed (mail.py:1277-1279).
+    # The parametrized "all six skills" test above only exercises a short
+    # subject/body_preview item for mail.thread, so nothing actually proves the
+    # documented promise that --full's full body stays untouched while only
+    # body_preview is capped - pin it directly against a real --full-shaped item.
+    long_body = "b" * 300
+    long_preview = "p" * 200
+    payload = _items_payload(
+        {"subject": "s", "body_preview": long_preview, "body": long_body, "body_type": "text"}
+    )
+    result = _run_payload(
+        "mail.thread",
+        {"id": "m1", "full": True, "fields": ["body", "body_type", "body_preview"]},
+        provider=_items_provider("mail_thread", payload),
+    )
+    item = result["items"][0]
+    assert item["body"] == long_body
+    assert item["body_type"] == "text"
+    assert item["body_preview"] == "p" * 150 + "..."
+
+
+def test_postprocess_is_a_noop_for_skills_outside_items_skills() -> None:
+    # A payload with no "items" key can't distinguish "skipped because
+    # calendar.today isn't in _ITEMS_SKILLS" from "skipped because there's no
+    # items list regardless of membership" - use an items-shaped payload (with a
+    # long body_preview and a --fields request) so a typo'd or deleted membership
+    # check would make this test fail.
+    long_preview = "w" * 200
+    payload = _items_payload({"subject": "s", "body_preview": long_preview})
+    result = _run_payload(
+        "calendar.today",
+        {"fields": ["subject"]},
+        provider=_items_provider("calendar_today", payload),
+    )
+    assert result == payload
+    assert result["items"][0]["body_preview"] == long_preview
+
+
+def test_postprocess_truncation_and_fields_compose() -> None:
+    long_preview = "z" * 300
+    payload = _items_payload({"subject": "s", "body_preview": long_preview, "id": "m1"})
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["body_preview", "subject"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    item = result["items"][0]
+    assert set(item) == {"body_preview", "subject"}
+    assert item["body_preview"] == "z" * 150 + "..."

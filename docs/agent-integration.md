@@ -348,6 +348,25 @@ So an agent can branch on `ok` without inspecting the exit code, then fall back
 to the exit code and `error` value for classification. Fields other than `ok`
 are command-specific and not frozen unless listed above.
 
+### Narrowing large list/search results
+
+`calendar.freebusy`, `calendar.view`, `mail.inbox`, `mail.list`, `mail.search`,
+and `mail.thread` return a JSON object with `items`, one dict per result — every
+field the underlying model has, which for `mail.*` is ~14 keys per message. Two
+independent ways to shrink that, applied by the same dispatch path the CLI and
+every MCP tool share (so this works identically over both):
+
+- **`--fields`** (repeatable or comma-separated) narrows each item to just the
+  named fields, in the order requested — e.g. `--fields subject,from_email` or
+  `--fields body_preview --fields subject`. Naming a field that does not exist
+  on the item is a usage error (`ValueError` → `usage_error`) that lists the
+  valid field names, so a typo fails loudly instead of silently returning
+  nothing for that key.
+- **`body_preview` is always capped at 150 characters** on these six tools,
+  whether or not `--fields` is used — that field is a preview, not the message.
+  For the full body, use `mail.get` (one message) or `mail.thread --full`
+  (every message in a conversation) instead; neither is affected by this cap.
+
 ### Error envelope
 
 Most failures with `--json` print one object to **stderr**, leaving stdout empty:
