@@ -319,6 +319,14 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
   blumkin stops appending `[mail.signature]` to drafts so the message is not
   signed twice; `blumkin mail signature --json` reports `suppressed: true`. Re-run
   `blumkin doctor` after changing the Outlook setting.
+
+  If the probe cannot run for this profile (Google, reply/forward before issue
+  #231 lands, or before `auth login` has ever run), set
+  `client_appends_signature = true` under `[profiles.<name>.mail.signature]` to
+  suppress `[mail.signature]` manually instead. It is an unconditional
+  per-profile override - do not set it unless the client genuinely appends its
+  own signature; `blumkin mail signature --json` reports `suppressed: true`
+  either way, but does not say which mechanism caused it.
 - **WO1162425 add-on scopes (off by default):** `wo1162425_scopes = true` in
   `config.toml` after Remedy WO1162425 grants its add-ons (runtime requests
   `Chat.ReadWrite`, `OnlineMeetings.ReadWrite`, `People.Read`; full augmented ask

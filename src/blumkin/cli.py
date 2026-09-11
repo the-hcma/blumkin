@@ -1282,7 +1282,10 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         "mail_signature": {
             "configured": cfg.mail_signature.enabled,
             "outlook_signature_detected": signature_state.detected,
-            "suppressed": signature_state.suppresses_signature and cfg.mail_signature.enabled,
+            "suppressed": (
+                cfg.mail_signature.client_appends_signature or signature_state.suppresses_signature
+            )
+            and cfg.mail_signature.enabled,
         },
         "status": status,
         "skills": [s["id"] for s in skills_catalog()["skills"]],
@@ -3142,7 +3145,9 @@ def mail_signature_cmd(ctx: click.Context, body_type: str, as_json_flag: bool) -
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     state = load_signature_state(cfg)
-    suppressed = state.suppresses_signature and cfg.mail_signature.enabled
+    suppressed = (
+        cfg.mail_signature.client_appends_signature or state.suppresses_signature
+    ) and cfg.mail_signature.enabled
     if as_json:
         emit_json(
             {

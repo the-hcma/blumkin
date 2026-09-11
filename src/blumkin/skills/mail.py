@@ -134,15 +134,21 @@ def append_mail_signature(
 ) -> str:
     """Append the configured signature when enabled and not opted out.
 
-    Also stands down when a login-time probe found that Outlook itself
-    auto-inserts a signature for this account (see
-    :mod:`blumkin.mail_signature_state`) - otherwise a draft blumkin leaves in
-    the mailbox ends up double-signed once Outlook's compose pipeline touches it.
+    Also stands down when either:
+
+    - ``config.mail_signature.client_appends_signature`` is set - a manual,
+      per-profile override for cases the automatic probe below does not cover
+      (Google/Gmail, reply/forward before issue #231 lands, or before
+      ``auth login`` has ever run against this profile); or
+    - a login-time probe found that Outlook itself auto-inserts a signature for
+      this account (see :mod:`blumkin.mail_signature_state`) - otherwise a draft
+      blumkin leaves in the mailbox ends up double-signed once Outlook's compose
+      pipeline touches it.
     """
     signature = getattr(config, "mail_signature", None)
     if no_signature or signature is None or not signature.enabled:
         return content
-    if load_signature_state(config).suppresses_signature:
+    if signature.client_appends_signature or load_signature_state(config).suppresses_signature:
         return content
     rendered = render_mail_signature(signature, body_type=body_type)
     if not rendered:

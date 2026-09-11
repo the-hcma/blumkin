@@ -48,6 +48,22 @@ def test_mail_signature_parses_nested_table(tmp_path: Path, monkeypatch) -> None
     assert cfg.mail_signature.title_color == "#445566"
 
 
+def test_mail_signature_parses_client_appends_signature(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.mail.signature]\nenabled = true\nclient_appends_signature = true\n"
+    )
+    cfg = load_config()
+    assert cfg.mail_signature.client_appends_signature is True
+
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n[profiles.default.mail.signature]\nenabled = true\n'
+    )
+    cfg = load_config()
+    assert cfg.mail_signature.client_appends_signature is False
+
+
 def test_render_mail_signature_text() -> None:
     sig = MailSignatureConfig(enabled=True, name="Ada", title="Engineer", affiliation="Example Org")
     assert render_mail_signature(sig, body_type="text") == "Ada\nEngineer\nExample Org"
@@ -132,6 +148,53 @@ def test_append_mail_signature_stands_down_when_outlook_auto_signs(
     # A negative probe result does not suppress.
     record_signature_state(cfg, detected=False)
     assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello\n\nAda"
+
+
+def test_append_mail_signature_stands_down_when_client_appends_signature(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        '[profiles.default.mail.signature]\nenabled = true\nname = "Ada"\n'
+        "client_appends_signature = true\n"
+    )
+    cfg = load_config()
+    # No probe ever ran (no mail_signature_state.json) - the manual override alone
+    # is enough to suppress.
+    assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello"
+
+    # Inversion guard: with the flag off and no probe state, the signature still
+    # appends - confirms the new check does not accidentally invert the condition.
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        '[profiles.default.mail.signature]\nenabled = true\nname = "Ada"\n'
+    )
+    cfg = load_config()
+    assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello\n\nAda"
+
+
+def test_append_mail_signature_client_appends_signature_or_probe_either_suppresses(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Pins `or`, not `and`: either source alone is sufficient to suppress."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        '[profiles.default.mail.signature]\nenabled = true\nname = "Ada"\n'
+        "client_appends_signature = true\n"
+    )
+    cfg = load_config()
+    record_signature_state(cfg, detected=False)
+    assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello"
+
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        '[profiles.default.mail.signature]\nenabled = true\nname = "Ada"\n'
+    )
+    cfg = load_config()
+    record_signature_state(cfg, detected=True)
+    assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello"
 
 
 def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
