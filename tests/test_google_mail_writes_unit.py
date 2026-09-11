@@ -131,6 +131,18 @@ def test_mail_reply_empty_body_appends_html_signature(tmp_path: Path) -> None:
     assert "Ada Lovelace" in html
 
 
+def test_mail_reply_unescapes_html_entities_in_the_source_subject(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(subject="Q3 &amp; Q4", sender="Ada <ada@example.com>"),
+        create_result={"id": "d"},
+    )
+    with _patched(service):
+        payload = asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(message_id="m-1"))
+    assert payload["draft"]["subject"] == "Re: Q3 & Q4"
+    sent = _sent_message(service, "create")
+    assert sent["Subject"] == "Re: Q3 & Q4"
+
+
 def test_mail_draft_attaches_file(tmp_path: Path) -> None:
     attachment = tmp_path / "note.txt"
     attachment.write_text("payload bytes")
@@ -603,6 +615,25 @@ def test_mail_forward_prefixes_subject_and_carries_attachment(tmp_path: Path) ->
     names = [part.get_filename() for part in sent.iter_attachments()]
     assert names == ["contract.pdf"]
     assert "Forwarded message" in _content(sent, "plain")
+
+
+def test_mail_forward_unescapes_html_entities_in_the_source_subject(tmp_path: Path) -> None:
+    # Review follow-up on #252: the source subject came from a message we did not
+    # compose - an entity already baked into it must not carry through the "Fwd:"
+    # prefix and into the new draft, and the summary must report the same value.
+    service = _service(
+        message_result=_full_message(subject="Q3 &amp; Q4", sender="Ada <ada@example.com>"),
+        create_result={"id": "d-f", "message": {"threadId": "thread-9"}},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_forward(
+                message_id="m-1", to="dana@example.com", body="fyi"
+            )
+        )
+    assert payload["draft"]["subject"] == "Fwd: Q3 & Q4"
+    sent = _sent_message(service, "create")
+    assert sent["Subject"] == "Fwd: Q3 & Q4"
 
 
 def test_mail_forward_requires_to(tmp_path: Path) -> None:

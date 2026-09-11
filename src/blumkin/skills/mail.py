@@ -775,7 +775,8 @@ async def mail_draft(
         raise ValueError("--to is required")
     cc_addrs = _parse_addresses(cc, flag="--cc", required=False) or []
     bcc_addrs = _parse_addresses(bcc, flag="--bcc", required=False) or []
-    if not subject.strip():
+    subject_clean = _plain_subject(subject)
+    if not subject_clean:
         raise ValueError("--subject is required")
     # Read the files before touching Graph: a bad path should not leave a half-built draft.
     pending = [_read_attachment(path) for path in attach]
@@ -791,7 +792,7 @@ async def mail_draft(
         bcc_recipients=_recipient_models(bcc_addrs) or None,
         body=_compose_item_body(graph_body_type, content),
         cc_recipients=_recipient_models(cc_addrs) or None,
-        subject=_plain_subject(subject),
+        subject=subject_clean,
         to_recipients=_recipient_models(to_addrs),
     )
     created = await client.me.messages.post(message)
@@ -1352,9 +1353,10 @@ async def mail_update_draft(
             content = f"{head}{quoted}"
     patch = Message()
     if subject is not None:
-        if not subject.strip():
+        subject_clean = _plain_subject(subject)
+        if not subject_clean:
             raise ValueError("--subject must be non-empty when provided")
-        patch.subject = _plain_subject(subject)
+        patch.subject = subject_clean
     if content is not None and graph_body_type is not None:
         patch.body = _compose_item_body(graph_body_type, content)
     if to_addrs is not None:
@@ -2055,17 +2057,34 @@ def _parse_addresses(
     return addresses
 
 
+_HTML_ENTITY_RE = re.compile(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);")
+
+
 def _plain_subject(subject: str) -> str:
-    """Strip and un-escape a ``--subject`` value.
+    """Un-escape well-formed HTML entities in a ``--subject`` value, then strip.
 
     Subject is a plain header, never rendered as HTML, but a caller composing
     a message body and subject together (an MCP client generating both at
     once) sometimes HTML-escapes the subject out of habit, leaving a literal
     ``&amp;`` where the recipient's mail client shows the raw entity instead
-    of ``&``. Un-escaping here is safe: a subject can never legitimately need
-    an HTML entity since it is never HTML-interpreted.
+    of ``&``.
+
+    Only entities with a closing ``;`` are touched - ``html.unescape`` also
+    resolves the ~150 legacy HTML4 names that are valid *without* one
+    (``&amp``, ``&copy``, ...), which would mangle ordinary text that merely
+    contains an ampersand followed by one of those names, e.g. a pasted query
+    string like ``...?n=1&copy=2``. A deliberate literal ``&amp;`` in a
+    subject is inherently indistinguishable from an accidentally-escaped one
+    and is not recoverable here either way - this only trades the rare former
+    for fixing the common latter.
+
+    Unescaping before stripping (rather than after) means an entity that
+    decodes to whitespace at either end - or a subject that is nothing but
+    entities, e.g. ``&nbsp;`` - collapses to ``""`` here, where the caller can
+    still catch it as empty.
     """
-    return html_lib.unescape(subject.strip())
+    unescaped = _HTML_ENTITY_RE.sub(lambda m: html_lib.unescape(m.group(0)), subject)
+    return unescaped.strip()
 
 
 def _apply_font_preference(html_body: str, config: BlumkinConfig | None) -> str:
