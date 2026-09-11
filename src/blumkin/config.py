@@ -395,13 +395,16 @@ def _preferences_config(
     merged = {**top_level, **profile_prefs}
     html_email = True
     if "html_email" in merged:
-        coerced = _coerce_bool(merged["html_email"])
-        if coerced is None:
+        raw_html_email = merged["html_email"]
+        # Strict bool, unlike the lenient _coerce_bool used elsewhere in this file:
+        # this flag silently switches the wire format (HTML vs. plain text) that
+        # every composed message sends, so a stray "true"/1 typo should fail loudly
+        # rather than quietly do the right thing today and the wrong thing tomorrow.
+        if not isinstance(raw_html_email, bool):
             raise ProviderConfigError(
-                "preferences.html_email must be a boolean in config.toml, "
-                f"got {merged['html_email']!r}"
+                f"preferences.html_email must be a boolean in config.toml, got {raw_html_email!r}"
             )
-        html_email = coerced
+        html_email = raw_html_email
     return PreferencesConfig(
         font_name=str(merged.get("font_name") or "").strip(),
         font_size=_positive_int(merged.get("font_size"), key="preferences.font_size"),

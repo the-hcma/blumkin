@@ -944,12 +944,37 @@ def test_mail_reply_needs_no_yes_because_it_only_drafts(monkeypatch) -> None:
         "bcc": None,
         "body": "Thanks",
         "body_file": None,
-        "body_type": "markdown",
+        # Omitted --body-type reaches the skill function as None (not a baked-in
+        # "markdown"), so resolve_mail_body can fall back to config preferences.
+        "body_type": None,
         "cc": None,
         "message_id": "msg-1",
         "no_signature": False,
         "reply_all": True,
     }
+
+
+def test_dispatch_loads_config_once_per_command(tmp_path, monkeypatch) -> None:
+    """_dispatch calls _load_config() directly and again inside _workspace()'s
+    default-argument path - without caching that's two config.toml parses and a
+    preferences conflict warning printed twice for one command."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[preferences]\nfont_size = 11\n\n"
+        '[profiles.personal]\nclient_id = "b"\n'
+        "[profiles.personal.preferences]\nfont_size = 13\n"
+    )
+
+    async def _reply(**_kwargs):
+        return {"draft": {"id": "d", "kind": "reply", "source_message_id": "m", "to": []}}
+
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_reply", _reply)
+    result = CliRunner().invoke(
+        main,
+        ["--profile", "personal", "mail", "reply", "--id", "m", "--body", "hi", "--json"],
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert (result.stderr or "").count("warning:") == 1
 
 
 def test_mail_compose_commands_wire_no_signature_flag(monkeypatch) -> None:

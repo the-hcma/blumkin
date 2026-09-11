@@ -388,6 +388,27 @@ def test_atexit_named_profile_refuses_symlinked_profiles_dir(tmp_path: Path, mon
     assert not (real_profiles / "work" / "msal_token_cache.json").exists()
 
 
+def test_preferences_conflicting_override_warns_but_profile_value_wins(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    (tmp_path / "config.toml").write_text(
+        "[preferences]\n"
+        "font_size = 11\n"
+        "\n"
+        "[profiles.personal]\n"
+        'client_id = "b"\n'
+        "[profiles.personal.preferences]\n"
+        "font_size = 13\n"
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    cfg = load_config(profile="personal")
+    assert cfg.preferences.font_size == 13
+    err = capsys.readouterr().err
+    assert "personal" in err
+    assert "preferences.font_size" in err
+    assert "13" in err and "11" in err
+
+
 def test_preferences_default_when_unset(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
@@ -397,25 +418,46 @@ def test_preferences_default_when_unset(tmp_path: Path, monkeypatch) -> None:
     assert cfg.preferences.html_email is True
 
 
-def test_preferences_top_level_applies_to_every_profile(tmp_path: Path, monkeypatch) -> None:
+def test_preferences_font_size_must_be_a_positive_int(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "config.toml").write_text(
-        "[preferences]\n"
-        'font_name = "Calibri"\n'
-        "font_size = 11\n"
-        "html_email = false\n"
-        "\n"
-        "[profiles.work]\n"
-        'client_id = "a"\n'
-        "\n"
-        "[profiles.personal]\n"
-        'client_id = "b"\n'
+        '[profiles.default]\nclient_id = "abc"\n[profiles.default.preferences]\nfont_size = -1\n'
     )
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    for name in ("work", "personal"):
-        cfg = load_config(profile=name)
-        assert cfg.preferences.font_name == "Calibri"
-        assert cfg.preferences.font_size == 11
-        assert cfg.preferences.html_email is False
+    with pytest.raises(ProviderConfigError, match="positive integer"):
+        load_config()
+
+
+def test_preferences_html_email_must_be_a_bool(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        '[profiles.default.preferences]\nhtml_email = "sometimes"\n'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    with pytest.raises(ProviderConfigError, match="must be a boolean"):
+        load_config()
+
+
+@pytest.mark.parametrize("raw", ['html_email = "true"\n', "html_email = 1\n"])
+def test_preferences_html_email_rejects_lenient_truthy_forms(
+    raw: str, tmp_path: Path, monkeypatch
+) -> None:
+    """Unlike other config booleans, html_email is strict - it silently flips the
+    wire format of every composed message, so a typo like 1/"true" must fail loudly."""
+    (tmp_path / "config.toml").write_text(
+        f'[profiles.default]\nclient_id = "abc"\n[profiles.default.preferences]\n{raw}'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    with pytest.raises(ProviderConfigError, match="must be a boolean"):
+        load_config()
+
+
+def test_preferences_profile_non_table_raises(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\npreferences = "Calibri"\n'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    with pytest.raises(ProviderConfigError, match="profiles.default.preferences must be a table"):
+        load_config()
 
 
 def test_preferences_profile_override_wins_without_a_conflicting_value(
@@ -439,27 +481,6 @@ def test_preferences_profile_override_wins_without_a_conflicting_value(
     assert capsys.readouterr().err == ""
 
 
-def test_preferences_conflicting_override_warns_but_profile_value_wins(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
-    (tmp_path / "config.toml").write_text(
-        "[preferences]\n"
-        "font_size = 11\n"
-        "\n"
-        "[profiles.personal]\n"
-        'client_id = "b"\n'
-        "[profiles.personal.preferences]\n"
-        "font_size = 13\n"
-    )
-    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    cfg = load_config(profile="personal")
-    assert cfg.preferences.font_size == 13
-    err = capsys.readouterr().err
-    assert "personal" in err
-    assert "preferences.font_size" in err
-    assert "13" in err and "11" in err
-
-
 def test_preferences_top_level_alongside_profiles_does_not_trip_stray_key_check(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -471,20 +492,31 @@ def test_preferences_top_level_alongside_profiles_does_not_trip_stray_key_check(
     assert load_config().preferences.font_name == "Calibri"
 
 
-def test_preferences_font_size_must_be_a_positive_int(tmp_path: Path, monkeypatch) -> None:
+def test_preferences_top_level_applies_to_every_profile(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "config.toml").write_text(
-        '[profiles.default]\nclient_id = "abc"\n[profiles.default.preferences]\nfont_size = -1\n'
+        "[preferences]\n"
+        'font_name = "Calibri"\n'
+        "font_size = 11\n"
+        "html_email = false\n"
+        "\n"
+        "[profiles.work]\n"
+        'client_id = "a"\n'
+        "\n"
+        "[profiles.personal]\n"
+        'client_id = "b"\n'
     )
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    with pytest.raises(ProviderConfigError, match="positive integer"):
-        load_config()
+    for name in ("work", "personal"):
+        cfg = load_config(profile=name)
+        assert cfg.preferences.font_name == "Calibri"
+        assert cfg.preferences.font_size == 11
+        assert cfg.preferences.html_email is False
 
 
-def test_preferences_html_email_must_be_a_bool(tmp_path: Path, monkeypatch) -> None:
+def test_preferences_top_level_non_table_raises(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "config.toml").write_text(
-        '[profiles.default]\nclient_id = "abc"\n'
-        '[profiles.default.preferences]\nhtml_email = "sometimes"\n'
+        'preferences = "Calibri"\n\n[profiles.work]\nclient_id = "a"\n'
     )
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    with pytest.raises(ProviderConfigError, match="must be a boolean"):
+    with pytest.raises(ProviderConfigError, match="preferences must be a table"):
         load_config()

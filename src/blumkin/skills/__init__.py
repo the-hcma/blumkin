@@ -1163,8 +1163,8 @@ SKILLS: list[SkillSpec] = [
                 "type": "enum",
                 "values": ["markdown", "text", "html"],
                 "note": (
-                    "how --body is authored; default markdown, or text when "
-                    "preferences.html_email = false, rendered to HTML on the wire"
+                    "how --body is authored; default markdown (rendered to HTML on "
+                    "the wire), or plain text when preferences.html_email = false"
                 ),
             },
             {
@@ -1222,8 +1222,8 @@ SKILLS: list[SkillSpec] = [
                 "type": "enum",
                 "values": ["markdown", "text", "html"],
                 "note": (
-                    "how --body is authored; default markdown, or text when "
-                    "preferences.html_email = false, rendered to HTML on the wire"
+                    "how --body is authored; default markdown (rendered to HTML on "
+                    "the wire), or plain text when preferences.html_email = false"
                 ),
             },
             {
@@ -1426,8 +1426,8 @@ SKILLS: list[SkillSpec] = [
                 "type": "enum",
                 "values": ["markdown", "text", "html"],
                 "note": (
-                    "how --body is authored; default markdown, or text when "
-                    "preferences.html_email = false, rendered to HTML on the wire"
+                    "how --body is authored; default markdown (rendered to HTML on "
+                    "the wire), or plain text when preferences.html_email = false"
                 ),
             },
             {
@@ -1555,8 +1555,8 @@ SKILLS: list[SkillSpec] = [
                 "type": "enum",
                 "values": ["markdown", "text", "html"],
                 "note": (
-                    "how --body is authored; default markdown, or text when "
-                    "preferences.html_email = false, rendered to HTML on the wire"
+                    "how --body is authored; default markdown (rendered to HTML on "
+                    "the wire), or plain text when preferences.html_email = false"
                 ),
             },
         ],

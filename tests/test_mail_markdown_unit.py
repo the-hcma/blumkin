@@ -14,6 +14,7 @@ import pytest
 from msgraph.generated.models.body_type import BodyType
 
 from blumkin.config import PreferencesConfig
+from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
 from blumkin.skills.mail import mail_draft, render_markdown_email, resolve_mail_body
 
 
@@ -78,6 +79,25 @@ def test_resolve_mail_body_omitted_type_follows_config_html_email_true() -> None
     assert (content, label, graph_type) == ("<p>one</p><p>two</p>", "html", BodyType.Html)
 
 
+def test_resolve_mail_body_wraps_the_markdown_default_in_the_configured_font() -> None:
+    """The wrap must also apply on the markdown default branch, not only --body-type html."""
+    config = SimpleNamespace(preferences=PreferencesConfig(font_name="Calibri", font_size=11))
+    content, label, graph_type = resolve_mail_body(body="hi", config=config)  # type: ignore[arg-type]
+    assert (label, graph_type) == ("html", BodyType.Html)
+    assert content == '<div style="font-family:Calibri;font-size:11pt"><p>hi</p></div>'
+
+
+def test_resolve_mail_body_explicit_flag_beats_config_html_email_false() -> None:
+    """An explicit --body-type always wins over preferences.html_email = false."""
+    config = SimpleNamespace(preferences=PreferencesConfig(html_email=False))
+    content, label, graph_type = resolve_mail_body(
+        body="one\n\ntwo",
+        body_type="markdown",
+        config=config,  # type: ignore[arg-type]
+    )
+    assert (content, label, graph_type) == ("<p>one</p><p>two</p>", "html", BodyType.Html)
+
+
 def test_resolve_mail_body_wraps_html_in_the_configured_font() -> None:
     config = SimpleNamespace(preferences=PreferencesConfig(font_name="Calibri", font_size=11))
     content, _label, _graph_type = resolve_mail_body(
@@ -137,3 +157,17 @@ def test_mail_draft_omitted_type_sends_text_when_config_disables_html_email(monk
     body = client.me.messages.post.await_args.args[0].body
     assert body.content_type == BodyType.Text
     assert body.content == "plain please"
+
+
+def test_provider_wrapper_body_type_none_still_respects_config(monkeypatch) -> None:
+    """dispatch drops a --body-type omitted on the CLI, calling the provider wrapper
+    with no body_type kwarg at all - its own default must not shadow config, the
+    way the CLI/MCP path (not the skill function called directly) actually runs."""
+    client = _client(monkeypatch, preferences=PreferencesConfig(html_email=False))
+    config = SimpleNamespace(
+        client_id="x", default_tz="UTC", preferences=PreferencesConfig(html_email=False)
+    )
+    provider = MicrosoftWorkspaceProvider(config)  # type: ignore[arg-type]
+    asyncio.run(provider.mail_draft(to="a@b.com", subject="Asks", body="plain please"))
+    body = client.me.messages.post.await_args.args[0].body
+    assert body.content_type == BodyType.Text

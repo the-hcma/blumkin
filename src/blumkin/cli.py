@@ -249,17 +249,31 @@ def _emit_error(
 
 
 def _load_config() -> BlumkinConfig:
+    """Load config for the active command, cached on the Click context.
+
+    A single command (``_dispatch`` / ``_dispatch_soft``) calls this once directly
+    and once more inside the default-argument path of ``_workspace()`` - without
+    caching, that means two fresh ``config.toml`` parses per command, and a
+    preferences conflict warning (``blumkin.config._preferences_config``) firing
+    twice on stderr for one invocation.
+    """
     ctx = click.get_current_context(silent=True)
     profile: str | None = None
     if ctx is not None and isinstance(ctx.obj, dict):
+        cached = ctx.obj.get("_loaded_config")
+        if isinstance(cached, BlumkinConfig):
+            return cached
         raw = ctx.obj.get("profile")
         if isinstance(raw, str) and raw.strip():
             profile = raw.strip()
     try:
-        return load_config(profile=profile)
+        cfg = load_config(profile=profile)
     except ProviderConfigError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
         raise SystemExit(EXIT_USAGE) from exc
+    if ctx is not None and isinstance(ctx.obj, dict):
+        ctx.obj["_loaded_config"] = cfg
+    return cfg
 
 
 def _populate_profile_email_once() -> str | None:
