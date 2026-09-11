@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.providers import google_http
 from blumkin.providers.kind import ProviderKind
 
@@ -63,6 +63,7 @@ def _cfg(config_dir: Path, *, timeout: float = 60.0) -> BlumkinConfig:
         google_oauth_client_file=None,
         graph_timeout_seconds=timeout,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
         tags=(),

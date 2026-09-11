@@ -14,7 +14,7 @@ from docx import Document
 from kiota_abstractions.method import Method
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.created_docs import is_blumkin_created_doc, record_created_doc
 from blumkin.providers import microsoft_docs as _md
 from blumkin.providers.kind import ProviderKind
@@ -56,6 +56,7 @@ def _cfg(
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=provider,
         tags=(),

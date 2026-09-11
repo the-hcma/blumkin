@@ -18,7 +18,7 @@ from click.testing import CliRunner
 from googleapiclient.errors import HttpError
 
 from blumkin.cli import main
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.exit_codes import EXIT_MISSING_SCOPE, EXIT_NOT_FOUND
 from blumkin.providers.google_auth import GOOGLE_SCOPES
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
@@ -812,6 +812,7 @@ def _cfg(config_dir: Path, *, signature: MailSignatureConfig | None = None) -> B
         google_oauth_client_file=oauth,
         graph_timeout_seconds=60.0,
         mail_signature=signature or MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
         tags=(),

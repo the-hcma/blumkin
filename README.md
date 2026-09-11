@@ -162,6 +162,21 @@ tags = ["@personal", "personal", "google", "gmail"]
 supported (a config with none configures zero profiles rather than an implicit
 one).
 
+A top-level `[preferences]` table sets `font_name` / `font_size` / `html_email`
+(default `true`) for every profile; `[profiles.<name>.preferences]` overrides
+one profile. A profile value that disagrees with the top-level one for the same
+key still wins, but blumkin warns about it on stderr:
+
+```toml
+[preferences]
+font_name = "Calibri"
+font_size = 11
+html_email = true
+
+[profiles.personal.preferences]
+font_size = 13  # overrides just this key for this profile
+```
+
 Set `tenant_id`, `default_tz`, and `provider` in the profile table (there are no
 org-specific code defaults). `provider` defaults to `microsoft` when omitted.
 

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from googleapiclient.errors import HttpError
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.created_docs import is_blumkin_created_doc, record_created_doc
 from blumkin.providers.google_auth import DOCS_SCOPES
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
@@ -178,6 +178,7 @@ def _cfg(config_dir: Path) -> BlumkinConfig:
         google_oauth_client_file=oauth,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
         tags=(),

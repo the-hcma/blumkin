@@ -14,7 +14,7 @@ from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.cli import main
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_USAGE
 from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
@@ -233,6 +233,7 @@ def _google_cfg(config_dir: Path) -> BlumkinConfig:
         google_oauth_client_file=oauth,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
         tags=(),

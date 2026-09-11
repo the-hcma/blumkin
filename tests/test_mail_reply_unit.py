@@ -13,7 +13,7 @@ from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.mail import (
     MailBodyFileError,
@@ -438,6 +438,7 @@ def _client(monkeypatch, *, signature: bool = False) -> MagicMock:
             google_oauth_client_file=None,
             graph_timeout_seconds=60.0,
             mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
+            preferences=PreferencesConfig(),
             profile="default",
             provider=ProviderKind.MICROSOFT,
             tags=(),

@@ -280,6 +280,24 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
 - Keep that directory a real local folder (not a symlink into a shared tree). Token
   cache and auth-record writes refuse symlinked secret paths and report
   `secret_write_failed` (exit `1`) instead of looping on `auth login`.
+- **Preferences (optional):** `font_name`, `font_size`, `html_email` (defaults to
+  `true`) live in a top-level `[preferences]` table (applies to every profile) and/or
+  a per-profile `[profiles.<name>.preferences]` override:
+
+  ```toml
+  [preferences]
+  font_name = "Calibri"
+  font_size = 11
+  html_email = true
+
+  [profiles.personal.preferences]
+  font_size = 13  # overrides just this key for this profile
+  ```
+
+  A profile value that disagrees with the top-level one for the same key still
+  wins, but blumkin warns on stderr (`warning: profile '<name>' sets
+  preferences.<key> = …, overriding preferences.<key> = … set at the top level`)
+  since it may be drift rather than an intentional per-profile tweak.
 - **Mail signature (optional):** under the profile, e.g. `[profiles.work.mail.signature]`:
 
   ```toml
