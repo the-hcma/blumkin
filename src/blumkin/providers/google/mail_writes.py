@@ -47,7 +47,6 @@ from blumkin.providers.google_auth import (
 )
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.mail import (
-    _DEFAULT_COMPOSE_TYPE,
     MailDraftNotFoundError,
     MailFolderNotFoundError,
     MailMessageNotFoundError,
@@ -361,7 +360,7 @@ async def mail_draft(
     bcc: str | Sequence[str] = (),
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = _DEFAULT_COMPOSE_TYPE,
+    body_type: str | None = None,
     cc: str | Sequence[str] = (),
     config: BlumkinConfig | None = None,
     no_signature: bool = False,
@@ -375,10 +374,10 @@ async def mail_draft(
         raise ValueError("--subject is required")
     # Read the files before touching Gmail: a bad path should not leave a draft behind.
     pending = [_read_attachment(path) for path in attach]
-    content, body_type_label, _ = resolve_mail_body(
-        body=body, body_file=body_file, body_type=body_type
-    )
     cfg = config or load_config()
+    content, body_type_label, _ = resolve_mail_body(
+        body=body, body_file=body_file, body_type=body_type, config=cfg
+    )
     content = append_mail_signature(
         content, body_type=body_type_label, config=cfg, no_signature=no_signature
     )
@@ -416,7 +415,7 @@ async def mail_forward(
     to: str,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = _DEFAULT_COMPOSE_TYPE,
+    body_type: str | None = None,
     bcc: str | Sequence[str] | None = None,
     cc: str | Sequence[str] | None = None,
     config: BlumkinConfig | None = None,
@@ -430,8 +429,8 @@ async def mail_forward(
     to_addrs = _parse_addresses(to, flag="--to", required=True) or []
     cc_addrs = _parse_addresses(cc, flag="--cc", required=False) or []
     bcc_addrs = _parse_addresses(bcc, flag="--bcc", required=False) or []
-    label = _body_label(body_type)
     cfg = config or load_config()
+    label = _body_label(body_type, config=cfg)
     service = _gmail_service(cfg)
     original = _get_message(service, mid)
     detail = _message_detail(original, wanted="text")
@@ -473,7 +472,7 @@ async def mail_reply(
     message_id: str,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = _DEFAULT_COMPOSE_TYPE,
+    body_type: str | None = None,
     bcc: str | Sequence[str] | None = None,
     cc: str | Sequence[str] | None = None,
     reply_all: bool = False,
@@ -485,8 +484,8 @@ async def mail_reply(
         raise ValueError("--id is required")
     cc_flag = _parse_addresses(cc, flag="--cc", required=False)
     bcc_flag = _parse_addresses(bcc, flag="--bcc", required=False)
-    label = _body_label(body_type)
     cfg = config or load_config()
+    label = _body_label(body_type, config=cfg)
     service = _gmail_service(cfg)
     original = _get_message(service, mid)
     detail = _message_detail(original, wanted="text")
@@ -581,7 +580,7 @@ async def mail_update_draft(
     subject: str | None = None,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = _DEFAULT_COMPOSE_TYPE,
+    body_type: str | None = None,
     cc: str | Sequence[str] | None = None,
     keep_quoted: bool = False,
     no_signature: bool = False,
@@ -609,13 +608,13 @@ async def mail_update_draft(
     pending = [_read_attachment(path) for path in attach]
     new_content: str | None = None
     new_body_type: str | None = None
+    cfg = config or load_config()
     if has_body:
         new_content, new_body_type, _ = resolve_mail_body(
-            body=body, body_file=body_file, body_type=body_type
+            body=body, body_file=body_file, body_type=body_type, config=cfg
         )
         if not new_content.strip():
             raise ValueError("--body/--body-file must be non-empty when provided")
-    cfg = config or load_config()
     if new_content is not None:
         new_content = append_mail_signature(
             new_content,
@@ -714,10 +713,10 @@ def _attachment_refs(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
     return refs
 
 
-def _body_label(raw: str) -> str:
+def _body_label(raw: str | None, config: BlumkinConfig | None = None) -> str:
     """Effective type for quoting / joining the reply: markdown and html both
     produce an HTML lead, so the quoted original has to be HTML too."""
-    return _compose_wire_label(raw)
+    return _compose_wire_label(raw, config=config)
 
 
 def _build_message(
@@ -759,23 +758,23 @@ def _comment_text(
     *,
     body: str | None,
     body_file: str | None,
-    body_type: str,
+    body_type: str | None,
     config: BlumkinConfig,
     no_signature: bool,
 ) -> str:
     """Resolve the optional reply/forward lead text, with the signature appended.
 
-    ``body_type`` is the raw ``--body-type`` (``markdown`` / ``html`` / ``text``);
-    ``resolve_mail_body`` renders a Markdown lead to HTML before it is joined to
-    the quoted original.
+    ``body_type`` is the raw ``--body-type`` (``markdown`` / ``html`` / ``text``, or
+    ``None`` to fall back to ``config.preferences.html_email``); ``resolve_mail_body``
+    renders a Markdown lead to HTML before it is joined to the quoted original.
     """
     if body is None and body_file is None:
         # Nothing to render - markdown/html both give an HTML signature to match
         # the HTML quoted original (see _body_label).
-        label = _body_label(body_type)
+        label = _body_label(body_type, config=config)
         return append_mail_signature("", body_type=label, config=config, no_signature=no_signature)
     content, resolved_label, _ = resolve_mail_body(
-        body=body, body_file=body_file, body_type=body_type
+        body=body, body_file=body_file, body_type=body_type, config=config
     )
     return append_mail_signature(
         content, body_type=resolved_label, config=config, no_signature=no_signature
