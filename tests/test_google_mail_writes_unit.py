@@ -60,6 +60,24 @@ def test_mail_draft_builds_rfc822_and_skill_payload(tmp_path: Path) -> None:
     assert _content(sent, "plain").strip() == "Please review - thanks."
 
 
+def test_mail_draft_unescapes_html_entities_in_subject(tmp_path: Path) -> None:
+    # Same rationale as the Microsoft path: subject is a plain header, never
+    # rendered as HTML, so a caller's habitual HTML-escaping of it must be undone.
+    service = _service(create_result={"id": "draft-1"})
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com",
+                subject="Q3 &amp; Q4 Plans",
+                body="hi",
+                body_type="text",
+            )
+        )
+    assert payload["draft"]["subject"] == "Q3 & Q4 Plans"
+    sent = _sent_message(service, "create")
+    assert sent["Subject"] == "Q3 & Q4 Plans"
+
+
 def test_mail_draft_html_adds_alternative(tmp_path: Path) -> None:
     service = _service(create_result={"id": "d"})
     with _patched(service):
@@ -111,6 +129,18 @@ def test_mail_reply_empty_body_appends_html_signature(tmp_path: Path) -> None:
     html = _content(_sent_message(service, "create"), "html")
     assert "font-weight:bold" in html
     assert "Ada Lovelace" in html
+
+
+def test_mail_reply_unescapes_html_entities_in_the_source_subject(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(subject="Q3 &amp; Q4", sender="Ada <ada@example.com>"),
+        create_result={"id": "d"},
+    )
+    with _patched(service):
+        payload = asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(message_id="m-1"))
+    assert payload["draft"]["subject"] == "Re: Q3 & Q4"
+    sent = _sent_message(service, "create")
+    assert sent["Subject"] == "Re: Q3 & Q4"
 
 
 def test_mail_draft_attaches_file(tmp_path: Path) -> None:
@@ -211,6 +241,22 @@ def test_mail_update_draft_replaces_subject_keeps_body_and_recipients(tmp_path: 
     assert sent["Subject"] == "New subject"
     assert sent["To"] == "keep@example.com"
     assert "original body text" in _content(sent, "plain")
+
+
+def test_mail_update_draft_unescapes_html_entities_in_subject(tmp_path: Path) -> None:
+    service = _service(
+        get_result=_raw_draft(subject="Old", to="keep@example.com", body="original body text"),
+        update_result={"id": "d-2"},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-2", subject="Q3 &amp; Q4 Plans"
+            )
+        )
+    assert payload["draft"]["subject"] == "Q3 & Q4 Plans"
+    sent = _sent_message(service, "update")
+    assert sent["Subject"] == "Q3 & Q4 Plans"
 
 
 def test_mail_update_draft_requires_at_least_one_field(tmp_path: Path) -> None:
@@ -569,6 +615,51 @@ def test_mail_forward_prefixes_subject_and_carries_attachment(tmp_path: Path) ->
     names = [part.get_filename() for part in sent.iter_attachments()]
     assert names == ["contract.pdf"]
     assert "Forwarded message" in _content(sent, "plain")
+
+
+def test_mail_forward_unescapes_html_entities_in_the_source_subject(tmp_path: Path) -> None:
+    # Review follow-up on #252: the source subject came from a message we did not
+    # compose - an entity already baked into it must not carry through the "Fwd:"
+    # prefix and into the new draft, and the summary must report the same value.
+    service = _service(
+        message_result=_full_message(subject="Q3 &amp; Q4", sender="Ada <ada@example.com>"),
+        create_result={"id": "d-f", "message": {"threadId": "thread-9"}},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_forward(
+                message_id="m-1", to="dana@example.com", body="fyi"
+            )
+        )
+    assert payload["draft"]["subject"] == "Fwd: Q3 & Q4"
+    sent = _sent_message(service, "create")
+    assert sent["Subject"] == "Fwd: Q3 & Q4"
+
+
+def test_mail_forward_strips_crlf_from_a_malicious_source_subject(tmp_path: Path) -> None:
+    # Review follow-up on #252 (security): the source subject is from a message a
+    # third party wrote. html.unescape resolves numeric character references too,
+    # so &#13;/&#10; decode to a real CR/LF - stripped only at the ends, an interior
+    # pair would reach the Subject header: a crash under the default email policy,
+    # or on a layer that tolerates it, MIME header injection (a forged Bcc line).
+    service = _service(
+        message_result=_full_message(
+            subject="Hi&#13;&#10;Bcc: attacker@example.com", sender="Ada <ada@example.com>"
+        ),
+        create_result={"id": "d-f", "message": {"threadId": "thread-9"}},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_forward(
+                message_id="m-1", to="dana@example.com", body="fyi"
+            )
+        )
+    assert payload["draft"]["subject"] == "Fwd: HiBcc: attacker@example.com"
+    sent = _sent_message(service, "create")
+    assert sent["Subject"] == "Fwd: HiBcc: attacker@example.com"
+    assert "\r" not in sent["Subject"]
+    assert "\n" not in sent["Subject"]
+    assert sent["Bcc"] is None
 
 
 def test_mail_forward_requires_to(tmp_path: Path) -> None:

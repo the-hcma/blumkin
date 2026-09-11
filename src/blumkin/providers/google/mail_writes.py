@@ -54,6 +54,7 @@ from blumkin.skills.mail import (
     _compose_wire_label,
     _merge_addresses,
     _parse_addresses,
+    _plain_subject,
     _read_attachment,
     _validate_importance,
     append_mail_signature,
@@ -370,7 +371,8 @@ async def mail_draft(
         raise ValueError("--to is required")
     cc_addrs = _parse_addresses(cc, flag="--cc", required=False) or []
     bcc_addrs = _parse_addresses(bcc, flag="--bcc", required=False) or []
-    if not subject.strip():
+    subject_clean = _plain_subject(subject)
+    if not subject_clean:
         raise ValueError("--subject is required")
     # Read the files before touching Gmail: a bad path should not leave a draft behind.
     pending = [_read_attachment(path) for path in attach]
@@ -382,7 +384,7 @@ async def mail_draft(
         content, body_type=body_type_label, config=cfg, no_signature=no_signature
     )
     message = _build_message(
-        subject=subject.strip(),
+        subject=subject_clean,
         to=to_addrs,
         cc=cc_addrs,
         bcc=bcc_addrs,
@@ -403,7 +405,7 @@ async def mail_draft(
             "body_type": body_type_label,
             "cc": ", ".join(cc_addrs) or None,
             "id": created.get("id"),
-            "subject": subject.strip(),
+            "subject": subject_clean,
             "to": ", ".join(to_addrs),
         }
     }
@@ -438,8 +440,12 @@ async def mail_forward(
         body=body, body_file=body_file, body_type=body_type, config=cfg, no_signature=no_signature
     )
     content = _join_sections(comment, _quote_for_forward(detail, label), label)
+    # The source subject came from a message we did not compose - an entity like
+    # &amp; already baked into it (some senders' clients do this) would otherwise
+    # carry straight through the "Fwd:" prefix and into the new draft.
+    subject = _plain_subject(_prefixed_subject(detail.get("subject"), "Fwd:"))
     message = _build_message(
-        subject=_prefixed_subject(detail.get("subject"), "Fwd:"),
+        subject=subject,
         to=to_addrs,
         cc=cc_addrs,
         bcc=bcc_addrs,
@@ -458,7 +464,7 @@ async def mail_forward(
             thread_id=(created.get("message") or {}).get("threadId"),
             kind="forward",
             source=mid,
-            subject=_prefixed_subject(detail.get("subject"), "Fwd:"),
+            subject=subject,
             to=to_addrs,
             cc=cc_addrs,
             bcc=bcc_addrs,
@@ -514,7 +520,8 @@ async def mail_reply(
         cc_out = _merge_addresses(cc_out, cc_flag)
     bcc_out = bcc_flag or []
 
-    subject = _prefixed_subject(detail.get("subject"), "Re:")
+    # See mail_forward: the source subject is from a message we did not compose.
+    subject = _plain_subject(_prefixed_subject(detail.get("subject"), "Re:"))
     comment = _comment_text(
         body=body, body_file=body_file, body_type=body_type, config=cfg, no_signature=no_signature
     )
@@ -637,9 +644,10 @@ async def mail_update_draft(
             "--body cannot rewrite a draft that has inline images; recreate the draft instead"
         )
     if subject is not None:
-        if not subject.strip():
+        subject_clean = _plain_subject(subject)
+        if not subject_clean:
             raise ValueError("--subject must be non-empty when provided")
-        _set_header(message, "Subject", subject.strip())
+        _set_header(message, "Subject", subject_clean)
     if to_addrs is not None:
         _set_header(message, "To", ", ".join(to_addrs))
     if cc_addrs is not None:
