@@ -351,6 +351,23 @@ def test_postprocess_does_not_truncate_a_short_body_preview() -> None:
     assert result["items"][0]["body_preview"] == "short preview"
 
 
+def test_postprocess_truncation_boundary_is_exact() -> None:
+    # Review follow-up: every other truncation test used a preview far longer
+    # than 150 chars (or far shorter), so a `>` -> `>=` typo at the cutoff would
+    # not have failed anything. Pin exactly-150 (unchanged, no ellipsis) and
+    # exactly-151 (truncated) directly.
+    at_limit = _items_payload({"subject": "s", "body_preview": "x" * 150})
+    over_limit = _items_payload({"subject": "s", "body_preview": "x" * 151})
+    at_result = _run_payload(
+        "mail.list", {"top": 10}, provider=_items_provider("mail_list", at_limit)
+    )
+    over_result = _run_payload(
+        "mail.list", {"top": 10}, provider=_items_provider("mail_list", over_limit)
+    )
+    assert at_result["items"][0]["body_preview"] == "x" * 150
+    assert over_result["items"][0]["body_preview"] == "x" * 150 + "..."
+
+
 def test_postprocess_fields_narrows_items_to_exactly_the_requested_keys() -> None:
     payload = _items_payload(
         {
