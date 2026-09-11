@@ -195,9 +195,6 @@ rg -n '^[a-z_]+|\[|tags' ~/.config/blumkin/config.toml \
   | sed -E 's/(client_id|client_secret|google_oauth_client_file|.*token.*)\s*=.*/\1 = "(redacted)"/I'
 ```
 
-**Legacy:** a separate directory (`export BLUMKIN_CONFIG_DIR=~/.config/blumkin-google`
-with a flat `config.toml`) still works if you have not migrated yet.
-
 ---
 
 ## C. Install / point the CLI
@@ -219,8 +216,8 @@ invoke `blumkin …`, not `uv run blumkin`.
 ## D. Login and smoke (reads only)
 
 The following commands assume the **named-profile** layout (for example
-`[profiles.personal]`). For a legacy flat config under `BLUMKIN_CONFIG_DIR`,
-omit `--profile` (implicit profile name `default`).
+`[profiles.personal]`); if it is your only configured profile, `--profile` is
+optional.
 
 Always select the Google profile (name or tag) when using named profiles:
 
@@ -228,7 +225,6 @@ Always select the Google profile (name or tag) when using named profiles:
 blumkin --profile personal auth login
 # or: blumkin --profile @personal …
 # or: export BLUMKIN_PROFILE=personal
-# Legacy flat config: blumkin auth login
 ```
 
 Interactive login needs a real TTY and a browser (do this in Terminal.app, not a
@@ -236,14 +232,12 @@ noninteractive agent shell).
 
 Sign in as the **test user** (or Internal org user) you configured. Allow the
 Calendar / Gmail scopes. On success,
-`~/.config/blumkin/profiles/personal/google_token.json` appears (mode `0600`)
-(legacy flat: `google_token.json` in the config dir root).
+`~/.config/blumkin/profiles/personal/google_token.json` appears (mode `0600`).
 
 Check status (safe keys only):
 
 ```bash
 blumkin --profile personal auth status --json
-# Legacy flat: blumkin auth status --json
 # expect provider=google, token/refresh present, access_token_expired false
 ```
 
@@ -252,7 +246,6 @@ Read smokes:
 ```bash
 BLUMKIN_NONINTERACTIVE=1 blumkin --profile personal calendar today --json
 BLUMKIN_NONINTERACTIVE=1 blumkin --profile personal mail inbox --top 5 --json
-# Legacy flat: omit --profile on the same verbs
 ```
 
 Agent / CI shells should set `BLUMKIN_NONINTERACTIVE=1` so Blumkin never opens a
@@ -286,7 +279,7 @@ blumkin --profile personal auth logout
 - [ ] Desktop client JSON mode `0600`, outside any git repo
 - [ ] `config.toml` mode `0600`; directory mode `700`
 - [ ] No `client_secret` in toml, env, chat, or commits
-- [ ] Named profiles (or legacy separate dirs) when Microsoft and Google coexist
+- [ ] Named profiles when Microsoft and Google coexist
 - [ ] Never commit `google_token.json`, MSAL caches, or `.env`
 - [ ] Prefer allowlisted status keys over dumping config/token files
 

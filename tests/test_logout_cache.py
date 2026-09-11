@@ -12,11 +12,13 @@ from blumkin.config import load_config
 
 def test_logout_clears_bound_cache_so_atexit_cannot_rewrite(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    cache_path = tmp_path / "msal_token_cache.json"
-    record_path = tmp_path / "auth_record.json"
+    profile_dir = tmp_path / "profiles" / "default"
+    profile_dir.mkdir(parents=True)
+    cache_path = profile_dir / "msal_token_cache.json"
+    record_path = profile_dir / "auth_record.json"
     cache_path.write_text(json.dumps({"RefreshToken": {"r1": {"secret": "x"}}}))
     record_path.write_text("{}")
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\n')
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "test-client"\n')
 
     cfg = load_config()
     auth.reload_token_cache_from_disk(cfg)

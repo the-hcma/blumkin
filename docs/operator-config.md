@@ -17,8 +17,6 @@ Each file is looked up in two places and their entries **combined**:
 1. `$BLUMKIN_CONFIG_DIR/<file>` (else `~/.config/blumkin/<file>`)
 2. `<config-dir>/profiles/<active-profile>/<file>`
 
-A legacy flat config (no `[profiles.*]`) makes those the same path.
-
 Entries for the same key that **agree** (an address matches; a note fills a blank
 or is identical) are merged into one. Entries that **clash** — a different
 address, or two different non-empty notes for one name — are **not** merged:

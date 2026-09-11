@@ -13,8 +13,8 @@ from blumkin.config import load_config
 from blumkin.mail_signature_state import load_signature_state, record_signature_state
 
 _CONFIG = (
-    'client_id = "abc"\ntenant_id = "example.com"\ndefault_tz = "UTC"\n'
-    '[mail.signature]\nenabled = true\nname = "Ada"\n'
+    '[profiles.default]\nclient_id = "abc"\ntenant_id = "example.com"\ndefault_tz = "UTC"\n'
+    '[profiles.default.mail.signature]\nenabled = true\nname = "Ada"\n'
 )
 
 

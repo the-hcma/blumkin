@@ -148,6 +148,7 @@ def test_auth_refresh_transient_error_exits_other(monkeypatch) -> None:
 def test_auth_status_google_provider_ok(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'client_id = "fake-google-desktop-client.apps.googleusercontent.com"\n'
         'provider = "google"\n'
         'default_tz = "UTC"\n'
@@ -223,6 +224,7 @@ def test_root_profile_flag_selects_tag(tmp_path, monkeypatch) -> None:
 def test_calendar_accept_invalid_tz_exits_usage(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'client_id = "00000000-0000-0000-0000-000000000001"\n'
         'tenant_id = "example.onmicrosoft.com"\n'
     )
@@ -385,7 +387,7 @@ def test_wo1162425_scopes_disabled_allows_calendar_create_teams(
     """Teams-on-event uses Calendars.ReadWrite only; WO gate must not block create."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
-    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
 
     async def _create(**kwargs):
         assert kwargs.get("teams") is True
@@ -423,7 +425,7 @@ def test_wo1162425_scopes_disabled_allows_calendar_create_teams(
 def test_wo1162425_scopes_disabled_blocks_chat_send(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
-    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -436,7 +438,7 @@ def test_wo1162425_scopes_disabled_blocks_chat_send(tmp_path: Path, monkeypatch)
 def test_wo1162425_scopes_disabled_blocks_people_resolve(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_WO1162425_SCOPES", raising=False)
-    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1632,7 +1634,9 @@ def test_calendar_today_auth_transient_error_exits_other(monkeypatch) -> None:
 def test_calendar_today_empty_default_tz_exits_usage(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_TZ", raising=False)
-    (tmp_path / "config.toml").write_text('client_id = "00000000-0000-0000-0000-000000000001"\n')
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "00000000-0000-0000-0000-000000000001"\n'
+    )
     result = CliRunner().invoke(main, ["calendar", "today", "--json"])
     assert result.exit_code == EXIT_USAGE
     combined = (result.output or "") + (result.stderr or "")
@@ -1695,6 +1699,7 @@ def test_calendar_view_auth_required_value_error_exits_auth(monkeypatch) -> None
 def test_doctor_auth_cache_incomplete_exits_auth(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'client_id = "00000000-0000-0000-0000-000000000001"\n'
         'tenant_id = "example.onmicrosoft.com"\n'
     )
@@ -1714,6 +1719,7 @@ def test_wo1162425_gate_does_not_apply_to_a_google_profile(tmp_path, monkeypatch
     from blumkin.cli import main
 
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'provider = "google"\n'
         'default_tz = "UTC"\n'
         'google_oauth_client_file = "%s"\n' % (tmp_path / "client.json")

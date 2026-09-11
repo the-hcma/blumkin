@@ -420,6 +420,7 @@ def test_doctor_reports_method_and_warns_on_stale_metadata(tmp_path, monkeypatch
     monkeypatch.setattr(cli, "metadata_stale", lambda _p: ("0.5.0", "0.6.0"))
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'client_id = "fake-google-desktop-client.apps.googleusercontent.com"\n'
         'provider = "google"\n'
         'default_tz = "UTC"\n'

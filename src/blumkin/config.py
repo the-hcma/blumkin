@@ -12,7 +12,6 @@ from typing import Any
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
-_LEGACY_PROFILE_NAME = "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +23,6 @@ class BlumkinConfig:
     files_scopes: bool
     google_oauth_client_file: Path | None
     graph_timeout_seconds: float
-    legacy_flat: bool
     mail_signature: MailSignatureConfig
     profile: str
     provider: ProviderKind
@@ -59,8 +57,6 @@ class BlumkinConfig:
 
     @property
     def profile_dir(self) -> Path:
-        if self.legacy_flat:
-            return self.config_dir
         return self.config_dir / "profiles" / self.profile
 
     @property
@@ -113,12 +109,12 @@ def list_profiles() -> list[dict[str, Any]]:
     """Return safe summaries of configured profiles (no secrets)."""
     directory = config_dir()
     file_data = _read_toml(directory / "config.toml")
-    tables, default_name, legacy_flat = _profile_tables(file_data)
+    tables, default_name = _profile_tables(file_data)
     marked_default = _configured_default_name(tables, default_name)
     summaries: list[dict[str, Any]] = []
     for name in sorted(tables):
         table = tables[name]
-        profile_dir = directory if legacy_flat else directory / "profiles" / name
+        profile_dir = directory / "profiles" / name
         tags = _tags_from_table(table)
         summaries.append(
             {
@@ -149,7 +145,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
     """
     directory = config_dir()
     file_data = _read_toml(directory / "config.toml")
-    tables, default_name, legacy_flat = _profile_tables(file_data)
+    tables, default_name = _profile_tables(file_data)
     selected = _resolve_profile_name(
         tables,
         default_name=default_name,
@@ -170,7 +166,6 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         files_scopes=_files_scopes_enabled(table),
         google_oauth_client_file=google_oauth_client_file,
         graph_timeout_seconds=_graph_timeout_seconds(table),
-        legacy_flat=legacy_flat,
         mail_signature=_mail_signature_config(table),
         profile=selected,
         provider=_provider_kind(table),
@@ -185,7 +180,6 @@ def set_profile_email(
     *,
     profile: str,
     email: str,
-    legacy_flat: bool,
     overwrite: bool = False,
 ) -> bool:
     """Write ``email`` into one profile table.
@@ -216,18 +210,14 @@ def set_profile_email(
         lines = config_path.read_text().splitlines(keepends=True)
     except OSError:
         return False
-    header = None if legacy_flat else profile
-    # Legacy flat config: top-level keys, i.e. everything before the first table.
-    start = 0
-    if header is not None:
-        start = next(
-            (i + 1 for i, line in enumerate(lines) if _toml_profile_header(line) == header),
-            -1,
-        )
-        if start < 0:
-            return False
-    # Walk this section only: stop at the next table header (which for the
-    # non-legacy layout also excludes the profile's own [profiles.x.mail.signature]).
+    start = next(
+        (i + 1 for i, line in enumerate(lines) if _toml_profile_header(line) == profile),
+        -1,
+    )
+    if start < 0:
+        return False
+    # Walk this section only: stop at the next table header (which also excludes
+    # the profile's own [profiles.x.mail.signature]).
     insert_at = start
     for index in range(start, len(lines)):
         stripped = lines[index].strip()
@@ -362,8 +352,8 @@ def _optional_str(value: Any) -> str | None:
 
 def _profile_tables(
     file_data: dict[str, Any],
-) -> tuple[dict[str, dict[str, Any]], str | None, bool]:
-    """Return (name → table, default_profile name, legacy_flat)."""
+) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """Return (name → table, default_profile name)."""
     if "profiles" in file_data:
         raw_profiles = file_data["profiles"]
         if not isinstance(raw_profiles, dict):
@@ -413,25 +403,28 @@ def _profile_tables(
             raise ProviderConfigError(
                 f"default_profile must be a string in config.toml, got {type(default_raw).__name__}"
             )
-        return tables, default_name, False
+        return tables, default_name
 
     # Missing / empty config.toml: no profiles (do not invent a phantom "default").
     if not file_data:
-        return {}, None, False
+        return {}, None
 
-    # Legacy: flat top-level keys → one implicit profile named "default".
-    legacy_table = {
-        key: value for key, value in file_data.items() if key not in {"default_profile", "profiles"}
-    }
-    if not legacy_table:
-        # default_profile alone must not invent a phantom empty "default" profile.
-        if "default_profile" in file_data:
-            raise ProviderConfigError(
-                "default_profile set but no profiles configured; "
-                "add [profiles.<name>] entries or flat top-level keys"
-            )
-        return {}, None, False
-    return {_LEGACY_PROFILE_NAME: legacy_table}, _LEGACY_PROFILE_NAME, True
+    # default_profile alone must not invent a phantom empty "default" profile.
+    if set(file_data) <= {"default_profile"}:
+        raise ProviderConfigError(
+            "default_profile set but no profiles configured; add [profiles.<name>] entries"
+        )
+
+    # Flat top-level keys with no [profiles.*] table are no longer a valid layout -
+    # config.toml used to fold them into one implicit "default" profile, but that made
+    # every consumer (profile_dir, set_profile_email, ...) carry a legacy_flat branch
+    # for a shape only ever seen on first-time setup. See README.md for the profile
+    # layout this now requires.
+    stray = sorted(key for key in file_data if key != "default_profile")
+    raise ProviderConfigError(
+        "config.toml must use [profiles.<name>]; flat top-level keys "
+        f"({', '.join(stray)}) are no longer supported - see README.md"
+    )
 
 
 def _provider_kind(file_data: dict[str, Any]) -> ProviderKind:

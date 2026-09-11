@@ -21,9 +21,11 @@ def test_status_reads_access_token_expiry(tmp_path: Path, monkeypatch) -> None:
         },
         "RefreshToken": {"r1": {"client_id": "test-client"}},
     }
-    (tmp_path / "msal_token_cache.json").write_text(json.dumps(cache))
-    (tmp_path / "auth_record.json").write_text("{}")
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\n')
+    profile_dir = tmp_path / "profiles" / "default"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "msal_token_cache.json").write_text(json.dumps(cache))
+    (profile_dir / "auth_record.json").write_text("{}")
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "test-client"\n')
     payload = status_dict()
     assert payload["refresh_token_present"] is True
     assert payload["access_token_expired"] is False

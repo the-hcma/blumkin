@@ -18,7 +18,7 @@ from blumkin.providers.kind import ProviderConfigError
 def test_load_config_from_toml(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
-        'client_id = "abc-123"\ntenant_id = "contoso.com"\ndefault_tz = "UTC"\n'
+        '[profiles.default]\nclient_id = "abc-123"\ntenant_id = "contoso.com"\ndefault_tz = "UTC"\n'
     )
     cfg = load_config()
     assert cfg.client_id == "abc-123"
@@ -26,9 +26,8 @@ def test_load_config_from_toml(tmp_path: Path, monkeypatch) -> None:
     assert cfg.default_tz == "UTC"
     assert cfg.config_dir == tmp_path
     assert cfg.profile == "default"
-    assert cfg.legacy_flat is True
     assert cfg.tags == ()
-    assert cfg.token_cache_path == tmp_path / "msal_token_cache.json"
+    assert cfg.token_cache_path == tmp_path / "profiles" / "default" / "msal_token_cache.json"
     assert cfg.wo1162425_scopes is False
     assert cfg.google_oauth_client_file is None
 
@@ -39,7 +38,8 @@ def test_credential_env_vars_do_not_override_toml(tmp_path: Path, monkeypatch) -
     monkeypatch.setenv("BLUMKIN_TENANT_ID", "env.tenant")
     monkeypatch.setenv("BLUMKIN_TZ", "Europe/London")
     (tmp_path / "config.toml").write_text(
-        'client_id = "from-file"\ntenant_id = "file.tenant"\ndefault_tz = "UTC"\n'
+        '[profiles.default]\nclient_id = "from-file"\n'
+        'tenant_id = "file.tenant"\ndefault_tz = "UTC"\n'
     )
     cfg = load_config()
     assert cfg.client_id == "from-file"
@@ -49,7 +49,7 @@ def test_credential_env_vars_do_not_override_toml(tmp_path: Path, monkeypatch) -
 
 def test_missing_tenant_and_tz_have_no_code_defaults(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
     cfg = load_config()
     assert cfg.tenant_id == ""
     assert cfg.default_tz == ""
@@ -64,12 +64,22 @@ def test_google_oauth_client_file_loads_client_id(tmp_path: Path, monkeypatch) -
         '"client_secret": "not-a-secret"}}'
     )
     (tmp_path / "config.toml").write_text(
-        f'provider = "google"\ngoogle_oauth_client_file = "{oauth}"\ndefault_tz = "UTC"\n'
+        "[profiles.default]\n"
+        'provider = "google"\n'
+        f'google_oauth_client_file = "{oauth}"\n'
+        'default_tz = "UTC"\n'
     )
     cfg = load_config()
     assert cfg.provider.value == "google"
     assert cfg.client_id == "gid.apps.googleusercontent.com"
     assert cfg.google_oauth_client_file == oauth
+
+
+def test_flat_config_without_profiles_table_raises(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('client_id = "abc"\ntenant_id = "contoso.com"\n')
+    with pytest.raises(ProviderConfigError, match=r"must use \[profiles\.<name>\]"):
+        load_config()
 
 
 def _write_multi_profile(tmp_path: Path, oauth: Path | None = None) -> None:
@@ -109,7 +119,6 @@ def test_multi_profile_default_and_token_paths(tmp_path: Path, monkeypatch) -> N
     _write_multi_profile(tmp_path, oauth)
     cfg = load_config()
     assert cfg.profile == "work"
-    assert cfg.legacy_flat is False
     assert cfg.provider.value == "microsoft"
     assert cfg.client_id == "ms-client"
     assert cfg.mail_signature.enabled is True

@@ -31,35 +31,43 @@ def test_get_provider_returns_microsoft() -> None:
 
 def test_load_config_provider_default(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
     assert load_config().provider is ProviderKind.MICROSOFT
 
 
 def test_load_config_provider_google(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "abc"\nprovider = "google"\n')
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\nprovider = "google"\n'
+    )
     cfg = load_config()
     assert cfg.provider is ProviderKind.GOOGLE
-    assert cfg.google_token_path == tmp_path / "google_token.json"
+    assert cfg.google_token_path == tmp_path / "profiles" / "default" / "google_token.json"
 
 
 def test_load_config_provider_ignores_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "abc"\nprovider = "microsoft"\n')
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\nprovider = "microsoft"\n'
+    )
     monkeypatch.setenv("BLUMKIN_PROVIDER", "google")
     assert load_config().provider is ProviderKind.MICROSOFT
 
 
 def test_load_config_provider_non_string_raises(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "abc"\nprovider = true\n')
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\nprovider = true\n'
+    )
     with pytest.raises(ProviderConfigError, match="must be a string"):
         load_config()
 
 
 def test_load_config_provider_toml(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "abc"\nprovider = "microsoft"\n')
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\nprovider = "microsoft"\n'
+    )
     assert load_config().provider is ProviderKind.MICROSOFT
 
 
@@ -117,7 +125,6 @@ def _cfg(*, provider: ProviderKind = ProviderKind.MICROSOFT) -> BlumkinConfig:
         files_scopes=False,
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
-        legacy_flat=True,
         mail_signature=MailSignatureConfig(),
         profile="default",
         provider=provider,

@@ -23,9 +23,12 @@ def test_create_credential_falls_back_to_authenticate_when_get_token_fails(
 ) -> None:
     """Scope/cache miss on get_token must fall through to interactive authenticate()."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
-    (tmp_path / "msal_token_cache.json").write_text("{}")
-    (tmp_path / "auth_record.json").write_text("record-bytes")
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntenant_id = "contoso.com"\n'
+    )
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("record-bytes")
 
     fake_record = MagicMock(name="AuthenticationRecord")
     fresh_record = MagicMock(name="FreshAuthenticationRecord")
@@ -53,9 +56,12 @@ def test_create_credential_falls_back_when_get_token_raises_oserror(
 ) -> None:
     """Transport OSError from get_token must still fall through to authenticate()."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
-    (tmp_path / "msal_token_cache.json").write_text("{}")
-    (tmp_path / "auth_record.json").write_text("record-bytes")
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntenant_id = "contoso.com"\n'
+    )
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("record-bytes")
 
     fake_record = MagicMock(name="AuthenticationRecord")
     fresh_record = MagicMock(name="FreshAuthenticationRecord")
@@ -79,10 +85,13 @@ def test_create_credential_noninteractive_invalid_grant_is_auth_required(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("BLUMKIN_NONINTERACTIVE", "1")
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
-    (tmp_path / "msal_token_cache.json").write_text("{}")
-    (tmp_path / "auth_record.json").write_text("record-bytes")
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntenant_id = "contoso.com"\n'
+    )
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("record-bytes")
 
     fake_record = MagicMock(name="AuthenticationRecord")
     fake_cred = MagicMock(name="InteractiveBrowserCredential")
@@ -101,10 +110,13 @@ def test_create_credential_noninteractive_server_error_is_transient(
 ) -> None:
     """AAD's standard OAuth2 server_error/temporarily_unavailable is not a bad grant."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("BLUMKIN_NONINTERACTIVE", "1")
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
-    (tmp_path / "msal_token_cache.json").write_text("{}")
-    (tmp_path / "auth_record.json").write_text("record-bytes")
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntenant_id = "contoso.com"\n'
+    )
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("record-bytes")
 
     fake_record = MagicMock(name="AuthenticationRecord")
     fake_cred = MagicMock(name="InteractiveBrowserCredential")
@@ -122,10 +134,13 @@ def test_create_credential_noninteractive_skips_authenticate_on_get_token_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("BLUMKIN_NONINTERACTIVE", "1")
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
-    (tmp_path / "msal_token_cache.json").write_text("{}")
-    (tmp_path / "auth_record.json").write_text("record-bytes")
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntenant_id = "contoso.com"\n'
+    )
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("record-bytes")
 
     fake_record = MagicMock(name="AuthenticationRecord")
     fake_cred = MagicMock(name="InteractiveBrowserCredential")
@@ -148,10 +163,13 @@ def test_create_credential_noninteractive_transient_get_token_error(
 ) -> None:
     """A network OSError from get_token is not a bad grant - it's retryable (issue #133)."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("BLUMKIN_NONINTERACTIVE", "1")
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
-    (tmp_path / "msal_token_cache.json").write_text("{}")
-    (tmp_path / "auth_record.json").write_text("record-bytes")
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntenant_id = "contoso.com"\n'
+    )
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("record-bytes")
 
     fake_record = MagicMock(name="AuthenticationRecord")
     fake_cred = MagicMock(name="InteractiveBrowserCredential")
@@ -172,9 +190,12 @@ def test_create_credential_reraises_oserror_from_save_token_cache(
 ) -> None:
     """Secret-path write failures must not be treated as a stale auth record."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
-    (tmp_path / "msal_token_cache.json").write_text("{}")
-    (tmp_path / "auth_record.json").write_text("record-bytes")
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntenant_id = "contoso.com"\n'
+    )
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("record-bytes")
 
     fake_record = MagicMock(name="AuthenticationRecord")
     fake_cred = MagicMock(name="InteractiveBrowserCredential")
@@ -199,9 +220,12 @@ def test_create_credential_uses_cached_auth_record(
 ) -> None:
     """Silent path: with AuthenticationRecord + cache, no interactive authenticate()."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\ntenant_id = "contoso.com"\n')
-    (tmp_path / "msal_token_cache.json").write_text("{}")
-    (tmp_path / "auth_record.json").write_text("record-bytes")
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntenant_id = "contoso.com"\n'
+    )
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("record-bytes")
 
     fake_record = MagicMock(name="AuthenticationRecord")
     fake_cred = MagicMock(name="InteractiveBrowserCredential")
@@ -231,6 +255,7 @@ def test_status_dict_expired_access_token_still_reports_granted_scopes(
     reason to report a false "no gap".
     """
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
     expired = int((datetime.now(UTC) - timedelta(minutes=5)).timestamp())
     cache = {
         "AccessToken": {
@@ -242,9 +267,9 @@ def test_status_dict_expired_access_token_still_reports_granted_scopes(
         },
         "RefreshToken": {"r1": {"client_id": "test-client"}},
     }
-    (tmp_path / "msal_token_cache.json").write_text(json.dumps(cache))
-    (tmp_path / "auth_record.json").write_text("{}")
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\n')
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text(json.dumps(cache))
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("{}")
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "test-client"\n')
     payload = status_dict()
     assert payload["granted_scopes"] == ["User.Read"]
     assert "User.Read" not in payload["missing_scopes"]
@@ -254,7 +279,8 @@ def test_status_dict_missing_scopes_empty_without_a_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\n')
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "test-client"\n')
     payload = status_dict()
     assert payload["granted_scopes"] == []
     assert payload["missing_scopes"] == []
@@ -264,6 +290,7 @@ def test_status_dict_reports_granted_and_missing_scopes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
     cache = {
         "AccessToken": {
             "entry1": {
@@ -289,9 +316,9 @@ def test_status_dict_reports_granted_and_missing_scopes(
         },
         "RefreshToken": {"r1": {"client_id": "test-client"}},
     }
-    (tmp_path / "msal_token_cache.json").write_text(json.dumps(cache))
-    (tmp_path / "auth_record.json").write_text("{}")
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\n')
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text(json.dumps(cache))
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("{}")
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "test-client"\n')
     payload = status_dict()
     assert payload["granted_scopes"] == ["User.Read"]
     assert "Calendars.ReadWrite" in payload["missing_scopes"]
@@ -303,14 +330,15 @@ def test_status_reports_expired_access_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
     expired = int((datetime.now(UTC) - timedelta(minutes=5)).timestamp())
     cache = {
         "AccessToken": {"entry1": {"expires_on": str(expired), "target": "User.Read"}},
         "RefreshToken": {"r1": {"client_id": "test-client"}},
     }
-    (tmp_path / "msal_token_cache.json").write_text(json.dumps(cache))
-    (tmp_path / "auth_record.json").write_text("{}")
-    (tmp_path / "config.toml").write_text('client_id = "test-client"\n')
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text(json.dumps(cache))
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("{}")
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "test-client"\n')
     payload = status_dict()
     assert payload["access_token_expired"] is True
     assert payload["refresh_token_present"] is True

@@ -92,8 +92,8 @@ def load_context(config: BlumkinConfig) -> list[Contact]:
 
 def locate_operator_files(config: BlumkinConfig, filename: str) -> list[Path]:
     """Existing operator-config files for ``filename``, base (config dir) first,
-    then the active profile's dir. De-duplicated - a legacy-flat config makes the
-    two directories the same path."""
+    then the active profile's dir. De-duplicated in case both resolve to the same
+    path."""
     found: list[Path] = []
     for directory in (config.config_dir, config.profile_dir):
         candidate = directory / filename
