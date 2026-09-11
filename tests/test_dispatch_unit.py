@@ -61,6 +61,32 @@ def test_mail_list_since_is_tz_aware_only_when_present() -> None:
     assert "until" not in kwargs
 
 
+def test_mail_draft_attach_is_a_list_of_whole_paths_not_characters() -> None:
+    # Regression for issue #250: an MCP client may send a single path as a bare
+    # string rather than a one-element array. Without `multiple: True` on the
+    # `--attach` spec, `_coerce` passed that string straight through, and
+    # `mail_draft` iterated it character by character.
+    prov = _provider("mail_draft")
+    _run(
+        "mail.draft",
+        {"to": ["a@x.com"], "subject": "s", "attach": "/tmp/report.pdf"},
+        provider=prov,
+    )
+    kwargs = prov.mail_draft.await_args.kwargs
+    assert kwargs["attach"] == ["/tmp/report.pdf"]
+
+
+def test_mail_update_draft_attach_is_a_list_of_whole_paths_not_characters() -> None:
+    prov = _provider("mail_update_draft")
+    _run(
+        "mail.update-draft",
+        {"id": "m1", "attach": "/tmp/report.pdf"},
+        provider=prov,
+    )
+    kwargs = prov.mail_update_draft.await_args.kwargs
+    assert kwargs["attach"] == ["/tmp/report.pdf"]
+
+
 def test_freebusy_and_suggest_coercions() -> None:
     prov = _provider("calendar_suggest")
     _run(
