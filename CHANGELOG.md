@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.0.0...blumkin-v1.1.0) (2026-09-11)
+
+
+### Features
+
+* **dispatch:** add --fields selector and default body_preview cap ([#259](https://github.com/the-hcma/blumkin/issues/259)) ([ffcf16d](https://github.com/the-hcma/blumkin/commit/ffcf16d9319a0006bba2b2d38abda70ecc15082f))
+* **mail:** add client_appends_signature manual override ([#258](https://github.com/the-hcma/blumkin/issues/258)) ([e20520e](https://github.com/the-hcma/blumkin/commit/e20520e6c432d559d819301032eeccc23a17ed50))
+
+
+### Bug Fixes
+
+* **mail:** mark --attach repeatable so MCP clients get an array schema ([#251](https://github.com/the-hcma/blumkin/issues/251)) ([086b493](https://github.com/the-hcma/blumkin/commit/086b493a3611b178710fa55209195cd3a3de55f9))
+* **mail:** un-escape HTML entities in --subject ([#252](https://github.com/the-hcma/blumkin/issues/252)) ([048f406](https://github.com/the-hcma/blumkin/commit/048f406d66af6426e8fe172abbc0b3804d6c554a))
+
 ## [1.0.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.7.0...blumkin-v1.0.0) (2026-09-11)
 
 
