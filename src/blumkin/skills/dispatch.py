@@ -125,7 +125,13 @@ def _as_list(value: Any, *, split_commas: bool = True) -> list[str]:
         return []
     parts = [value] if isinstance(value, str) else [str(part) for part in value]
     if not split_commas:
-        return [part.strip() for part in parts if part.strip()]
+        # Do not drop an empty/whitespace-only element: for --attach (the one
+        # `multiple` arg that reaches this branch), a blank path must still reach
+        # `_read_attachment` and fail loudly (MailAttachError), not be silently
+        # treated as "no attachment" - an empty shell variable in
+        # `--attach "$maybe_unset"` should error, not silently send with nothing
+        # attached.
+        return [part.strip() for part in parts]
     result: list[str] = []
     for part in parts:
         result.extend(piece.strip() for piece in part.split(",") if piece.strip())

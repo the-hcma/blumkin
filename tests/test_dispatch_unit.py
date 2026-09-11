@@ -108,6 +108,22 @@ def test_mail_draft_attach_does_not_split_a_comma_in_the_filename() -> None:
     assert kwargs["attach"] == ["/tmp/Q3, final.pdf"]
 
 
+def test_mail_draft_attach_preserves_an_empty_element_for_the_loud_failure() -> None:
+    # Review follow-up: an empty/whitespace-only --attach element must reach
+    # mail_draft as an empty string, not be silently dropped - the provider's
+    # _read_attachment(""), not dispatch, is what turns it into a loud
+    # MailAttachError ("not a directory"). Silently dropping it here would send
+    # the message with no attachment and exit 0 instead of failing.
+    prov = _provider("mail_draft")
+    _run(
+        "mail.draft",
+        {"to": ["a@x.com"], "subject": "s", "attach": [""]},
+        provider=prov,
+    )
+    kwargs = prov.mail_draft.await_args.kwargs
+    assert kwargs["attach"] == [""]
+
+
 def test_mail_draft_attach_list_of_paths_is_untouched() -> None:
     # A schema-following MCP client sends an array, not a string - each element is
     # already a whole path and must not be re-split on commas either.
@@ -462,8 +478,20 @@ def test_postprocess_applies_to_all_six_items_skills(
 
 
 def test_postprocess_is_a_noop_for_skills_outside_items_skills() -> None:
-    result = _run_payload("calendar.today", {}, provider=_provider("calendar_today"))
-    assert result == {"ok": True}
+    # A payload with no "items" key can't distinguish "skipped because
+    # calendar.today isn't in _ITEMS_SKILLS" from "skipped because there's no
+    # items list regardless of membership" - use an items-shaped payload (with a
+    # long body_preview and a --fields request) so a typo'd or deleted membership
+    # check would make this test fail.
+    long_preview = "w" * 200
+    payload = _items_payload({"subject": "s", "body_preview": long_preview})
+    result = _run_payload(
+        "calendar.today",
+        {"fields": ["subject"]},
+        provider=_items_provider("calendar_today", payload),
+    )
+    assert result == payload
+    assert result["items"][0]["body_preview"] == long_preview
 
 
 def test_postprocess_truncation_and_fields_compose() -> None:
