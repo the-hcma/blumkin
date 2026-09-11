@@ -636,6 +636,32 @@ def test_mail_forward_unescapes_html_entities_in_the_source_subject(tmp_path: Pa
     assert sent["Subject"] == "Fwd: Q3 & Q4"
 
 
+def test_mail_forward_strips_crlf_from_a_malicious_source_subject(tmp_path: Path) -> None:
+    # Review follow-up on #252 (security): the source subject is from a message a
+    # third party wrote. html.unescape resolves numeric character references too,
+    # so &#13;/&#10; decode to a real CR/LF - stripped only at the ends, an interior
+    # pair would reach the Subject header: a crash under the default email policy,
+    # or on a layer that tolerates it, MIME header injection (a forged Bcc line).
+    service = _service(
+        message_result=_full_message(
+            subject="Hi&#13;&#10;Bcc: attacker@example.com", sender="Ada <ada@example.com>"
+        ),
+        create_result={"id": "d-f", "message": {"threadId": "thread-9"}},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_forward(
+                message_id="m-1", to="dana@example.com", body="fyi"
+            )
+        )
+    assert payload["draft"]["subject"] == "Fwd: HiBcc: attacker@example.com"
+    sent = _sent_message(service, "create")
+    assert sent["Subject"] == "Fwd: HiBcc: attacker@example.com"
+    assert "\r" not in sent["Subject"]
+    assert "\n" not in sent["Subject"]
+    assert sent["Bcc"] is None
+
+
 def test_mail_forward_requires_to(tmp_path: Path) -> None:
     with _patched(_service()), pytest.raises(ValueError, match="--to is required"):
         asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_forward(message_id="m-1", to="  "))

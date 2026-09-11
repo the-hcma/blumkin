@@ -2058,6 +2058,7 @@ def _parse_addresses(
 
 
 _HTML_ENTITY_RE = re.compile(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def _plain_subject(subject: str) -> str:
@@ -2078,13 +2079,23 @@ def _plain_subject(subject: str) -> str:
     and is not recoverable here either way - this only trades the rare former
     for fixing the common latter.
 
+    ``html.unescape`` also resolves numeric character references, including
+    ``&#13;``/``&#10;`` (CR/LF), which this function is also fed a
+    third-party message's subject through for `mail reply` / `mail forward`
+    (:func:`blumkin.providers.google.mail_writes.mail_reply` /
+    ``mail_forward``) - a value blumkin never composed. Stripping only the
+    ends would leave an interior CR/LF pair, which the ``email`` package's
+    header assignment rejects outright, or - on a layer that does not reject
+    it - is MIME header injection. Every control character is dropped from
+    the whole string, not just the ends.
+
     Unescaping before stripping (rather than after) means an entity that
     decodes to whitespace at either end - or a subject that is nothing but
     entities, e.g. ``&nbsp;`` - collapses to ``""`` here, where the caller can
     still catch it as empty.
     """
     unescaped = _HTML_ENTITY_RE.sub(lambda m: html_lib.unescape(m.group(0)), subject)
-    return unescaped.strip()
+    return _CONTROL_CHAR_RE.sub("", unescaped).strip()
 
 
 def _apply_font_preference(html_body: str, config: BlumkinConfig | None) -> str:

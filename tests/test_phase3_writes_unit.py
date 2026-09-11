@@ -690,6 +690,35 @@ def test_mail_draft_rejects_a_subject_that_is_only_entities(monkeypatch) -> None
         asyncio.run(mail_draft(to="a@b.com", subject="&nbsp;", body="hi", body_type="text"))
 
 
+def test_mail_draft_strips_crlf_produced_by_numeric_entities(monkeypatch) -> None:
+    # Review follow-up on #252 (security): html.unescape resolves numeric character
+    # references too, including &#13;/&#10; (CR/LF). A subject was only stripped at
+    # its ends, so an interior pair would have survived into the Subject header -
+    # either a crash (the email package rejects CR/LF in a header value) or, on a
+    # layer that tolerates it, MIME header injection.
+    draft = SimpleNamespace(id="draft-1", subject="HiBcc: attacker@example.com")
+    client = MagicMock()
+    client.me.messages.post = AsyncMock(return_value=draft)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    asyncio.run(
+        mail_draft(
+            to="a@b.com",
+            subject="Hi&#13;&#10;Bcc: attacker@example.com",
+            body="hi",
+            body_type="text",
+        )
+    )
+    post_await = client.me.messages.post.await_args
+    assert post_await is not None
+    assert post_await.args[0].subject == "HiBcc: attacker@example.com"
+    assert "\r" not in post_await.args[0].subject
+    assert "\n" not in post_await.args[0].subject
+
+
 def test_mail_draft_html_and_body_file(tmp_path, monkeypatch) -> None:
     draft = SimpleNamespace(id="draft-html", subject="Html")
     client = MagicMock()
