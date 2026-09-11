@@ -80,6 +80,17 @@ def test_mail_signature_not_suppressed_without_a_probe(tmp_path: Path, monkeypat
     assert payload["outlook_signature_detected"] is None
 
 
+def test_mail_signature_reports_suppressed_via_client_appends_signature(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "config.toml").write_text(_CONFIG + "client_appends_signature = true\n")
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    # No probe has ever run - suppression comes only from the manual override.
+    payload = json.loads(CliRunner().invoke(main, ["mail", "signature", "--json"]).stdout)
+    assert payload["suppressed"] is True
+    assert payload["outlook_signature_detected"] is None
+
+
 def _doctor_provider(probe_result: bool | None) -> MagicMock:
     provider = MagicMock()
     provider.auth_status.return_value = {
@@ -106,6 +117,25 @@ def test_doctor_reports_the_signature_suppression(tmp_path: Path, monkeypatch) -
         "suppressed": True,
     }
     assert any("double signature" in w for w in payload["warnings"])
+
+
+def test_doctor_reports_suppression_via_client_appends_signature(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "config.toml").write_text(_CONFIG + "client_appends_signature = true\n")
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    # The probe itself reports no detection (None) - suppression is manual only.
+    with patch("blumkin.cli._workspace", return_value=_doctor_provider(None)):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    payload = json.loads(result.stdout)
+    assert payload["mail_signature"] == {
+        "configured": True,
+        "outlook_signature_detected": None,
+        "suppressed": True,
+    }
+    # The probe-discovery warning is specifically about the probe, not the manual
+    # override, so it should not fire here.
+    assert not any("double signature" in w for w in payload["warnings"])
 
 
 def test_doctor_re_probe_clears_a_stale_positive(tmp_path: Path, monkeypatch) -> None:

@@ -74,6 +74,15 @@ class MailSignatureConfig:
     """Optional mail signature rendered into draft/reply/forward bodies."""
 
     affiliation: str = ""
+    # Manual override: the client itself (Outlook when the automatic probe cannot
+    # run yet, Gmail's own send-as signature, or any client not covered by
+    # providers.microsoft_mail_probe) already appends a signature, so blumkin's own
+    # [mail.signature] must stand down unconditionally for this profile. The probe
+    # in providers/microsoft_mail_probe.py only covers Outlook's *new message*
+    # signature on a Microsoft profile that has already run `auth login`; this
+    # flag covers every other case (Google, reply/forward before issue #231 lands,
+    # or before the probe has ever run) - see issue #256.
+    client_appends_signature: bool = False
     enabled: bool = False
     html_template: str | None = None
     name: str = ""
@@ -323,9 +332,13 @@ def _mail_signature_config(file_data: dict[str, Any]) -> MailSignatureConfig:
     raw = mail.get("signature")
     if not isinstance(raw, dict):
         return MailSignatureConfig()
+    client_appends_signature = _coerce_bool(raw.get("client_appends_signature"))
     enabled = _coerce_bool(raw.get("enabled"))
     return MailSignatureConfig(
         affiliation=str(raw.get("affiliation") or "").strip(),
+        client_appends_signature=(
+            bool(client_appends_signature) if client_appends_signature is not None else False
+        ),
         enabled=bool(enabled) if enabled is not None else False,
         html_template=_optional_str(raw.get("html_template")),
         name=str(raw.get("name") or "").strip(),

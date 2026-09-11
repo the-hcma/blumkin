@@ -567,7 +567,9 @@ v1 is stdio only. A loopback HTTP transport is a later option if a host needs it
 - Inventing colored HTML mail signatures per draft (use `[mail.signature]` /
   `--no-signature` instead). If `mail signature --json` shows `suppressed: true`,
   the account's Outlook adds its own signature and blumkin is deliberately not
-  appending `[mail.signature]` — do not force it back in.
+  appending `[mail.signature]` — do not force it back in. The same field also
+  goes `true` for profiles with `client_appends_signature = true` set manually
+  (Google, or Microsoft before the probe has run) — treat both the same way.
 - Hand-writing HTML for a mail body — `mail draft` / `reply` / `forward` take
   Markdown by default and render it to HTML; pass `--body-type text` only when a
   literal plain-text body is wanted
