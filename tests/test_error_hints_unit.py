@@ -60,6 +60,7 @@ def test_missing_yes_hint_reason_is_per_command(tmp_path, monkeypatch) -> None:
     """meeting transcription --enable is a write gate, not a notify gate."""
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'client_id = "00000000-0000-0000-0000-000000000001"\n'
         'tenant_id = "example.onmicrosoft.com"\ndefault_tz = "UTC"\n'
         "wo1162425_scopes = true\n"
@@ -86,6 +87,7 @@ def test_invalid_timezone_hint_points_at_iana_names() -> None:
 def test_wo1162425_gate_hint_explains_how_to_enable(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'client_id = "00000000-0000-0000-0000-000000000001"\n'
         'tenant_id = "example.onmicrosoft.com"\ndefault_tz = "UTC"\n'
     )
@@ -99,6 +101,7 @@ def test_wo1162425_gate_hint_explains_how_to_enable(tmp_path, monkeypatch) -> No
 def test_mail_attachments_missing_id_hint(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'client_id = "00000000-0000-0000-0000-000000000001"\n'
         'tenant_id = "example.onmicrosoft.com"\ndefault_tz = "UTC"\n'
     )

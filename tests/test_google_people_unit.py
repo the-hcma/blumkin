@@ -132,7 +132,6 @@ def _cfg(config_dir: Path, *, scopes: tuple[str, ...] = (_DIRECTORY_SCOPE,)) -> 
         files_scopes=False,
         google_oauth_client_file=oauth,
         graph_timeout_seconds=60.0,
-        legacy_flat=True,
         mail_signature=MailSignatureConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
@@ -152,7 +151,9 @@ def _patched(service: MagicMock):
 
 def _write_token(config_dir: Path, *scopes: str) -> None:
     """Persist the granted-scope set the way google_auth does."""
-    (config_dir / "google_token.json").write_text(json.dumps({"scopes": list(scopes)}))
+    profile_dir = config_dir / "profiles" / "default"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "google_token.json").write_text(json.dumps({"scopes": list(scopes)}))
 
 
 def _service(

@@ -15,7 +15,7 @@ from blumkin.skills.mail import append_mail_signature, mail_draft, render_mail_s
 
 def test_mail_signature_defaults_disabled(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "abc"\n')
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
     cfg = load_config()
     assert cfg.mail_signature.enabled is False
     assert cfg.mail_signature.name == ""
@@ -26,8 +26,9 @@ def test_mail_signature_parses_nested_table(tmp_path: Path, monkeypatch) -> None
     (tmp_path / "config.toml").write_text(
         "\n".join(
             [
+                "[profiles.default]",
                 'client_id = "abc"',
-                "[mail.signature]",
+                "[profiles.default.mail.signature]",
                 "enabled = true",
                 'name = "Ada Example"',
                 'affiliation = "Example Org"',
@@ -77,7 +78,6 @@ def test_append_mail_signature_html_separator_and_empty_body() -> None:
         files_scopes=False,
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
-        legacy_flat=True,
         mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
         profile="default",
         provider=ProviderKind.MICROSOFT,
@@ -96,7 +96,8 @@ def test_append_mail_signature_html_separator_and_empty_body() -> None:
 def test_append_mail_signature_respects_opt_out(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
-        'client_id = "abc"\n[mail.signature]\nenabled = true\nname = "Ada"\n'
+        '[profiles.default]\nclient_id = "abc"\n'
+        '[profiles.default.mail.signature]\nenabled = true\nname = "Ada"\n'
     )
     cfg = load_config()
     assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello\n\nAda"
@@ -107,7 +108,9 @@ def test_append_mail_signature_respects_opt_out(tmp_path: Path, monkeypatch) -> 
 
 def test_append_mail_signature_disabled_is_noop(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "abc"\n[mail.signature]\nname = "Ada"\n')
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n[profiles.default.mail.signature]\nname = "Ada"\n'
+    )
     cfg = load_config()
     assert cfg.mail_signature.enabled is False
     assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello"
@@ -118,7 +121,8 @@ def test_append_mail_signature_stands_down_when_outlook_auto_signs(
 ) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
-        'client_id = "abc"\n[mail.signature]\nenabled = true\nname = "Ada"\n'
+        '[profiles.default]\nclient_id = "abc"\n'
+        '[profiles.default.mail.signature]\nenabled = true\nname = "Ada"\n'
     )
     cfg = load_config()
     assert append_mail_signature("Hello", body_type="text", config=cfg) == "Hello\n\nAda"
@@ -142,7 +146,6 @@ def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
         files_scopes=False,
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
-        legacy_flat=True,
         mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
         profile="default",
         provider=ProviderKind.MICROSOFT,

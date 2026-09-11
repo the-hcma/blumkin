@@ -158,8 +158,9 @@ google_oauth_client_file = "~/path/to/google-oauth-desktop-client.json"
 tags = ["@personal", "personal", "google", "gmail"]
 ```
 
-Legacy flat keys (no `[profiles.*]`) still load as one implicit profile named
-`default`, with token files in the config dir root.
+`config.toml` must use `[profiles.<name>]`; flat top-level keys are not
+supported (a config with none configures zero profiles rather than an implicit
+one).
 
 Set `tenant_id`, `default_tz`, and `provider` in the profile table (there are no
 org-specific code defaults). `provider` defaults to `microsoft` when omitted.
@@ -167,8 +168,7 @@ org-specific code defaults). `provider` defaults to `microsoft` when omitted.
 Interactive browser auth is public-client only (`client_id`; plus `tenant_id` for
 Microsoft). Do not set a client secret for these flows.
 
-Microsoft token cache files (under `profiles/<name>/`, or config dir root for
-legacy):
+Microsoft token cache files (under `profiles/<name>/`):
 
 - `msal_token_cache.json`
 - `auth_record.json`

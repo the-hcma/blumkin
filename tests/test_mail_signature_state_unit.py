@@ -15,7 +15,7 @@ from blumkin.providers.kind import ProviderKind
 
 
 def _cfg(tmp_path: Path) -> BlumkinConfig:
-    return BlumkinConfig(
+    cfg = BlumkinConfig(
         client_id="x",
         config_dir=tmp_path,
         default_tz="UTC",
@@ -23,7 +23,6 @@ def _cfg(tmp_path: Path) -> BlumkinConfig:
         files_scopes=False,
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
-        legacy_flat=True,
         mail_signature=MailSignatureConfig(),
         profile="default",
         provider=ProviderKind.MICROSOFT,
@@ -31,6 +30,8 @@ def _cfg(tmp_path: Path) -> BlumkinConfig:
         tenant_id="t",
         wo1162425_scopes=False,
     )
+    cfg.profile_dir.mkdir(parents=True, exist_ok=True)
+    return cfg
 
 
 def test_missing_state_is_unknown(tmp_path: Path) -> None:

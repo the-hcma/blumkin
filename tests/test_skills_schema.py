@@ -214,7 +214,7 @@ def test_diagnostic_commands_report_failure_on_stdout(tmp_path, monkeypatch) -> 
     stderr, which is the opposite of the envelope contract everything else follows.
     """
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('default_tz = "UTC"\n')
+    (tmp_path / "config.toml").write_text('[profiles.default]\ndefault_tz = "UTC"\n')
     runner = CliRunner()
 
     doctor = runner.invoke(main, ["doctor", "--json"])

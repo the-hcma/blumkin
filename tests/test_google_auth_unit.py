@@ -232,7 +232,7 @@ def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
                 '"client_id": "fake-google-desktop-client.apps.googleusercontent.com", '
                 '"client_secret": "fake-google-client-secret"}}'
             )
-    return BlumkinConfig(
+    cfg = BlumkinConfig(
         client_id="fake-google-desktop-client.apps.googleusercontent.com",
         config_dir=config_dir,
         default_tz="UTC",
@@ -240,7 +240,6 @@ def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
         files_scopes=False,
         google_oauth_client_file=path,
         graph_timeout_seconds=60.0,
-        legacy_flat=True,
         mail_signature=MailSignatureConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
@@ -248,6 +247,8 @@ def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
         tenant_id="",
         wo1162425_scopes=False,
     )
+    cfg.profile_dir.mkdir(parents=True, exist_ok=True)
+    return cfg
 
 
 def _scope_warning(message: str, new_scope: list[str]) -> Warning:

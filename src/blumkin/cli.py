@@ -281,7 +281,6 @@ def _populate_profile_email_once() -> str | None:
             cfg.config_path,
             profile=cfg.profile,
             email=address,
-            legacy_flat=cfg.legacy_flat,
         )
     except Exception:
         return None
@@ -942,7 +941,6 @@ def profiles_set_email(ctx: click.Context, email: str | None, as_json_flag: bool
             cfg.config_path,
             profile=cfg.profile,
             email=address,
-            legacy_flat=cfg.legacy_flat,
             overwrite=True,
         )
     except ValueError as exc:

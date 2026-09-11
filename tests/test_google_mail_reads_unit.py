@@ -307,7 +307,6 @@ def _cfg(config_dir: Path) -> BlumkinConfig:
         files_scopes=False,
         google_oauth_client_file=oauth,
         graph_timeout_seconds=60.0,
-        legacy_flat=True,
         mail_signature=MailSignatureConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,

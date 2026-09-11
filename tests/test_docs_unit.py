@@ -169,7 +169,7 @@ def test_strip_docx_suffix() -> None:
 def _cfg(config_dir: Path) -> BlumkinConfig:
     oauth = config_dir / "client.json"
     oauth.write_text("{}")
-    return BlumkinConfig(
+    cfg = BlumkinConfig(
         client_id="id.apps.googleusercontent.com",
         config_dir=config_dir,
         default_tz="America/New_York",
@@ -177,7 +177,6 @@ def _cfg(config_dir: Path) -> BlumkinConfig:
         files_scopes=False,
         google_oauth_client_file=oauth,
         graph_timeout_seconds=60.0,
-        legacy_flat=True,
         mail_signature=MailSignatureConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
@@ -185,6 +184,8 @@ def _cfg(config_dir: Path) -> BlumkinConfig:
         tenant_id="",
         wo1162425_scopes=False,
     )
+    cfg.profile_dir.mkdir(parents=True, exist_ok=True)
+    return cfg
 
 
 def _service() -> MagicMock:

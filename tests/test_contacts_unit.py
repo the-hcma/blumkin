@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -180,10 +181,19 @@ def test_a_non_utf8_file_degrades_instead_of_crashing(tmp_path, monkeypatch) -> 
     assert jose.email == "jose@example.com"
 
 
-def test_locate_operator_files_dedupes_a_legacy_flat_config(tmp_path, monkeypatch) -> None:
-    (tmp_path / "config.toml").write_text('client_id = "x"\ndefault_tz = "UTC"\n', encoding="utf-8")
-    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    cfg = load_config()
+def test_locate_operator_files_finds_base_config_dir_file(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "email-context.md").write_text("- Sam <sam@example.com>\n", encoding="utf-8")
+    assert locate_operator_files(cfg, "email-context.md") == [tmp_path / "email-context.md"]
+
+
+def test_locate_operator_files_dedupes_a_symlinked_profile_dir(tmp_path, monkeypatch) -> None:
+    """A profile dir symlinked back at the config dir must not double the file."""
+    if sys.platform == "win32":
+        pytest.skip("symlinked profile dir is a POSIX concern")
+    cfg = _cfg(tmp_path, monkeypatch, profile="work")
+    (tmp_path / "profiles").mkdir()
+    (tmp_path / "profiles" / "work").symlink_to(tmp_path, target_is_directory=True)
     (tmp_path / "email-context.md").write_text("- Sam <sam@example.com>\n", encoding="utf-8")
     assert locate_operator_files(cfg, "email-context.md") == [tmp_path / "email-context.md"]
 

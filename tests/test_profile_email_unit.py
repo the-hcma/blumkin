@@ -114,10 +114,13 @@ def test_doctor_warns_when_config_email_and_signed_in_account_disagree(
 def test_microsoft_account_email_reads_the_auth_record(tmp_path: Path, monkeypatch) -> None:
     from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
 
-    (tmp_path / "config.toml").write_text('client_id = "abc"\ntenant_id = "example.com"\n')
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\ntenant_id = "example.com"\n'
+    )
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     config = load_config()
-    record = tmp_path / "auth_record.json"
+    record = config.auth_record_path
+    record.parent.mkdir(parents=True, exist_ok=True)
 
     record.write_text(json.dumps({"username": "ada@example.com"}))
     assert MicrosoftWorkspaceProvider(config).account_email() == "ada@example.com"
@@ -217,20 +220,22 @@ def test_set_profile_email_does_not_glue_onto_a_file_without_a_trailing_newline(
 ) -> None:
     """No trailing newline at EOF must not fuse two keys into one invalid line."""
     path = tmp_path / "config.toml"
-    path.write_text('client_id = "abc"\ntenant_id = "example.com"')  # no trailing \n
-    assert set_profile_email(path, profile="default", email="ada@example.com", legacy_flat=True)
+    path.write_text(
+        '[profiles.default]\nclient_id = "abc"\ntenant_id = "example.com"'
+    )  # no trailing \n
+    assert set_profile_email(path, profile="default", email="ada@example.com")
     text = path.read_text()
     assert 'tenant_id = "example.com"\nemail = "ada@example.com"' in text
     # The whole point: it still parses.
-    assert tomllib.loads(text)["email"] == "ada@example.com"
+    assert tomllib.loads(text)["profiles"]["default"]["email"] == "ada@example.com"
 
 
 def test_set_profile_email_fills_a_whitespace_only_value(tmp_path: Path) -> None:
     """load_config strips, so `email = "  "` is unset to every other caller too."""
     path = tmp_path / "config.toml"
-    path.write_text('client_id = "abc"\nemail = "  "\n')
-    assert set_profile_email(path, profile="default", email="ada@example.com", legacy_flat=True)
-    assert tomllib.loads(path.read_text())["email"] == "ada@example.com"
+    path.write_text('[profiles.default]\nclient_id = "abc"\nemail = "  "\n')
+    assert set_profile_email(path, profile="default", email="ada@example.com")
+    assert tomllib.loads(path.read_text())["profiles"]["default"]["email"] == "ada@example.com"
 
 
 def test_set_profile_email_fills_an_existing_empty_value(tmp_path: Path) -> None:
@@ -239,7 +244,7 @@ def test_set_profile_email_fills_an_existing_empty_value(tmp_path: Path) -> None
     path.write_text(
         _TWO_PROFILES.replace('tenant_id = "example.com"', 'tenant_id = "example.com"\nemail = ""')
     )
-    assert set_profile_email(path, profile="work", email="ada@example.com", legacy_flat=False)
+    assert set_profile_email(path, profile="work", email="ada@example.com")
     text = path.read_text()
     assert 'email = "ada@example.com"' in text
     assert text.count("email = ") == 1
@@ -250,7 +255,7 @@ def test_set_profile_email_finds_a_header_with_a_comment_or_quotes(tmp_path: Pat
     for header in ("[profiles.work]  # main", '[profiles."work"]'):
         path = tmp_path / "config.toml"
         path.write_text(f'{header}\nclient_id = "abc"\n')
-        assert set_profile_email(path, profile="work", email="ada@example.com", legacy_flat=False)
+        assert set_profile_email(path, profile="work", email="ada@example.com")
         assert 'email = "ada@example.com"' in path.read_text()
         assert tomllib.loads(path.read_text())["profiles"]["work"]["email"] == "ada@example.com"
 
@@ -261,31 +266,24 @@ def test_set_profile_email_handles_a_quoted_dotted_profile_name(tmp_path: Path) 
     path.write_text(
         '[profiles."a.b"]\nclient_id = "abc"\n\n[profiles."a.b".mail.signature]\nenabled = true\n'
     )
-    assert set_profile_email(path, profile="a.b", email="ada@example.com", legacy_flat=False)
+    assert set_profile_email(path, profile="a.b", email="ada@example.com")
     parsed = tomllib.loads(path.read_text())
     assert parsed["profiles"]["a.b"]["email"] == "ada@example.com"
     # The sub-table must not have been mistaken for the profile table.
     assert "email" not in parsed["profiles"]["a.b"]["mail"]["signature"]
 
 
-def test_set_profile_email_handles_legacy_flat_and_missing_section(tmp_path: Path) -> None:
-    flat = tmp_path / "flat.toml"
-    flat.write_text('client_id = "abc"\ndefault_tz = "UTC"\n')
-    assert set_profile_email(flat, profile="default", email="solo@example.com", legacy_flat=True)
-    assert 'email = "solo@example.com"' in flat.read_text()
-
+def test_set_profile_email_handles_missing_section_or_file(tmp_path: Path) -> None:
     missing = tmp_path / "config.toml"
     missing.write_text(_TWO_PROFILES)
-    assert not set_profile_email(missing, profile="nope", email="x@example.com", legacy_flat=False)
-    assert not set_profile_email(
-        tmp_path / "absent.toml", profile="work", email="x@e.com", legacy_flat=False
-    )
+    assert not set_profile_email(missing, profile="nope", email="x@example.com")
+    assert not set_profile_email(tmp_path / "absent.toml", profile="work", email="x@e.com")
 
 
 def test_set_profile_email_inserts_into_the_right_table(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(_TWO_PROFILES)
-    assert set_profile_email(path, profile="work", email="ada@example.com", legacy_flat=False)
+    assert set_profile_email(path, profile="work", email="ada@example.com")
     text = path.read_text()
     # Landed in [profiles.work], above its signature sub-table, and left the rest alone.
     work = text.split("[profiles.work]")[1].split("[profiles.work.mail.signature]")[0]
@@ -302,9 +300,7 @@ def test_set_profile_email_never_overwrites_an_existing_value(tmp_path: Path) ->
             'tenant_id = "example.com"', 'tenant_id = "example.com"\nemail = "first@example.com"'
         )
     )
-    assert not set_profile_email(
-        path, profile="work", email="second@example.com", legacy_flat=False
-    )
+    assert not set_profile_email(path, profile="work", email="second@example.com")
     assert 'email = "first@example.com"' in path.read_text()
     assert "second@example.com" not in path.read_text()
 
@@ -317,12 +313,10 @@ def test_set_profile_email_overwrites_only_when_asked(tmp_path: Path) -> None:
         )
     )
     # Automatic paths leave an existing label alone...
-    assert not set_profile_email(path, profile="work", email="new@example.com", legacy_flat=False)
+    assert not set_profile_email(path, profile="work", email="new@example.com")
     assert 'email = "old@example.com"' in path.read_text()
     # ...but the explicit command replaces it in place, without duplicating the key.
-    assert set_profile_email(
-        path, profile="work", email="new@example.com", legacy_flat=False, overwrite=True
-    )
+    assert set_profile_email(path, profile="work", email="new@example.com", overwrite=True)
     text = path.read_text()
     assert 'email = "new@example.com"' in text
     assert "old@example.com" not in text
@@ -332,22 +326,20 @@ def test_set_profile_email_overwrites_only_when_asked(tmp_path: Path) -> None:
 def test_set_profile_email_rejects_control_characters(tmp_path: Path) -> None:
     """A newline in the value would break the file, or inject a table header."""
     path = tmp_path / "config.toml"
-    path.write_text('client_id = "abc"\n')
+    path.write_text('[profiles.default]\nclient_id = "abc"\n')
     with pytest.raises(ValueError, match="control characters or newlines"):
-        set_profile_email(
-            path, profile="default", email='a\n[profiles.evil]\nx = "1', legacy_flat=True
-        )
+        set_profile_email(path, profile="default", email='a\n[profiles.evil]\nx = "1')
     assert "evil" not in path.read_text()
 
 
 def test_toml_value_of_reads_an_empty_value_with_a_trailing_comment(tmp_path: Path) -> None:
     """`email = ""  # not yet known` is blank, so the automatic backfill must fill it."""
     path = tmp_path / "config.toml"
-    path.write_text('client_id = "abc"\nemail = ""  # not yet known\n')
-    assert set_profile_email(path, profile="default", email="ada@example.com", legacy_flat=True)
+    path.write_text('[profiles.default]\nclient_id = "abc"\nemail = ""  # not yet known\n')
+    assert set_profile_email(path, profile="default", email="ada@example.com")
     text = path.read_text()
     assert 'email = "ada@example.com"' in text
-    assert tomllib.loads(text)["email"] == "ada@example.com"
+    assert tomllib.loads(text)["profiles"]["default"]["email"] == "ada@example.com"
 
 
 def _authed_provider(address: str) -> MagicMock:
@@ -358,4 +350,11 @@ def _authed_provider(address: str) -> MagicMock:
 
 
 def _flat_config(email: str) -> str:
-    return f'client_id = "abc"\ntenant_id = "example.com"\ndefault_tz = "UTC"\nemail = "{email}"\n'
+    """A single named "default" profile - implicitly selected since it's the only one."""
+    return (
+        "[profiles.default]\n"
+        'client_id = "abc"\n'
+        'tenant_id = "example.com"\n'
+        'default_tz = "UTC"\n'
+        f'email = "{email}"\n'
+    )

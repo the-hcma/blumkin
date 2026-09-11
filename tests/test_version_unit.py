@@ -98,6 +98,7 @@ def test_cli_version_flag_reports_version_commit_and_path() -> None:
 def test_doctor_json_carries_build_block(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'client_id = "fake-google-desktop-client.apps.googleusercontent.com"\n'
         'provider = "google"\n'
         'default_tz = "UTC"\n'
@@ -110,6 +111,7 @@ def test_doctor_json_carries_build_block(tmp_path, monkeypatch) -> None:
 def test_auth_status_json_carries_build_fields(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'client_id = "fake-google-desktop-client.apps.googleusercontent.com"\n'
         'provider = "google"\n'
         'default_tz = "UTC"\n'

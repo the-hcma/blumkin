@@ -46,10 +46,11 @@ def test_split_quoted_original_returns_empty_tail_when_unrecognised() -> None:
 
 def _signature_config(tmp_path: Path) -> None:
     (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
         'client_id = "abc"\n'
         'tenant_id = "example.com"\n'
         'default_tz = "UTC"\n'
-        "\n[mail.signature]\n"
+        "\n[profiles.default.mail.signature]\n"
         "enabled = true\n"
         'name = "Ada Lovelace"\n'
         'title = "Technical Fellow"\n'
@@ -77,7 +78,9 @@ def test_mail_signature_renders_html_and_text(tmp_path: Path, monkeypatch) -> No
 
 
 def test_mail_signature_is_quiet_when_unconfigured(tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / "config.toml").write_text('client_id = "abc"\ntenant_id = "example.com"\n')
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\ntenant_id = "example.com"\n'
+    )
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     result = CliRunner().invoke(main, ["mail", "signature"])
     assert result.exit_code == 0

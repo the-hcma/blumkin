@@ -22,7 +22,8 @@ def _isolate_default_blumkin_config(
         return
     root = tmp_path_factory.mktemp("blumkin-default-config")
     (root / "config.toml").write_text(
-        'client_id = "test-client"\ntenant_id = "contoso.com"\ndefault_tz = "UTC"\n',
+        '[profiles.default]\nclient_id = "test-client"\n'
+        'tenant_id = "contoso.com"\ndefault_tz = "UTC"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(root))

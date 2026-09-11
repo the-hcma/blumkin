@@ -37,7 +37,7 @@ def test_auth_status_dict_keys(tmp_path: Path) -> None:
 def test_auth_status_with_token_file(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     expiry = datetime(2099, 1, 1, tzinfo=UTC)
-    (tmp_path / "google_token.json").write_text(
+    cfg.google_token_path.write_text(
         json.dumps(
             {
                 "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
@@ -58,7 +58,7 @@ def test_auth_status_with_token_file(tmp_path: Path) -> None:
 
 def test_logout_deletes_token(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    path = tmp_path / "google_token.json"
+    path = cfg.google_token_path
     path.write_text("{}")
     provider = GoogleWorkspaceProvider(cfg)
     provider.auth_logout()
@@ -922,7 +922,7 @@ def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
                 '"client_id": "fake-google-desktop-client.apps.googleusercontent.com", '
                 '"client_secret": "fake-google-client-secret"}}'
             )
-    return BlumkinConfig(
+    cfg = BlumkinConfig(
         client_id="fake-google-desktop-client.apps.googleusercontent.com",
         config_dir=config_dir,
         default_tz="UTC",
@@ -930,7 +930,6 @@ def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
         files_scopes=False,
         google_oauth_client_file=path,
         graph_timeout_seconds=60.0,
-        legacy_flat=True,
         mail_signature=MailSignatureConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
@@ -938,3 +937,5 @@ def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
         tenant_id="",
         wo1162425_scopes=False,
     )
+    cfg.profile_dir.mkdir(parents=True, exist_ok=True)
+    return cfg
