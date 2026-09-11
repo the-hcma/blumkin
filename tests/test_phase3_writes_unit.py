@@ -631,6 +631,27 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
     client.me.messages.by_message_id.return_value.send.post.assert_awaited_once()
 
 
+def test_mail_draft_unescapes_html_entities_in_subject(monkeypatch) -> None:
+    # An MCP caller composing subject + HTML body together sometimes HTML-escapes
+    # the subject too, out of habit - subject is a plain header, never rendered as
+    # HTML, so the recipient would otherwise see a literal "&amp;" in Outlook.
+    draft = SimpleNamespace(id="draft-1", subject="Q3 & Q4 Plans")
+    client = MagicMock()
+    client.me.messages.post = AsyncMock(return_value=draft)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    saved = asyncio.run(
+        mail_draft(to="a@b.com", subject="Q3 &amp; Q4 Plans", body="Hello", body_type="text")
+    )
+    post_await = client.me.messages.post.await_args
+    assert post_await is not None
+    assert post_await.args[0].subject == "Q3 & Q4 Plans"
+    assert saved["draft"]["id"] == "draft-1"
+
+
 def test_mail_draft_html_and_body_file(tmp_path, monkeypatch) -> None:
     draft = SimpleNamespace(id="draft-html", subject="Html")
     client = MagicMock()
@@ -854,6 +875,35 @@ def test_mail_update_draft_subject_only(monkeypatch) -> None:
     wire = json.loads(writer.get_serialized_content())
     assert set(wire) <= {"@odata.type", "subject"}
     assert wire["subject"] == "OnlySubject"
+
+
+def test_mail_update_draft_unescapes_html_entities_in_subject(monkeypatch) -> None:
+    existing = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Old",
+        body=SimpleNamespace(content_type=BodyType.Text, content="old"),
+        to_recipients=[],
+    )
+    patched = SimpleNamespace(
+        id="draft-1",
+        is_draft=True,
+        subject="Q3 & Q4 Plans",
+        body=existing.body,
+        to_recipients=existing.to_recipients,
+    )
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    asyncio.run(mail_update_draft(draft_id="draft-1", subject="Q3 &amp; Q4 Plans"))
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    assert patch_await.args[0].subject == "Q3 & Q4 Plans"
 
 
 def test_mail_update_draft_body_file(tmp_path, monkeypatch) -> None:

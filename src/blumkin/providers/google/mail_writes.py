@@ -54,6 +54,7 @@ from blumkin.skills.mail import (
     _compose_wire_label,
     _merge_addresses,
     _parse_addresses,
+    _plain_subject,
     _read_attachment,
     _validate_importance,
     append_mail_signature,
@@ -381,8 +382,9 @@ async def mail_draft(
     content = append_mail_signature(
         content, body_type=body_type_label, config=cfg, no_signature=no_signature
     )
+    subject_clean = _plain_subject(subject)
     message = _build_message(
-        subject=subject.strip(),
+        subject=subject_clean,
         to=to_addrs,
         cc=cc_addrs,
         bcc=bcc_addrs,
@@ -403,7 +405,7 @@ async def mail_draft(
             "body_type": body_type_label,
             "cc": ", ".join(cc_addrs) or None,
             "id": created.get("id"),
-            "subject": subject.strip(),
+            "subject": subject_clean,
             "to": ", ".join(to_addrs),
         }
     }
@@ -639,7 +641,7 @@ async def mail_update_draft(
     if subject is not None:
         if not subject.strip():
             raise ValueError("--subject must be non-empty when provided")
-        _set_header(message, "Subject", subject.strip())
+        _set_header(message, "Subject", _plain_subject(subject))
     if to_addrs is not None:
         _set_header(message, "To", ", ".join(to_addrs))
     if cc_addrs is not None:

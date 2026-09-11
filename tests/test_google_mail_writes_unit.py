@@ -60,6 +60,24 @@ def test_mail_draft_builds_rfc822_and_skill_payload(tmp_path: Path) -> None:
     assert _content(sent, "plain").strip() == "Please review - thanks."
 
 
+def test_mail_draft_unescapes_html_entities_in_subject(tmp_path: Path) -> None:
+    # Same rationale as the Microsoft path: subject is a plain header, never
+    # rendered as HTML, so a caller's habitual HTML-escaping of it must be undone.
+    service = _service(create_result={"id": "draft-1"})
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com",
+                subject="Q3 &amp; Q4 Plans",
+                body="hi",
+                body_type="text",
+            )
+        )
+    assert payload["draft"]["subject"] == "Q3 & Q4 Plans"
+    sent = _sent_message(service, "create")
+    assert sent["Subject"] == "Q3 & Q4 Plans"
+
+
 def test_mail_draft_html_adds_alternative(tmp_path: Path) -> None:
     service = _service(create_result={"id": "d"})
     with _patched(service):
@@ -211,6 +229,22 @@ def test_mail_update_draft_replaces_subject_keeps_body_and_recipients(tmp_path: 
     assert sent["Subject"] == "New subject"
     assert sent["To"] == "keep@example.com"
     assert "original body text" in _content(sent, "plain")
+
+
+def test_mail_update_draft_unescapes_html_entities_in_subject(tmp_path: Path) -> None:
+    service = _service(
+        get_result=_raw_draft(subject="Old", to="keep@example.com", body="original body text"),
+        update_result={"id": "d-2"},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-2", subject="Q3 &amp; Q4 Plans"
+            )
+        )
+    assert payload["draft"]["subject"] == "Q3 & Q4 Plans"
+    sent = _sent_message(service, "update")
+    assert sent["Subject"] == "Q3 & Q4 Plans"
 
 
 def test_mail_update_draft_requires_at_least_one_field(tmp_path: Path) -> None:

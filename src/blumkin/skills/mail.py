@@ -791,7 +791,7 @@ async def mail_draft(
         bcc_recipients=_recipient_models(bcc_addrs) or None,
         body=_compose_item_body(graph_body_type, content),
         cc_recipients=_recipient_models(cc_addrs) or None,
-        subject=subject.strip(),
+        subject=_plain_subject(subject),
         to_recipients=_recipient_models(to_addrs),
     )
     created = await client.me.messages.post(message)
@@ -1354,7 +1354,7 @@ async def mail_update_draft(
     if subject is not None:
         if not subject.strip():
             raise ValueError("--subject must be non-empty when provided")
-        patch.subject = subject.strip()
+        patch.subject = _plain_subject(subject)
     if content is not None and graph_body_type is not None:
         patch.body = _compose_item_body(graph_body_type, content)
     if to_addrs is not None:
@@ -2053,6 +2053,19 @@ def _parse_addresses(
             raise ValueError(f"{flag} must be non-empty when provided")
         return []
     return addresses
+
+
+def _plain_subject(subject: str) -> str:
+    """Strip and un-escape a ``--subject`` value.
+
+    Subject is a plain header, never rendered as HTML, but a caller composing
+    a message body and subject together (an MCP client generating both at
+    once) sometimes HTML-escapes the subject out of habit, leaving a literal
+    ``&amp;`` where the recipient's mail client shows the raw entity instead
+    of ``&``. Un-escaping here is safe: a subject can never legitimately need
+    an HTML entity since it is never HTML-interpreted.
+    """
+    return html_lib.unescape(subject.strip())
 
 
 def _apply_font_preference(html_body: str, config: BlumkinConfig | None) -> str:
