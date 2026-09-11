@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import tomlkit
+import tomlkit.exceptions
+
 from blumkin.output import emit_warning
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
@@ -201,14 +204,16 @@ def set_profile_email(
     back. ``overwrite=True`` is for ``profiles set-email``, where replacing the
     value is the explicit ask.
 
-    A targeted line edit rather than a full TOML re-serialize: config.toml is
-    hand-maintained here (comments, key order, the signature sub-table), and this
-    runs once per profile at onboarding, so rewriting the whole document to add
-    one display-only key would be a poor trade.
+    A style-preserving edit via ``tomlkit`` rather than a full re-serialize:
+    config.toml is hand-maintained (comments, key order, the signature
+    sub-table), and this runs once per profile at onboarding, so a fresh,
+    reformatted document would blow away all of that for one display-only key.
+    ``tomlkit`` gets this for free - it round-trips the untouched parts of the
+    document exactly as written and only the assigned key changes.
 
-    Returns True when a line was written, False when the key already exists, the
-    section is missing, or the value is empty. Never raises on an unwritable
-    file - the caller treats this as best-effort.
+    Returns True when the key was written, False when it already exists, the
+    section is missing, or the value is empty. Never raises on an unwritable or
+    unparseable file - the caller treats this as best-effort.
     """
     value = email.strip()
     if not value or not config_path.is_file():
@@ -219,42 +224,24 @@ def set_profile_email(
         # parse on every later command - a newline could even inject a table header.
         raise ValueError("email must not contain control characters or newlines")
     try:
-        lines = config_path.read_text().splitlines(keepends=True)
-    except OSError:
+        doc = tomlkit.parse(config_path.read_text())
+    except OSError, tomlkit.exceptions.TOMLKitError:
         return False
-    start = next(
-        (i + 1 for i, line in enumerate(lines) if _toml_profile_header(line) == profile),
-        -1,
-    )
-    if start < 0:
+    profiles = doc.get("profiles")
+    if not isinstance(profiles, dict) or profile not in profiles:
         return False
-    # Walk this section only: stop at the next table header (which also excludes
-    # the profile's own [profiles.x.mail.signature]).
-    insert_at = start
-    for index in range(start, len(lines)):
-        stripped = lines[index].strip()
-        if stripped.startswith("["):
-            break
-        if _toml_key_of(stripped) == "email":
-            if not overwrite and _toml_value_of(stripped).strip():
-                # Already populated — the automatic paths never relabel a profile.
-                # An empty value is a blank to fill, not a label to protect, so the
-                # two guards agree with _populate_profile_email_once's `if cfg.email`.
-                return False
-            lines[index] = f'email = "{_toml_escape(value)}"\n'
-            try:
-                config_path.write_text("".join(lines))
-            except OSError:
-                return False
-            return True
-        insert_at = index + 1
-    if insert_at > 0 and lines[insert_at - 1] and not lines[insert_at - 1].endswith("\n"):
-        # Inserting after a final line with no trailing newline would concatenate the
-        # two into one invalid line, and the write would still report success.
-        lines[insert_at - 1] += "\n"
-    lines.insert(insert_at, f'email = "{_toml_escape(value)}"\n')
+    table = profiles[profile]
+    if not isinstance(table, dict):
+        return False
+    existing = table.get("email")
+    if existing is not None and not overwrite and str(existing).strip():
+        # Already populated — the automatic paths never relabel a profile. An
+        # empty value is a blank to fill, not a label to protect, so the two
+        # guards agree with _populate_profile_email_once's `if cfg.email`.
+        return False
+    table["email"] = value
     try:
-        config_path.write_text("".join(lines))
+        config_path.write_text(tomlkit.dumps(doc))
     except OSError:
         return False
     return True
@@ -578,64 +565,6 @@ def _resolve_profile_name(
         "multiple profiles configured; pass --profile / BLUMKIN_PROFILE, or set "
         f"default_profile; available: {available}"
     )
-
-
-def _toml_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _toml_key_of(stripped_line: str) -> str | None:
-    """Bare key name of a ``key = value`` line, or None for comments/tables/blanks."""
-    if not stripped_line or stripped_line.startswith(("#", "[")):
-        return None
-    key, sep, _ = stripped_line.partition("=")
-    return key.strip().strip('"').strip("'") if sep else None
-
-
-def _toml_profile_header(line: str) -> str | None:
-    """Profile name from a ``[profiles.<name>]`` header line, else None.
-
-    Tolerates what tomllib accepts and a plain string compare would miss: a
-    trailing comment (``[profiles.work]  # main``) and a quoted name
-    (``[profiles."work"]``). Missing the header made the backfill a silent no-op
-    and made set-email claim the section did not exist.
-    """
-    stripped = line.strip()
-    if not stripped.startswith("["):
-        return None
-    closing = stripped.find("]")
-    if closing == -1:
-        return None
-    inside = stripped[1:closing].strip()
-    prefix = "profiles."
-    if not inside.startswith(prefix):
-        return None
-    name = inside[len(prefix) :].strip()
-    if name.startswith(('"', "'")) and name[-1:] == name[:1]:
-        # A quoted name is one key, dots included: [profiles."a.b"] is profile "a.b",
-        # which _profile_tables allows and is the only way to spell a dotted name.
-        return name[1:-1] or None
-    # Unquoted dots mean a nested table ([profiles.work.mail.signature]), not a profile.
-    return name if name and "." not in name else None
-
-
-def _toml_value_of(stripped_line: str) -> str:
-    """Unquoted value of a ``key = value`` line ("" when blank or unparseable).
-
-    Handles a trailing inline comment, which is valid TOML and plausible in a
-    hand-maintained file: ``email = ""  # not yet known`` has to read as blank, or
-    the automatic backfill would decline to fill a value tomllib parses as empty.
-    """
-    _, sep, raw = stripped_line.partition("=")
-    if not sep:
-        return ""
-    raw = raw.strip()
-    for quote in ('"', "'"):
-        if raw.startswith(quote):
-            closing = raw.find(quote, 1)
-            return raw[1:closing] if closing != -1 else raw[1:]
-    # Bare value: anything from an unquoted ``#`` on is a comment.
-    return raw.partition("#")[0].strip()
 
 
 def _string_values(file_data: dict[str, Any]) -> dict[str, str]:

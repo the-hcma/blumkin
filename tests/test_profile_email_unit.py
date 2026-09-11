@@ -332,6 +332,23 @@ def test_set_profile_email_rejects_control_characters(tmp_path: Path) -> None:
     assert "evil" not in path.read_text()
 
 
+def test_set_profile_email_escapes_quotes_and_backslashes(tmp_path: Path) -> None:
+    """tomlkit escapes the basic-string value correctly - no hand-rolled escaping."""
+    path = tmp_path / "config.toml"
+    path.write_text('[profiles.default]\nclient_id = "abc"\n')
+    value = 'weird"name\\here'
+    assert set_profile_email(path, profile="default", email=value)
+    assert tomllib.loads(path.read_text())["profiles"]["default"]["email"] == value
+
+
+def test_set_profile_email_returns_false_on_unparseable_toml(tmp_path: Path) -> None:
+    """A broken config.toml must fail closed, not raise - this is best-effort."""
+    path = tmp_path / "config.toml"
+    path.write_text("[profiles.default\nclient_id = abc\n")
+    assert not set_profile_email(path, profile="default", email="ada@example.com")
+    assert "ada@example.com" not in path.read_text()
+
+
 def test_toml_value_of_reads_an_empty_value_with_a_trailing_comment(tmp_path: Path) -> None:
     """`email = ""  # not yet known` is blank, so the automatic backfill must fill it."""
     path = tmp_path / "config.toml"
