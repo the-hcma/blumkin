@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from blumkin.output import emit_warning
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
@@ -24,6 +25,7 @@ class BlumkinConfig:
     google_oauth_client_file: Path | None
     graph_timeout_seconds: float
     mail_signature: MailSignatureConfig
+    preferences: PreferencesConfig
     profile: str
     provider: ProviderKind
     tags: tuple[str, ...]
@@ -75,6 +77,15 @@ class MailSignatureConfig:
     name_color: str = "#003366"
     title: str = ""
     title_color: str = "#5B9BD5"
+
+
+@dataclass(frozen=True, slots=True)
+class PreferencesConfig:
+    """Display preferences for composed mail: a top-level default, per-profile override."""
+
+    font_name: str = ""
+    font_size: int | None = None
+    html_email: bool = True
 
 
 def config_dir() -> Path:
@@ -167,6 +178,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         google_oauth_client_file=google_oauth_client_file,
         graph_timeout_seconds=_graph_timeout_seconds(table),
         mail_signature=_mail_signature_config(table),
+        preferences=_preferences_config(table, _top_level_preferences(file_data), profile=selected),
         profile=selected,
         provider=_provider_kind(table),
         tags=_tags_from_table(table),
@@ -350,6 +362,56 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
+def _positive_int(value: Any, *, key: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ProviderConfigError(f"{key} must be a positive integer in config.toml, got {value!r}")
+    return value
+
+
+def _preferences_config(
+    table: dict[str, Any], top_level: dict[str, Any], *, profile: str
+) -> PreferencesConfig:
+    """Merge ``[profiles.<name>.preferences]`` over the top-level ``[preferences]`` default.
+
+    A key set at both scopes with different values still resolves to the profile's
+    value (the override is intentional), but is worth flagging - it may be drift
+    rather than a deliberate per-profile tweak.
+    """
+    raw = table.get("preferences")
+    if raw is not None and not isinstance(raw, dict):
+        raise ProviderConfigError(
+            f"profiles.{profile}.preferences must be a table in config.toml, "
+            f"got {type(raw).__name__}"
+        )
+    profile_prefs: dict[str, Any] = raw or {}
+    for key in sorted(profile_prefs):
+        if key in top_level and profile_prefs[key] != top_level[key]:
+            emit_warning(
+                f"profile {profile!r} sets preferences.{key} = {profile_prefs[key]!r}, "
+                f"overriding preferences.{key} = {top_level[key]!r} set at the top level"
+            )
+    merged = {**top_level, **profile_prefs}
+    html_email = True
+    if "html_email" in merged:
+        raw_html_email = merged["html_email"]
+        # Strict bool, unlike the lenient _coerce_bool used elsewhere in this file:
+        # this flag silently switches the wire format (HTML vs. plain text) that
+        # every composed message sends, so a stray "true"/1 typo should fail loudly
+        # rather than quietly do the right thing today and the wrong thing tomorrow.
+        if not isinstance(raw_html_email, bool):
+            raise ProviderConfigError(
+                f"preferences.html_email must be a boolean in config.toml, got {raw_html_email!r}"
+            )
+        html_email = raw_html_email
+    return PreferencesConfig(
+        font_name=str(merged.get("font_name") or "").strip(),
+        font_size=_positive_int(merged.get("font_size"), key="preferences.font_size"),
+        html_email=html_email,
+    )
+
+
 def _profile_tables(
     file_data: dict[str, Any],
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -364,7 +426,9 @@ def _profile_tables(
             raise ProviderConfigError(
                 "profiles table is empty; add [profiles.<name>] entries or remove the key"
             )
-        stray = sorted(key for key in file_data if key not in {"default_profile", "profiles"})
+        stray = sorted(
+            key for key in file_data if key not in {"default_profile", "preferences", "profiles"}
+        )
         if stray:
             shown = ", ".join(stray)
             raise ProviderConfigError(
@@ -597,6 +661,18 @@ def _tags_from_table(table: dict[str, Any]) -> tuple[str, ...]:
         seen.add(text)
         tags.append(text)
     return tuple(sorted(tags, key=str.lower))
+
+
+def _top_level_preferences(file_data: dict[str, Any]) -> dict[str, Any]:
+    """The optional top-level ``[preferences]`` table, applying to every profile."""
+    raw = file_data.get("preferences")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ProviderConfigError(
+            f"preferences must be a table in config.toml, got {type(raw).__name__}"
+        )
+    return raw
 
 
 def _wo1162425_scopes_enabled(file_data: dict[str, Any]) -> bool:

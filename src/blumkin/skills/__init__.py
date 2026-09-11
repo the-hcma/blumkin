@@ -1162,7 +1162,10 @@ SKILLS: list[SkillSpec] = [
                 "required": False,
                 "type": "enum",
                 "values": ["markdown", "text", "html"],
-                "note": "how --body is authored; default markdown, rendered to HTML on the wire",
+                "note": (
+                    "how --body is authored; default markdown (rendered to HTML on "
+                    "the wire), or plain text when preferences.html_email = false"
+                ),
             },
             {
                 "name": "--no-signature",
@@ -1218,7 +1221,10 @@ SKILLS: list[SkillSpec] = [
                 "required": False,
                 "type": "enum",
                 "values": ["markdown", "text", "html"],
-                "note": "how --body is authored; default markdown, rendered to HTML on the wire",
+                "note": (
+                    "how --body is authored; default markdown (rendered to HTML on "
+                    "the wire), or plain text when preferences.html_email = false"
+                ),
             },
             {
                 "name": "--no-signature",
@@ -1419,7 +1425,10 @@ SKILLS: list[SkillSpec] = [
                 "required": False,
                 "type": "enum",
                 "values": ["markdown", "text", "html"],
-                "note": "how --body is authored; default markdown, rendered to HTML on the wire",
+                "note": (
+                    "how --body is authored; default markdown (rendered to HTML on "
+                    "the wire), or plain text when preferences.html_email = false"
+                ),
             },
             {
                 "name": "--no-signature",
@@ -1545,7 +1554,10 @@ SKILLS: list[SkillSpec] = [
                 "required": False,
                 "type": "enum",
                 "values": ["markdown", "text", "html"],
-                "note": "how --body is authored; default markdown, rendered to HTML on the wire",
+                "note": (
+                    "how --body is authored; default markdown (rendered to HTML on "
+                    "the wire), or plain text when preferences.html_email = false"
+                ),
             },
         ],
     ),

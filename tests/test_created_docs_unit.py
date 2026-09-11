@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.created_docs import (
     _MAX_TRACKED_IDS,
     is_blumkin_created_doc,
@@ -24,6 +24,7 @@ def _cfg(tmp_path: Path) -> BlumkinConfig:
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.MICROSOFT,
         tags=(),

@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig, load_config
 from blumkin.mail_signature_state import record_signature_state
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.mail import append_mail_signature, mail_draft, render_mail_signature
@@ -79,6 +79,7 @@ def test_append_mail_signature_html_separator_and_empty_body() -> None:
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.MICROSOFT,
         tags=(),
@@ -147,6 +148,7 @@ def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(enabled=True, name="Ada"),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.MICROSOFT,
         tags=(),

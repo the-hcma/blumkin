@@ -13,7 +13,7 @@ import pytest
 from googleapiclient.errors import HttpError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.providers.google_auth import DRIVE_SCOPES
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
@@ -82,6 +82,7 @@ def _google_cfg(config_dir: Path) -> BlumkinConfig:
         google_oauth_client_file=oauth,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
         tags=(),
@@ -101,6 +102,7 @@ def _ms_cfg(*, docs_scopes: bool = True) -> BlumkinConfig:
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.MICROSOFT,
         tags=(),

@@ -15,7 +15,7 @@ from googleapiclient.errors import HttpError
 
 from blumkin.auth import MissingScopeError
 from blumkin.cli import main
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.exit_codes import EXIT_MISSING_SCOPE
 from blumkin.providers.google_auth import GOOGLE_SCOPES, status_dict
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
@@ -931,6 +931,7 @@ def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
         google_oauth_client_file=path,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
         tags=(),

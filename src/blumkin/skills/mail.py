@@ -765,7 +765,7 @@ async def mail_draft(
     bcc: str | Sequence[str] = (),
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = _DEFAULT_COMPOSE_TYPE,
+    body_type: str | None = None,
     cc: str | Sequence[str] = (),
     config: BlumkinConfig | None = None,
     no_signature: bool = False,
@@ -779,10 +779,10 @@ async def mail_draft(
         raise ValueError("--subject is required")
     # Read the files before touching Graph: a bad path should not leave a half-built draft.
     pending = [_read_attachment(path) for path in attach]
-    content, body_type_label, graph_body_type = resolve_mail_body(
-        body=body, body_file=body_file, body_type=body_type
-    )
     cfg = config or load_config()
+    content, body_type_label, graph_body_type = resolve_mail_body(
+        body=body, body_file=body_file, body_type=body_type, config=cfg
+    )
     content = append_mail_signature(
         content, body_type=body_type_label, config=cfg, no_signature=no_signature
     )
@@ -846,7 +846,7 @@ async def mail_forward(
     to: str,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = _DEFAULT_COMPOSE_TYPE,
+    body_type: str | None = None,
     bcc: str | Sequence[str] | None = None,
     cc: str | Sequence[str] | None = None,
     config: BlumkinConfig | None = None,
@@ -1080,7 +1080,7 @@ async def mail_reply(
     message_id: str,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = _DEFAULT_COMPOSE_TYPE,
+    body_type: str | None = None,
     bcc: str | Sequence[str] | None = None,
     cc: str | Sequence[str] | None = None,
     reply_all: bool = False,
@@ -1282,7 +1282,7 @@ async def mail_update_draft(
     subject: str | None = None,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = _DEFAULT_COMPOSE_TYPE,
+    body_type: str | None = None,
     cc: str | Sequence[str] | None = None,
     keep_quoted: bool = False,
     no_signature: bool = False,
@@ -1318,13 +1318,13 @@ async def mail_update_draft(
     content: str | None = None
     body_type_label: MailBodyType | None = None
     graph_body_type: BodyType | None = None
+    cfg = config or load_config()
     if has_body:
         content, body_type_label, graph_body_type = resolve_mail_body(
-            body=body, body_file=body_file, body_type=body_type
+            body=body, body_file=body_file, body_type=body_type, config=cfg
         )
         if not content.strip():
             raise ValueError("--body/--body-file must be non-empty when provided")
-    cfg = config or load_config()
     if content is not None and body_type_label is not None:
         content = append_mail_signature(
             content, body_type=body_type_label, config=cfg, no_signature=no_signature
@@ -1455,19 +1455,26 @@ def resolve_mail_body(
     *,
     body: str | None = None,
     body_file: str | None = None,
-    body_type: str = _DEFAULT_COMPOSE_TYPE,
+    body_type: str | None = None,
+    config: BlumkinConfig | None = None,
 ) -> tuple[str, MailBodyType, BodyType]:
     """Resolve --body / --body-file and --body-type into wire content + type.
 
     ``markdown`` (the default) is rendered to an HTML fragment here, so callers
     downstream only ever deal with ``html`` / ``text`` - a Markdown body reads as
     a formatted message in Gmail and Outlook instead of one collapsed line.
+    ``body_type`` omitted (``None``) falls back to ``config.preferences.html_email``
+    (plain markdown when ``config`` is also omitted, matching the historical
+    default). When ``config`` sets a font preference, an HTML result is wrapped
+    in it.
     """
     has_body = body is not None
     has_file = body_file is not None
     if has_body == has_file:
         raise ValueError("exactly one of --body or --body-file is required")
-    compose = _parse_compose_body_type(body_type)
+    compose = _parse_compose_body_type(
+        body_type if body_type is not None else _default_compose_body_type(config)
+    )
     if has_file:
         path = Path(str(body_file))
         try:
@@ -1477,8 +1484,10 @@ def resolve_mail_body(
     else:
         content = str(body)
     if compose == "markdown":
-        return render_markdown_email(content), "html", BodyType.Html
+        return _apply_font_preference(render_markdown_email(content), config), "html", BodyType.Html
     graph_type = BodyType.Html if compose == "html" else BodyType.Text
+    if graph_type == BodyType.Html:
+        content = _apply_font_preference(content, config)
     return content, compose, graph_type
 
 
@@ -2046,13 +2055,39 @@ def _parse_addresses(
     return addresses
 
 
-def _compose_wire_label(raw: str) -> MailBodyType:
+def _apply_font_preference(html_body: str, config: BlumkinConfig | None) -> str:
+    """Wrap a composed HTML body in ``preferences.font_name`` / ``font_size``, if set."""
+    prefs = getattr(config, "preferences", None)
+    if prefs is None:
+        return html_body
+    declarations: list[str] = []
+    if prefs.font_name:
+        declarations.append(f"font-family:{html_lib.escape(prefs.font_name, quote=True)}")
+    if prefs.font_size is not None:
+        declarations.append(f"font-size:{prefs.font_size}pt")
+    if not declarations:
+        return html_body
+    return f'<div style="{";".join(declarations)}">{html_body}</div>'
+
+
+def _compose_wire_label(raw: str | None, config: BlumkinConfig | None = None) -> MailBodyType:
     """The html/text label a compose ``--body-type`` resolves to on the wire.
 
     Single source of truth for "markdown and html both go out as HTML; only text
-    stays text" - used for signature rendering and reply/forward quoting.
+    stays text" - used for signature rendering and reply/forward quoting. ``raw``
+    omitted (``None``) falls back to ``_default_compose_body_type``.
     """
-    return "text" if _parse_compose_body_type(raw) == "text" else "html"
+    resolved = raw if raw is not None else _default_compose_body_type(config)
+    return "text" if _parse_compose_body_type(resolved) == "text" else "html"
+
+
+def _default_compose_body_type(config: BlumkinConfig | None) -> str:
+    """``--body-type`` default when the flag is omitted: markdown, unless
+    ``config.preferences.html_email`` is explicitly off, in which case plain text."""
+    prefs = getattr(config, "preferences", None)
+    if prefs is None or prefs.html_email:
+        return _DEFAULT_COMPOSE_TYPE
+    return "text"
 
 
 def _parse_body_type(raw: str) -> MailBodyType:
@@ -2217,7 +2252,7 @@ def _resolve_comment(
     *,
     body: str | None,
     body_file: str | None,
-    body_type: str,
+    body_type: str | None,
     config: BlumkinConfig | None = None,
     no_signature: bool = False,
 ) -> str:
@@ -2233,7 +2268,7 @@ def _resolve_comment(
     if body is None and body_file is None:
         # Nothing to render - markdown and html both give an HTML signature so it
         # matches the HTML quoted original the draft is joined onto.
-        label = _compose_wire_label(body_type)
+        label = _compose_wire_label(body_type, config=cfg)
         content = append_mail_signature("", body_type=label, config=cfg, no_signature=no_signature)
         if not content:
             return ""
@@ -2241,7 +2276,7 @@ def _resolve_comment(
             return html_lib.escape(content).replace("\n", "<br>")
         return content
     content, label, _graph_type = resolve_mail_body(
-        body=body, body_file=body_file, body_type=body_type
+        body=body, body_file=body_file, body_type=body_type, config=cfg
     )
     content = append_mail_signature(content, body_type=label, config=cfg, no_signature=no_signature)
     if label == "text":

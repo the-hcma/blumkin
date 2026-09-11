@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
 from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
@@ -184,6 +184,7 @@ def _google_cfg(config_dir: Path) -> BlumkinConfig:
         google_oauth_client_file=config_dir / "client.json",
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
         tags=(),
@@ -203,6 +204,7 @@ def _ms_cfg() -> BlumkinConfig:
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.MICROSOFT,
         tags=(),

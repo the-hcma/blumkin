@@ -249,17 +249,31 @@ def _emit_error(
 
 
 def _load_config() -> BlumkinConfig:
+    """Load config for the active command, cached on the Click context.
+
+    A single command (``_dispatch`` / ``_dispatch_soft``) calls this once directly
+    and once more inside the default-argument path of ``_workspace()`` - without
+    caching, that means two fresh ``config.toml`` parses per command, and a
+    preferences conflict warning (``blumkin.config._preferences_config``) firing
+    twice on stderr for one invocation.
+    """
     ctx = click.get_current_context(silent=True)
     profile: str | None = None
     if ctx is not None and isinstance(ctx.obj, dict):
+        cached = ctx.obj.get("_loaded_config")
+        if isinstance(cached, BlumkinConfig):
+            return cached
         raw = ctx.obj.get("profile")
         if isinstance(raw, str) and raw.strip():
             profile = raw.strip()
     try:
-        return load_config(profile=profile)
+        cfg = load_config(profile=profile)
     except ProviderConfigError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=_cli_as_json())
         raise SystemExit(EXIT_USAGE) from exc
+    if ctx is not None and isinstance(ctx.obj, dict):
+        ctx.obj["_loaded_config"] = cfg
+    return cfg
 
 
 def _populate_profile_email_once() -> str | None:
@@ -2908,10 +2922,12 @@ def mail_delete_draft_cmd(ctx: click.Context, draft_id: str, as_json_flag: bool)
 @click.option(
     "--body-type",
     "body_type",
-    default="markdown",
-    show_default=True,
+    default=None,
     type=click.Choice(["markdown", "text", "html"], case_sensitive=False),
-    help="How --body is authored. markdown renders to HTML on the wire.",
+    help=(
+        "How --body is authored; markdown renders to HTML on the wire. "
+        "Default: markdown, or text when config sets preferences.html_email = false."
+    ),
 )
 @click.option(
     "--no-signature",
@@ -2930,7 +2946,7 @@ def mail_draft_cmd(
     attach: tuple[str, ...],
     body: str | None,
     body_file: str | None,
-    body_type: str,
+    body_type: str | None,
     no_signature: bool,
     as_json_flag: bool,
 ) -> None:
@@ -2976,10 +2992,12 @@ def mail_draft_cmd(
 @click.option("--body-file", default=None, help="Read the added text from a file.")
 @click.option(
     "--body-type",
-    default="markdown",
-    show_default=True,
+    default=None,
     type=click.Choice(["markdown", "text", "html"], case_sensitive=False),
-    help="How --body is authored. markdown renders to HTML on the wire.",
+    help=(
+        "How --body is authored; markdown renders to HTML on the wire. "
+        "Default: markdown, or text when config sets preferences.html_email = false."
+    ),
 )
 @click.option(
     "--no-signature",
@@ -2997,7 +3015,7 @@ def mail_forward_cmd(
     bcc: tuple[str, ...],
     body: str | None,
     body_file: str | None,
-    body_type: str,
+    body_type: str | None,
     no_signature: bool,
     as_json_flag: bool,
 ) -> None:
@@ -3042,10 +3060,12 @@ def mail_forward_cmd(
 @click.option("--body-file", default=None, help="Read the reply text from a file.")
 @click.option(
     "--body-type",
-    default="markdown",
-    show_default=True,
+    default=None,
     type=click.Choice(["markdown", "text", "html"], case_sensitive=False),
-    help="How --body is authored. markdown renders to HTML on the wire.",
+    help=(
+        "How --body is authored; markdown renders to HTML on the wire. "
+        "Default: markdown, or text when config sets preferences.html_email = false."
+    ),
 )
 @click.option(
     "--no-signature",
@@ -3063,7 +3083,7 @@ def mail_reply_cmd(
     bcc: tuple[str, ...],
     body: str | None,
     body_file: str | None,
-    body_type: str,
+    body_type: str | None,
     no_signature: bool,
     as_json_flag: bool,
 ) -> None:
@@ -3200,10 +3220,12 @@ def mail_send_draft_cmd(ctx: click.Context, draft_id: str, yes: bool, as_json_fl
 @click.option(
     "--body-type",
     "body_type",
-    default="markdown",
-    show_default=True,
+    default=None,
     type=click.Choice(["markdown", "text", "html"], case_sensitive=False),
-    help="How --body is authored. markdown renders to HTML on the wire.",
+    help=(
+        "How --body is authored; markdown renders to HTML on the wire. "
+        "Default: markdown, or text when config sets preferences.html_email = false."
+    ),
 )
 @click.option(
     "--keep-quoted",
@@ -3229,7 +3251,7 @@ def mail_update_draft_cmd(
     bcc: tuple[str, ...],
     body: str | None,
     body_file: str | None,
-    body_type: str,
+    body_type: str | None,
     keep_quoted: bool,
     no_signature: bool,
     as_json_flag: bool,

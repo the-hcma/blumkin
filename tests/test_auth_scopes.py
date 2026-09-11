@@ -11,7 +11,7 @@ from blumkin.auth import (
     WO1162425_SCOPES,
     effective_scopes,
 )
-from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig, load_config
 from blumkin.providers.kind import ProviderKind
 
 
@@ -105,6 +105,7 @@ def _cfg(
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.MICROSOFT,
         tags=(),

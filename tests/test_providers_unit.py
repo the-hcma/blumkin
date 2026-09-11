@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig, load_config
 from blumkin.providers import get_provider
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
@@ -126,6 +126,7 @@ def _cfg(*, provider: ProviderKind = ProviderKind.MICROSOFT) -> BlumkinConfig:
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=provider,
         tags=(),

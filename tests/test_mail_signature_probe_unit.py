@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.providers.kind import ProviderKind
 from blumkin.providers.microsoft_mail_probe import (
     _PROBE_SENTINEL,
@@ -31,6 +31,7 @@ def _cfg() -> BlumkinConfig:
         google_oauth_client_file=None,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.MICROSOFT,
         tags=(),

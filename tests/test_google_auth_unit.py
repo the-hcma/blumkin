@@ -11,7 +11,7 @@ import pytest
 from google.auth.exceptions import RefreshError, TransportError
 
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.providers import google_auth
 from blumkin.providers.google_auth import (
     CALENDAR_FREEBUSY_SCOPES,
@@ -241,6 +241,7 @@ def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
         google_oauth_client_file=path,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
         tags=(),

@@ -25,7 +25,7 @@ from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
 from msgraph.generated.models.response_type import ResponseType
 
 from blumkin.cli import main
-from blumkin.config import BlumkinConfig, MailSignatureConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_SUCCESS
 from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
@@ -197,6 +197,7 @@ def _google_cfg(config_dir: Path) -> BlumkinConfig:
         google_oauth_client_file=oauth,
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
         profile="default",
         provider=ProviderKind.GOOGLE,
         tags=(),
