@@ -112,14 +112,24 @@ def _zone(tz_name: str | None, config: BlumkinConfig) -> ZoneInfo:
 
 
 def _as_list(value: Any, *, split_commas: bool = True) -> list[str]:
+    """Normalize a CLI-repeated or MCP-array arg value into a flat list of strings.
+
+    Click's ``multiple=True`` never splits on commas itself, so a single
+    ``--fields a,b`` (or ``--to``/``--cc``/...) CLI invocation arrives here as
+    ``["a,b"]`` - a one-element list, not the two-element list a bare MCP string
+    ``"a,b"`` would produce. Splitting every element (not just a bare top-level
+    string) makes the two call shapes behave identically, so "repeatable or
+    comma-separated" is true from both the CLI and MCP.
+    """
     if value is None:
         return []
-    if isinstance(value, str):
-        if not split_commas:
-            text = value.strip()
-            return [text] if text else []
-        return [part.strip() for part in value.split(",") if part.strip()]
-    return [str(part) for part in value]
+    parts = [value] if isinstance(value, str) else [str(part) for part in value]
+    if not split_commas:
+        return [part.strip() for part in parts if part.strip()]
+    result: list[str] = []
+    for part in parts:
+        result.extend(piece.strip() for piece in part.split(",") if piece.strip())
+    return result
 
 
 def _coerce(value: Any, *, arg: dict[str, Any], tz_name: str | None, config: BlumkinConfig) -> Any:
@@ -330,13 +340,19 @@ def _filter_fields(payload: dict[str, Any], fields: list[str]) -> dict[str, Any]
 
     Raises ``ValueError`` (a usage error, same as any other dispatch-layer
     ``ValueError``) naming the valid keys when a requested field does not exist
-    on the first item - there is nothing sensible to return for a typo'd name,
-    and failing loud beats silently dropping it.
+    on any item - there is nothing sensible to return for a typo'd name, and
+    failing loud beats silently dropping it. Validated against the union of
+    every item's keys, not just the first: some skills add a key to every item
+    only conditionally (e.g. ``mail.thread --full`` adds ``body``/``body_type``
+    to every item, but only when ``--full`` was passed at all), so the first
+    item is not guaranteed to carry every key the rest of the response does.
     """
     items = payload.get("items")
     if not items:
         return payload
-    valid = set(items[0])
+    valid: set[str] = set()
+    for item in items:
+        valid.update(item)
     unknown = [name for name in fields if name not in valid]
     if unknown:
         raise ValueError(f"unknown --fields value(s) {unknown!r}; valid fields are {sorted(valid)}")

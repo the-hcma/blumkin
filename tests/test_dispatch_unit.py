@@ -375,6 +375,7 @@ def test_postprocess_fields_is_a_noop_on_an_empty_items_list() -> None:
 
 
 def test_postprocess_fields_accepts_comma_separated_string() -> None:
+    # The MCP shape: a bare comma-joined string.
     payload = _items_payload({"subject": "s", "from_email": "a@x.com", "id": "m1"})
     result = _run_payload(
         "mail.list",
@@ -382,6 +383,49 @@ def test_postprocess_fields_accepts_comma_separated_string() -> None:
         provider=_items_provider("mail_list", payload),
     )
     assert set(result["items"][0]) == {"subject", "from_email"}
+
+
+def test_postprocess_fields_accepts_the_cli_repeatable_shape() -> None:
+    # Review follow-up (blocker): Click's `multiple=True` never splits on commas
+    # itself, so a single `--fields a,b` CLI invocation arrives as a *list*
+    # containing one comma-joined string (["a,b"]), not the two-element list a
+    # bare MCP string would produce. Previously only the MCP shape was tested,
+    # which hid that this list form fell straight through `_as_list` unsplit and
+    # was then rejected by `_filter_fields` as one unknown field.
+    payload = _items_payload({"subject": "s", "from_email": "a@x.com", "id": "m1"})
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["subject,from_email"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert set(result["items"][0]) == {"subject", "from_email"}
+
+    # The other CLI form: two separate --fields flags, already a real two-element
+    # list with no embedded commas - must keep working unchanged.
+    result = _run_payload(
+        "mail.list",
+        {"top": 10, "fields": ["subject", "from_email"]},
+        provider=_items_provider("mail_list", payload),
+    )
+    assert set(result["items"][0]) == {"subject", "from_email"}
+
+
+def test_postprocess_fields_validates_against_the_union_of_item_keys() -> None:
+    # Review follow-up: mail.thread --full adds body/body_type to every item, but
+    # only when --full was passed - validating against items[0] alone is
+    # incidentally correct only because that key happens to be uniform within one
+    # response. Pin the union explicitly with items that legitimately differ.
+    payload = _items_payload(
+        {"subject": "s1", "id": "m1"},
+        {"subject": "s2", "id": "m2", "folder": "inbox"},
+    )
+    result = _run_payload(
+        "mail.search",
+        {"query": "q", "fields": ["folder"]},
+        provider=_items_provider("mail_search", payload),
+    )
+    assert result["items"][0] == {"folder": None}
+    assert result["items"][1] == {"folder": "inbox"}
 
 
 @pytest.mark.parametrize(

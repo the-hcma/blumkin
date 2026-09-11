@@ -425,7 +425,14 @@ def format_view_human(payload: dict[str, Any]) -> list[str]:
         lines.append("  (none)")
         return lines
     for item in payload["items"]:
-        when = "all day" if item.get("is_all_day") else f"{item['start']} → {item['end']}"
+        # --fields can narrow an item down to a subset that omits start/end (or
+        # is_all_day itself), so read every key with .get() like the rest of the
+        # human formatters do - a direct item["start"] would KeyError instead of
+        # just printing a shorter line.
+        if item.get("is_all_day"):
+            when = "all day"
+        else:
+            when = f"{item.get('start', '?')} → {item.get('end', '?')}"
         subject = item.get("subject") or "(no subject)"
         loc = item.get("location") or ""
         suffix = f" @ {loc}" if loc else ""

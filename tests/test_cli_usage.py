@@ -800,6 +800,76 @@ def test_mail_list_wires_options_and_emits_json(monkeypatch) -> None:
     assert '"sentitems"' in (result.output or "")
 
 
+def test_mail_list_fields_narrows_items_via_the_cli(monkeypatch) -> None:
+    # Review follow-up (blocker): --fields is post-processed in dispatch.py, not
+    # passed to the skill function, so a test that only calls run_skill directly
+    # (as the dispatch unit tests do) cannot catch a broken Click wiring or a
+    # comma-split regression specific to how Click hands the value over. Drive it
+    # through the real CLI, both comma-separated (one flag) and repeated (two
+    # flags), matching the help text's "repeatable or comma-separated".
+    import json
+
+    async def _list(**_kwargs):
+        return {
+            "folder": "inbox",
+            "items": [
+                {"subject": "s1", "from_email": "a@x.com", "id": "m1", "body_preview": "p1"},
+                {"subject": "s2", "from_email": "b@x.com", "id": "m2", "body_preview": "p2"},
+            ],
+            "orderby": None,
+            "top": 5,
+        }
+
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_list", _list)
+    runner = CliRunner()
+
+    comma = runner.invoke(main, ["mail", "list", "--fields", "subject,from_email", "--json"])
+    assert comma.exit_code == EXIT_SUCCESS
+    items = json.loads(comma.stdout)["items"]
+    assert items == [
+        {"subject": "s1", "from_email": "a@x.com"},
+        {"subject": "s2", "from_email": "b@x.com"},
+    ]
+
+    repeated = runner.invoke(
+        main,
+        ["mail", "list", "--fields", "subject", "--fields", "from_email", "--json"],
+    )
+    assert repeated.exit_code == EXIT_SUCCESS
+    assert json.loads(repeated.stdout)["items"] == items
+
+
+def test_mail_list_fields_unknown_name_is_a_usage_error(monkeypatch) -> None:
+    async def _list(**_kwargs):
+        return {"folder": "inbox", "items": [{"subject": "s1"}], "orderby": None, "top": 5}
+
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_list", _list)
+    result = CliRunner().invoke(main, ["mail", "list", "--fields", "bogus_field", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    assert "bogus_field" in (result.stderr or "")
+
+
+def test_calendar_view_human_output_tolerates_a_narrowed_field_set(monkeypatch) -> None:
+    # Review follow-up (blocker): format_view_human used to index item["start"] /
+    # item["end"] directly, so --fields subject (without --json) crashed with a
+    # KeyError instead of printing a shorter listing.
+    async def _view(**_kwargs):
+        return {
+            "start": "2026-09-01",
+            "end": "2026-09-08",
+            "timezone": "UTC",
+            "items": [{"subject": "Standup"}],
+        }
+
+    monkeypatch.setattr("blumkin.providers.microsoft.calendar_view", _view)
+    result = CliRunner().invoke(
+        main,
+        ["calendar", "view", "--from", "2026-09-01", "--to", "2026-09-08", "--fields", "subject"],
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert "Standup" in result.output
+
+
 def test_mail_list_wires_filters_and_parses_dates(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
