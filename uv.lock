@@ -2,8 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
-[options]
-
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -157,6 +155,7 @@ dependencies = [
     { name = "msal" },
     { name = "msgraph-sdk" },
     { name = "python-docx" },
+    { name = "tomlkit" },
 ]
 
 [package.optional-dependencies]
@@ -193,6 +192,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "python-docx", specifier = ">=1.2.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.5" },
+    { name = "tomlkit", specifier = ">=0.15.1" },
 ]
 provides-extras = ["dev", "mcp"]
 
@@ -1525,6 +1525,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7a/f8/8f2b708394a6371e9b0e1cabdaf1be314f6b28c3697786a0a7e5f31ee9bf/std_uritemplate-2.0.12.tar.gz", hash = "sha256:c245e6d9c6804e435c45fa94ee4a3c8a57e08aeeb45af261101cb0d513964534", size = 6557, upload-time = "2026-07-16T11:04:14.654Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/53/9b/77a4936805a7853189ca040b698f7c8d6a1d4ca88c09a880a95b8d544d6a/std_uritemplate-2.0.12-py3-none-any.whl", hash = "sha256:42b702d8d7eb8c13b586c527b8f2edaff456b69fee88e817d2f5dc5f088b8765", size = 7095, upload-time = "2026-07-16T11:04:15.43Z" },
+]
+
+[[package]]
+name = "tomlkit"
+version = "0.15.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/96/e07752635b98536177fa1f37671c8f3cdde2e724c6bcf6034b2cfb571565/tomlkit-0.15.1.tar.gz", hash = "sha256:e25bbf38843005246210a12982776f27f99cb9be67160e14434d0c0d21ee1e97", size = 180129, upload-time = "2026-07-17T01:48:04.562Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/bc/8c13eb66537dce1d2bd3a57132902f38d0e7f5bb46fa9f4daed9fe9d76ee/tomlkit-0.15.1-py3-none-any.whl", hash = "sha256:177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304", size = 49449, upload-time = "2026-07-17T01:48:05.728Z" },
 ]
 
 [[package]]

@@ -39,6 +39,7 @@ dependencies = [
     "msal>=1.38.0",
     "msgraph-sdk>=1.61.0",
     "python-docx>=1.2.0",
+    "tomlkit>=0.15.1",
 ]
 
 [project.optional-dependencies]
