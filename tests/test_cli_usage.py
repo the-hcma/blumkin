@@ -1342,7 +1342,7 @@ def test_mail_draft_passes_repeated_attachments_through(tmp_path, monkeypatch) -
         ],
     )
     assert result.exit_code == EXIT_SUCCESS
-    assert seen["attach"] == (str(first), str(second))
+    assert seen["attach"] == [str(first), str(second)]
 
 
 def test_mail_draft_wires_repeatable_recipients(monkeypatch) -> None:
@@ -1414,7 +1414,7 @@ def test_mail_update_draft_accepts_attach_without_other_fields(tmp_path, monkeyp
         ["mail", "update-draft", "--id", "d", "--attach", str(source), "--json"],
     )
     assert result.exit_code == EXIT_SUCCESS
-    assert seen["attach"] == (str(source),)
+    assert seen["attach"] == [str(source)]
 
 
 def test_mail_draft_missing_attachment_exits_usage(tmp_path, monkeypatch) -> None:

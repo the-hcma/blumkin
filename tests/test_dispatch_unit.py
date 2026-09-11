@@ -61,6 +61,84 @@ def test_mail_list_since_is_tz_aware_only_when_present() -> None:
     assert "until" not in kwargs
 
 
+def test_mail_draft_attach_is_a_list_of_whole_paths_not_characters() -> None:
+    # Regression for issue #250: an MCP client may send a single path as a bare
+    # string rather than a one-element array. Without `multiple: True` on the
+    # `--attach` spec, `_coerce` passed that string straight through, and
+    # `mail_draft` iterated it character by character.
+    prov = _provider("mail_draft")
+    _run(
+        "mail.draft",
+        {"to": ["a@x.com"], "subject": "s", "attach": "/tmp/report.pdf"},
+        provider=prov,
+    )
+    kwargs = prov.mail_draft.await_args.kwargs
+    assert kwargs["attach"] == ["/tmp/report.pdf"]
+
+
+def test_mail_update_draft_attach_is_a_list_of_whole_paths_not_characters() -> None:
+    prov = _provider("mail_update_draft")
+    _run(
+        "mail.update-draft",
+        {"id": "m1", "attach": "/tmp/report.pdf"},
+        provider=prov,
+    )
+    kwargs = prov.mail_update_draft.await_args.kwargs
+    assert kwargs["attach"] == ["/tmp/report.pdf"]
+
+
+def test_mail_draft_attach_does_not_split_a_comma_in_the_filename() -> None:
+    # Review follow-up on #250/#251: comma-splitting a bare string is a documented
+    # convenience for `email` args only. `--attach` is `type: path`, so a single
+    # path containing a literal comma (a real, if unusual, filename) must survive
+    # as one whole path, not be torn into two nonexistent ones.
+    prov = _provider("mail_draft")
+    _run(
+        "mail.draft",
+        {"to": ["a@x.com"], "subject": "s", "attach": "/tmp/Q3, final.pdf"},
+        provider=prov,
+    )
+    kwargs = prov.mail_draft.await_args.kwargs
+    assert kwargs["attach"] == ["/tmp/Q3, final.pdf"]
+
+
+def test_mail_draft_attach_list_of_paths_is_untouched() -> None:
+    # A schema-following MCP client sends an array, not a string - each element is
+    # already a whole path and must not be re-split on commas either.
+    prov = _provider("mail_draft")
+    _run(
+        "mail.draft",
+        {"to": ["a@x.com"], "subject": "s", "attach": ["/tmp/Q3, final.pdf", "/tmp/b.txt"]},
+        provider=prov,
+    )
+    kwargs = prov.mail_draft.await_args.kwargs
+    assert kwargs["attach"] == ["/tmp/Q3, final.pdf", "/tmp/b.txt"]
+
+
+def test_calendar_suggest_with_still_splits_a_comma_separated_string() -> None:
+    # Review follow-up on #251: `calendar.suggest --with` is `multiple: True` but,
+    # like every other comma-splitting `multiple` arg in the catalog (--to, --cc,
+    # --id, ...), it also carries an explicit `coerce: "list"` entry - handled by
+    # `_coerce`'s `coerce == "list"` branch, not the `arg.get("multiple")` one this
+    # PR touches. That branch is unreachable for any cataloged `email` arg today,
+    # so this only pins the (previously untested) coerce="list" path: the MCP shape
+    # a schema-following client sends when it joins several addresses into one
+    # string rather than an array.
+    prov = _provider("calendar_suggest")
+    _run(
+        "calendar.suggest",
+        {
+            "with": "a@x.com, b@y.com",
+            "start": "2026-09-01T09:00",
+            "end": "2026-09-01T18:00",
+            "duration": "45m",
+        },
+        provider=prov,
+    )
+    kwargs = prov.calendar_suggest.await_args.kwargs
+    assert kwargs["with_emails"] == ["a@x.com", "b@y.com"]
+
+
 def test_freebusy_and_suggest_coercions() -> None:
     prov = _provider("calendar_suggest")
     _run(

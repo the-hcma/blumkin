@@ -103,10 +103,13 @@ def _zone(tz_name: str | None, config: BlumkinConfig) -> ZoneInfo:
     return ZoneInfo(tz_name or config.default_tz)
 
 
-def _as_list(value: Any) -> list[str]:
+def _as_list(value: Any, *, split_commas: bool = True) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
+        if not split_commas:
+            text = value.strip()
+            return [text] if text else []
         return [part.strip() for part in value.split(",") if part.strip()]
     return [str(part) for part in value]
 
@@ -137,7 +140,12 @@ def _coerce(value: Any, *, arg: dict[str, Any], tz_name: str | None, config: Blu
 
     arg_type = arg["type"]
     if arg.get("multiple"):
-        return _as_list(value)
+        # Every `multiple` arg that comma-splits today (--to, --cc, --with, --id,
+        # ...) carries its own `coerce: "list"` entry, handled above. This branch is
+        # only reached by a `multiple` arg with no such override (currently just
+        # `--attach`), where a bare string is one whole value and a literal comma in
+        # it (a filename, say) must not be treated as a separator.
+        return _as_list(value, split_commas=False)
     if arg_type == "email" and isinstance(value, str) and "," in value:
         return _as_list(value)
     if arg_type == "flag":

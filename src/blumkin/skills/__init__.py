@@ -1143,6 +1143,7 @@ SKILLS: list[SkillSpec] = [
                 "name": "--attach",
                 "required": False,
                 "type": "path",
+                "multiple": True,
                 "note": "repeatable; each file must be under 2 MB",
             },
             {
@@ -1514,6 +1515,7 @@ SKILLS: list[SkillSpec] = [
                 "name": "--attach",
                 "required": False,
                 "type": "path",
+                "multiple": True,
                 "note": "repeatable; adds to the draft's existing attachments",
             },
             {
