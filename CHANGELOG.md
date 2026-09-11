@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.7.0...blumkin-v1.0.0) (2026-09-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** drop legacy flat config.toml layout ([#246](https://github.com/the-hcma/blumkin/issues/246))
+
+### Features
+
+* **config:** add font/HTML-email preferences with conflict warning ([#247](https://github.com/the-hcma/blumkin/issues/247)) ([f8749d5](https://github.com/the-hcma/blumkin/commit/f8749d52dc27d362d12fa011ae228bf6ff2bdcc8))
+* **config:** drop legacy flat config.toml layout ([#246](https://github.com/the-hcma/blumkin/issues/246)) ([fb5a318](https://github.com/the-hcma/blumkin/commit/fb5a3182ebace69927c7985f1212842d8f4d98ea))
+
 ## [0.7.0](https://github.com/the-hcma/blumkin/compare/blumkin-v0.6.0...blumkin-v0.7.0) (2026-09-10)
 
 
