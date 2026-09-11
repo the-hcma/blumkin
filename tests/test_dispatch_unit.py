@@ -116,11 +116,14 @@ def test_mail_draft_attach_list_of_paths_is_untouched() -> None:
 
 
 def test_calendar_suggest_with_still_splits_a_comma_separated_string() -> None:
-    # Review follow-up on #251: split_commas=arg_type == "email" must still split
-    # for `email` multiples like --with - only `path`/`string` multiples opt out.
-    # `calendar.suggest --with` (catalog: type email, multiple True) is the MCP
-    # shape a schema-following client sends when it joins several addresses into
-    # one string rather than an array.
+    # Review follow-up on #251: `calendar.suggest --with` is `multiple: True` but,
+    # like every other comma-splitting `multiple` arg in the catalog (--to, --cc,
+    # --id, ...), it also carries an explicit `coerce: "list"` entry - handled by
+    # `_coerce`'s `coerce == "list"` branch, not the `arg.get("multiple")` one this
+    # PR touches. That branch is unreachable for any cataloged `email` arg today,
+    # so this only pins the (previously untested) coerce="list" path: the MCP shape
+    # a schema-following client sends when it joins several addresses into one
+    # string rather than an array.
     prov = _provider("calendar_suggest")
     _run(
         "calendar.suggest",
