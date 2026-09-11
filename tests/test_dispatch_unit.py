@@ -161,6 +161,29 @@ def test_calendar_suggest_with_still_splits_a_comma_separated_string() -> None:
     assert kwargs["with_emails"] == ["a@x.com", "b@y.com"]
 
 
+def test_calendar_suggest_with_splits_a_comma_inside_one_list_element() -> None:
+    # Review follow-up on #259: the CLI array shape (a real list, e.g. `--with`
+    # passed once with an embedded comma, or the MCP array-with-one-joined-string
+    # shape) must split the same way the bare MCP string does above - this is the
+    # `coerce: "list"` contract every comma-splitting `multiple` arg shares
+    # (--to, --cc, --id, --with, --optional), not something specific to --fields.
+    # A bare email address never legitimately contains a literal comma, so
+    # splitting here is always the intended outcome for this field.
+    prov = _provider("calendar_suggest")
+    _run(
+        "calendar.suggest",
+        {
+            "with": ["a@x.com, b@y.com"],
+            "start": "2026-09-01T09:00",
+            "end": "2026-09-01T18:00",
+            "duration": "45m",
+        },
+        provider=prov,
+    )
+    kwargs = prov.calendar_suggest.await_args.kwargs
+    assert kwargs["with_emails"] == ["a@x.com", "b@y.com"]
+
+
 def test_freebusy_and_suggest_coercions() -> None:
     prov = _provider("calendar_suggest")
     _run(
