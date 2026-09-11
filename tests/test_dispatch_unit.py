@@ -517,6 +517,29 @@ def test_postprocess_applies_to_all_six_items_skills(
         assert result["items"][0]["body_preview"] == "y" * 150 + "..."
 
 
+def test_postprocess_mail_thread_full_body_survives_truncation_and_fields() -> None:
+    # Review follow-up: mail.thread is the one skill in _ITEMS_SKILLS whose items
+    # gain a full `body`/`body_type` when `--full` is passed (mail.py:1277-1279).
+    # The parametrized "all six skills" test above only exercises a short
+    # subject/body_preview item for mail.thread, so nothing actually proves the
+    # documented promise that --full's full body stays untouched while only
+    # body_preview is capped - pin it directly against a real --full-shaped item.
+    long_body = "b" * 300
+    long_preview = "p" * 200
+    payload = _items_payload(
+        {"subject": "s", "body_preview": long_preview, "body": long_body, "body_type": "text"}
+    )
+    result = _run_payload(
+        "mail.thread",
+        {"id": "m1", "full": True, "fields": ["body", "body_type", "body_preview"]},
+        provider=_items_provider("mail_thread", payload),
+    )
+    item = result["items"][0]
+    assert item["body"] == long_body
+    assert item["body_type"] == "text"
+    assert item["body_preview"] == "p" * 150 + "..."
+
+
 def test_postprocess_is_a_noop_for_skills_outside_items_skills() -> None:
     # A payload with no "items" key can't distinguish "skipped because
     # calendar.today isn't in _ITEMS_SKILLS" from "skipped because there's no
