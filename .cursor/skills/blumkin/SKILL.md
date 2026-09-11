@@ -271,17 +271,16 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
 ## Config
 
 - Default: `~/.config/blumkin/config.toml`. Named profiles live under
-  `[profiles.<name>]`; token files under `profiles/<name>/`. Legacy flat toml
-  (no `[profiles.*]`) is one implicit profile `default` with tokens in the
-  config dir root.
+  `[profiles.<name>]`; token files under `profiles/<name>/`. Flat top-level
+  keys (no `[profiles.*]`) are not a valid layout - wrap them in
+  `[profiles.<name>]`.
 - Select with `--profile <name-or-tag>` or `BLUMKIN_PROFILE` (non-secret). 
   `BLUMKIN_CONFIG_DIR` still selects the config **directory** only. Never invent
   or commit secrets; no credential env overrides.
 - Keep that directory a real local folder (not a symlink into a shared tree). Token
   cache and auth-record writes refuse symlinked secret paths and report
   `secret_write_failed` (exit `1`) instead of looping on `auth login`.
-- **Mail signature (optional):** under the profile, e.g. `[profiles.work.mail.signature]`
-  (legacy: `[mail.signature]`):
+- **Mail signature (optional):** under the profile, e.g. `[profiles.work.mail.signature]`:
 
   ```toml
   [profiles.work.mail.signature]

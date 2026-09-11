@@ -69,9 +69,10 @@ Safe discovery keys only (`name`, `provider`, `email`, `tags`, `default_tz`,
 `auth_present`, `is_default`, plus envelope `count` / `default_profile`). Never
 read `config.toml` or token files for secrets.
 
-Legacy single-file layouts (flat keys, no `[profiles.*]`) appear as one profile
-named `default`. Separate directories via `BLUMKIN_CONFIG_DIR` still work but are
-no longer the preferred multi-account setup.
+Flat top-level keys (no `[profiles.*]`) are not a valid `config.toml` layout -
+`profiles list` and any command needing config fail closed with a usage error
+naming the offending keys. Separate directories via `BLUMKIN_CONFIG_DIR` still
+work but are not the preferred multi-account setup; use named profiles instead.
 
 Optional **operator-context files** (`email-context.md`, `tasks/<name>.md`)
 follow the same per-profile shape: a `<config-dir>` base, merged with the active

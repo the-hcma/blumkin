@@ -47,13 +47,22 @@ def test_credential_env_vars_do_not_override_toml(tmp_path: Path, monkeypatch) -
     assert cfg.default_tz == "UTC"
 
 
-def test_missing_tenant_and_tz_have_no_code_defaults(tmp_path: Path, monkeypatch) -> None:
+def test_flat_config_without_profiles_table_raises(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
-    cfg = load_config()
-    assert cfg.tenant_id == ""
-    assert cfg.default_tz == ""
-    assert cfg.provider.value == "microsoft"
+    (tmp_path / "config.toml").write_text('client_id = "abc"\ntenant_id = "contoso.com"\n')
+    with pytest.raises(ProviderConfigError, match=r"must use \[profiles\.<name>\]"):
+        load_config()
+
+
+def test_flat_config_with_default_profile_excludes_it_from_the_stray_keys(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """default_profile is a recognized top-level key even without [profiles.*] -
+    the error must name only the keys that are actually stray."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('default_profile = "work"\nclient_id = "abc"\n')
+    with pytest.raises(ProviderConfigError, match=r"flat top-level keys \(client_id\)"):
+        load_config()
 
 
 def test_google_oauth_client_file_loads_client_id(tmp_path: Path, monkeypatch) -> None:
@@ -75,11 +84,13 @@ def test_google_oauth_client_file_loads_client_id(tmp_path: Path, monkeypatch) -
     assert cfg.google_oauth_client_file == oauth
 
 
-def test_flat_config_without_profiles_table_raises(tmp_path: Path, monkeypatch) -> None:
+def test_missing_tenant_and_tz_have_no_code_defaults(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('client_id = "abc"\ntenant_id = "contoso.com"\n')
-    with pytest.raises(ProviderConfigError, match=r"must use \[profiles\.<name>\]"):
-        load_config()
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    cfg = load_config()
+    assert cfg.tenant_id == ""
+    assert cfg.default_tz == ""
+    assert cfg.provider.value == "microsoft"
 
 
 def _write_multi_profile(tmp_path: Path, oauth: Path | None = None) -> None:

@@ -350,7 +350,7 @@ def _authed_provider(address: str) -> MagicMock:
 
 
 def _flat_config(email: str) -> str:
-    """A single unnamed profile - implicitly selected since it's the only one."""
+    """A single named "default" profile - implicitly selected since it's the only one."""
     return (
         "[profiles.default]\n"
         'client_id = "abc"\n'

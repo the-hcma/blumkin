@@ -5,8 +5,9 @@ local config profile, and smoke-test calendar/mail reads. Keep secrets out of
 git, chat, and environment variables.
 
 Prefer a **named profile** (for example `personal`) in the same
-`~/.config/blumkin/config.toml` as Microsoft work. Legacy separate directories via
-`BLUMKIN_CONFIG_DIR` (for example `~/.config/blumkin-google/`) still work.
+`~/.config/blumkin/config.toml` as Microsoft work. A separate directory via
+`BLUMKIN_CONFIG_DIR` (for example `~/.config/blumkin-google/`) also still works,
+but is not the preferred multi-account setup.
 
 ---
 
