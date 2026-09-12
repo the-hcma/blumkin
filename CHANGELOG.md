@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.1.0...blumkin-v1.1.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **docs:** replace docs_update body correctly instead of appending ([#265](https://github.com/the-hcma/blumkin/issues/265)) ([9f86104](https://github.com/the-hcma/blumkin/commit/9f861041abcae6aba055e7ab145c5585f53e1fb2))
+* **docs:** support block quotes and decode HTML entities in docs create ([#266](https://github.com/the-hcma/blumkin/issues/266)) ([a22ef6d](https://github.com/the-hcma/blumkin/commit/a22ef6d8ce13b4ff38fb1cb02ceabf194c1f783a))
+
+
+### Documentation
+
+* attribute the MIT license to the copyright holder in the README ([#267](https://github.com/the-hcma/blumkin/issues/267)) ([a36c7cc](https://github.com/the-hcma/blumkin/commit/a36c7ccc59ef4b299b9df92aae7739a9e4be5d4b))
+
 ## [1.1.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.0.0...blumkin-v1.1.0) (2026-09-11)
 
 
