@@ -5,11 +5,13 @@ Both provider backends render the same :class:`DocBlock` list - Google via
 format (and one test fixture) covers both. Constructs outside the subset degrade
 to plain text; nothing here raises on unrecognised Markdown.
 
-Supported subset: ATX headings (``#``-``######``), paragraphs, ``**bold**`` /
+Supported subset: ATX headings (``#``-``######``), paragraphs, ``> `` block
+quotes (rendered as an indented paragraph, not a bullet), ``**bold**`` /
 ``*italic*`` / ``` `code` ``` / ``[text](url)`` inline, ``-``/``*``/``+`` and
 ``1.`` lists (one nesting level), fenced code blocks, ``---`` horizontal rules,
 and pipe tables. Tables render as a fenced-style monospace grid in v1 (see
-issue #194 phase 4 for native tables).
+issue #194 phase 4 for native tables). Common named HTML entities
+(``&amp;``, ``&nbsp;``, ...) are decoded via :func:`html.unescape`.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from typing import Any, Literal
 
 from blumkin.output import hyperlink
 
-DocBlockKind = Literal["heading", "paragraph", "bullet", "number", "code", "rule", "table"]
+DocBlockKind = Literal["heading", "paragraph", "quote", "bullet", "number", "code", "rule", "table"]
 
 # A whole authored document is held in memory (and, for Microsoft, turned into an
 # in-memory .docx); cap the input so a runaway `--body-file` cannot exhaust it.
@@ -101,6 +103,7 @@ def parse_markdown(source: str, *, hard_breaks: bool = False) -> list[DocBlock]:
     lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     blocks: list[DocBlock] = []
     para: list[str] = []
+    quote: list[str] = []
     index = 0
     total = len(lines)
     para_sep = "\n" if hard_breaks else " "
@@ -113,12 +116,21 @@ def parse_markdown(source: str, *, hard_breaks: bool = False) -> list[DocBlock]:
         if text:
             blocks.append(DocBlock(kind="paragraph", spans=parse_inline(text)))
 
+    def flush_quote() -> None:
+        if not quote:
+            return
+        text = para_sep.join(part.strip() for part in quote).strip()
+        quote.clear()
+        if text:
+            blocks.append(DocBlock(kind="quote", spans=parse_inline(text)))
+
     while index < total:
         line = lines[index]
         stripped = line.strip()
 
         if stripped.startswith("```"):
             flush_paragraph()
+            flush_quote()
             index += 1
             buffer: list[str] = []
             while index < total and lines[index].strip() != "```":
@@ -130,8 +142,17 @@ def parse_markdown(source: str, *, hard_breaks: bool = False) -> list[DocBlock]:
 
         if not stripped:
             flush_paragraph()
+            flush_quote()
             index += 1
             continue
+
+        quote_line = _QUOTE_RE.match(stripped)
+        if quote_line:
+            flush_paragraph()
+            quote.append(quote_line.group(1))
+            index += 1
+            continue
+        flush_quote()
 
         if _RULE_RE.fullmatch(stripped):
             flush_paragraph()
@@ -186,11 +207,18 @@ def parse_markdown(source: str, *, hard_breaks: bool = False) -> list[DocBlock]:
         index += 1
 
     flush_paragraph()
+    flush_quote()
     return blocks
 
 
 def parse_inline(text: str, *, bold: bool = False, italic: bool = False) -> tuple[DocSpan, ...]:
-    """Split one line of text into formatted spans (recurses for nested emphasis)."""
+    """Split one line of text into formatted spans (recurses for nested emphasis).
+
+    Decodes common named HTML entities (``&amp;``, ``&nbsp;``, ...) first -
+    previously they passed through literally into the rendered document
+    (issue #264).
+    """
+    text = _html.unescape(text)
     spans: list[DocSpan] = []
     pos = 0
     for match in _INLINE_RE.finditer(text):
@@ -300,6 +328,8 @@ def render_email_html(blocks: list[DocBlock]) -> str:
         elif block.kind == "paragraph":
             para = spans_to_html(block.spans).replace("\n", "<br>")
             out.append(f"<p>{para}</p>")
+        elif block.kind == "quote":
+            out.append(f"<blockquote>{spans_to_html(block.spans)}</blockquote>")
         elif block.kind == "code":
             out.append(f"<pre><code>{_html.escape(block.code_text)}</code></pre>")
         elif block.kind == "rule":
@@ -374,6 +404,7 @@ _INLINE_RE = re.compile(
     r"|(?P<i2>(?<![\w_])_(?P<i2t>[^_\s](?:[^_]*[^_\s])?)_)"
 )
 _LIST_RE = re.compile(r"(\s*)([-*+]|\d+[.)])\s+(.*)")
+_QUOTE_RE = re.compile(r">\s?(.*)")
 _RULE_RE = re.compile(r"(-{3,}|\*{3,}|_{3,})")
 _SAFE_LINK_SCHEME = re.compile(r"(?i)^(?:https?:|mailto:|tel:)")
 
