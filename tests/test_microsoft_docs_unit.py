@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from docx import Document
+from docx.shared import Pt
 from kiota_abstractions.method import Method
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
@@ -180,6 +181,18 @@ def test_docs_create_renders_every_supported_block(monkeypatch: pytest.MonkeyPat
     assert "Heading 1" in styles
     assert "List Bullet" in styles and "List Bullet 2" in styles
     assert "1. n0" in [p.text for p in document.paragraphs]  # numbered marker is literal text
+
+
+def test_docs_create_renders_a_block_quote_as_an_indented_paragraph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client()
+    _run(client, monkeypatch, title="T", body="> a quote")
+    (upload,) = [c for c in client.calls if ":/content" in c.url_template]
+    (paragraph,) = Document(io.BytesIO(bytes(upload.content))).paragraphs
+    assert paragraph.text == "a quote"
+    assert paragraph.paragraph_format.left_indent == Pt(36)
+    assert paragraph.style.name not in ("List Bullet", "List Bullet 2")
 
 
 def test_docs_create_restarts_numbering_for_each_ordered_list(

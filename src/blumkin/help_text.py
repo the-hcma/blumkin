@@ -482,8 +482,9 @@ created on the spot, intermediate folders included. An ambiguous segment on
 Google is exit 2 - pass the folder id via `blumkin drive move` instead.
 
 The Markdown subset is headings, bold / italic / code / links, bullet and
-numbered lists, fenced code, rules, and simple tables; anything else renders as
-plain text. Use ASCII hyphens, not em dashes.
+numbered lists, block quotes (an indent, not a bullet), fenced code, rules,
+and simple tables; anything else renders as plain text. Use ASCII hyphens,
+not em dashes.
 """
 
 DOCS_EPILOG = """

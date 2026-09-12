@@ -365,6 +365,20 @@ def _style_requests(block: DocBlock, start: int, end: int) -> list[dict[str, Any
                 }
             }
         )
+    elif block.kind == "quote":
+        # No native Docs "blockquote" - an indent is the closest non-bulleted
+        # equivalent (issue #264: a plain leading tab/spaces was silently
+        # stripped, and `- ` was the only thing that actually indented, but
+        # that draws a bullet).
+        requests.append(
+            {
+                "updateParagraphStyle": {
+                    "range": {"startIndex": start, "endIndex": end},
+                    "paragraphStyle": {"indentStart": {"magnitude": 36, "unit": "PT"}},
+                    "fields": "indentStart",
+                }
+            }
+        )
     elif block.kind == "rule":
         requests.append(
             {

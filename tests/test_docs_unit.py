@@ -96,9 +96,34 @@ def test_ragged_pipe_table_renders_without_raising() -> None:
 
 
 def test_out_of_subset_markdown_degrades_to_text() -> None:
-    (block,) = parse_markdown("> a blockquote with an ![image](x.png)")
+    (block,) = parse_markdown("a paragraph with ~~strikethrough~~ text")
     assert block.kind == "paragraph"
-    assert block.spans[0].text.startswith("> a blockquote")
+    assert block.spans == (DocSpan("a paragraph with ~~strikethrough~~ text"),)
+
+
+def test_block_quote_is_its_own_kind_not_a_paragraph() -> None:
+    (block,) = parse_markdown("> a quoted line")
+    assert block.kind == "quote"
+    assert block.spans == (DocSpan("a quoted line"),)
+
+
+def test_block_quote_joins_consecutive_lines_like_a_paragraph() -> None:
+    (block,) = parse_markdown("> line one\n> line two")
+    assert block.kind == "quote"
+    assert block.spans == (DocSpan("line one line two"),)
+
+
+def test_block_quote_is_flushed_by_a_following_paragraph() -> None:
+    blocks = parse_markdown("> quoted\nnot quoted")
+    assert [(b.kind, b.spans[0].text) for b in blocks] == [
+        ("quote", "quoted"),
+        ("paragraph", "not quoted"),
+    ]
+
+
+def test_html_entities_are_decoded() -> None:
+    (block,) = parse_markdown("A &amp; B&nbsp;C &lt;tag&gt;")
+    assert block.spans == (DocSpan("A & B\xa0C <tag>"),)
 
 
 def test_plain_text_format_splits_on_blank_lines_only() -> None:
@@ -119,6 +144,11 @@ def test_render_email_html_maps_blocks_to_semantic_tags() -> None:
         "<ol><li>one</li><li>two</li></ol>"
         "<pre><code>code()</code></pre><hr>"
     )
+
+
+def test_render_email_html_wraps_a_quote_in_blockquote() -> None:
+    html = render_email_html(parse_markdown("> a quote"))
+    assert html == "<blockquote>a quote</blockquote>"
 
 
 def test_render_email_html_renders_tables_with_a_header_row() -> None:
@@ -268,6 +298,20 @@ def _batch_for(tmp_path: Path, body: str) -> list[dict]:
     with _patched(service):
         asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).docs_create(title="T", body=body))
     return service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+
+
+def test_docs_create_renders_a_block_quote_as_an_indented_paragraph(tmp_path: Path) -> None:
+    requests = _batch_for(tmp_path, "> a quote")
+    assert requests[0]["insertText"]["text"] == "a quote\n"
+    indent = next(
+        r["updateParagraphStyle"]
+        for r in requests
+        if "updateParagraphStyle" in r
+        and "indentStart" in r["updateParagraphStyle"]["paragraphStyle"]
+    )
+    assert indent["paragraphStyle"]["indentStart"] == {"magnitude": 36, "unit": "PT"}
+    # No bullet - unlike `- `/`1. `, a quote must not draw a list marker.
+    assert not any("createParagraphBullets" in r for r in requests)
 
 
 def test_docs_create_renders_a_bullet_list_with_nesting(tmp_path: Path) -> None:

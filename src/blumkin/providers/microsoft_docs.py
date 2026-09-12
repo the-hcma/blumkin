@@ -286,6 +286,14 @@ def _render_block(document: DocxDocument, block: DocBlock, *, ordinal: int) -> N
         paragraph.add_run(f"{ordinal}. ")
         _add_runs(paragraph, block.spans)
         return
+    if block.kind == "quote":
+        # No dedicated Word "block quote" style is used here - a left indent is
+        # the closest non-bulleted equivalent, matching the Google backend's
+        # `indentStart` (issue #264).
+        paragraph = document.add_paragraph()
+        paragraph.paragraph_format.left_indent = Pt(36)
+        _add_runs(paragraph, block.spans)
+        return
     if block.kind == "rule":
         document.add_paragraph("_" * 40)
         return
