@@ -294,7 +294,11 @@ def test_docs_create_renders_a_numbered_list(tmp_path: Path) -> None:
 def test_docs_create_renders_a_fenced_code_block(tmp_path: Path) -> None:
     requests = _batch_for(tmp_path, "```\nx = 1\ny = 2\n```")
     assert requests[0]["insertText"]["text"] == "x = 1\ny = 2\n"
-    para = next(r["updateParagraphStyle"] for r in requests if "updateParagraphStyle" in r)
+    para = next(
+        r["updateParagraphStyle"]
+        for r in requests
+        if "updateParagraphStyle" in r and "shading" in r["updateParagraphStyle"]["paragraphStyle"]
+    )
     # backgroundColor is an OptionalColor - the {"color": {...}} wrapper is required.
     assert para["paragraphStyle"]["shading"] == {
         "backgroundColor": {"color": {"rgbColor": {"red": 0.95, "green": 0.95, "blue": 0.95}}}
@@ -329,7 +333,11 @@ def test_docs_create_renders_a_pipe_table_as_a_monospace_grid(tmp_path: Path) ->
     requests = _batch_for(tmp_path, "| A | BB |\n|---|----|\n| 1 | 2 |")
     text = requests[0]["insertText"]["text"]
     assert text == "A | BB\n--+---\n1 | 2 \n"
-    para = next(r["updateParagraphStyle"] for r in requests if "updateParagraphStyle" in r)
+    para = next(
+        r["updateParagraphStyle"]
+        for r in requests
+        if "updateParagraphStyle" in r and "shading" in r["updateParagraphStyle"]["paragraphStyle"]
+    )
     assert "shading" in para["paragraphStyle"]
 
 
@@ -432,6 +440,49 @@ def test_docs_update_replaces_the_body_then_renames(tmp_path: Path) -> None:
         "format": "gdoc",
         "folder": None,
     }
+
+
+def test_docs_update_computes_the_delete_range_from_tabs_content(tmp_path: Path) -> None:
+    # `docs.documents().get(..., includeTabsContent=True)` populates `tabs` and
+    # leaves the legacy top-level `body` unpopulated for any document with tabs
+    # (every document since Workspace's 2024 tabs rollout). Reading only the
+    # top-level `body` here always computed end_index<=2 and silently skipped
+    # the delete - `docs update` appended instead of replacing. Regression for
+    # https://github.com/the-hcma/blumkin/issues/263.
+    service = _service()
+    service.documents.return_value.get.return_value.execute.return_value = {
+        "title": "Old title",
+        "body": {},
+        "tabs": [
+            {
+                "tabId": "t1",
+                "documentTab": {"body": {"content": [{"endIndex": 1}, {"endIndex": 42}]}},
+            }
+        ],
+    }
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", body="hi")
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    assert requests[0] == {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 41}}}
+
+
+def test_docs_update_resets_a_plain_paragraph_to_normal_text(tmp_path: Path) -> None:
+    # The delete range can never remove the body's terminal paragraph mark
+    # (Docs forbids it), so a doc whose old body ended on a heading can leave
+    # new plain text inheriting that heading's style. Regression for
+    # https://github.com/the-hcma/blumkin/issues/263.
+    service = _service()
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(
+                document_id="doc-123", body="plain text"
+            )
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    reset = next(r["updateParagraphStyle"] for r in requests if "updateParagraphStyle" in r)
+    assert reset["paragraphStyle"] == {"namedStyleType": "NORMAL_TEXT"}
 
 
 def test_docs_update_body_only_keeps_the_existing_name(tmp_path: Path) -> None:

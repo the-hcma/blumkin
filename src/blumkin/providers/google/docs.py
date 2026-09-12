@@ -233,11 +233,32 @@ def _block_text(block: DocBlock) -> str:
 
 
 def _body_end_index(document: dict[str, Any]) -> int:
-    """The document's final content index (``documents.get`` ``body.content[-1].endIndex``)."""
-    content = ((document.get("body") or {}).get("content")) or []
+    """The document's final content index, for sizing the pre-insert delete range."""
+    content = _document_body_content(document)
     if not content:
         return 2
     return int(content[-1].get("endIndex", 2))
+
+
+def _document_body_content(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """The single editable body's content list, tabs-content-aware.
+
+    ``docs_update`` fetches with ``includeTabsContent=True`` so the multi-tab
+    guard above can see every tab; that flag populates ``tabs`` and leaves the
+    legacy top-level ``body`` empty for any document with tabs - which is every
+    document since Workspace's 2024 tabs rollout. Reading only ``body`` here
+    made the computed end index always fall back to 2, which skipped the
+    pre-insert delete unconditionally (`docs update` silently appended instead
+    of replacing). Prefer the first tab's body; fall back to the legacy
+    top-level field for any response shape that still uses it.
+    """
+    tabs = document.get("tabs") or []
+    if tabs:
+        tab_body = (tabs[0].get("documentTab") or {}).get("body") or {}
+        content = tab_body.get("content")
+        if content:
+            return content
+    return ((document.get("body") or {}).get("content")) or []
 
 
 def _reparent(drive: Any, *, document_id: str, folder_id: str) -> None:
@@ -280,7 +301,22 @@ def _span_style(span: DocSpan, start: int, end: int) -> dict[str, Any] | None:
 
 
 def _style_requests(block: DocBlock, start: int, end: int) -> list[dict[str, Any]]:
-    requests: list[dict[str, Any]] = []
+    # `docs update`'s delete range can never remove the body's terminal paragraph
+    # mark (Docs forbids it - see `_body_end_index`), so newly inserted text can
+    # land inside a paragraph that survived from the old body and inherit
+    # whatever named style it had (e.g. a stray `HEADING_2`). Reset every
+    # block's own range to `NORMAL_TEXT` up front so leftover styling never
+    # leaks into new content; the heading branch below overrides it right back
+    # for an actual heading.
+    requests: list[dict[str, Any]] = [
+        {
+            "updateParagraphStyle": {
+                "range": {"startIndex": start, "endIndex": end},
+                "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                "fields": "namedStyleType",
+            }
+        }
+    ]
     if block.kind == "heading":
         requests.append(
             {
