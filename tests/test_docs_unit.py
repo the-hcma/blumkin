@@ -523,9 +523,41 @@ def test_docs_update_resets_the_surviving_trailing_paragraph_too(tmp_path: Path)
         )
     requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
     # "New\nbody\n" is 9 UTF-16 units; the surviving mark lands right after it.
-    trailing = requests[-1]["updateParagraphStyle"]
-    assert trailing["range"] == {"startIndex": 10, "endIndex": 11}
+    trailing = next(
+        r["updateParagraphStyle"]
+        for r in requests
+        if "updateParagraphStyle" in r
+        and r["updateParagraphStyle"]["range"] == {"startIndex": 10, "endIndex": 11}
+    )
     assert trailing["paragraphStyle"] == {"namedStyleType": "NORMAL_TEXT"}
+
+
+def test_docs_update_resets_the_trailing_paragraph_before_bullets_strip_tabs(
+    tmp_path: Path,
+) -> None:
+    # createParagraphBullets strips each nested list item's leading tab and
+    # shifts every later index down; the trailing reset is computed from the
+    # tab-inclusive text length, so it must run before any such request, not
+    # after. Regression for https://github.com/the-hcma/blumkin/issues/263
+    # (review finding).
+    service = _service()
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(
+                document_id="doc-123", body="- a\n  - b"
+            )
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    # "a\n\tb\n" (the nested item's leading tab included) is 5 UTF-16 units.
+    trailing_index = next(
+        i
+        for i, r in enumerate(requests)
+        if "updateParagraphStyle" in r
+        and r["updateParagraphStyle"]["range"] == {"startIndex": 6, "endIndex": 7}
+    )
+    bullet_indices = [i for i, r in enumerate(requests) if "createParagraphBullets" in r]
+    assert bullet_indices  # sanity: the nested list did produce bullet requests
+    assert all(trailing_index < i for i in bullet_indices)
 
 
 def test_docs_update_body_only_keeps_the_existing_name(tmp_path: Path) -> None:

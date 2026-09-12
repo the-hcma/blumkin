@@ -161,7 +161,7 @@ async def docs_update(
             requests.append(
                 {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index - 1}}}
             )
-        requests.extend(_batch_requests(blocks))
+        block_requests = _batch_requests(blocks)
         if end_index > 2:
             # The delete above can never remove the body's terminal paragraph
             # mark (Docs forbids it), so that one surviving mark gets pushed
@@ -169,16 +169,26 @@ async def docs_update(
             # per-block style reset too - still carrying whatever named style
             # the *old* body's last paragraph had (e.g. a phantom entry left
             # in the Docs heading outline). Reset it too.
+            #
+            # `new_text_end` counts each nested list item's leading tab, which
+            # `createParagraphBullets` (always last in `block_requests` - see
+            # `_batch_requests`) strips, shifting every later index down. This
+            # request must run *before* those, while the tab-inclusive length
+            # is still the real one - inserting right after `insertText`
+            # (index 0) guarantees that, since nothing between them changes
+            # the document's length.
             new_text_end = 1 + _utf16_len("".join(_block_text(block) for block in blocks))
-            requests.append(
+            block_requests.insert(
+                1 if block_requests else 0,
                 {
                     "updateParagraphStyle": {
                         "range": {"startIndex": new_text_end, "endIndex": new_text_end + 1},
                         "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
                         "fields": "namedStyleType",
                     }
-                }
+                },
             )
+        requests.extend(block_requests)
         if requests:
             execute(docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}))
 
