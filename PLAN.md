@@ -1,5 +1,12 @@
 # Blumkin — CLI plan (review)
 
+> **Historical v1 design doc.** The command tree and phase list below predate
+> Google Workspace support, `docs create`, `mcp serve`, `people resolve`,
+> `profiles`, and other post-v1 features. For the current command surface see
+> `README.md`; for ongoing design decisions see `docs/DECISIONS.md`. Kept here
+> for the original rationale (§1–§10) and because `docs/agent-integration.md`
+> cites §6.1's skill-vs-MCP tradeoff.
+
 Personal Microsoft 365 / Graph **skills CLI**. Named after Rose “Mrs. B” Blumkin.
 
 **Language decision:** **Python 3.14+** with **`uv`** for packaging and local gates (Blumkin is a Graph skills CLI, not a Bot Framework host). End users and agents invoke **`blumkin` on `PATH`**, not `uv run blumkin`.
@@ -533,14 +540,17 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 
 ---
 
-## 11. Open questions (for your review)
+## 11. Open questions (v1 design review — resolved; kept for history)
 
-1. **Config path:** XDG `~/.config/blumkin/` only, or also allow repo-local `.blumkin.toml`?  
-2. **People resolve:** keep `--with "Display Name"` fuzzy match, or require email once `People.Read` lands?  
-3. **Migrate private Graph lab:** leave as lab until Blumkin Phase 2–3, then archive?  
-4. **Default duration** for `calendar create` if `--duration` omitted (propose `30m`)?  
-5. **Skill install:** project-only (`.cursor/skills/blumkin`) vs also document personal `~/.cursor/skills/` for Copilot/Cursor across all repos?  
-6. ~~**MCP later:** skip until a concrete host requires it?~~ Resolved (issue #113): shipped `blumkin mcp serve` as a thin stdio adapter over `run_skill`.  
+All six v1 open questions are resolved by shipped behavior; see the code /
+docs cited below rather than treating any of this as still open.
+
+1. ~~**Config path:** XDG only, or also repo-local `.blumkin.toml`?~~ Resolved: XDG (`~/.config/blumkin/`, or `BLUMKIN_CONFIG_DIR`) only — see `config.py`.
+2. ~~**People resolve:** fuzzy `--with` match, or require email?~~ Resolved (issue #79): `people resolve` ships fail-closed on ambiguous matches.
+3. ~~**Migrate private Graph lab:** leave as lab, then archive?~~ Moot — the lab stays private/out-of-repo; not tracked here.
+4. ~~**Default duration** for `calendar create`?~~ Resolved: defaults to `30m` when `--duration` is omitted.
+5. ~~**Skill install:** project-only vs also personal `~/.cursor/skills/`?~~ Resolved (Phase 5): document both — see `docs/agent-integration.md`.
+6. ~~**MCP later:** skip until a concrete host requires it?~~ Resolved (issue #113): shipped `blumkin mcp serve` as a thin stdio adapter over `run_skill`.
 
 ---
 

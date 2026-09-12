@@ -273,10 +273,10 @@ never committed.
 
 ## Docs
 
-- [`PLAN.md`](./PLAN.md) — CLI design  
+- [`PLAN.md`](./PLAN.md) — original v1 CLI design (historical; open questions resolved in-place, current surface documented above and in `docs/DECISIONS.md`)  
 - [`docs/DECISIONS.md`](./docs/DECISIONS.md) — standing decisions and the design-artifact index  
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — review model and the static-analysis / scanning toolchain  
-- [`HANDOFF.md`](./HANDOFF.md) — session handoff  
+- [`HANDOFF.md`](./HANDOFF.md) — open Identity/scope-grant follow-up (WO1162425) referenced from runtime scope errors  
 - [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
 - [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md) — M1 ship retrospective (#11)  
 - [`docs/agent-integration.md`](./docs/agent-integration.md) — using blumkin from Cursor / Copilot CLI, and the frozen `skills list --json` contract  
