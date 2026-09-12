@@ -192,7 +192,8 @@ def test_docs_create_renders_a_block_quote_as_an_indented_paragraph(
     (paragraph,) = Document(io.BytesIO(bytes(upload.content))).paragraphs
     assert paragraph.text == "a quote"
     assert paragraph.paragraph_format.left_indent == Pt(36)
-    assert paragraph.style.name not in ("List Bullet", "List Bullet 2")
+    style = paragraph.style
+    assert style is None or style.name not in ("List Bullet", "List Bullet 2")
 
 
 def test_docs_create_restarts_numbering_for_each_ordered_list(
