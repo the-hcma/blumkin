@@ -161,7 +161,34 @@ async def docs_update(
             requests.append(
                 {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index - 1}}}
             )
-        requests.extend(_batch_requests(blocks))
+        block_requests = _batch_requests(blocks)
+        if end_index > 2:
+            # The delete above can never remove the body's terminal paragraph
+            # mark (Docs forbids it), so that one surviving mark gets pushed
+            # past every newly inserted block by `insertText` - past every
+            # per-block style reset too - still carrying whatever named style
+            # the *old* body's last paragraph had (e.g. a phantom entry left
+            # in the Docs heading outline). Reset it too.
+            #
+            # `new_text_end` counts each nested list item's leading tab, which
+            # `createParagraphBullets` (always last in `block_requests` - see
+            # `_batch_requests`) strips, shifting every later index down. This
+            # request must run *before* those, while the tab-inclusive length
+            # is still the real one - inserting right after `insertText`
+            # (index 0) guarantees that, since nothing between them changes
+            # the document's length.
+            new_text_end = 1 + _utf16_len("".join(_block_text(block) for block in blocks))
+            block_requests.insert(
+                1 if block_requests else 0,
+                {
+                    "updateParagraphStyle": {
+                        "range": {"startIndex": new_text_end, "endIndex": new_text_end + 1},
+                        "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                        "fields": "namedStyleType",
+                    }
+                },
+            )
+        requests.extend(block_requests)
         if requests:
             execute(docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}))
 
@@ -233,11 +260,41 @@ def _block_text(block: DocBlock) -> str:
 
 
 def _body_end_index(document: dict[str, Any]) -> int:
-    """The document's final content index (``documents.get`` ``body.content[-1].endIndex``)."""
-    content = ((document.get("body") or {}).get("content")) or []
+    """The document's final content index, for sizing the pre-insert delete range."""
+    content = _document_body_content(document)
     if not content:
         return 2
     return int(content[-1].get("endIndex", 2))
+
+
+def _document_body_content(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """The single editable body's content list, tabs-content-aware.
+
+    ``docs_update`` fetches with ``includeTabsContent=True`` so the multi-tab
+    guard above can see every tab; that flag populates ``tabs`` and leaves the
+    legacy top-level ``body`` empty for any document with tabs - which is every
+    document since Workspace's 2024 tabs rollout. Reading only ``body`` here
+    made the computed end index always fall back to 2, which skipped the
+    pre-insert delete unconditionally (`docs update` silently appended instead
+    of replacing). Prefer the first tab's body; fall back to the legacy
+    top-level field only when the response has no ``tabs`` at all.
+
+    A response that *does* carry ``tabs`` but has no readable first-tab
+    ``content`` raises rather than falling back to the (documented-empty)
+    legacy field - silently treating that as "content: []" would recompute
+    ``end_index`` as 2 and skip the delete again, reintroducing exactly the
+    append-instead-of-replace bug this exists to fix, with no error surfaced.
+    """
+    tabs = document.get("tabs") or []
+    if not tabs:
+        return ((document.get("body") or {}).get("content")) or []
+    content = ((tabs[0].get("documentTab") or {}).get("body") or {}).get("content")
+    if content is None:
+        raise DocBodyError(
+            "documents.get returned `tabs` but no readable first-tab body content - "
+            "cannot safely compute the delete range for `docs update`"
+        )
+    return content
 
 
 def _reparent(drive: Any, *, document_id: str, folder_id: str) -> None:
@@ -280,7 +337,22 @@ def _span_style(span: DocSpan, start: int, end: int) -> dict[str, Any] | None:
 
 
 def _style_requests(block: DocBlock, start: int, end: int) -> list[dict[str, Any]]:
-    requests: list[dict[str, Any]] = []
+    # `docs update`'s delete range can never remove the body's terminal paragraph
+    # mark (Docs forbids it - see `_body_end_index`), so newly inserted text can
+    # land inside a paragraph that survived from the old body and inherit
+    # whatever named style it had (e.g. a stray `HEADING_2`). Reset every
+    # block's own range to `NORMAL_TEXT` up front so leftover styling never
+    # leaks into new content; the heading branch below overrides it right back
+    # for an actual heading.
+    requests: list[dict[str, Any]] = [
+        {
+            "updateParagraphStyle": {
+                "range": {"startIndex": start, "endIndex": end},
+                "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                "fields": "namedStyleType",
+            }
+        }
+    ]
     if block.kind == "heading":
         requests.append(
             {

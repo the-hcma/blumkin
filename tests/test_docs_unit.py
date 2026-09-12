@@ -294,7 +294,11 @@ def test_docs_create_renders_a_numbered_list(tmp_path: Path) -> None:
 def test_docs_create_renders_a_fenced_code_block(tmp_path: Path) -> None:
     requests = _batch_for(tmp_path, "```\nx = 1\ny = 2\n```")
     assert requests[0]["insertText"]["text"] == "x = 1\ny = 2\n"
-    para = next(r["updateParagraphStyle"] for r in requests if "updateParagraphStyle" in r)
+    para = next(
+        r["updateParagraphStyle"]
+        for r in requests
+        if "updateParagraphStyle" in r and "shading" in r["updateParagraphStyle"]["paragraphStyle"]
+    )
     # backgroundColor is an OptionalColor - the {"color": {...}} wrapper is required.
     assert para["paragraphStyle"]["shading"] == {
         "backgroundColor": {"color": {"rgbColor": {"red": 0.95, "green": 0.95, "blue": 0.95}}}
@@ -329,7 +333,11 @@ def test_docs_create_renders_a_pipe_table_as_a_monospace_grid(tmp_path: Path) ->
     requests = _batch_for(tmp_path, "| A | BB |\n|---|----|\n| 1 | 2 |")
     text = requests[0]["insertText"]["text"]
     assert text == "A | BB\n--+---\n1 | 2 \n"
-    para = next(r["updateParagraphStyle"] for r in requests if "updateParagraphStyle" in r)
+    para = next(
+        r["updateParagraphStyle"]
+        for r in requests
+        if "updateParagraphStyle" in r and "shading" in r["updateParagraphStyle"]["paragraphStyle"]
+    )
     assert "shading" in para["paragraphStyle"]
 
 
@@ -432,6 +440,134 @@ def test_docs_update_replaces_the_body_then_renames(tmp_path: Path) -> None:
         "format": "gdoc",
         "folder": None,
     }
+
+
+def test_docs_update_computes_the_delete_range_from_tabs_content(tmp_path: Path) -> None:
+    # `docs.documents().get(..., includeTabsContent=True)` populates `tabs` and
+    # leaves the legacy top-level `body` unpopulated for any document with tabs
+    # (every document since Workspace's 2024 tabs rollout). Reading only the
+    # top-level `body` here always computed end_index<=2 and silently skipped
+    # the delete - `docs update` appended instead of replacing. Regression for
+    # https://github.com/the-hcma/blumkin/issues/263.
+    service = _service()
+    service.documents.return_value.get.return_value.execute.return_value = {
+        "title": "Old title",
+        "body": {},
+        "tabs": [
+            {
+                "tabId": "t1",
+                "documentTab": {"body": {"content": [{"endIndex": 1}, {"endIndex": 42}]}},
+            }
+        ],
+    }
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", body="hi")
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    assert requests[0] == {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 41}}}
+
+
+def test_docs_update_resets_a_plain_paragraph_to_normal_text(tmp_path: Path) -> None:
+    # The delete range can never remove the body's terminal paragraph mark
+    # (Docs forbids it), so a doc whose old body ended on a heading can leave
+    # new plain text inheriting that heading's style. Regression for
+    # https://github.com/the-hcma/blumkin/issues/263.
+    service = _service()
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(
+                document_id="doc-123", body="plain text"
+            )
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    # Select by the paragraph's own range (not just "the first
+    # updateParagraphStyle") - the trailing-mark reset from
+    # test_docs_update_resets_the_surviving_trailing_paragraph_too also sets
+    # NORMAL_TEXT and now runs first, so picking the first match would pass
+    # even if `_style_requests` never reset the block itself.
+    reset = next(
+        r["updateParagraphStyle"]
+        for r in requests
+        if "updateParagraphStyle" in r
+        and r["updateParagraphStyle"]["range"] == {"startIndex": 1, "endIndex": 12}
+    )
+    assert reset["paragraphStyle"] == {"namedStyleType": "NORMAL_TEXT"}
+
+
+def test_docs_update_refuses_tabs_with_no_readable_first_tab_body(tmp_path: Path) -> None:
+    # `includeTabsContent=True` should always populate `documentTab` for a
+    # single-tab response; a `tabs` entry with no readable body content is an
+    # unexpected shape blumkin cannot safely compute a delete range for -
+    # silently falling back to the (documented-empty) legacy `body` field
+    # would recompute end_index as 2 and skip the delete again, reintroducing
+    # the append-instead-of-replace bug. Regression for
+    # https://github.com/the-hcma/blumkin/issues/263 (review finding).
+    service = _service()
+    service.documents.return_value.get.return_value.execute.return_value = {
+        "title": "Old title",
+        "body": {},
+        "tabs": [{"tabId": "t1"}],  # no `documentTab` at all
+    }
+    with _patched(service), pytest.raises(DocBodyError, match="readable"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", body="hi")
+        )
+    service.documents.return_value.batchUpdate.assert_not_called()
+
+
+def test_docs_update_resets_the_surviving_trailing_paragraph_too(tmp_path: Path) -> None:
+    # The per-block NORMAL_TEXT resets only cover the *new* blocks' own
+    # ranges. The delete can never remove the body's terminal paragraph mark,
+    # so that mark survives and `insertText` pushes it past every new block -
+    # past every one of those resets - still carrying the *old* body's
+    # trailing style (e.g. a phantom entry left in the Docs heading outline).
+    # Regression for https://github.com/the-hcma/blumkin/issues/263 (review
+    # finding).
+    service = _service()
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(
+                document_id="doc-123", body="# New\n\nbody"
+            )
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    # "New\nbody\n" is 9 UTF-16 units; the surviving mark lands right after it.
+    trailing = next(
+        r["updateParagraphStyle"]
+        for r in requests
+        if "updateParagraphStyle" in r
+        and r["updateParagraphStyle"]["range"] == {"startIndex": 10, "endIndex": 11}
+    )
+    assert trailing["paragraphStyle"] == {"namedStyleType": "NORMAL_TEXT"}
+
+
+def test_docs_update_resets_the_trailing_paragraph_before_bullets_strip_tabs(
+    tmp_path: Path,
+) -> None:
+    # createParagraphBullets strips each nested list item's leading tab and
+    # shifts every later index down; the trailing reset is computed from the
+    # tab-inclusive text length, so it must run before any such request, not
+    # after. Regression for https://github.com/the-hcma/blumkin/issues/263
+    # (review finding).
+    service = _service()
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(
+                document_id="doc-123", body="- a\n  - b"
+            )
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    # "a\n\tb\n" (the nested item's leading tab included) is 5 UTF-16 units.
+    trailing_index = next(
+        i
+        for i, r in enumerate(requests)
+        if "updateParagraphStyle" in r
+        and r["updateParagraphStyle"]["range"] == {"startIndex": 6, "endIndex": 7}
+    )
+    bullet_indices = [i for i, r in enumerate(requests) if "createParagraphBullets" in r]
+    assert bullet_indices  # sanity: the nested list did produce bullet requests
+    assert all(trailing_index < i for i in bullet_indices)
 
 
 def test_docs_update_body_only_keeps_the_existing_name(tmp_path: Path) -> None:
