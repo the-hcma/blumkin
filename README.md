@@ -287,4 +287,4 @@ never committed.
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+MIT © 2026 Henrique Andrade ([GitHub's thehcma](https://github.com/thehcma)) — see [`LICENSE`](./LICENSE).
