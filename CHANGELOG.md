@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/the-hcma/blumkin/compare/blumkin-v1.1.1...blumkin-v1.1.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* **docs:** actually indent a block quote's first line (follow-up to [#264](https://github.com/the-hcma/blumkin/issues/264)) ([#270](https://github.com/the-hcma/blumkin/issues/270)) ([82c8c08](https://github.com/the-hcma/blumkin/commit/82c8c08aa1441a6699e58c8afd7372a1ac9c5df4))
+
 ## [1.1.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.1.0...blumkin-v1.1.1) (2026-09-12)
 
 
