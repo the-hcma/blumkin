@@ -309,7 +309,14 @@ def test_docs_create_renders_a_block_quote_as_an_indented_paragraph(tmp_path: Pa
         if "updateParagraphStyle" in r
         and "indentStart" in r["updateParagraphStyle"]["paragraphStyle"]
     )
-    assert indent["paragraphStyle"]["indentStart"] == {"magnitude": 36, "unit": "PT"}
+    # Both must be set and equal: `indentFirstLine` is a separate,
+    # non-additive field that defaults to 0, so a short quote that never
+    # wraps to a second line - entirely "first line" - would otherwise
+    # render at zero indent regardless of `indentStart`'s value.
+    magnitude = {"magnitude": 36, "unit": "PT"}
+    assert indent["paragraphStyle"]["indentStart"] == magnitude
+    assert indent["paragraphStyle"]["indentFirstLine"] == magnitude
+    assert indent["fields"] == "indentStart,indentFirstLine"
     # No bullet - unlike `- `/`1. `, a quote must not draw a list marker.
     assert not any("createParagraphBullets" in r for r in requests)
 

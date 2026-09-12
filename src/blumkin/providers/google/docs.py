@@ -370,12 +370,21 @@ def _style_requests(block: DocBlock, start: int, end: int) -> list[dict[str, Any
         # equivalent (issue #264: a plain leading tab/spaces was silently
         # stripped, and `- ` was the only thing that actually indented, but
         # that draws a bullet).
+        #
+        # `indentFirstLine` is a separate, independent field from
+        # `indentStart` - it is NOT additive, and defaults to 0 when unset.
+        # `indentStart` alone governs only wrapped (non-first) lines, so a
+        # short quote that never wraps is entirely "first line" and rendered
+        # with zero indent regardless of `indentStart`'s value, even though
+        # it persists correctly in the document. Set both to the same value
+        # so every line - first or wrapped - gets a uniform indent.
+        _indent = {"magnitude": 36, "unit": "PT"}
         requests.append(
             {
                 "updateParagraphStyle": {
                     "range": {"startIndex": start, "endIndex": end},
-                    "paragraphStyle": {"indentStart": {"magnitude": 36, "unit": "PT"}},
-                    "fields": "indentStart",
+                    "paragraphStyle": {"indentStart": _indent, "indentFirstLine": _indent},
+                    "fields": "indentStart,indentFirstLine",
                 }
             }
         )
