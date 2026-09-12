@@ -162,6 +162,23 @@ async def docs_update(
                 {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index - 1}}}
             )
         requests.extend(_batch_requests(blocks))
+        if end_index > 2:
+            # The delete above can never remove the body's terminal paragraph
+            # mark (Docs forbids it), so that one surviving mark gets pushed
+            # past every newly inserted block by `insertText` - past every
+            # per-block style reset too - still carrying whatever named style
+            # the *old* body's last paragraph had (e.g. a phantom entry left
+            # in the Docs heading outline). Reset it too.
+            new_text_end = 1 + _utf16_len("".join(_block_text(block) for block in blocks))
+            requests.append(
+                {
+                    "updateParagraphStyle": {
+                        "range": {"startIndex": new_text_end, "endIndex": new_text_end + 1},
+                        "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                        "fields": "namedStyleType",
+                    }
+                }
+            )
         if requests:
             execute(docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}))
 
@@ -250,15 +267,24 @@ def _document_body_content(document: dict[str, Any]) -> list[dict[str, Any]]:
     made the computed end index always fall back to 2, which skipped the
     pre-insert delete unconditionally (`docs update` silently appended instead
     of replacing). Prefer the first tab's body; fall back to the legacy
-    top-level field for any response shape that still uses it.
+    top-level field only when the response has no ``tabs`` at all.
+
+    A response that *does* carry ``tabs`` but has no readable first-tab
+    ``content`` raises rather than falling back to the (documented-empty)
+    legacy field - silently treating that as "content: []" would recompute
+    ``end_index`` as 2 and skip the delete again, reintroducing exactly the
+    append-instead-of-replace bug this exists to fix, with no error surfaced.
     """
     tabs = document.get("tabs") or []
-    if tabs:
-        tab_body = (tabs[0].get("documentTab") or {}).get("body") or {}
-        content = tab_body.get("content")
-        if content:
-            return content
-    return ((document.get("body") or {}).get("content")) or []
+    if not tabs:
+        return ((document.get("body") or {}).get("content")) or []
+    content = ((tabs[0].get("documentTab") or {}).get("body") or {}).get("content")
+    if content is None:
+        raise DocBodyError(
+            "documents.get returned `tabs` but no readable first-tab body content - "
+            "cannot safely compute the delete range for `docs update`"
+        )
+    return content
 
 
 def _reparent(drive: Any, *, document_id: str, folder_id: str) -> None:

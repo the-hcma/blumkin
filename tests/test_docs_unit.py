@@ -485,6 +485,49 @@ def test_docs_update_resets_a_plain_paragraph_to_normal_text(tmp_path: Path) -> 
     assert reset["paragraphStyle"] == {"namedStyleType": "NORMAL_TEXT"}
 
 
+def test_docs_update_refuses_tabs_with_no_readable_first_tab_body(tmp_path: Path) -> None:
+    # `includeTabsContent=True` should always populate `documentTab` for a
+    # single-tab response; a `tabs` entry with no readable body content is an
+    # unexpected shape blumkin cannot safely compute a delete range for -
+    # silently falling back to the (documented-empty) legacy `body` field
+    # would recompute end_index as 2 and skip the delete again, reintroducing
+    # the append-instead-of-replace bug. Regression for
+    # https://github.com/the-hcma/blumkin/issues/263 (review finding).
+    service = _service()
+    service.documents.return_value.get.return_value.execute.return_value = {
+        "title": "Old title",
+        "body": {},
+        "tabs": [{"tabId": "t1"}],  # no `documentTab` at all
+    }
+    with _patched(service), pytest.raises(DocBodyError, match="readable"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(document_id="doc-123", body="hi")
+        )
+    service.documents.return_value.batchUpdate.assert_not_called()
+
+
+def test_docs_update_resets_the_surviving_trailing_paragraph_too(tmp_path: Path) -> None:
+    # The per-block NORMAL_TEXT resets only cover the *new* blocks' own
+    # ranges. The delete can never remove the body's terminal paragraph mark,
+    # so that mark survives and `insertText` pushes it past every new block -
+    # past every one of those resets - still carrying the *old* body's
+    # trailing style (e.g. a phantom entry left in the Docs heading outline).
+    # Regression for https://github.com/the-hcma/blumkin/issues/263 (review
+    # finding).
+    service = _service()
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).docs_update(
+                document_id="doc-123", body="# New\n\nbody"
+            )
+        )
+    requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
+    # "New\nbody\n" is 9 UTF-16 units; the surviving mark lands right after it.
+    trailing = requests[-1]["updateParagraphStyle"]
+    assert trailing["range"] == {"startIndex": 10, "endIndex": 11}
+    assert trailing["paragraphStyle"] == {"namedStyleType": "NORMAL_TEXT"}
+
+
 def test_docs_update_body_only_keeps_the_existing_name(tmp_path: Path) -> None:
     service = _service()
     with _patched(service):
