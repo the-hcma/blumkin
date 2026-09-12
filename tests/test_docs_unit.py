@@ -481,7 +481,17 @@ def test_docs_update_resets_a_plain_paragraph_to_normal_text(tmp_path: Path) -> 
             )
         )
     requests = service.documents.return_value.batchUpdate.call_args.kwargs["body"]["requests"]
-    reset = next(r["updateParagraphStyle"] for r in requests if "updateParagraphStyle" in r)
+    # Select by the paragraph's own range (not just "the first
+    # updateParagraphStyle") - the trailing-mark reset from
+    # test_docs_update_resets_the_surviving_trailing_paragraph_too also sets
+    # NORMAL_TEXT and now runs first, so picking the first match would pass
+    # even if `_style_requests` never reset the block itself.
+    reset = next(
+        r["updateParagraphStyle"]
+        for r in requests
+        if "updateParagraphStyle" in r
+        and r["updateParagraphStyle"]["range"] == {"startIndex": 1, "endIndex": 12}
+    )
     assert reset["paragraphStyle"] == {"namedStyleType": "NORMAL_TEXT"}
 
 
