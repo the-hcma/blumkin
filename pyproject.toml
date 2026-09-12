@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "blumkin"
-version = "1.1.1"
+version = "1.1.2"
 description = "Personal Microsoft 365 / Graph skills CLI (delegated as me)"
 readme = "README.md"
 license = "MIT"
