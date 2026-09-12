@@ -1,69 +1,25 @@
-# Handoff — Graph lab → Blumkin CLI
+# Handoff — Identity grant status (WO0000001162425)
 
-**Date:** 2026-08-26  
-**Purpose:** Continue in a new session without re-deriving context.  
-**Status:** M1 shipped ([#10](https://github.com/the-hcma/blumkin/pull/10)); M1 retro closed ([#11](https://github.com/the-hcma/blumkin/issues/11) / [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md)). Phases 2–3 read/write skills are on `main`. Prefer validating new Graph flows in the private lab, then porting them as Blumkin skills.
-
----
-
-## What Blumkin is
-
-- Public repo: [the-hcma/blumkin](https://github.com/the-hcma/blumkin).
-- Goal: Python **`blumkin`** CLI on `PATH` — delegated Microsoft Graph “as me”, skill-shaped commands, `--json` for agents.
-- Agent integration: **Cursor Agent Skill + shell** (`.cursor/skills/blumkin/SKILL.md`); Copilot CLI docs later — **not MCP** for v1 (see `PLAN.md` §6).
-- Org practices via `repository-helpers` / `github-repo-lint` (`AGENTS.md`, LICENSE, `.cursor/rules`, `.github/stacking-tool` = `gh-stack`, CODEOWNERS).
-
-**Read first in a new session:** `README.md` → `PLAN.md` → this file → `AGENTS.md`.
-
----
-
-## Lab that already works (hand automations)
-
-A private Graph lab (separate from this repo) already exercises delegated auth and the flows below. Keep client IDs and token caches **out of git**.
-
-| Piece | Role |
-|-------|------|
-| Local client-id config (gitignored) | Entra public-client ID — **do not commit** |
-| Graph client + config helpers | Auth + Graph client; file token cache + auth record required for silent login |
-| Token cache + auth record (gitignored) | Silent auth |
-| Probe scripts | Access / readonly explore / token status |
-| Entra app | **BRK Tech Microsoft Agent** — client ID in local config only; tenant `brk.tech` |
-| Mode | **Delegated** / interactive browser / `http://localhost` |
-
-### Flows already exercised by hand (CLI skill candidates)
-
-| Flow | Notes |
-|------|--------|
-| Calendar today | TZ bug fixed: Graph UTC → America/New_York |
-| Free/busy | Proven against real calendars |
-| Accept pending invites | Proven |
-| Create / cancel meeting | Proven |
-| Mail inbox | List recent |
-| Mail draft + send | Draft then send |
-| Teams chat read | Last messages in 1:1 chats |
-| Teams chat send | **Blocked** — need `Chat.ReadWrite` |
-| Online meeting transcription flags | **Blocked** — need `OnlineMeetings.ReadWrite` |
-| Channel message bodies | **Blocked** — need `ChannelMessage.Read.All` |
-
-Auth caching: Keychain-only failed under Cursor; **file cache + AuthenticationRecord** works. Re-auth forces browser if those files are deleted.
+**Last updated:** 2026-09-12.
+**Purpose:** Track the one open cross-cutting item this repo can't close itself —
+the delegated-scope grant follow-up — so `auth.py` / `cli.py` / `dispatch.py` /
+the Cursor skill have one place to point to. For everything else (what's
+shipped, current command surface, design rationale), read `README.md`,
+`CHANGELOG.md`, and `docs/DECISIONS.md` — they track current state; this file
+does not.
 
 ---
 
 ## Identity / permissions follow-up (open)
 
-Remedy **WO0000001162425** (opened after the initial Entra app WO) is the
-follow-up for **delegated** add-ons. Confirmed in 1:1 with Dan Erickson
-(2026-08-25): after the operator asked to widen permissions beyond the original
-app grant, Dan stated **“WO0000001162425 is open to get this permissions
-updated”** — i.e. the original Identity ask was **augmented** onto that WO with
-the fuller list below. **State (2026-08-28):** those augmented asks are **on the
-ticket but not fully granted yet** (consent still hits admin approval for scopes
-such as `People.Read`). Do not enable `wo1162425_scopes` / expect live
-`people resolve` until Identity finishes the grant.
-
-**Working assumption:** those add-ons will be granted. Phase 4 CLI skills are
-**implemented with mocked tests**; do not treat live Graph success as proven until
-the validation TODO below passes.
+Remedy **WO0000001162425** is the follow-up for **delegated** scope add-ons
+beyond the original Entra app grant. **State (2026-08-28, last checked
+2026-09-12):** the augmented asks below are on the ticket but **not fully
+granted yet** (consent still hits admin approval for scopes such as
+`People.Read`). Do not enable `wo1162425_scopes` / expect live `people
+resolve` until Identity finishes the grant — `_wo1162425_scopes_enabled()` in
+`config.py` still defaults to off, which is the current source of truth for
+"not granted yet."
 
 **Already granted / in use:** `Calendars.ReadWrite`, `Chat.Read`, `Mail.ReadWrite`,
 `Mail.Send`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `User.Read`. Keep those.
@@ -77,11 +33,11 @@ the validation TODO below passes.
   `People.Read`, `Notes.ReadWrite`
 
 **Runtime gating today:** `wo1162425_scopes` requests only the scopes Blumkin
-actually uses so far (`Chat.ReadWrite`, `OnlineMeetings.ReadWrite`, `People.Read`).
-`files_scopes` remains a separate opt-in for chat attachment download (`Files.Read`).
-`docs_scopes` is a third opt-in: `Files.ReadWrite` for `docs create` (uploads a
-`.docx` to OneDrive). Also needs the Entra grant + re-consent before it works
-live.
+actually uses (`Chat.ReadWrite`, `OnlineMeetings.ReadWrite`, `People.Read`).
+`files_scopes` is a separate opt-in for chat attachment download
+(`Files.Read`). `docs_scopes` is a third opt-in: `Files.ReadWrite` for `docs
+create` (uploads a `.docx` to OneDrive). All three need the Entra grant +
+re-consent before they work live.
 
 - [ ] **TODO (validate live after grant):** add the **new** scopes to the Entra
   client, delete token cache + auth record under the effective config dir
@@ -96,22 +52,8 @@ Keep the delegated `*.All` scopes listed above only when the corresponding flow 
 
 ---
 
-## What to do next (ordered)
+## Other open TODOs tracked elsewhere (not duplicated here)
 
-1. **Agent DX (Phase 5):** [#20](https://github.com/the-hcma/blumkin/issues/20) — personal skill install + Copilot CLI instruction snippet — shell to `blumkin`, not MCP first.
-2. **Human:** run any **new hand automation** in the private lab. Note: command, Graph APIs, scopes, failure modes.
-3. **After Identity grant (validate TODO above):** live-smoke Phase 4 skills (`chat send|edit|delete`, `meeting get|transcription`); check off the TODO.
-4. **Bugbot validate TODO:** after Bugbot is enabled on this repo, confirm a real review on a PR head (`RETROSPECTIVE-M1.md`).
-
----
-
-## Intentional non-work in this repo right now
-
-- Do not block new hand automation on Blumkin implementation.
-- Do not claim Phase 4 live Graph coverage until the Identity **validate live** TODO is checked off.
-
----
-
-## Open plan questions (still for review)
-
-See `PLAN.md` §11 — config path, people resolve, migrate lab, default meeting duration, skill install location, MCP-later.
+- Bugbot real-review validation once enabled on this repo — `RETROSPECTIVE-M1.md`.
+- `calendar update --no-teams` live validation against Microsoft Graph (Google
+  side is already live-tested) — `docs/DECISIONS.md` D9.
