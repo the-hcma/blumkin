@@ -686,6 +686,46 @@ def test_google_mail_get_reports_unresolvable_metadata_when_the_attachment_fetch
     assert result["ical_uid"] is None
 
 
+def test_google_mail_get_reports_unresolvable_metadata_for_a_malformed_ics_body() -> None:
+    """A `text/calendar` part that isn't valid ICS (truncated, corrupted, or
+    otherwise not parseable) must not fail the whole read either — same
+    courtesy-read contract as a gone/unfetchable attachment. This part is
+    sender-controlled, so a merely odd body shouldn't hard-fail `mail get`.
+    """
+    service = _service(_full_message_with_raw_ics("this is not a calendar body"))
+
+    with _patched(service):
+        result = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert result["is_meeting_message"] is True
+    assert result["meeting_message_type"] is None
+    assert result["ical_uid"] is None
+
+
+def test_google_mail_get_uses_the_first_attendee_for_a_multi_attendee_reply() -> None:
+    """A REPLY normally carries exactly one `ATTENDEE` (the person replying),
+    but pin the behavior for the rare/non-standard case of more than one:
+    the first `ATTENDEE`'s `PARTSTAT` is the one that determines
+    `meeting_message_type`, not a later one.
+    """
+    ics = (
+        "BEGIN:VCALENDAR\r\n"
+        "METHOD:REPLY\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:uid-multi@google.com\r\n"
+        'ATTENDEE;CN="Rebecca";PARTSTAT=ACCEPTED:mailto:rebecca@example.com\r\n'
+        'ATTENDEE;CN="Sam";PARTSTAT=DECLINED:mailto:sam@example.com\r\n'
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+    service = _service(_full_message_with_raw_ics(ics))
+
+    with _patched(service):
+        message = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert message["meeting_message_type"] == "meetingAccepted"
+
+
 def test_google_mail_thread_full_surfaces_meeting_metadata_per_item() -> None:
     service = MagicMock()
     users = service.users.return_value

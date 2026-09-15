@@ -739,18 +739,22 @@ def _meeting_fields_from_payload(
     part = _find_calendar_part(payload)
     if part is None:
         return _not_a_meeting()
-    raw = _calendar_part_bytes(service, message_id, part)
-    if not raw:
-        # We found a text/calendar part — Gmail (or the sender) marked this a
-        # meeting message — but couldn't fetch/decode its body (a gone or
-        # transient-error attachment). Report "meeting, RSVP unknown" rather
-        # than silently dropping the meeting flag over an unrelated I/O error.
-        return {**_not_a_meeting(), "is_meeting_message": True}
     try:
-        calendar = icalendar.Calendar.from_ical(raw)
+        raw = _calendar_part_bytes(service, message_id, part)
+        calendar = icalendar.Calendar.from_ical(raw) if raw else None
     except ValueError:
-        # Malformed ICS is the same "we know it's a meeting, not its details"
-        # situation as an unfetchable attachment.
+        # A part we can't base64-decode or parse as a calendar (malformed,
+        # truncated, or otherwise not valid ICS) is the same "we know it's a
+        # meeting, not its details" situation as an unfetchable attachment —
+        # this is sender-controlled data, so a merely odd part shouldn't fail
+        # the whole message read.
+        calendar = None
+    if calendar is None:
+        # Either we found a text/calendar part — Gmail (or the sender) marked
+        # this a meeting message — but couldn't fetch/decode/parse its body
+        # (a gone or transient-error attachment, or malformed ICS). Report
+        # "meeting, RSVP unknown" rather than silently dropping the meeting
+        # flag over an unrelated I/O or parse error.
         return {**_not_a_meeting(), "is_meeting_message": True}
     method = str(calendar.get("METHOD") or "").upper() or None
     if method not in _ICS_KNOWN_METHODS:
