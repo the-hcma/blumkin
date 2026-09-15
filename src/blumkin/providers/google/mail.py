@@ -731,6 +731,11 @@ _ICS_PARTSTAT_TO_TYPE = {
 }
 _ICS_UID_RE = re.compile(r"(?im)^UID:\s*(.+?)\s*$")
 _ICS_UNFOLD_RE = re.compile(r"\r?\n[ \t]")
+# A folded ICS body puts a VTIMEZONE block (with its own DTSTART for each
+# DAYLIGHT/STANDARD rule) before the VEVENT it's used by; without scoping to
+# the VEVENT, `_ICS_DTSTART_RE`/`_ICS_DTEND_RE` can match the timezone rule's
+# line instead of the actual event's, well before its real DTSTART.
+_ICS_VEVENT_RE = re.compile(r"(?is)BEGIN:VEVENT\r?\n(.*?)\r?\nEND:VEVENT")
 
 
 def _not_a_meeting() -> dict[str, Any]:
@@ -773,14 +778,20 @@ def _meeting_fields_from_payload(
         # response expected) — don't tag this as a meeting message we understand.
         return _not_a_meeting()
     meeting_message_type = _ICS_METHOD_TO_TYPE.get(method)
+    # Properties read below (UID, ATTENDEE/PARTSTAT, ORGANIZER, DTSTART/DTEND)
+    # all belong on the VEVENT, not the calendar wrapper — a VTIMEZONE block
+    # (which a TZID-qualified DTSTART implies) carries its own DTSTART for each
+    # DAYLIGHT/STANDARD rule, so an unscoped search can match that instead.
+    vevent_match = _ICS_VEVENT_RE.search(ics)
+    vevent = vevent_match.group(1) if vevent_match else ics
     if method == "REPLY":
-        partstat_match = _ICS_PARTSTAT_RE.search(ics)
+        partstat_match = _ICS_PARTSTAT_RE.search(vevent)
         partstat = partstat_match.group(1).upper() if partstat_match else None
         meeting_message_type = _ICS_PARTSTAT_TO_TYPE.get(partstat or "", meeting_message_type)
-    uid_match = _ICS_UID_RE.search(ics)
-    organizer_match = _ICS_ORGANIZER_RE.search(ics)
-    start_match = _ICS_DTSTART_RE.search(ics)
-    end_match = _ICS_DTEND_RE.search(ics)
+    uid_match = _ICS_UID_RE.search(vevent)
+    organizer_match = _ICS_ORGANIZER_RE.search(vevent)
+    start_match = _ICS_DTSTART_RE.search(vevent)
+    end_match = _ICS_DTEND_RE.search(vevent)
     return {
         "is_meeting_message": True,
         "meeting_message_type": meeting_message_type,

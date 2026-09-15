@@ -172,6 +172,31 @@ def test_mail_thread_reports_meeting_metadata_for_a_list_item(monkeypatch) -> No
     assert "meetingMessageType" in sent_query.select
 
 
+def test_mail_thread_full_reports_organizer_and_times_from_the_expanded_event(
+    monkeypatch,
+) -> None:
+    """`--full` re-fetches each message via `mail_get` (which expands the event);
+    that resolved organizer/start/end must make it into the thread item, not just
+    `body`/`body_type` — the list query alone has no `$expand` to source them from.
+    """
+    client = _client(monkeypatch)
+    client.me.messages.by_message_id.return_value.get = AsyncMock(
+        side_effect=[SimpleNamespace(conversation_id="conv-1"), _event_message()]
+    )
+    page = SimpleNamespace(value=[_event_message()], odata_next_link=None)
+    client.me.messages.get = AsyncMock(return_value=page)
+
+    payload = asyncio.run(mail_thread(message_id="msg-1", full=True))
+
+    (item,) = payload["items"]
+    assert item["is_meeting_message"] is True
+    assert item["meeting_message_type"] == "meetingRequest"
+    assert item["linked_event_id"] == "evt-1"
+    assert item["organizer_email"] == "janelle@example.com"
+    assert item["start"] == "2026-01-15T14:00:00.0000000Z"
+    assert item["end"] == "2026-01-15T15:00:00.0000000Z"
+
+
 def test_mail_inbox_reports_no_meeting_metadata_for_a_plain_list_item(monkeypatch) -> None:
     client = _client(monkeypatch)
     page = SimpleNamespace(value=[_plain_message()], odata_next_link=None)
@@ -461,6 +486,46 @@ def test_google_mail_get_reports_a_tzid_qualified_start_in_utc() -> None:
 
     # 09:00 America/New_York in January (EST, UTC-5) is 14:00 UTC.
     assert message["start"] == "2026-01-15T14:00:00Z"
+
+
+def test_google_mail_get_scopes_dtstart_to_the_vevent_not_a_preceding_vtimezone() -> None:
+    """A TZID-qualified DTSTART implies a VTIMEZONE block, which carries its own
+    DTSTART for each DAYLIGHT/STANDARD rule and (per Google/Outlook convention)
+    precedes the VEVENT — an unscoped search must not pick that line up instead
+    of the real event's.
+    """
+    ics = (
+        "BEGIN:VCALENDAR\r\n"
+        "METHOD:REQUEST\r\n"
+        "BEGIN:VTIMEZONE\r\n"
+        "TZID:America/New_York\r\n"
+        "BEGIN:DAYLIGHT\r\n"
+        "DTSTART:19700308T020000\r\n"
+        "TZOFFSETFROM:-0500\r\n"
+        "TZOFFSETTO:-0400\r\n"
+        "END:DAYLIGHT\r\n"
+        "BEGIN:STANDARD\r\n"
+        "DTSTART:19701101T020000\r\n"
+        "TZOFFSETFROM:-0400\r\n"
+        "TZOFFSETTO:-0500\r\n"
+        "END:STANDARD\r\n"
+        "END:VTIMEZONE\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:uid-vtimezone@google.com\r\n"
+        "DTSTART;TZID=America/New_York:20260115T090000\r\n"
+        "DTEND;TZID=America/New_York:20260115T100000\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+    service = _service(_full_message_with_raw_ics(ics))
+
+    with _patched(service):
+        message = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    # 09:00/10:00 America/New_York in January (EST, UTC-5) is 14:00/15:00 UTC —
+    # not the VTIMEZONE's 1970 DAYLIGHT rule DTSTART.
+    assert message["start"] == "2026-01-15T14:00:00Z"
+    assert message["end"] == "2026-01-15T15:00:00Z"
 
 
 def test_google_mail_get_does_not_report_a_meeting_for_an_unrecognized_method() -> None:

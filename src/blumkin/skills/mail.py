@@ -1322,6 +1322,12 @@ async def mail_thread(
             detail = await mail_get(message_id=str(item["id"]), body_type=body_type, config=cfg)
             item["body"] = detail["message"].get("body")
             item["body_type"] = detail["message"].get("body_type", wanted)
+            item["is_meeting_message"] = detail["message"].get("is_meeting_message")
+            item["meeting_message_type"] = detail["message"].get("meeting_message_type")
+            item["linked_event_id"] = detail["message"].get("linked_event_id")
+            item["organizer_email"] = detail["message"].get("organizer_email")
+            item["start"] = detail["message"].get("start")
+            item["end"] = detail["message"].get("end")
         items.append(item)
     return {"conversation_id": conversation_id, "items": items, "count": len(items)}
 
