@@ -642,9 +642,23 @@ def _find_calendar_part(payload: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+_ICS_UNFOLD_RE = re.compile(r"\r?\n[ \t]")
 _ICS_METHOD_RE = re.compile(r"(?im)^METHOD:\s*([A-Za-z]+)\s*$")
 _ICS_UID_RE = re.compile(r"(?im)^UID:\s*(.+?)\s*$")
 _ICS_PARTSTAT_RE = re.compile(r"(?im)^ATTENDEE[^\r\n:]*PARTSTAT=([A-Za-z]+)[^\r\n:]*:")
+
+
+def _unfold_ics(ics: str) -> str:
+    """Join RFC 5545 folded lines back together before matching against them.
+
+    ICS wraps any line over 75 octets onto a continuation line that starts
+    with a single space or tab; without unfolding, `^...:` patterns that
+    should match a single logical property (e.g. a long ``ATTENDEE`` line)
+    silently fail once the value pushes the terminating ``:`` past the fold.
+    """
+    return _ICS_UNFOLD_RE.sub("", ics)
+
+
 # Named to line up with Graph's `meetingMessageType` values so a caller sees the
 # same vocabulary regardless of provider.
 _ICS_METHOD_TO_TYPE = {
@@ -672,7 +686,7 @@ def _meeting_fields_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if part is None:
         return {"is_meeting_message": False, "meeting_message_type": None, "ical_uid": None}
     data = (part.get("body") or {}).get("data")
-    ics = _decode_b64url(data) if data else ""
+    ics = _unfold_ics(_decode_b64url(data)) if data else ""
     method_match = _ICS_METHOD_RE.search(ics)
     method = method_match.group(1).upper() if method_match else None
     meeting_message_type = _ICS_METHOD_TO_TYPE.get(method or "")

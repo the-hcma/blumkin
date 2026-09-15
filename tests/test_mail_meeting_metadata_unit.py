@@ -18,9 +18,11 @@ from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.event import Event
 from msgraph.generated.models.event_message import EventMessage
 from msgraph.generated.models.meeting_message_type import MeetingMessageType
+from msgraph.generated.models.o_data_errors.main_error import MainError
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.providers.google import mail as google_mail
-from blumkin.skills.mail import mail_get
+from blumkin.skills.mail import mail_get, mail_inbox
 
 # ---------------------------------------------------------------------------
 # Microsoft / Graph
@@ -51,6 +53,59 @@ def test_mail_get_reports_no_meeting_metadata_for_a_plain_message(monkeypatch) -
     assert message["linked_event_id"] is None
 
 
+def test_mail_get_falls_back_when_a_tenant_rejects_the_cast_expand(monkeypatch) -> None:
+    """A 400 on the expand-carrying request must not fail the whole read.
+
+    The retry drops `$expand`, so a message that would otherwise be a meeting
+    request still comes back (with `linked_event_id` unresolved) instead of a
+    ``mail get`` failure over metadata that is a nice-to-have.
+    """
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    error = ODataError()
+    error.response_status_code = 400
+    error.error = MainError(code="invalidRequest", message="unsupported $expand")
+    retried = _event_message()
+    retried.event = None
+    item.get = AsyncMock(side_effect=[error, retried])
+
+    message = asyncio.run(mail_get(message_id="msg-1"))["message"]
+
+    assert item.get.await_count == 2
+    second_query = item.get.await_args_list[1].args[0].query_parameters
+    # `query.expand` is cleared in place on the shared query object before the
+    # retry, so only the second call's state can be asserted directly here.
+    assert second_query.expand is None
+    assert message["is_meeting_message"] is True
+    assert message["meeting_message_type"] == "meetingRequest"
+    assert message["linked_event_id"] is None
+
+
+def test_mail_inbox_reports_meeting_metadata_for_a_list_item(monkeypatch) -> None:
+    """The issue's own scenario: spotting an invite in an inbox listing, not `mail get`."""
+    client = _client(monkeypatch)
+    page = SimpleNamespace(value=[_event_message()], odata_next_link=None)
+    client.me.messages.get = AsyncMock(return_value=page)
+
+    payload = asyncio.run(mail_inbox(top=5))
+
+    (item,) = payload["items"]
+    assert item["is_meeting_message"] is True
+    assert item["meeting_message_type"] == "meetingRequest"
+
+
+def test_mail_inbox_reports_no_meeting_metadata_for_a_plain_list_item(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    page = SimpleNamespace(value=[_plain_message()], odata_next_link=None)
+    client.me.messages.get = AsyncMock(return_value=page)
+
+    payload = asyncio.run(mail_inbox(top=5))
+
+    (item,) = payload["items"]
+    assert item["is_meeting_message"] is False
+    assert item["meeting_message_type"] is None
+
+
 def _client(monkeypatch) -> MagicMock:
     client = MagicMock()
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
@@ -67,9 +122,15 @@ def _event_message() -> Any:
     msg.subject = "Quarterly sync"
     msg.body = SimpleNamespace(content="hello", content_type=BodyType.Text)
     msg.body_preview = "hello"
+    msg.conversation_id = "conv-1"
+    msg.created_date_time = "2026-08-27T08:59Z"
     msg.has_attachments = False
     msg.is_read = True
     msg.is_draft = False
+    msg.parent_folder_id = None
+    msg.received_date_time = "2026-08-27T09:00Z"
+    msg.sent_date_time = "2026-08-27T08:58Z"
+    msg.to_recipients = []
     msg.meeting_message_type = MeetingMessageType.MeetingRequest
     msg.event = Event()
     msg.event.id = "evt-1"
@@ -85,9 +146,16 @@ def _plain_message() -> Any:
         subject="Quarterly sync",
         body=SimpleNamespace(content="hello", content_type=BodyType.Text),
         body_preview="hello",
+        conversation_id="conv-1",
+        created_date_time="2026-08-27T08:59Z",
         has_attachments=False,
+        importance=None,
         is_read=True,
         is_draft=False,
+        parent_folder_id=None,
+        received_date_time="2026-08-27T09:00Z",
+        sent_date_time="2026-08-27T08:58Z",
+        to_recipients=[],
         from_=SimpleNamespace(
             email_address=SimpleNamespace(address="rebecca@example.com", name="Rebecca Doe")
         ),
@@ -119,6 +187,32 @@ def test_google_mail_get_detects_a_cancellation_ics_part() -> None:
         message = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
 
     assert message["meeting_message_type"] == "meetingCancelled"
+
+
+def test_google_mail_get_maps_a_folded_reply_partstat_to_a_meeting_message_type() -> None:
+    """RFC 5545 folds any line over 75 octets onto a continuation line.
+
+    A real REPLY's ATTENDEE line (CUTYPE/ROLE/PARTSTAT/RSVP/CN/X-NUM-GUESTS
+    params plus a mailto:) routinely lands past that limit, so this pins the
+    fold-independent match rather than one that only happens to work on a
+    short, single-line fixture.
+    """
+    folded_attendee = (
+        "ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED;RSVP=TRUE;\r\n"
+        " CN=Rebecca Doe;X-NUM-GUESTS=0:mailto:rebecca@example.com\r\n"
+    )
+    ics = (
+        "BEGIN:VCALENDAR\r\n"
+        "METHOD:REPLY\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:uid-999@google.com\r\n" + folded_attendee + "END:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    service = _service(_full_message_with_raw_ics(ics))
+
+    with _patched(service):
+        message = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert message["meeting_message_type"] == "meetingAccepted"
 
 
 def test_google_mail_get_maps_a_reply_partstat_to_a_meeting_message_type() -> None:

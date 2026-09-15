@@ -242,6 +242,27 @@ def format_folders_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+_MEETING_TYPE_LABELS = {
+    "meetingRequest": "request",
+    "meetingCancelled": "cancelled",
+    "meetingAccepted": "accepted",
+    "meetingDeclined": "declined",
+    "meetingTenativelyAccepted": "tentative",
+}
+
+
+def _meeting_tag(item: dict[str, Any]) -> str:
+    """A short `[meeting: ...]` suffix mirroring `is_meeting_message` /
+    `meeting_message_type` so a caller scanning plain-text output (no
+    `--json`) can still spot invites and their RSVP state.
+    """
+    if not item.get("is_meeting_message"):
+        return ""
+    kind = item.get("meeting_message_type")
+    label = _MEETING_TYPE_LABELS.get(kind, None) if isinstance(kind, str) else None
+    return f" [meeting: {label or kind or 'invite'}]"
+
+
 def format_get_human(payload: dict[str, Any]) -> list[str]:
     msg = payload.get("message") or {}
     sender = (
@@ -249,7 +270,7 @@ def format_get_human(payload: dict[str, Any]) -> list[str]:
         or "(unknown sender)"
     )
     lines = [
-        sanitize_terminal(str(msg.get("subject") or "(no subject)")),
+        sanitize_terminal(str(msg.get("subject") or "(no subject)")) + _meeting_tag(msg),
         f"  from: {sender}",
     ]
     for label, key in (("to", "to"), ("cc", "cc")):
@@ -290,7 +311,7 @@ def format_inbox_human(payload: dict[str, Any]) -> list[str]:
         unread = "" if item.get("is_read") else " [unread]"
         who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
         subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
-        lines.append(f"  • {item.get('received')}{unread} — {who}: {subject}")
+        lines.append(f"  • {item.get('received')}{unread} — {who}: {subject}{_meeting_tag(item)}")
     return lines
 
 
@@ -321,7 +342,7 @@ def format_list_human(payload: dict[str, Any]) -> list[str]:
                 str(item.get("from_name") or item.get("from_email") or "(unknown)")
             )
         subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
-        lines.append(f"  • {stamp}{unread} — {who}: {subject}")
+        lines.append(f"  • {stamp}{unread} — {who}: {subject}{_meeting_tag(item)}")
     return lines
 
 
@@ -368,7 +389,7 @@ def format_search_human(payload: dict[str, Any]) -> list[str]:
         who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
         subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
         folder = sanitize_terminal(str(item.get("folder") or "?"))
-        lines.append(f"  • {stamp} — {who}: {subject}  [{folder}]")
+        lines.append(f"  • {stamp} — {who}: {subject}  [{folder}]{_meeting_tag(item)}")
     return lines
 
 
@@ -379,7 +400,7 @@ def format_thread_human(payload: dict[str, Any]) -> list[str]:
         stamp = item.get("received") or item.get("sent") or item.get("created") or "(no date)"
         who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
         subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
-        lines.append(f"  • {stamp} — {who}: {subject}")
+        lines.append(f"  • {stamp} — {who}: {subject}{_meeting_tag(item)}")
         body = item.get("body")
         if body:
             lines.extend(f"    {line}" for line in sanitize_terminal(str(body)).splitlines())
