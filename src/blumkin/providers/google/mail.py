@@ -692,9 +692,11 @@ def _calendar_part_ics(service: Any, message_id: str, part: dict[str, Any]) -> s
     if isinstance(attachment_id, str) and attachment_id:
         try:
             fetched = _attachment_data(service, message_id, attachment_id)
-        except MailAttachmentNotFoundError:
+        except MailAttachmentNotFoundError, HttpError:
             # Metadata is a courtesy read here, not a hard requirement: report
-            # "meeting, RSVP unknown" rather than failing the whole message read.
+            # "meeting, RSVP unknown" rather than failing the whole message
+            # read over a vanished/expired attachment or a transient Google
+            # API error (404/403/5xx all surface as HttpError from `execute`).
             return ""
         return _unfold_ics(_decode_b64url(fetched))
     return ""

@@ -14,7 +14,9 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httplib2
 import pytest
+from googleapiclient.errors import HttpError
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.event import Event
 from msgraph.generated.models.event_message import EventMessage
@@ -31,6 +33,7 @@ from blumkin.skills.mail import (
     format_thread_human,
     mail_get,
     mail_inbox,
+    mail_thread,
 )
 
 # ---------------------------------------------------------------------------
@@ -48,6 +51,12 @@ def test_mail_get_reports_meeting_metadata_for_an_event_message(monkeypatch) -> 
     assert message["is_meeting_message"] is True
     assert message["meeting_message_type"] == "meetingRequest"
     assert message["linked_event_id"] == "evt-1"
+    # Pin the actual request shape: deleting `meetingMessageType` from `$select`
+    # or dropping/mistyping the `$expand` cast would keep the mocked assertions
+    # above green while a live tenant silently stopped reporting these fields.
+    sent_query = item.get.await_args_list[0].args[0].query_parameters
+    assert "meetingMessageType" in sent_query.select
+    assert sent_query.expand == ["Microsoft.Graph.EventMessage/Event($select=id)"]
 
 
 def test_mail_get_reports_no_meeting_metadata_for_a_plain_message(monkeypatch) -> None:
@@ -101,6 +110,25 @@ def test_mail_inbox_reports_meeting_metadata_for_a_list_item(monkeypatch) -> Non
     (item,) = payload["items"]
     assert item["is_meeting_message"] is True
     assert item["meeting_message_type"] == "meetingRequest"
+    sent_query = client.me.messages.get.await_args_list[0].args[0].query_parameters
+    assert "meetingMessageType" in sent_query.select
+
+
+def test_mail_thread_reports_meeting_metadata_for_a_list_item(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    client.me.messages.by_message_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(conversation_id="conv-1")
+    )
+    page = SimpleNamespace(value=[_event_message()], odata_next_link=None)
+    client.me.messages.get = AsyncMock(return_value=page)
+
+    payload = asyncio.run(mail_thread(message_id="msg-1"))
+
+    (item,) = payload["items"]
+    assert item["is_meeting_message"] is True
+    assert item["meeting_message_type"] == "meetingRequest"
+    sent_query = client.me.messages.get.await_args_list[0].args[0].query_parameters
+    assert "meetingMessageType" in sent_query.select
 
 
 def test_mail_inbox_reports_no_meeting_metadata_for_a_plain_list_item(monkeypatch) -> None:
@@ -421,6 +449,42 @@ def test_google_mail_get_reports_unresolvable_metadata_for_a_gone_attachment() -
     service = _service(message)
     attachments = service.users.return_value.messages.return_value.attachments
     attachments.return_value.get.return_value.execute.return_value = {}
+
+    with _patched(service):
+        result = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert result["is_meeting_message"] is True
+    assert result["meeting_message_type"] is None
+    assert result["ical_uid"] is None
+
+
+def test_google_mail_get_reports_unresolvable_metadata_when_the_attachment_fetch_errors() -> None:
+    """A transient Google API error (404/403/5xx) fetching the attachment must not
+    fail the whole message read either — same courtesy-read contract as a
+    successful-but-empty response.
+    """
+    message = {
+        "id": "m-1",
+        "threadId": "t-1",
+        "labelIds": ["INBOX"],
+        "internalDate": "1735689600000",
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "Subject", "value": "Team sync"}],
+            "parts": [
+                {
+                    "mimeType": "text/calendar",
+                    "filename": "invite.ics",
+                    "body": {"attachmentId": "att-broken"},
+                },
+            ],
+        },
+    }
+    service = _service(message)
+    attachments = service.users.return_value.messages.return_value.attachments
+    attachments.return_value.get.return_value.execute.side_effect = HttpError(
+        httplib2.Response({"status": 404}), b"gone"
+    )
 
     with _patched(service):
         result = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
