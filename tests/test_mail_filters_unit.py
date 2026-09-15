@@ -14,6 +14,8 @@ from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.skills.mail import (
+    _MESSAGE_LIST_SELECT_FIELDS,
+    _MESSAGE_LIST_SELECT_FIELDS_WITHOUT_MEETING_TYPE,
     format_inbox_human,
     format_list_human,
     mail_inbox,
@@ -34,6 +36,44 @@ def test_mail_list_matches_a_sender_locally_because_graph_will_not_sort_it(monke
     assert _query(client.me.messages.get).orderby == ["receivedDateTime desc"]
     assert [item["from_name"] for item in payload["items"]] == ["Rebecca Doe"]
     assert payload["filters"]["matched_locally"] is True
+
+
+def test_mail_list_retries_without_meeting_message_type_on_a_plain_400(monkeypatch) -> None:
+    """Some tenants reject `meetingMessageType` in `$select` on the base `Message`
+    collection with a plain 400 (issue #290) - the second attempt must drop it and
+    succeed rather than surface the error to the caller."""
+    client = _client(monkeypatch)
+    seen_selects: list[list[str]] = []
+    responses = iter([_odata_error(400, "invalidRequest"), _page([_msg("Rebecca Doe", "budget")])])
+
+    async def _get(config, /):  # noqa: ANN001
+        seen_selects.append(list(config.query_parameters.select or []))
+        response = next(responses)
+        if isinstance(response, ODataError):
+            raise response
+        return response
+
+    client.me.messages.get = _get
+
+    payload = asyncio.run(mail_list())
+
+    assert [item["subject"] for item in payload["items"]] == ["budget"]
+    assert seen_selects[0] == list(_MESSAGE_LIST_SELECT_FIELDS)
+    assert seen_selects[1] == list(_MESSAGE_LIST_SELECT_FIELDS_WITHOUT_MEETING_TYPE)
+
+
+def test_mail_list_does_not_retry_on_a_non_400_error(monkeypatch) -> None:
+    """A 429/5xx/401/403 is a real failure, not a rejected query shape: retrying
+    would duplicate the request (doubling load right when Graph may be signalling
+    back-off) and hide the original, more diagnostic error."""
+    client = _client(monkeypatch)
+    error = _odata_error(429, "TooManyRequests")
+    client.me.messages.get = AsyncMock(side_effect=error)
+
+    with pytest.raises(ODataError):
+        asyncio.run(mail_list())
+
+    assert client.me.messages.get.await_count == 1
 
 
 def test_mail_list_matches_a_sender_by_address_too(monkeypatch) -> None:

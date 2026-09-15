@@ -22,6 +22,8 @@ from blumkin.providers.google import mail as google_mail
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.mail import (
+    _MESSAGE_LIST_SELECT_FIELDS,
+    _MESSAGE_LIST_SELECT_FIELDS_WITHOUT_MEETING_TYPE,
     MailMessageNotFoundError,
     format_search_human,
     format_thread_human,
@@ -193,6 +195,66 @@ def test_graph_search_dated_overfetches_and_marks_incomplete(monkeypatch) -> Non
     assert payload["count"] == 2
     posted = client.me.messages.get.await_args.args[0]
     assert posted.query_parameters.top >= 60  # over-fetched a relevance window
+
+
+def test_graph_thread_retries_without_meeting_message_type_on_a_plain_400(monkeypatch) -> None:
+    """Some tenants reject `meetingMessageType` in `$select` on the base `Message`
+    collection with a plain 400 (issue #290) - the list query must retry without it."""
+    from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+
+    err = ODataError()
+    err.response_status_code = 400
+    seen_selects: list[list[str]] = []
+    responses = iter([err, SimpleNamespace(value=[_msg("a", subject="Re: hi")])])
+
+    async def _get(config, /):  # noqa: ANN001
+        seen_selects.append(list(config.query_parameters.select or []))
+        response = next(responses)
+        if isinstance(response, ODataError):
+            raise response
+        return response
+
+    client = MagicMock()
+    client.me.messages.get = _get
+    client.me.messages.by_message_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(conversation_id="c1")
+    )
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+
+    payload = asyncio.run(mail_thread(message_id="a"))
+
+    assert [i["id"] for i in payload["items"]] == ["a"]
+    assert seen_selects[0] == list(_MESSAGE_LIST_SELECT_FIELDS)
+    assert seen_selects[1] == list(_MESSAGE_LIST_SELECT_FIELDS_WITHOUT_MEETING_TYPE)
+
+
+def test_graph_thread_does_not_retry_on_a_non_400_error(monkeypatch) -> None:
+    """A 429/5xx/401/403 is a real failure, not a rejected query shape: retrying
+    would duplicate the request (doubling load right when Graph may be signalling
+    back-off) and hide the original, more diagnostic error."""
+    from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+
+    err = ODataError()
+    err.response_status_code = 429
+    client = MagicMock()
+    client.me.messages.get = AsyncMock(side_effect=err)
+    client.me.messages.by_message_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(conversation_id="c1")
+    )
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+
+    with pytest.raises(ODataError):
+        asyncio.run(mail_thread(message_id="a"))
+
+    assert client.me.messages.get.await_count == 1
 
 
 def test_graph_thread_missing_message_is_not_found(monkeypatch) -> None:

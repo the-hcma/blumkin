@@ -115,6 +115,34 @@ MAIL_IMPORTANCE_VALUES = ("high", "normal", "low")
 # Upper bound on the mail thread walk; a conversation this long is pathological.
 _MAX_THREAD_MESSAGES = 500
 
+# `meetingMessageType` belongs to the `EventMessage` subtype, not the base `Message`
+# type. Some tenants reject it in `$select` on a `Message` collection endpoint (bare,
+# with no cast/expand) with a plain 400 - `_get_messages` and `mail_thread` retry once
+# with `_MESSAGE_LIST_SELECT_FIELDS_WITHOUT_MEETING_TYPE` when that happens, mirroring
+# `mail_get`'s cast/expand retry for the same underlying tenant quirk.
+_MEETING_MESSAGE_TYPE_FIELD = "meetingMessageType"
+
+_MESSAGE_LIST_SELECT_FIELDS = (
+    "id",
+    "subject",
+    "from",
+    "toRecipients",
+    "conversationId",
+    "createdDateTime",
+    "parentFolderId",
+    "receivedDateTime",
+    "sentDateTime",
+    "isRead",
+    "hasAttachments",
+    "importance",
+    "bodyPreview",
+    _MEETING_MESSAGE_TYPE_FIELD,
+)
+
+_MESSAGE_LIST_SELECT_FIELDS_WITHOUT_MEETING_TYPE = tuple(
+    field for field in _MESSAGE_LIST_SELECT_FIELDS if field != _MEETING_MESSAGE_TYPE_FIELD
+)
+
 
 WELL_KNOWN_MAIL_FOLDERS = (
     "archive",
@@ -914,6 +942,19 @@ async def mail_forward(
     return {"draft": _draft_summary(created, source=mid, kind="forward")}
 
 
+def _is_query_shape_rejection(exc: ODataError) -> bool:
+    """True only for a plain 400 - the signal some tenants send back for a `$select`/
+    `$expand` shape they reject (e.g. `meetingMessageType` or a cast/expand naming
+    a subtype property on the base `Message` type).
+
+    Anything else - 401/403/429/5xx - is a real failure that a blind retry would only
+    duplicate (doubling request count and wall-clock right when Graph may be signalling
+    back-off), so callers let it propagate rather than mask it behind a second,
+    unrelated attempt.
+    """
+    return getattr(exc, "response_status_code", None) == 400
+
+
 async def mail_get(
     *,
     message_id: str,
@@ -962,15 +1003,14 @@ async def mail_get(
     except ODataError as exc:
         if is_id_lookup_failure(exc):
             raise MailMessageNotFoundError(f"message not found: {mid}") from exc
-        # Only a plain 400 plausibly means "this tenant/policy rejected the
-        # cast-expand query shape" (what we've actually seen documented for
-        # some tenants). Anything else — 401/403/429/5xx — is a real failure
-        # that a blind retry would only duplicate (doubling request count and
-        # wall-clock right when Graph may be signalling back-off), so let it
-        # propagate rather than mask it behind a second, unrelated attempt.
-        if getattr(exc, "response_status_code", None) != 400:
+        if not _is_query_shape_rejection(exc):
             raise
+        # Drop both the subtype cast/expand *and* the bare `meetingMessageType` select
+        # (it belongs to `EventMessage`, not the base `Message` type queried here) -
+        # a tenant could reject either shape, and leaving the field in `$select` would
+        # make this retry fail for the same reason as the first attempt (issue #290).
         query.expand = None
+        query.select = [f for f in (query.select or []) if f != _MEETING_MESSAGE_TYPE_FIELD]
         try:
             msg = await client.me.messages.by_message_id(mid).get(
                 request_config(query, headers=headers)
@@ -1295,24 +1335,17 @@ async def mail_thread(
         top=100,
         filter=f"conversationId eq '{escaped}'",
         orderby=["receivedDateTime"],
-        select=[
-            "id",
-            "subject",
-            "from",
-            "toRecipients",
-            "conversationId",
-            "createdDateTime",
-            "parentFolderId",
-            "receivedDateTime",
-            "sentDateTime",
-            "isRead",
-            "hasAttachments",
-            "importance",
-            "bodyPreview",
-            "meetingMessageType",
-        ],
+        select=list(_MESSAGE_LIST_SELECT_FIELDS),
     )
-    page = await client.me.messages.get(request_config(list_query))
+    try:
+        page = await client.me.messages.get(request_config(list_query))
+    except ODataError as exc:
+        # Some tenants reject `meetingMessageType` in `$select` on the base `Message`
+        # collection with a plain 400 - retry once without it (see `_get_messages`).
+        if not _is_query_shape_rejection(exc):
+            raise
+        list_query.select = list(_MESSAGE_LIST_SELECT_FIELDS_WITHOUT_MEETING_TYPE)
+        page = await client.me.messages.get(request_config(list_query))
     messages: list[Any] = []
     while page is not None:
         messages.extend(page.value or [])
@@ -1942,29 +1975,23 @@ async def _get_messages(
         filter=criteria,
         search=None if search is None else f'"{search}"',
         orderby=None if sort is None else [f"{_ORDERBY_FIELDS[sort]} desc"],
-        select=[
-            "id",
-            "subject",
-            "from",
-            "toRecipients",
-            "conversationId",
-            "createdDateTime",
-            "parentFolderId",
-            "receivedDateTime",
-            "sentDateTime",
-            "isRead",
-            "hasAttachments",
-            "importance",
-            "bodyPreview",
-            "meetingMessageType",
-        ],
+        select=list(_MESSAGE_LIST_SELECT_FIELDS),
     )
     builder = (
         client.me.messages
         if folder is None
         else client.me.mail_folders.by_mail_folder_id(folder).messages
     )
-    return await builder.get(request_config(query))
+    try:
+        return await builder.get(request_config(query))
+    except ODataError as exc:
+        # Some tenants reject `meetingMessageType` in `$select` on the base `Message`
+        # collection (it belongs to the `EventMessage` subtype, not `Message`) with a
+        # plain 400 - retry once without it rather than failing every mail list.
+        if not _is_query_shape_rejection(exc):
+            raise
+        query.select = list(_MESSAGE_LIST_SELECT_FIELDS_WITHOUT_MEETING_TYPE)
+        return await builder.get(request_config(query))
 
 
 def _matches_text(msg: Any, *, sender: str | None, subject: str | None) -> bool:

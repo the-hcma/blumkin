@@ -117,10 +117,12 @@ def test_mail_get_falls_back_when_a_tenant_rejects_the_cast_expand(monkeypatch) 
     # after the fact would read the same, already-mutated object for both calls
     # regardless of what the retry actually sent — snapshot it at call time instead.
     seen_expands: list[Any] = []
+    seen_selects: list[list[str]] = []
 
     async def fake_get(config: Any) -> Any:
         expand = config.query_parameters.expand
         seen_expands.append(list(expand) if expand else None)
+        seen_selects.append(list(config.query_parameters.select or []))
         outcome = next(outcomes)
         if isinstance(outcome, Exception):
             raise outcome
@@ -134,6 +136,8 @@ def test_mail_get_falls_back_when_a_tenant_rejects_the_cast_expand(monkeypatch) 
         ["Microsoft.Graph.EventMessage/Event($select=id,organizer,start,end)"],
         None,
     ]
+    assert "meetingMessageType" in seen_selects[0]
+    assert seen_selects[1] == [f for f in seen_selects[0] if f != "meetingMessageType"]
     assert message["is_meeting_message"] is True
     assert message["meeting_message_type"] == "meetingRequest"
     assert message["linked_event_id"] is None
