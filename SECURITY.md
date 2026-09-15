@@ -53,6 +53,7 @@ follow the **Rollback** section there.
 - Handling of the local token cache and config under `~/.config/blumkin/`
   ([`src/blumkin/auth.py`](src/blumkin/auth.py),
   [`src/blumkin/config.py`](src/blumkin/config.py),
+  [`src/blumkin/secret_store.py`](src/blumkin/secret_store.py),
   [`src/blumkin/providers/google_auth.py`](src/blumkin/providers/google_auth.py)).
 
 ## What is out of scope

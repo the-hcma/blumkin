@@ -8,6 +8,26 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _force_file_secret_backend(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never let the test suite touch the real OS keychain (issue #287).
+
+    ``token_storage`` defaults to ``"auto"``, which prefers a real keyring
+    backend when one is usable - on a developer's macOS laptop that is the
+    login Keychain. Without this, tests that assert on the on-disk secret
+    file would instead read/write the operator's actual Keychain items.
+    Tests that specifically exercise the keyring path install their own fake
+    backend via ``blumkin.secret_store`` and don't need this guard.
+    """
+    if request.node.get_closest_marker("live") is not None:
+        return
+    from blumkin import secret_store
+
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_blumkin_config(
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,

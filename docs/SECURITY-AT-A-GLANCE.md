@@ -28,12 +28,19 @@ data anywhere.
 - **Delegated only.** Interactive browser sign-in (public client + `localhost`
   redirect). No client secret for Microsoft flows; the Google secret stays in
   the desktop-client JSON, never in toml or env.
-- The token cache and auth record are written under `~/.config/blumkin/` as
-  plaintext, mode `0600`, with **no cryptographic or host binding** - a copy
-  taken with the client id / tenant will refresh on another machine. Protect
-  the directory; revoke tenant-side (or remove the app grant) if it leaks.
+- The token cache and auth record are written under `~/.config/blumkin/`. By
+  default (`token_storage = "auto"` in `config.toml`) blumkin prefers the OS
+  keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+  when the optional `keyring` extra is installed and a real backend is usable
+  at runtime, falling back to a plain `0600` file otherwise (headless Linux
+  with no Secret Service, the extra not installed, etc.); `token_storage =
+  "file"` forces the file unconditionally. Neither backend does cryptographic
+  or host binding - a copied file, or a keychain item exported off the
+  machine, will refresh on another host with the client id / tenant. Protect
+  the directory (and, for the keychain path, the OS account); revoke
+  tenant-side (or remove the app grant) if it leaks. See issue #287.
 - Silent refresh renews access tokens without a browser; deleting the cache
-  forces a fresh sign-in.
+  (`blumkin auth logout`) forces a fresh sign-in.
 
 ## Blast radius
 

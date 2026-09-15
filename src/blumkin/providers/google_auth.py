@@ -3,22 +3,19 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from google.auth.exceptions import RefreshError, TransportError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
+from blumkin import secret_store
 from blumkin.auth import (
     AuthRequiredError,
     AuthTransientError,
     MissingScopeError,
-    SecretWriteError,
-    _ensure_secret_dir,
     format_scope_gap,
     interactive_auth_allowed,
 )
@@ -243,8 +240,7 @@ def login(config: BlumkinConfig | None = None) -> Credentials:
 def logout(config: BlumkinConfig | None = None) -> None:
     """Delete the Google token file when present."""
     cfg = config or load_config()
-    if cfg.google_token_path.is_file():
-        cfg.google_token_path.unlink()
+    secret_store.delete(cfg, "google_token")
 
 
 def persisted_granted_scopes(cfg: BlumkinConfig) -> frozenset[str]:
@@ -268,11 +264,12 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     cfg = config or load_config()
     access = _access_token_expiry(cfg)
     granted = persisted_granted_scopes(cfg)
+    token_present = secret_store.exists(cfg, "google_token")
     return {
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
         "access_token_expired": access.get("expired"),
-        "auth_record": cfg.google_token_path.is_file(),
+        "auth_record": token_present,
         "client_id_configured": bool(cfg.client_id) or cfg.google_oauth_client_file is not None,
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),
@@ -281,15 +278,14 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         # profile against (auth_required already covers that state). Diffed against
         # GOOGLE_REQUIRED_SCOPES, not GOOGLE_SCOPES: directory.readonly is optional
         # (issue #133 review, round 3).
-        "missing_scopes": sorted(GOOGLE_REQUIRED_SCOPES - granted)
-        if cfg.google_token_path.is_file()
-        else [],
+        "missing_scopes": sorted(GOOGLE_REQUIRED_SCOPES - granted) if token_present else [],
         "provider": "google",
         "refresh_token_present": access.get("refresh_token_present", False),
         "requested_scopes": sorted(GOOGLE_SCOPES),
         "tenant_id": "",
         # Google stores the OAuth session in one token JSON (no separate MSAL auth record).
-        "token_cache": cfg.google_token_path.is_file(),
+        "token_cache": token_present,
+        "token_storage_backend": secret_store.active_backend(cfg),
     }
 
 
@@ -415,11 +411,11 @@ def _consent_once(cfg: BlumkinConfig, *, force_consent: bool) -> Credentials:
 
 
 def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
-    path = cfg.google_token_path
-    if not path.is_file():
+    raw = secret_store.read_text(cfg, "google_token")
+    if raw is None:
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(raw)
     except json.JSONDecodeError, OSError:
         return None
     if not isinstance(data, dict):
@@ -463,7 +459,7 @@ def _missing_scope_error(
 
 def _needs_additional_scopes(cfg: BlumkinConfig, required: frozenset[str]) -> bool:
     """True when the stored grant is missing any scope in ``required``."""
-    if not cfg.google_token_path.is_file():
+    if not secret_store.exists(cfg, "google_token"):
         return False
     granted = persisted_granted_scopes(cfg)
     if not granted:
@@ -474,11 +470,11 @@ def _needs_additional_scopes(cfg: BlumkinConfig, required: frozenset[str]) -> bo
 
 
 def _read_persisted_scopes(cfg: BlumkinConfig) -> list[str] | None:
-    path = cfg.google_token_path
-    if not path.is_file():
+    raw = secret_store.read_text(cfg, "google_token")
+    if raw is None:
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(raw)
     except json.JSONDecodeError, OSError:
         return None
     if not isinstance(data, dict):
@@ -523,7 +519,6 @@ def _save_credentials(
     *,
     preserve_granted_scopes: bool = False,
 ) -> None:
-    _ensure_secret_dir(cfg.profile_dir, stop_at=cfg.config_dir)
     payload = json.loads(creds.to_json())
     if preserve_granted_scopes:
         granted = _read_persisted_scopes(cfg)
@@ -537,7 +532,7 @@ def _save_credentials(
         payload["client_secret"] = secret
     else:
         payload.setdefault("client_secret", "")
-    _write_secret_text(cfg.google_token_path, json.dumps(payload))
+    secret_store.write_text(cfg, "google_token", json.dumps(payload))
 
 
 def _scopes_from_oauthlib_warning(exc: Warning) -> frozenset[str] | None:
@@ -562,35 +557,3 @@ def _warn_scope_gap(current: frozenset[str]) -> None:
         'consent screen - tick every box (or click "Select all") this time.\n'
         + format_scope_gap(current=current, missing=GOOGLE_SCOPES - current)
     )
-
-
-def _write_secret_text(path: Path, text: str) -> None:
-    """Write sensitive text at 0600 with O_NOFOLLOW when available (see blumkin.auth)."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    if nofollow:
-        flags |= nofollow
-    try:
-        fd = os.open(path, flags, 0o600)
-    except OSError as exc:
-        raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
-    try:
-        try:
-            if hasattr(os, "fchmod"):
-                try:
-                    os.fchmod(fd, 0o600)
-                except OSError:
-                    pass
-            os.write(fd, text.encode())
-        except OSError as exc:
-            raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
-    finally:
-        try:
-            os.close(fd)
-        except OSError as exc:
-            raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
-    if not hasattr(os, "fchmod"):
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass

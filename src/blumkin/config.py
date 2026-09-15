@@ -39,6 +39,13 @@ class BlumkinConfig:
     # *reads* - see docs/DECISIONS.md D10. Defaulted so existing construction
     # sites (and configs) do not have to name it.
     docs_scopes: bool = False
+    # OS keychain vs. a plain 0600 file for the token cache / auth record /
+    # Google token (issue #287). "auto" prefers the keyring extra when a real
+    # backend is usable at runtime, silently falling back to the file
+    # otherwise (headless Linux with no Secret Service, etc.); "keyring" /
+    # "file" force one and warn once if "keyring" is unusable. See
+    # blumkin.secret_store.
+    token_storage: str = "auto"
 
     @property
     def auth_record_path(self) -> Path:
@@ -130,6 +137,10 @@ def google_oauth_installed_client(path: Path) -> dict[str, Any]:
 
 def list_profiles() -> list[dict[str, Any]]:
     """Return safe summaries of configured profiles (no secrets)."""
+    # Local import: blumkin.secret_store imports BlumkinConfig from this module,
+    # so importing it at module level here would be circular.
+    from blumkin import secret_store
+
     directory = config_dir()
     file_data = _read_toml(directory / "config.toml")
     tables, default_name = _profile_tables(file_data)
@@ -137,14 +148,14 @@ def list_profiles() -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for name in sorted(tables):
         table = tables[name]
-        profile_dir = directory / "profiles" / name
         tags = _tags_from_table(table)
+        cfg = load_config(profile=name)
         summaries.append(
             {
                 "auth_present": {
-                    "auth_record": (profile_dir / "auth_record.json").is_file(),
-                    "google_token": (profile_dir / "google_token.json").is_file(),
-                    "msal_token_cache": (profile_dir / "msal_token_cache.json").is_file(),
+                    "auth_record": secret_store.exists(cfg, "auth_record"),
+                    "google_token": secret_store.exists(cfg, "google_token"),
+                    "msal_token_cache": secret_store.exists(cfg, "token_cache"),
                 },
                 "default_tz": _string_values(table).get("default_tz", "").strip(),
                 "email": _string_values(table).get("email", "").strip(),
@@ -195,6 +206,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         provider=_provider_kind(table),
         tags=_tags_from_table(table),
         tenant_id=string_values.get("tenant_id", "").strip(),
+        token_storage=_token_storage_preference(table),
         wo1162425_scopes=_wo1162425_scopes_enabled(table),
     )
 
@@ -615,6 +627,14 @@ def _top_level_preferences(file_data: dict[str, Any]) -> dict[str, Any]:
             f"preferences must be a table in config.toml, got {type(raw).__name__}"
         )
     return raw
+
+
+def _token_storage_preference(file_data: dict[str, Any]) -> str:
+    """Parse ``token_storage`` (issue #287); any unrecognized value is "auto"."""
+    raw = file_data.get("token_storage")
+    if isinstance(raw, str) and raw.strip().lower() in {"auto", "file", "keyring"}:
+        return raw.strip().lower()
+    return "auto"
 
 
 def _wo1162425_scopes_enabled(file_data: dict[str, Any]) -> bool:
