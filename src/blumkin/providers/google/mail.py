@@ -775,7 +775,12 @@ def _meeting_fields_from_payload(
         partstat = str(first.params.get("PARTSTAT") or "").upper() if first is not None else ""
         meeting_message_type = _ICS_PARTSTAT_TO_TYPE.get(partstat, meeting_message_type)
     organizer = event.get("ORGANIZER")
-    organizer_email = str(organizer).removeprefix("mailto:") if organizer else None
+    organizer_value = str(organizer) if organizer else None
+    organizer_email = (
+        organizer_value[len("mailto:") :]
+        if organizer_value and organizer_value.casefold().startswith("mailto:")
+        else organizer_value
+    )
     uid = event.get("UID")
     return {
         "is_meeting_message": True,

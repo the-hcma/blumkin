@@ -1292,7 +1292,9 @@ SKILLS: list[SkillSpec] = [
         summary=(
             "List recent inbox messages, optionally filtered or searched; each item "
             "reports is_meeting_message/meeting_message_type so meeting invites can "
-            "be spotted and triaged before opening them"
+            "be spotted and triaged before opening them (Google accounts report both "
+            "as null here — Gmail's list/search API omits the message body needed to "
+            "classify them, so use mail.get for a Google message's meeting details)"
         ),
         mutates=False,
         notifies_others=False,
@@ -1339,7 +1341,9 @@ SKILLS: list[SkillSpec] = [
         summary=(
             "List recent messages from a mail folder "
             "(well-known name such as sentitems/archive, or a folder id); "
-            "items report is_meeting_message/meeting_message_type"
+            "items report is_meeting_message/meeting_message_type (Google accounts "
+            "report both as null here — use mail.get for a Google message's meeting "
+            "details)"
         ),
         mutates=False,
         notifies_others=False,
@@ -1496,7 +1500,8 @@ SKILLS: list[SkillSpec] = [
         cli=["blumkin", "mail", "search"],
         summary=(
             "Search the whole mailbox (every folder); tags each hit with its folder "
-            "and its is_meeting_message/meeting_message_type"
+            "and its is_meeting_message/meeting_message_type (Google accounts report "
+            "both as null here — use mail.get for a Google message's meeting details)"
         ),
         mutates=False,
         notifies_others=False,

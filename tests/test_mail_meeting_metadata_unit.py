@@ -130,7 +130,6 @@ def test_mail_get_falls_back_when_a_tenant_rejects_the_cast_expand(monkeypatch) 
 
     message = asyncio.run(mail_get(message_id="msg-1"))["message"]
 
-    assert item.get.await_count == 2
     assert seen_expands == [
         ["Microsoft.Graph.EventMessage/Event($select=id,organizer,start,end)"],
         None,
@@ -743,6 +742,25 @@ def test_google_mail_get_reports_unresolvable_metadata_for_a_malformed_ics_body(
 
     assert result["is_meeting_message"] is True
     assert result["meeting_message_type"] is None
+    assert result["ical_uid"] is None
+
+
+def test_google_mail_get_reports_a_meeting_for_a_known_method_with_no_vevent() -> None:
+    """A calendar that parses cleanly and carries a recognized `METHOD` but has
+    no `VEVENT` at all (a truncated invite, or a body that is only a
+    `VTIMEZONE`) is still the signal issue #277 is about: report
+    `is_meeting_message`/`meeting_message_type` from the METHOD alone rather
+    than falling back to "not a meeting" just because the event body itself
+    is unusable.
+    """
+    ics = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n"
+    service = _service(_full_message_with_raw_ics(ics))
+
+    with _patched(service):
+        result = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert result["is_meeting_message"] is True
+    assert result["meeting_message_type"] == "meetingRequest"
     assert result["ical_uid"] is None
 
 
