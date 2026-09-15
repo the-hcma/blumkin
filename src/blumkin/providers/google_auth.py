@@ -285,7 +285,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "tenant_id": "",
         # Google stores the OAuth session in one token JSON (no separate MSAL auth record).
         "token_cache": token_present,
-        "token_storage_backend": secret_store.active_backend(cfg),
+        "token_storage_backend": secret_store.active_backend(cfg, "google_token"),
     }
 
 

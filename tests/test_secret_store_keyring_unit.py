@@ -124,14 +124,47 @@ def test_active_backend_reports_file_when_forced(tmp_path: Path, monkeypatch) ->
     cfg = _load(tmp_path, monkeypatch, token_storage="file")
     fake = _FakeKeyring()
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
-    assert secret_store.active_backend(cfg) == "file"
+    assert secret_store.active_backend(cfg, "token_cache") == "file"
 
 
 def test_active_backend_reports_keyring_when_usable(tmp_path: Path, monkeypatch) -> None:
     cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
     fake = _FakeKeyring()
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
-    assert secret_store.active_backend(cfg) == "keyring"
+    assert secret_store.active_backend(cfg, "token_cache") == "keyring"
+
+
+def test_active_backend_reports_file_once_a_write_has_actually_fallen_back_there(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A profile preferring keyring must not be misreported once it always falls back.
+
+    ``_backend_for`` only reflects config + whether *some* backend is usable
+    in principle - it cannot see that every write for this profile has been
+    falling back to the file at runtime (a payload past the backend's own
+    size cap, a keychain that only fails at write time, etc.). Once that has
+    happened, `doctor`/`profiles list` must say "file", the backend actually
+    holding the current value, not "keyring" (issue #287 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    # The keyring never received anything (write always fell back); the file
+    # is the one place the secret actually landed.
+    secret_store._file_path(cfg, "token_cache").parent.mkdir(parents=True, exist_ok=True)
+    secret_store._file_path(cfg, "token_cache").write_text("cache-payload")
+
+    assert secret_store.active_backend(cfg, "token_cache") == "file"
+
+
+def test_active_backend_reports_the_preference_for_a_brand_new_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Nothing stored anywhere yet: report the preference, not a hard-coded default."""
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    assert secret_store.active_backend(cfg, "token_cache") == "keyring"
 
 
 def test_write_then_read_round_trips_through_keyring(tmp_path: Path, monkeypatch) -> None:
@@ -239,6 +272,32 @@ def test_delete_is_a_noop_when_nothing_is_stored(tmp_path: Path, monkeypatch) ->
     fake = _FakeKeyring()
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
     secret_store.delete(cfg, "auth_record")  # must not raise
+
+
+def test_delete_raises_secret_write_error_when_the_file_cannot_be_unlinked(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A failed file-side delete (permission denied, read-only mount, ...) is not swallowed.
+
+    ``path.unlink()`` was the one filesystem mutation in this module not
+    already wrapped into ``SecretWriteError`` - an ``OSError`` here escaped
+    `auth logout` as a bare, unclassified traceback, bypassing the CLI's
+    `secret_write_failed` contract, and did so *before* the keychain-side
+    deletion below even ran, aborting logout early while the credential
+    stayed in place (issue #287 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="file")
+    secret_store.write_text(cfg, "auth_record", "record-payload")
+    real_unlink = Path.unlink
+
+    def _denied_unlink(self: Path, *args, **kwargs):
+        if self == cfg.auth_record_path:
+            raise PermissionError("denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _denied_unlink)
+    with pytest.raises(SecretWriteError, match="cannot delete"):
+        secret_store.delete(cfg, "auth_record")
 
 
 def test_delete_surfaces_backend_failure_that_is_not_not_found(tmp_path: Path, monkeypatch) -> None:

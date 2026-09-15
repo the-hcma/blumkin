@@ -257,7 +257,11 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "requested_scopes": requested,
         "tenant_id": cfg.tenant_id,
         "token_cache": secret_store.exists(cfg, "token_cache"),
-        "token_storage_backend": secret_store.active_backend(cfg),
+        # token_cache (not auth_record): it is the one refreshed - and thus
+        # re-serialized/re-persisted - on virtually every silent auth call,
+        # so it is the secret most likely to reveal a backend that only
+        # falls back to the file at write time (issue #287 review).
+        "token_storage_backend": secret_store.active_backend(cfg, "token_cache"),
     }
 
 

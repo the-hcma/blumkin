@@ -138,21 +138,26 @@ def google_oauth_installed_client(path: Path) -> dict[str, Any]:
 def list_profiles() -> list[dict[str, Any]]:
     """Return safe summaries of configured profiles (no secrets).
 
-    ``load_config(profile=name)`` is only used per-profile to compute
-    ``auth_present`` and can raise ``ProviderConfigError`` for a profile that
-    is otherwise listable (a missing/unparseable
-    ``google_oauth_client_file``, a name that also collides with another
-    profile's tag, etc.). One broken profile must not hide every healthy one
-    from `blumkin profiles list` or a multi-account MCP server (issue #287
-    review) - such a profile is still listed, with ``auth_present`` all
-    ``False`` and an ``error`` key describing why it could not be resolved.
+    ``load_config(profile=name)`` can raise ``ProviderConfigError`` for a
+    profile that is otherwise listable (a missing/unparseable
+    ``google_oauth_client_file``, a bad ``provider`` value, malformed
+    ``tags``, a name that also collides with another profile's tag, etc.).
+    One broken profile must not hide every healthy one from
+    `blumkin profiles list` or a multi-account MCP server (issue #287
+    review) - such a profile is still listed, with an ``error`` key
+    describing why it could not be fully resolved.
 
-    Loading the config, resolving the provider kind, and parsing tags are
-    three independent ways a single profile's table can be malformed; each
-    gets its own try/except so that a failure in one does not suppress the
-    other two - a bad ``provider`` value must not blank out an otherwise
-    valid ``auth_present`` (and vice versa), and malformed ``tags`` must not
-    abort the whole per-profile summary (issue #287 review).
+    ``auth_present`` is computed from a minimal, provider-independent
+    ``BlumkinConfig`` (see ``_auth_present_probe_cfg``) rather than from
+    ``load_config``'s result: every field ``secret_store.exists`` actually
+    needs (``config_dir``, ``profile``, ``token_storage``) is resolvable
+    even when the *rest* of the profile's config is broken, so a bad
+    ``provider`` value or a `load_config`-only failure elsewhere must not
+    blank out an otherwise-correct auth-present summary (issue #287
+    review). Resolving the provider kind and parsing tags are two more
+    independent ways a single profile's table can be malformed; each gets
+    its own try/except too, so a failure in one does not suppress the
+    others.
     """
     # Local import: blumkin.secret_store imports BlumkinConfig from this module,
     # so importing it at module level here would be circular.
@@ -165,21 +170,21 @@ def list_profiles() -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for name in sorted(tables):
         table = tables[name]
-        auth_present = {"auth_record": False, "google_token": False, "msal_token_cache": False}
         provider = ""
         tags: tuple[str, ...] = ()
         errors: list[str] = []
 
+        probe_cfg = _auth_present_probe_cfg(directory, name, table)
+        auth_present = {
+            "auth_record": secret_store.exists(probe_cfg, "auth_record"),
+            "google_token": secret_store.exists(probe_cfg, "google_token"),
+            "msal_token_cache": secret_store.exists(probe_cfg, "token_cache"),
+        }
+
         try:
-            cfg = load_config(profile=name)
+            load_config(profile=name)
         except ProviderConfigError as exc:
             errors.append(str(exc))
-        else:
-            auth_present = {
-                "auth_record": secret_store.exists(cfg, "auth_record"),
-                "google_token": secret_store.exists(cfg, "google_token"),
-                "msal_token_cache": secret_store.exists(cfg, "token_cache"),
-            }
 
         try:
             provider = _provider_kind(table).value
@@ -627,6 +632,38 @@ def _resolve_profile_name(
     raise ProviderConfigError(
         "multiple profiles configured; pass --profile / BLUMKIN_PROFILE, or set "
         f"default_profile; available: {available}"
+    )
+
+
+def _auth_present_probe_cfg(directory: Path, name: str, table: dict[str, Any]) -> BlumkinConfig:
+    """A minimal ``BlumkinConfig`` good only for locating this profile's secret files.
+
+    ``auth_present`` must stay computable even when this profile has an
+    unrelated config error (a bad ``provider``, malformed ``tags``, an
+    unparseable ``google_oauth_client_file``, etc.) - none of those affect
+    where a profile's secrets live on disk (issue #287 review):
+    ``profile_dir`` (and every ``*_path`` property ``secret_store`` reads)
+    depends only on ``config_dir``/``profile``, and ``_backend_for`` only
+    additionally needs ``token_storage`` - all three are resolvable in
+    isolation. Every other field here is a placeholder never read by
+    ``secret_store.exists``.
+    """
+    return BlumkinConfig(
+        client_id="",
+        config_dir=directory,
+        default_tz="",
+        email="",
+        files_scopes=False,
+        google_oauth_client_file=None,
+        graph_timeout_seconds=DEFAULT_GRAPH_TIMEOUT_SECONDS,
+        mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
+        profile=name,
+        provider=ProviderKind.MICROSOFT,
+        tags=(),
+        tenant_id="",
+        token_storage=_token_storage_preference(table),
+        wo1162425_scopes=False,
     )
 
 

@@ -304,6 +304,12 @@ def test_list_profiles_tolerates_a_profile_with_an_invalid_provider(
     *outside* the ``try`` block that wraps ``load_config`` - so this one typo
     still aborted the whole listing, exactly what the surrounding try/except
     was added to prevent (issue #287 review).
+
+    ``auth_present`` must also still reflect real, on-disk credentials for
+    this profile: ``load_config`` resolves the (invalid) provider itself and
+    raises before ever returning a usable ``BlumkinConfig``, so computing
+    ``auth_present`` from ``load_config``'s result would blank it out for a
+    profile that actually has credentials on disk (issue #287 review).
     """
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     _write_multi_profile(tmp_path)
@@ -311,12 +317,19 @@ def test_list_profiles_tolerates_a_profile_with_an_invalid_provider(
         (tmp_path / "config.toml").read_text()
         + '\n[profiles.broken]\nprovider = "chart"\nclient_id = "x"\n'
     )
+    (tmp_path / "profiles" / "broken").mkdir(parents=True)
+    (tmp_path / "profiles" / "broken" / "msal_token_cache.json").write_text("cache-payload")
 
     summaries = list_profiles()
     assert [item["name"] for item in summaries] == ["broken", "personal", "work"]
     broken = summaries[0]
     assert broken["provider"] == ""
     assert "error" in broken
+    assert broken["auth_present"] == {
+        "auth_record": False,
+        "google_token": False,
+        "msal_token_cache": True,
+    }
     healthy_names = {item["name"] for item in summaries if "error" not in item}
     assert healthy_names == {"personal", "work"}
 

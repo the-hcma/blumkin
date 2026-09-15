@@ -10,12 +10,17 @@ This module adds an OS-keychain-backed alternative via the optional
 Service), selected per profile by ``token_storage`` in ``config.toml``:
 
 - ``"auto"`` (default): prefer the keychain when a real backend is usable at
-  runtime, silently fall back to the file otherwise (headless Linux with no
-  Secret Service running, the ``keychain`` extra not installed, a keychain
-  write failing at runtime, etc.) — a non-interactive agent shell must never
-  hang or fail because no keychain backend can service it.
+  runtime, silently fall back to the file for most write trouble (headless
+  Linux with no Secret Service running, the ``keychain`` extra not
+  installed, a keychain write failing at runtime, etc.) — a non-interactive
+  agent shell must never hang or fail because no keychain backend can
+  service it. It only raises if that fallback write's own cleanup of a
+  stale keyring entry then fails too, since that would otherwise leave the
+  two backends silently disagreeing.
 - ``"keyring"``: same preference, but warn once (not on every call) if no
-  usable backend is found, since the operator explicitly asked for one.
+  usable backend is found, since the operator explicitly asked for one; a
+  write failure of any kind raises rather than silently downgrading to the
+  file.
 - ``"file"``: always use the file, even if a keyring backend is available.
 
 A legacy plaintext file is migrated into the keyring transparently the first
@@ -43,9 +48,35 @@ class SecretWriteError(OSError):
     """Failed to persist a secret (symlink at the path, keyring backend error, etc.)."""
 
 
-def active_backend(cfg: BlumkinConfig) -> str:
-    """Backend name ("keyring" or "file") that would service the next read/write."""
-    return _backend_for(cfg)
+def active_backend(cfg: BlumkinConfig, kind: SecretKind) -> str:
+    """Backend name ("keyring" or "file") actually holding ``kind`` right now.
+
+    Reports where the secret really is, not just this profile's preference:
+    ``token_storage = "auto"``/``"keyring"`` can still end up on the file on
+    *every* write for reasons ``_backend_for`` can't see from config alone -
+    a serialized MSAL token cache exceeding a backend's own size cap (e.g.
+    Windows Credential Manager's 2560-byte ``CRED_MAX_CREDENTIAL_BLOB_SIZE``),
+    or a keychain that only fails at write time. Reporting the static
+    preference in that case would have `doctor`/`profiles list` permanently
+    claim "keyring" for a profile that has in fact always fallen back to the
+    file (issue #287 review). When neither backend has anything stored yet
+    (a brand new, never-logged-in profile) there is nothing on disk to
+    disagree with the preference, so the preference is reported.
+    """
+    if _backend_for(cfg) == "file":
+        return "file"
+    keyring = _keyring_module()
+    if keyring is None:
+        return "file"
+    try:
+        account = _keyring_account(cfg, kind)
+        if _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account) is not None:
+            return "keyring"
+    except Exception:
+        pass
+    if _file_path(cfg, kind).is_file():
+        return "file"
+    return "keyring"
 
 
 def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
@@ -67,7 +98,16 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
     """
     path = _file_path(cfg, kind)
     if path.is_file():
-        path.unlink()
+        try:
+            path.unlink()
+        except OSError as exc:
+            # Every other file mutation in this module already converts a
+            # failed OSError into SecretWriteError; this unlink was the one
+            # exception, so a read-only mount / permission mismatch (a file
+            # created by an earlier `sudo blumkin auth login`, etc.) escaped
+            # `auth logout` as a bare, unclassified traceback instead of the
+            # documented secret_write_failed error (issue #287 review).
+            raise SecretWriteError(f"cannot delete {kind} file {path}: {exc}") from exc
     keyring = _keyring_module()
     if keyring is None:
         return
