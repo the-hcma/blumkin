@@ -45,11 +45,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "openpyxl>=3.1",
+    "pdfplumber>=0.11",
     "pyright>=1.1.411",
     "pytest>=9.1.1",
     "ruff>=0.16.6",
 ]
 mcp = ["mcp>=2.1.1"]
+ocr = ["pytesseract>=0.3", "pdf2image>=1.17", "pillow>=11"]
+pdf = ["pdfplumber>=0.11"]
+xlsx = ["openpyxl>=3.1"]
 
 [project.scripts]
 blumkin = "blumkin.cli:main"
@@ -84,6 +89,8 @@ package = true
 
 [dependency-groups]
 dev = [
+    "openpyxl>=3.1",
+    "pdfplumber>=0.11",
     "pyright>=1.1.411",
     "pytest>=9.1.1",
     "ruff>=0.16.6",

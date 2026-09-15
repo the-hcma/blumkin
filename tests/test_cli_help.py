@@ -83,6 +83,7 @@ def test_group_help_carries_examples(group: tuple[str, ...]) -> None:
         (["calendar", "create"], 'blumkin calendar create --subject "1:1 sync"'),
         (["calendar", "suggest"], "--duration 45m"),
         (["calendar", "view"], "half-open"),
+        (["docs", "read"], "blumkin docs read --path ./agenda.pdf --pages 1-3 --json"),
         (["mail", "draft"], "blumkin mail draft --to sam@example.com"),
         (["mail", "reply"], "send with `mail send-draft"),
         (["mail", "inbox"], "--search"),

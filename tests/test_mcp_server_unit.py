@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from docx import Document
 
 from blumkin.exit_codes import EXIT_USAGE
 from blumkin.providers.kind import ProviderKind
@@ -503,6 +504,34 @@ def test_config_skill_people_context_is_a_tool_and_needs_no_provider(tmp_path) -
             result = _drive(lambda c: c.call_tool("people.context", {"profile": "work"}))
     assert result.is_error is False
     assert [x["name"] for x in result.structured_content["contacts"]] == ["Sam"]
+
+
+def test_config_skill_docs_read_is_a_tool_and_dispatches_locally(tmp_path) -> None:
+    path = tmp_path / "brief.docx"
+    document = Document()
+    document.add_paragraph("Quarterly agenda")
+    document.save(path)
+    cfg = SimpleNamespace(
+        config_dir=tmp_path,
+        profile_dir=tmp_path / "profiles" / "work",
+        profile="work",
+        default_tz="UTC",
+        provider=ProviderKind.MICROSOFT,
+        wo1162425_scopes=True,
+    )
+    with _profiles(_TWO_PROFILES):
+        tools = {t.name: t for t in build_tools(profiles=_TWO_PROFILES)}
+        assert "docs.read" in tools
+        assert "profile" in tools["docs.read"].input_schema["required"]
+        assert tools["docs.read"].annotations is not None
+        assert tools["docs.read"].annotations.read_only_hint is True
+        with patch("blumkin.mcp_server.load_config", return_value=cfg):
+            result = _drive(
+                lambda c: c.call_tool("docs.read", {"path": str(path), "profile": "work"})
+            )
+    assert result.is_error is False
+    assert result.structured_content["kind"] == "docx"
+    assert result.structured_content["pages"][0]["text"] == "Quarterly agenda"
 
 
 def test_config_skill_tasks_are_tools_and_dispatch_locally(tmp_path) -> None:

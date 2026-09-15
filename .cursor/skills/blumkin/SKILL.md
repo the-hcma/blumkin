@@ -138,6 +138,21 @@ original's attachments.
      use `mail list --folder drafts` or `mail get --id` for existence)
      `blumkin mail attachments --id '<message-id>' --json`
      `blumkin mail attachments download --message-id '<message-id>' --attachment-id '<id>' --out ./file.docx`
+   - Local document reads: `blumkin docs read --path ./agenda.pdf --json`
+     (or `./contract.docx`, `./report.xlsx`). Use this after `drive download`,
+     `drive export`, `mail attachments download`, or `chat attachments download`
+     when you need the contents of a file already on disk. Do **not** `pip install`
+     anything ad hoc.
+     - PDF: optional `--pages 1-3` and `--ocr` (OCR is only for PDF, is slower,
+       and needs the `ocr` extra plus `tesseract` and `poppler` on PATH).
+     - XLSX: optional `--sheet Summary` or a 1-based sheet index.
+     - `--json` shape:
+       `{ok, path, kind, pages: [{index, text, tables, sheet?}], ocr_used}`.
+     - Safety caps: files over 25 MB are refused, and extracted output over 1 MB
+       fails closed with a usage error.
+     - Missing extras fail closed with actionable messages such as
+       `docs read needs the pdf extra: uv tool install -e '.[pdf]'` or
+       `docs read --ocr needs the ocr extra: uv tool install -e '.[ocr]'`.
    - Chat: `blumkin chat find --with "Name" --json`,
      `blumkin chat last --with "Name" --n 3 --json`
      `blumkin chat attachments --chat-id '<chat-id>' --message-id '<message-id>' --json`

@@ -39,6 +39,7 @@ from blumkin.skills.chat import (
     ChatAttachmentSkippedError,
     ChatMessageNotFoundError,
 )
+from blumkin.skills.docs_read import DocsReadFileNotFoundError
 from blumkin.skills.mail import (
     MailAttachError,
     MailAttachmentNotFoundError,
@@ -118,6 +119,8 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
     # classified before the generic LookupError branch below.
     if isinstance(exc, ZoneInfoNotFoundError):
         return ErrorInfo("usage_error", EXIT_USAGE, f"invalid timezone: {exc}", _TZ_HINT)
+    if isinstance(exc, DocsReadFileNotFoundError):
+        return ErrorInfo("not_found", EXIT_NOT_FOUND, str(exc))
 
     # 1. per-verb "not found" / bad-input classes that the CLI catches ahead of the ladder
     if isinstance(
