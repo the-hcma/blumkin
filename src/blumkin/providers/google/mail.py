@@ -9,6 +9,7 @@ import re
 from datetime import UTC, datetime
 from email.header import decode_header, make_header
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from googleapiclient.errors import HttpError
 
@@ -396,6 +397,9 @@ async def mail_thread(
             item["is_meeting_message"] = detail.get("is_meeting_message")
             item["meeting_message_type"] = detail.get("meeting_message_type")
             item["ical_uid"] = detail.get("ical_uid")
+            item["organizer_email"] = detail.get("organizer_email")
+            item["start"] = detail.get("start")
+            item["end"] = detail.get("end")
         items.append(item)
     return {"conversation_id": thread_id, "items": items, "count": len(items)}
 
@@ -631,49 +635,6 @@ def _label_ids_for_folder(well_known: str | None) -> list[str] | None:
     return [label]
 
 
-def _find_calendar_part(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Depth-first search for an inline ``text/calendar`` MIME part (iTIP)."""
-    if str(payload.get("mimeType") or "").casefold() == "text/calendar":
-        return payload
-    for part in payload.get("parts") or []:
-        if not isinstance(part, dict):
-            continue
-        found = _find_calendar_part(part)
-        if found is not None:
-            return found
-    return None
-
-
-_ICS_UNFOLD_RE = re.compile(r"\r?\n[ \t]")
-_ICS_METHOD_RE = re.compile(r"(?im)^METHOD:\s*([A-Za-z]+)\s*$")
-_ICS_UID_RE = re.compile(r"(?im)^UID:\s*(.+?)\s*$")
-_ICS_PARTSTAT_RE = re.compile(r"(?im)^ATTENDEE[^\r\n:]*PARTSTAT=([A-Za-z]+)[^\r\n:]*:")
-
-
-def _unfold_ics(ics: str) -> str:
-    """Join RFC 5545 folded lines back together before matching against them.
-
-    ICS wraps any line over 75 octets onto a continuation line that starts
-    with a single space or tab; without unfolding, `^...:` patterns that
-    should match a single logical property (e.g. a long ``ATTENDEE`` line)
-    silently fail once the value pushes the terminating ``:`` past the fold.
-    """
-    return _ICS_UNFOLD_RE.sub("", ics)
-
-
-# Named to line up with Graph's `meetingMessageType` values so a caller sees the
-# same vocabulary regardless of provider.
-_ICS_METHOD_TO_TYPE = {
-    "REQUEST": "meetingRequest",
-    "CANCEL": "meetingCancelled",
-}
-_ICS_PARTSTAT_TO_TYPE = {
-    "ACCEPTED": "meetingAccepted",
-    "DECLINED": "meetingDeclined",
-    "TENTATIVE": "meetingTenativelyAccepted",
-}
-
-
 def _calendar_part_ics(service: Any, message_id: str, part: dict[str, Any]) -> str:
     """Decode an iTIP part's body, fetching it as an attachment when Gmail didn't
     inline it.
@@ -702,6 +663,87 @@ def _calendar_part_ics(service: Any, message_id: str, part: dict[str, Any]) -> s
     return ""
 
 
+def _find_calendar_part(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Depth-first search for an inline ``text/calendar`` MIME part (iTIP)."""
+    if str(payload.get("mimeType") or "").casefold() == "text/calendar":
+        return payload
+    for part in payload.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        found = _find_calendar_part(part)
+        if found is not None:
+            return found
+    return None
+
+
+def _ics_datetime_to_iso(params: str, value: str) -> str | None:
+    """Convert an ICS ``DTSTART``/``DTEND`` value to an ISO 8601 string.
+
+    RFC 5545 allows three shapes here: a bare UTC instant (trailing ``Z``), an
+    all-day ``VALUE=DATE`` (8 digits, no time component), and a ``TZID``-qualified
+    local time. UTC and all-day values convert directly; a ``TZID`` value is
+    localized via `zoneinfo` and converted to UTC. A local time with no ``TZID``
+    (a "floating" time) is returned as-is since there is no zone to resolve it
+    against.
+    """
+    value = value.strip()
+    if len(value) == 8 and value.isdigit():
+        try:
+            return datetime.strptime(value, "%Y%m%d").strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+    is_utc = value.endswith("Z")
+    try:
+        parsed = datetime.strptime(value, "%Y%m%dT%H%M%SZ" if is_utc else "%Y%m%dT%H%M%S")
+    except ValueError:
+        return None
+    if is_utc:
+        return _iso_z(parsed.replace(tzinfo=UTC))
+    tzid_match = re.search(r"(?i)TZID=([^;:]+)", params)
+    if tzid_match:
+        try:
+            return _iso_z(parsed.replace(tzinfo=ZoneInfo(tzid_match.group(1))))
+        except ZoneInfoNotFoundError, ValueError:
+            pass
+    return parsed.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+_ICS_DTEND_RE = re.compile(r"(?im)^DTEND((?:;[^\r\n:]*)?):([^\r\n]+)\s*$")
+_ICS_DTSTART_RE = re.compile(r"(?im)^DTSTART((?:;[^\r\n:]*)?):([^\r\n]+)\s*$")
+# Only these methods are an invite/RSVP this tool understands well enough to
+# tag as a meeting message; e.g. PUBLISH is a plain calendar broadcast with no
+# response expected, so a part with no METHOD (or an unrecognized one) is
+# reported as "not a meeting message" rather than guessed at.
+_ICS_KNOWN_METHODS = frozenset({"CANCEL", "REPLY", "REQUEST"})
+_ICS_METHOD_RE = re.compile(r"(?im)^METHOD:\s*([A-Za-z]+)\s*$")
+# Named to line up with Graph's `meetingMessageType` values so a caller sees the
+# same vocabulary regardless of provider.
+_ICS_METHOD_TO_TYPE = {
+    "REQUEST": "meetingRequest",
+    "CANCEL": "meetingCancelled",
+}
+_ICS_ORGANIZER_RE = re.compile(r"(?im)^ORGANIZER[^\r\n:]*:mailto:([^\r\n]+)\s*$")
+_ICS_PARTSTAT_RE = re.compile(r"(?im)^ATTENDEE[^\r\n:]*PARTSTAT=([A-Za-z]+)[^\r\n:]*:")
+_ICS_PARTSTAT_TO_TYPE = {
+    "ACCEPTED": "meetingAccepted",
+    "DECLINED": "meetingDeclined",
+    "TENTATIVE": "meetingTenativelyAccepted",
+}
+_ICS_UID_RE = re.compile(r"(?im)^UID:\s*(.+?)\s*$")
+_ICS_UNFOLD_RE = re.compile(r"\r?\n[ \t]")
+
+
+def _not_a_meeting() -> dict[str, Any]:
+    return {
+        "end": None,
+        "ical_uid": None,
+        "is_meeting_message": False,
+        "meeting_message_type": None,
+        "organizer_email": None,
+        "start": None,
+    }
+
+
 def _meeting_fields_from_payload(
     payload: dict[str, Any], *, service: Any, message_id: str
 ) -> dict[str, Any]:
@@ -716,16 +758,29 @@ def _meeting_fields_from_payload(
     """
     part = _find_calendar_part(payload)
     if part is None:
-        return {"is_meeting_message": False, "meeting_message_type": None, "ical_uid": None}
+        return _not_a_meeting()
     ics = _calendar_part_ics(service, message_id, part)
+    if not ics:
+        # We found a text/calendar part — Gmail (or the sender) marked this a
+        # meeting message — but couldn't fetch/decode its body (a gone or
+        # transient-error attachment). Report "meeting, RSVP unknown" rather
+        # than silently dropping the meeting flag over an unrelated I/O error.
+        return {**_not_a_meeting(), "is_meeting_message": True}
     method_match = _ICS_METHOD_RE.search(ics)
     method = method_match.group(1).upper() if method_match else None
-    meeting_message_type = _ICS_METHOD_TO_TYPE.get(method or "")
+    if method not in _ICS_KNOWN_METHODS:
+        # No METHOD, or an unsupported one (e.g. PUBLISH is a broadcast with no
+        # response expected) — don't tag this as a meeting message we understand.
+        return _not_a_meeting()
+    meeting_message_type = _ICS_METHOD_TO_TYPE.get(method)
     if method == "REPLY":
         partstat_match = _ICS_PARTSTAT_RE.search(ics)
         partstat = partstat_match.group(1).upper() if partstat_match else None
         meeting_message_type = _ICS_PARTSTAT_TO_TYPE.get(partstat or "", meeting_message_type)
     uid_match = _ICS_UID_RE.search(ics)
+    organizer_match = _ICS_ORGANIZER_RE.search(ics)
+    start_match = _ICS_DTSTART_RE.search(ics)
+    end_match = _ICS_DTEND_RE.search(ics)
     return {
         "is_meeting_message": True,
         "meeting_message_type": meeting_message_type,
@@ -733,7 +788,21 @@ def _meeting_fields_from_payload(
         # `calendar` lookup by iCalUID can resolve it to an event id without a
         # second Gmail round trip.
         "ical_uid": uid_match.group(1) if uid_match else None,
+        "organizer_email": organizer_match.group(1) if organizer_match else None,
+        "start": _ics_datetime_to_iso(*start_match.groups()) if start_match else None,
+        "end": _ics_datetime_to_iso(*end_match.groups()) if end_match else None,
     }
+
+
+def _unfold_ics(ics: str) -> str:
+    """Join RFC 5545 folded lines back together before matching against them.
+
+    ICS wraps any line over 75 octets onto a continuation line that starts
+    with a single space or tab; without unfolding, `^...:` patterns that
+    should match a single logical property (e.g. a long ``ATTENDEE`` line)
+    silently fail once the value pushes the terminating ``:`` past the fold.
+    """
+    return _ICS_UNFOLD_RE.sub("", ics)
 
 
 def _message_detail(
@@ -799,6 +868,9 @@ def _message_to_dict(msg: dict[str, Any]) -> dict[str, Any]:
         "is_meeting_message": None,
         "meeting_message_type": None,
         "ical_uid": None,
+        "organizer_email": None,
+        "start": None,
+        "end": None,
     }
 
 

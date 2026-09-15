@@ -18,11 +18,14 @@ import httplib2
 import pytest
 from googleapiclient.errors import HttpError
 from msgraph.generated.models.body_type import BodyType
+from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
+from msgraph.generated.models.email_address import EmailAddress
 from msgraph.generated.models.event import Event
 from msgraph.generated.models.event_message import EventMessage
 from msgraph.generated.models.meeting_message_type import MeetingMessageType
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+from msgraph.generated.models.recipient import Recipient
 
 from blumkin.providers.google import mail as google_mail
 from blumkin.skills.mail import (
@@ -51,12 +54,35 @@ def test_mail_get_reports_meeting_metadata_for_an_event_message(monkeypatch) -> 
     assert message["is_meeting_message"] is True
     assert message["meeting_message_type"] == "meetingRequest"
     assert message["linked_event_id"] == "evt-1"
+    assert message["organizer_email"] == "janelle@example.com"
+    assert message["start"] == "2026-01-15T14:00:00.0000000Z"
+    assert message["end"] == "2026-01-15T15:00:00.0000000Z"
     # Pin the actual request shape: deleting `meetingMessageType` from `$select`
     # or dropping/mistyping the `$expand` cast would keep the mocked assertions
     # above green while a live tenant silently stopped reporting these fields.
     sent_query = item.get.await_args_list[0].args[0].query_parameters
     assert "meetingMessageType" in sent_query.select
-    assert sent_query.expand == ["Microsoft.Graph.EventMessage/Event($select=id)"]
+    assert sent_query.expand == [
+        "Microsoft.Graph.EventMessage/Event($select=id,organizer,start,end)"
+    ]
+
+
+def test_mail_get_reports_a_non_utc_event_time_as_graph_sent_it(monkeypatch) -> None:
+    """No `Prefer: outlook.timezone` header is sent, so Graph defaults to UTC —
+    but if that ever changes upstream, a non-UTC zone is passed through as-is
+    rather than silently mislabeled with a trailing `Z`.
+    """
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    event_message = _event_message()
+    event_message.event.start = DateTimeTimeZone(
+        date_time="2026-01-15T09:00:00.0000000", time_zone="Eastern Standard Time"
+    )
+    item.get = AsyncMock(return_value=event_message)
+
+    message = asyncio.run(mail_get(message_id="msg-1"))["message"]
+
+    assert message["start"] == "2026-01-15T09:00:00.0000000"
 
 
 def test_mail_get_reports_no_meeting_metadata_for_a_plain_message(monkeypatch) -> None:
@@ -85,15 +111,30 @@ def test_mail_get_falls_back_when_a_tenant_rejects_the_cast_expand(monkeypatch) 
     error.error = MainError(code="invalidRequest", message="unsupported $expand")
     retried = _event_message()
     retried.event = None
-    item.get = AsyncMock(side_effect=[error, retried])
+    outcomes = iter([error, retried])
+    # `query.expand` is cleared **in place** on the shared query object before
+    # the retry, so asserting `await_args_list[i].args[0].query_parameters.expand`
+    # after the fact would read the same, already-mutated object for both calls
+    # regardless of what the retry actually sent — snapshot it at call time instead.
+    seen_expands: list[Any] = []
+
+    async def fake_get(config: Any) -> Any:
+        expand = config.query_parameters.expand
+        seen_expands.append(list(expand) if expand else None)
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    item.get = AsyncMock(side_effect=fake_get)
 
     message = asyncio.run(mail_get(message_id="msg-1"))["message"]
 
     assert item.get.await_count == 2
-    second_query = item.get.await_args_list[1].args[0].query_parameters
-    # `query.expand` is cleared in place on the shared query object before the
-    # retry, so only the second call's state can be asserted directly here.
-    assert second_query.expand is None
+    assert seen_expands == [
+        ["Microsoft.Graph.EventMessage/Event($select=id,organizer,start,end)"],
+        None,
+    ]
     assert message["is_meeting_message"] is True
     assert message["meeting_message_type"] == "meetingRequest"
     assert message["linked_event_id"] is None
@@ -255,6 +296,9 @@ def _event_message() -> Any:
     msg.meeting_message_type = MeetingMessageType.MeetingRequest
     msg.event = Event()
     msg.event.id = "evt-1"
+    msg.event.organizer = Recipient(email_address=EmailAddress(address="janelle@example.com"))
+    msg.event.start = DateTimeTimeZone(date_time="2026-01-15T14:00:00.0000000", time_zone="UTC")
+    msg.event.end = DateTimeTimeZone(date_time="2026-01-15T15:00:00.0000000", time_zone="UTC")
     msg.from_ = SimpleNamespace(
         email_address=SimpleNamespace(address="organizer@example.com", name="Organizer")
     )
@@ -353,6 +397,89 @@ def test_google_mail_get_maps_a_reply_partstat_to_a_meeting_message_type() -> No
 
     assert message["meeting_message_type"] == "meetingDeclined"
     assert message["ical_uid"] == "uid-789@google.com"
+
+
+def test_google_mail_get_maps_a_tentative_reply_partstat_to_a_meeting_message_type() -> None:
+    """`TENTATIVE` is the one PARTSTAT->type mapping spelled unlike its Graph
+    counterpart (`meetingTenativelyAccepted`, matching `_MEETING_TYPE_LABELS` in
+    `skills/mail.py`) — pin it through `_meeting_fields_from_payload`, not just
+    against a hand-built payload dict.
+    """
+    ics = (
+        "BEGIN:VCALENDAR\r\n"
+        "METHOD:REPLY\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:uid-tentative@google.com\r\n"
+        'ATTENDEE;CN="Rebecca";PARTSTAT=TENTATIVE:mailto:rebecca@example.com\r\n'
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+    service = _service(_full_message_with_raw_ics(ics))
+
+    with _patched(service):
+        message = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert message["meeting_message_type"] == "meetingTenativelyAccepted"
+
+
+def test_google_mail_get_reports_meeting_details_from_the_ics_body() -> None:
+    ics = (
+        "BEGIN:VCALENDAR\r\n"
+        "METHOD:REQUEST\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:uid-details@google.com\r\n"
+        "ORGANIZER;CN=Janelle Doe:mailto:janelle@example.com\r\n"
+        "DTSTART:20260115T140000Z\r\n"
+        "DTEND:20260115T150000Z\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+    service = _service(_full_message_with_raw_ics(ics))
+
+    with _patched(service):
+        message = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert message["organizer_email"] == "janelle@example.com"
+    assert message["start"] == "2026-01-15T14:00:00Z"
+    assert message["end"] == "2026-01-15T15:00:00Z"
+
+
+def test_google_mail_get_reports_a_tzid_qualified_start_in_utc() -> None:
+    ics = (
+        "BEGIN:VCALENDAR\r\n"
+        "METHOD:REQUEST\r\n"
+        "BEGIN:VEVENT\r\n"
+        "UID:uid-tz@google.com\r\n"
+        "DTSTART;TZID=America/New_York:20260115T090000\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+    service = _service(_full_message_with_raw_ics(ics))
+
+    with _patched(service):
+        message = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    # 09:00 America/New_York in January (EST, UTC-5) is 14:00 UTC.
+    assert message["start"] == "2026-01-15T14:00:00Z"
+
+
+def test_google_mail_get_does_not_report_a_meeting_for_an_unrecognized_method() -> None:
+    """A `PUBLISH` iTIP part is a plain calendar broadcast, not an invite/RSVP —
+    finding a `text/calendar` part alone must not be enough to claim
+    `is_meeting_message`.
+    """
+    ics = (
+        "BEGIN:VCALENDAR\r\nMETHOD:PUBLISH\r\nBEGIN:VEVENT\r\n"
+        "UID:uid-publish@google.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    service = _service(_full_message_with_raw_ics(ics))
+
+    with _patched(service):
+        message = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert message["is_meeting_message"] is False
+    assert message["meeting_message_type"] is None
+    assert message["ical_uid"] is None
 
 
 def test_google_mail_get_reports_no_meeting_metadata_for_a_plain_message() -> None:

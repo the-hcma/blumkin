@@ -1269,7 +1269,8 @@ SKILLS: list[SkillSpec] = [
         summary=(
             "Read one message in full, including its body and attachments; flags "
             "meeting invites/updates/cancellations via is_meeting_message and "
-            "meeting_message_type (with linked_event_id/ical_uid when resolvable)"
+            "meeting_message_type, with linked_event_id/ical_uid/organizer_email/"
+            "start/end when resolvable"
         ),
         mutates=False,
         notifies_others=False,
@@ -1549,7 +1550,8 @@ SKILLS: list[SkillSpec] = [
         cli=["blumkin", "mail", "thread"],
         summary=(
             "List every message in the conversation a message belongs to, oldest "
-            "first, including each one's is_meeting_message/meeting_message_type"
+            "first, including each one's is_meeting_message/meeting_message_type/"
+            "organizer_email/start/end when full detail is requested"
         ),
         mutates=False,
         notifies_others=False,

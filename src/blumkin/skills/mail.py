@@ -943,9 +943,10 @@ async def mail_get(
             "webLink",
         ],
         # Populates `.event` when this is a meeting-request message, so
-        # `linked_event_id` can point straight at the calendar event without a
-        # second lookup. Harmless (empty) for plain messages.
-        expand=["Microsoft.Graph.EventMessage/Event($select=id)"],
+        # `linked_event_id`/`organizer_email`/`start`/`end` can be read straight
+        # off the calendar event without a second lookup. Harmless (empty) for
+        # plain messages.
+        expand=["Microsoft.Graph.EventMessage/Event($select=id,organizer,start,end)"],
     )
     # Graph converts the body for us when asked, which beats stripping tags locally.
     headers = {"Prefer": f'outlook.body-content-type="{wanted}"'}
@@ -1971,6 +1972,24 @@ def _matches_text(msg: Any, *, sender: str | None, subject: str | None) -> bool:
     return True
 
 
+def _graph_datetime_iso(value: Any) -> str | None:
+    """Render a Graph `DateTimeTimeZone` as an ISO 8601 string.
+
+    `mail_get` never sends a `Prefer: outlook.timezone=...` header, so Graph
+    reports event times in UTC by default; a non-UTC zone (e.g. because a
+    caller changed that default upstream) is passed through as Graph sent it
+    rather than guessed at.
+    """
+    raw = getattr(value, "date_time", None) if value is not None else None
+    if not raw:
+        return None
+    raw = str(raw)
+    time_zone = getattr(value, "time_zone", None) or "UTC"
+    if time_zone == "UTC":
+        return raw if raw.endswith("Z") else f"{raw}Z"
+    return raw
+
+
 def _meeting_fields(msg: Any) -> dict[str, Any]:
     """Meeting-invite metadata, present only when Graph returned an eventMessage.
 
@@ -1982,12 +2001,19 @@ def _meeting_fields(msg: Any) -> dict[str, Any]:
         _enum_value_or_none(getattr(msg, "meeting_message_type", None)) if is_meeting else None
     )
     event = getattr(msg, "event", None)
+    organizer = getattr(event, "organizer", None) if event is not None else None
+    organizer_address = getattr(organizer, "email_address", None) if organizer is not None else None
     return {
         "is_meeting_message": is_meeting,
         "meeting_message_type": meeting_message_type,
         # Only populated when the caller asked Graph to $expand the event (see
         # `mail_get`); null elsewhere rather than a second round trip per message.
         "linked_event_id": getattr(event, "id", None) if event is not None else None,
+        "organizer_email": getattr(organizer_address, "address", None)
+        if organizer_address is not None
+        else None,
+        "start": _graph_datetime_iso(getattr(event, "start", None) if event is not None else None),
+        "end": _graph_datetime_iso(getattr(event, "end", None) if event is not None else None),
     }
 
 
