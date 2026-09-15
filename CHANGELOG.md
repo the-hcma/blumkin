@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.2.0...blumkin-v1.2.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* retry mail list/search/thread without meetingMessageType on a plain 400 ([#291](https://github.com/the-hcma/blumkin/issues/291)) ([e11e699](https://github.com/the-hcma/blumkin/commit/e11e699c8a931cc34624a52e2ba60607b52c27bc))
+
 ## [1.2.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.1.2...blumkin-v1.2.0) (2026-09-15)
 
 
