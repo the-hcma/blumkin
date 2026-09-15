@@ -379,6 +379,50 @@ def test_google_mail_get_detects_a_cancellation_ics_part() -> None:
     assert message["meeting_message_type"] == "meetingCancelled"
 
 
+def test_google_mail_get_finds_a_calendar_part_nested_under_multipart_alternative() -> None:
+    """A real invite's `text/calendar` part is not always a direct child of the
+    root payload — e.g. `multipart/mixed > multipart/alternative > text/calendar`
+    is a common nesting some senders use. Pin `_find_calendar_part`'s recursion
+    past depth 1, and that a stray non-dict entry in `parts` (malformed/odd
+    payload shape) doesn't blow up the search either.
+    """
+    ics = (
+        "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n"
+        "UID:uid-nested@google.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    encoded = base64.urlsafe_b64encode(ics.encode()).decode()
+    message = {
+        "id": "m-1",
+        "threadId": "t-1",
+        "labelIds": ["INBOX"],
+        "internalDate": "1735689600000",
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "Subject", "value": "Team sync"}],
+            "parts": [
+                None,
+                {
+                    "mimeType": "multipart/alternative",
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "body": {"data": base64.urlsafe_b64encode(b"hi").decode()},
+                        },
+                        {"mimeType": "text/calendar", "body": {"data": encoded}},
+                    ],
+                },
+            ],
+        },
+    }
+    service = _service(message)
+
+    with _patched(service):
+        result = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert result["is_meeting_message"] is True
+    assert result["meeting_message_type"] == "meetingRequest"
+
+
 def test_google_mail_get_maps_a_folded_reply_partstat_to_a_meeting_message_type() -> None:
     """RFC 5545 folds any line over 75 octets onto a continuation line.
 
