@@ -391,6 +391,9 @@ async def mail_thread(
             detail = _message_detail(msg, wanted=wanted)
             item["body"] = detail.get("body")
             item["body_type"] = detail.get("body_type", wanted)
+            item["is_meeting_message"] = detail.get("is_meeting_message")
+            item["meeting_message_type"] = detail.get("meeting_message_type")
+            item["ical_uid"] = detail.get("ical_uid")
         items.append(item)
     return {"conversation_id": thread_id, "items": items, "count": len(items)}
 
@@ -626,6 +629,68 @@ def _label_ids_for_folder(well_known: str | None) -> list[str] | None:
     return [label]
 
 
+def _find_calendar_part(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Depth-first search for an inline ``text/calendar`` MIME part (iTIP)."""
+    if str(payload.get("mimeType") or "").casefold() == "text/calendar":
+        return payload
+    for part in payload.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        found = _find_calendar_part(part)
+        if found is not None:
+            return found
+    return None
+
+
+_ICS_METHOD_RE = re.compile(r"(?im)^METHOD:\s*([A-Za-z]+)\s*$")
+_ICS_UID_RE = re.compile(r"(?im)^UID:\s*(.+?)\s*$")
+_ICS_PARTSTAT_RE = re.compile(r"(?im)^ATTENDEE[^\r\n:]*PARTSTAT=([A-Za-z]+)[^\r\n:]*:")
+# Named to line up with Graph's `meetingMessageType` values so a caller sees the
+# same vocabulary regardless of provider.
+_ICS_METHOD_TO_TYPE = {
+    "REQUEST": "meetingRequest",
+    "CANCEL": "meetingCancelled",
+}
+_ICS_PARTSTAT_TO_TYPE = {
+    "ACCEPTED": "meetingAccepted",
+    "DECLINED": "meetingDeclined",
+    "TENTATIVE": "meetingTenativelyAccepted",
+}
+
+
+def _meeting_fields_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Meeting-invite metadata parsed from an inline ``text/calendar`` MIME part.
+
+    Gmail has no first-class "this is a meeting request" field like Graph's
+    eventMessage/meetingMessageType, so this looks for the iTIP part Google
+    Calendar attaches to invites/updates/cancellations/replies and reads
+    METHOD (and, for a REPLY, the attendee's PARTSTAT) out of the decoded ICS
+    body. Requires the ``full`` message format — a ``metadata``-format message
+    has no MIME parts to inspect, so this always reports "not a meeting" there.
+    """
+    part = _find_calendar_part(payload)
+    if part is None:
+        return {"is_meeting_message": False, "meeting_message_type": None, "ical_uid": None}
+    data = (part.get("body") or {}).get("data")
+    ics = _decode_b64url(data) if data else ""
+    method_match = _ICS_METHOD_RE.search(ics)
+    method = method_match.group(1).upper() if method_match else None
+    meeting_message_type = _ICS_METHOD_TO_TYPE.get(method or "")
+    if method == "REPLY":
+        partstat_match = _ICS_PARTSTAT_RE.search(ics)
+        partstat = partstat_match.group(1).upper() if partstat_match else None
+        meeting_message_type = _ICS_PARTSTAT_TO_TYPE.get(partstat or "", meeting_message_type)
+    uid_match = _ICS_UID_RE.search(ics)
+    return {
+        "is_meeting_message": True,
+        "meeting_message_type": meeting_message_type,
+        # Google Calendar's event.iCalUID matches this 1:1 — a future
+        # `calendar` lookup by iCalUID can resolve it to an event id without a
+        # second Gmail round trip.
+        "ical_uid": uid_match.group(1) if uid_match else None,
+    }
+
+
 def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, Any]:
     headers = _header_map(msg)
     from_name, from_email = _parse_from(headers.get("from"))
@@ -654,6 +719,7 @@ def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, A
         "subject": _decode_header_value(headers.get("subject")),
         "to": _parse_address_list(headers.get("to")),
         "web_link": None,
+        **_meeting_fields_from_payload(payload),
     }
 
 
@@ -679,6 +745,11 @@ def _message_to_dict(msg: dict[str, Any]) -> dict[str, Any]:
         "sent": sent,
         "subject": _decode_header_value(headers.get("subject")),
         "to_email": to_addrs[0]["email"] if to_addrs else None,
+        # metadata format has no MIME parts, so meeting detection is unavailable
+        # here — same limitation Graph's list endpoints have for `linked_event_id`.
+        "is_meeting_message": None,
+        "meeting_message_type": None,
+        "ical_uid": None,
     }
 
 

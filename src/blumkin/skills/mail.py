@@ -20,6 +20,7 @@ from msgraph.generated.models.automatic_replies_status import AutomaticRepliesSt
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
 from msgraph.generated.models.email_address import EmailAddress
+from msgraph.generated.models.event_message import EventMessage
 from msgraph.generated.models.external_audience_scope import ExternalAudienceScope
 from msgraph.generated.models.file_attachment import FileAttachment
 from msgraph.generated.models.followup_flag import FollowupFlag
@@ -913,12 +914,17 @@ async def mail_get(
             "internetMessageId",
             "isDraft",
             "isRead",
+            "meetingMessageType",
             "receivedDateTime",
             "sentDateTime",
             "subject",
             "toRecipients",
             "webLink",
         ],
+        # Populates `.event` when this is a meeting-request message, so
+        # `linked_event_id` can point straight at the calendar event without a
+        # second lookup. Harmless (empty) for plain messages.
+        expand=["Microsoft.Graph.EventMessage/Event($select=id)"],
     )
     # Graph converts the body for us when asked, which beats stripping tags locally.
     headers = {"Prefer": f'outlook.body-content-type="{wanted}"'}
@@ -927,9 +933,20 @@ async def mail_get(
             request_config(query, headers=headers)
         )
     except ODataError as exc:
-        if not is_id_lookup_failure(exc):
+        if is_id_lookup_failure(exc):
+            raise MailMessageNotFoundError(f"message not found: {mid}") from exc
+        # Some tenants/mailbox policies reject the cast-expand above; retry once
+        # without it rather than fail the whole read over metadata we can live
+        # without (meeting_message_type from $select still comes through).
+        query.expand = None
+        try:
+            msg = await client.me.messages.by_message_id(mid).get(
+                request_config(query, headers=headers)
+            )
+        except ODataError as retry_exc:
+            if is_id_lookup_failure(retry_exc):
+                raise MailMessageNotFoundError(f"message not found: {mid}") from retry_exc
             raise
-        raise MailMessageNotFoundError(f"message not found: {mid}") from exc
     if msg is None or not msg.id:
         raise MailMessageNotFoundError(f"message not found: {mid}")
     detail = _message_detail(msg, wanted=wanted)
@@ -1260,6 +1277,7 @@ async def mail_thread(
             "hasAttachments",
             "importance",
             "bodyPreview",
+            "meetingMessageType",
         ],
     )
     page = await client.me.messages.get(request_config(list_query))
@@ -1900,6 +1918,7 @@ async def _get_messages(
             "hasAttachments",
             "importance",
             "bodyPreview",
+            "meetingMessageType",
         ],
     )
     builder = (
@@ -1924,6 +1943,26 @@ def _matches_text(msg: Any, *, sender: str | None, subject: str | None) -> bool:
         if not any(needle in field for field in fields):
             return False
     return True
+
+
+def _meeting_fields(msg: Any) -> dict[str, Any]:
+    """Meeting-invite metadata, present only when Graph returned an eventMessage.
+
+    Plain messages deserialize as ``Message`` and simply lack these attributes, so
+    ``getattr(..., None)`` is enough to keep this a no-op for regular mail.
+    """
+    is_meeting = isinstance(msg, EventMessage)
+    meeting_message_type = (
+        _enum_value_or_none(getattr(msg, "meeting_message_type", None)) if is_meeting else None
+    )
+    event = getattr(msg, "event", None)
+    return {
+        "is_meeting_message": is_meeting,
+        "meeting_message_type": meeting_message_type,
+        # Only populated when the caller asked Graph to $expand the event (see
+        # `mail_get`); null elsewhere rather than a second round trip per message.
+        "linked_event_id": getattr(event, "id", None) if event is not None else None,
+    }
 
 
 def _message_detail(msg: Any, *, wanted: MailBodyType) -> dict[str, Any]:
@@ -1969,6 +2008,7 @@ def _message_detail(msg: Any, *, wanted: MailBodyType) -> dict[str, Any]:
         "subject": msg.subject,
         "to": _participants(getattr(msg, "to_recipients", None)),
         "web_link": getattr(msg, "web_link", None),
+        **_meeting_fields(msg),
     }
 
 
@@ -2002,6 +2042,7 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
         "sent": str(sent) if sent else None,
         "subject": msg.subject,
         "to_email": _primary_to_address(msg),
+        **_meeting_fields(msg),
     }
 
 
