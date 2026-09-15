@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from pathlib import Path
 
 import pytest
 
@@ -13,6 +12,8 @@ from blumkin.auth import reload_token_cache_from_disk, save_token_cache, status_
 from blumkin.config import load_config
 from blumkin.providers.kind import ProviderKind
 from blumkin.providers.microsoft_mail_probe import probe_outlook_signature
+from blumkin.secret_store import read_text as read_secret_text
+from blumkin.secret_store import write_text as write_secret_text
 from blumkin.skills.calendar import calendar_today
 
 pytestmark = pytest.mark.live
@@ -31,13 +32,22 @@ def _live_ready() -> bool:
     )
 
 
-def _force_expire_access_tokens(cache_path: Path) -> None:
-    data = json.loads(cache_path.read_text())
+def _force_expire_access_tokens(cfg) -> None:
+    """Force-expire access tokens in the token cache, wherever it lives.
+
+    Goes through ``secret_store`` (not ``cache_path.read_text()`` directly)
+    because a keychain-preferring profile (the new default) migrates the
+    cache into the OS keychain and unlinks the legacy file on first read - a
+    raw file read/write here would raise ``FileNotFoundError`` on exactly the
+    dev machines this live test is meant to run on (issue #287 review).
+    """
+    raw = read_secret_text(cfg, "token_cache")
+    assert raw is not None, "token cache missing - _live_ready() should have skipped"
+    data = json.loads(raw)
     for entry in (data.get("AccessToken") or {}).values():
         if isinstance(entry, dict) and "expires_on" in entry:
             entry["expires_on"] = "1"  # 1970-01-01 — definitely expired
-    cache_path.write_text(json.dumps(data))
-    cache_path.chmod(0o600)
+    write_secret_text(cfg, "token_cache", json.dumps(data))
 
 
 def test_live_calendar_today() -> None:
@@ -76,10 +86,10 @@ def test_live_silent_refresh_after_forced_access_token_expiry() -> None:
             "(config.toml + token cache + auth record + refresh token)"
         )
     cfg = load_config()
-    cache_path = cfg.token_cache_path
-    backup = cache_path.read_text()
+    backup = read_secret_text(cfg, "token_cache")
+    assert backup is not None
     try:
-        _force_expire_access_tokens(cache_path)
+        _force_expire_access_tokens(cfg)
         reload_token_cache_from_disk(cfg)
         before = status_dict(cfg)
         assert before["access_token_expired"] is True
@@ -97,7 +107,6 @@ def test_live_silent_refresh_after_forced_access_token_expiry() -> None:
         assert after["access_token_expires_in_seconds"] is not None
         assert after["access_token_expires_in_seconds"] > 0
     except BaseException:
-        cache_path.write_text(backup)
-        cache_path.chmod(0o600)
+        write_secret_text(cfg, "token_cache", backup)
         reload_token_cache_from_disk(cfg)
         raise

@@ -556,3 +556,31 @@ def test_preferences_top_level_non_table_raises(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     with pytest.raises(ProviderConfigError, match="preferences must be a table"):
         load_config()
+
+
+@pytest.mark.parametrize(
+    ("raw_toml", "expected"),
+    [
+        ("", "auto"),  # unset
+        ('token_storage = "auto"\n', "auto"),
+        ('token_storage = "file"\n', "file"),
+        ('token_storage = "keyring"\n', "keyring"),
+        ('token_storage = "  Keyring  "\n', "keyring"),  # normalized: trimmed + lower-cased
+        ('token_storage = "keychain"\n', "auto"),  # typo for the extra's name, not a valid value
+        ("token_storage = true\n", "auto"),  # non-string silently falls back
+        ('token_storage = "bogus"\n', "auto"),  # unrecognized string silently falls back
+    ],
+)
+def test_token_storage_preference_parses_each_branch(
+    tmp_path: Path, monkeypatch, raw_toml: str, expected: str
+) -> None:
+    """Every branch of the token_storage knob's parser (issue #287 review).
+
+    In particular: an unrecognized or non-string value resolving to "auto" is
+    silent by design (a misconfigured file must not block every command), but
+    that silence must stay pinned down by a test so a future edit of this
+    mapping cannot regress unnoticed.
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(f'[profiles.default]\nclient_id = "abc"\n{raw_toml}')
+    assert load_config().token_storage == expected

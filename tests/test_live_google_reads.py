@@ -23,6 +23,8 @@ from blumkin.config import load_config
 from blumkin.providers import get_provider
 from blumkin.providers.google_auth import status_dict
 from blumkin.providers.kind import ProviderKind
+from blumkin.secret_store import read_text as read_secret_text
+from blumkin.secret_store import write_text as write_secret_text
 
 # ``live`` too, so CI's ``-m 'not live'`` deselects these without touching the
 # shared ``.github/ci`` gate; the operator narrows to ``-m live_google``.
@@ -65,17 +67,22 @@ def test_live_google_mail_inbox() -> None:
 
 
 def test_live_google_silent_refresh_after_forced_expiry() -> None:
-    """Force the cached access token to expire; the next read must refresh it."""
+    """Force the cached access token to expire; the next read must refresh it.
+
+    Reads/writes go through ``secret_store`` (not ``google_token_path``
+    directly), since a keychain-preferring profile migrates the token into
+    the OS keychain and unlinks the legacy file on first read (issue #287
+    review, mirroring ``test_live_reads.py``'s equivalent fix).
+    """
     if not _live_ready():
         pytest.skip(_SKIP)
     cfg = load_config()
-    token_path = cfg.google_token_path
-    backup = token_path.read_text()
+    backup = read_secret_text(cfg, "google_token")
+    assert backup is not None
     try:
         data = json.loads(backup)
         data["expiry"] = datetime(2000, 1, 1, tzinfo=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        token_path.write_text(json.dumps(data))
-        token_path.chmod(0o600)
+        write_secret_text(cfg, "google_token", json.dumps(data))
 
         before = status_dict(cfg)
         assert before["access_token_expired"] is True
@@ -89,6 +96,5 @@ def test_live_google_silent_refresh_after_forced_expiry() -> None:
         assert after["access_token_expires_in_seconds"]
         assert after["access_token_expires_in_seconds"] > 0
     except BaseException:
-        token_path.write_text(backup)
-        token_path.chmod(0o600)
+        write_secret_text(cfg, "google_token", backup)
         raise

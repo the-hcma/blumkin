@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -220,6 +221,30 @@ def test_status_dict_reports_granted_and_missing_scopes(tmp_path: Path) -> None:
     assert payload["missing_scopes"] == sorted(
         GOOGLE_REQUIRED_SCOPES - {"https://www.googleapis.com/auth/gmail.readonly"}
     )
+
+
+def test_status_dict_reports_token_storage_backend(tmp_path: Path, monkeypatch) -> None:
+    """`doctor` prints this key verbatim - a drop or rename must fail loudly (issue #287 review)."""
+    cfg = _cfg(tmp_path)
+    assert google_auth.status_dict(cfg)["token_storage_backend"] == "file"
+
+    from blumkin import secret_store
+
+    class _FakeKeyring:
+        def get_password(self, service: str, username: str) -> str | None:
+            return None
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            pass
+
+        def delete_password(self, service: str, username: str) -> None:
+            pass
+
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+    keyring_dir = tmp_path / "keyring-profile"
+    keyring_dir.mkdir()
+    keyring_cfg = dataclasses.replace(_cfg(keyring_dir), token_storage="keyring")
+    assert google_auth.status_dict(keyring_cfg)["token_storage_backend"] == "keyring"
 
 
 def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:

@@ -78,16 +78,29 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
 
 
 def exists(cfg: BlumkinConfig, kind: SecretKind) -> bool:
-    """True when a secret is stored for ``kind`` in either backend."""
-    if _file_path(cfg, kind).is_file():
-        return True
+    """True when a secret is stored for ``kind`` in the active backend for this profile.
+
+    Must agree with ``read_text``/``write_text`` on which backend is
+    authoritative: consulting the keyring unconditionally here would report a
+    stale keychain leftover as present for a profile explicitly pinned to
+    ``token_storage = "file"``, even though ``read_text`` (honoring
+    ``_backend_for``) can never see it - `doctor`/`profiles list` would show
+    ``auth_present: true`` for a profile every real command then fails to
+    authenticate with (issue #287 review).
+    """
+    if _backend_for(cfg) == "file":
+        return _file_path(cfg, kind).is_file()
     keyring = _keyring_module()
     if keyring is None:
+        # _backend_for only returns "keyring" when a real backend is usable.
         return False
     try:
-        return keyring.get_password(_KEYRING_SERVICE, _keyring_account(cfg, kind)) is not None
+        if keyring.get_password(_KEYRING_SERVICE, _keyring_account(cfg, kind)) is not None:
+            return True
     except Exception:
-        return False
+        pass
+    # A legacy file not yet migrated is still a real, readable secret.
+    return _file_path(cfg, kind).is_file()
 
 
 def read_text(cfg: BlumkinConfig, kind: SecretKind) -> str | None:
