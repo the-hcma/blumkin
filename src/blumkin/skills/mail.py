@@ -956,9 +956,14 @@ async def mail_get(
     except ODataError as exc:
         if is_id_lookup_failure(exc):
             raise MailMessageNotFoundError(f"message not found: {mid}") from exc
-        # Some tenants/mailbox policies reject the cast-expand above; retry once
-        # without it rather than fail the whole read over metadata we can live
-        # without (meeting_message_type from $select still comes through).
+        # Only a plain 400 plausibly means "this tenant/policy rejected the
+        # cast-expand query shape" (what we've actually seen documented for
+        # some tenants). Anything else — 401/403/429/5xx — is a real failure
+        # that a blind retry would only duplicate (doubling request count and
+        # wall-clock right when Graph may be signalling back-off), so let it
+        # propagate rather than mask it behind a second, unrelated attempt.
+        if getattr(exc, "response_status_code", None) != 400:
+            raise
         query.expand = None
         try:
             msg = await client.me.messages.by_message_id(mid).get(

@@ -182,7 +182,7 @@ async def mail_get(
         if _http_not_found(exc):
             raise MailMessageNotFoundError(f"message not found: {mid}") from exc
         raise
-    return {"message": _message_detail(raw, wanted=wanted)}
+    return {"message": _message_detail(raw, wanted=wanted, service=service, message_id=mid)}
 
 
 async def mail_inbox(
@@ -388,7 +388,9 @@ async def mail_thread(
     for msg in thread.get("messages") or []:
         item = _message_to_dict(msg)
         if full:
-            detail = _message_detail(msg, wanted=wanted)
+            detail = _message_detail(
+                msg, wanted=wanted, service=service, message_id=str(msg.get("id") or mid)
+            )
             item["body"] = detail.get("body")
             item["body_type"] = detail.get("body_type", wanted)
             item["is_meeting_message"] = detail.get("is_meeting_message")
@@ -672,7 +674,35 @@ _ICS_PARTSTAT_TO_TYPE = {
 }
 
 
-def _meeting_fields_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _calendar_part_ics(service: Any, message_id: str, part: dict[str, Any]) -> str:
+    """Decode an iTIP part's body, fetching it as an attachment when Gmail didn't
+    inline it.
+
+    Gmail normally inlines a small ``text/calendar`` part's bytes in
+    ``body.data``, but an Outlook/Exchange-originated invite can arrive with
+    ``Content-Disposition: attachment`` instead, in which case Gmail only sets
+    ``body.attachmentId`` and leaves ``body.data`` empty — the same shape this
+    module already fetches via ``_attachment_data`` for every other attachment.
+    """
+    body = part.get("body") or {}
+    data = body.get("data")
+    if isinstance(data, str) and data:
+        return _unfold_ics(_decode_b64url(data))
+    attachment_id = body.get("attachmentId")
+    if isinstance(attachment_id, str) and attachment_id:
+        try:
+            fetched = _attachment_data(service, message_id, attachment_id)
+        except MailAttachmentNotFoundError:
+            # Metadata is a courtesy read here, not a hard requirement: report
+            # "meeting, RSVP unknown" rather than failing the whole message read.
+            return ""
+        return _unfold_ics(_decode_b64url(fetched))
+    return ""
+
+
+def _meeting_fields_from_payload(
+    payload: dict[str, Any], *, service: Any, message_id: str
+) -> dict[str, Any]:
     """Meeting-invite metadata parsed from an inline ``text/calendar`` MIME part.
 
     Gmail has no first-class "this is a meeting request" field like Graph's
@@ -685,8 +715,7 @@ def _meeting_fields_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     part = _find_calendar_part(payload)
     if part is None:
         return {"is_meeting_message": False, "meeting_message_type": None, "ical_uid": None}
-    data = (part.get("body") or {}).get("data")
-    ics = _unfold_ics(_decode_b64url(data)) if data else ""
+    ics = _calendar_part_ics(service, message_id, part)
     method_match = _ICS_METHOD_RE.search(ics)
     method = method_match.group(1).upper() if method_match else None
     meeting_message_type = _ICS_METHOD_TO_TYPE.get(method or "")
@@ -705,7 +734,9 @@ def _meeting_fields_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, Any]:
+def _message_detail(
+    msg: dict[str, Any], *, wanted: MailBodyType, service: Any, message_id: str | None = None
+) -> dict[str, Any]:
     headers = _header_map(msg)
     from_name, from_email = _parse_from(headers.get("from"))
     payload = msg.get("payload") or {}
@@ -733,7 +764,9 @@ def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, A
         "subject": _decode_header_value(headers.get("subject")),
         "to": _parse_address_list(headers.get("to")),
         "web_link": None,
-        **_meeting_fields_from_payload(payload),
+        **_meeting_fields_from_payload(
+            payload, service=service, message_id=message_id or str(msg.get("id") or "")
+        ),
     }
 
 

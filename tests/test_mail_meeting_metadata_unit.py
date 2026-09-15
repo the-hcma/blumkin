@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.event import Event
 from msgraph.generated.models.event_message import EventMessage
@@ -22,7 +23,15 @@ from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.providers.google import mail as google_mail
-from blumkin.skills.mail import mail_get, mail_inbox
+from blumkin.skills.mail import (
+    format_get_human,
+    format_inbox_human,
+    format_list_human,
+    format_search_human,
+    format_thread_human,
+    mail_get,
+    mail_inbox,
+)
 
 # ---------------------------------------------------------------------------
 # Microsoft / Graph
@@ -104,6 +113,90 @@ def test_mail_inbox_reports_no_meeting_metadata_for_a_plain_list_item(monkeypatc
     (item,) = payload["items"]
     assert item["is_meeting_message"] is False
     assert item["meeting_message_type"] is None
+
+
+# ---------------------------------------------------------------------------
+# Human-formatted output (`--json` is not the only consumer)
+# ---------------------------------------------------------------------------
+
+
+def test_format_get_human_tags_a_meeting_request() -> None:
+    payload = {
+        "message": {
+            "subject": "Sync",
+            "is_meeting_message": True,
+            "meeting_message_type": "meetingRequest",
+        }
+    }
+
+    lines = format_get_human(payload)
+
+    assert lines[0] == "Sync [meeting: request]"
+
+
+def test_format_get_human_falls_back_to_a_generic_tag_for_an_unmapped_type() -> None:
+    """Covers a null/unrecognized `meeting_message_type` (e.g. a Graph event message
+    with a null enum, or a Gmail REPLY without a PARTSTAT) — still flagged as a
+    meeting rather than silently dropped."""
+    payload = {
+        "message": {"subject": "Sync", "is_meeting_message": True, "meeting_message_type": None}
+    }
+
+    lines = format_get_human(payload)
+
+    assert lines[0] == "Sync [meeting: invite]"
+
+
+def test_format_get_human_has_no_tag_for_a_plain_message() -> None:
+    payload = {"message": {"subject": "Sync", "is_meeting_message": False}}
+
+    lines = format_get_human(payload)
+
+    assert lines[0] == "Sync"
+
+
+def _meeting_item(**overrides: Any) -> dict[str, Any]:
+    item = {
+        "subject": "Sync",
+        "from_name": "Rebecca",
+        "received": "2026-01-01T00:00:00Z",
+        "is_meeting_message": True,
+        "meeting_message_type": "meetingAccepted",
+    }
+    item.update(overrides)
+    return item
+
+
+def test_format_inbox_human_tags_a_meeting_item() -> None:
+    payload = {"top": 5, "items": [_meeting_item()], "orderby": None, "filters": {}}
+
+    lines = format_inbox_human(payload)
+
+    assert lines[-1].endswith("[meeting: accepted]")
+
+
+def test_format_list_human_tags_a_meeting_item() -> None:
+    payload = {"top": 5, "items": [_meeting_item()], "orderby": None, "filters": {}, "folder": None}
+
+    lines = format_list_human(payload)
+
+    assert lines[-1].endswith("[meeting: accepted]")
+
+
+def test_format_search_human_tags_a_meeting_item() -> None:
+    payload = {"query": "sync", "items": [_meeting_item(folder="inbox")]}
+
+    lines = format_search_human(payload)
+
+    assert lines[-1].endswith("[meeting: accepted]")
+
+
+def test_format_thread_human_tags_a_meeting_item() -> None:
+    payload = {"conversation_id": "c-1", "items": [_meeting_item()]}
+
+    lines = format_thread_human(payload)
+
+    assert lines[-1].endswith("[meeting: accepted]")
 
 
 def _client(monkeypatch) -> MagicMock:
@@ -263,6 +356,119 @@ def test_google_mail_list_leaves_meeting_metadata_unknown(monkeypatch) -> None:
     assert item["is_meeting_message"] is None
     assert item["meeting_message_type"] is None
     assert item["ical_uid"] is None
+
+
+def test_google_mail_get_fetches_a_calendar_part_served_as_an_attachment() -> None:
+    """An Outlook/Exchange-originated invite can land as `Content-Disposition:
+    attachment`, in which case Gmail leaves `body.data` empty and only sets
+    `body.attachmentId` — the same shape every other attachment already uses.
+    """
+    ics = (
+        "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n"
+        "UID:uid-att@google.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    encoded = base64.urlsafe_b64encode(ics.encode()).decode()
+    message = {
+        "id": "m-1",
+        "threadId": "t-1",
+        "labelIds": ["INBOX"],
+        "internalDate": "1735689600000",
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "Subject", "value": "Team sync"}],
+            "parts": [
+                {
+                    "mimeType": "text/calendar",
+                    "filename": "invite.ics",
+                    "body": {"attachmentId": "att-1"},
+                },
+            ],
+        },
+    }
+    service = _service(message)
+    attachments = service.users.return_value.messages.return_value.attachments
+    attachments.return_value.get.return_value.execute.return_value = {"data": encoded}
+
+    with _patched(service):
+        result = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert result["is_meeting_message"] is True
+    assert result["meeting_message_type"] == "meetingRequest"
+    assert result["ical_uid"] == "uid-att@google.com"
+
+
+def test_google_mail_get_reports_unresolvable_metadata_for_a_gone_attachment() -> None:
+    """A vanished attachment must not fail the whole read: still a meeting, just
+    with RSVP/UID unresolved rather than incorrectly reported as "not a meeting".
+    """
+    message = {
+        "id": "m-1",
+        "threadId": "t-1",
+        "labelIds": ["INBOX"],
+        "internalDate": "1735689600000",
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "Subject", "value": "Team sync"}],
+            "parts": [
+                {
+                    "mimeType": "text/calendar",
+                    "filename": "invite.ics",
+                    "body": {"attachmentId": "att-missing"},
+                },
+            ],
+        },
+    }
+    service = _service(message)
+    attachments = service.users.return_value.messages.return_value.attachments
+    attachments.return_value.get.return_value.execute.return_value = {}
+
+    with _patched(service):
+        result = asyncio.run(google_mail.mail_get(message_id="m-1"))["message"]
+
+    assert result["is_meeting_message"] is True
+    assert result["meeting_message_type"] is None
+    assert result["ical_uid"] is None
+
+
+def test_google_mail_thread_full_surfaces_meeting_metadata_per_item() -> None:
+    service = MagicMock()
+    users = service.users.return_value
+    users.messages.return_value.get.return_value.execute.return_value = {"threadId": "t-1"}
+    ics_msg = _full_message_with_ics(method="REQUEST", uid="uid-thread@google.com")
+    plain_msg = _full_message_plain()
+    plain_msg["id"] = "m-2"
+    users.threads.return_value.get.return_value.execute.return_value = {
+        "messages": [ics_msg, plain_msg]
+    }
+
+    with _patched(service):
+        payload = asyncio.run(google_mail.mail_thread(message_id="m-1", full=True))
+
+    invite_item, plain_item = payload["items"]
+    assert invite_item["is_meeting_message"] is True
+    assert invite_item["meeting_message_type"] == "meetingRequest"
+    assert invite_item["ical_uid"] == "uid-thread@google.com"
+    assert plain_item["is_meeting_message"] is False
+    assert plain_item["meeting_message_type"] is None
+    assert plain_item["ical_uid"] is None
+
+
+def test_mail_get_does_not_retry_the_expand_query_on_a_non_400_error(monkeypatch) -> None:
+    """A 429/5xx/401/403 is a real failure, not a rejected query shape: retrying
+    would duplicate the request (doubling load right when Graph may be
+    signalling back-off) and hide the original, more diagnostic error.
+    """
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    error = ODataError()
+    error.response_status_code = 429
+    error.error = MainError(code="TooManyRequests", message="throttled")
+    item.get = AsyncMock(side_effect=error)
+
+    with pytest.raises(ODataError):
+        asyncio.run(mail_get(message_id="msg-1"))
+
+    assert item.get.await_count == 1
 
 
 def _full_message_with_ics(*, method: str, uid: str) -> dict:
