@@ -71,6 +71,7 @@ from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.mail_signature_state import load_signature_state
 from blumkin.output import sanitize_terminal
+from blumkin.prompt_injection import format_injection_warning_banner, scan_for_injection
 from blumkin.skills.docs import parse_body as _parse_doc_body
 from blumkin.skills.docs import render_email_html as _render_email_html
 
@@ -293,6 +294,10 @@ def format_get_human(payload: dict[str, Any]) -> list[str]:
         name = sanitize_terminal(str(item.get("name") or item.get("id") or ""))
         lines.append(f"  attachment: {name!r} ({item.get('size')} bytes) id={item.get('id')}")
     lines.append("")
+    warning_lines = format_injection_warning_banner(msg.get("injection_warning"))
+    lines.extend(warning_lines)
+    if warning_lines:
+        lines.append("")
     body = str(msg.get("body") or "").splitlines() or ["(no body)"]
     lines.extend(sanitize_terminal(line) for line in body)
     return lines
@@ -2058,6 +2063,7 @@ def _message_detail(msg: Any, *, wanted: MailBodyType) -> dict[str, Any]:
         "from_name": from_name,
         "has_attachments": bool(msg.has_attachments),
         "id": msg.id,
+        "injection_warning": _scan_message_for_injection(body=body, subject=msg.subject),
         "internet_message_id": getattr(msg, "internet_message_id", None),
         "is_draft": bool(getattr(msg, "is_draft", False)),
         "is_read": bool(msg.is_read),
@@ -2462,6 +2468,28 @@ async def _resolve_folder_fallback(client: Any, label: str) -> tuple[str | None,
     if alias is not None:
         return alias, alias, truncated
     return None, None, truncated
+
+
+def _scan_message_for_injection(*, body: str | None, subject: str | None) -> dict[str, Any] | None:
+    """Scan a message's subject + body for prompt-injection patterns.
+
+    Advisory only (see `blumkin.prompt_injection`): a match never blocks or
+    alters the returned content, it only surfaces a warning in the payload
+    and the human-formatted output.
+    """
+    findings = []
+    if subject:
+        findings.extend(scan_for_injection(subject, location="subject").findings)
+    if body:
+        findings.extend(scan_for_injection(body, location="body").findings)
+    if not findings:
+        return None
+    return {
+        "findings": [
+            {"family": f.family, "location": f.location, "snippet": f.snippet} for f in findings
+        ],
+        "matched": True,
+    }
 
 
 async def _scan_messages(

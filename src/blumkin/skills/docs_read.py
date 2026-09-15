@@ -10,6 +10,7 @@ from typing import Any
 from docx import Document
 
 from blumkin.config import BlumkinConfig
+from blumkin.prompt_injection import format_injection_warning_banner, scan_for_injection
 
 
 class DocsReadExtraMissingError(ValueError):
@@ -66,6 +67,7 @@ async def docs_read(
         )
 
     return {
+        "injection_warning": _scan_pages_for_injection(extracted_pages),
         "kind": kind.removeprefix("."),
         "ocr_used": ocr_used,
         "ok": True,
@@ -80,6 +82,7 @@ def format_docs_read_human(payload: dict[str, Any]) -> list[str]:
         f"Read {payload.get('path')!r} ({payload.get('kind')}); "
         f"{len(pages)} section(s); OCR used: {'yes' if payload.get('ocr_used') else 'no'}"
     ]
+    lines.extend(format_injection_warning_banner(payload.get("injection_warning")))
     for page in pages:
         heading = f"section {page.get('index')}"
         if page.get("sheet"):
@@ -390,6 +393,28 @@ def _resolve_sheet(workbook: Any, sheet: str | None) -> Any:
         raise ValueError(
             f"worksheet {wanted!r} not found; available sheets: {workbook.sheetnames}"
         ) from exc
+
+
+def _scan_pages_for_injection(pages: list[dict[str, Any]]) -> dict[str, object] | None:
+    """Scan every extracted page's text for prompt-injection patterns.
+
+    Advisory only (see `blumkin.prompt_injection`): a match never blocks or
+    alters the extracted content, it only surfaces a warning in the payload
+    and the human-formatted output.
+    """
+    findings = []
+    for page in pages:
+        text = str(page.get("text") or "")
+        result = scan_for_injection(text, location=f"pages[{page.get('index')}].text")
+        findings.extend(result.findings)
+    if not findings:
+        return None
+    return {
+        "findings": [
+            {"family": f.family, "location": f.location, "snippet": f.snippet} for f in findings
+        ],
+        "matched": True,
+    }
 
 
 def _table_rows(table: Any, *, budget: _BudgetGuard) -> list[list[str]]:

@@ -284,6 +284,17 @@ need `poppler`):
 brew install tesseract poppler
 ```
 
+**Prompt-injection flagging.** `docs read` and `mail get` scan extracted
+text/body content for common prompt-injection patterns (instruction-override
+phrasing, zero-width/bidi-override characters, link-label/URL mismatches,
+role-impersonation blocks, base64 blobs next to "decode/execute" triggers).
+Detection is heuristic and advisory only: it never blocks, redacts, or alters
+the returned content. A match adds an `injection_warning` field to the JSON
+payload (`null` when clean) and a `⚠️ POSSIBLE PROMPT INJECTION DETECTED`
+banner to human-formatted output, so the caller can decide whether to act on
+the content. See issue #282 for the full design and deferred scope (no
+LLM-based detection, no hard-block/confirmation wiring in v1).
+
 ## Tests
 
 ```bash
