@@ -152,6 +152,28 @@ def test_docs_read_ocr_missing_poppler_binary_is_actionable(tmp_path: Path, monk
         asyncio.run(docs_read(config=_cfg(tmp_path), ocr=True, path=str(path)))
 
 
+def test_docs_read_pdf_ocr_does_not_run_when_page_already_has_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"pdf")
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_pdfplumber",
+        lambda: SimpleNamespace(open=lambda _path: _FakePdf([_FakePage(text="one")])),
+    )
+    monkeypatch.setattr("blumkin.skills.docs_read._require_ocr_binaries", lambda: None)
+
+    def _fail_if_called() -> object:
+        raise AssertionError("OCR should not run when the page already has text")
+
+    monkeypatch.setattr("blumkin.skills.docs_read._import_ocr_modules", _fail_if_called)
+
+    payload = asyncio.run(docs_read(config=_cfg(tmp_path), ocr=True, path=str(path)))
+
+    assert payload["ocr_used"] is False
+    assert payload["pages"][0]["text"] == "one"
+
+
 def test_docs_read_ocr_missing_extra_is_actionable(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "scan.pdf"
     path.write_bytes(b"pdf")
@@ -393,6 +415,47 @@ def test_docs_read_xlsx_allows_numeric_sheet_name(tmp_path: Path) -> None:
 
     assert payload["pages"][0]["sheet"] == "2024"
     assert payload["pages"][0]["tables"] == [[["Quarter", "Amount"], ["Q4", "7"]]]
+
+
+def test_docs_read_xlsx_rejects_blank_sheet(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    path = tmp_path / "report.xlsx"
+    workbook = openpyxl.Workbook()
+    workbook.active.title = "Summary"
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(ValueError, match="--sheet must not be blank"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), sheet="  "))
+
+
+def test_docs_read_xlsx_rejects_out_of_range_sheet_index(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    path = tmp_path / "report.xlsx"
+    workbook = openpyxl.Workbook()
+    workbook.active.title = "Summary"
+    workbook.create_sheet("Detail")
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(ValueError, match=r"--sheet index 9 is out of range for 2 worksheet\(s\)"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), sheet="9"))
+
+
+def test_docs_read_xlsx_rejects_unknown_sheet_name(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    path = tmp_path / "report.xlsx"
+    workbook = openpyxl.Workbook()
+    workbook.active.title = "Summary"
+    workbook.create_sheet("Detail")
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(
+        ValueError,
+        match=r"worksheet 'NoSuch' not found; available sheets: \['Summary', 'Detail'\]",
+    ):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), sheet="NoSuch"))
 
 
 class _FakePage:
