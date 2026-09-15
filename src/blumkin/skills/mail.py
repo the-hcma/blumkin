@@ -71,6 +71,7 @@ from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.mail_signature_state import load_signature_state
 from blumkin.output import sanitize_terminal
+from blumkin.prompt_injection import format_injection_warning_banner, scan_mail_message
 from blumkin.skills.docs import parse_body as _parse_doc_body
 from blumkin.skills.docs import render_email_html as _render_email_html
 
@@ -293,6 +294,10 @@ def format_get_human(payload: dict[str, Any]) -> list[str]:
         name = sanitize_terminal(str(item.get("name") or item.get("id") or ""))
         lines.append(f"  attachment: {name!r} ({item.get('size')} bytes) id={item.get('id')}")
     lines.append("")
+    warning_lines = format_injection_warning_banner(msg.get("injection_warning"))
+    lines.extend(warning_lines)
+    if warning_lines:
+        lines.append("")
     body = str(msg.get("body") or "").splitlines() or ["(no body)"]
     lines.extend(sanitize_terminal(line) for line in body)
     return lines
@@ -2058,6 +2063,7 @@ def _message_detail(msg: Any, *, wanted: MailBodyType) -> dict[str, Any]:
         "from_name": from_name,
         "has_attachments": bool(msg.has_attachments),
         "id": msg.id,
+        "injection_warning": scan_mail_message(body=body, subject=msg.subject),
         "internet_message_id": getattr(msg, "internet_message_id", None),
         "is_draft": bool(getattr(msg, "is_draft", False)),
         "is_read": bool(msg.is_read),

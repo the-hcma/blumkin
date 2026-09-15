@@ -125,7 +125,9 @@ original's attachments.
      `"orderby": null`.
      `blumkin mail get --id '<message-id>' --json` (one message in full: participants,
      timestamps, attachments, and body — use this instead of listing and filtering
-     client-side; `--body-type html` keeps the markup, default `text`)
+     client-side; `--body-type html` keeps the markup, default `text`). Subject/body
+     are scanned for prompt-injection patterns the same way as `docs read`
+     (`injection_warning`, advisory only).
      `blumkin mail search --query '<term>' --json` searches the WHOLE mailbox
      (every folder), relevance-ranked, tagging each hit with its `folder` —
      prefer this over `mail list --search` (one folder). Google `--query` takes
@@ -153,7 +155,11 @@ original's attachments.
        and cannot be passed. Only needs the `ocr` extra and `tesseract` (not
        `pdf`/`poppler`, which are PDF-only).
      - `--json` shape:
-       `{ok, path, kind, pages: [{index, text, tables, sheet?}], ocr_used}`.
+       `{ok, path, kind, pages: [{index, text, tables, sheet?}], ocr_used, injection_warning}`.
+       `injection_warning` is `null` unless a heuristic prompt-injection scan
+       flags the extracted text (advisory only - never blocks the read); the
+       human formatter shows a matching `⚠️ POSSIBLE PROMPT INJECTION DETECTED`
+       banner.
      - Safety caps: files over 25 MB are refused, and extracted output over 1 MB
        fails closed with a usage error.
      - Missing extras fail closed with actionable messages such as
