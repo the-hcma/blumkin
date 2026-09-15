@@ -170,7 +170,13 @@ def scan_for_injection(text: str, *, location: str) -> InjectionScanResult:
 
 
 def _label_domain_mismatches_host(label_domain: str, url: str) -> bool:
-    host = (urlsplit(url).hostname or "").lower()
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        # A malformed href (unbalanced brackets, invalid NFKC netloc, ...) has
+        # no usable host to compare against - this scan must never raise on
+        # attacker-controlled input, so treat it like "no parseable host".
+        return False
     if not host:
         # No parseable host (e.g. a relative path) - nothing to compare against.
         return False
