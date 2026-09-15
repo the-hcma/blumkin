@@ -133,6 +133,44 @@ def test_microsoft_account_email_reads_the_auth_record(tmp_path: Path, monkeypat
     assert MicrosoftWorkspaceProvider(config).account_email() == ""
 
 
+def test_microsoft_account_email_reads_the_auth_record_from_the_keychain(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """account_email() must go through secret_store, not read auth_record_path directly.
+
+    `secret_store.read_text` migrates a legacy plaintext auth record into the
+    keychain and unlinks the file - a caller that still does its own
+    `auth_record_path.read_text()` finds nothing and reports "unknown" even
+    though the account is signed in (issue #287 review, BLOCKER).
+    """
+    from blumkin import secret_store
+    from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
+
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\ntenant_id = "example.com"\n'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    config = load_config()
+
+    store: dict[tuple[str, str], str] = {}
+
+    class _FakeKeyring:
+        def get_password(self, service: str, username: str) -> str | None:
+            return store.get((service, username))
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            store[(service, username)] = password
+
+        def delete_password(self, service: str, username: str) -> None:
+            store.pop((service, username), None)
+
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+    secret_store.write_text(config, "auth_record", json.dumps({"username": "ada@example.com"}))
+
+    assert not config.auth_record_path.exists()
+    assert MicrosoftWorkspaceProvider(config).account_email() == "ada@example.com"
+
+
 def test_profiles_list_reports_email(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "config.toml").write_text(
         _TWO_PROFILES.replace(

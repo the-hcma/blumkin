@@ -134,3 +134,27 @@ def test_write_secret_text_survives_fchmod_oserror(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(os, "fchmod", reject)
     secret_store._write_file_secret(target, "still-saved")
     assert target.read_text(encoding="utf-8") == "still-saved"
+
+
+def test_write_secret_text_completes_a_short_write(tmp_path: Path, monkeypatch) -> None:
+    """A `os.write` that accepts fewer bytes than given must not truncate the secret.
+
+    Simulates the short-write case `os.write` is documented to allow (e.g. a
+    signal interrupting a large write): only 4 bytes land per call, so a
+    single-call implementation would silently persist a truncated credential
+    (issue #287 review).
+    """
+    target = tmp_path / "msal_token_cache.json"
+    real_write = os.write
+    chunks: list[bytes] = []
+
+    def short_write(fd: int, data) -> int:
+        limited = bytes(data)[:4]
+        chunks.append(limited)
+        return real_write(fd, limited)
+
+    monkeypatch.setattr(os, "write", short_write)
+    payload = "0123456789" * 5  # 50 bytes, well over the 4-byte cap per call
+    secret_store._write_file_secret(target, payload)
+    assert target.read_text(encoding="utf-8") == payload
+    assert len(chunks) > 1

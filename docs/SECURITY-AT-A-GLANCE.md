@@ -13,7 +13,7 @@ permissions, no multi-tenant anything.
 | Data | Location | In git? |
 |------|----------|---------|
 | OAuth client id (public client) | `~/.config/blumkin/config.toml` (mode `0600`) | never |
-| Token cache + auth record / Google token | `~/.config/blumkin/profiles/<name>/` | never |
+| Token cache + auth record / Google token | `~/.config/blumkin/profiles/<name>/` (file backend), or the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) when `token_storage` selects it - see below | never |
 | Google desktop-client JSON (holds `client_secret`) | operator-chosen path, mode `0600` | never |
 | The user's mail / calendar / chat content | fetched on demand, printed to stdout, not persisted | n/a |
 
@@ -28,12 +28,14 @@ data anywhere.
 - **Delegated only.** Interactive browser sign-in (public client + `localhost`
   redirect). No client secret for Microsoft flows; the Google secret stays in
   the desktop-client JSON, never in toml or env.
-- The token cache and auth record are written under `~/.config/blumkin/`. By
-  default (`token_storage = "auto"` in `config.toml`) blumkin prefers the OS
-  keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
-  when the optional `keyring` extra is installed and a real backend is usable
-  at runtime, falling back to a plain `0600` file otherwise (headless Linux
-  with no Secret Service, the extra not installed, etc.); `token_storage =
+- The token cache and auth record are written under `~/.config/blumkin/` by
+  default (the file backend). With `token_storage = "auto"` (default) or
+  `"keyring"` in `config.toml`, blumkin instead prefers the OS keychain
+  (macOS Keychain, Windows Credential Manager, Linux Secret Service) when the
+  optional `keychain` extra (`pipx install 'blumkin[keychain]'`) is installed
+  and a real backend is usable at runtime, falling back to the plain `0600`
+  file otherwise (headless Linux with no Secret Service, the extra not
+  installed, a keychain write failing at runtime, etc.); `token_storage =
   "file"` forces the file unconditionally. Neither backend does cryptographic
   or host binding - a copied file, or a keychain item exported off the
   machine, will refresh on another host with the client id / tenant. Protect

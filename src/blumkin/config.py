@@ -136,7 +136,17 @@ def google_oauth_installed_client(path: Path) -> dict[str, Any]:
 
 
 def list_profiles() -> list[dict[str, Any]]:
-    """Return safe summaries of configured profiles (no secrets)."""
+    """Return safe summaries of configured profiles (no secrets).
+
+    ``load_config(profile=name)`` is only used per-profile to compute
+    ``auth_present`` and can raise ``ProviderConfigError`` for a profile that
+    is otherwise listable (a missing/unparseable
+    ``google_oauth_client_file``, a name that also collides with another
+    profile's tag, etc.). One broken profile must not hide every healthy one
+    from `blumkin profiles list` or a multi-account MCP server (issue #287
+    review) - such a profile is still listed, with ``auth_present`` all
+    ``False`` and an ``error`` key describing why it could not be resolved.
+    """
     # Local import: blumkin.secret_store imports BlumkinConfig from this module,
     # so importing it at module level here would be circular.
     from blumkin import secret_store
@@ -149,22 +159,30 @@ def list_profiles() -> list[dict[str, Any]]:
     for name in sorted(tables):
         table = tables[name]
         tags = _tags_from_table(table)
-        cfg = load_config(profile=name)
-        summaries.append(
-            {
-                "auth_present": {
-                    "auth_record": secret_store.exists(cfg, "auth_record"),
-                    "google_token": secret_store.exists(cfg, "google_token"),
-                    "msal_token_cache": secret_store.exists(cfg, "token_cache"),
-                },
-                "default_tz": _string_values(table).get("default_tz", "").strip(),
-                "email": _string_values(table).get("email", "").strip(),
-                "is_default": name == marked_default,
-                "name": name,
-                "provider": _provider_kind(table).value,
-                "tags": list(tags),
+        auth_present = {"auth_record": False, "google_token": False, "msal_token_cache": False}
+        error: str | None = None
+        try:
+            cfg = load_config(profile=name)
+        except ProviderConfigError as exc:
+            error = str(exc)
+        else:
+            auth_present = {
+                "auth_record": secret_store.exists(cfg, "auth_record"),
+                "google_token": secret_store.exists(cfg, "google_token"),
+                "msal_token_cache": secret_store.exists(cfg, "token_cache"),
             }
-        )
+        summary = {
+            "auth_present": auth_present,
+            "default_tz": _string_values(table).get("default_tz", "").strip(),
+            "email": _string_values(table).get("email", "").strip(),
+            "is_default": name == marked_default,
+            "name": name,
+            "provider": _provider_kind(table).value,
+            "tags": list(tags),
+        }
+        if error is not None:
+            summary["error"] = error
+        summaries.append(summary)
     return summaries
 
 

@@ -8,6 +8,8 @@ keyring module instead, to exercise the keyring code paths deterministically.
 
 from __future__ import annotations
 
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,11 @@ import pytest
 from blumkin import secret_store
 from blumkin.config import load_config
 from blumkin.secret_store import SecretWriteError
+
+# Captured before any fixture (see conftest._force_file_secret_backend) patches
+# secret_store._keyring_module - the only way to reinstate the real function
+# for the tests below without undoing every other autouse fixture's patches.
+_REAL_KEYRING_MODULE = secret_store._keyring_module
 
 
 class _FakeKeyring:
@@ -24,13 +31,19 @@ class _FakeKeyring:
         self.store: dict[tuple[str, str], str] = {}
 
     def delete_password(self, service: str, username: str) -> None:
-        self.store.pop((service, username), None)
+        if (service, username) not in self.store:
+            raise _PasswordDeleteError("not found")
+        del self.store[(service, username)]
 
     def get_password(self, service: str, username: str) -> str | None:
         return self.store.get((service, username))
 
     def set_password(self, service: str, username: str, password: str) -> None:
         self.store[(service, username)] = password
+
+
+class _PasswordDeleteError(Exception):
+    """Stand-in for ``keyring.errors.PasswordDeleteError``."""
 
 
 class _BrokenKeyring(_FakeKeyring):
@@ -40,7 +53,20 @@ class _BrokenKeyring(_FakeKeyring):
         raise RuntimeError("keychain access denied")
 
 
+class _DeleteFailsKeyring(_FakeKeyring):
+    """A backend that has an entry but refuses to delete it (not "not found")."""
+
+    def delete_password(self, service: str, username: str) -> None:
+        raise RuntimeError("keychain deletion denied")
+
+
+def _account(cfg, kind: secret_store.SecretKind) -> tuple[str, str]:
+    """The (service, account) key ``fake.store`` should hold for ``cfg``/``kind``."""
+    return (secret_store._KEYRING_SERVICE, secret_store._keyring_account(cfg, kind))
+
+
 def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, token_storage: str):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
         f'[profiles.default]\nclient_id = "test-client"\ntoken_storage = "{token_storage}"\n'
@@ -68,7 +94,7 @@ def test_write_then_read_round_trips_through_keyring(tmp_path: Path, monkeypatch
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
     secret_store.write_text(cfg, "token_cache", "secret-payload")
     assert not cfg.token_cache_path.exists()
-    assert fake.store[("blumkin", "default:token_cache")] == "secret-payload"
+    assert fake.store[_account(cfg, "token_cache")] == "secret-payload"
     assert secret_store.read_text(cfg, "token_cache") == "secret-payload"
     assert secret_store.exists(cfg, "token_cache") is True
 
@@ -83,7 +109,7 @@ def test_legacy_file_migrates_into_keyring_on_first_read(tmp_path: Path, monkeyp
     assert secret_store.read_text(cfg, "token_cache") == "legacy-value"
 
     assert not cfg.token_cache_path.exists()
-    assert fake.store[("blumkin", "default:token_cache")] == "legacy-value"
+    assert fake.store[_account(cfg, "token_cache")] == "legacy-value"
 
 
 def test_migration_keeps_serving_file_if_keyring_write_fails(tmp_path: Path, monkeypatch) -> None:
@@ -96,6 +122,38 @@ def test_migration_keeps_serving_file_if_keyring_write_fails(tmp_path: Path, mon
     assert cfg.token_cache_path.is_file()
 
 
+def test_migration_rolls_back_keyring_copy_when_unlink_fails(tmp_path: Path, monkeypatch) -> None:
+    """A partial migration (keyring write ok, plaintext unlink fails) must retry.
+
+    Otherwise the plaintext file lingers untracked forever: the keyring copy
+    is served on every subsequent read, so cleanup of the stale file never
+    happens (issue #287 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    cfg.profile_dir.mkdir(parents=True)
+    cfg.token_cache_path.write_text("legacy-value")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    real_unlink = Path.unlink
+
+    def reject_unlink(self: Path, *args, **kwargs) -> None:
+        raise OSError("device busy")
+
+    monkeypatch.setattr(Path, "unlink", reject_unlink)
+
+    assert secret_store.read_text(cfg, "token_cache") == "legacy-value"
+    # Rolled back - the keyring must not hold a copy while the file still does.
+    assert _account(cfg, "token_cache") not in fake.store
+    assert cfg.token_cache_path.is_file()
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    # A later read (unlink working again) retries and completes the migration.
+    assert secret_store.read_text(cfg, "token_cache") == "legacy-value"
+    assert not cfg.token_cache_path.exists()
+    assert fake.store[_account(cfg, "token_cache")] == "legacy-value"
+
+
 def test_delete_removes_from_both_backends(tmp_path: Path, monkeypatch) -> None:
     cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
     fake = _FakeKeyring()
@@ -104,7 +162,29 @@ def test_delete_removes_from_both_backends(tmp_path: Path, monkeypatch) -> None:
     secret_store.delete(cfg, "auth_record")
     assert secret_store.exists(cfg, "auth_record") is False
     assert not cfg.auth_record_path.exists()
-    assert ("blumkin", "default:auth_record") not in fake.store
+    assert fake.store == {}
+
+
+def test_delete_is_a_noop_when_nothing_is_stored(tmp_path: Path, monkeypatch) -> None:
+    """No entry to delete - not an error, and the backend's delete is never called."""
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    secret_store.delete(cfg, "auth_record")  # must not raise
+
+
+def test_delete_surfaces_backend_failure_that_is_not_not_found(tmp_path: Path, monkeypatch) -> None:
+    """A denied/failed deletion of an entry that *does* exist must not look like success.
+
+    Silently swallowing every deletion failure leaves the credential usable
+    after `auth logout` reports success (issue #287 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _DeleteFailsKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    secret_store.write_text(cfg, "auth_record", "record-payload")
+    with pytest.raises(SecretWriteError, match="cannot delete"):
+        secret_store.delete(cfg, "auth_record")
 
 
 def test_explicit_keyring_falls_back_to_file_and_warns_once(
@@ -126,10 +206,24 @@ def test_explicit_keyring_falls_back_to_file_and_warns_once(
 def test_write_text_raises_secret_write_error_when_keyring_unusable_mid_write(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """token_storage = "keyring" is an explicit ask - raise, don't downgrade."""
     cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: _BrokenKeyring())
     with pytest.raises(SecretWriteError, match="OS keychain"):
         secret_store.write_text(cfg, "token_cache", "payload")
+
+
+def test_auto_falls_back_to_file_when_keyring_write_fails(tmp_path: Path, monkeypatch) -> None:
+    """token_storage = "auto" must silently downgrade to the file on a write failure.
+
+    Only "keyring" (an explicit ask) is allowed to raise; "auto" promises a
+    silent fallback for *any* backend trouble, not just a missing backend
+    (issue #287 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _BrokenKeyring())
+    secret_store.write_text(cfg, "token_cache", "payload")
+    assert cfg.token_cache_path.read_text() == "payload"
 
 
 def test_auto_prefers_file_when_no_keyring_backend(tmp_path: Path, monkeypatch) -> None:
@@ -137,3 +231,123 @@ def test_auto_prefers_file_when_no_keyring_backend(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
     secret_store.write_text(cfg, "google_token", "payload")
     assert cfg.google_token_path.read_text() == "payload"
+
+
+def test_keyring_account_is_namespaced_by_config_dir(tmp_path: Path, monkeypatch) -> None:
+    """Two config dirs with the same profile name must not share one keychain item.
+
+    ``BLUMKIN_CONFIG_DIR`` / ``XDG_CONFIG_HOME`` exist precisely to select a
+    *different* config dir (e.g. a sandbox/CI tenant); without config_dir in
+    the account name, logging out of one silently deletes the other's secret
+    (issue #287 review).
+    """
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    primary = _load(tmp_path / "primary", monkeypatch, token_storage="keyring")
+    secret_store.write_text(primary, "auth_record", "primary-value")
+
+    alternate = _load(tmp_path / "alternate", monkeypatch, token_storage="keyring")
+    assert secret_store.read_text(alternate, "auth_record") is None
+
+    secret_store.write_text(alternate, "auth_record", "alternate-value")
+    assert secret_store.read_text(primary, "auth_record") == "primary-value"
+    assert secret_store.read_text(alternate, "auth_record") == "alternate-value"
+
+    secret_store.delete(alternate, "auth_record")
+    assert secret_store.read_text(primary, "auth_record") == "primary-value"
+
+
+@pytest.fixture
+def _real_keyring_module_lookup(monkeypatch: pytest.MonkeyPatch):
+    """Undo the autouse file-backend guard so ``_keyring_module`` itself runs.
+
+    ``tests/conftest.py::_force_file_secret_backend`` replaces
+    ``secret_store._keyring_module`` wholesale for every other test; these
+    tests exist specifically to exercise the real function body (the lazy
+    import, the ``keyring.backends.fail`` detection, and the module-level
+    cache), which no other test in the suite does (issue #287 review: a
+    regression there - e.g. the fail-backend check being inverted or dropped -
+    would ship green while every login/cache write starts raising on hosts
+    with no usable backend).
+    """
+    monkeypatch.setattr(secret_store, "_keyring_module", _REAL_KEYRING_MODULE)
+    secret_store._keyring_checked = False
+    secret_store._keyring_mod = None
+    yield
+    secret_store._keyring_checked = False
+    secret_store._keyring_mod = None
+
+
+def _install_fake_keyring_package(monkeypatch: pytest.MonkeyPatch, backend: object) -> None:
+    stub = type(sys)("keyring")
+    stub.get_keyring = lambda: backend
+    monkeypatch.setitem(sys.modules, "keyring", stub)
+
+
+def test_real_keyring_module_returns_none_for_a_fail_backend(
+    _real_keyring_module_lookup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _FailBackend:
+        pass
+
+    _FailBackend.__module__ = "keyring.backends.fail.Keyring"
+    _install_fake_keyring_package(monkeypatch, _FailBackend())
+
+    assert secret_store._keyring_module() is None
+
+
+def test_real_keyring_module_returns_the_module_for_a_real_backend(
+    _real_keyring_module_lookup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _RealBackend:
+        pass
+
+    _RealBackend.__module__ = "keyring.backends.macOS.Keyring"
+    _install_fake_keyring_package(monkeypatch, _RealBackend())
+
+    module = secret_store._keyring_module()
+    assert module is not None
+    assert module.get_keyring() is not None
+
+
+def test_real_keyring_module_caches_after_first_call(
+    _real_keyring_module_lookup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"n": 0}
+
+    class _RealBackend:
+        pass
+
+    _RealBackend.__module__ = "keyring.backends.macOS.Keyring"
+
+    def get_keyring():
+        calls["n"] += 1
+        return _RealBackend()
+
+    stub = type(sys)("keyring")
+    stub.get_keyring = get_keyring
+    monkeypatch.setitem(sys.modules, "keyring", stub)
+
+    assert secret_store._keyring_module() is not None
+    assert secret_store._keyring_module() is not None
+    assert calls["n"] == 1
+
+
+def test_keyring_probe_treats_a_hang_as_unusable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backend whose ``get_keyring()`` hangs (e.g. a stuck D-Bus call) must not
+    hang login/`doctor` - the probe is bounded and treats a timeout as "unusable".
+    """
+    monkeypatch.setattr(secret_store, "_KEYRING_PROBE_TIMEOUT_SECONDS", 0.05)
+    release = threading.Event()
+
+    class _HangingModule:
+        @staticmethod
+        def get_keyring():
+            release.wait(timeout=5)
+            return object()
+
+    try:
+        assert secret_store._probe_keyring_backend(_HangingModule()) is False
+    finally:
+        release.set()

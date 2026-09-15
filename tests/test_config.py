@@ -258,6 +258,42 @@ def test_list_profiles_safe_summaries(tmp_path: Path, monkeypatch) -> None:
     assert "ms-client" not in dumped
 
 
+def test_list_profiles_tolerates_one_broken_profile(tmp_path: Path, monkeypatch) -> None:
+    """A single unresolvable profile must not hide the rest of the list.
+
+    ``load_config(profile=name)`` can raise ``ProviderConfigError`` for a
+    profile whose ``google_oauth_client_file`` no longer exists (deleted,
+    moved, etc.) while every other profile is perfectly healthy; the whole
+    command used to abort with a traceback instead of listing the healthy
+    ones with the broken one flagged (issue #287 review).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    oauth = tmp_path / "desktop-client.json"
+    oauth.write_text(
+        '{"installed": {"client_id": "gid.apps.googleusercontent.com", '
+        '"client_secret": "not-a-secret"}}'
+    )
+    _write_multi_profile(tmp_path, oauth)
+    (tmp_path / "config.toml").write_text(
+        (tmp_path / "config.toml").read_text() + "\n[profiles.broken]\n"
+        'provider = "google"\n'
+        'google_oauth_client_file = "/does/not/exist.json"\n'
+        'tags = ["broken"]\n'
+    )
+
+    summaries = list_profiles()
+    assert [item["name"] for item in summaries] == ["broken", "personal", "work"]
+    broken = summaries[0]
+    assert broken["auth_present"] == {
+        "auth_record": False,
+        "google_token": False,
+        "msal_token_cache": False,
+    }
+    assert "error" in broken and "exist.json" in broken["error"]
+    healthy_names = {item["name"] for item in summaries if "error" not in item}
+    assert healthy_names == {"personal", "work"}
+
+
 def test_missing_config_has_zero_profiles(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)

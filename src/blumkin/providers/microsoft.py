@@ -11,6 +11,7 @@ from blumkin.auth import create_credential, logout, refresh_silent, save_token_c
 from blumkin.config import BlumkinConfig
 from blumkin.providers import microsoft_docs, microsoft_drive, microsoft_mail_probe
 from blumkin.providers.kind import ProviderKind
+from blumkin.secret_store import read_text as read_secret_text
 from blumkin.skills.calendar import (
     calendar_freebusy,
     calendar_get,
@@ -82,13 +83,20 @@ class MicrosoftWorkspaceProvider:
         return refresh_silent(self._config)
 
     def account_email(self) -> str:
-        """Signed-in address from the MSAL auth record (written by auth login)."""
-        path = self._config.auth_record_path
-        if not path.is_file():
+        """Signed-in address from the MSAL auth record (written by auth login).
+
+        Goes through ``secret_store`` (not a direct file read) because a
+        keyring-preferring profile migrates the auth record into the OS
+        keychain and unlinks the legacy file on first read, so
+        ``auth_record_path`` alone can no longer be relied on to exist
+        (issue #287 review).
+        """
+        raw = read_secret_text(self._config, "auth_record")
+        if raw is None:
             return ""
         try:
-            record = json.loads(path.read_text())
-        except OSError, json.JSONDecodeError:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
             return ""
         username = record.get("username") if isinstance(record, dict) else None
         return str(username).strip() if isinstance(username, str) else ""

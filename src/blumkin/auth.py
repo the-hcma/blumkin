@@ -99,7 +99,7 @@ WO1162425_SCOPES = [
 _token_cache = SerializableTokenCache()
 _atexit_registered = False
 _cache_bound_cfg: BlumkinConfig | None = None
-_cache_bound_key: str | None = None
+_cache_bound_key: tuple[str, str] | None = None
 
 
 def create_credential(
@@ -300,9 +300,16 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
     return out
 
 
-def _cache_key(cfg: BlumkinConfig) -> str:
-    """Identify the profile a bound in-memory cache belongs to (config dir + profile)."""
-    return f"{cfg.config_dir}:{cfg.profile}"
+def _cache_key(cfg: BlumkinConfig) -> tuple[str, str]:
+    """Identify the profile a bound in-memory cache belongs to (config dir + profile).
+
+    A tuple, not an f-string join: ``:`` does not safely delimit the two
+    values (e.g. ``("/tmp/a:work", "one")`` and ``("/tmp/a", "work:one")``
+    would otherwise collide onto the same string key), and a collision here
+    lets ``_ensure_cache``/``save_token_cache`` persist one profile's token
+    cache into another's (issue #287 review).
+    """
+    return (str(cfg.config_dir), cfg.profile)
 
 
 def _classify_get_token_error(exc: BaseException) -> AuthError:
