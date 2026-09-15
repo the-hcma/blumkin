@@ -121,6 +121,39 @@ def test_docs_read_ocr_falls_back_for_empty_pdf_pages(tmp_path: Path, monkeypatc
     assert payload["pages"][0]["text"] == "Scanned agenda"
 
 
+def test_docs_read_ocr_passes_the_requested_page_to_pdf2image(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"pdf")
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_pdfplumber",
+        lambda: SimpleNamespace(
+            open=lambda _path: _FakePdf(
+                [_FakePage(text=""), _FakePage(text=""), _FakePage(text="")]
+            )
+        ),
+    )
+    monkeypatch.setattr("blumkin.skills.docs_read._require_ocr_binaries", lambda: None)
+    recorded_pages: list[tuple[int, int]] = []
+
+    def _convert_from_path(_path: str, *, first_page: int, last_page: int, **_kwargs: object):
+        recorded_pages.append((first_page, last_page))
+        return [f"image-{first_page}"]
+
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_ocr_modules",
+        lambda: (
+            SimpleNamespace(convert_from_path=_convert_from_path),
+            SimpleNamespace(),
+            SimpleNamespace(image_to_string=lambda image: f"OCR text for {image}"),
+        ),
+    )
+
+    payload = asyncio.run(docs_read(config=_cfg(tmp_path), ocr=True, path=str(path), pages="2"))
+
+    assert recorded_pages == [(2, 2)]
+    assert payload["pages"] == [{"index": 2, "tables": [], "text": "OCR text for image-2"}]
+
+
 def test_docs_read_ocr_missing_binary_is_actionable(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "scan.pdf"
     path.write_bytes(b"pdf")
