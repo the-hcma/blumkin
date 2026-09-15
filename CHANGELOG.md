@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.1.2...blumkin-v1.2.0) (2026-09-15)
+
+
+### Features
+
+* add docs read skill for local PDF/DOCX/XLSX extraction ([#279](https://github.com/the-hcma/blumkin/issues/279)) ([38fe3c2](https://github.com/the-hcma/blumkin/commit/38fe3c2fb0625ef6f6d70bdbd6b4d95d7faf1110))
+* add heuristic prompt-injection detection to docs read and mail ([#284](https://github.com/the-hcma/blumkin/issues/284)) ([f87dc4b](https://github.com/the-hcma/blumkin/commit/f87dc4b54f3507fc91fe419c895cbd3904047c06))
+* add image OCR support to docs read (closes [#281](https://github.com/the-hcma/blumkin/issues/281)) ([#283](https://github.com/the-hcma/blumkin/issues/283)) ([b733623](https://github.com/the-hcma/blumkin/commit/b733623a1c12ab44d98aef76e7cc3194b8a53838))
+
+
+### Bug Fixes
+
+* expose meeting-invite metadata on mail reads ([#278](https://github.com/the-hcma/blumkin/issues/278)) ([cbe9222](https://github.com/the-hcma/blumkin/commit/cbe9222ff4ad9e2656d6bc2015baec8c679d912e))
+
+
+### Documentation
+
+* clean up outdated PLAN.md and HANDOFF.md content ([#272](https://github.com/the-hcma/blumkin/issues/272)) ([9283c92](https://github.com/the-hcma/blumkin/commit/9283c92161e39b216d933b16ddad9bc739c2acd2))
+
 ## [1.1.2](https://github.com/the-hcma/blumkin/compare/blumkin-v1.1.1...blumkin-v1.1.2) (2026-09-12)
 
 
