@@ -1,4 +1,4 @@
-"""Read local PDF, DOCX, and XLSX files into a stable JSON shape."""
+"""Read local PDF, DOCX, XLSX, and common image files into a stable JSON shape."""
 
 from __future__ import annotations
 
@@ -21,7 +21,8 @@ class DocsReadFileNotFoundError(FileNotFoundError):
 
 
 class DocsReadOcrUnavailableError(ValueError):
-    """`--ocr` was requested, but the extra or a required system binary is missing."""
+    """OCR is needed (via `--ocr` for PDFs, or always for images), but the
+    extra or a required system binary is missing."""
 
 
 class DocsReadOversizeError(ValueError):
@@ -54,9 +55,14 @@ async def docs_read(
         extracted_pages, ocr_used = _read_pdf(file_path, ocr=ocr, pages=pages)
     elif kind == ".xlsx":
         extracted_pages = _read_xlsx(file_path, sheet=sheet)
+    elif kind in _IMAGE_EXTENSIONS:
+        extracted_pages = _read_image(file_path)
+        ocr_used = True
     else:
+        supported_images = ", ".join(sorted(_IMAGE_EXTENSIONS))
         raise DocsReadUnsupportedFormatError(
-            f"unsupported file type {kind or '<none>'!r} (expected .pdf, .docx, or .xlsx)"
+            f"unsupported file type {kind or '<none>'!r} "
+            f"(expected .pdf, .docx, .xlsx, or an image: {supported_images})"
         )
 
     return {
@@ -93,6 +99,12 @@ def format_docs_read_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+# Pure image formats have no text layer, so OCR is implicit (always on) for
+# this kind - unlike PDFs, where `--ocr` is an opt-in fallback for pages that
+# have no extractable text. Multi-frame formats (multi-page TIFF, animated
+# GIF) are read as a single frame; HEIC/HEIF is not supported yet (needs the
+# `pillow-heif` extra).
+_IMAGE_EXTENSIONS = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
 _MAX_EXTRACTED_BYTES = 1_000_000
 _MAX_FILE_BYTES = 25_000_000
 _OCR_EXTRA_HINT = "docs read --ocr needs the ocr extra: uv tool install -e '.[pdf,ocr]'"
@@ -127,6 +139,18 @@ def _ensure_file(path: Path) -> None:
         raise DocsReadOversizeError(
             f"file is larger than {_MAX_FILE_BYTES} bytes; choose a smaller file"
         )
+
+
+def _import_image_ocr_modules() -> tuple[Any, Any]:
+    # Pure image OCR only needs Pillow (to open the file) and pytesseract (to
+    # run OCR) - unlike PDF OCR, it never calls pdf2image, so it must not
+    # require poppler.
+    try:
+        pil_image = importlib.import_module("PIL.Image")
+        pytesseract = importlib.import_module("pytesseract")
+    except ModuleNotFoundError as exc:
+        raise DocsReadOcrUnavailableError(_OCR_EXTRA_HINT) from exc
+    return pil_image, pytesseract
 
 
 def _import_ocr_modules() -> tuple[Any, Any, Any]:
@@ -245,6 +269,26 @@ def _read_docx(path: Path) -> list[dict[str, Any]]:
     return [page]
 
 
+def _read_image(path: Path) -> list[dict[str, Any]]:
+    _require_tesseract_binary()
+    pil_image, pytesseract = _import_image_ocr_modules()
+    try:
+        with pil_image.open(path) as image:
+            image.load()
+            try:
+                text = str(pytesseract.image_to_string(image)).strip()
+            except getattr(pytesseract, "TesseractNotFoundError", RuntimeError) as exc:
+                raise DocsReadOcrUnavailableError(_TESSERACT_HINT) from exc
+    except DocsReadOcrUnavailableError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - emit a clean usage error message
+        raise ValueError(f"cannot read image file {path}: {exc}") from exc
+    budget = _BudgetGuard()
+    budget.add(text)
+    page = {"index": 1, "tables": [], "text": text}
+    return [page]
+
+
 def _read_pdf(path: Path, *, ocr: bool, pages: str | None) -> tuple[list[dict[str, Any]], bool]:
     pdfplumber = _import_pdfplumber()
     budget = _BudgetGuard()
@@ -313,6 +357,13 @@ def _require_ocr_binaries() -> None:
         raise DocsReadOcrUnavailableError(_POPPLER_HINT)
 
 
+def _require_tesseract_binary() -> None:
+    # Pure image OCR never calls pdf2image, so it does not need poppler -
+    # only the tesseract binary itself.
+    if shutil.which("tesseract") is None:
+        raise DocsReadOcrUnavailableError(_TESSERACT_HINT)
+
+
 def _resolve_sheet(workbook: Any, sheet: str | None) -> Any:
     worksheets = list(workbook.worksheets)
     if not worksheets:
@@ -371,5 +422,5 @@ def _validate_flags(kind: str, *, ocr: bool, pages: str | None, sheet: str | Non
         raise ValueError("--ocr is only valid for .pdf files")
     if pages is not None:
         raise ValueError("--pages is only valid for .pdf files")
-    if kind == ".docx" and sheet is not None:
+    if kind in {".docx", *_IMAGE_EXTENSIONS} and sheet is not None:
         raise ValueError("--sheet is only valid for .xlsx files")

@@ -139,15 +139,19 @@ original's attachments.
      `blumkin mail attachments --id '<message-id>' --json`
      `blumkin mail attachments download --message-id '<message-id>' --attachment-id '<id>' --out ./file.docx`
    - Local document reads: `blumkin docs read --path ./agenda.pdf --json`
-     (or `./contract.docx`, `./report.xlsx`). Use this after `drive download`,
-     `drive export`, `mail attachments download`, or `chat attachments download`
-     when you need the contents of a file already on disk. Do **not** `pip install`
-     anything ad hoc.
+     (or `./contract.docx`, `./report.xlsx`, or an image like `./whiteboard.png`).
+     Use this after `drive download`, `drive export`, `mail attachments download`,
+     or `chat attachments download` when you need the contents of a file already
+     on disk. Do **not** `pip install` anything ad hoc.
      - PDF: optional `--pages 1-3` and `--ocr` (OCR is only for PDF, is slower,
        and needs the `pdf` extra **and** the `ocr` extra plus `tesseract` and
        `poppler` on PATH - `.[ocr]` alone cannot read a PDF, install
        `.[pdf,ocr]`).
      - XLSX: optional `--sheet Summary` or a 1-based sheet index.
+     - Images (`.png`/`.jpg`/`.jpeg`/`.tif`/`.tiff`/`.bmp`/`.webp`): always
+       OCR'd - there's no text layer to fall back to, so `--ocr` is implicit
+       and cannot be passed. Only needs the `ocr` extra and `tesseract` (not
+       `pdf`/`poppler`, which are PDF-only).
      - `--json` shape:
        `{ok, path, kind, pages: [{index, text, tables, sheet?}], ocr_used}`.
      - Safety caps: files over 25 MB are refused, and extracted output over 1 MB

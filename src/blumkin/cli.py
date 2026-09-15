@@ -3714,7 +3714,10 @@ def docs_create_cmd(
     "--path",
     required=True,
     type=click.Path(dir_okay=False, path_type=str),
-    help="Local PDF, DOCX, or XLSX to read; no provider/auth call is made.",
+    help=(
+        "Local PDF, DOCX, XLSX, or image (png/jpg/jpeg/tif/tiff/bmp/webp) to "
+        "read; no provider/auth call is made."
+    ),
 )
 @click.option(
     "--pages",
@@ -3741,10 +3744,12 @@ def docs_read_cmd(
     ocr: bool,
     as_json_flag: bool,
 ) -> None:
-    """Read a local PDF, DOCX, or XLSX file already on disk.
+    """Read a local PDF, DOCX, XLSX, or image file already on disk.
 
     This is a pure local file read - no provider, auth, or network setup. PDF
     defaults to native text extraction; pass `--ocr` for scanned/image pages.
+    Images (png/jpg/jpeg/tif/tiff/bmp/webp) are always OCR'd - `--ocr` is
+    implicit and does not need to be (and cannot be) passed for them.
     """
     _dispatch_local(
         ctx,
