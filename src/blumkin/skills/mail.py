@@ -20,6 +20,7 @@ from msgraph.generated.models.automatic_replies_status import AutomaticRepliesSt
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
 from msgraph.generated.models.email_address import EmailAddress
+from msgraph.generated.models.event_message import EventMessage
 from msgraph.generated.models.external_audience_scope import ExternalAudienceScope
 from msgraph.generated.models.file_attachment import FileAttachment
 from msgraph.generated.models.followup_flag import FollowupFlag
@@ -241,6 +242,27 @@ def format_folders_human(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+_MEETING_TYPE_LABELS = {
+    "meetingRequest": "request",
+    "meetingCancelled": "cancelled",
+    "meetingAccepted": "accepted",
+    "meetingDeclined": "declined",
+    "meetingTenativelyAccepted": "tentative",
+}
+
+
+def _meeting_tag(item: dict[str, Any]) -> str:
+    """A short `[meeting: ...]` suffix mirroring `is_meeting_message` /
+    `meeting_message_type` so a caller scanning plain-text output (no
+    `--json`) can still spot invites and their RSVP state.
+    """
+    if not item.get("is_meeting_message"):
+        return ""
+    kind = item.get("meeting_message_type")
+    label = _MEETING_TYPE_LABELS.get(kind, None) if isinstance(kind, str) else None
+    return f" [meeting: {label or kind or 'invite'}]"
+
+
 def format_get_human(payload: dict[str, Any]) -> list[str]:
     msg = payload.get("message") or {}
     sender = (
@@ -248,7 +270,7 @@ def format_get_human(payload: dict[str, Any]) -> list[str]:
         or "(unknown sender)"
     )
     lines = [
-        sanitize_terminal(str(msg.get("subject") or "(no subject)")),
+        sanitize_terminal(str(msg.get("subject") or "(no subject)")) + _meeting_tag(msg),
         f"  from: {sender}",
     ]
     for label, key in (("to", "to"), ("cc", "cc")):
@@ -289,7 +311,7 @@ def format_inbox_human(payload: dict[str, Any]) -> list[str]:
         unread = "" if item.get("is_read") else " [unread]"
         who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
         subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
-        lines.append(f"  • {item.get('received')}{unread} — {who}: {subject}")
+        lines.append(f"  • {item.get('received')}{unread} — {who}: {subject}{_meeting_tag(item)}")
     return lines
 
 
@@ -320,7 +342,7 @@ def format_list_human(payload: dict[str, Any]) -> list[str]:
                 str(item.get("from_name") or item.get("from_email") or "(unknown)")
             )
         subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
-        lines.append(f"  • {stamp}{unread} — {who}: {subject}")
+        lines.append(f"  • {stamp}{unread} — {who}: {subject}{_meeting_tag(item)}")
     return lines
 
 
@@ -367,7 +389,7 @@ def format_search_human(payload: dict[str, Any]) -> list[str]:
         who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
         subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
         folder = sanitize_terminal(str(item.get("folder") or "?"))
-        lines.append(f"  • {stamp} — {who}: {subject}  [{folder}]")
+        lines.append(f"  • {stamp} — {who}: {subject}  [{folder}]{_meeting_tag(item)}")
     return lines
 
 
@@ -378,7 +400,7 @@ def format_thread_human(payload: dict[str, Any]) -> list[str]:
         stamp = item.get("received") or item.get("sent") or item.get("created") or "(no date)"
         who = sanitize_terminal(str(item.get("from_name") or item.get("from_email") or "(unknown)"))
         subject = sanitize_terminal(str(item.get("subject") or "(no subject)"))
-        lines.append(f"  • {stamp} — {who}: {subject}")
+        lines.append(f"  • {stamp} — {who}: {subject}{_meeting_tag(item)}")
         body = item.get("body")
         if body:
             lines.extend(f"    {line}" for line in sanitize_terminal(str(body)).splitlines())
@@ -913,12 +935,18 @@ async def mail_get(
             "internetMessageId",
             "isDraft",
             "isRead",
+            "meetingMessageType",
             "receivedDateTime",
             "sentDateTime",
             "subject",
             "toRecipients",
             "webLink",
         ],
+        # Populates `.event` when this is a meeting-request message, so
+        # `linked_event_id`/`organizer_email`/`start`/`end` can be read straight
+        # off the calendar event without a second lookup. Harmless (empty) for
+        # plain messages.
+        expand=["Microsoft.Graph.EventMessage/Event($select=id,organizer,start,end)"],
     )
     # Graph converts the body for us when asked, which beats stripping tags locally.
     headers = {"Prefer": f'outlook.body-content-type="{wanted}"'}
@@ -927,9 +955,25 @@ async def mail_get(
             request_config(query, headers=headers)
         )
     except ODataError as exc:
-        if not is_id_lookup_failure(exc):
+        if is_id_lookup_failure(exc):
+            raise MailMessageNotFoundError(f"message not found: {mid}") from exc
+        # Only a plain 400 plausibly means "this tenant/policy rejected the
+        # cast-expand query shape" (what we've actually seen documented for
+        # some tenants). Anything else — 401/403/429/5xx — is a real failure
+        # that a blind retry would only duplicate (doubling request count and
+        # wall-clock right when Graph may be signalling back-off), so let it
+        # propagate rather than mask it behind a second, unrelated attempt.
+        if getattr(exc, "response_status_code", None) != 400:
             raise
-        raise MailMessageNotFoundError(f"message not found: {mid}") from exc
+        query.expand = None
+        try:
+            msg = await client.me.messages.by_message_id(mid).get(
+                request_config(query, headers=headers)
+            )
+        except ODataError as retry_exc:
+            if is_id_lookup_failure(retry_exc):
+                raise MailMessageNotFoundError(f"message not found: {mid}") from retry_exc
+            raise
     if msg is None or not msg.id:
         raise MailMessageNotFoundError(f"message not found: {mid}")
     detail = _message_detail(msg, wanted=wanted)
@@ -1260,6 +1304,7 @@ async def mail_thread(
             "hasAttachments",
             "importance",
             "bodyPreview",
+            "meetingMessageType",
         ],
     )
     page = await client.me.messages.get(request_config(list_query))
@@ -1277,6 +1322,12 @@ async def mail_thread(
             detail = await mail_get(message_id=str(item["id"]), body_type=body_type, config=cfg)
             item["body"] = detail["message"].get("body")
             item["body_type"] = detail["message"].get("body_type", wanted)
+            item["is_meeting_message"] = detail["message"].get("is_meeting_message")
+            item["meeting_message_type"] = detail["message"].get("meeting_message_type")
+            item["linked_event_id"] = detail["message"].get("linked_event_id")
+            item["organizer_email"] = detail["message"].get("organizer_email")
+            item["start"] = detail["message"].get("start")
+            item["end"] = detail["message"].get("end")
         items.append(item)
     return {"conversation_id": conversation_id, "items": items, "count": len(items)}
 
@@ -1900,6 +1951,7 @@ async def _get_messages(
             "hasAttachments",
             "importance",
             "bodyPreview",
+            "meetingMessageType",
         ],
     )
     builder = (
@@ -1924,6 +1976,51 @@ def _matches_text(msg: Any, *, sender: str | None, subject: str | None) -> bool:
         if not any(needle in field for field in fields):
             return False
     return True
+
+
+def _graph_datetime_iso(value: Any) -> str | None:
+    """Render a Graph `DateTimeTimeZone` as an ISO 8601 string.
+
+    `mail_get` never sends a `Prefer: outlook.timezone=...` header, so Graph
+    reports event times in UTC by default; a non-UTC zone (e.g. because a
+    caller changed that default upstream) is passed through as Graph sent it
+    rather than guessed at.
+    """
+    raw = getattr(value, "date_time", None) if value is not None else None
+    if not raw:
+        return None
+    raw = str(raw)
+    time_zone = getattr(value, "time_zone", None) or "UTC"
+    if time_zone == "UTC":
+        return raw if raw.endswith("Z") else f"{raw}Z"
+    return raw
+
+
+def _meeting_fields(msg: Any) -> dict[str, Any]:
+    """Meeting-invite metadata, present only when Graph returned an eventMessage.
+
+    Plain messages deserialize as ``Message`` and simply lack these attributes, so
+    ``getattr(..., None)`` is enough to keep this a no-op for regular mail.
+    """
+    is_meeting = isinstance(msg, EventMessage)
+    meeting_message_type = (
+        _enum_value_or_none(getattr(msg, "meeting_message_type", None)) if is_meeting else None
+    )
+    event = getattr(msg, "event", None)
+    organizer = getattr(event, "organizer", None) if event is not None else None
+    organizer_address = getattr(organizer, "email_address", None) if organizer is not None else None
+    return {
+        "is_meeting_message": is_meeting,
+        "meeting_message_type": meeting_message_type,
+        # Only populated when the caller asked Graph to $expand the event (see
+        # `mail_get`); null elsewhere rather than a second round trip per message.
+        "linked_event_id": getattr(event, "id", None) if event is not None else None,
+        "organizer_email": getattr(organizer_address, "address", None)
+        if organizer_address is not None
+        else None,
+        "start": _graph_datetime_iso(getattr(event, "start", None) if event is not None else None),
+        "end": _graph_datetime_iso(getattr(event, "end", None) if event is not None else None),
+    }
 
 
 def _message_detail(msg: Any, *, wanted: MailBodyType) -> dict[str, Any]:
@@ -1969,6 +2066,7 @@ def _message_detail(msg: Any, *, wanted: MailBodyType) -> dict[str, Any]:
         "subject": msg.subject,
         "to": _participants(getattr(msg, "to_recipients", None)),
         "web_link": getattr(msg, "web_link", None),
+        **_meeting_fields(msg),
     }
 
 
@@ -2002,6 +2100,7 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
         "sent": str(sent) if sent else None,
         "subject": msg.subject,
         "to_email": _primary_to_address(msg),
+        **_meeting_fields(msg),
     }
 
 

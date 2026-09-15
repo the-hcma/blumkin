@@ -6,10 +6,11 @@ import base64
 import email.utils
 import html as html_lib
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from email.header import decode_header, make_header
 from typing import Any, Literal
 
+import icalendar
 from googleapiclient.errors import HttpError
 
 from blumkin.attachments import (
@@ -182,7 +183,7 @@ async def mail_get(
         if _http_not_found(exc):
             raise MailMessageNotFoundError(f"message not found: {mid}") from exc
         raise
-    return {"message": _message_detail(raw, wanted=wanted)}
+    return {"message": _message_detail(raw, wanted=wanted, service=service, message_id=mid)}
 
 
 async def mail_inbox(
@@ -388,9 +389,17 @@ async def mail_thread(
     for msg in thread.get("messages") or []:
         item = _message_to_dict(msg)
         if full:
-            detail = _message_detail(msg, wanted=wanted)
+            detail = _message_detail(
+                msg, wanted=wanted, service=service, message_id=str(msg.get("id") or mid)
+            )
             item["body"] = detail.get("body")
             item["body_type"] = detail.get("body_type", wanted)
+            item["is_meeting_message"] = detail.get("is_meeting_message")
+            item["meeting_message_type"] = detail.get("meeting_message_type")
+            item["ical_uid"] = detail.get("ical_uid")
+            item["organizer_email"] = detail.get("organizer_email")
+            item["start"] = detail.get("start")
+            item["end"] = detail.get("end")
         items.append(item)
     return {"conversation_id": thread_id, "items": items, "count": len(items)}
 
@@ -626,7 +635,169 @@ def _label_ids_for_folder(well_known: str | None) -> list[str] | None:
     return [label]
 
 
-def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, Any]:
+def _calendar_part_bytes(service: Any, message_id: str, part: dict[str, Any]) -> bytes:
+    """Decode an iTIP part's body, fetching it as an attachment when Gmail didn't
+    inline it.
+
+    Gmail normally inlines a small ``text/calendar`` part's bytes in
+    ``body.data``, but an Outlook/Exchange-originated invite can arrive with
+    ``Content-Disposition: attachment`` instead, in which case Gmail only sets
+    ``body.attachmentId`` and leaves ``body.data`` empty — the same shape this
+    module already fetches via ``_attachment_data`` for every other attachment.
+    """
+    body = part.get("body") or {}
+    data = body.get("data")
+    if isinstance(data, str) and data:
+        return _attachment_bytes(data)
+    attachment_id = body.get("attachmentId")
+    if isinstance(attachment_id, str) and attachment_id:
+        try:
+            fetched = _attachment_data(service, message_id, attachment_id)
+        except MailAttachmentNotFoundError, HttpError:
+            # Metadata is a courtesy read here, not a hard requirement: report
+            # "meeting, RSVP unknown" rather than failing the whole message
+            # read over a vanished/expired attachment or a transient Google
+            # API error (404/403/5xx all surface as HttpError from `execute`).
+            return b""
+        return _attachment_bytes(fetched)
+    return b""
+
+
+def _find_calendar_part(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Depth-first search for an inline ``text/calendar`` MIME part (iTIP)."""
+    if str(payload.get("mimeType") or "").casefold() == "text/calendar":
+        return payload
+    for part in payload.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        found = _find_calendar_part(part)
+        if found is not None:
+            return found
+    return None
+
+
+def _ics_datetime_to_iso(value: Any) -> str | None:
+    """Render an icalendar `DTSTART`/`DTEND` value as an ISO 8601 string.
+
+    `icalendar` already resolves a `TZID`-qualified value against the ICS
+    body's own `VTIMEZONE` block (falling back to the IANA database), so this
+    only has to convert what it hands back: a `date` (an all-day `VALUE=DATE`)
+    or an aware/naive `datetime`. A naive value (RFC 5545's "floating" time,
+    with no `TZID` and no trailing ``Z``) is returned as-is since there is no
+    zone to resolve it against.
+    """
+    if isinstance(value, datetime):
+        return _iso_z(value) if value.tzinfo is not None else value.strftime("%Y-%m-%dT%H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    return None
+
+
+# Only these methods are an invite/RSVP this tool understands well enough to
+# tag as a meeting message; e.g. PUBLISH is a plain calendar broadcast with no
+# response expected, so a part with no METHOD (or an unrecognized one) is
+# reported as "not a meeting message" rather than guessed at.
+_ICS_KNOWN_METHODS = frozenset({"CANCEL", "REPLY", "REQUEST"})
+# Named to line up with Graph's `meetingMessageType` values so a caller sees the
+# same vocabulary regardless of provider.
+_ICS_METHOD_TO_TYPE = {
+    "REQUEST": "meetingRequest",
+    "CANCEL": "meetingCancelled",
+}
+_ICS_PARTSTAT_TO_TYPE = {
+    "ACCEPTED": "meetingAccepted",
+    "DECLINED": "meetingDeclined",
+    "TENTATIVE": "meetingTenativelyAccepted",
+}
+
+
+def _not_a_meeting() -> dict[str, Any]:
+    return {
+        "end": None,
+        "ical_uid": None,
+        "is_meeting_message": False,
+        "meeting_message_type": None,
+        "organizer_email": None,
+        "start": None,
+    }
+
+
+def _meeting_fields_from_payload(
+    payload: dict[str, Any], *, service: Any, message_id: str
+) -> dict[str, Any]:
+    """Meeting-invite metadata parsed from an inline ``text/calendar`` MIME part.
+
+    Gmail has no first-class "this is a meeting request" field like Graph's
+    eventMessage/meetingMessageType, so this looks for the iTIP part Google
+    Calendar attaches to invites/updates/cancellations/replies and reads
+    METHOD (and, for a REPLY, the attendee's PARTSTAT) out of the parsed ICS
+    body via `icalendar`, which handles RFC 5545 line-folding and `VTIMEZONE`
+    resolution rather than this module hand-rolling either. Requires the
+    ``full`` message format — a ``metadata``-format message has no MIME parts
+    to inspect, so this always reports "not a meeting" there.
+    """
+    part = _find_calendar_part(payload)
+    if part is None:
+        return _not_a_meeting()
+    try:
+        raw = _calendar_part_bytes(service, message_id, part)
+        calendar = icalendar.Calendar.from_ical(raw) if raw else None
+    except ValueError:
+        # A part we can't base64-decode or parse as a calendar (malformed,
+        # truncated, or otherwise not valid ICS) is the same "we know it's a
+        # meeting, not its details" situation as an unfetchable attachment —
+        # this is sender-controlled data, so a merely odd part shouldn't fail
+        # the whole message read.
+        calendar = None
+    if calendar is None:
+        # Either we found a text/calendar part — Gmail (or the sender) marked
+        # this a meeting message — but couldn't fetch/decode/parse its body
+        # (a gone or transient-error attachment, or malformed ICS). Report
+        # "meeting, RSVP unknown" rather than silently dropping the meeting
+        # flag over an unrelated I/O or parse error.
+        return {**_not_a_meeting(), "is_meeting_message": True}
+    method = str(calendar.get("METHOD") or "").upper() or None
+    if method not in _ICS_KNOWN_METHODS:
+        # No METHOD, or an unsupported one (e.g. PUBLISH is a broadcast with no
+        # response expected) — don't tag this as a meeting message we understand.
+        return _not_a_meeting()
+    meeting_message_type = _ICS_METHOD_TO_TYPE.get(method)
+    event = next(iter(calendar.walk("VEVENT")), None)
+    if event is None:
+        return {
+            **_not_a_meeting(),
+            "is_meeting_message": True,
+            "meeting_message_type": meeting_message_type,
+        }
+    if method == "REPLY":
+        attendee = event.get("ATTENDEE")
+        first = (attendee[0] if isinstance(attendee, list) else attendee) if attendee else None
+        partstat = str(first.params.get("PARTSTAT") or "").upper() if first is not None else ""
+        meeting_message_type = _ICS_PARTSTAT_TO_TYPE.get(partstat, meeting_message_type)
+    organizer = event.get("ORGANIZER")
+    organizer_value = str(organizer) if organizer else None
+    organizer_email = (
+        organizer_value[len("mailto:") :]
+        if organizer_value and organizer_value.casefold().startswith("mailto:")
+        else organizer_value
+    )
+    uid = event.get("UID")
+    return {
+        "is_meeting_message": True,
+        "meeting_message_type": meeting_message_type,
+        # Google Calendar's event.iCalUID matches this 1:1 — a future
+        # `calendar` lookup by iCalUID can resolve it to an event id without a
+        # second Gmail round trip.
+        "ical_uid": str(uid) if uid else None,
+        "organizer_email": organizer_email,
+        "start": _ics_datetime_to_iso(getattr(event.get("DTSTART"), "dt", None)),
+        "end": _ics_datetime_to_iso(getattr(event.get("DTEND"), "dt", None)),
+    }
+
+
+def _message_detail(
+    msg: dict[str, Any], *, wanted: MailBodyType, service: Any, message_id: str | None = None
+) -> dict[str, Any]:
     headers = _header_map(msg)
     from_name, from_email = _parse_from(headers.get("from"))
     payload = msg.get("payload") or {}
@@ -654,6 +825,9 @@ def _message_detail(msg: dict[str, Any], *, wanted: MailBodyType) -> dict[str, A
         "subject": _decode_header_value(headers.get("subject")),
         "to": _parse_address_list(headers.get("to")),
         "web_link": None,
+        **_meeting_fields_from_payload(
+            payload, service=service, message_id=message_id or str(msg.get("id") or "")
+        ),
     }
 
 
@@ -679,6 +853,14 @@ def _message_to_dict(msg: dict[str, Any]) -> dict[str, Any]:
         "sent": sent,
         "subject": _decode_header_value(headers.get("subject")),
         "to_email": to_addrs[0]["email"] if to_addrs else None,
+        # metadata format has no MIME parts, so meeting detection is unavailable
+        # here — same limitation Graph's list endpoints have for `linked_event_id`.
+        "is_meeting_message": None,
+        "meeting_message_type": None,
+        "ical_uid": None,
+        "organizer_email": None,
+        "start": None,
+        "end": None,
     }
 
 

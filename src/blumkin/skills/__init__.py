@@ -1266,7 +1266,12 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="mail.get",
         cli=["blumkin", "mail", "get"],
-        summary="Read one message in full, including its body and attachments",
+        summary=(
+            "Read one message in full, including its body and attachments; flags "
+            "meeting invites/updates/cancellations via is_meeting_message and "
+            "meeting_message_type, with linked_event_id/ical_uid/organizer_email/"
+            "start/end when resolvable"
+        ),
         mutates=False,
         notifies_others=False,
         scopes=["Mail.ReadWrite"],
@@ -1284,7 +1289,13 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="mail.inbox",
         cli=["blumkin", "mail", "inbox"],
-        summary="List recent inbox messages, optionally filtered or searched",
+        summary=(
+            "List recent inbox messages, optionally filtered or searched; each item "
+            "reports is_meeting_message/meeting_message_type so meeting invites can "
+            "be spotted and triaged before opening them (Google accounts report both "
+            "as null here — Gmail's list/search API omits the message body needed to "
+            "classify them, so use mail.get for a Google message's meeting details)"
+        ),
         mutates=False,
         notifies_others=False,
         scopes=["Mail.ReadWrite"],
@@ -1329,7 +1340,10 @@ SKILLS: list[SkillSpec] = [
         cli=["blumkin", "mail", "list"],
         summary=(
             "List recent messages from a mail folder "
-            "(well-known name such as sentitems/archive, or a folder id)"
+            "(well-known name such as sentitems/archive, or a folder id); "
+            "items report is_meeting_message/meeting_message_type (Google accounts "
+            "report both as null here — use mail.get for a Google message's meeting "
+            "details)"
         ),
         mutates=False,
         notifies_others=False,
@@ -1484,7 +1498,11 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="mail.search",
         cli=["blumkin", "mail", "search"],
-        summary="Search the whole mailbox (every folder); tags each hit with its folder",
+        summary=(
+            "Search the whole mailbox (every folder); tags each hit with its folder "
+            "and its is_meeting_message/meeting_message_type (Google accounts report "
+            "both as null here — use mail.get for a Google message's meeting details)"
+        ),
         mutates=False,
         notifies_others=False,
         scopes=["Mail.ReadWrite"],
@@ -1535,7 +1553,11 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="mail.thread",
         cli=["blumkin", "mail", "thread"],
-        summary="List every message in the conversation a message belongs to, oldest first",
+        summary=(
+            "List every message in the conversation a message belongs to, oldest "
+            "first, including each one's is_meeting_message/meeting_message_type/"
+            "organizer_email/start/end when full detail is requested"
+        ),
         mutates=False,
         notifies_others=False,
         scopes=["Mail.ReadWrite"],

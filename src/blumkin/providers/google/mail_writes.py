@@ -435,7 +435,7 @@ async def mail_forward(
     label = _body_label(body_type, config=cfg)
     service = _gmail_service(cfg)
     original = _get_message(service, mid)
-    detail = _message_detail(original, wanted="text")
+    detail = _message_detail(original, wanted="text", service=service, message_id=mid)
     comment = _comment_text(
         body=body, body_file=body_file, body_type=body_type, config=cfg, no_signature=no_signature
     )
@@ -494,7 +494,7 @@ async def mail_reply(
     label = _body_label(body_type, config=cfg)
     service = _gmail_service(cfg)
     original = _get_message(service, mid)
-    detail = _message_detail(original, wanted="text")
+    detail = _message_detail(original, wanted="text", service=service, message_id=mid)
     headers = _header_map(original)
 
     me = _me_email(service)
