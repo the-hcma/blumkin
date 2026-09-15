@@ -321,6 +321,34 @@ def test_list_profiles_tolerates_a_profile_with_an_invalid_provider(
     assert healthy_names == {"personal", "work"}
 
 
+def test_list_profiles_tolerates_a_profile_with_malformed_tags(tmp_path: Path, monkeypatch) -> None:
+    """Malformed ``tags`` on one profile must not crash the listing for every profile.
+
+    ``_tags_from_table(table)`` was called unconditionally at the top of the
+    per-profile loop, *before* the try/except that guards ``load_config`` -
+    so a single typo'd ``tags`` entry raised straight out of ``list_profiles``
+    with no per-profile summaries at all, not even for the profiles that
+    would otherwise have listed cleanly (issue #287 review).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    _write_multi_profile(tmp_path)
+    (tmp_path / "config.toml").write_text(
+        (tmp_path / "config.toml").read_text()
+        + '\n[profiles.broken]\nclient_id = "x"\ntags = ["ok", 7]\n'
+    )
+
+    summaries = list_profiles()
+    assert [item["name"] for item in summaries] == ["broken", "personal", "work"]
+    broken = summaries[0]
+    assert broken["tags"] == []
+    assert "error" in broken
+    # The provider still resolves independently of the tags failure - one
+    # bad field must not blank out information the summary can still report.
+    assert broken["provider"] == "microsoft"
+    healthy_names = {item["name"] for item in summaries if "error" not in item}
+    assert healthy_names == {"personal", "work"}
+
+
 def test_missing_config_has_zero_profiles(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)

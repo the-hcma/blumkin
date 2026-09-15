@@ -11,6 +11,7 @@ from __future__ import annotations
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -24,8 +25,17 @@ from blumkin.secret_store import SecretWriteError
 _REAL_KEYRING_MODULE = secret_store._keyring_module
 
 
+class _PasswordDeleteError(Exception):
+    """Stand-in for ``keyring.errors.PasswordDeleteError``."""
+
+
 class _FakeKeyring:
     """Minimal in-memory stand-in for the ``keyring`` module's module-level API."""
+
+    class errors:
+        """Stand-in for ``keyring.errors`` - just enough for ``_is_not_found``."""
+
+        PasswordDeleteError = _PasswordDeleteError
 
     def __init__(self) -> None:
         self.store: dict[tuple[str, str], str] = {}
@@ -40,10 +50,6 @@ class _FakeKeyring:
 
     def set_password(self, service: str, username: str, password: str) -> None:
         self.store[(service, username)] = password
-
-
-class _PasswordDeleteError(Exception):
-    """Stand-in for ``keyring.errors.PasswordDeleteError``."""
 
 
 class _BrokenKeyring(_FakeKeyring):
@@ -84,6 +90,20 @@ class _BreaksAfterFirstWriteKeyring(_FakeKeyring):
         if self._writes > 1:
             raise RuntimeError("keychain access denied")
         super().set_password(service, username, password)
+
+
+class _BrokenAndUncleanableKeyring(_BrokenKeyring):
+    """A backend whose write *and* stale-entry cleanup both fail.
+
+    Models the double-fault "auto" must not swallow: the fresh write fails
+    (as ``_BrokenKeyring`` already does), and the best-effort cleanup of the
+    stale prior entry fails too, for a reason other than "already gone" - so
+    the keyring is left holding a stale value while the file gets the new
+    one, and the two backends now disagree (issue #287 review).
+    """
+
+    def delete_password(self, service: str, username: str) -> None:
+        raise RuntimeError("keychain deletion denied")
 
 
 def _account(cfg, kind: secret_store.SecretKind) -> tuple[str, str]:
@@ -180,6 +200,28 @@ def test_migration_rolls_back_keyring_copy_when_unlink_fails(tmp_path: Path, mon
     assert fake.store[_account(cfg, "token_cache")] == "legacy-value"
 
 
+def test_read_reconciles_a_leftover_plaintext_file_once_the_keyring_has_a_value(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A stale plaintext file next to a live keyring value must not linger forever.
+
+    This models a prior "auto" write that fell back to the file, whose own
+    best-effort stale-keyring cleanup didn't land (a delayed unlock, a
+    racing process, etc.) - the keyring still holds a value, so it wins, but
+    the leftover file must still get cleaned up once it is safe to do so
+    (issue #287 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    cfg.profile_dir.mkdir(parents=True)
+    cfg.token_cache_path.write_text("stale-file-value")
+    fake = _FakeKeyring()
+    fake.store[_account(cfg, "token_cache")] = "keyring-value"
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    assert secret_store.read_text(cfg, "token_cache") == "keyring-value"
+    assert not cfg.token_cache_path.exists()
+
+
 def test_delete_removes_from_both_backends(tmp_path: Path, monkeypatch) -> None:
     cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
     fake = _FakeKeyring()
@@ -231,6 +273,25 @@ def test_delete_attempts_deletion_when_existence_cannot_be_probed(
     secret_store.delete(cfg, "auth_record")
 
     assert account not in fake.store
+
+
+def test_delete_treats_an_unprobeable_but_genuinely_absent_entry_as_a_noop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Probe fails *and* nothing was ever there - must not report a failed logout.
+
+    The existence probe and the delete call are two independent ways to ask
+    "is anything stored", and keyring's own APIs cannot always tell "not
+    found" apart from "denied" - but when the delete attempt reports "not
+    found" for an entry we could never confirm existed in the first place,
+    that must resolve as an ordinary no-op logout, not a reported
+    ``SecretWriteError`` (issue #287 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _ProbeFailsKeyring()  # empty store: nothing was ever written
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    secret_store.delete(cfg, "auth_record")  # must not raise
 
 
 def test_explicit_keyring_falls_back_to_file_and_warns_once(
@@ -295,6 +356,27 @@ def test_auto_fallback_deletes_a_stale_keyring_entry_so_the_file_is_actually_rea
     assert secret_store.read_text(cfg, "token_cache") == "second-value"
 
 
+def test_auto_raises_when_write_fails_and_the_stale_entry_cannot_be_cleaned_up(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A write failure *and* a failed stale-entry cleanup must not look like success.
+
+    Unlike an ordinary write failure (silently downgraded to the file), this
+    double-fault leaves the keyring holding the *old* value while the file
+    now holds the *new* one - a real disagreement between the two backends
+    that "auto" must surface rather than silently paper over (issue #287
+    review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    fake = _BrokenAndUncleanableKeyring()
+    account = _account(cfg, "token_cache")
+    fake.store[account] = "stale-value"  # a value from a prior successful write
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    with pytest.raises(SecretWriteError, match="now disagree"):
+        secret_store.write_text(cfg, "token_cache", "new-value")
+
+
 def test_auto_prefers_file_when_no_keyring_backend(tmp_path: Path, monkeypatch) -> None:
     cfg = _load(tmp_path, monkeypatch, token_storage="auto")
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
@@ -341,11 +423,9 @@ def _real_keyring_module_lookup(monkeypatch: pytest.MonkeyPatch):
     with no usable backend).
     """
     monkeypatch.setattr(secret_store, "_keyring_module", _REAL_KEYRING_MODULE)
-    secret_store._keyring_checked = False
-    secret_store._keyring_mod = None
+    monkeypatch.setattr(secret_store, "_keyring_checked", False)
+    monkeypatch.setattr(secret_store, "_keyring_mod", None)
     yield
-    secret_store._keyring_checked = False
-    secret_store._keyring_mod = None
 
 
 def _install_fake_keyring_package(monkeypatch: pytest.MonkeyPatch, backend: object) -> None:
@@ -403,6 +483,54 @@ def test_real_keyring_module_caches_after_first_call(
     assert calls["n"] == 1
 
 
+def test_real_keyring_module_resolves_consistently_under_concurrent_callers(
+    _real_keyring_module_lookup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent first calls must not observe a "checked but not yet resolved" gap.
+
+    Setting ``_keyring_checked`` before ``_keyring_mod`` is populated lets a
+    second thread's call land in that window and see "already checked" while
+    the module is still ``None`` - wrongly concluding no backend is usable
+    even though the first call's probe is about to succeed (issue #287
+    review).
+    """
+    release = threading.Event()
+    probed = threading.Event()
+
+    class _RealBackend:
+        pass
+
+    _RealBackend.__module__ = "keyring.backends.macOS.Keyring"
+
+    def get_keyring():
+        probed.set()
+        release.wait(timeout=5)
+        return _RealBackend()
+
+    stub = type(sys)("keyring")
+    stub.get_keyring = get_keyring
+    monkeypatch.setitem(sys.modules, "keyring", stub)
+
+    results: list[Any] = []
+
+    def call_once() -> None:
+        results.append(secret_store._keyring_module())
+
+    first = threading.Thread(target=call_once)
+    first.start()
+    assert probed.wait(timeout=5), "first caller never reached the probe"
+
+    second = threading.Thread(target=call_once)
+    second.start()
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert len(results) == 2
+    assert results[0] is stub
+    assert results[1] is stub
+
+
 def test_keyring_probe_treats_a_hang_as_unusable(monkeypatch: pytest.MonkeyPatch) -> None:
     """A backend whose ``get_keyring()`` hangs (e.g. a stuck D-Bus call) must not
     hang login/`doctor` - the probe is bounded and treats a timeout as "unusable".
@@ -420,3 +548,36 @@ def test_keyring_probe_treats_a_hang_as_unusable(monkeypatch: pytest.MonkeyPatch
         assert secret_store._probe_keyring_backend(_HangingModule()) is False
     finally:
         release.set()
+
+
+def test_keyring_io_call_treats_a_hang_as_a_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hanging keyring backend call must not block a login or `doctor` check forever.
+
+    Only backend *selection* used to be time-bounded; a hanging
+    ``get_password``/``set_password``/``delete_password`` (e.g. a locked
+    Linux Secret Service prompting for interactive unlock) could still hang
+    an agent shell indefinitely (issue #287 review).
+    """
+    release = threading.Event()
+
+    def hangs() -> str:
+        release.wait(timeout=5)
+        return "too-late"
+
+    try:
+        with pytest.raises(TimeoutError):
+            secret_store._call_keyring_with_timeout(hangs, timeout=0.05)
+    finally:
+        release.set()
+
+
+def test_keyring_io_call_re_raises_the_backend_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fails() -> None:
+        raise RuntimeError("keychain denied")
+
+    with pytest.raises(RuntimeError, match="keychain denied"):
+        secret_store._call_keyring_with_timeout(fails)
+
+
+def test_keyring_io_call_returns_the_backend_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert secret_store._call_keyring_with_timeout(lambda a, b: a + b, 1, 2) == 3

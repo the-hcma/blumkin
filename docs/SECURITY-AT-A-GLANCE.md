@@ -29,14 +29,16 @@ data anywhere.
   redirect). No client secret for Microsoft flows; the Google secret stays in
   the desktop-client JSON, never in toml or env.
 - The token cache and auth record are written under `~/.config/blumkin/` by
-  default (the file backend). With `token_storage = "auto"` (default) or
-  `"keyring"` in `config.toml`, blumkin instead prefers the OS keychain
-  (macOS Keychain, Windows Credential Manager, Linux Secret Service) when the
-  optional `keychain` extra (`pipx install 'blumkin[keychain]'`) is installed
-  and a real backend is usable at runtime, falling back to the plain `0600`
-  file otherwise (headless Linux with no Secret Service, the extra not
-  installed, a keychain write failing at runtime, etc.); `token_storage =
-  "file"` forces the file unconditionally. Neither backend does cryptographic
+  default (the plain `0600` file backend) unless the optional `keychain`
+  extra (`pipx install 'blumkin[keychain]'`) is installed and a real backend
+  is usable at runtime. `token_storage = "auto"` (the default in
+  `config.toml`) prefers the OS keychain (macOS Keychain, Windows Credential
+  Manager, Linux Secret Service) whenever that is the case, silently falling
+  back to the plain file otherwise (headless Linux with no Secret Service,
+  the extra not installed, a keychain write failing at runtime, etc.);
+  `token_storage = "keyring"` behaves the same but warns once when no usable
+  backend is found; `token_storage = "file"` forces the file unconditionally,
+  even when a keychain backend is available. Neither backend does cryptographic
   or host binding - a copied file, or a keychain item exported off the
   machine, will refresh on another host with the client id / tenant. Protect
   the directory (and, for the keychain path, the OS account); revoke

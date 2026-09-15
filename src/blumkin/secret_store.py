@@ -56,9 +56,14 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
     entry, or that cannot even be probed for one, still gets a
     ``delete_password`` attempt - a probe failure must not look like "nothing
     stored" and skip deletion, since the entry could very well still be there
-    (issue #287 review). A backend that fails to delete an entry that exists
-    (or that couldn't be confirmed absent) raises ``SecretWriteError`` instead
-    of silently pretending the logout succeeded.
+    (issue #287 review). A backend that fails to delete an entry *confirmed*
+    to exist raises ``SecretWriteError`` instead of silently pretending the
+    logout succeeded. When existence could not be confirmed either way and
+    the delete attempt itself reports "nothing to delete", that is treated as
+    resolved rather than a failure - keyring's own delete APIs use the same
+    exception for "not found" and other failures, so re-raising here would
+    turn an ordinary already-logged-out profile into a reported error on
+    every logout call (issue #287 review).
     """
     path = _file_path(cfg, kind)
     if path.is_file():
@@ -67,17 +72,32 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
     if keyring is None:
         return
     account = _keyring_account(cfg, kind)
+    probed_existence: bool | None
     try:
-        if keyring.get_password(_KEYRING_SERVICE, account) is None:
-            return
+        probed_existence = (
+            _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account) is not None
+        )
     except Exception:
         # Can't tell whether an entry exists - fall through to a real delete
         # attempt below rather than assume it's gone.
-        pass
+        probed_existence = None
+    if probed_existence is False:
+        return
     try:
-        keyring.delete_password(_KEYRING_SERVICE, account)
+        _call_keyring_with_timeout(keyring.delete_password, _KEYRING_SERVICE, account)
     except Exception as exc:
+        if probed_existence is None and _is_not_found(keyring, exc):
+            # Existence couldn't be probed above, but the backend's own
+            # delete call now confirms there was nothing there - resolved.
+            return
         raise SecretWriteError(f"cannot delete {kind} from the OS keychain: {exc}") from exc
+
+
+def _is_not_found(keyring_module: Any, exc: Exception) -> bool:
+    """True when ``exc`` is a keyring "delete" failure, not a timeout or other error."""
+    errors = getattr(keyring_module, "errors", None)
+    not_found_type = getattr(errors, "PasswordDeleteError", None)
+    return not_found_type is not None and isinstance(exc, not_found_type)
 
 
 def exists(cfg: BlumkinConfig, kind: SecretKind) -> bool:
@@ -98,7 +118,8 @@ def exists(cfg: BlumkinConfig, kind: SecretKind) -> bool:
         # _backend_for only returns "keyring" when a real backend is usable.
         return False
     try:
-        if keyring.get_password(_KEYRING_SERVICE, _keyring_account(cfg, kind)) is not None:
+        account = _keyring_account(cfg, kind)
+        if _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account) is not None:
             return True
     except Exception:
         pass
@@ -122,10 +143,24 @@ def read_text(cfg: BlumkinConfig, kind: SecretKind) -> str | None:
         return None
     account = _keyring_account(cfg, kind)
     try:
-        value = keyring.get_password(_KEYRING_SERVICE, account)
+        value = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
     except Exception:
         value = None
     if value is not None:
+        # The keyring is authoritative once it holds a value. A plaintext
+        # file can still be sitting alongside it - e.g. a prior "auto" write
+        # fell back to the file, but the best-effort stale-keyring cleanup
+        # that write attempted didn't actually land (a delayed keychain
+        # unlock, a second process racing the cleanup, etc.) - and it must
+        # not linger forever once the keyring is reachable again, or the
+        # file's on-disk plaintext copy outlives its purpose (issue #287
+        # review). Best-effort: a cleanup failure here does not change what
+        # is returned - the keyring value stays authoritative either way.
+        if path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                pass
         return value
     if not path.is_file():
         return None
@@ -134,7 +169,7 @@ def read_text(cfg: BlumkinConfig, kind: SecretKind) -> str | None:
     except OSError:
         return None
     try:
-        keyring.set_password(_KEYRING_SERVICE, account, legacy)
+        _call_keyring_with_timeout(keyring.set_password, _KEYRING_SERVICE, account, legacy)
     except Exception:
         # Keychain write failed - keep serving the file untouched rather than
         # lose the secret.
@@ -147,8 +182,12 @@ def read_text(cfg: BlumkinConfig, kind: SecretKind) -> str | None:
         # authoritative and the next read retries the migration, instead of
         # reporting success while a stale plaintext copy lingers untracked
         # (issue #287 review: a partial migration must not look complete).
+        # Best-effort: both backends already hold the same value at this
+        # point, so a rollback failure here cannot cause the two backends to
+        # disagree (unlike write_text's stale-entry cleanup below) - it can
+        # only leave migration incomplete, safely retried on the next read.
         try:
-            keyring.delete_password(_KEYRING_SERVICE, account)
+            _call_keyring_with_timeout(keyring.delete_password, _KEYRING_SERVICE, account)
         except Exception:
             pass
         return legacy
@@ -163,7 +202,7 @@ def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
             raise SecretWriteError(f"cannot write {kind}: no usable keyring backend")
         account = _keyring_account(cfg, kind)
         try:
-            keyring.set_password(_KEYRING_SERVICE, account, text)
+            _call_keyring_with_timeout(keyring.set_password, _KEYRING_SERVICE, account, text)
         except Exception as exc:
             if cfg.token_storage != "auto":
                 # The operator explicitly asked for "keyring" - surface the
@@ -176,13 +215,24 @@ def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
             # be left behind: read_text() always prefers a present keyring
             # value over the file, so the value we are about to write to the
             # file would otherwise be permanently unreachable (issue #287
-            # review). Best-effort - if this also fails, the fallback file
-            # write below still happens; the stale entry is a smaller
-            # exposure than losing the new value entirely.
+            # review). Unlike the migration rollback in read_text() (where
+            # both backends already agree), a failure to remove this stale
+            # entry leaves the two backends genuinely disagreeing - the
+            # keyring still has the *old* value, the file has the *new* one
+            # - so it is surfaced as a failure instead of swallowed, even
+            # though we are inside "auto": a loud, rare double-fault (keyring
+            # write failed *and* keyring cleanup failed) is safer than a
+            # quiet, indefinite split-brain between the two backends (issue
+            # #287 review).
             try:
-                keyring.delete_password(_KEYRING_SERVICE, account)
-            except Exception:
-                pass
+                _call_keyring_with_timeout(keyring.delete_password, _KEYRING_SERVICE, account)
+            except Exception as cleanup_exc:
+                if not _is_not_found(keyring, cleanup_exc):
+                    raise SecretWriteError(
+                        f"cannot write {kind}: the OS keychain write failed ({exc}) and "
+                        f"the stale keychain entry left behind could not be removed "
+                        f"({cleanup_exc}) - the file and keychain backends now disagree"
+                    ) from cleanup_exc
         else:
             return
     path = _file_path(cfg, kind)
@@ -256,10 +306,47 @@ def _keyring_account(cfg: BlumkinConfig, kind: SecretKind) -> str:
 
 
 _keyring_checked = False
+_keyring_lock = threading.Lock()
 _keyring_mod: Any | None = None
 
 
+_KEYRING_IO_TIMEOUT_SECONDS = 5.0
 _KEYRING_PROBE_TIMEOUT_SECONDS = 2.0
+
+
+def _call_keyring_with_timeout(
+    func: Any, *args: Any, timeout: float = _KEYRING_IO_TIMEOUT_SECONDS
+) -> Any:
+    """Call a keyring backend method on a bounded daemon thread.
+
+    Only backend *selection* (``_probe_keyring_backend``) used to be
+    time-bounded; every actual read/write/delete call went straight to the
+    backend uncapped. A locked Linux Secret Service (or a keychain daemon
+    prompting for interactive unlock) can hang a synchronous call
+    indefinitely, and a non-interactive agent shell must not block forever on
+    a single keychain call any more than it should on backend selection
+    (issue #287 review). Run on a daemon thread purely to bound wall-clock
+    time: a call that never returns is abandoned rather than joined, so it
+    cannot block process exit. Raises ``TimeoutError`` on timeout, or
+    re-raises whatever ``func`` raised - both are treated by callers the same
+    as any other backend failure.
+    """
+    result: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            result["value"] = func(*args)
+        except Exception as exc:  # noqa: BLE001 - re-raised verbatim on the caller's thread
+            result["error"] = exc
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"keyring backend call timed out after {timeout}s")
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
 
 
 def _keyring_module() -> Any | None:
@@ -270,19 +357,32 @@ def _keyring_module() -> Any | None:
     backend found: headless Linux with no Secret Service, etc.) counts as
     unavailable, same as the extra not being installed, so callers never
     block a non-interactive agent shell on a backend that cannot service it.
+
+    Guarded by a lock so ``_keyring_checked`` only ever flips to ``True``
+    after ``_keyring_mod`` has been fully resolved - setting the flag first
+    and populating the module after let a concurrent caller observe
+    "checked" but still see the pre-probe (``None``) module and wrongly
+    conclude no backend is usable (issue #287 review).
     """
     global _keyring_mod, _keyring_checked
     if _keyring_checked:
         return _keyring_mod
-    _keyring_checked = True
-    try:
-        import keyring
-    except ImportError:
-        return None
-    if not _probe_keyring_backend(keyring):
-        return None
-    _keyring_mod = keyring
-    return _keyring_mod
+    with _keyring_lock:
+        if _keyring_checked:
+            return _keyring_mod
+        try:
+            import keyring
+        except ImportError:
+            _keyring_mod = None
+            _keyring_checked = True
+            return None
+        if not _probe_keyring_backend(keyring):
+            _keyring_mod = None
+            _keyring_checked = True
+            return None
+        _keyring_mod = keyring
+        _keyring_checked = True
+        return _keyring_mod
 
 
 def _probe_keyring_backend(keyring_module: Any) -> bool:

@@ -146,6 +146,13 @@ def list_profiles() -> list[dict[str, Any]]:
     from `blumkin profiles list` or a multi-account MCP server (issue #287
     review) - such a profile is still listed, with ``auth_present`` all
     ``False`` and an ``error`` key describing why it could not be resolved.
+
+    Loading the config, resolving the provider kind, and parsing tags are
+    three independent ways a single profile's table can be malformed; each
+    gets its own try/except so that a failure in one does not suppress the
+    other two - a bad ``provider`` value must not blank out an otherwise
+    valid ``auth_present`` (and vice versa), and malformed ``tags`` must not
+    abort the whole per-profile summary (issue #287 review).
     """
     # Local import: blumkin.secret_store imports BlumkinConfig from this module,
     # so importing it at module level here would be circular.
@@ -158,21 +165,32 @@ def list_profiles() -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for name in sorted(tables):
         table = tables[name]
-        tags = _tags_from_table(table)
         auth_present = {"auth_record": False, "google_token": False, "msal_token_cache": False}
         provider = ""
-        error: str | None = None
+        tags: tuple[str, ...] = ()
+        errors: list[str] = []
+
         try:
             cfg = load_config(profile=name)
-            provider = _provider_kind(table).value
         except ProviderConfigError as exc:
-            error = str(exc)
+            errors.append(str(exc))
         else:
             auth_present = {
                 "auth_record": secret_store.exists(cfg, "auth_record"),
                 "google_token": secret_store.exists(cfg, "google_token"),
                 "msal_token_cache": secret_store.exists(cfg, "token_cache"),
             }
+
+        try:
+            provider = _provider_kind(table).value
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
+        try:
+            tags = _tags_from_table(table)
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
         summary = {
             "auth_present": auth_present,
             "default_tz": _string_values(table).get("default_tz", "").strip(),
@@ -182,8 +200,8 @@ def list_profiles() -> list[dict[str, Any]]:
             "provider": provider,
             "tags": list(tags),
         }
-        if error is not None:
-            summary["error"] = error
+        if errors:
+            summary["error"] = "; ".join(errors)
         summaries.append(summary)
     return summaries
 
@@ -557,7 +575,7 @@ def _resolve_by_selector(
     tag_matches = [
         name
         for name, table in tables.items()
-        if any(_normalize_selector(tag) == needle for tag in _tags_from_table(table))
+        if any(_normalize_selector(tag) == needle for tag in _tags_from_table_or_empty(table))
     ]
     other_tag_matches = [name for name in tag_matches if name not in name_matches]
     if name_matches and other_tag_matches:
@@ -614,6 +632,22 @@ def _resolve_profile_name(
 
 def _string_values(file_data: dict[str, Any]) -> dict[str, str]:
     return {key: value for key, value in file_data.items() if isinstance(value, str)}
+
+
+def _tags_from_table_or_empty(table: dict[str, Any]) -> tuple[str, ...]:
+    """``_tags_from_table``, treating malformed tags as "no tags" for selector matching.
+
+    ``_resolve_by_selector`` scans *every* profile's tags to detect name/tag
+    collisions, even when the selector is an exact name match on a different,
+    perfectly valid profile - one profile with malformed ``tags`` must not
+    make every other profile unresolvable by name too (issue #287 review).
+    The malformed profile's own summary in ``list_profiles`` still reports
+    the real parse error; this is only used for cross-profile tag matching.
+    """
+    try:
+        return _tags_from_table(table)
+    except ProviderConfigError:
+        return ()
 
 
 def _tags_from_table(table: dict[str, Any]) -> tuple[str, ...]:
