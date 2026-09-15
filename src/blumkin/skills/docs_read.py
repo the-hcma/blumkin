@@ -396,7 +396,12 @@ def _resolve_sheet(workbook: Any, sheet: str | None) -> Any:
 
 
 def _scan_pages_for_injection(pages: list[dict[str, Any]]) -> dict[str, object] | None:
-    """Scan every extracted page's text for prompt-injection patterns.
+    """Scan every extracted page's text and table cells for prompt-injection patterns.
+
+    Table cells need their own pass because `.docx` extraction keeps table
+    text out of `page["text"]` (python-docx's `Document.paragraphs` excludes
+    table-cell paragraphs) - a payload placed in a table cell would otherwise
+    render under `table N:` with no warning at all.
 
     Advisory only (see `blumkin.prompt_injection`): a match never blocks or
     alters the extracted content, it only surfaces a warning in the payload
@@ -404,9 +409,16 @@ def _scan_pages_for_injection(pages: list[dict[str, Any]]) -> dict[str, object] 
     """
     findings = []
     for page in pages:
+        index = page.get("index")
         text = str(page.get("text") or "")
-        result = scan_for_injection(text, location=f"pages[{page.get('index')}].text")
+        result = scan_for_injection(text, location=f"pages[{index}].text")
         findings.extend(result.findings)
+        for table_number, table in enumerate(page.get("tables") or [], start=1):
+            table_text = "\n".join("\t".join(row) for row in table)
+            result = scan_for_injection(
+                table_text, location=f"pages[{index}].tables[{table_number}]"
+            )
+            findings.extend(result.findings)
     if not findings:
         return None
     return {

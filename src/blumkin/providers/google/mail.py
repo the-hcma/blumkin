@@ -22,6 +22,7 @@ from blumkin.attachments import (
     unique_filename,
 )
 from blumkin.config import BlumkinConfig, load_config
+from blumkin.prompt_injection import scan_mail_message
 from blumkin.providers.google_auth import MAIL_READ_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.mail import (
@@ -805,6 +806,7 @@ def _message_detail(
     label_ids = set(msg.get("labelIds") or [])
     received = _ms_to_iso(msg.get("internalDate"))
     sent = _parse_date_header(headers.get("date")) or received
+    subject = _decode_header_value(headers.get("subject"))
     return {
         "attachments": [],
         "body": body,
@@ -817,12 +819,13 @@ def _message_detail(
         "from_name": from_name,
         "has_attachments": _payload_has_attachments(payload),
         "id": msg.get("id"),
+        "injection_warning": scan_mail_message(body=body, subject=subject),
         "internet_message_id": headers.get("message-id"),
         "is_draft": "DRAFT" in label_ids,
         "is_read": "UNREAD" not in label_ids,
         "received": received,
         "sent": sent,
-        "subject": _decode_header_value(headers.get("subject")),
+        "subject": subject,
         "to": _parse_address_list(headers.get("to")),
         "web_link": None,
         **_meeting_fields_from_payload(

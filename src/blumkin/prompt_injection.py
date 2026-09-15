@@ -15,6 +15,9 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
+
+from blumkin.output import sanitize_terminal
 
 # Families are named for the on-thread reply / payload `family` field, so keep
 # these stable once shipped - external callers may key off them.
@@ -127,9 +130,24 @@ def format_injection_warning_banner(warning: dict[str, Any] | None) -> list[str]
     for finding in findings:
         family = finding.get("family")
         location = finding.get("location")
-        snippet = finding.get("snippet")
+        snippet = sanitize_terminal(str(finding.get("snippet") or ""))
         lines.append(f"  - [{family}] {location}: {snippet}")
     return lines
+
+
+def scan_mail_message(*, subject: str | None, body: str | None) -> dict[str, Any] | None:
+    """Scan a mail message's subject + body for prompt injection.
+
+    Shared by every mail provider (`skills/mail.py` for Microsoft Graph,
+    `providers/google/mail.py` for Gmail) so `mail get` carries the same
+    `injection_warning` payload shape regardless of provider.
+    """
+    findings: list[InjectionFinding] = []
+    if subject:
+        findings.extend(scan_for_injection(subject, location="subject").findings)
+    if body:
+        findings.extend(scan_for_injection(body, location="body").findings)
+    return InjectionScanResult(matched=bool(findings), findings=findings).to_payload()
 
 
 def scan_for_injection(text: str, *, location: str) -> InjectionScanResult:
@@ -149,6 +167,16 @@ def scan_for_injection(text: str, *, location: str) -> InjectionScanResult:
         *_scan_base64_near_trigger(text, location=location),
     ]
     return InjectionScanResult(matched=bool(findings), findings=findings)
+
+
+def _label_domain_mismatches_host(label_domain: str, url: str) -> bool:
+    host = (urlsplit(url).hostname or "").lower()
+    if not host:
+        # No parseable host (e.g. a relative path) - nothing to compare against.
+        return False
+    host = host.removeprefix("www.")
+    label_domain = label_domain.removeprefix("www.")
+    return host != label_domain and not host.endswith(f".{label_domain}")
 
 
 def _scan_base64_near_trigger(text: str, *, location: str) -> list[InjectionFinding]:
@@ -184,9 +212,11 @@ def _scan_link_label_mismatch(text: str, *, location: str) -> list[InjectionFind
         label_domain = _DOMAIN_IN_LABEL.search(label)
         if label_domain is None:
             continue
-        # The label claims to point at `label_domain`, but the href's host is
-        # a different domain entirely - classic phishing/injection lure.
-        if label_domain.group(1).lower() not in lowered_url:
+        # The label claims to point at `label_domain` - compare it against the
+        # href's actual host (not a substring of the whole URL, which a lure
+        # can pad with the real domain in its path/query) allowing a bare
+        # "www." prefix or the label domain as a subdomain of the real host.
+        if _label_domain_mismatches_host(label_domain.group(1).lower(), url):
             findings.append(
                 InjectionFinding(
                     family=FAMILY_LINK_LABEL_MISMATCH,
