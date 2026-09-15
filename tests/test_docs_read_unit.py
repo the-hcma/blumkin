@@ -154,6 +154,69 @@ def test_docs_read_ocr_passes_the_requested_page_to_pdf2image(tmp_path: Path, mo
     assert payload["pages"] == [{"index": 2, "tables": [], "text": "OCR text for image-2"}]
 
 
+def test_docs_read_ocr_maps_poppler_failure_to_actionable_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"pdf")
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_pdfplumber",
+        lambda: SimpleNamespace(open=lambda _path: _FakePdf([_FakePage(text="")])),
+    )
+    monkeypatch.setattr("blumkin.skills.docs_read._require_ocr_binaries", lambda: None)
+
+    class _PDFInfoNotInstalledError(Exception):
+        pass
+
+    def _convert_from_path(*_args: object, **_kwargs: object) -> list[str]:
+        raise _PDFInfoNotInstalledError("pdfinfo missing at runtime")
+
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_ocr_modules",
+        lambda: (
+            SimpleNamespace(convert_from_path=_convert_from_path),
+            SimpleNamespace(PDFInfoNotInstalledError=_PDFInfoNotInstalledError),
+            SimpleNamespace(image_to_string=lambda _image: "unused"),
+        ),
+    )
+
+    with pytest.raises(DocsReadOcrUnavailableError, match="poppler not found on PATH"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), ocr=True, path=str(path)))
+
+
+def test_docs_read_ocr_maps_tesseract_failure_to_actionable_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"pdf")
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_pdfplumber",
+        lambda: SimpleNamespace(open=lambda _path: _FakePdf([_FakePage(text="")])),
+    )
+    monkeypatch.setattr("blumkin.skills.docs_read._require_ocr_binaries", lambda: None)
+
+    class _TesseractNotFoundError(Exception):
+        pass
+
+    def _image_to_string(_image: object) -> str:
+        raise _TesseractNotFoundError("tesseract missing at runtime")
+
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_ocr_modules",
+        lambda: (
+            SimpleNamespace(convert_from_path=lambda *_args, **_kwargs: ["image"]),
+            SimpleNamespace(),
+            SimpleNamespace(
+                TesseractNotFoundError=_TesseractNotFoundError,
+                image_to_string=_image_to_string,
+            ),
+        ),
+    )
+
+    with pytest.raises(DocsReadOcrUnavailableError, match="tesseract not found on PATH"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), ocr=True, path=str(path)))
+
+
 def test_docs_read_ocr_missing_binary_is_actionable(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "scan.pdf"
     path.write_bytes(b"pdf")
@@ -374,6 +437,22 @@ def test_docs_read_rejects_xlsx_sheet_on_non_xlsx(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="--sheet is only valid for .xlsx files"):
         asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), sheet="Sheet1"))
+
+
+def test_docs_read_rejects_ocr_on_non_pdf(tmp_path: Path) -> None:
+    path = tmp_path / "brief.docx"
+    Document().save(str(path))
+
+    with pytest.raises(ValueError, match="--ocr is only valid for .pdf files"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), ocr=True))
+
+
+def test_docs_read_rejects_pages_on_non_pdf(tmp_path: Path) -> None:
+    path = tmp_path / "brief.docx"
+    Document().save(str(path))
+
+    with pytest.raises(ValueError, match="--pages is only valid for .pdf files"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), pages="1"))
 
 
 def test_docs_read_skill_is_catalogued_and_local() -> None:
