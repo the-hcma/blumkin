@@ -144,7 +144,9 @@ original's attachments.
      when you need the contents of a file already on disk. Do **not** `pip install`
      anything ad hoc.
      - PDF: optional `--pages 1-3` and `--ocr` (OCR is only for PDF, is slower,
-       and needs the `ocr` extra plus `tesseract` and `poppler` on PATH).
+       and needs the `pdf` extra **and** the `ocr` extra plus `tesseract` and
+       `poppler` on PATH - `.[ocr]` alone cannot read a PDF, install
+       `.[pdf,ocr]`).
      - XLSX: optional `--sheet Summary` or a 1-based sheet index.
      - `--json` shape:
        `{ok, path, kind, pages: [{index, text, tables, sheet?}], ocr_used}`.
@@ -152,7 +154,7 @@ original's attachments.
        fails closed with a usage error.
      - Missing extras fail closed with actionable messages such as
        `docs read needs the pdf extra: uv tool install -e '.[pdf]'` or
-       `docs read --ocr needs the ocr extra: uv tool install -e '.[ocr]'`.
+       `docs read --ocr needs the ocr extra: uv tool install -e '.[pdf,ocr]'`.
    - Chat: `blumkin chat find --with "Name" --json`,
      `blumkin chat last --with "Name" --n 3 --json`
      `blumkin chat attachments --chat-id '<chat-id>' --message-id '<message-id>' --json`

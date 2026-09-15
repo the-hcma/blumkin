@@ -510,7 +510,7 @@ def test_config_skill_docs_read_is_a_tool_and_dispatches_locally(tmp_path) -> No
     path = tmp_path / "brief.docx"
     document = Document()
     document.add_paragraph("Quarterly agenda")
-    document.save(path)
+    document.save(str(path))
     cfg = SimpleNamespace(
         config_dir=tmp_path,
         profile_dir=tmp_path / "profiles" / "work",

@@ -258,7 +258,13 @@ Install only the extras you need:
 ```bash
 uv tool install -e '.[pdf]'
 uv tool install -e '.[xlsx]'
-uv tool install -e '.[ocr]'
+```
+
+`--ocr` is only reachable through the PDF code path, so it needs `pdf` too -
+`.[ocr]` alone cannot read a PDF:
+
+```bash
+uv tool install -e '.[pdf,ocr]'
 ```
 
 The `ocr` extra also needs system binaries on macOS:

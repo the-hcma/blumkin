@@ -95,9 +95,28 @@ def format_docs_read_human(payload: dict[str, Any]) -> list[str]:
 
 _MAX_EXTRACTED_BYTES = 1_000_000
 _MAX_FILE_BYTES = 25_000_000
-_OCR_EXTRA_HINT = "docs read --ocr needs the ocr extra: uv tool install -e '.[ocr]'"
+_OCR_EXTRA_HINT = "docs read --ocr needs the ocr extra: uv tool install -e '.[pdf,ocr]'"
 _POPPLER_HINT = "poppler not found on PATH, install via `brew install tesseract poppler`"
 _TESSERACT_HINT = "tesseract not found on PATH, install via `brew install tesseract poppler`"
+
+
+class _BudgetGuard:
+    """Tracks extracted bytes as they are produced and raises as soon as the cap
+    is exceeded - checking only after a whole document/sheet is already
+    materialized would defeat the cap's purpose (bounding memory)."""
+
+    __slots__ = ("total",)
+
+    def __init__(self) -> None:
+        self.total = 0
+
+    def add(self, *chunks: str) -> None:
+        self.total += sum(len(chunk.encode("utf-8")) for chunk in chunks)
+        if self.total > _MAX_EXTRACTED_BYTES:
+            raise DocsReadOversizeError(
+                "extracted content exceeds "
+                f"{_MAX_EXTRACTED_BYTES} bytes; narrow --pages or choose a smaller file"
+            )
 
 
 def _ensure_file(path: Path) -> None:
@@ -172,17 +191,6 @@ def _ocr_pdf_page(path: Path, *, page_index: int) -> str:
         raise DocsReadOcrUnavailableError(_TESSERACT_HINT) from exc
 
 
-def _page_size_bytes(page: dict[str, Any]) -> int:
-    size = len(str(page.get("text") or "").encode("utf-8"))
-    if sheet := page.get("sheet"):
-        size += len(str(sheet).encode("utf-8"))
-    for table in page.get("tables") or []:
-        for row in table:
-            for cell in row:
-                size += len(str(cell).encode("utf-8"))
-    return size
-
-
 def _parse_pages(raw: str | None, *, total_pages: int) -> list[int]:
     if raw is None:
         return list(range(1, total_pages + 1))
@@ -198,16 +206,22 @@ def _parse_pages(raw: str | None, *, total_pages: int) -> list[int]:
             start, end = int(start_text), int(end_text)
             if start < 1 or end < start:
                 raise ValueError(f"invalid --pages value {raw!r} (expected 1-3 or 1,3,5)")
-            selected.update(range(start, end + 1))
+            # Validate against total_pages before materializing the range - an
+            # unclamped `--pages 1-1000000000` would otherwise build a
+            # billion-element set before the out-of-range check ever ran.
+            if start > total_pages:
+                raise ValueError(
+                    f"--pages selects page {start}, but this PDF has {total_pages} page(s)"
+                )
+            selected.update(range(start, min(end, total_pages) + 1))
             continue
         if not chunk.isdigit() or int(chunk) < 1:
             raise ValueError(f"invalid --pages value {raw!r} (expected 1-3 or 1,3,5)")
-        selected.add(int(chunk))
-    pages = sorted(selected)
-    too_high = next((page for page in pages if page > total_pages), None)
-    if too_high is not None:
-        raise ValueError(f"--pages selects page {too_high}, but this PDF has {total_pages} page(s)")
-    return pages
+        page = int(chunk)
+        if page > total_pages:
+            raise ValueError(f"--pages selects page {page}, but this PDF has {total_pages} page(s)")
+        selected.add(page)
+    return sorted(selected)
 
 
 def _read_docx(path: Path) -> list[dict[str, Any]]:
@@ -215,17 +229,25 @@ def _read_docx(path: Path) -> list[dict[str, Any]]:
         document = Document(str(path))
     except Exception as exc:  # noqa: BLE001 - emit a clean usage error message
         raise ValueError(f"cannot read docx file {path}: {exc}") from exc
-    paragraphs = [
-        paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()
-    ]
-    tables = [table for table in (_table_rows(x) for x in document.tables) if table]
+    budget = _BudgetGuard()
+    paragraphs: list[str] = []
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if text:
+            budget.add(text)
+            paragraphs.append(text)
+    tables: list[list[list[str]]] = []
+    for table in document.tables:
+        rows = _table_rows(table, budget=budget)
+        if rows:
+            tables.append(rows)
     page = {"index": 1, "tables": tables, "text": "\n\n".join(paragraphs)}
-    _require_output_budget([page])
     return [page]
 
 
 def _read_pdf(path: Path, *, ocr: bool, pages: str | None) -> tuple[list[dict[str, Any]], bool]:
     pdfplumber = _import_pdfplumber()
+    budget = _BudgetGuard()
     try:
         with pdfplumber.open(str(path)) as document:
             selected_pages = _parse_pages(pages, total_pages=len(document.pages))
@@ -237,17 +259,16 @@ def _read_pdf(path: Path, *, ocr: bool, pages: str | None) -> tuple[list[dict[st
                 if ocr and not text:
                     text = _ocr_pdf_page(path, page_index=page_index)
                     ocr_used = True
-                extracted_page = {
-                    "index": page_index,
-                    "tables": [_table_rows(table) for table in page.extract_tables() or []],
-                    "text": text,
-                }
+                budget.add(text)
+                tables = [
+                    _table_rows(table, budget=budget) for table in page.extract_tables() or []
+                ]
+                extracted_page = {"index": page_index, "tables": tables, "text": text}
                 extracted_pages.append(extracted_page)
     except DocsReadOcrUnavailableError, DocsReadOversizeError, ValueError:
         raise
     except Exception as exc:  # noqa: BLE001 - emit a clean usage error message
         raise ValueError(f"cannot read pdf file {path}: {exc}") from exc
-    _require_output_budget(extracted_pages)
     return extracted_pages, ocr_used
 
 
@@ -257,12 +278,15 @@ def _read_xlsx(path: Path, *, sheet: str | None) -> list[dict[str, Any]]:
         workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
     except Exception as exc:  # noqa: BLE001 - emit a clean usage error message
         raise ValueError(f"cannot read xlsx file {path}: {exc}") from exc
+    budget = _BudgetGuard()
     try:
         worksheet = _resolve_sheet(workbook, sheet)
+        budget.add(worksheet.title)
         rows = []
         for row in worksheet.iter_rows(values_only=True):
             trimmed = _trim_row([_normalize_cell(cell) for cell in row])
             if trimmed:
+                budget.add(*trimmed)
                 rows.append(trimmed)
         page = {
             "index": 1,
@@ -272,7 +296,6 @@ def _read_xlsx(path: Path, *, sheet: str | None) -> list[dict[str, Any]]:
         }
     finally:
         workbook.close()
-    _require_output_budget([page])
     return [page]
 
 
@@ -281,15 +304,6 @@ def _require_ocr_binaries() -> None:
         raise DocsReadOcrUnavailableError(_TESSERACT_HINT)
     if shutil.which("pdfinfo") is None and shutil.which("pdftoppm") is None:
         raise DocsReadOcrUnavailableError(_POPPLER_HINT)
-
-
-def _require_output_budget(pages: list[dict[str, Any]]) -> None:
-    total = sum(_page_size_bytes(page) for page in pages)
-    if total > _MAX_EXTRACTED_BYTES:
-        raise DocsReadOversizeError(
-            "extracted content exceeds "
-            f"{_MAX_EXTRACTED_BYTES} bytes; narrow --pages or choose a smaller file"
-        )
 
 
 def _resolve_sheet(workbook: Any, sheet: str | None) -> Any:
@@ -316,7 +330,7 @@ def _resolve_sheet(workbook: Any, sheet: str | None) -> Any:
         ) from exc
 
 
-def _table_rows(table: Any) -> list[list[str]]:
+def _table_rows(table: Any, *, budget: _BudgetGuard) -> list[list[str]]:
     rows: list[list[str]] = []
     if hasattr(table, "rows"):
         iterable = ([cell.text for cell in row.cells] for row in table.rows)
@@ -325,6 +339,7 @@ def _table_rows(table: Any) -> list[list[str]]:
     for row in iterable:
         trimmed = _trim_row([_normalize_cell(cell) for cell in row])
         if trimmed:
+            budget.add(*trimmed)
             rows.append(trimmed)
     return rows
 

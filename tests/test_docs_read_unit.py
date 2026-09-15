@@ -154,6 +154,59 @@ def test_docs_read_ocr_missing_extra_is_actionable(tmp_path: Path, monkeypatch) 
         asyncio.run(docs_read(config=_cfg(tmp_path), ocr=True, path=str(path)))
 
 
+def test_docs_read_pdf_pages_multi_page_selection(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "agenda.pdf"
+    path.write_bytes(b"pdf")
+    fake = SimpleNamespace(
+        open=lambda _path: _FakePdf(
+            [_FakePage(text="one"), _FakePage(text="two"), _FakePage(text="three")]
+        )
+    )
+    monkeypatch.setattr("blumkin.skills.docs_read._import_pdfplumber", lambda: fake)
+
+    payload = asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), pages="2"))
+
+    assert payload["pages"] == [{"index": 2, "tables": [], "text": "two"}]
+
+
+def test_docs_read_pdf_pages_range_and_list_selection(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "agenda.pdf"
+    path.write_bytes(b"pdf")
+    fake = SimpleNamespace(
+        open=lambda _path: _FakePdf(
+            [_FakePage(text="one"), _FakePage(text="two"), _FakePage(text="three")]
+        )
+    )
+    monkeypatch.setattr("blumkin.skills.docs_read._import_pdfplumber", lambda: fake)
+
+    payload = asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), pages="1-2"))
+    single = asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), pages="1,3"))
+
+    assert [page["index"] for page in payload["pages"]] == [1, 2]
+    assert [page["index"] for page in single["pages"]] == [1, 3]
+
+
+def test_docs_read_pdf_pages_rejects_out_of_range_without_materializing_huge_range(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "agenda.pdf"
+    path.write_bytes(b"pdf")
+    fake = SimpleNamespace(
+        open=lambda _path: _FakePdf(
+            [_FakePage(text="one"), _FakePage(text="two"), _FakePage(text="three")]
+        )
+    )
+    monkeypatch.setattr("blumkin.skills.docs_read._import_pdfplumber", lambda: fake)
+
+    # start in range: the huge end is clamped to total_pages, not materialized whole.
+    clamped = asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), pages="1-1000000000"))
+    assert [page["index"] for page in clamped["pages"]] == [1, 2, 3]
+
+    # start out of range: rejected before a huge range is ever built.
+    with pytest.raises(ValueError, match=r"this PDF has 3 page\(s\)"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), pages="1000000000-2000000000"))
+
+
 def test_docs_read_pdf_extra_error_is_actionable(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "agenda.pdf"
     path.write_bytes(b"pdf")
@@ -204,6 +257,32 @@ def test_docs_read_rejects_oversize_before_parsing(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr("blumkin.skills.docs_read._MAX_FILE_BYTES", 10)
 
     with pytest.raises(ValueError, match="larger than 10 bytes"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path)))
+
+
+def test_docs_read_rejects_oversize_extracted_output_for_docx(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "brief.docx"
+    document = Document()
+    document.add_paragraph("Quarterly agenda and next steps")
+    document.save(str(path))
+    monkeypatch.setattr("blumkin.skills.docs_read._MAX_EXTRACTED_BYTES", 10)
+
+    with pytest.raises(ValueError, match="extracted content exceeds"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path)))
+
+
+def test_docs_read_rejects_oversize_extracted_output_for_xlsx(tmp_path: Path, monkeypatch) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    path = tmp_path / "report.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(["Quarter", "Amount", "Notes"])
+    sheet.append(["Q3", 42, "a fairly long note that pushes past a tiny byte budget"])
+    workbook.save(path)
+    workbook.close()
+    monkeypatch.setattr("blumkin.skills.docs_read._MAX_EXTRACTED_BYTES", 10)
+
+    with pytest.raises(ValueError, match="extracted content exceeds"):
         asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path)))
 
 
