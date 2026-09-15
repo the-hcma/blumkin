@@ -455,6 +455,110 @@ def test_docs_read_rejects_pages_on_non_pdf(tmp_path: Path) -> None:
         asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), pages="1"))
 
 
+def test_docs_read_image_ocrs_a_png(tmp_path: Path, monkeypatch) -> None:
+    pil_image = pytest.importorskip("PIL.Image")
+    path = tmp_path / "whiteboard.png"
+    pil_image.new("RGB", (4, 4), color="white").save(path)
+    monkeypatch.setattr("blumkin.skills.docs_read._require_tesseract_binary", lambda: None)
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_image_ocr_modules",
+        lambda: (pil_image, SimpleNamespace(image_to_string=lambda _image: "Roadmap Q3")),
+    )
+
+    payload = asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path)))
+
+    assert payload["kind"] == "png"
+    assert payload["ocr_used"] is True
+    assert payload["pages"] == [{"index": 1, "tables": [], "text": "Roadmap Q3"}]
+
+
+@pytest.mark.parametrize("extension", [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"])
+def test_docs_read_image_accepts_every_supported_extension(
+    tmp_path: Path, monkeypatch, extension: str
+) -> None:
+    pil_image = pytest.importorskip("PIL.Image")
+    path = tmp_path / f"scan{extension}"
+    image_format = {".jpg": "JPEG", ".jpeg": "JPEG", ".tif": "TIFF"}.get(
+        extension, extension.removeprefix(".").upper()
+    )
+    pil_image.new("RGB", (4, 4), color="white").save(path, format=image_format)
+    monkeypatch.setattr("blumkin.skills.docs_read._require_tesseract_binary", lambda: None)
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_image_ocr_modules",
+        lambda: (pil_image, SimpleNamespace(image_to_string=lambda _image: "text")),
+    )
+
+    payload = asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path)))
+
+    assert payload["ocr_used"] is True
+    assert payload["pages"][0]["text"] == "text"
+
+
+def test_docs_read_rejects_explicit_ocr_flag_on_image(tmp_path: Path) -> None:
+    path = tmp_path / "whiteboard.png"
+    path.write_bytes(b"not a real png, but --validate_flags runs first")
+
+    with pytest.raises(ValueError, match="--ocr is only valid for .pdf files"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), ocr=True))
+
+
+def test_docs_read_rejects_pages_on_image(tmp_path: Path) -> None:
+    path = tmp_path / "whiteboard.png"
+    path.write_bytes(b"not a real png, but --validate_flags runs first")
+
+    with pytest.raises(ValueError, match="--pages is only valid for .pdf files"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), pages="1"))
+
+
+def test_docs_read_rejects_sheet_on_image(tmp_path: Path) -> None:
+    path = tmp_path / "whiteboard.png"
+    path.write_bytes(b"not a real png, but --validate_flags runs first")
+
+    with pytest.raises(ValueError, match="--sheet is only valid for .xlsx files"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), sheet="Sheet1"))
+
+
+def test_docs_read_image_missing_tesseract_binary_is_actionable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "whiteboard.png"
+    path.write_bytes(b"fake png bytes")
+    monkeypatch.setattr("blumkin.skills.docs_read.shutil.which", lambda _name: None)
+
+    with pytest.raises(DocsReadOcrUnavailableError, match="tesseract not found on PATH"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path)))
+
+
+def test_docs_read_image_missing_extra_is_actionable(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "whiteboard.png"
+    path.write_bytes(b"fake png bytes")
+    monkeypatch.setattr("blumkin.skills.docs_read._require_tesseract_binary", lambda: None)
+
+    def _missing(name: str) -> object:
+        if name in {"PIL.Image", "pytesseract"}:
+            raise ModuleNotFoundError(name)
+        raise AssertionError(name)
+
+    monkeypatch.setattr("blumkin.skills.docs_read.importlib.import_module", _missing)
+
+    with pytest.raises(DocsReadOcrUnavailableError, match="needs the ocr extra"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path)))
+
+
+def test_docs_read_rejects_oversize_extracted_output_for_image(tmp_path: Path, monkeypatch) -> None:
+    pil_image = pytest.importorskip("PIL.Image")
+    path = tmp_path / "whiteboard.png"
+    pil_image.new("RGB", (4, 4), color="white").save(path)
+    monkeypatch.setattr("blumkin.skills.docs_read._require_tesseract_binary", lambda: None)
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_image_ocr_modules",
+        lambda: (pil_image, SimpleNamespace(image_to_string=lambda _image: "x" * 2_000_000)),
+    )
+
+    with pytest.raises(ValueError, match="extracted content exceeds"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path)))
+
+
 def test_docs_read_skill_is_catalogued_and_local() -> None:
     skill = describe_skill("docs.read")
 

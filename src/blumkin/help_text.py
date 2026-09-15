@@ -511,9 +511,13 @@ Examples:
   blumkin docs read --path ./contract.docx --json
 \b
   blumkin docs read --path ./report.xlsx --sheet Summary --json
+\b
+  blumkin docs read --path ./whiteboard.png --json
 
 Reads a local file already on disk - no provider, auth, or network call. PDF
 uses native text extraction by default; pass `--ocr` for scanned/image pages.
+Images (png/jpg/jpeg/tif/tiff/bmp/webp) are always OCR'd - there is no text
+layer to fall back to, so `--ocr` is implicit and cannot be passed for them.
 Refuses files larger than 25 MB, and extracted output larger than 1 MB.
 
 `--json` prints:

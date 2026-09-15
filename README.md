@@ -250,7 +250,7 @@ clear error.
 Google HTTP and token-refresh calls too. Never commit any of these files.
 
 **Local document reads.** `blumkin docs read --path ./file.pdf --json` reads a
-local PDF/DOCX/XLSX already on disk (for example from `drive download`,
+local PDF/DOCX/XLSX/image already on disk (for example from `drive download`,
 `drive export`, `mail attachments download`, or `chat attachments download`).
 It refuses files larger than 25 MB.
 Install only the extras you need:
@@ -267,7 +267,18 @@ uv tool install -e '.[xlsx]'
 uv tool install -e '.[pdf,ocr]'
 ```
 
-The `ocr` extra also needs system binaries on macOS:
+Images (`.png`/`.jpg`/`.jpeg`/`.tif`/`.tiff`/`.bmp`/`.webp`) are always OCR'd -
+there is no text layer to fall back to, so `--ocr` is implicit for them and
+cannot be passed. They only need the `ocr` extra (not `pdf`), and only the
+`tesseract` binary (not `poppler`, which is PDF-only):
+
+```bash
+uv tool install -e '.[ocr]'
+```
+
+The `ocr` extra also needs system binaries on macOS - `tesseract` for both
+PDF and image OCR, `poppler` for PDF page rendering only (image OCR does not
+need `poppler`):
 
 ```bash
 brew install tesseract poppler
