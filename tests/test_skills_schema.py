@@ -135,6 +135,12 @@ _ARG_PARAM_PINS = {
         "--format": ("body_format", None),
         "--folder": ("folder", None),
     },
+    "docs.read": {
+        "--path": ("path", None),
+        "--pages": ("pages", None),
+        "--sheet": ("sheet", None),
+        "--ocr": ("ocr", None),
+    },
     "docs.update": {
         "--id": ("document_id", None),
         "--title": ("title", None),
@@ -394,6 +400,12 @@ _ARG_SIGNATURES = {
         ("--tz", False, "iana_tz"),
         ("--fields", False, "string"),
     ],
+    "docs.read": [
+        ("--path", True, "path"),
+        ("--pages", False, "string"),
+        ("--sheet", False, "string"),
+        ("--ocr", False, "flag"),
+    ],
     "skills.describe": [("skill-id", True, "string")],
 }
 
@@ -499,6 +511,7 @@ _CONSENT = {
     "chat.last": (False, False),
     "chat.send": (True, True),
     "docs.create": (True, False),
+    "docs.read": (False, False),
     "docs.update": (True, False),
     "doctor": (False, False),
     "drive.download": (False, False),

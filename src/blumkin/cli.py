@@ -79,6 +79,7 @@ from blumkin.skills.chat import (
 )
 from blumkin.skills.dispatch import run_skill
 from blumkin.skills.docs import format_docs_create_human, format_docs_update_human
+from blumkin.skills.docs_read import format_docs_read_human
 from blumkin.skills.drive import (
     format_drive_download_human,
     format_drive_export_human,
@@ -3642,11 +3643,13 @@ def _format_mcp_status_human(payload: dict[str, Any]) -> list[str]:
 
 @main.group(epilog=help_text.DOCS_EPILOG)
 def docs() -> None:
-    """Author a document and store it in your drive.
+    """Author a document, or read a local document already on disk.
 
-    One authoring format across providers - a Markdown subset. The backend is a
-    native Google Doc (`provider = "google"`) or a `.docx` uploaded to OneDrive
-    (`provider = "microsoft"`).
+    Create and update share one authoring format across providers - a Markdown
+    subset. The backend is a native Google Doc (`provider = "google"`) or a
+    `.docx` uploaded to OneDrive (`provider = "microsoft"`). `read` is local
+    only: it extracts text and basic tables from a PDF, DOCX, or XLSX already on
+    disk.
     """
 
 
@@ -3702,6 +3705,52 @@ def docs_create_cmd(
             "folder": folder,
         },
         human=format_docs_create_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@docs.command("read", epilog=help_text.DOCS_READ_EPILOG)
+@click.option(
+    "--path",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=str),
+    help="Local PDF, DOCX, or XLSX to read; no provider/auth call is made.",
+)
+@click.option(
+    "--pages",
+    default=None,
+    help="PDF only: 1-based page range(s) like 1-3 or 1,3,5.",
+)
+@click.option(
+    "--sheet",
+    default=None,
+    help="XLSX only: worksheet name or 1-based index; first sheet if omitted.",
+)
+@click.option(
+    "--ocr",
+    is_flag=True,
+    help="PDF only: OCR pages with no text layer (needs the optional `ocr` extra).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def docs_read_cmd(
+    ctx: click.Context,
+    path: str,
+    pages: str | None,
+    sheet: str | None,
+    ocr: bool,
+    as_json_flag: bool,
+) -> None:
+    """Read a local PDF, DOCX, or XLSX file already on disk.
+
+    This is a pure local file read - no provider, auth, or network setup. PDF
+    defaults to native text extraction; pass `--ocr` for scanned/image pages.
+    """
+    _dispatch_local(
+        ctx,
+        "docs.read",
+        {"ocr": ocr, "pages": pages, "path": path, "sheet": sheet},
+        human=format_docs_read_human,
         as_json_flag=as_json_flag,
     )
 

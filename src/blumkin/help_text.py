@@ -488,15 +488,39 @@ not em dashes.
 """
 
 DOCS_EPILOG = """
-Author a document and store it in your drive:
+Author a document, or read one back locally after download/export:
 
 \b
   blumkin docs create --title "..." --body-file ./brief.md --json
+  blumkin docs read --path ./agenda.pdf --pages 1-2 --json
   blumkin docs update --id 1AbC... --body-file ./brief-v2.md --json
 
 One authoring format (a Markdown subset) across both providers; the backend is a
 native Google Doc, or a `.docx` uploaded to OneDrive. `update` re-renders a doc
-this tool created in place - same id, URL, and sharing.
+this tool created in place - same id, URL, and sharing. `read` is local only:
+use it on a PDF/DOCX/XLSX already on disk (for example from `drive download`,
+`drive export`, or an attachment download).
+"""
+
+DOCS_READ_EPILOG = """
+Examples:
+
+\b
+  blumkin docs read --path ./agenda.pdf --pages 1-3 --json
+\b
+  blumkin docs read --path ./contract.docx --json
+\b
+  blumkin docs read --path ./report.xlsx --sheet Summary --json
+
+Reads a local file already on disk - no provider, auth, or network call. PDF
+uses native text extraction by default; pass `--ocr` for scanned/image pages.
+Refuses files larger than 25 MB, and extracted output larger than 1 MB.
+
+`--json` prints:
+`{ok, path, kind, pages: [{index, text, tables, sheet?}], ocr_used}`.
+
+Missing extras fail closed with an actionable error, for example:
+`docs read needs the pdf extra: uv tool install -e '.[pdf]'`.
 """
 
 DOCS_UPDATE_EPILOG = """

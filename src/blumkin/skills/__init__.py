@@ -65,7 +65,9 @@ BESPOKE_SKILLS: frozenset[str] = frozenset(
 # `WorkspaceProvider` method. `run_skill` routes these to a local handler (no
 # token, no network); they are NOT in `BESPOKE_SKILLS`, so their args get normal
 # `param` enrichment and the MCP server exposes them like any read skill.
-CONFIG_SKILLS: frozenset[str] = frozenset({"people.context", "tasks.list", "tasks.show"})
+CONFIG_SKILLS: frozenset[str] = frozenset(
+    {"docs.read", "people.context", "tasks.list", "tasks.show"}
+)
 
 # (skill id, catalog arg name) -> provider kwarg. Only listed where it differs from
 # the default `name.lstrip("-").replace("-", "_")`. `None` means the value is consumed
@@ -806,6 +808,39 @@ SKILLS: list[SkillSpec] = [
                 "type": "string",
                 "note": "destination folder path (existing or created, e.g. "
                 "'Language Classes/Portuguese Classes'); drive root if omitted",
+            },
+        ],
+    ),
+    SkillSpec(
+        id="docs.read",
+        cli=["blumkin", "docs", "read"],
+        summary=(
+            "Read a local PDF, DOCX, or XLSX already on disk - the output of drive "
+            "download/export or attachment download - into text plus basic tables. "
+            "Local only: no provider, auth, or network calls."
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=[],
+        args=[
+            {"name": "--path", "required": True, "type": "path"},
+            {
+                "name": "--pages",
+                "required": False,
+                "type": "string",
+                "note": "PDF only; 1-based page range(s) like 1-3 or 1,3,5",
+            },
+            {
+                "name": "--sheet",
+                "required": False,
+                "type": "string",
+                "note": "XLSX only; worksheet name or 1-based index; first sheet if omitted",
+            },
+            {
+                "name": "--ocr",
+                "required": False,
+                "type": "flag",
+                "note": "PDF only; use pdf2image + pytesseract when a page has no text layer",
             },
         ],
     ),

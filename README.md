@@ -249,6 +249,30 @@ clear error.
 `profiles/<name>/google_token.json`. `graph_timeout_seconds` in toml bounds
 Google HTTP and token-refresh calls too. Never commit any of these files.
 
+**Local document reads.** `blumkin docs read --path ./file.pdf --json` reads a
+local PDF/DOCX/XLSX already on disk (for example from `drive download`,
+`drive export`, `mail attachments download`, or `chat attachments download`).
+It refuses files larger than 25 MB.
+Install only the extras you need:
+
+```bash
+uv tool install -e '.[pdf]'
+uv tool install -e '.[xlsx]'
+```
+
+`--ocr` is only reachable through the PDF code path, so it needs `pdf` too -
+`.[ocr]` alone cannot read a PDF:
+
+```bash
+uv tool install -e '.[pdf,ocr]'
+```
+
+The `ocr` extra also needs system binaries on macOS:
+
+```bash
+brew install tesseract poppler
+```
+
 ## Tests
 
 ```bash
