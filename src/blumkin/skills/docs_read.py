@@ -286,7 +286,11 @@ def _read_xlsx(path: Path, *, sheet: str | None) -> list[dict[str, Any]]:
         for row in worksheet.iter_rows(values_only=True):
             trimmed = _trim_row([_normalize_cell(cell) for cell in row])
             if trimmed:
-                budget.add(*trimmed)
+                # Cell values are returned twice in the payload - once per row in
+                # `tables`, once joined into `text` - so budget both renderings,
+                # not just the cells, or a wide sheet can double the advertised cap.
+                row_text = "\t".join(trimmed)
+                budget.add(*trimmed, row_text, "\n")
                 rows.append(trimmed)
         page = {
             "index": 1,
@@ -302,7 +306,10 @@ def _read_xlsx(path: Path, *, sheet: str | None) -> list[dict[str, Any]]:
 def _require_ocr_binaries() -> None:
     if shutil.which("tesseract") is None:
         raise DocsReadOcrUnavailableError(_TESSERACT_HINT)
-    if shutil.which("pdfinfo") is None and shutil.which("pdftoppm") is None:
+    # convert_from_path uses pdfinfo to inspect the PDF and pdftoppm to render it -
+    # a partial poppler install (only one of the two) needs both checked, not
+    # either, or the missing one surfaces as a generic read error instead.
+    if shutil.which("pdfinfo") is None or shutil.which("pdftoppm") is None:
         raise DocsReadOcrUnavailableError(_POPPLER_HINT)
 
 
@@ -315,6 +322,10 @@ def _resolve_sheet(workbook: Any, sheet: str | None) -> Any:
     wanted = sheet.strip()
     if not wanted:
         raise ValueError("--sheet must not be blank")
+    # Excel allows a numeric worksheet name (e.g. "2024") - check for an exact
+    # name match before treating a digit string as a 1-based index.
+    if wanted in workbook.sheetnames:
+        return workbook[wanted]
     if wanted.isdigit():
         index = int(wanted)
         if 1 <= index <= len(worksheets):

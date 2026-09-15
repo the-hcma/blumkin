@@ -134,6 +134,24 @@ def test_docs_read_ocr_missing_binary_is_actionable(tmp_path: Path, monkeypatch)
         asyncio.run(docs_read(config=_cfg(tmp_path), ocr=True, path=str(path)))
 
 
+def test_docs_read_ocr_missing_poppler_binary_is_actionable(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "scan.pdf"
+    path.write_bytes(b"pdf")
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read._import_pdfplumber",
+        lambda: SimpleNamespace(open=lambda _path: _FakePdf([_FakePage(text="")])),
+    )
+    # tesseract present, poppler (pdfinfo/pdftoppm) missing - the second guard
+    # in `_require_ocr_binaries` should fire with the poppler-specific hint.
+    monkeypatch.setattr(
+        "blumkin.skills.docs_read.shutil.which",
+        lambda name: "/usr/bin/tesseract" if name == "tesseract" else None,
+    )
+
+    with pytest.raises(DocsReadOcrUnavailableError, match="poppler not found on PATH"):
+        asyncio.run(docs_read(config=_cfg(tmp_path), ocr=True, path=str(path)))
+
+
 def test_docs_read_ocr_missing_extra_is_actionable(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "scan.pdf"
     path.write_bytes(b"pdf")
@@ -355,6 +373,26 @@ def test_docs_read_xlsx_reads_selected_sheet(tmp_path: Path) -> None:
         }
     ]
     assert by_index["pages"][0]["sheet"] == "Detail"
+
+
+def test_docs_read_xlsx_allows_numeric_sheet_name(tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    path = tmp_path / "report.xlsx"
+    workbook = openpyxl.Workbook()
+    summary = workbook.active
+    summary.title = "Summary"
+    # Excel permits a numeric-looking sheet name; an exact name match must win
+    # over interpreting the digit string as a 1-based sheet index.
+    numeric = workbook.create_sheet("2024")
+    numeric.append(["Quarter", "Amount"])
+    numeric.append(["Q4", 7])
+    workbook.save(path)
+    workbook.close()
+
+    payload = asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path), sheet="2024"))
+
+    assert payload["pages"][0]["sheet"] == "2024"
+    assert payload["pages"][0]["tables"] == [[["Quarter", "Amount"], ["Q4", "7"]]]
 
 
 class _FakePage:
