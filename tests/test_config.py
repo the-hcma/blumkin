@@ -294,6 +294,33 @@ def test_list_profiles_tolerates_one_broken_profile(tmp_path: Path, monkeypatch)
     assert healthy_names == {"personal", "work"}
 
 
+def test_list_profiles_tolerates_a_profile_with_an_invalid_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An invalid ``provider`` value must not escape the same try/except as everything else.
+
+    ``_provider_kind(table)`` raises ``ProviderConfigError`` directly (not via
+    ``load_config``), and the summary-building loop originally called it
+    *outside* the ``try`` block that wraps ``load_config`` - so this one typo
+    still aborted the whole listing, exactly what the surrounding try/except
+    was added to prevent (issue #287 review).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    _write_multi_profile(tmp_path)
+    (tmp_path / "config.toml").write_text(
+        (tmp_path / "config.toml").read_text()
+        + '\n[profiles.broken]\nprovider = "chart"\nclient_id = "x"\n'
+    )
+
+    summaries = list_profiles()
+    assert [item["name"] for item in summaries] == ["broken", "personal", "work"]
+    broken = summaries[0]
+    assert broken["provider"] == ""
+    assert "error" in broken
+    healthy_names = {item["name"] for item in summaries if "error" not in item}
+    assert healthy_names == {"personal", "work"}
+
+
 def test_missing_config_has_zero_profiles(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)

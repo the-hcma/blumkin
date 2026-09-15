@@ -175,3 +175,25 @@ def test_auth_logout_clears_the_probe_state(tmp_path: Path, monkeypatch) -> None
         result = CliRunner().invoke(main, ["auth", "logout", "--json"])
     assert result.exit_code == 0
     assert not cfg.mail_signature_state_path.is_file()
+
+
+def test_auth_logout_reports_a_keychain_deletion_failure(tmp_path: Path, monkeypatch) -> None:
+    """A backend that refuses to delete an entry must not look like a successful logout.
+
+    Otherwise `blumkin auth logout` prints "Logged out" and exits 0 while the
+    credential is still usable in the OS keychain (issue #287 review).
+    """
+    from blumkin.secret_store import SecretWriteError
+
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    provider = MagicMock()
+    provider.auth_logout.side_effect = SecretWriteError(
+        "cannot delete token_cache from the OS keychain: denied"
+    )
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "logout", "--json"])
+    assert result.exit_code != 0
+    payload = json.loads(result.stderr)
+    assert payload["error"] == "secret_write_failed"
+    assert payload["ok"] is False

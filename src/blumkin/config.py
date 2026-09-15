@@ -160,9 +160,11 @@ def list_profiles() -> list[dict[str, Any]]:
         table = tables[name]
         tags = _tags_from_table(table)
         auth_present = {"auth_record": False, "google_token": False, "msal_token_cache": False}
+        provider = ""
         error: str | None = None
         try:
             cfg = load_config(profile=name)
+            provider = _provider_kind(table).value
         except ProviderConfigError as exc:
             error = str(exc)
         else:
@@ -177,7 +179,7 @@ def list_profiles() -> list[dict[str, Any]]:
             "email": _string_values(table).get("email", "").strip(),
             "is_default": name == marked_default,
             "name": name,
-            "provider": _provider_kind(table).value,
+            "provider": provider,
             "tags": list(tags),
         }
         if error is not None:

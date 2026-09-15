@@ -51,11 +51,14 @@ def active_backend(cfg: BlumkinConfig) -> str:
 def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
     """Remove the secret for ``kind`` from both backends, wherever it lives.
 
-    A keyring backend that has nothing stored for this account is left alone
-    (there is nothing to report); a backend that *does* have an entry but
-    fails to delete it raises ``SecretWriteError`` instead of silently
-    pretending the logout succeeded (issue #287 review: a denied or failed
-    deletion must not leave the credential usable after `auth logout`).
+    A keyring backend that confirms nothing is stored for this account is
+    left alone (there is nothing to report); a backend that *does* have an
+    entry, or that cannot even be probed for one, still gets a
+    ``delete_password`` attempt - a probe failure must not look like "nothing
+    stored" and skip deletion, since the entry could very well still be there
+    (issue #287 review). A backend that fails to delete an entry that exists
+    (or that couldn't be confirmed absent) raises ``SecretWriteError`` instead
+    of silently pretending the logout succeeded.
     """
     path = _file_path(cfg, kind)
     if path.is_file():
@@ -68,9 +71,9 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
         if keyring.get_password(_KEYRING_SERVICE, account) is None:
             return
     except Exception:
-        # Can't even probe whether an entry exists - nothing reliable to act
-        # on or report; treat as already gone rather than block logout.
-        return
+        # Can't tell whether an entry exists - fall through to a real delete
+        # attempt below rather than assume it's gone.
+        pass
     try:
         keyring.delete_password(_KEYRING_SERVICE, account)
     except Exception as exc:
@@ -158,8 +161,9 @@ def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
         keyring = _keyring_module()
         if keyring is None:
             raise SecretWriteError(f"cannot write {kind}: no usable keyring backend")
+        account = _keyring_account(cfg, kind)
         try:
-            keyring.set_password(_KEYRING_SERVICE, _keyring_account(cfg, kind), text)
+            keyring.set_password(_KEYRING_SERVICE, account, text)
         except Exception as exc:
             if cfg.token_storage != "auto":
                 # The operator explicitly asked for "keyring" - surface the
@@ -168,6 +172,17 @@ def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
             # "auto" promises a silent fallback to the file on any backend
             # trouble (locked keychain over SSH, access denied, ...), not
             # just when no backend is installed at all (issue #287 review).
+            # A *stale* keyring entry from a prior successful write must not
+            # be left behind: read_text() always prefers a present keyring
+            # value over the file, so the value we are about to write to the
+            # file would otherwise be permanently unreachable (issue #287
+            # review). Best-effort - if this also fails, the fallback file
+            # write below still happens; the stale entry is a smaller
+            # exposure than losing the new value entirely.
+            try:
+                keyring.delete_password(_KEYRING_SERVICE, account)
+            except Exception:
+                pass
         else:
             return
     path = _file_path(cfg, kind)

@@ -60,6 +60,32 @@ class _DeleteFailsKeyring(_FakeKeyring):
         raise RuntimeError("keychain deletion denied")
 
 
+class _ProbeFailsKeyring(_FakeKeyring):
+    """A backend whose existence probe fails but whose deletion would succeed.
+
+    Models a locked keychain / denied ACL prompt: ``get_password`` raises, but
+    the entry is still really there and ``delete_password`` would work fine
+    if actually attempted.
+    """
+
+    def get_password(self, service: str, username: str) -> str | None:
+        raise RuntimeError("keychain locked")
+
+
+class _BreaksAfterFirstWriteKeyring(_FakeKeyring):
+    """Accepts one write, then refuses every later one (e.g. a keychain that locks mid-session)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._writes = 0
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._writes += 1
+        if self._writes > 1:
+            raise RuntimeError("keychain access denied")
+        super().set_password(service, username, password)
+
+
 def _account(cfg, kind: secret_store.SecretKind) -> tuple[str, str]:
     """The (service, account) key ``fake.store`` should hold for ``cfg``/``kind``."""
     return (secret_store._KEYRING_SERVICE, secret_store._keyring_account(cfg, kind))
@@ -187,6 +213,26 @@ def test_delete_surfaces_backend_failure_that_is_not_not_found(tmp_path: Path, m
         secret_store.delete(cfg, "auth_record")
 
 
+def test_delete_attempts_deletion_when_existence_cannot_be_probed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A failed 'does it exist' probe must not be treated as 'nothing stored'.
+
+    Otherwise a locked keychain makes `auth logout` silently delete nothing
+    and still report success, leaving the credential usable once the
+    keychain unlocks (issue #287 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _ProbeFailsKeyring()
+    account = _account(cfg, "auth_record")
+    fake.store[account] = "record-payload"  # bypass the (also-failing) probe on write
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    secret_store.delete(cfg, "auth_record")
+
+    assert account not in fake.store
+
+
 def test_explicit_keyring_falls_back_to_file_and_warns_once(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -224,6 +270,29 @@ def test_auto_falls_back_to_file_when_keyring_write_fails(tmp_path: Path, monkey
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: _BrokenKeyring())
     secret_store.write_text(cfg, "token_cache", "payload")
     assert cfg.token_cache_path.read_text() == "payload"
+
+
+def test_auto_fallback_deletes_a_stale_keyring_entry_so_the_file_is_actually_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A failed re-write under "auto" must not leave an unreachable stale keyring entry.
+
+    read_text() always prefers a present keyring value over the file, so if
+    the old value from a prior successful write is left behind, the fresh
+    value that was just written to the file (the whole point of the "auto"
+    fallback) can never be read back (issue #287 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    fake = _BreaksAfterFirstWriteKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    secret_store.write_text(cfg, "token_cache", "first-value")
+    assert secret_store.read_text(cfg, "token_cache") == "first-value"
+
+    secret_store.write_text(cfg, "token_cache", "second-value")
+
+    assert _account(cfg, "token_cache") not in fake.store
+    assert secret_store.read_text(cfg, "token_cache") == "second-value"
 
 
 def test_auto_prefers_file_when_no_keyring_backend(tmp_path: Path, monkeypatch) -> None:
