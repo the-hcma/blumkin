@@ -12,15 +12,20 @@ Service), selected per profile by ``token_storage`` in ``config.toml``:
 - ``"auto"`` (default): prefer the keychain when a real backend is usable at
   runtime, silently fall back to the file for most write trouble (headless
   Linux with no Secret Service running, the ``keychain`` extra not
-  installed, a keychain write failing at runtime, etc.) — a non-interactive
-  agent shell must never hang or fail because no keychain backend can
-  service it. It only raises if that fallback write's own cleanup of a
-  stale keyring entry then fails too, since that would otherwise leave the
-  two backends silently disagreeing.
+  installed, a keychain write/delete failing synchronously, etc.) — a
+  non-interactive agent shell must never hang or fail because no keychain
+  backend can service it. It raises instead of falling back when a mutating
+  call (write or delete) *times out*: the abandoned backend call is still
+  running and can complete later, after some newer operation for the same
+  account - so falling back and moving on risks that late completion
+  silently clobbering (or resurrecting) state a later login/logout already
+  changed; it is safer to tell the caller to retry. It also raises if a
+  fallback write's own cleanup of a stale keyring entry then fails, since
+  that would otherwise leave the two backends silently disagreeing.
 - ``"keyring"``: same preference, but warn once (not on every call) if no
   usable backend is found, since the operator explicitly asked for one; a
-  write failure of any kind raises rather than silently downgrading to the
-  file.
+  write or delete failure of any kind (timeout included) raises rather than
+  silently downgrading to the file.
 - ``"file"``: always use the file, even if a keyring backend is available.
 
 A legacy plaintext file is migrated into the keyring transparently the first
@@ -130,6 +135,19 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
             # Existence couldn't be probed above, but the backend's own
             # delete call now confirms there was nothing there - resolved.
             return
+        if isinstance(exc, TimeoutError):
+            # An abandoned delete_password call keeps running after this
+            # times out, and can still complete later - possibly after a
+            # newer login has re-populated this same account - and remove
+            # credentials it had nothing to do with. Raising here (rather
+            # than silently treating the timeout as "deleted") at least
+            # ensures the caller is told to retry instead of assuming
+            # logout succeeded (issue #287 review).
+            raise SecretWriteError(
+                f"cannot delete {kind}: the OS keychain backend did not respond within "
+                f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
+                f"in the background - wait a moment and retry"
+            ) from exc
         raise SecretWriteError(f"cannot delete {kind} from the OS keychain: {exc}") from exc
 
 
@@ -243,6 +261,25 @@ def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
         account = _keyring_account(cfg, kind)
         try:
             _call_keyring_with_timeout(keyring.set_password, _KEYRING_SERVICE, account, text)
+        except TimeoutError as exc:
+            # A hung call is not abandoned when it "times out" - the daemon
+            # thread keeps running in the background and can still complete
+            # (and call set_password) after this function has moved on. If
+            # "auto" fell back to the file here as it does for other
+            # failures, that abandoned call could later land in the keyring
+            # after a *newer* operation for this same account (a later
+            # login, or a `delete()`) has already run, silently resurrecting
+            # a stale value or clobbering fresh state (issue #287 review).
+            # Only a timeout has this "may still complete later" property -
+            # every other failure below is synchronous and safe to treat as
+            # final - so this is raised instead of silently falling back,
+            # with an actionable message rather than a bare TimeoutError.
+            raise SecretWriteError(
+                f"cannot write {kind}: the OS keychain backend did not respond within "
+                f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
+                f"in the background - wait a moment and retry rather than switch profiles "
+                f"or log out, to avoid a stale write landing later"
+            ) from exc
         except Exception as exc:
             if cfg.token_storage != "auto":
                 # The operator explicitly asked for "keyring" - surface the
@@ -354,9 +391,7 @@ _KEYRING_IO_TIMEOUT_SECONDS = 5.0
 _KEYRING_PROBE_TIMEOUT_SECONDS = 2.0
 
 
-def _call_keyring_with_timeout(
-    func: Any, *args: Any, timeout: float = _KEYRING_IO_TIMEOUT_SECONDS
-) -> Any:
+def _call_keyring_with_timeout(func: Any, *args: Any, timeout: float | None = None) -> Any:
     """Call a keyring backend method on a bounded daemon thread.
 
     Only backend *selection* (``_probe_keyring_backend``) used to be
@@ -370,7 +405,13 @@ def _call_keyring_with_timeout(
     cannot block process exit. Raises ``TimeoutError`` on timeout, or
     re-raises whatever ``func`` raised - both are treated by callers the same
     as any other backend failure.
+
+    ``timeout`` defaults to ``_KEYRING_IO_TIMEOUT_SECONDS`` looked up at call
+    time (not bound into the signature) so tests can shrink it via
+    monkeypatch without every call site needing to pass it explicitly.
     """
+    if timeout is None:
+        timeout = _KEYRING_IO_TIMEOUT_SECONDS
     result: dict[str, Any] = {}
 
     def _run() -> None:

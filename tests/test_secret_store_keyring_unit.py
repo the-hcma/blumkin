@@ -106,6 +106,29 @@ class _BrokenAndUncleanableKeyring(_BrokenKeyring):
         raise RuntimeError("keychain deletion denied")
 
 
+class _HangsOnMutationKeyring(_FakeKeyring):
+    """A backend whose ``set_password``/``delete_password`` never return in time.
+
+    Models a locked Linux Secret Service / macOS Keychain prompting for
+    interactive unlock: the call is not merely slow to fail, it genuinely
+    hangs, so ``_call_keyring_with_timeout`` abandons it on a daemon thread
+    that keeps running - and could still complete after the caller has
+    moved on (issue #287 review, round 6).
+    """
+
+    def __init__(self, release: threading.Event) -> None:
+        super().__init__()
+        self._release = release
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._release.wait(timeout=5)
+        super().set_password(service, username, password)
+
+    def delete_password(self, service: str, username: str) -> None:
+        self._release.wait(timeout=5)
+        super().delete_password(service, username)
+
+
 def _account(cfg, kind: secret_store.SecretKind) -> tuple[str, str]:
     """The (service, account) key ``fake.store`` should hold for ``cfg``/``kind``."""
     return (secret_store._KEYRING_SERVICE, secret_store._keyring_account(cfg, kind))
@@ -434,6 +457,77 @@ def test_auto_raises_when_write_fails_and_the_stale_entry_cannot_be_cleaned_up(
 
     with pytest.raises(SecretWriteError, match="now disagree"):
         secret_store.write_text(cfg, "token_cache", "new-value")
+
+
+def test_auto_raises_rather_than_falls_back_when_a_write_times_out(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A write timeout must not fall back to the file, unlike other write failures.
+
+    A timed-out ``set_password`` call is abandoned, not cancelled - the
+    daemon thread keeps running and can still land in the keyring after
+    this call returns, possibly after a *later* login for the same account
+    has already completed. Falling back to the file (as "auto" does for
+    every other failure) would leave that race in place; raising instead
+    tells the caller to retry rather than risk a stale value clobbering
+    newer state later (issue #287 review, round 6).
+    """
+    release = threading.Event()
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    fake = _HangsOnMutationKeyring(release)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    monkeypatch.setattr(secret_store, "_KEYRING_IO_TIMEOUT_SECONDS", 0.05)
+
+    try:
+        with pytest.raises(SecretWriteError, match="did not respond"):
+            secret_store.write_text(cfg, "token_cache", "new-value")
+        # Must not have silently fallen back to the file.
+        assert not cfg.token_cache_path.exists()
+    finally:
+        release.set()
+
+
+def test_keyring_pinned_also_raises_rather_than_falls_back_on_a_write_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A pinned ``"keyring"`` write timeout raises the same actionable error as "auto"."""
+    release = threading.Event()
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _HangsOnMutationKeyring(release)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    monkeypatch.setattr(secret_store, "_KEYRING_IO_TIMEOUT_SECONDS", 0.05)
+
+    try:
+        with pytest.raises(SecretWriteError, match="did not respond"):
+            secret_store.write_text(cfg, "auth_record", "new-value")
+    finally:
+        release.set()
+
+
+def test_delete_raises_rather_than_treats_a_delete_timeout_as_resolved(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A delete timeout must not be treated as "nothing to delete" or silently succeed.
+
+    An abandoned ``delete_password`` call is not cancelled by the timeout -
+    it can still complete later, possibly removing credentials created by a
+    *later* login for the same account. The caller must be told to retry
+    rather than have `auth logout` report success while that race is still
+    live (issue #287 review, round 6).
+    """
+    release = threading.Event()
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _HangsOnMutationKeyring(release)
+    account = _account(cfg, "auth_record")
+    fake.store[account] = "existing-value"
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    monkeypatch.setattr(secret_store, "_KEYRING_IO_TIMEOUT_SECONDS", 0.05)
+
+    try:
+        with pytest.raises(SecretWriteError, match="did not respond"):
+            secret_store.delete(cfg, "auth_record")
+    finally:
+        release.set()
 
 
 def test_auto_prefers_file_when_no_keyring_backend(tmp_path: Path, monkeypatch) -> None:

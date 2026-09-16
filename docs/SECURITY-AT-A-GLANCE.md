@@ -34,15 +34,20 @@ data anywhere.
   is usable at runtime. `token_storage = "auto"` (the default in
   `config.toml`) prefers the OS keychain (macOS Keychain, Windows Credential
   Manager, Linux Secret Service) whenever that is the case, silently falling
-  back to the plain file for most runtime trouble (headless Linux with no
-  Secret Service, the extra not installed, a keychain write failing, etc.);
-  it only raises if that fallback write itself cannot even be reconciled -
-  a stale keyring entry from a prior write that the fallback then fails to
-  remove, which would otherwise leave the two backends silently
-  disagreeing. `token_storage = "keyring"` pins the keychain: it warns once
-  (not on every call) when no usable backend is found, and raises if a
-  write to the keychain fails for any reason, since the operator explicitly
-  asked for it and a silent downgrade to the file would defeat that choice.
+  back to the plain file for most synchronous runtime trouble (headless
+  Linux with no Secret Service, the extra not installed, a keychain
+  write/delete failing outright, etc.); it raises instead of falling back
+  when a keychain call *times out* (a hung/locked backend), since the
+  abandoned call keeps running and could still complete later - after a
+  newer login/logout for the same profile - and silently clobber or
+  resurrect state, so the caller is told to retry rather than risk that. It
+  also raises if a fallback write's stale-keyring-entry cleanup itself
+  cannot be reconciled, which would otherwise leave the two backends
+  silently disagreeing. `token_storage = "keyring"` pins the keychain: it
+  warns once (not on every call) when no usable backend is found, and
+  raises if a write or delete to the keychain fails for any reason
+  (timeout included), since the operator explicitly asked for it and a
+  silent downgrade to the file would defeat that choice.
   `token_storage = "file"` forces the file unconditionally, even when a
   keychain backend is available. Neither backend does cryptographic
   or host binding - a copied file, or a keychain item exported off the
