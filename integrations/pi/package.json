@@ -1,0 +1,38 @@
+{
+  "name": "@the-hcma/blumkin-pi-skill",
+  "version": "1.0.0",
+  "description": "Pi package exposing the blumkin Agent Skill (personal Microsoft 365 via the blumkin CLI: calendar, mail, Teams chat, free/busy). Requires the separately installed `blumkin` binary on PATH.",
+  "keywords": [
+    "pi-package",
+    "pi-skill",
+    "blumkin",
+    "microsoft-365",
+    "microsoft-graph",
+    "outlook",
+    "teams"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/the-hcma/blumkin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/the-hcma/blumkin.git",
+    "directory": "integrations/pi"
+  },
+  "bugs": {
+    "url": "https://github.com/the-hcma/blumkin/issues"
+  },
+  "files": [
+    "skills/blumkin/**",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "rm -rf skills && mkdir -p skills && cp -R ../../.agents/skills/blumkin skills/blumkin",
+    "postpack": "rm -rf skills && ln -s ../../.agents/skills skills"
+  },
+  "pi": {
+    "skills": [
+      "./skills/blumkin"
+    ]
+  }
+}

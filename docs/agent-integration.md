@@ -128,6 +128,44 @@ refresh it by re-running the `cp -R` above.
 
 ---
 
+## Pi
+
+[pi.dev](https://pi.dev) (`@earendil-works/pi-coding-agent`) is a terminal
+coding-agent harness that consumes the same [Agent Skills
+standard](https://agentskills.io) Cursor does. The canonical skill content
+lives at [`.agents/skills/blumkin/SKILL.md`](../.agents/skills/blumkin/SKILL.md)
+— `.cursor/skills/blumkin` is a symlink to it, so both agents read one file.
+
+### Project skill (shipped, zero install)
+
+Pi auto-discovers skills from `.agents/skills/` (searched from `cwd` up
+through parent directories), so a `pi` session opened **in this repo** picks
+up blumkin's skill with no setup, exactly like Cursor's project skill.
+
+### Personal / any-repo install
+
+To use blumkin from Pi sessions in *other* repos or projects, install the
+[Pi package](../integrations/pi) that wraps this same skill. Pi's `git:`
+source installs the whole repo and expects the manifest at the repo root, so
+it can't target this subdirectory in one command; until the package is
+published to npm, install from a local clone (pi's local-path source loads a
+directory in place, so the symlink still resolves):
+
+```bash
+git clone https://github.com/the-hcma/blumkin
+pi install ./blumkin/integrations/pi
+
+# Or, once published to npm:
+pi install npm:@the-hcma/blumkin-pi-skill
+```
+
+This still needs `blumkin` on `PATH` per the [prerequisite](#prerequisite-blumkin-on-path)
+above — the package ships only the skill, not the CLI. See
+[`integrations/pi/README.md`](../integrations/pi/README.md) for package
+details and publishing notes.
+
+---
+
 ## GitHub Copilot CLI
 
 Copilot CLI has no skills directory; it reads Markdown instruction files. For a
