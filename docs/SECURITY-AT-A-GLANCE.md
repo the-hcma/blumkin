@@ -63,6 +63,46 @@ data anywhere.
 - Silent refresh renews access tokens without a browser; deleting the cache
   (`blumkin auth logout`) forces a fresh sign-in.
 
+## Microsoft app registration hardening
+
+A public client's `client_id` is not itself a secret - it is routinely visible
+in redirect URLs and can be embedded in an open-source client without
+weakening security by itself. It is not nothing, though: anyone who learns it
+can attempt their own OAuth flow against it, most notably **device-code-flow
+phishing** (a real technique, e.g. used by Nobelium/APT29 against unrelated
+victims via legitimate public client ids) - the attacker starts a device-code
+request using the known `client_id`, then tricks a real user into completing
+it on Microsoft's genuine login page; the resulting token goes to the
+attacker, not to blumkin. blumkin's requested scopes (`Mail.ReadWrite`,
+`Mail.Send`, `Calendars.ReadWrite`, and optionally `OnlineMeetings.ReadWrite` /
+`People.Read`) are sensitive enough that this is worth configuring against,
+not just accepting. blumkin itself never uses device-code or ROPC flows -
+only interactive browser sign-in (auth code + PKCE, `localhost` redirect) -
+so the mitigations below cost nothing functionally:
+
+- **Single-tenant, not multi-tenant.** Set "Supported account types" to
+  accounts in *this organizational directory only*, and set `tenant_id` in
+  `config.toml` to your tenant's specific GUID or verified domain - never
+  `common` / `organizations` / `consumers`. This is a per-installation
+  setting: each operator registers their own app in their own tenant, so
+  restricting yours has no effect on anyone else's ability to run blumkin.
+  It bounds who can even attempt to sign in to *this* registration to actual
+  members of *your* tenant, rather than anyone on the internet.
+- **Disable "Allow public client flows"** in the app registration's
+  Authentication blade unless you specifically need device code / ROPC -
+  blumkin's interactive browser flow does not require it. Turning it off
+  closes off device-code-flow phishing against this registration entirely.
+- **Restrict redirect URIs** to `http://localhost` (loopback) only, with no
+  wildcards - this is what `InteractiveBrowserCredential` uses and all it
+  needs.
+- **Consider "assignment required"** on the corresponding Enterprise
+  Application if your tenant has more than one member, so only explicitly
+  assigned users/groups can even complete sign-in, further narrowing who a
+  phishing attempt could target.
+
+None of this is enforced by blumkin's code - it is Entra-side configuration
+on the app registration itself, done once at setup.
+
 ## Blast radius
 
 - A skill only ever affects the operator's own tenant, with their own consent.
