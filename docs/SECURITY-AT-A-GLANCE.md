@@ -84,7 +84,8 @@ particular grants control over mailbox auto-forward/auto-reply rules, so
 treat it as the most sensitive of the set). See `src/blumkin/auth.py` for the
 authoritative, current lists. blumkin itself never uses device-code or ROPC flows -
 only interactive browser sign-in (auth code + PKCE, `localhost` redirect) -
-so the mitigations below cost nothing functionally:
+so the mitigations below narrow this registration's exposure without
+changing how blumkin signs in:
 
 - **Single-tenant, not multi-tenant.** Set "Supported account types" to
   accounts in *this organizational directory only*, and set `tenant_id` in
@@ -94,13 +95,19 @@ so the mitigations below cost nothing functionally:
   restricting yours has no effect on anyone else's ability to run blumkin.
   It bounds who can even attempt to sign in to *this* registration to actual
   members of *your* tenant, rather than anyone on the internet.
-- **Disable "Allow public client flows"** in the app registration's
-  Authentication blade unless you specifically need device code / ROPC -
-  blumkin's interactive browser flow does not require it. Turning it off
-  closes off device-code-flow phishing against this registration entirely.
-- **Restrict redirect URIs** to `http://localhost` (loopback) only, with no
-  wildcards - this is what `InteractiveBrowserCredential` uses and all it
-  needs.
+- **Leave "Allow public client flows" enabled, but rely on the other
+  mitigations here instead of disabling it.** `InteractiveBrowserCredential`'s
+  auth-code-plus-PKCE flow is *itself* a public client flow and needs this
+  setting on - blumkin's own sign-in breaks without it. It does not
+  distinguish auth-code-plus-PKCE from device code / ROPC, so it cannot be
+  used to allow one and block the other; single-tenant scope, redirect URI
+  restriction, and assignment requirement are what actually narrow the
+  device-code-phishing surface here.
+- **Restrict redirect URIs** to `http://localhost` (loopback) registered
+  under the **Mobile and desktop applications** platform (not Web or SPA -
+  SPA redirect URIs can't be used with this non-SPA flow and will break
+  sign-in), with no wildcards - this is what `InteractiveBrowserCredential`
+  uses and all it needs.
 - **Consider "assignment required"** on the corresponding Enterprise
   Application if your tenant has more than one member, so only explicitly
   assigned users/groups can even complete sign-in, further narrowing who a
