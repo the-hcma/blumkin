@@ -329,11 +329,11 @@ never committed.
 - [`HANDOFF.md`](./HANDOFF.md) — open Identity/scope-grant follow-up (WO1162425) referenced from runtime scope errors  
 - [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
 - [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md) — M1 ship retrospective (#11)  
-- [`docs/agent-integration.md`](./docs/agent-integration.md) — using blumkin from Cursor / Copilot CLI, and the frozen `skills list --json` contract  
+- [`docs/agent-integration.md`](./docs/agent-integration.md) — using blumkin from Cursor / Pi / Copilot CLI, and the frozen `skills list --json` contract  
 - [`docs/operator-config.md`](./docs/operator-config.md) — optional `~/.config/blumkin/*.md` operator-context files (`email-context.md`)  
 - [`docs/RELEASING.md`](./docs/RELEASING.md) — release flow, PyPI trusted publishing, rollback  
 - [`docs/google-setup.md`](./docs/google-setup.md) — Google Cloud Desktop OAuth + blumkin Google profile  
-- [`.cursor/skills/blumkin/SKILL.md`](./.cursor/skills/blumkin/SKILL.md) — Cursor agent skill  
+- [`.cursor/skills/blumkin/SKILL.md`](./.cursor/skills/blumkin/SKILL.md) — Cursor agent skill (symlink to the canonical `.agents/skills/blumkin/SKILL.md`, also consumed directly by [pi.dev](https://pi.dev) — see [`integrations/pi/`](./integrations/pi/))  
 
 ## License
 
