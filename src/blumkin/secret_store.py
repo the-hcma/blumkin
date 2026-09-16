@@ -30,7 +30,12 @@ Service), selected per profile by ``token_storage`` in ``config.toml``:
 
 A legacy plaintext file is migrated into the keyring transparently the first
 time it is read under a keyring-preferring config: written into the keyring,
-then removed, so a secret never ends up duplicated across both backends.
+then removed, so a secret never ends up duplicated across both backends. A
+migration write that times out is registered (like any other abandoned
+mutating call - see ``_pending_mutations``) so a subsequent operation for the
+same account within this process waits for it before trusting a probe,
+narrowing the window where it could otherwise land invisibly and resurrect a
+credential just removed by a `delete()` moments earlier.
 Tracked in issue #287; a further macOS-only access-control layer (Touch
 ID / passphrase-cache style re-auth) is a separate, follow-up enhancement.
 """
@@ -100,6 +105,13 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
     exception for "not found" and other failures, so re-raising here would
     turn an ordinary already-logged-out profile into a reported error on
     every logout call (issue #287 review).
+
+    A profile pinned to ``token_storage = "file"`` never touches the keyring
+    at all here, matching every other entry point (``read_text``/
+    ``write_text``/``exists``/``active_backend``) - reaching the keyring path
+    anyway meant a locked/unreachable keychain could fail, or multi-second
+    stall, a logout that had already fully succeeded on the only backend
+    such a profile actually uses (issue #287 review, round 10).
     """
     path = _file_path(cfg, kind)
     if path.is_file():
@@ -113,10 +125,21 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
             # `auth logout` as a bare, unclassified traceback instead of the
             # documented secret_write_failed error (issue #287 review).
             raise SecretWriteError(f"cannot delete {kind} file {path}: {exc}") from exc
+    if _backend_for(cfg) == "file":
+        return
     keyring = _keyring_module()
     if keyring is None:
         return
     account = _keyring_account(cfg, kind)
+    # A prior operation for this same account (typically read_text()'s
+    # legacy-file migration write) may have timed out and left its call
+    # abandoned rather than cancelled, still running on a daemon thread.
+    # Give it a further bounded chance to land before trusting a probe
+    # result below - otherwise this could conclude "nothing to delete"
+    # moments before that abandoned write actually lands, silently
+    # resurrecting the credential this call is meant to remove (issue #287
+    # review, round 10).
+    _await_pending_mutation(account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
     probed_existence: bool | None
     try:
         probed_existence = (
@@ -230,7 +253,14 @@ def read_text(cfg: BlumkinConfig, kind: SecretKind) -> str | None:
         _call_keyring_with_timeout(keyring.set_password, _KEYRING_SERVICE, account, legacy)
     except Exception:
         # Keychain write failed - keep serving the file untouched rather than
-        # lose the secret.
+        # lose the secret. A TimeoutError here is not swallowed as harmlessly
+        # as it looks: the abandoned call keeps running and can still land
+        # later, in-process, after e.g. a subsequent `delete()` for this same
+        # account. That race is closed on the other side instead - the
+        # timeout is registered by `_call_keyring_with_timeout` itself, and
+        # `delete()` awaits any such pending mutation before trusting a
+        # probe, rather than this read-only function being made to raise
+        # (issue #287 review, round 10).
         return legacy
     try:
         path.unlink()
@@ -306,7 +336,12 @@ def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
             # or already falling back under "auto" would look identical to
             # a genuine stale entry) - that ambiguity is exactly what made
             # "auto" wrongly raise on an ordinary keychain outage for such a
-            # profile (issue #287 review, round 9).
+            # profile (issue #287 review, round 9). Give a previously
+            # abandoned mutation for this account a further bounded chance
+            # to land first, so this probe is less likely to act on
+            # information a still-running timed-out call is about to
+            # invalidate (issue #287 review, round 10).
+            _await_pending_mutation(account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
             try:
                 confirmed_stale_value = (
                     _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
@@ -447,6 +482,44 @@ _keyring_mod: Any | None = None
 _KEYRING_IO_TIMEOUT_SECONDS = 5.0
 _KEYRING_PROBE_TIMEOUT_SECONDS = 2.0
 
+# Tracks, per keychain account, the daemon thread (if any) still running a
+# mutating call (set_password/delete_password) this process gave up waiting
+# on. `_call_keyring_with_timeout` abandons rather than cancels a hung call,
+# so that thread can still complete - and mutate the account's real state -
+# well after the caller that timed out has moved on and made a decision
+# based on stale information (e.g. `delete()` concluding "nothing to
+# remove" because the abandoned write from an earlier `read_text()`
+# migration hadn't landed yet). Any operation about to make such a decision
+# for the same account should give a known-pending mutation a further
+# bounded chance to land first via `_await_pending_mutation` (issue #287
+# review, round 10). Confined to this process's lifetime like the daemon
+# threads themselves - a fresh CLI invocation starts with an empty registry,
+# since an abandoned thread cannot outlive the process it was spawned in.
+_pending_mutation_lock = threading.Lock()
+_pending_mutations: dict[str, threading.Thread] = {}
+
+
+def _await_pending_mutation(account: str, *, timeout: float) -> None:
+    """Give a previously-abandoned mutating call for ``account`` a further chance to land.
+
+    Best-effort and bounded: the thread can still be alive after this - the
+    underlying call is never actually cancellable - but this narrows the
+    common "one operation times out, the very next operation for the same
+    account acts on stale information" race to cases where the backend is
+    genuinely still unresponsive after two timeout windows, rather than
+    every case where it merely happened to be slow once (issue #287 review,
+    round 10).
+    """
+    with _pending_mutation_lock:
+        thread = _pending_mutations.get(account)
+    if thread is None:
+        return
+    thread.join(timeout=timeout)
+    if not thread.is_alive():
+        with _pending_mutation_lock:
+            if _pending_mutations.get(account) is thread:
+                del _pending_mutations[account]
+
 
 def _call_keyring_with_timeout(func: Any, *args: Any, timeout: float | None = None) -> Any:
     """Call a keyring backend method on a bounded daemon thread.
@@ -466,6 +539,12 @@ def _call_keyring_with_timeout(func: Any, *args: Any, timeout: float | None = No
     ``timeout`` defaults to ``_KEYRING_IO_TIMEOUT_SECONDS`` looked up at call
     time (not bound into the signature) so tests can shrink it via
     monkeypatch without every call site needing to pass it explicitly.
+
+    On timeout, the abandoned thread is registered against ``args[1]`` (the
+    keyring account - every call here follows the ``(service, account, ...)``
+    convention) so a later operation for that same account can wait on it
+    via ``_await_pending_mutation`` instead of acting on information it may
+    invalidate moments later (issue #287 review, round 10).
     """
     if timeout is None:
         timeout = _KEYRING_IO_TIMEOUT_SECONDS
@@ -481,6 +560,9 @@ def _call_keyring_with_timeout(func: Any, *args: Any, timeout: float | None = No
     thread.start()
     thread.join(timeout=timeout)
     if thread.is_alive():
+        if len(args) >= 2 and isinstance(args[1], str):
+            with _pending_mutation_lock:
+                _pending_mutations[args[1]] = thread
         raise TimeoutError(f"keyring backend call timed out after {timeout}s")
     if "error" in result:
         raise result["error"]

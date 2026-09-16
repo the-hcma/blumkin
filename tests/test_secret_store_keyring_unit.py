@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -308,6 +309,90 @@ def test_delete_removes_from_both_backends(tmp_path: Path, monkeypatch) -> None:
     assert secret_store.exists(cfg, "auth_record") is False
     assert not cfg.auth_record_path.exists()
     assert fake.store == {}
+
+
+def test_delete_never_touches_the_keyring_when_pinned_to_file(tmp_path: Path, monkeypatch) -> None:
+    """token_storage = "file" must not run the keyring path in delete() at all.
+
+    Every other entry point (read_text/write_text/exists/active_backend)
+    already short-circuits on ``_backend_for(cfg) == "file"`` - delete() used
+    to be the one exception, reaching into a keyring that could be locked or
+    unreachable even though this profile's real (and only) backend is the
+    file, which had already been removed successfully by that point (issue
+    #287 review, round 10).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="file")
+    fake = _LockedKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    cfg.auth_record_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.auth_record_path.write_text("payload")
+
+    secret_store.delete(cfg, "auth_record")  # must not raise or touch the keyring
+
+    assert not cfg.auth_record_path.exists()
+
+
+def test_delete_awaits_an_abandoned_migration_write_before_declaring_nothing_to_remove(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """delete() must give a previously-abandoned mutation for this account a further chance.
+
+    Models read_text()'s legacy-file migration write timing out (abandoned,
+    not cancelled - it keeps running) followed immediately by delete(): if
+    delete() trusts an immediate probe without first waiting on any known
+    pending mutation, it can conclude "nothing to remove" moments before the
+    abandoned write actually lands, silently leaving the credential behind
+    after logout reports success (issue #287 review, round 10).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    release = threading.Event()
+    fake = _HangsOnMutationKeyring(release)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    monkeypatch.setattr(secret_store, "_KEYRING_IO_TIMEOUT_SECONDS", 0.05)
+
+    account = _account(cfg, "auth_record")[1]
+    with pytest.raises(TimeoutError):
+        secret_store._call_keyring_with_timeout(
+            fake.set_password, secret_store._KEYRING_SERVICE, account, "migrated-value"
+        )
+    assert account in secret_store._pending_mutations
+
+    # The abandoned write "lands" partway through delete()'s bounded wait.
+    def _release_after_a_moment() -> None:
+        time.sleep(0.05)
+        release.set()
+
+    threading.Thread(target=_release_after_a_moment, daemon=True).start()
+    monkeypatch.setattr(secret_store, "_KEYRING_IO_TIMEOUT_SECONDS", 2.0)
+
+    secret_store.delete(cfg, "auth_record")
+
+    assert account not in fake.store
+
+
+def test_await_pending_mutation_waits_for_a_previously_abandoned_call_to_land(
+    monkeypatch,
+) -> None:
+    """`_await_pending_mutation` gives a registered abandoned thread a further bounded chance."""
+    release = threading.Event()
+    landed = threading.Event()
+
+    def _slow_mutation(service: str, account: str, value: str) -> None:
+        release.wait(timeout=5)
+        landed.set()
+
+    account = "test-account-for-await-pending-mutation"
+    monkeypatch.setattr(secret_store, "_KEYRING_IO_TIMEOUT_SECONDS", 0.05)
+    with pytest.raises(TimeoutError):
+        secret_store._call_keyring_with_timeout(_slow_mutation, "svc", account, "value")
+    assert account in secret_store._pending_mutations
+
+    release.set()
+    secret_store._await_pending_mutation(account, timeout=2)
+
+    assert landed.is_set()
+    assert account not in secret_store._pending_mutations
 
 
 def test_delete_is_a_noop_when_nothing_is_stored(tmp_path: Path, monkeypatch) -> None:
