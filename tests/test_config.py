@@ -388,19 +388,19 @@ def test_list_profiles_reports_invalid_preferences_as_an_error(tmp_path: Path, m
     assert "error" in summaries["broken"]
 
 
-def test_resolve_by_selector_still_fails_closed_on_a_genuine_tag_collision(
+def test_resolve_by_selector_still_rejects_a_sibling_profiles_malformed_tags(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The real ``--profile``/``BLUMKIN_PROFILE`` selection path stays fail-closed/loud.
+    """A sibling profile's malformed ``tags`` must still abort selector resolution.
 
     `list_profiles()` gained tolerance for a malformed `provider`/`tags` on
     one profile, but the actual account-selection path
     (`load_config(profile=...)` -> `_resolve_by_selector`) must keep raising
-    on a genuine ambiguous tag collision rather than silently resolving to
-    one of the colliding profiles - an early attempt at this fix made the
-    collision scan tolerate malformed `tags` by treating it as "no tags",
-    which would have silently misrouted `--profile shared` to `work`
-    instead of raising (issue #293, scenario 3 - this must never regress).
+    when *any* profile's `tags` is unparseable, rather than treating it as
+    "no tags" for that profile and resolving around it - an early attempt
+    at this fix did exactly that, which would have silently misrouted
+    `--profile shared` to `work` instead of raising (issue #293, scenario 3
+    - this must never regress).
     """
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
@@ -415,7 +415,34 @@ def test_resolve_by_selector_still_fails_closed_on_a_genuine_tag_collision(
         'tags = ["shared", 7]\n'  # malformed: 7 is not a string
     )
 
-    with pytest.raises(ProviderConfigError):
+    with pytest.raises(ProviderConfigError, match="tags entries must be"):
+        load_config(profile="shared")
+
+
+def test_resolve_by_selector_still_fails_closed_on_a_genuine_tag_collision(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The real ``--profile``/``BLUMKIN_PROFILE`` selection path stays fail-closed/loud.
+
+    Two profiles that both carry a well-formed, matching tag must still
+    make selector resolution raise on the ambiguity rather than silently
+    picking one of them - the collision scan itself, not just malformed-tag
+    parsing, must keep failing closed (issue #293, scenario 3).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    (tmp_path / "config.toml").write_text(
+        "[profiles.work]\n"
+        'provider = "microsoft"\n'
+        'client_id = "ms-client"\n'
+        'tags = ["shared"]\n'
+        "\n"
+        "[profiles.personal]\n"
+        'provider = "google"\n'
+        'tags = ["shared"]\n'
+    )
+
+    with pytest.raises(ProviderConfigError, match="multiple profiles"):
         load_config(profile="shared")
 
 
