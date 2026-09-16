@@ -106,6 +106,19 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
     turn an ordinary already-logged-out profile into a reported error on
     every logout call (issue #287 review).
 
+    Under ``token_storage = "auto"``, a delete failure for an entry whose
+    existence could *not* be confirmed either (a locked/unreachable
+    keychain, the same failure mode a probe just hit) is not raised either:
+    the file - the only backend such a profile may have ever actually used,
+    if the keychain has never been reachable - was already removed above,
+    and "auto" promises a logout must never fail just because no keychain
+    backend can service it, the same promise ``write_text`` already honors
+    (issue #287 review, round 11). ``token_storage = "keyring"`` is an
+    explicit ask, so it keeps raising in that same case - and any backend
+    that *does* confirm an entry exists still gets a raised failure if it
+    cannot be removed, regardless of ``token_storage``, since that is a
+    genuine, confirmed leftover rather than an unprovable maybe.
+
     A profile pinned to ``token_storage = "file"`` never touches the keyring
     at all here, matching every other entry point (``read_text``/
     ``write_text``/``exists``/``active_backend``) - reaching the keyring path
@@ -171,6 +184,16 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
                 f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
                 f"in the background - wait a moment and retry"
             ) from exc
+        if probed_existence is None and cfg.token_storage == "auto":
+            # Existence could not be confirmed (the same access failure that
+            # is now failing this delete attempt likely already failed the
+            # probe above), and the operator did not explicitly pin
+            # "keyring" - treat this the same way "auto" already treats an
+            # unconfirmable write failure: the file has already been
+            # removed, and there is no proof anything is actually left
+            # behind in the keychain to report as a failure (issue #287
+            # review, round 11).
+            return
         raise SecretWriteError(f"cannot delete {kind} from the OS keychain: {exc}") from exc
 
 

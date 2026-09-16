@@ -482,6 +482,46 @@ def test_delete_treats_an_unprobeable_but_genuinely_absent_entry_as_a_noop(
     secret_store.delete(cfg, "auth_record")  # must not raise
 
 
+def test_auto_delete_does_not_raise_when_the_keychain_is_locked_and_unprobeable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`auto` must not fail a logout just because the keychain is locked/unreachable.
+
+    A locked keychain fails both the existence probe and the delete
+    attempt with the same access error - there is no way to tell "there is
+    a confirmed leftover we failed to remove" from "there may never have
+    been anything here at all". Under `token_storage = "auto"` the file
+    (this profile's only backend, if the keychain has never been
+    reachable) was already unlinked above, so raising here would report a
+    fully successful logout as failed - contradicting the "auto must never
+    fail because no keychain backend can service it" contract this module
+    documents for every other operation (issue #287 review, round 11).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    fake = _LockedKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    secret_store.delete(cfg, "auth_record")  # must not raise
+
+
+def test_keyring_pinned_delete_still_raises_when_the_keychain_is_locked_and_unprobeable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`token_storage = "keyring"` is an explicit ask, so it keeps surfacing this failure.
+
+    Unlike `auto`, a profile explicitly pinned to the keyring has no file
+    fallback to have already succeeded on - a locked/unreachable keychain
+    here is a real failure the caller needs to know about, not one "auto"
+    quietly resolves (issue #287 review, round 11).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _LockedKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    with pytest.raises(SecretWriteError, match="cannot delete"):
+        secret_store.delete(cfg, "auth_record")
+
+
 def test_explicit_keyring_falls_back_to_file_and_warns_once(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
