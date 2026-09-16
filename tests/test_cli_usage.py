@@ -197,6 +197,41 @@ def test_profiles_list_empty_config_dir_reports_count_zero(tmp_path, monkeypatch
     assert "(no profiles)" in (human.output or "")
 
 
+def test_profiles_list_surfaces_one_bad_profile_without_hiding_the_others(
+    tmp_path, monkeypatch
+) -> None:
+    """`blumkin profiles list` must still list a healthy profile when another one is broken.
+
+    Before issue #293's fix, a single profile with an invalid `provider`
+    made `list_profiles()` raise while resolving it, aborting the whole
+    command - `personal` (perfectly healthy) never got listed either.
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    (tmp_path / "config.toml").write_text(
+        "[profiles.personal]\n"
+        'provider = "microsoft"\n'
+        'client_id = "abc"\n'
+        "\n"
+        "[profiles.broken]\n"
+        'provider = "chart"\n'  # typo: should be "microsoft"
+        'client_id = "xyz"\n'
+    )
+    runner = CliRunner()
+    json_result = runner.invoke(main, ["profiles", "list", "--json"])
+    assert json_result.exit_code == EXIT_SUCCESS
+    assert '"count": 2' in (json_result.output or "")
+    assert '"name": "personal"' in (json_result.output or "")
+    assert '"name": "broken"' in (json_result.output or "")
+    assert '"error"' in (json_result.output or "")
+
+    human = runner.invoke(main, ["profiles", "list"])
+    assert human.exit_code == EXIT_SUCCESS
+    assert "personal: provider=microsoft" in (human.output or "")
+    assert "broken: provider=(invalid)" in (human.output or "")
+    assert "error:" in (human.output or "")
+
+
 def test_root_profile_flag_selects_tag(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("BLUMKIN_PROFILE", "work")

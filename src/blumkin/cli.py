@@ -1017,13 +1017,18 @@ def profiles_list(ctx: click.Context, as_json_flag: bool) -> None:
     for item in profiles_payload:
         tags = ", ".join(item["tags"]) if item["tags"] else "(none)"
         marker = " (default)" if item["is_default"] else ""
-        emit_lines(
-            [
-                f"{item['name']}{marker}: provider={item['provider']} "
-                f"email={item['email'] or '(unset)'} "
-                f"tz={item['default_tz'] or '(unset)'} tags={tags}"
-            ]
-        )
+        error = item.get("error")
+        lines = [
+            f"{item['name']}{marker}: provider={item['provider'] or '(invalid)'} "
+            f"email={item['email'] or '(unset)'} "
+            f"tz={item['default_tz'] or '(unset)'} tags={tags}"
+        ]
+        if error:
+            # Surface a per-profile config error inline instead of only in
+            # --json output, so a typo'd provider/tags is visible without
+            # aborting the rest of the listing (issue #293).
+            lines.append(f"  error: {error}")
+        emit_lines(lines)
 
 
 @main.group(epilog=help_text.SKILLS_EPILOG)

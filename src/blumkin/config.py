@@ -136,7 +136,29 @@ def google_oauth_installed_client(path: Path) -> dict[str, Any]:
 
 
 def list_profiles() -> list[dict[str, Any]]:
-    """Return safe summaries of configured profiles (no secrets)."""
+    """Return safe summaries of configured profiles (no secrets).
+
+    Loading the provider, resolving tags, resolving the Google OAuth client
+    id, parsing preferences, and checking ``auth_present`` are five
+    independent ways a single profile's table can be malformed; each gets
+    its own try/except so a failure in one does not suppress the others -
+    a bad ``provider`` typo must not blank out an otherwise valid
+    ``auth_present``, and no single misconfigured profile aborts the whole
+    listing (issue #293). Each of these mirrors a validation
+    ``load_config()`` itself performs per-profile table - google_oauth
+    client id resolution (``_client_id_from_google_oauth_file``) and
+    ``[profiles.<name>.preferences]`` parsing (``_preferences_config``) can
+    each raise ``ProviderConfigError`` too, and must be just as tolerated
+    here as ``provider``/``tags`` (issue #293 review). ``auth_present`` is
+    computed via ``_auth_present_probe_cfg`` rather than the full
+    ``load_config(profile=name)`` used elsewhere, specifically so it stays
+    accurate even for a profile whose ``provider``/``tags`` are invalid -
+    the credential's on-disk location never depended on either being valid
+    (issue #293). ``load_config()`` itself is never called here - doing so
+    would reach ``_resolve_by_selector``, which scans *every* profile's
+    tags to detect name/tag collisions, reintroducing the very "one broken
+    profile hides every other profile" bug this function exists to avoid.
+    """
     # Local import: blumkin.secret_store imports BlumkinConfig from this module,
     # so importing it at module level here would be circular.
     from blumkin import secret_store
@@ -148,23 +170,52 @@ def list_profiles() -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for name in sorted(tables):
         table = tables[name]
-        tags = _tags_from_table(table)
-        cfg = load_config(profile=name)
-        summaries.append(
-            {
-                "auth_present": {
-                    "auth_record": secret_store.exists(cfg, "auth_record"),
-                    "google_token": secret_store.exists(cfg, "google_token"),
-                    "msal_token_cache": secret_store.exists(cfg, "token_cache"),
-                },
-                "default_tz": _string_values(table).get("default_tz", "").strip(),
-                "email": _string_values(table).get("email", "").strip(),
-                "is_default": name == marked_default,
-                "name": name,
-                "provider": _provider_kind(table).value,
-                "tags": list(tags),
-            }
-        )
+        provider = ""
+        tags: tuple[str, ...] = ()
+        errors: list[str] = []
+
+        probe_cfg = _auth_present_probe_cfg(directory, name, table)
+        auth_present = {
+            "auth_record": secret_store.exists(probe_cfg, "auth_record"),
+            "google_token": secret_store.exists(probe_cfg, "google_token"),
+            "msal_token_cache": secret_store.exists(probe_cfg, "token_cache"),
+        }
+
+        try:
+            provider = _provider_kind(table).value
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
+        try:
+            tags = _tags_from_table(table)
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
+        try:
+            google_oauth_client_file = _google_oauth_client_file(table)
+            client_id = _string_values(table).get("client_id", "").strip()
+            if not client_id and google_oauth_client_file is not None:
+                _client_id_from_google_oauth_file(google_oauth_client_file)
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
+        try:
+            _preferences_config(table, _top_level_preferences(file_data), profile=name)
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
+        summary: dict[str, Any] = {
+            "auth_present": auth_present,
+            "default_tz": _string_values(table).get("default_tz", "").strip(),
+            "email": _string_values(table).get("email", "").strip(),
+            "is_default": name == marked_default,
+            "name": name,
+            "provider": provider,
+            "tags": list(tags),
+        }
+        if errors:
+            summary["error"] = "; ".join(errors)
+        summaries.append(summary)
     return summaries
 
 
@@ -266,6 +317,41 @@ def set_profile_email(
     except OSError:
         return False
     return True
+
+
+def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]) -> BlumkinConfig:
+    """Build a minimal ``BlumkinConfig`` sufficient to check ``auth_present``, nothing else.
+
+    ``secret_store.exists()`` only ever consults ``cfg.token_storage``,
+    ``cfg.config_dir``, ``cfg.profile``, and the path properties derived
+    solely from ``config_dir``/``profile`` (``auth_record_path``,
+    ``google_token_path``, ``token_cache_path``) - none of which depend on
+    ``provider`` being valid. Building the *full* config via
+    ``load_config(profile=name)`` instead would raise ``ProviderConfigError``
+    for a profile whose ``provider`` has a typo, even though its on-disk
+    credential is completely unaffected - reporting `auth_present: false` (or
+    aborting the whole `list_profiles()` call) for a profile that is, in
+    fact, still fully logged in (issue #293). Every field this probe cfg does
+    not need is filled with a cheap, valid placeholder purely to satisfy the
+    dataclass's required arguments.
+    """
+    return BlumkinConfig(
+        client_id="",
+        config_dir=directory,
+        default_tz="",
+        email="",
+        files_scopes=False,
+        google_oauth_client_file=None,
+        graph_timeout_seconds=DEFAULT_GRAPH_TIMEOUT_SECONDS,
+        mail_signature=MailSignatureConfig(),
+        preferences=PreferencesConfig(),
+        profile=profile,
+        provider=ProviderKind.MICROSOFT,
+        tags=(),
+        tenant_id="",
+        token_storage=_token_storage_preference(table),
+        wo1162425_scopes=False,
+    )
 
 
 def _client_id_from_google_oauth_file(path: Path) -> str:

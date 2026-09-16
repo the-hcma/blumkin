@@ -258,6 +258,198 @@ def test_list_profiles_safe_summaries(tmp_path: Path, monkeypatch) -> None:
     assert "ms-client" not in dumped
 
 
+def test_list_profiles_tolerates_one_bad_profile(tmp_path: Path, monkeypatch) -> None:
+    """A single profile with an invalid ``provider`` must not hide every other profile.
+
+    Before this fix, `list_profiles()` called `load_config(profile=name)` per
+    profile, and `load_config()` raises `ProviderConfigError` while
+    resolving an invalid `provider` - aborting the *entire* `blumkin
+    profiles list`/`doctor` call, hiding every other, perfectly healthy
+    profile too (issue #293, scenario 1).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.personal]\n"
+        'provider = "microsoft"\n'
+        'client_id = "abc"\n'
+        "\n"
+        "[profiles.broken]\n"
+        'provider = "chart"\n'  # typo: should be "microsoft"
+        'client_id = "xyz"\n'
+    )
+
+    summaries = {item["name"]: item for item in list_profiles()}
+
+    assert set(summaries) == {"personal", "broken"}
+    assert summaries["personal"]["provider"] == "microsoft"
+    assert "error" not in summaries["personal"]
+    assert summaries["broken"]["provider"] == ""
+    assert "error" in summaries["broken"]
+
+
+def test_list_profiles_reports_auth_present_despite_an_invalid_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`auth_present` must reflect real on-disk credentials even when `provider` is invalid.
+
+    The credential's location on disk (`auth_record_path` / `token_cache_path`
+    / `google_token_path`) only ever depends on `config_dir`/`profile`, never
+    on `provider` - so a profile that later got a typo'd `provider` must not
+    suddenly be reported as logged out when its credential is still sitting
+    on disk untouched (issue #293, scenario 2).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.broken]\n"
+        'provider = "chart"\n'  # typo: should be "microsoft"
+        'client_id = "xyz"\n'
+    )
+    profile_dir = tmp_path / "profiles" / "broken"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "msal_token_cache.json").write_text("{}")
+    (profile_dir / "auth_record.json").write_text("{}")
+
+    summaries = {item["name"]: item for item in list_profiles()}
+
+    assert summaries["broken"]["auth_present"]["msal_token_cache"] is True
+    assert summaries["broken"]["auth_present"]["auth_record"] is True
+    assert "error" in summaries["broken"]
+
+
+def test_list_profiles_reports_malformed_tags_as_a_per_profile_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Malformed ``tags`` on one profile must not blank out its provider/auth_present.
+
+    Loading the provider, resolving tags, and checking `auth_present` are
+    three independent concerns; a malformed `tags` entry on `broken` must
+    still leave `broken`'s valid `provider` and `auth_present` intact,
+    surfaced instead as a per-profile `error` (issue #293).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.broken]\n"
+        'provider = "microsoft"\n'
+        'client_id = "xyz"\n'
+        "tags = [7]\n"  # malformed: entries must be strings
+    )
+    profile_dir = tmp_path / "profiles" / "broken"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "auth_record.json").write_text("{}")
+
+    summaries = {item["name"]: item for item in list_profiles()}
+
+    assert summaries["broken"]["auth_present"]["auth_record"] is True
+    assert summaries["broken"]["provider"] == "microsoft"
+    assert summaries["broken"]["tags"] == []
+    assert "error" in summaries["broken"]
+
+
+def test_list_profiles_reports_an_unreadable_google_oauth_client_file_as_an_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A missing/unreadable ``google_oauth_client_file`` must surface as a per-profile error.
+
+    `load_config()` resolves a blank `client_id` from `google_oauth_client_file`
+    and raises `ProviderConfigError` if that file is missing or malformed -
+    `list_profiles()` must perform (and tolerate a failure of) the same
+    check directly, rather than silently reporting the profile as healthy
+    with no `client_id` and no explanation (issue #293 review, round 1).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.g]\n"
+        'provider = "google"\n'
+        'google_oauth_client_file = "/nope/does-not-exist.json"\n'
+    )
+
+    summaries = {item["name"]: item for item in list_profiles()}
+
+    assert summaries["g"]["provider"] == "google"
+    assert "error" in summaries["g"]
+
+
+def test_list_profiles_reports_invalid_preferences_as_an_error(tmp_path: Path, monkeypatch) -> None:
+    """A malformed ``[profiles.<name>.preferences]`` table must surface as a per-profile error.
+
+    `load_config()` raises `ProviderConfigError` for a non-table
+    `preferences` value (or an invalid `font_size`) - `list_profiles()`
+    must perform (and tolerate a failure of) the same check directly
+    instead of silently reporting the profile as healthy (issue #293
+    review, round 1).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.broken]\n"
+        'provider = "microsoft"\n'
+        'client_id = "abc"\n'
+        'preferences = "not-a-table"\n'
+    )
+
+    summaries = {item["name"]: item for item in list_profiles()}
+
+    assert summaries["broken"]["provider"] == "microsoft"
+    assert "error" in summaries["broken"]
+
+
+def test_resolve_by_selector_still_rejects_a_sibling_profiles_malformed_tags(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A sibling profile's malformed ``tags`` must still abort selector resolution.
+
+    `list_profiles()` gained tolerance for a malformed `provider`/`tags` on
+    one profile, but the actual account-selection path
+    (`load_config(profile=...)` -> `_resolve_by_selector`) must keep raising
+    when *any* profile's `tags` is unparseable, rather than treating it as
+    "no tags" for that profile and resolving around it - an early attempt
+    at this fix did exactly that, which would have silently misrouted
+    `--profile shared` to `work` instead of raising (issue #293, scenario 3
+    - this must never regress).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    (tmp_path / "config.toml").write_text(
+        "[profiles.work]\n"
+        'provider = "microsoft"\n'
+        'client_id = "ms-client"\n'
+        'tags = ["shared"]\n'
+        "\n"
+        "[profiles.personal]\n"
+        'provider = "google"\n'
+        'tags = ["shared", 7]\n'  # malformed: 7 is not a string
+    )
+
+    with pytest.raises(ProviderConfigError, match="tags entries must be"):
+        load_config(profile="shared")
+
+
+def test_resolve_by_selector_still_fails_closed_on_a_genuine_tag_collision(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The real ``--profile``/``BLUMKIN_PROFILE`` selection path stays fail-closed/loud.
+
+    Two profiles that both carry a well-formed, matching tag must still
+    make selector resolution raise on the ambiguity rather than silently
+    picking one of them - the collision scan itself, not just malformed-tag
+    parsing, must keep failing closed (issue #293, scenario 3).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    (tmp_path / "config.toml").write_text(
+        "[profiles.work]\n"
+        'provider = "microsoft"\n'
+        'client_id = "ms-client"\n'
+        'tags = ["shared"]\n'
+        "\n"
+        "[profiles.personal]\n"
+        'provider = "google"\n'
+        'tags = ["shared"]\n'
+    )
+
+    with pytest.raises(ProviderConfigError, match="multiple profiles"):
+        load_config(profile="shared")
+
+
 def test_missing_config_has_zero_profiles(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
