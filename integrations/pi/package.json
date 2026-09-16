@@ -21,6 +21,15 @@
   "bugs": {
     "url": "https://github.com/the-hcma/blumkin/issues"
   },
+  "files": [
+    "skills/blumkin/**",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "rm -rf skills && mkdir -p skills && cp -R ../../.agents/skills/blumkin skills/blumkin",
+    "postpack": "rm -rf skills && ln -s ../../.agents/skills skills"
+  },
   "pi": {
     "skills": [
       "./skills/blumkin"

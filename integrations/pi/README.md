@@ -13,12 +13,20 @@ to shell out to it.
 
 ## Install
 
-```bash
-# Directly from this repo (no npm publish required); the fragment after `#`
-# points pi at this subdirectory of the monorepo:
-pi install git:github.com/the-hcma/blumkin@v1.2.1#integrations/pi
+Pi's `git:` source installs the whole repository and expects the package
+manifest at the repo root, so it cannot target this subdirectory directly.
+Until `@the-hcma/blumkin-pi-skill` is published to npm, install from a local
+clone instead — pi's local-path source loads a directory in place, without
+copying, so the symlink above still resolves correctly:
 
-# Or, once published to npm:
+```bash
+git clone https://github.com/the-hcma/blumkin
+pi install ./blumkin/integrations/pi
+```
+
+Or, once published to npm:
+
+```bash
 pi install npm:@the-hcma/blumkin-pi-skill
 ```
 

@@ -145,11 +145,15 @@ up blumkin's skill with no setup, exactly like Cursor's project skill.
 ### Personal / any-repo install
 
 To use blumkin from Pi sessions in *other* repos or projects, install the
-[Pi package](../integrations/pi) that wraps this same skill:
+[Pi package](../integrations/pi) that wraps this same skill. Pi's `git:`
+source installs the whole repo and expects the manifest at the repo root, so
+it can't target this subdirectory in one command; until the package is
+published to npm, install from a local clone (pi's local-path source loads a
+directory in place, so the symlink still resolves):
 
 ```bash
-# Directly from this repo (no npm publish required):
-pi install git:github.com/the-hcma/blumkin@v1.2.1#integrations/pi
+git clone https://github.com/the-hcma/blumkin
+pi install ./blumkin/integrations/pi
 
 # Or, once published to npm:
 pi install npm:@the-hcma/blumkin-pi-skill
