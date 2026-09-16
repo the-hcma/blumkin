@@ -63,6 +63,59 @@ data anywhere.
 - Silent refresh renews access tokens without a browser; deleting the cache
   (`blumkin auth logout`) forces a fresh sign-in.
 
+## Microsoft app registration hardening
+
+A public client's `client_id` is not itself a secret - it is routinely visible
+in redirect URLs and can be embedded in an open-source client without
+weakening security by itself. It is not nothing, though: anyone who learns it
+can attempt their own OAuth flow against it, most notably **device-code-flow
+phishing** (a real technique, e.g. used by Nobelium/APT29 against unrelated
+victims via legitimate public client ids) - the attacker starts a device-code
+request using the known `client_id`, then tricks a real user into completing
+it on Microsoft's genuine login page; the resulting token goes to the
+attacker, not to blumkin. blumkin's requested scopes are sensitive enough
+that this is worth configuring against, not just accepting: `BASE_SCOPES`
+(always requested) covers `Calendars.ReadWrite`, `Chat.Read`,
+`Mail.ReadWrite`, `Mail.Send`, `User.Read`; opt-in config flags can add
+`Files.ReadWrite` (`docs_scopes`), `Files.Read` (`files_scopes`), or
+`Chat.ReadWrite` / `MailboxSettings.ReadWrite` / `OnlineMeetings.ReadWrite` /
+`People.Read` (`wo1162425_scopes` - `MailboxSettings.ReadWrite` in
+particular grants control over mailbox auto-forward/auto-reply rules, so
+treat it as the most sensitive of the set). See `src/blumkin/auth.py` for the
+authoritative, current lists. blumkin itself never uses device-code or ROPC flows -
+only interactive browser sign-in (auth code + PKCE, `localhost` redirect) -
+so the mitigations below narrow this registration's exposure without
+changing how blumkin signs in:
+
+- **Single-tenant, not multi-tenant.** Set "Supported account types" to
+  accounts in *this organizational directory only*, and set `tenant_id` in
+  `config.toml` to your tenant's specific GUID or verified domain - never
+  `common` / `organizations` / `consumers`. This is a per-installation
+  setting: each operator registers their own app in their own tenant, so
+  restricting yours has no effect on anyone else's ability to run blumkin.
+  It bounds who can even attempt to sign in to *this* registration to actual
+  members of *your* tenant, rather than anyone on the internet.
+- **Leave "Allow public client flows" enabled, but rely on the other
+  mitigations here instead of disabling it.** `InteractiveBrowserCredential`'s
+  auth-code-plus-PKCE flow is *itself* a public client flow and needs this
+  setting on - blumkin's own sign-in breaks without it. It does not
+  distinguish auth-code-plus-PKCE from device code / ROPC, so it cannot be
+  used to allow one and block the other; single-tenant scope, redirect URI
+  restriction, and assignment requirement are what actually narrow the
+  device-code-phishing surface here.
+- **Restrict redirect URIs** to `http://localhost` (loopback) registered
+  under the **Mobile and desktop applications** platform (not Web or SPA -
+  SPA redirect URIs can't be used with this non-SPA flow and will break
+  sign-in), with no wildcards - this is what `InteractiveBrowserCredential`
+  uses and all it needs.
+- **Consider "assignment required"** on the corresponding Enterprise
+  Application if your tenant has more than one member, so only explicitly
+  assigned users/groups can even complete sign-in, further narrowing who a
+  phishing attempt could target.
+
+None of this is enforced by blumkin's code - it is Entra-side configuration
+on the app registration itself, done once at setup.
+
 ## Blast radius
 
 - A skill only ever affects the operator's own tenant, with their own consent.

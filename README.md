@@ -181,7 +181,11 @@ Set `tenant_id`, `default_tz`, and `provider` in the profile table (there are no
 org-specific code defaults). `provider` defaults to `microsoft` when omitted.
 
 Interactive browser auth is public-client only (`client_id`; plus `tenant_id` for
-Microsoft). Do not set a client secret for these flows.
+Microsoft). Do not set a client secret for these flows. Set `tenant_id` to your
+tenant's specific GUID or verified domain, never `common` / `organizations` /
+`consumers` - see the app-registration hardening checklist in
+[`docs/SECURITY-AT-A-GLANCE.md`](./docs/SECURITY-AT-A-GLANCE.md#microsoft-app-registration-hardening)
+before your first login.
 
 Microsoft token cache files (under `profiles/<name>/`):
 
