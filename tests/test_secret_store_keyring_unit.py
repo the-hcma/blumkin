@@ -459,6 +459,40 @@ def test_auto_fallback_deletes_a_stale_keyring_entry_so_the_file_is_actually_rea
     assert secret_store.read_text(cfg, "token_cache") == "second-value"
 
 
+def test_auto_leaves_the_stale_keyring_entry_intact_when_the_file_write_itself_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A failed fallback file write must not first delete the still-good keyring entry.
+
+    The stale-entry cleanup used to run *before* the fallback file write -
+    if that write then failed too (a read-only mount, ENOSPC, a symlinked
+    path component, ...), the secret was gone from both backends at once,
+    with nothing left to recover from. Cleaning up only after the file
+    write has actually landed means a failed file write leaves the old
+    keyring value intact rather than losing the secret outright (issue #287
+    review, round 9).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    fake = _BreaksAfterFirstWriteKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    secret_store.write_text(cfg, "token_cache", "first-value")
+    assert secret_store.read_text(cfg, "token_cache") == "first-value"
+
+    monkeypatch.setattr(
+        secret_store,
+        "_write_file_secret",
+        lambda *a, **k: (_ for _ in ()).throw(SecretWriteError("disk full")),
+    )
+    with pytest.raises(SecretWriteError, match="disk full"):
+        secret_store.write_text(cfg, "token_cache", "second-value")
+
+    # The stale keyring entry must still be there - it was never deleted,
+    # since the file write it exists to make redundant never succeeded.
+    assert _account(cfg, "token_cache") in fake.store
+    assert fake.store[_account(cfg, "token_cache")] == "first-value"
+
+
 def test_auto_raises_when_write_fails_and_the_stale_entry_cannot_be_cleaned_up(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -604,6 +638,30 @@ def test_keyring_account_is_namespaced_by_config_dir(tmp_path: Path, monkeypatch
 
     secret_store.delete(alternate, "auth_record")
     assert secret_store.read_text(primary, "auth_record") == "primary-value"
+
+
+def test_keyring_account_resolves_config_dir_so_relative_spellings_still_match(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Two spellings of the same config dir must key the same keychain item.
+
+    ``_keyring_account`` used to key on ``str(cfg.config_dir)`` directly -
+    only ``expanduser()``'d, never resolved - so a config dir addressed via a
+    ``..`` segment (or a different relative path that resolves to the same
+    directory) would silently miss the entry a previous write under a
+    different-but-equivalent spelling created (issue #287 review, round 9).
+    """
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    written = _load(real_dir, monkeypatch, token_storage="keyring")
+    secret_store.write_text(written, "auth_record", "value")
+
+    detoured = _load(tmp_path / "detour" / ".." / "real", monkeypatch, token_storage="keyring")
+    assert detoured.config_dir.resolve() == real_dir.resolve()
+    assert secret_store.read_text(detoured, "auth_record") == "value"
 
 
 @pytest.fixture

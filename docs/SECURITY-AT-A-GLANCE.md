@@ -33,21 +33,27 @@ data anywhere.
   extra (`pipx install 'blumkin[keychain]'`) is installed and a real backend
   is usable at runtime. `token_storage = "auto"` (the default in
   `config.toml`) prefers the OS keychain (macOS Keychain, Windows Credential
-  Manager, Linux Secret Service) whenever that is the case, silently falling
-  back to the plain file for most synchronous runtime trouble (headless
-  Linux with no Secret Service, the extra not installed, a keychain
-  write/delete failing outright, etc.); it raises instead of falling back
-  when a keychain call *times out* (a hung/locked backend), since the
-  abandoned call keeps running and could still complete later - after a
-  newer login/logout for the same profile - and silently clobber or
-  resurrect state, so the caller is told to retry rather than risk that. It
-  also raises if a fallback write's stale-keyring-entry cleanup itself
-  cannot be reconciled, which would otherwise leave the two backends
-  silently disagreeing. `token_storage = "keyring"` pins the keychain: it
-  warns once (not on every call) when no usable backend is found, and
-  raises if a write or delete to the keychain fails for any reason
-  (timeout included), since the operator explicitly asked for it and a
-  silent downgrade to the file would defeat that choice.
+  Manager, Linux Secret Service) whenever that is the case. Only a *write*
+  silently falls back to the plain file for most synchronous runtime
+  trouble (headless Linux with no Secret Service, the extra not installed,
+  a keychain write failing outright, etc.) - a *delete* (`auth logout`) has
+  no file fallback and instead raises on any keychain failure, since
+  silently reporting a successful logout while credentials remain in the
+  keychain would be worse than a loud, actionable error. It raises rather
+  than falling back or reporting success when a keychain *write or delete*
+  call *times out* (a hung/locked backend), since the abandoned call keeps
+  running and could still complete later - after a newer login/logout for
+  the same profile - and silently clobber or resurrect state, so the
+  caller is told to retry rather than risk that; a *read* that times out is
+  simply treated as "nothing found there yet" and falls through to the
+  file, since there is nothing to lose by retrying a read later. It also
+  raises if a fallback write's stale-keyring-entry cleanup itself cannot be
+  reconciled, which would otherwise leave the two backends silently
+  disagreeing. `token_storage = "keyring"` pins the keychain: it warns once
+  (not on every call) when no usable backend is found, and raises if a
+  write or delete to the keychain fails for any reason (timeout included),
+  since the operator explicitly asked for it and a silent downgrade to the
+  file would defeat that choice.
   `token_storage = "file"` forces the file unconditionally, even when a
   keychain backend is available. Neither backend does cryptographic
   or host binding - a copied file, or a keychain item exported off the

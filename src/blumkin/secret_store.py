@@ -255,6 +255,11 @@ def read_text(cfg: BlumkinConfig, kind: SecretKind) -> str | None:
 def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
     """Persist the secret for ``kind`` to the active backend for this profile."""
     path = _file_path(cfg, kind)
+    # Populated only when an "auto" keyring write failed and a keyring
+    # cleanup of a possibly-stale entry still needs attempting *after* the
+    # file write below has safely landed - see the ordering note in the
+    # except-Exception branch.
+    stale_cleanup: tuple[Any, str, bool, Exception] | None = None
     if _backend_for(cfg) == "keyring":
         keyring = _keyring_module()
         if keyring is None:
@@ -292,52 +297,70 @@ def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
             # crucially including the very first write ever made for this
             # account, where there is nothing in the keyring to disagree
             # with the file no matter how the write failed.
+            #
+            # This probe must happen *before* the file write below: once
+            # that write lands, ``path.is_file()`` is always true and can no
+            # longer distinguish "there is a stale keyring entry to clean
+            # up" from "this profile has always used the file" (every
+            # profile upgraded from before #287, pinned to "file" earlier,
+            # or already falling back under "auto" would look identical to
+            # a genuine stale entry) - that ambiguity is exactly what made
+            # "auto" wrongly raise on an ordinary keychain outage for such a
+            # profile (issue #287 review, round 9).
             try:
-                already_had_value = (
+                confirmed_stale_value = (
                     _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
                     is not None
                 )
+                probe_failed = False
             except Exception:
-                # The probe failed too - most likely the same access problem
-                # that failed the write (a locked/denied keychain blocks
-                # reads the same way it blocks writes), which is not
-                # evidence that a value exists. Whether a plaintext file
-                # already exists is the only cheap signal available (without
-                # persisting extra state) for "this account has been used
-                # before" - if there isn't one either, this is almost
-                # certainly this account's very first write, so there is
-                # nothing to leave behind and no possible disagreement
-                # (issue #287 review: a locked keychain must not fail a
-                # brand new profile's very first login).
-                already_had_value = path.is_file()
-            if already_had_value:
-                # A *stale* keyring entry from a prior successful write must
-                # not be left behind: read_text() always prefers a present
-                # keyring value over the file, so the value we are about to
-                # write to the file would otherwise be permanently
-                # unreachable (issue #287 review). Unlike the migration
-                # rollback in read_text() (where both backends already
-                # agree), a failure to remove this stale entry leaves the
-                # two backends genuinely disagreeing - the keyring still has
-                # the *old* value, the file has the *new* one - so it is
-                # surfaced as a failure instead of swallowed, even though we
-                # are inside "auto": a loud, rare double-fault (keyring
-                # write failed *and* keyring cleanup failed) is safer than a
-                # quiet, indefinite split-brain between the two backends
-                # (issue #287 review).
-                try:
-                    _call_keyring_with_timeout(keyring.delete_password, _KEYRING_SERVICE, account)
-                except Exception as cleanup_exc:
-                    if not _is_not_found(keyring, cleanup_exc):
-                        raise SecretWriteError(
-                            f"cannot write {kind}: the OS keychain write failed ({exc}) and "
-                            f"the stale keychain entry left behind could not be removed "
-                            f"({cleanup_exc}) - the file and keychain backends now disagree"
-                        ) from cleanup_exc
+                confirmed_stale_value = False
+                probe_failed = True
+            if confirmed_stale_value or probe_failed:
+                stale_cleanup = (keyring, account, confirmed_stale_value, exc)
         else:
             return
+    # The file write happens *before* any stale-keyring-entry cleanup below,
+    # not after: cleaning up first and then having this write also fail
+    # (a read-only mount, ENOSPC, a symlinked path component, ...) would
+    # lose the secret from both backends at once, with nothing left to
+    # recover from (issue #287 review, round 9).
     _ensure_secret_dir(path.parent, stop_at=cfg.config_dir)
     _write_file_secret(path, text)
+    if stale_cleanup is not None:
+        keyring_mod, account, confirmed_stale_value, write_exc = stale_cleanup
+        try:
+            _call_keyring_with_timeout(keyring_mod.delete_password, _KEYRING_SERVICE, account)
+        except Exception as cleanup_exc:
+            if _is_not_found(keyring_mod, cleanup_exc):
+                return
+            if confirmed_stale_value:
+                # There is positive evidence (a successful probe) that a
+                # keyring entry existed before this write, and cleaning it
+                # up just failed too: the keyring still holds the *old*
+                # value while the file now holds the *new* one, and
+                # read_text() always prefers a present keyring value over
+                # the file - so the value just written to the file would
+                # otherwise be permanently unreachable. A loud, rare
+                # double-fault here is safer than a quiet, indefinite
+                # split-brain between the two backends (issue #287 review).
+                raise SecretWriteError(
+                    f"cannot write {kind}: the OS keychain write failed ({write_exc}) and "
+                    f"the stale keychain entry left behind could not be removed "
+                    f"({cleanup_exc}) - the file and keychain backends now disagree"
+                ) from cleanup_exc
+            # The probe itself failed - most likely the same access problem
+            # that failed the write and this cleanup attempt (a locked or
+            # unreachable keychain blocks reads the same way it blocks
+            # writes) - so there is no positive evidence a stale entry ever
+            # existed to leave behind. The write itself already safely
+            # landed on the file above; "auto" must not fail a login just
+            # because a cleanup of unknown necessity also failed (issue
+            # #287 review, round 9: this used to be decided by
+            # ``path.is_file()``, which - after this function started
+            # writing the file first - could never again tell "a stale
+            # keyring entry" apart from "this profile has always used the
+            # file").
 
 
 _KEYRING_SERVICE = "blumkin"
@@ -400,9 +423,20 @@ def _keyring_account(cfg: BlumkinConfig, kind: SecretKind) -> str:
     - e.g. a sandbox/CI tenant vs. the primary one) that both happen to have a
     profile named the same must not collide on one keychain item (issue #287
     review). JSON-encoded so ``:`` inside a config dir path or profile name
-    cannot be used to construct a colliding account string.
+    cannot be used to construct a colliding account string. ``config_dir`` is
+    resolved (``Path.resolve()``, not just ``expanduser()``'d) before keying
+    so two spellings of the same directory - a relative ``BLUMKIN_CONFIG_DIR``
+    resolved against a different cwd, ``..`` segments, or a symlink - match
+    the same keychain item the file backend already treats as one path
+    (``cfg.token_cache_path`` etc. are absolute-but-unresolved; matching that
+    exactly is unnecessary since the keyring key only has to be internally
+    consistent with itself, not with the file backend's own string) instead
+    of silently addressing two different keychain entries, or the same entry
+    from two directories that happen to resolve to it (issue #287 review
+    round 9).
     """
-    return json.dumps([str(cfg.config_dir), cfg.profile, kind], separators=(",", ":"))
+    resolved_config_dir = str(cfg.config_dir.resolve())
+    return json.dumps([resolved_config_dir, cfg.profile, kind], separators=(",", ":"))
 
 
 _keyring_checked = False
