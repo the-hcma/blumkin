@@ -806,7 +806,14 @@ def auth_logout(ctx: click.Context, as_json_flag: bool) -> None:
     """
     as_json = _as_json(ctx, as_json_flag)
     cfg = _load_config()
-    _workspace(cfg).auth_logout()
+    try:
+        _workspace(cfg).auth_logout()
+    except SecretWriteError as exc:
+        # A keyring entry existed but couldn't be deleted (denied, backend
+        # error, ...) - surface it rather than report a successful logout
+        # that left the credential usable (issue #287 review).
+        _emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
     clear_signature_state(cfg)
     if as_json:
         emit_json({"ok": True})
@@ -1300,6 +1307,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"running_from: {build['running_from']}"])
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
+        emit_lines([f"token_storage_backend: {status.get('token_storage_backend', 'file')}"])
         for problem in problems:
             emit_lines([f"problem: {problem}"])
         for warning in warnings:

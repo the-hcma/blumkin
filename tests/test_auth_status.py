@@ -32,3 +32,30 @@ def test_status_reads_access_token_expiry(tmp_path: Path, monkeypatch) -> None:
     assert payload["access_token_expires_at"] is not None
     assert payload["access_token_expires_in_seconds"] is not None
     assert payload["access_token_expires_in_seconds"] > 0
+
+
+def test_status_dict_reports_token_storage_backend(tmp_path: Path, monkeypatch) -> None:
+    """`doctor` prints this key verbatim - a drop or rename must fail loudly (issue #287 review)."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntoken_storage = "file"\n'
+    )
+    assert status_dict()["token_storage_backend"] == "file"
+
+    from blumkin import secret_store
+
+    class _FakeKeyring:
+        def get_password(self, service: str, username: str) -> str | None:
+            return None
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            pass
+
+        def delete_password(self, service: str, username: str) -> None:
+            pass
+
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntoken_storage = "keyring"\n'
+    )
+    assert status_dict()["token_storage_backend"] == "keyring"

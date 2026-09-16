@@ -13,7 +13,7 @@ permissions, no multi-tenant anything.
 | Data | Location | In git? |
 |------|----------|---------|
 | OAuth client id (public client) | `~/.config/blumkin/config.toml` (mode `0600`) | never |
-| Token cache + auth record / Google token | `~/.config/blumkin/profiles/<name>/` | never |
+| Token cache + auth record / Google token | `~/.config/blumkin/profiles/<name>/` (file backend), or the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) when `token_storage` selects it - see below | never |
 | Google desktop-client JSON (holds `client_secret`) | operator-chosen path, mode `0600` | never |
 | The user's mail / calendar / chat content | fetched on demand, printed to stdout, not persisted | n/a |
 
@@ -28,12 +28,40 @@ data anywhere.
 - **Delegated only.** Interactive browser sign-in (public client + `localhost`
   redirect). No client secret for Microsoft flows; the Google secret stays in
   the desktop-client JSON, never in toml or env.
-- The token cache and auth record are written under `~/.config/blumkin/` as
-  plaintext, mode `0600`, with **no cryptographic or host binding** - a copy
-  taken with the client id / tenant will refresh on another machine. Protect
-  the directory; revoke tenant-side (or remove the app grant) if it leaks.
+- The token cache and auth record are written under `~/.config/blumkin/` by
+  default (the plain `0600` file backend) unless the optional `keychain`
+  extra (`pipx install 'blumkin[keychain]'`) is installed and a real backend
+  is usable at runtime. `token_storage = "auto"` (the default in
+  `config.toml`) prefers the OS keychain (macOS Keychain, Windows Credential
+  Manager, Linux Secret Service) whenever that is the case. Only a *write*
+  silently falls back to the plain file for most synchronous runtime
+  trouble (headless Linux with no Secret Service, the extra not installed,
+  a keychain write failing outright, etc.) - a *delete* (`auth logout`) has
+  no file fallback and instead raises on any keychain failure, since
+  silently reporting a successful logout while credentials remain in the
+  keychain would be worse than a loud, actionable error. It raises rather
+  than falling back or reporting success when a keychain *write or delete*
+  call *times out* (a hung/locked backend), since the abandoned call keeps
+  running and could still complete later - after a newer login/logout for
+  the same profile - and silently clobber or resurrect state, so the
+  caller is told to retry rather than risk that; a *read* that times out is
+  simply treated as "nothing found there yet" and falls through to the
+  file, since there is nothing to lose by retrying a read later. It also
+  raises if a fallback write's stale-keyring-entry cleanup itself cannot be
+  reconciled, which would otherwise leave the two backends silently
+  disagreeing. `token_storage = "keyring"` pins the keychain: it warns once
+  (not on every call) when no usable backend is found, and raises if a
+  write or delete to the keychain fails for any reason (timeout included),
+  since the operator explicitly asked for it and a silent downgrade to the
+  file would defeat that choice.
+  `token_storage = "file"` forces the file unconditionally, even when a
+  keychain backend is available. Neither backend does cryptographic
+  or host binding - a copied file, or a keychain item exported off the
+  machine, will refresh on another host with the client id / tenant. Protect
+  the directory (and, for the keychain path, the OS account); revoke
+  tenant-side (or remove the app grant) if it leaks. See issue #287.
 - Silent refresh renews access tokens without a browser; deleting the cache
-  forces a fresh sign-in.
+  (`blumkin auth logout`) forces a fresh sign-in.
 
 ## Blast radius
 

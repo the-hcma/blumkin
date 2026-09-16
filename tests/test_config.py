@@ -326,8 +326,8 @@ def test_named_profile_secret_writes_under_profile_dir(tmp_path: Path, monkeypat
     _write_multi_profile(tmp_path, oauth)
 
     work = load_config(profile="work")
-    auth._cache_bound_path = str(work.token_cache_path)
-    auth._cache_bound_stop_at = work.config_dir
+    auth._cache_bound_cfg = work
+    auth._cache_bound_key = auth._cache_key(work)
     auth._token_cache.deserialize("")
     auth._token_cache.has_state_changed = True
     auth.save_token_cache(work)
@@ -379,8 +379,8 @@ def test_atexit_named_profile_refuses_symlinked_profiles_dir(tmp_path: Path, mon
     profiles_link = tmp_path / "profiles"
     profiles_link.symlink_to(real_profiles)
     work = load_config(profile="work")
-    auth._cache_bound_path = str(work.token_cache_path)
-    auth._cache_bound_stop_at = work.config_dir
+    auth._cache_bound_cfg = work
+    auth._cache_bound_key = auth._cache_key(work)
     auth._token_cache.deserialize("")
     auth._token_cache.has_state_changed = True
     auth._save_bound_token_cache_at_exit()

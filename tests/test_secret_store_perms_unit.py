@@ -1,4 +1,4 @@
-"""Secret file permission hardening for the MSAL cache and auth record."""
+"""Secret file permission hardening for blumkin.secret_store's file backend."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from blumkin import auth
-from blumkin.auth import SecretWriteError
+from blumkin import secret_store
+from blumkin.secret_store import SecretWriteError
 
 _POSIX_MODE_TESTS = pytest.mark.skipif(
     sys.platform == "win32",
@@ -21,14 +21,14 @@ _POSIX_MODE_TESTS = pytest.mark.skipif(
 def test_write_secret_text_round_trips(tmp_path: Path) -> None:
     """Every platform must persist without raising (Windows has no fchmod)."""
     target = tmp_path / "msal_token_cache.json"
-    auth._write_secret_text(target, '{"RefreshToken":{}}')
+    secret_store._write_file_secret(target, '{"RefreshToken":{}}')
     assert target.read_text(encoding="utf-8") == '{"RefreshToken":{}}'
 
 
 @_POSIX_MODE_TESTS
 def test_write_secret_text_creates_0600(tmp_path: Path) -> None:
     target = tmp_path / "msal_token_cache.json"
-    auth._write_secret_text(target, '{"RefreshToken":{}}')
+    secret_store._write_file_secret(target, '{"RefreshToken":{}}')
     mode = stat.S_IMODE(target.stat().st_mode)
     assert mode == 0o600
 
@@ -39,7 +39,7 @@ def test_write_secret_text_tightens_existing_world_readable(tmp_path: Path) -> N
     target.write_text("stale", encoding="utf-8")
     target.chmod(0o644)
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
-    auth._write_secret_text(target, "secret-payload")
+    secret_store._write_file_secret(target, "secret-payload")
     mode = stat.S_IMODE(target.stat().st_mode)
     assert mode == 0o600
     assert target.read_text(encoding="utf-8") == "secret-payload"
@@ -55,7 +55,7 @@ def test_write_secret_text_refuses_symlink(tmp_path: Path) -> None:
     link = tmp_path / "msal_token_cache.json"
     link.symlink_to(real)
     with pytest.raises(SecretWriteError, match="cannot write secret file"):
-        auth._write_secret_text(link, "hijack")
+        secret_store._write_file_secret(link, "hijack")
     assert real.read_text(encoding="utf-8") == "keep"
 
 
@@ -63,7 +63,7 @@ def test_write_secret_text_refuses_symlink(tmp_path: Path) -> None:
 def test_ensure_secret_dir_tightens_existing_mode(tmp_path: Path) -> None:
     directory = tmp_path / "blumkin"
     directory.mkdir(mode=0o755)
-    auth._ensure_secret_dir(directory, stop_at=directory)
+    secret_store._ensure_secret_dir(directory, stop_at=directory)
     mode = stat.S_IMODE(directory.stat().st_mode)
     assert mode == 0o700
 
@@ -76,7 +76,7 @@ def test_ensure_secret_dir_refuses_symlink(tmp_path: Path) -> None:
     link = tmp_path / "blumkin"
     link.symlink_to(real)
     with pytest.raises(SecretWriteError, match="cannot use symlinked config dir"):
-        auth._ensure_secret_dir(link, stop_at=link)
+        secret_store._ensure_secret_dir(link, stop_at=link)
 
 
 def test_ensure_secret_dir_refuses_symlinked_ancestor(tmp_path: Path) -> None:
@@ -89,7 +89,7 @@ def test_ensure_secret_dir_refuses_symlinked_ancestor(tmp_path: Path) -> None:
     link.symlink_to(real)
     nested = link / "profiles" / "work"
     with pytest.raises(SecretWriteError, match="cannot use symlinked config dir"):
-        auth._ensure_secret_dir(nested, stop_at=link)
+        secret_store._ensure_secret_dir(nested, stop_at=link)
     assert not (real / "profiles").exists()
 
 
@@ -97,7 +97,7 @@ def test_ensure_secret_dir_allows_platform_symlinks_above_config(tmp_path: Path)
     """Walk stops at config_dir so macOS /var → /private/var does not refuse writes."""
     config_dir = tmp_path / "blumkin"
     profile_dir = config_dir / "profiles" / "work"
-    auth._ensure_secret_dir(profile_dir, stop_at=config_dir)
+    secret_store._ensure_secret_dir(profile_dir, stop_at=config_dir)
     assert profile_dir.is_dir()
     assert not profile_dir.is_symlink()
 
@@ -107,7 +107,7 @@ def test_ensure_secret_dir_rejects_path_outside_stop_at(tmp_path: Path) -> None:
     config_dir.mkdir()
     outside = tmp_path / "elsewhere" / "work"
     with pytest.raises(SecretWriteError, match="outside config dir"):
-        auth._ensure_secret_dir(outside, stop_at=config_dir)
+        secret_store._ensure_secret_dir(outside, stop_at=config_dir)
     assert not outside.exists()
 
 
@@ -119,7 +119,7 @@ def test_ensure_secret_dir_survives_chmod_oserror(tmp_path: Path, monkeypatch) -
         raise OSError("chmod unsupported")
 
     monkeypatch.setattr(os, "chmod", reject)
-    auth._ensure_secret_dir(directory, stop_at=directory)
+    secret_store._ensure_secret_dir(directory, stop_at=directory)
     assert directory.is_dir()
 
 
@@ -132,5 +132,29 @@ def test_write_secret_text_survives_fchmod_oserror(tmp_path: Path, monkeypatch) 
         raise OSError("fchmod unsupported")
 
     monkeypatch.setattr(os, "fchmod", reject)
-    auth._write_secret_text(target, "still-saved")
+    secret_store._write_file_secret(target, "still-saved")
     assert target.read_text(encoding="utf-8") == "still-saved"
+
+
+def test_write_secret_text_completes_a_short_write(tmp_path: Path, monkeypatch) -> None:
+    """A `os.write` that accepts fewer bytes than given must not truncate the secret.
+
+    Simulates the short-write case `os.write` is documented to allow (e.g. a
+    signal interrupting a large write): only 4 bytes land per call, so a
+    single-call implementation would silently persist a truncated credential
+    (issue #287 review).
+    """
+    target = tmp_path / "msal_token_cache.json"
+    real_write = os.write
+    chunks: list[bytes] = []
+
+    def short_write(fd: int, data) -> int:
+        limited = bytes(data)[:4]
+        chunks.append(limited)
+        return real_write(fd, limited)
+
+    monkeypatch.setattr(os, "write", short_write)
+    payload = "0123456789" * 5  # 50 bytes, well over the 4-byte cap per call
+    secret_store._write_file_secret(target, payload)
+    assert target.read_text(encoding="utf-8") == payload
+    assert len(chunks) > 1

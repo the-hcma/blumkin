@@ -8,14 +8,15 @@ import os
 import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from azure.identity import AuthenticationRecord, InteractiveBrowserCredential
 from msal import SerializableTokenCache
 
+from blumkin import secret_store
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.kind import ProviderConfigError
+from blumkin.secret_store import SecretWriteError as SecretWriteError
 
 
 class AuthError(ValueError):
@@ -84,10 +85,6 @@ class MissingScopeError(AuthError):
         self.missing = missing
 
 
-class SecretWriteError(OSError):
-    """Failed to persist the MSAL cache or auth record (symlink, perms, etc.)."""
-
-
 # Remedy WO1162425 was augmented beyond the original chat/meetings pair; Identity has
 # not finished granting the new asks. Keep these off until wo1162425_scopes + re-consent.
 # Full ask list (Teams / mailbox / productivity) lives in HANDOFF.md — only scopes we
@@ -101,8 +98,8 @@ WO1162425_SCOPES = [
 
 _token_cache = SerializableTokenCache()
 _atexit_registered = False
-_cache_bound_path: str | None = None
-_cache_bound_stop_at: Path | None = None
+_cache_bound_cfg: BlumkinConfig | None = None
+_cache_bound_key: tuple[str, str] | None = None
 
 
 def create_credential(
@@ -208,34 +205,32 @@ def refresh_silent(config: BlumkinConfig | None = None) -> dict[str, Any]:
 
 
 def logout(config: BlumkinConfig | None = None) -> None:
-    global _cache_bound_path, _cache_bound_stop_at
+    global _cache_bound_cfg, _cache_bound_key
     cfg = config or load_config()
-    for path in (cfg.token_cache_path, cfg.auth_record_path):
-        if path.is_file():
-            path.unlink()
+    secret_store.delete(cfg, "token_cache")
+    secret_store.delete(cfg, "auth_record")
     # Drop in-memory cache so atexit cannot recreate deleted secrets.
     _token_cache.deserialize("")
-    if _cache_bound_path == str(cfg.token_cache_path):
-        _cache_bound_path = None
-        _cache_bound_stop_at = None
+    if _cache_bound_key == _cache_key(cfg):
+        _cache_bound_cfg = None
+        _cache_bound_key = None
 
 
 def reload_token_cache_from_disk(config: BlumkinConfig | None = None) -> None:
     """Force re-read MSAL cache from disk (e.g. after a test mutates the file)."""
-    global _cache_bound_path, _cache_bound_stop_at
+    global _cache_bound_cfg, _cache_bound_key
     cfg = config or load_config()
-    _cache_bound_path = None
-    _cache_bound_stop_at = None
+    _cache_bound_cfg = None
+    _cache_bound_key = None
     _ensure_cache(cfg)
 
 
 def save_token_cache(config: BlumkinConfig | None = None) -> None:
     cfg = config or load_config()
-    if _cache_bound_path != str(cfg.token_cache_path):
+    if _cache_bound_key != _cache_key(cfg):
         return
     if _token_cache.has_state_changed:
-        _ensure_secret_dir(cfg.profile_dir, stop_at=cfg.config_dir)
-        _write_secret_text(cfg.token_cache_path, _token_cache.serialize())
+        secret_store.write_text(cfg, "token_cache", _token_cache.serialize())
 
 
 def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
@@ -247,7 +242,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
         "access_token_expired": access.get("expired"),
-        "auth_record": cfg.auth_record_path.is_file(),
+        "auth_record": secret_store.exists(cfg, "auth_record"),
         "client_id_configured": bool(cfg.client_id),
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),
@@ -261,7 +256,12 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "refresh_token_present": access.get("refresh_token_present", False),
         "requested_scopes": requested,
         "tenant_id": cfg.tenant_id,
-        "token_cache": cfg.token_cache_path.is_file(),
+        "token_cache": secret_store.exists(cfg, "token_cache"),
+        # token_cache (not auth_record): it is the one refreshed - and thus
+        # re-serialized/re-persisted - on virtually every silent auth call,
+        # so it is the secret most likely to reveal a backend that only
+        # falls back to the file at write time (issue #287 review).
+        "token_storage_backend": secret_store.active_backend(cfg, "token_cache"),
     }
 
 
@@ -273,10 +273,11 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
         "expires_in_seconds": None,
         "refresh_token_present": False,
     }
-    if not cfg.token_cache_path.is_file():
+    raw = secret_store.read_text(cfg, "token_cache")
+    if raw is None:
         return out
     try:
-        data = json.loads(cfg.token_cache_path.read_text())
+        data = json.loads(raw)
     except json.JSONDecodeError, OSError:
         return out
     out["refresh_token_present"] = bool(data.get("RefreshToken"))
@@ -301,6 +302,18 @@ def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
     out["expires_in_seconds"] = remaining
     out["expired"] = remaining <= 0
     return out
+
+
+def _cache_key(cfg: BlumkinConfig) -> tuple[str, str]:
+    """Identify the profile a bound in-memory cache belongs to (config dir + profile).
+
+    A tuple, not an f-string join: ``:`` does not safely delimit the two
+    values (e.g. ``("/tmp/a:work", "one")`` and ``("/tmp/a", "work:one")``
+    would otherwise collide onto the same string key), and a collision here
+    lets ``_ensure_cache``/``save_token_cache`` persist one profile's token
+    cache into another's (issue #287 review).
+    """
+    return (str(cfg.config_dir), cfg.profile)
 
 
 def _classify_get_token_error(exc: BaseException) -> AuthError:
@@ -331,50 +344,20 @@ def _classify_get_token_error(exc: BaseException) -> AuthError:
 
 
 def _ensure_cache(cfg: BlumkinConfig) -> None:
-    global _atexit_registered, _cache_bound_path, _cache_bound_stop_at
-    path = str(cfg.token_cache_path)
-    if _cache_bound_path == path:
+    global _atexit_registered, _cache_bound_cfg, _cache_bound_key
+    key = _cache_key(cfg)
+    if _cache_bound_key == key:
         return
     _token_cache.deserialize("")
-    if cfg.token_cache_path.is_file():
-        _token_cache.deserialize(cfg.token_cache_path.read_text())
-    _cache_bound_path = path
-    _cache_bound_stop_at = cfg.config_dir
-    # Register once: save only the currently bound path (never stale dirs).
+    cached = secret_store.read_text(cfg, "token_cache")
+    if cached is not None:
+        _token_cache.deserialize(cached)
+    _cache_bound_cfg = cfg
+    _cache_bound_key = key
+    # Register once: save only the currently bound profile (never stale ones).
     if not _atexit_registered:
         atexit.register(_save_bound_token_cache_at_exit)
         _atexit_registered = True
-
-
-def _ensure_secret_dir(directory: Path, *, stop_at: Path) -> None:
-    """Create ``directory`` at 0700; best-effort tighten if it already existed looser.
-
-    Mode-setting is optional: SMB/FUSE mounts may reject ``chmod``. A symlinked
-    config dir or ``profiles/`` segment is refused — ``mkdir(parents=True)``
-    follows intermediate symlinks. The walk stops at ``stop_at`` (the config
-    directory) so platform symlinks such as macOS ``/var`` → ``/private/var``
-    do not break TMPDIR / XDG layouts. Intermediate dirs from ``stop_at`` through
-    the leaf are tightened to 0700 when the filesystem allows it.
-    """
-    if directory != stop_at and stop_at not in directory.parents:
-        raise SecretWriteError(f"secret dir {directory} is outside config dir {stop_at}")
-    _refuse_symlinked_path_components(directory, stop_at=stop_at)
-    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-    current = directory
-    chain: list[Path] = []
-    while True:
-        chain.append(current)
-        if current == stop_at:
-            break
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-    for path in reversed(chain):
-        try:
-            os.chmod(path, 0o700)
-        except OSError:
-            pass
 
 
 def _granted_scopes_from_cache(cfg: BlumkinConfig, requested: Iterable[str]) -> frozenset[str]:
@@ -395,10 +378,11 @@ def _granted_scopes_from_cache(cfg: BlumkinConfig, requested: Iterable[str]) -> 
     Google's equivalent (``persisted_granted_scopes``, reading the token file)
     has no expiry filter either, for the same reason.
     """
-    if not cfg.token_cache_path.is_file():
+    raw = secret_store.read_text(cfg, "token_cache")
+    if raw is None:
         return frozenset()
     try:
-        data = json.loads(cfg.token_cache_path.read_text())
+        data = json.loads(raw)
     except json.JSONDecodeError, OSError:
         return frozenset()
     requested_casefold = {s.casefold() for s in requested}
@@ -419,10 +403,11 @@ def _granted_scopes_from_cache(cfg: BlumkinConfig, requested: Iterable[str]) -> 
 
 
 def _load_auth_record(cfg: BlumkinConfig) -> AuthenticationRecord | None:
-    if not cfg.auth_record_path.is_file():
+    raw = secret_store.read_text(cfg, "auth_record")
+    if raw is None:
         return None
     try:
-        return AuthenticationRecord.deserialize(cfg.auth_record_path.read_text())
+        return AuthenticationRecord.deserialize(raw)
     except Exception:
         return None
 
@@ -433,40 +418,16 @@ def _missing_scopes(requested: Iterable[str], granted: frozenset[str]) -> set[st
     return {s for s in requested if s.casefold() not in granted_casefold}
 
 
-def _refuse_symlinked_path_components(directory: Path, *, stop_at: Path) -> None:
-    """Refuse ``directory`` or ancestors down to ``stop_at`` that are symlinks.
-
-    Caller must ensure ``stop_at`` is ``directory`` or an ancestor.
-    """
-    current = directory
-    while True:
-        if current.is_symlink():
-            raise SecretWriteError(f"cannot use symlinked config dir {current}")
-        if current == stop_at:
-            break
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-
-
 def _save_auth_record(cfg: BlumkinConfig, record: AuthenticationRecord) -> None:
-    _ensure_secret_dir(cfg.profile_dir, stop_at=cfg.config_dir)
-    _write_secret_text(cfg.auth_record_path, record.serialize())
+    secret_store.write_text(cfg, "auth_record", record.serialize())
 
 
 def _save_bound_token_cache_at_exit() -> None:
-    """Persist the in-memory MSAL cache to the currently bound path only."""
-    if (
-        _cache_bound_path is None
-        or _cache_bound_stop_at is None
-        or not _token_cache.has_state_changed
-    ):
+    """Persist the in-memory MSAL cache to the currently bound profile only."""
+    if _cache_bound_cfg is None or not _token_cache.has_state_changed:
         return
-    path = Path(_cache_bound_path)
     try:
-        _ensure_secret_dir(path.parent, stop_at=_cache_bound_stop_at)
-        _write_secret_text(path, _token_cache.serialize())
+        secret_store.write_text(_cache_bound_cfg, "token_cache", _token_cache.serialize())
     except OSError:
         # Avoid "Exception ignored" on atexit when the secret path is a symlink
         # or the filesystem rejects mode/write; process is already exiting.
@@ -476,48 +437,3 @@ def _save_bound_token_cache_at_exit() -> None:
 def _short_scope(scope: str) -> str:
     """Collapse a Google scope URI to its trailing segment; other scopes pass through."""
     return scope.removeprefix("https://www.googleapis.com/auth/")
-
-
-def _write_secret_text(path: Path, text: str) -> None:
-    """Write sensitive text, tightening Unix modes when the file already exists.
-
-    On POSIX, ``O_CREAT`` mode is ignored when the path already exists, so a
-    leftover world-readable cache would keep leaking tokens on every rewrite
-    without an explicit ``fchmod`` to ``0600``. ``O_NOFOLLOW`` (when available)
-    refuses a symlink swap at the path. Mode-setting is best-effort so
-    chmod-less filesystems still persist the cache after ``O_TRUNC``.
-
-    On Windows, ``os.fchmod`` is unavailable and ``os.chmod`` only toggles the
-    read-only bit (ACLs govern access). The post-close ``chmod`` there avoids
-    ``AttributeError`` so login/cache persistence still works; it does not
-    claim a Unix ``0600`` guarantee.
-    """
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    if nofollow:
-        flags |= nofollow
-    try:
-        fd = os.open(path, flags, 0o600)
-    except OSError as exc:
-        # Symlink at the secret path (ELOOP) or other open failure — never follow.
-        raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
-    try:
-        try:
-            if hasattr(os, "fchmod"):
-                try:
-                    os.fchmod(fd, 0o600)
-                except OSError:
-                    pass
-            os.write(fd, text.encode())
-        except OSError as exc:
-            raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
-    finally:
-        try:
-            os.close(fd)
-        except OSError as exc:
-            raise SecretWriteError(f"cannot write secret file {path}: {exc}") from exc
-    if not hasattr(os, "fchmod"):
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass

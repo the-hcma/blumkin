@@ -22,12 +22,12 @@ def test_logout_clears_bound_cache_so_atexit_cannot_rewrite(tmp_path: Path, monk
 
     cfg = load_config()
     auth.reload_token_cache_from_disk(cfg)
-    assert auth._cache_bound_path == str(cache_path)
+    assert auth._cache_bound_key == auth._cache_key(cfg)
 
     logout(cfg)
     assert not cache_path.is_file()
     assert not record_path.is_file()
-    assert auth._cache_bound_path is None
+    assert auth._cache_bound_cfg is None
     assert auth._token_cache.has_state_changed is False
 
     # Even if something marks the empty cache dirty later, bound path is cleared.
