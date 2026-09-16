@@ -2,6 +2,8 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
+[options]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -208,17 +210,17 @@ requires-dist = [
     { name = "google-auth-oauthlib", specifier = ">=1.4.1" },
     { name = "httplib2", specifier = ">=0.32.0" },
     { name = "icalendar", specifier = ">=7.3.0" },
-    { name = "keyring", marker = "extra == 'dev'", specifier = ">=25.0" },
-    { name = "keyring", marker = "extra == 'keychain'", specifier = ">=25.0" },
+    { name = "keyring", marker = "extra == 'dev'", specifier = ">=25.7.0" },
+    { name = "keyring", marker = "extra == 'keychain'", specifier = ">=25.7.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.1.1" },
     { name = "msal", specifier = ">=1.38.0" },
     { name = "msgraph-sdk", specifier = ">=1.62.0" },
-    { name = "openpyxl", marker = "extra == 'dev'", specifier = ">=3.1" },
-    { name = "openpyxl", marker = "extra == 'xlsx'", specifier = ">=3.1" },
+    { name = "openpyxl", marker = "extra == 'dev'", specifier = ">=3.1.5" },
+    { name = "openpyxl", marker = "extra == 'xlsx'", specifier = ">=3.1.5" },
     { name = "pdf2image", marker = "extra == 'ocr'", specifier = ">=1.17" },
-    { name = "pdfplumber", marker = "extra == 'dev'", specifier = ">=0.11" },
-    { name = "pdfplumber", marker = "extra == 'pdf'", specifier = ">=0.11" },
-    { name = "pillow", marker = "extra == 'ocr'", specifier = ">=11" },
+    { name = "pdfplumber", marker = "extra == 'dev'", specifier = ">=0.11.10" },
+    { name = "pdfplumber", marker = "extra == 'pdf'", specifier = ">=0.11.10" },
+    { name = "pillow", marker = "extra == 'ocr'", specifier = ">=12.3.0" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.411" },
     { name = "pytesseract", marker = "extra == 'ocr'", specifier = ">=0.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
@@ -230,10 +232,10 @@ provides-extras = ["dev", "keychain", "mcp", "ocr", "pdf", "xlsx"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "keyring", specifier = ">=25.0" },
+    { name = "keyring", specifier = ">=25.7.0" },
     { name = "mcp", specifier = ">=2.1.1" },
-    { name = "openpyxl", specifier = ">=3.1" },
-    { name = "pdfplumber", specifier = ">=0.11" },
+    { name = "openpyxl", specifier = ">=3.1.5" },
+    { name = "pdfplumber", specifier = ">=0.11.10" },
     { name = "pyright", specifier = ">=1.1.411" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.6" },
