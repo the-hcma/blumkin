@@ -583,7 +583,21 @@ def _call_keyring_with_timeout(func: Any, *args: Any, timeout: float | None = No
     thread.start()
     thread.join(timeout=timeout)
     if thread.is_alive():
-        if len(args) >= 2 and isinstance(args[1], str):
+        # Only a genuinely *mutating* call (set_password/delete_password) can
+        # resurrect or remove a credential once it eventually lands - a timed
+        # out get_password (read_text/exists/active_backend/delete's own
+        # probe) cannot. Registering reads here too would let a later timed
+        # out read silently displace and discard an already-registered
+        # mutating thread for the same account, so a subsequent
+        # _await_pending_mutation call would wait on (and clear) the wrong
+        # thread and could act before the real abandoned write/delete lands
+        # (issue #287 review, round 12).
+        func_name = getattr(func, "__name__", "")
+        if (
+            func_name in ("set_password", "delete_password")
+            and len(args) >= 2
+            and isinstance(args[1], str)
+        ):
             with _pending_mutation_lock:
                 _pending_mutations[args[1]] = thread
         raise TimeoutError(f"keyring backend call timed out after {timeout}s")

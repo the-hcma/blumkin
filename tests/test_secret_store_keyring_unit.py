@@ -378,14 +378,18 @@ def test_await_pending_mutation_waits_for_a_previously_abandoned_call_to_land(
     release = threading.Event()
     landed = threading.Event()
 
-    def _slow_mutation(service: str, account: str, value: str) -> None:
+    def set_password(service: str, account: str, value: str) -> None:
+        # Named `set_password` (rather than a generic helper name) because
+        # `_call_keyring_with_timeout` only registers abandoned mutating
+        # calls - identified by `func.__name__` - in `_pending_mutations`
+        # (issue #287 review, round 12).
         release.wait(timeout=5)
         landed.set()
 
     account = "test-account-for-await-pending-mutation"
     monkeypatch.setattr(secret_store, "_KEYRING_IO_TIMEOUT_SECONDS", 0.05)
     with pytest.raises(TimeoutError):
-        secret_store._call_keyring_with_timeout(_slow_mutation, "svc", account, "value")
+        secret_store._call_keyring_with_timeout(set_password, "svc", account, "value")
     assert account in secret_store._pending_mutations
 
     release.set()
@@ -393,6 +397,46 @@ def test_await_pending_mutation_waits_for_a_previously_abandoned_call_to_land(
 
     assert landed.is_set()
     assert account not in secret_store._pending_mutations
+
+
+def test_a_timed_out_read_does_not_displace_a_registered_pending_mutation(
+    monkeypatch,
+) -> None:
+    """A timed-out ``get_password`` must never overwrite an account's registered mutation.
+
+    Only a genuinely mutating call (``set_password``/``delete_password``) can
+    resurrect or remove a credential once it lands, so it is the only kind of
+    call whose abandoned thread is worth waiting on. Registering a timed-out
+    *read* (``read_text``/``exists``/``active_backend``/``delete``'s own
+    existence probe) under the same account key would silently discard the
+    real pending mutation - `_await_pending_mutation` would then join and
+    clear the harmless read thread instead, letting a caller like `delete()`
+    act on stale information moments before the real abandoned write lands
+    (issue #287 review, round 12).
+    """
+    account = "test-account-for-read-vs-mutation-registration"
+    write_release = threading.Event()
+
+    def set_password(service: str, account: str, value: str) -> None:
+        write_release.wait(timeout=5)
+
+    monkeypatch.setattr(secret_store, "_KEYRING_IO_TIMEOUT_SECONDS", 0.05)
+    with pytest.raises(TimeoutError):
+        secret_store._call_keyring_with_timeout(set_password, "svc", account, "value")
+    mutation_thread = secret_store._pending_mutations[account]
+
+    read_release = threading.Event()
+
+    def get_password(service: str, account: str) -> str | None:
+        read_release.wait(timeout=5)
+        return None
+
+    with pytest.raises(TimeoutError):
+        secret_store._call_keyring_with_timeout(get_password, "svc", account)
+
+    assert secret_store._pending_mutations[account] is mutation_thread
+    write_release.set()
+    read_release.set()
 
 
 def test_delete_is_a_noop_when_nothing_is_stored(tmp_path: Path, monkeypatch) -> None:
