@@ -106,6 +106,27 @@ class _BrokenAndUncleanableKeyring(_BrokenKeyring):
         raise RuntimeError("keychain deletion denied")
 
 
+class _LockedKeyring(_FakeKeyring):
+    """A backend present but entirely unreachable (locked login keychain over SSH, etc.).
+
+    Every call - read, write, or delete - fails with the same access error;
+    there is no way to distinguish "there is a stale value we can't reach"
+    from "there was never anything here" from the outside (issue #287
+    review, round 7: the single root cause behind a failed write and a
+    failed stale-entry probe/cleanup must not, on its own, be treated as
+    evidence of a real disagreement between the two backends).
+    """
+
+    def get_password(self, service: str, username: str) -> str | None:
+        raise RuntimeError("keychain locked")
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        raise RuntimeError("keychain locked")
+
+    def delete_password(self, service: str, username: str) -> None:
+        raise RuntimeError("keychain locked")
+
+
 class _HangsOnMutationKeyring(_FakeKeyring):
     """A backend whose ``set_password``/``delete_password`` never return in time.
 
@@ -457,6 +478,29 @@ def test_auto_raises_when_write_fails_and_the_stale_entry_cannot_be_cleaned_up(
 
     with pytest.raises(SecretWriteError, match="now disagree"):
         secret_store.write_text(cfg, "token_cache", "new-value")
+
+
+def test_auto_falls_back_when_a_locked_keychain_fails_a_brand_new_accounts_first_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A locked/unreachable keychain must not block a profile's very first write.
+
+    A single root cause (e.g. a locked login keychain over SSH) fails both
+    the write and the probe/cleanup used to check for a stale entry - with
+    no stale entry actually existing (this is the account's first-ever
+    write), that must not be mistaken for the write-and-cleanup double
+    fault that legitimately leaves the two backends disagreeing (issue #287
+    review, round 7 regression: the "auto" contract - never fail a login
+    just because the keychain is unreachable - must hold even when the
+    keychain also can't be probed for a false-positive stale entry).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    fake = _LockedKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    secret_store.write_text(cfg, "token_cache", "new-value")
+
+    assert cfg.token_cache_path.read_text() == "new-value"
 
 
 def test_auto_raises_rather_than_falls_back_when_a_write_times_out(

@@ -254,6 +254,7 @@ def read_text(cfg: BlumkinConfig, kind: SecretKind) -> str | None:
 
 def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
     """Persist the secret for ``kind`` to the active backend for this profile."""
+    path = _file_path(cfg, kind)
     if _backend_for(cfg) == "keyring":
         keyring = _keyring_module()
         if keyring is None:
@@ -287,32 +288,54 @@ def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
                 raise SecretWriteError(f"cannot write {kind} to the OS keychain: {exc}") from exc
             # "auto" promises a silent fallback to the file on any backend
             # trouble (locked keychain over SSH, access denied, ...), not
-            # just when no backend is installed at all (issue #287 review).
-            # A *stale* keyring entry from a prior successful write must not
-            # be left behind: read_text() always prefers a present keyring
-            # value over the file, so the value we are about to write to the
-            # file would otherwise be permanently unreachable (issue #287
-            # review). Unlike the migration rollback in read_text() (where
-            # both backends already agree), a failure to remove this stale
-            # entry leaves the two backends genuinely disagreeing - the
-            # keyring still has the *old* value, the file has the *new* one
-            # - so it is surfaced as a failure instead of swallowed, even
-            # though we are inside "auto": a loud, rare double-fault (keyring
-            # write failed *and* keyring cleanup failed) is safer than a
-            # quiet, indefinite split-brain between the two backends (issue
-            # #287 review).
+            # just when no backend is installed at all (issue #287 review) -
+            # crucially including the very first write ever made for this
+            # account, where there is nothing in the keyring to disagree
+            # with the file no matter how the write failed.
             try:
-                _call_keyring_with_timeout(keyring.delete_password, _KEYRING_SERVICE, account)
-            except Exception as cleanup_exc:
-                if not _is_not_found(keyring, cleanup_exc):
-                    raise SecretWriteError(
-                        f"cannot write {kind}: the OS keychain write failed ({exc}) and "
-                        f"the stale keychain entry left behind could not be removed "
-                        f"({cleanup_exc}) - the file and keychain backends now disagree"
-                    ) from cleanup_exc
+                already_had_value = (
+                    _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
+                    is not None
+                )
+            except Exception:
+                # The probe failed too - most likely the same access problem
+                # that failed the write (a locked/denied keychain blocks
+                # reads the same way it blocks writes), which is not
+                # evidence that a value exists. Whether a plaintext file
+                # already exists is the only cheap signal available (without
+                # persisting extra state) for "this account has been used
+                # before" - if there isn't one either, this is almost
+                # certainly this account's very first write, so there is
+                # nothing to leave behind and no possible disagreement
+                # (issue #287 review: a locked keychain must not fail a
+                # brand new profile's very first login).
+                already_had_value = path.is_file()
+            if already_had_value:
+                # A *stale* keyring entry from a prior successful write must
+                # not be left behind: read_text() always prefers a present
+                # keyring value over the file, so the value we are about to
+                # write to the file would otherwise be permanently
+                # unreachable (issue #287 review). Unlike the migration
+                # rollback in read_text() (where both backends already
+                # agree), a failure to remove this stale entry leaves the
+                # two backends genuinely disagreeing - the keyring still has
+                # the *old* value, the file has the *new* one - so it is
+                # surfaced as a failure instead of swallowed, even though we
+                # are inside "auto": a loud, rare double-fault (keyring
+                # write failed *and* keyring cleanup failed) is safer than a
+                # quiet, indefinite split-brain between the two backends
+                # (issue #287 review).
+                try:
+                    _call_keyring_with_timeout(keyring.delete_password, _KEYRING_SERVICE, account)
+                except Exception as cleanup_exc:
+                    if not _is_not_found(keyring, cleanup_exc):
+                        raise SecretWriteError(
+                            f"cannot write {kind}: the OS keychain write failed ({exc}) and "
+                            f"the stale keychain entry left behind could not be removed "
+                            f"({cleanup_exc}) - the file and keychain backends now disagree"
+                        ) from cleanup_exc
         else:
             return
-    path = _file_path(cfg, kind)
     _ensure_secret_dir(path.parent, stop_at=cfg.config_dir)
     _write_file_secret(path, text)
 

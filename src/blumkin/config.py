@@ -136,29 +136,7 @@ def google_oauth_installed_client(path: Path) -> dict[str, Any]:
 
 
 def list_profiles() -> list[dict[str, Any]]:
-    """Return safe summaries of configured profiles (no secrets).
-
-    ``load_config(profile=name)`` can raise ``ProviderConfigError`` for a
-    profile that is otherwise listable (a missing/unparseable
-    ``google_oauth_client_file``, a bad ``provider`` value, malformed
-    ``tags``, a name that also collides with another profile's tag, etc.).
-    One broken profile must not hide every healthy one from
-    `blumkin profiles list` or a multi-account MCP server (issue #287
-    review) - such a profile is still listed, with an ``error`` key
-    describing why it could not be fully resolved.
-
-    ``auth_present`` is computed from a minimal, provider-independent
-    ``BlumkinConfig`` (see ``_auth_present_probe_cfg``) rather than from
-    ``load_config``'s result: every field ``secret_store.exists`` actually
-    needs (``config_dir``, ``profile``, ``token_storage``) is resolvable
-    even when the *rest* of the profile's config is broken, so a bad
-    ``provider`` value or a `load_config`-only failure elsewhere must not
-    blank out an otherwise-correct auth-present summary (issue #287
-    review). Resolving the provider kind and parsing tags are two more
-    independent ways a single profile's table can be malformed; each gets
-    its own try/except too, so a failure in one does not suppress the
-    others.
-    """
+    """Return safe summaries of configured profiles (no secrets)."""
     # Local import: blumkin.secret_store imports BlumkinConfig from this module,
     # so importing it at module level here would be circular.
     from blumkin import secret_store
@@ -170,44 +148,23 @@ def list_profiles() -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for name in sorted(tables):
         table = tables[name]
-        provider = ""
-        tags: tuple[str, ...] = ()
-        errors: list[str] = []
-
-        probe_cfg = _auth_present_probe_cfg(directory, name, table)
-        auth_present = {
-            "auth_record": secret_store.exists(probe_cfg, "auth_record"),
-            "google_token": secret_store.exists(probe_cfg, "google_token"),
-            "msal_token_cache": secret_store.exists(probe_cfg, "token_cache"),
-        }
-
-        try:
-            load_config(profile=name)
-        except ProviderConfigError as exc:
-            errors.append(str(exc))
-
-        try:
-            provider = _provider_kind(table).value
-        except ProviderConfigError as exc:
-            errors.append(str(exc))
-
-        try:
-            tags = _tags_from_table(table)
-        except ProviderConfigError as exc:
-            errors.append(str(exc))
-
-        summary = {
-            "auth_present": auth_present,
-            "default_tz": _string_values(table).get("default_tz", "").strip(),
-            "email": _string_values(table).get("email", "").strip(),
-            "is_default": name == marked_default,
-            "name": name,
-            "provider": provider,
-            "tags": list(tags),
-        }
-        if errors:
-            summary["error"] = "; ".join(errors)
-        summaries.append(summary)
+        tags = _tags_from_table(table)
+        cfg = load_config(profile=name)
+        summaries.append(
+            {
+                "auth_present": {
+                    "auth_record": secret_store.exists(cfg, "auth_record"),
+                    "google_token": secret_store.exists(cfg, "google_token"),
+                    "msal_token_cache": secret_store.exists(cfg, "token_cache"),
+                },
+                "default_tz": _string_values(table).get("default_tz", "").strip(),
+                "email": _string_values(table).get("email", "").strip(),
+                "is_default": name == marked_default,
+                "name": name,
+                "provider": _provider_kind(table).value,
+                "tags": list(tags),
+            }
+        )
     return summaries
 
 
@@ -580,7 +537,7 @@ def _resolve_by_selector(
     tag_matches = [
         name
         for name, table in tables.items()
-        if any(_normalize_selector(tag) == needle for tag in _tags_from_table_or_empty(table))
+        if any(_normalize_selector(tag) == needle for tag in _tags_from_table(table))
     ]
     other_tag_matches = [name for name in tag_matches if name not in name_matches]
     if name_matches and other_tag_matches:
@@ -635,56 +592,8 @@ def _resolve_profile_name(
     )
 
 
-def _auth_present_probe_cfg(directory: Path, name: str, table: dict[str, Any]) -> BlumkinConfig:
-    """A minimal ``BlumkinConfig`` good only for locating this profile's secret files.
-
-    ``auth_present`` must stay computable even when this profile has an
-    unrelated config error (a bad ``provider``, malformed ``tags``, an
-    unparseable ``google_oauth_client_file``, etc.) - none of those affect
-    where a profile's secrets live on disk (issue #287 review):
-    ``profile_dir`` (and every ``*_path`` property ``secret_store`` reads)
-    depends only on ``config_dir``/``profile``, and ``_backend_for`` only
-    additionally needs ``token_storage`` - all three are resolvable in
-    isolation. Every other field here is a placeholder never read by
-    ``secret_store.exists``.
-    """
-    return BlumkinConfig(
-        client_id="",
-        config_dir=directory,
-        default_tz="",
-        email="",
-        files_scopes=False,
-        google_oauth_client_file=None,
-        graph_timeout_seconds=DEFAULT_GRAPH_TIMEOUT_SECONDS,
-        mail_signature=MailSignatureConfig(),
-        preferences=PreferencesConfig(),
-        profile=name,
-        provider=ProviderKind.MICROSOFT,
-        tags=(),
-        tenant_id="",
-        token_storage=_token_storage_preference(table),
-        wo1162425_scopes=False,
-    )
-
-
 def _string_values(file_data: dict[str, Any]) -> dict[str, str]:
     return {key: value for key, value in file_data.items() if isinstance(value, str)}
-
-
-def _tags_from_table_or_empty(table: dict[str, Any]) -> tuple[str, ...]:
-    """``_tags_from_table``, treating malformed tags as "no tags" for selector matching.
-
-    ``_resolve_by_selector`` scans *every* profile's tags to detect name/tag
-    collisions, even when the selector is an exact name match on a different,
-    perfectly valid profile - one profile with malformed ``tags`` must not
-    make every other profile unresolvable by name too (issue #287 review).
-    The malformed profile's own summary in ``list_profiles`` still reports
-    the real parse error; this is only used for cross-profile tag matching.
-    """
-    try:
-        return _tags_from_table(table)
-    except ProviderConfigError:
-        return ()
 
 
 def _tags_from_table(table: dict[str, Any]) -> tuple[str, ...]:
