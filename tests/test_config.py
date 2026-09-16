@@ -333,9 +333,13 @@ def test_list_profiles_reports_malformed_tags_as_a_per_profile_error(
         'client_id = "xyz"\n'
         "tags = [7]\n"  # malformed: entries must be strings
     )
+    profile_dir = tmp_path / "profiles" / "broken"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "auth_record.json").write_text("{}")
 
     summaries = {item["name"]: item for item in list_profiles()}
 
+    assert summaries["broken"]["auth_present"]["auth_record"] is True
     assert summaries["broken"]["provider"] == "microsoft"
     assert summaries["broken"]["tags"] == []
     assert "error" in summaries["broken"]
