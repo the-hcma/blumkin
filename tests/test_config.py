@@ -341,6 +341,53 @@ def test_list_profiles_reports_malformed_tags_as_a_per_profile_error(
     assert "error" in summaries["broken"]
 
 
+def test_list_profiles_reports_an_unreadable_google_oauth_client_file_as_an_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A missing/unreadable ``google_oauth_client_file`` must surface as a per-profile error.
+
+    `load_config()` resolves a blank `client_id` from `google_oauth_client_file`
+    and raises `ProviderConfigError` if that file is missing or malformed -
+    `list_profiles()` must perform (and tolerate a failure of) the same
+    check directly, rather than silently reporting the profile as healthy
+    with no `client_id` and no explanation (issue #293 review, round 1).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.g]\n"
+        'provider = "google"\n'
+        'google_oauth_client_file = "/nope/does-not-exist.json"\n'
+    )
+
+    summaries = {item["name"]: item for item in list_profiles()}
+
+    assert summaries["g"]["provider"] == "google"
+    assert "error" in summaries["g"]
+
+
+def test_list_profiles_reports_invalid_preferences_as_an_error(tmp_path: Path, monkeypatch) -> None:
+    """A malformed ``[profiles.<name>.preferences]`` table must surface as a per-profile error.
+
+    `load_config()` raises `ProviderConfigError` for a non-table
+    `preferences` value (or an invalid `font_size`) - `list_profiles()`
+    must perform (and tolerate a failure of) the same check directly
+    instead of silently reporting the profile as healthy (issue #293
+    review, round 1).
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.broken]\n"
+        'provider = "microsoft"\n'
+        'client_id = "abc"\n'
+        'preferences = "not-a-table"\n'
+    )
+
+    summaries = {item["name"]: item for item in list_profiles()}
+
+    assert summaries["broken"]["provider"] == "microsoft"
+    assert "error" in summaries["broken"]
+
+
 def test_resolve_by_selector_still_fails_closed_on_a_genuine_tag_collision(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -138,17 +138,26 @@ def google_oauth_installed_client(path: Path) -> dict[str, Any]:
 def list_profiles() -> list[dict[str, Any]]:
     """Return safe summaries of configured profiles (no secrets).
 
-    Loading the provider, resolving tags, and checking ``auth_present`` are
-    three independent ways a single profile's table can be malformed; each
-    gets its own try/except so a failure in one does not suppress the
-    other two - a bad ``provider`` typo must not blank out an otherwise
-    valid ``auth_present``, and vice versa, and no single misconfigured
-    profile aborts the whole listing (issue #293). ``auth_present`` is
+    Loading the provider, resolving tags, resolving the Google OAuth client
+    id, parsing preferences, and checking ``auth_present`` are five
+    independent ways a single profile's table can be malformed; each gets
+    its own try/except so a failure in one does not suppress the others -
+    a bad ``provider`` typo must not blank out an otherwise valid
+    ``auth_present``, and no single misconfigured profile aborts the whole
+    listing (issue #293). Each of these mirrors a validation
+    ``load_config()`` itself performs per-profile table - google_oauth
+    client id resolution (``_client_id_from_google_oauth_file``) and
+    ``[profiles.<name>.preferences]`` parsing (``_preferences_config``) can
+    each raise ``ProviderConfigError`` too, and must be just as tolerated
+    here as ``provider``/``tags`` (issue #293 review). ``auth_present`` is
     computed via ``_auth_present_probe_cfg`` rather than the full
     ``load_config(profile=name)`` used elsewhere, specifically so it stays
     accurate even for a profile whose ``provider``/``tags`` are invalid -
     the credential's on-disk location never depended on either being valid
-    (issue #293).
+    (issue #293). ``load_config()`` itself is never called here - doing so
+    would reach ``_resolve_by_selector``, which scans *every* profile's
+    tags to detect name/tag collisions, reintroducing the very "one broken
+    profile hides every other profile" bug this function exists to avoid.
     """
     # Local import: blumkin.secret_store imports BlumkinConfig from this module,
     # so importing it at module level here would be circular.
@@ -179,6 +188,19 @@ def list_profiles() -> list[dict[str, Any]]:
 
         try:
             tags = _tags_from_table(table)
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
+        try:
+            google_oauth_client_file = _google_oauth_client_file(table)
+            client_id = _string_values(table).get("client_id", "").strip()
+            if not client_id and google_oauth_client_file is not None:
+                _client_id_from_google_oauth_file(google_oauth_client_file)
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
+        try:
+            _preferences_config(table, _top_level_preferences(file_data), profile=name)
         except ProviderConfigError as exc:
             errors.append(str(exc))
 
