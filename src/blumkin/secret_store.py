@@ -299,6 +299,39 @@ def exists(cfg: BlumkinConfig, kind: SecretKind) -> bool:
     return _file_path(cfg, kind).is_file()
 
 
+def ms_bundle_exists(cfg: BlumkinConfig) -> dict[str, bool]:
+    """Presence of ``auth_record`` and ``token_cache`` from one keyring round trip.
+
+    ``list_profiles`` (and anything else that probes both bundled kinds in one
+    pass) used to call ``exists`` twice - after bundling those two calls hit
+    the *same* keychain item, so ``blumkin profiles list`` could still trigger
+    two OS Keychain authorization prompts for one credential. This answers
+    both from a single ``get_password`` (or from the two independent files,
+    for the file backend), matching ``exists`` on each kind including the
+    legacy-file fallback.
+    """
+    out: dict[str, bool] = {"auth_record": False, "token_cache": False}
+    kinds: tuple[SecretKind, ...] = ("auth_record", "token_cache")
+    if _backend_for(cfg) == "file":
+        for kind in kinds:
+            out[kind] = _file_path(cfg, kind).is_file()
+        return out
+    keyring = _keyring_module()
+    if keyring is None:
+        for kind in kinds:
+            out[kind] = _file_path(cfg, kind).is_file()
+        return out
+    account = _keyring_account(cfg, "auth_record")
+    try:
+        raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
+        bundle = _bundle_dict_from_raw(raw)
+    except Exception:
+        bundle = {}
+    for kind in kinds:
+        out[kind] = kind in bundle or _file_path(cfg, kind).is_file()
+    return out
+
+
 def read_ms_bundle_and_backend(cfg: BlumkinConfig) -> tuple[dict[str, str], str]:
     """Read ``auth_record`` and ``token_cache`` together in one round trip.
 

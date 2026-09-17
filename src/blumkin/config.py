@@ -175,10 +175,11 @@ def list_profiles() -> list[dict[str, Any]]:
         errors: list[str] = []
 
         probe_cfg = _auth_present_probe_cfg(directory, name, table)
+        ms_present = secret_store.ms_bundle_exists(probe_cfg)
         auth_present = {
-            "auth_record": secret_store.exists(probe_cfg, "auth_record"),
+            "auth_record": ms_present["auth_record"],
             "google_token": secret_store.exists(probe_cfg, "google_token"),
-            "msal_token_cache": secret_store.exists(probe_cfg, "token_cache"),
+            "msal_token_cache": ms_present["token_cache"],
         }
 
         try:

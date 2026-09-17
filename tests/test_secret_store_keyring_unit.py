@@ -495,6 +495,32 @@ def test_status_dict_touches_one_keychain_item_for_both_bundled_kinds(
     assert touched == {_account(cfg, "auth_record")}
 
 
+def test_ms_bundle_exists_touches_one_keychain_item_for_both_kinds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """profiles list probes both bundled kinds via one get_password, not two."""
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    secret_store.write_text(cfg, "auth_record", "{}")
+    secret_store.write_text(cfg, "token_cache", json.dumps({"AccessToken": {}, "RefreshToken": {}}))
+
+    call_count = 0
+    real_get = fake.get_password
+
+    def _tracking_get_password(service: str, account: str) -> str | None:
+        nonlocal call_count
+        call_count += 1
+        return real_get(service, account)
+
+    monkeypatch.setattr(fake, "get_password", _tracking_get_password)
+
+    present = secret_store.ms_bundle_exists(cfg)
+
+    assert call_count == 1
+    assert present == {"auth_record": True, "token_cache": True}
+
+
 def test_status_dict_reports_token_cache_backend_when_auth_record_is_on_keyring(
     tmp_path: Path, monkeypatch
 ) -> None:
