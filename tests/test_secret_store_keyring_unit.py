@@ -388,12 +388,14 @@ def test_deleting_both_bundled_kinds_removes_the_shared_item(
 def test_pre_bundle_per_kind_keyring_entries_are_not_carried_over(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """There is deliberately no migration from the old one-account-per-kind scheme.
+    """There is deliberately no *read* migration from the old one-account-per-kind scheme.
 
     A profile still holding entries under the pre-bundle account naming (one
     keychain item per kind, keyed directly by kind name rather than
     ``_BUNDLE_SLOT``) reads back empty here and needs a fresh `blumkin auth
     login` - the old items are simply never read again, not folded in.
+    ``delete()`` / logout still purge them (see
+    ``test_delete_purges_pre_bundle_per_kind_keyring_entries``).
     """
     cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
     fake = _FakeKeyring()
@@ -408,8 +410,45 @@ def test_pre_bundle_per_kind_keyring_entries_are_not_carried_over(
     assert secret_store.exists(cfg, "auth_record") is False
     assert secret_store.read_text(cfg, "auth_record") is None
     assert secret_store.active_backend(cfg, "auth_record") == "keyring"
-    # The old entry is left untouched, not cleaned up or folded in.
+    # The old entry is left untouched by reads, not folded into the bundle.
     assert fake.store == {pre_bundle_account: "pre-bundle-value"}
+
+
+def test_delete_purges_pre_bundle_per_kind_keyring_entries(tmp_path: Path, monkeypatch) -> None:
+    """Logout must remove legacy per-kind accounts even though reads ignore them."""
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    resolved_config_dir = str(cfg.config_dir.resolve())
+    pre_bundle_account = (
+        secret_store._KEYRING_SERVICE,
+        json.dumps([resolved_config_dir, cfg.profile, "auth_record"], separators=(",", ":")),
+    )
+    fake.store[pre_bundle_account] = "pre-bundle-value"
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    secret_store.delete(cfg, "auth_record")
+
+    assert fake.store == {}
+
+
+def test_delete_removes_unparseable_value_at_shared_bundle_account(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A non-bundle blob at the shared account must not make delete() no-op.
+
+    Models an abandoned legacy-file migration write that landed raw text at
+    the bundled account rather than a ``{kind: text}`` object - the read
+    path correctly treats that as absent, but logout must still remove it.
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    account = _account(cfg, "auth_record")
+    fake.store[account] = "migrated-value"
+
+    secret_store.delete(cfg, "auth_record")
+
+    assert account not in fake.store
 
 
 def test_status_dict_touches_one_keychain_item_for_both_bundled_kinds(
@@ -519,7 +558,7 @@ def test_delete_awaits_an_abandoned_migration_write_before_declaring_nothing_to_
 
     secret_store.delete(cfg, "auth_record")
 
-    assert account not in fake.store
+    assert (secret_store._KEYRING_SERVICE, account) not in fake.store
 
 
 def test_await_pending_mutation_waits_for_a_previously_abandoned_call_to_land(

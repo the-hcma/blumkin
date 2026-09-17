@@ -55,10 +55,16 @@ still gets one file per kind exactly as before, since the file backend has no
 per-item OS prompt to economize on, and splitting the two file layouts would
 only cost the on-disk compatibility ``AGENTS.md`` documents
 (``auth_record.json`` / ``msal_token_cache.json``) for no benefit. There is no
-migration from the pre-bundle, one-keychain-item-per-kind scheme this
+read migration from the pre-bundle, one-keychain-item-per-kind scheme this
 replaces - a profile still on that scheme reads back empty here and needs a
-fresh ``blumkin auth login``, which then always writes the bundled shape; the
-old per-kind items are simply never read again.
+fresh ``blumkin auth login``, which then always writes the bundled shape.
+``delete()`` / ``auth logout`` still remove those legacy per-kind items when
+present, so a successful logout does not leave a live refresh token behind
+under the old account names. Bundling also means both secrets share one
+backend size cap (notably Windows Credential Manager's 2560-byte
+``CRED_MAX_CREDENTIAL_BLOB_SIZE``); a realistic MSAL cache plus a small
+auth record usually still fits, and ``token_storage = "auto"`` falls back
+to the file if a write exceeds it.
 """
 
 from __future__ import annotations
@@ -200,52 +206,58 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
     _await_pending_mutation(account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
     probed_existence: bool | None
     try:
-        probed_existence = (
-            _bundle_has_kind(keyring, account, kind)
-            if kind in _BUNDLED_KINDS
-            else _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
-            is not None
-        )
+        if kind in _BUNDLED_KINDS:
+            probed_existence = _bundled_item_present_for_delete(keyring, account, kind)
+        else:
+            probed_existence = (
+                _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
+                is not None
+            )
     except Exception:
         # Can't tell whether an entry exists - fall through to a real delete
         # attempt below rather than assume it's gone.
         probed_existence = None
-    if probed_existence is False:
-        return
-    try:
-        if kind in _BUNDLED_KINDS:
-            _bundle_delete_kind(keyring, account, kind, fallback_to_full_delete=True)
-        else:
-            _call_keyring_with_timeout(keyring.delete_password, _KEYRING_SERVICE, account)
-    except Exception as exc:
-        if probed_existence is None and _is_not_found(keyring, exc):
-            # Existence couldn't be probed above, but the backend's own
-            # delete call now confirms there was nothing there - resolved.
-            return
-        if isinstance(exc, TimeoutError):
-            # An abandoned delete_password call keeps running after this
-            # times out, and can still complete later - possibly after a
-            # newer login has re-populated this same account - and remove
-            # credentials it had nothing to do with. Raising here (rather
-            # than silently treating the timeout as "deleted") at least
-            # ensures the caller is told to retry instead of assuming
-            # logout succeeded (issue #287 review).
-            raise SecretWriteError(
-                f"cannot delete {kind}: the OS keychain backend did not respond within "
-                f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
-                f"in the background - wait a moment and retry"
-            ) from exc
-        if probed_existence is None and cfg.token_storage == "auto":
-            # Existence could not be confirmed (the same access failure that
-            # is now failing this delete attempt likely already failed the
-            # probe above), and the operator did not explicitly pin
-            # "keyring" - treat this the same way "auto" already treats an
-            # unconfirmable write failure: the file has already been
-            # removed, and there is no proof anything is actually left
-            # behind in the keychain to report as a failure (issue #287
-            # review, round 11).
-            return
-        raise SecretWriteError(f"cannot delete {kind} from the OS keychain: {exc}") from exc
+    if probed_existence is not False:
+        try:
+            if kind in _BUNDLED_KINDS:
+                _bundle_delete_kind(keyring, account, kind, fallback_to_full_delete=True)
+            else:
+                _call_keyring_with_timeout(keyring.delete_password, _KEYRING_SERVICE, account)
+        except Exception as exc:
+            if probed_existence is None and _is_not_found(keyring, exc):
+                # Existence couldn't be probed above, but the backend's own
+                # delete call now confirms there was nothing there - resolved.
+                pass
+            elif isinstance(exc, TimeoutError):
+                # An abandoned delete_password call keeps running after this
+                # times out, and can still complete later - possibly after a
+                # newer login has re-populated this same account - and remove
+                # credentials it had nothing to do with. Raising here (rather
+                # than silently treating the timeout as "deleted") at least
+                # ensures the caller is told to retry instead of assuming
+                # logout succeeded (issue #287 review).
+                raise SecretWriteError(
+                    f"cannot delete {kind}: the OS keychain backend did not respond within "
+                    f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
+                    f"in the background - wait a moment and retry"
+                ) from exc
+            elif probed_existence is None and cfg.token_storage == "auto":
+                # Existence could not be confirmed (the same access failure that
+                # is now failing this delete attempt likely already failed the
+                # probe above), and the operator did not explicitly pin
+                # "keyring" - treat this the same way "auto" already treats an
+                # unconfirmable write failure: the file has already been
+                # removed, and there is no proof anything is actually left
+                # behind in the keychain to report as a failure (issue #287
+                # review, round 11).
+                pass
+            else:
+                raise SecretWriteError(f"cannot delete {kind} from the OS keychain: {exc}") from exc
+    if kind in _BUNDLED_KINDS:
+        # Reads deliberately ignore the pre-bundle per-kind accounts, but an
+        # explicit logout must still remove them so a live refresh token is
+        # not left behind under the old naming after "Logged out" succeeds.
+        _delete_legacy_per_kind_account(cfg, keyring, kind)
 
 
 def _is_not_found(keyring_module: Any, exc: Exception) -> bool:
@@ -658,6 +670,15 @@ def _keyring_account(cfg: BlumkinConfig, kind: SecretKind) -> str:
     return json.dumps([resolved_config_dir, cfg.profile, slot], separators=(",", ":"))
 
 
+def _legacy_per_kind_keyring_account(cfg: BlumkinConfig, kind: SecretKind) -> str:
+    """Pre-bundle account name: one keychain item per kind, keyed by kind name.
+
+    Used only by ``delete()`` / logout to purge leftovers that reads
+    deliberately ignore (no carry-over into the bundled shape).
+    """
+    return json.dumps([str(cfg.config_dir.resolve()), cfg.profile, kind], separators=(",", ":"))
+
+
 _BUNDLED_KINDS: frozenset[SecretKind] = frozenset({"auth_record", "token_cache"})
 _BUNDLE_SLOT = "ms_credentials"
 
@@ -702,14 +723,20 @@ def _bundle_write_kind(keyring_module: Any, account: str, kind: SecretKind, text
     there is preserved rather than clobbered by an assumed-empty bundle - if
     that fetch itself fails or times out, this raises (propagating like any
     other keyring failure to the caller's existing fallback/retry handling)
-    rather than risk silently dropping the sibling's value.
+    rather than risk silently dropping the sibling's value. Holds
+    ``_bundle_mutation_lock`` across the get/set so concurrent in-process
+    writers (login + silent refresh, abandoned timed-out set + later write)
+    cannot interleave and drop a sibling; cross-process serialization is out
+    of scope for a personal CLI (separate processes still race on the OS
+    keychain itself).
     """
-    raw = _call_keyring_with_timeout(keyring_module.get_password, _KEYRING_SERVICE, account)
-    bundle = _bundle_dict_from_raw(raw)
-    bundle[kind] = text
-    _call_keyring_with_timeout(
-        keyring_module.set_password, _KEYRING_SERVICE, account, json.dumps(bundle)
-    )
+    with _bundle_mutation_lock:
+        raw = _call_keyring_with_timeout(keyring_module.get_password, _KEYRING_SERVICE, account)
+        bundle = _bundle_dict_from_raw(raw)
+        bundle[kind] = text
+        _call_keyring_with_timeout(
+            keyring_module.set_password, _KEYRING_SERVICE, account, json.dumps(bundle)
+        )
 
 
 def _bundle_delete_kind(
@@ -731,35 +758,117 @@ def _bundle_delete_kind(
     unfulfilled - a sibling sharing the account is collaterally removed, an
     accepted trade-off there since an explicit logout must still be able to
     remove a credential when reads are failing but deletes are not, and
-    ``auth.logout()`` deletes both kinds together anyway. The stale-entry
-    cleanup paths in ``write_text``/``read_text_and_backend`` do *not* set
-    this - losing a sibling's still-good value as a side effect of one kind's
-    unrelated write failure would be a surprising way to lose it.
+    ``auth.logout()`` deletes both kinds together anyway. The same flag also
+    removes an unparseable / non-bundle value sitting at the shared account
+    (e.g. a raw legacy-migration write that timed out and landed as plain
+    text rather than a ``{kind: text}`` object) - ``_bundle_dict_from_raw``
+    would otherwise treat it as empty and this would no-op while the
+    credential remained. The stale-entry cleanup paths in
+    ``write_text``/``read_text_and_backend`` do *not* set this - losing a
+    sibling's still-good value as a side effect of one kind's unrelated
+    write failure would be a surprising way to lose it. Holds
+    ``_bundle_mutation_lock`` across the get/set-or-delete for the same
+    in-process reason as ``_bundle_write_kind``.
     """
-    try:
-        raw = _call_keyring_with_timeout(keyring_module.get_password, _KEYRING_SERVICE, account)
-    except Exception:
-        if fallback_to_full_delete:
-            _call_keyring_with_timeout(keyring_module.delete_password, _KEYRING_SERVICE, account)
+    with _bundle_mutation_lock:
+        try:
+            raw = _call_keyring_with_timeout(keyring_module.get_password, _KEYRING_SERVICE, account)
+        except Exception:
+            if fallback_to_full_delete:
+                _call_keyring_with_timeout(
+                    keyring_module.delete_password, _KEYRING_SERVICE, account
+                )
+                return
+            raise
+        if raw is None:
             return
-        raise
+        bundle = _bundle_dict_from_raw(raw)
+        if kind not in bundle:
+            if fallback_to_full_delete and not bundle:
+                # Non-None raw that is not a usable ``{kind: text}`` object
+                # (or an empty ``{}`` leftover) - still a credential blob to
+                # remove on explicit logout.
+                _call_keyring_with_timeout(
+                    keyring_module.delete_password, _KEYRING_SERVICE, account
+                )
+            return
+        del bundle[kind]
+        if bundle:
+            _call_keyring_with_timeout(
+                keyring_module.set_password, _KEYRING_SERVICE, account, json.dumps(bundle)
+            )
+        else:
+            _call_keyring_with_timeout(keyring_module.delete_password, _KEYRING_SERVICE, account)
+
+
+def _bundled_item_present_for_delete(keyring_module: Any, account: str, kind: SecretKind) -> bool:
+    """True when ``delete()`` must attempt a keyring removal for a bundled ``kind``.
+
+    Unlike ``_bundle_has_kind`` (which only sees a parseable ``{kind: text}``
+    entry - correct for read/exists), an explicit logout must also treat a
+    non-None raw value that is *not* a usable bundle as present: otherwise a
+    raw abandoned-migration write at the shared account makes the existence
+    probe False and ``delete()`` returns early while the credential remains.
+    A valid bundle that simply lacks this kind (sibling only) is still
+    absent for this kind.
+    """
+    raw = _call_keyring_with_timeout(keyring_module.get_password, _KEYRING_SERVICE, account)
     if raw is None:
-        return
+        return False
     bundle = _bundle_dict_from_raw(raw)
-    if kind not in bundle:
-        return
-    del bundle[kind]
-    if bundle:
-        _call_keyring_with_timeout(
-            keyring_module.set_password, _KEYRING_SERVICE, account, json.dumps(bundle)
+    if kind in bundle:
+        return True
+    return not bundle
+
+
+def _delete_legacy_per_kind_account(
+    cfg: BlumkinConfig, keyring_module: Any, kind: SecretKind
+) -> None:
+    """Best-effort removal of a pre-bundle per-kind keychain item for ``kind``.
+
+    Reads never consult these accounts (no carry-over), but logout must still
+    purge them so a live refresh token is not left behind under the old
+    naming after a successful ``auth logout``. Failures follow the same
+    ``token_storage`` rules as the main ``delete()`` keyring path.
+    """
+    legacy_account = _legacy_per_kind_keyring_account(cfg, kind)
+    _await_pending_mutation(legacy_account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
+    probed_existence: bool | None
+    try:
+        probed_existence = (
+            _call_keyring_with_timeout(
+                keyring_module.get_password, _KEYRING_SERVICE, legacy_account
+            )
+            is not None
         )
-    else:
-        _call_keyring_with_timeout(keyring_module.delete_password, _KEYRING_SERVICE, account)
+    except Exception:
+        probed_existence = None
+    if probed_existence is False:
+        return
+    try:
+        _call_keyring_with_timeout(keyring_module.delete_password, _KEYRING_SERVICE, legacy_account)
+    except Exception as exc:
+        if probed_existence is None and _is_not_found(keyring_module, exc):
+            return
+        if isinstance(exc, TimeoutError):
+            raise SecretWriteError(
+                f"cannot delete legacy {kind}: the OS keychain backend did not respond within "
+                f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
+                f"in the background - wait a moment and retry"
+            ) from exc
+        if probed_existence is None and cfg.token_storage == "auto":
+            return
+        raise SecretWriteError(f"cannot delete legacy {kind} from the OS keychain: {exc}") from exc
 
 
 _keyring_checked = False
 _keyring_lock = threading.Lock()
 _keyring_mod: Any | None = None
+# Serializes in-process read-modify-write on the shared MS bundle item so a
+# concurrent login write and silent-refresh write (or an abandoned timed-out
+# set landing beside a later write) cannot drop a sibling kind. Process-local
+# only - separate CLI processes still race on the OS keychain itself.
+_bundle_mutation_lock = threading.Lock()
 
 
 _KEYRING_IO_TIMEOUT_SECONDS = 5.0
