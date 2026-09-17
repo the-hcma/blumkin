@@ -126,13 +126,14 @@ def test_mail_folders_follows_pagination(monkeypatch) -> None:
 
 def test_mail_inbox_keeps_its_payload_shape(monkeypatch) -> None:
     client = _client(monkeypatch)
-    client.me.messages.get = AsyncMock(return_value=_page([_message()]))
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(return_value=_page([_message()]))
 
     payload = asyncio.run(mail_inbox(top=5))
 
     assert set(payload) == {"filters", "items", "orderby", "top"}
     assert payload["top"] == 5
-    client.me.mail_folders.by_mail_folder_id.assert_not_called()
+    client.me.mail_folders.by_mail_folder_id.assert_called_with("inbox")
 
 
 def test_mail_list_defaults_to_the_whole_mailbox(monkeypatch) -> None:

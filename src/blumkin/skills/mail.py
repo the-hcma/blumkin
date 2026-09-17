@@ -1042,6 +1042,7 @@ async def mail_inbox(
 ) -> dict[str, Any]:
     payload = await mail_list(
         top=top,
+        folder="inbox",
         has_attachments=has_attachments,
         importance=importance,
         search=search,
