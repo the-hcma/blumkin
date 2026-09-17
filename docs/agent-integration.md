@@ -162,7 +162,9 @@ pi install npm:@the-hcma/blumkin-pi-skill
 This still needs `blumkin` on `PATH` per the [prerequisite](#prerequisite-blumkin-on-path)
 above — the package ships only the skill, not the CLI. See
 [`integrations/pi/README.md`](../integrations/pi/README.md) for package
-details and publishing notes.
+details, and [`docs/RELEASING.md`](RELEASING.md#pi-npm-package-integrationspi)
+for how npm publishing is automated (Release Please + OIDC trusted
+publishing) and its current bootstrap status.
 
 ---
 
