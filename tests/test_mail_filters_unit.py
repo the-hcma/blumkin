@@ -588,7 +588,7 @@ def test_format_list_human_discloses_a_truncated_local_scan() -> None:
     assert lines[1] == "  filters: from='Rebecca'"
     assert lines[2] == (
         "  (stopped after scanning 500 messages; "
-        "narrow with --since, or use --search to reach the whole mailbox)"
+        "narrow with --since, or use --search for a server-side match)"
     )
 
 
@@ -632,7 +632,7 @@ def test_format_inbox_human_discloses_filters_and_a_truncated_scan() -> None:
     assert lines[1] == "  filters: from='Rebecca'"
     assert lines[2] == (
         "  (stopped after scanning 500 messages; "
-        "narrow with --since, or use --search to reach the whole mailbox)"
+        "narrow with --since, or use --search for a server-side match)"
     )
 
 
