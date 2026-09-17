@@ -15,7 +15,12 @@ from msgraph.generated.models.body_type import BodyType
 
 from blumkin.config import PreferencesConfig
 from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
-from blumkin.skills.mail import mail_draft, render_markdown_email, resolve_mail_body
+from blumkin.skills.mail import (
+    mail_draft,
+    render_markdown_email,
+    render_plain_text_email,
+    resolve_mail_body,
+)
 
 
 def test_render_markdown_email_covers_the_common_constructs() -> None:
@@ -53,6 +58,25 @@ def test_render_markdown_email_escapes_html_and_unsafe_links() -> None:
     assert "javascript:" not in out  # unsafe scheme dropped; link renders as plain text
     assert "<a " not in out
     assert "click" in out
+
+
+def test_render_plain_text_email_reflows_hard_wrapped_paragraphs() -> None:
+    # Issue #304: a fixed-width word-wrapped plain-text body - a single newline
+    # inside a paragraph is whitespace to fold away, not a line break to keep,
+    # unlike render_markdown_email's hard_breaks=True.
+    html = render_plain_text_email("Wanted to flag\nwhat is still open on my list.\n\nSecond para.")
+    assert html == "<p>Wanted to flag what is still open on my list.</p><p>Second para.</p>"
+
+
+def test_render_plain_text_email_does_not_interpret_markdown() -> None:
+    # --body-type text is "send exactly what I typed": unlike render_markdown_email,
+    # **bold**-looking syntax stays literal, only HTML-escaped.
+    html = render_plain_text_email("a <script> tag & **not bold**")
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+    assert "&amp;" in html
+    assert "<strong>" not in html
+    assert "**not bold**" in html
 
 
 def test_resolve_mail_body_markdown_is_the_default() -> None:

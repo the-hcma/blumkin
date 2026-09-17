@@ -27,7 +27,7 @@ from email.parser import BytesParser
 from email.policy import SMTP as _smtp_policy
 from email.policy import default as _default_policy
 from email.utils import getaddresses
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from googleapiclient.errors import HttpError
@@ -58,6 +58,7 @@ from blumkin.skills.mail import (
     _read_attachment,
     _validate_importance,
     append_mail_signature,
+    render_plain_text_email,
     resolve_mail_body,
     split_quoted_original,
 )
@@ -380,6 +381,16 @@ async def mail_draft(
     content, body_type_label, _ = resolve_mail_body(
         body=body, body_file=body_file, body_type=body_type, config=cfg
     )
+    html_alternative = (
+        append_mail_signature(
+            render_plain_text_email(content),
+            body_type="html",
+            config=cfg,
+            no_signature=no_signature,
+        )
+        if body_type_label == "text"
+        else None
+    )
     content = append_mail_signature(
         content, body_type=body_type_label, config=cfg, no_signature=no_signature
     )
@@ -391,6 +402,7 @@ async def mail_draft(
         content=content,
         body_type=body_type_label,
         attachments=pending,
+        html_alternative=html_alternative,
     )
     service = _gmail_service(cfg)
     created = execute(
@@ -440,6 +452,16 @@ async def mail_forward(
         body=body, body_file=body_file, body_type=body_type, config=cfg, no_signature=no_signature
     )
     content = _join_sections(comment, _quote_for_forward(detail, label), label)
+    html_alternative = None
+    if label == "text":
+        comment_html = _comment_text_html_alternative(
+            body=body,
+            body_file=body_file,
+            body_type=body_type,
+            config=cfg,
+            no_signature=no_signature,
+        )
+        html_alternative = _join_sections(comment_html, _quote_for_forward(detail, "html"), "html")
     # The source subject came from a message we did not compose - an entity like
     # &amp; already baked into it (some senders' clients do this) would otherwise
     # carry straight through the "Fwd:" prefix and into the new draft.
@@ -452,6 +474,7 @@ async def mail_forward(
         content=content,
         body_type=label,
         attachments=_original_attachments(service, mid, original.get("payload") or {}),
+        html_alternative=html_alternative,
     )
     created = execute(
         service.users().drafts().create(userId="me", body={"message": {"raw": _raw(message)}}),
@@ -526,6 +549,16 @@ async def mail_reply(
         body=body, body_file=body_file, body_type=body_type, config=cfg, no_signature=no_signature
     )
     content = _join_sections(comment, _quote_for_reply(detail, label), label)
+    html_alternative = None
+    if label == "text":
+        comment_html = _comment_text_html_alternative(
+            body=body,
+            body_file=body_file,
+            body_type=body_type,
+            config=cfg,
+            no_signature=no_signature,
+        )
+        html_alternative = _join_sections(comment_html, _quote_for_reply(detail, "html"), "html")
     message = _build_message(
         subject=subject,
         to=reply_to,
@@ -535,6 +568,7 @@ async def mail_reply(
         body_type=label,
         attachments=[],
         extra_headers=_thread_headers(headers),
+        html_alternative=html_alternative,
     )
     created = execute(
         service.users()
@@ -615,6 +649,7 @@ async def mail_update_draft(
     pending = [_read_attachment(path) for path in attach]
     new_content: str | None = None
     new_body_type: str | None = None
+    new_html_alternative: str | None = None
     cfg = config or load_config()
     if has_body:
         new_content, new_body_type, _ = resolve_mail_body(
@@ -622,6 +657,13 @@ async def mail_update_draft(
         )
         if not new_content.strip():
             raise ValueError("--body/--body-file must be non-empty when provided")
+        if (new_body_type or "text") == "text":
+            new_html_alternative = append_mail_signature(
+                render_plain_text_email(new_content),
+                body_type="html",
+                config=cfg,
+                no_signature=no_signature,
+            )
     if new_content is not None:
         new_content = append_mail_signature(
             new_content,
@@ -665,8 +707,9 @@ async def mail_update_draft(
                 if (new_body_type or "text") != "html":
                     head = html_lib.escape(head).replace("\n", "<br>")
                     new_body_type = "html"
+                    new_html_alternative = None
                 new_content = f"{head}{quoted}"
-        _replace_body(message, new_content, new_body_type or "text")
+        _replace_body(message, new_content, new_body_type or "text", new_html_alternative)
     for name, data in pending:
         maintype, _, subtype = (
             mimetypes.guess_type(name)[0] or "application/octet-stream"
@@ -686,7 +729,11 @@ async def mail_update_draft(
     )
     body_part = message.get_body(preferencelist=("html", "plain"))
     body_type_out = (
-        "html" if body_part is not None and body_part.get_content_subtype() == "html" else "text"
+        "html"
+        if body_part is not None
+        and body_part.get_content_subtype() == "html"
+        and not body_part.get(_TEXT_ALTERNATIVE_HEADER)
+        else "text"
     )
     return {
         "draft": {
@@ -727,6 +774,13 @@ def _body_label(raw: str | None, config: BlumkinConfig | None = None) -> str:
     return _compose_wire_label(raw, config=config)
 
 
+# Tags the auto-generated (reflowed) html alternative added for --body-type text,
+# so a later re-inspection of the MIME structure (mail_update_draft's body_type_out)
+# can tell it apart from a genuinely html-authored body - both are, structurally,
+# a multipart/alternative with a plain part and an html part.
+_TEXT_ALTERNATIVE_HEADER = "X-Blumkin-Text-Alternative"
+
+
 def _build_message(
     *,
     subject: str,
@@ -737,6 +791,7 @@ def _build_message(
     body_type: str,
     attachments: Sequence[tuple[str, bytes]],
     extra_headers: Mapping[str, str] | None = None,
+    html_alternative: str | None = None,
 ) -> EmailMessage:
     message = EmailMessage()
     message["Subject"] = subject
@@ -752,6 +807,9 @@ def _build_message(
     message.set_content(_html_to_text(content) if body_type == "html" else content)
     if body_type == "html":
         message.add_alternative(content, subtype="html")
+    elif html_alternative:
+        message.add_alternative(html_alternative, subtype="html")
+        cast(list[EmailMessage], message.get_payload())[-1][_TEXT_ALTERNATIVE_HEADER] = "1"
     for name, raw in attachments:
         maintype, _, subtype = (
             mimetypes.guess_type(name)[0] or "application/octet-stream"
@@ -786,6 +844,26 @@ def _comment_text(
     )
     return append_mail_signature(
         content, body_type=resolved_label, config=config, no_signature=no_signature
+    )
+
+
+def _comment_text_html_alternative(
+    *,
+    body: str | None,
+    body_file: str | None,
+    body_type: str | None,
+    config: BlumkinConfig,
+    no_signature: bool,
+) -> str:
+    """HTML companion to :func:`_comment_text`, for a lead the caller has already
+    resolved to the ``text`` label - see :func:`render_plain_text_email`."""
+    if body is None and body_file is None:
+        return append_mail_signature("", body_type="html", config=config, no_signature=no_signature)
+    content, _, _ = resolve_mail_body(
+        body=body, body_file=body_file, body_type=body_type, config=config
+    )
+    return append_mail_signature(
+        render_plain_text_email(content), body_type="html", config=config, no_signature=no_signature
     )
 
 
@@ -942,7 +1020,9 @@ def _raw(message: EmailMessage) -> str:
     return base64.urlsafe_b64encode(message.as_bytes(policy=_smtp_policy)).decode()
 
 
-def _replace_body(message: EmailMessage, content: str, body_type: str) -> None:
+def _replace_body(
+    message: EmailMessage, content: str, body_type: str, html_alternative: str | None = None
+) -> None:
     """Swap the draft body, keeping headers and re-attaching regular file attachments.
 
     Callers reject drafts with inline (cid) parts first (see ``_has_inline_parts``),
@@ -975,6 +1055,9 @@ def _replace_body(message: EmailMessage, content: str, body_type: str) -> None:
         message.add_alternative(content, subtype="html")
     else:
         message.set_content(content)
+        if html_alternative:
+            message.add_alternative(html_alternative, subtype="html")
+            cast(list[EmailMessage], message.get_payload())[-1][_TEXT_ALTERNATIVE_HEADER] = "1"
     for data, maintype, subtype, filename in files:
         message.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
     for nested_message in messages:
