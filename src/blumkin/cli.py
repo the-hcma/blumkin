@@ -1254,7 +1254,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         warnings.append(
             "macOS Keychain support (`keyring`) is missing or unreachable — tokens are "
             "stored in a plaintext file instead; reinstall to restore it: "
-            "`pipx install --force blumkin` (or set token_storage = \"file\" in "
+            '`pipx install --force blumkin` (or set token_storage = "file" in '
             "config.toml to opt out knowingly)"
         )
     # Non-fatal: config.toml's email is a label written once at onboarding, so a
