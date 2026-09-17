@@ -265,6 +265,37 @@ def test_mail_update_draft_text_body_replace_adds_html_alternative(tmp_path: Pat
     assert _content(sent, "html").strip() == "<p>new one still one para</p><p>new two</p>"
 
 
+def test_mail_update_draft_keep_quoted_forces_html_and_drops_text_alternative_tag(
+    tmp_path: Path,
+) -> None:
+    # Regression: this is the one branch that discards new_html_alternative - a
+    # text body joined to an extracted html quoted tail is coerced to html, so
+    # body_type_out must report "html" and the (now real) html part must not
+    # carry the auto-generated text-alternative tag.
+    service = _service(
+        get_result=_raw_draft(
+            subject="S",
+            to="a@example.com",
+            body="old lead<blockquote>quoted original</blockquote>",
+            body_type="html",
+        ),
+        update_result={"id": "d"},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d", body="fresh text", body_type="text", keep_quoted=True
+            )
+        )
+    assert payload["draft"]["body_type"] == "html"
+    sent = _sent_message(service, "update")
+    html_part = sent.get_body(preferencelist=("html",))
+    assert html_part is not None
+    assert "fresh text" in html_part.get_content()
+    assert "quoted original" in html_part.get_content()
+    assert html_part.get("X-Blumkin-Text-Alternative") is None
+
+
 def test_mail_draft_defaults_to_markdown_rendered_as_html(tmp_path: Path) -> None:
     # No --body-type: the Gmail path must render markdown to HTML on the wire and
     # report body_type "html", and the text/plain alternative must not collapse
