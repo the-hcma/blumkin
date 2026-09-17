@@ -235,12 +235,16 @@ def save_token_cache(config: BlumkinConfig | None = None) -> None:
 
 def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     cfg = config or load_config()
-    # Read the token cache once and reuse it below - `_access_token_expiry`,
-    # `_granted_scopes_from_cache`, the `token_cache` presence flag, and
-    # `token_storage_backend` each used to make their own independent keyring
-    # round trip for this same secret, so a single `doctor` / `auth status`
-    # call could hit the OS keychain for one item up to four times.
-    raw_cache, cache_backend = secret_store.read_text_and_backend(cfg, "token_cache")
+    # Read auth_record and token_cache together in one round trip and reuse
+    # it below - they share one keychain item (see
+    # `secret_store._BUNDLED_KINDS`), so `_access_token_expiry`,
+    # `_granted_scopes_from_cache`, both presence flags, and
+    # `token_storage_backend` each independently reading/probing their own
+    # kind would still cost a second keyring round trip (and, on a Keychain
+    # that reprompts on every access rather than remembering "Always Allow",
+    # a second authorization prompt) for the exact same item.
+    bundle, cache_backend = secret_store.read_ms_bundle_and_backend(cfg)
+    raw_cache = bundle.get("token_cache")
     access = _access_token_expiry(raw_cache)
     requested = effective_scopes(cfg)
     granted = _granted_scopes_from_cache(raw_cache, cfg, requested)
@@ -248,7 +252,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
         "access_token_expired": access.get("expired"),
-        "auth_record": secret_store.exists(cfg, "auth_record"),
+        "auth_record": "auth_record" in bundle,
         "client_id_configured": bool(cfg.client_id),
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),

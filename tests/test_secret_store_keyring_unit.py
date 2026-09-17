@@ -420,7 +420,10 @@ def test_status_dict_touches_one_keychain_item_for_both_bundled_kinds(
     Regression for the actual complaint that motivated bundling - `auth
     status_dict()` used to read `auth_record` and `token_cache` as two
     separate secrets, each its own keychain item, each its own OS
-    authorization prompt.
+    authorization prompt. After bundling they share one account, so this
+    also asserts a single ``get_password`` *call* - a second round trip on
+    the same account still prompts on Keychains that do not remember
+    "Always Allow".
     """
     from blumkin.auth import status_dict
 
@@ -430,10 +433,13 @@ def test_status_dict_touches_one_keychain_item_for_both_bundled_kinds(
     secret_store.write_text(cfg, "auth_record", "{}")
     secret_store.write_text(cfg, "token_cache", json.dumps({"AccessToken": {}, "RefreshToken": {}}))
 
+    call_count = 0
     touched: set[tuple[str, str]] = set()
     real_get = fake.get_password
 
     def _tracking_get_password(service: str, account: str) -> str | None:
+        nonlocal call_count
+        call_count += 1
         touched.add((service, account))
         return real_get(service, account)
 
@@ -441,6 +447,7 @@ def test_status_dict_touches_one_keychain_item_for_both_bundled_kinds(
 
     status_dict(cfg)
 
+    assert call_count == 1
     assert touched == {_account(cfg, "auth_record")}
 
 

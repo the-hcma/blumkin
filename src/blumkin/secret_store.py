@@ -287,6 +287,51 @@ def exists(cfg: BlumkinConfig, kind: SecretKind) -> bool:
     return _file_path(cfg, kind).is_file()
 
 
+def read_ms_bundle_and_backend(cfg: BlumkinConfig) -> tuple[dict[str, str], str]:
+    """Read ``auth_record`` and ``token_cache`` together in one round trip.
+
+    Calling ``read_text_and_backend`` once per kind would cost a second
+    keyring round trip for the exact same shared item (see
+    ``_BUNDLED_KINDS``) - on a Keychain that reprompts on every access rather
+    than remembering "Always Allow", a second authorization prompt for what
+    this module represents as one credential. This fetches that shared item
+    exactly once (or reads the two independent files, for the file backend)
+    and resolves both kinds from it. The returned dict has a key only for a
+    kind that actually has a value - a fresh, never-logged-in profile returns
+    ``{}``. ``backend`` is ``"file"`` only when *neither* kind came from the
+    keyring; a real split (one kind migrated to the keyring file-backend-side,
+    the other not) is possible on the file backend, since it keeps them as
+    two independent files, and is reported as ``"keyring"`` since a keyring
+    entry is present for at least one of them.
+    """
+    result: dict[str, str] = {}
+    backend = "file"
+    for kind in ("auth_record", "token_cache"):
+        path = _file_path(cfg, kind)
+        if path.is_file():
+            try:
+                result[kind] = path.read_text()
+            except OSError:
+                pass
+    if _backend_for(cfg) != "file":
+        keyring = _keyring_module()
+        if keyring is not None:
+            account = _keyring_account(cfg, "auth_record")  # same account as token_cache
+            try:
+                raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
+            except Exception:
+                raw = None
+            for kind in ("auth_record", "token_cache"):
+                value, kind_backend = _resolve_keyring_value(
+                    keyring, kind, _file_path(cfg, kind), account, raw
+                )
+                if value is not None:
+                    result[kind] = value
+                if kind_backend == "keyring":
+                    backend = "keyring"
+    return result, backend
+
+
 def read_text(cfg: BlumkinConfig, kind: SecretKind) -> str | None:
     """Read the secret for ``kind``, migrating a legacy file into the keyring once."""
     return read_text_and_backend(cfg, kind)[0]
@@ -320,6 +365,19 @@ def read_text_and_backend(cfg: BlumkinConfig, kind: SecretKind) -> tuple[str | N
         raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
     except Exception:
         raw = None
+    return _resolve_keyring_value(keyring, kind, path, account, raw)
+
+
+def _resolve_keyring_value(
+    keyring_module: Any, kind: SecretKind, path: Path, account: str, raw: str | None
+) -> tuple[str | None, str]:
+    """The rest of ``read_text_and_backend``, given an already-fetched ``raw`` value.
+
+    Split out so ``read_ms_bundle_and_backend`` can fetch the one shared
+    keyring item that ``auth_record``/``token_cache`` live in exactly once and
+    resolve both kinds from that single ``raw`` value, rather than each kind
+    making its own redundant ``get_password`` call against the same item.
+    """
     value = _bundle_dict_from_raw(raw).get(kind) if kind in _BUNDLED_KINDS else raw
     if value is not None:
         # The keyring is authoritative once it holds a value. A plaintext
@@ -347,9 +405,11 @@ def read_text_and_backend(cfg: BlumkinConfig, kind: SecretKind) -> tuple[str | N
         return None, "file"
     try:
         if kind in _BUNDLED_KINDS:
-            _bundle_write_kind(keyring, account, kind, legacy)
+            _bundle_write_kind(keyring_module, account, kind, legacy)
         else:
-            _call_keyring_with_timeout(keyring.set_password, _KEYRING_SERVICE, account, legacy)
+            _call_keyring_with_timeout(
+                keyring_module.set_password, _KEYRING_SERVICE, account, legacy
+            )
     except Exception:
         # Keychain write failed - keep serving the file untouched rather than
         # lose the secret. A TimeoutError here is not swallowed as harmlessly
@@ -378,9 +438,11 @@ def read_text_and_backend(cfg: BlumkinConfig, kind: SecretKind) -> tuple[str | N
         # already-migrated value must not be wiped by this kind's rollback.
         try:
             if kind in _BUNDLED_KINDS:
-                _bundle_delete_kind(keyring, account, kind)
+                _bundle_delete_kind(keyring_module, account, kind)
             else:
-                _call_keyring_with_timeout(keyring.delete_password, _KEYRING_SERVICE, account)
+                _call_keyring_with_timeout(
+                    keyring_module.delete_password, _KEYRING_SERVICE, account
+                )
         except Exception:
             # Rollback itself failed - the keyring still holds the value
             # alongside the file, so the keyring is what active_backend()'s
