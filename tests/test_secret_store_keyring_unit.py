@@ -8,6 +8,7 @@ keyring module instead, to exercise the keyring code paths deterministically.
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
@@ -156,6 +157,26 @@ def _account(cfg, kind: secret_store.SecretKind) -> tuple[str, str]:
     return (secret_store._KEYRING_SERVICE, secret_store._keyring_account(cfg, kind))
 
 
+def _bundle_seed(fake: _FakeKeyring, cfg, kind: secret_store.SecretKind, value: str) -> None:
+    """Set ``kind``'s value at its (possibly shared) account, preserving any sibling already there.
+
+    ``auth_record``/``token_cache`` share one keychain item holding a
+    ``{kind: text}`` JSON object - seeding a fake store for a test must merge
+    into that object rather than overwrite it, exactly like the real
+    ``_bundle_write_kind`` does, or a test that seeds both kinds would have
+    the second seed clobber the first.
+    """
+    key = _account(cfg, kind)
+    bundle = secret_store._bundle_dict_from_raw(fake.store.get(key))
+    bundle[kind] = value
+    fake.store[key] = json.dumps(bundle)
+
+
+def _bundle_value(fake: _FakeKeyring, cfg, kind: secret_store.SecretKind) -> str | None:
+    """Read back just ``kind``'s value from its (possibly shared) account, or ``None``."""
+    return secret_store._bundle_dict_from_raw(fake.store.get(_account(cfg, kind))).get(kind)
+
+
 def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, token_storage: str):
     tmp_path.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
@@ -218,7 +239,7 @@ def test_write_then_read_round_trips_through_keyring(tmp_path: Path, monkeypatch
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
     secret_store.write_text(cfg, "token_cache", "secret-payload")
     assert not cfg.token_cache_path.exists()
-    assert fake.store[_account(cfg, "token_cache")] == "secret-payload"
+    assert _bundle_value(fake, cfg, "token_cache") == "secret-payload"
     assert secret_store.read_text(cfg, "token_cache") == "secret-payload"
     assert secret_store.exists(cfg, "token_cache") is True
 
@@ -233,7 +254,7 @@ def test_legacy_file_migrates_into_keyring_on_first_read(tmp_path: Path, monkeyp
     assert secret_store.read_text(cfg, "token_cache") == "legacy-value"
 
     assert not cfg.token_cache_path.exists()
-    assert fake.store[_account(cfg, "token_cache")] == "legacy-value"
+    assert _bundle_value(fake, cfg, "token_cache") == "legacy-value"
 
 
 def test_migration_keeps_serving_file_if_keyring_write_fails(tmp_path: Path, monkeypatch) -> None:
@@ -275,7 +296,7 @@ def test_migration_rolls_back_keyring_copy_when_unlink_fails(tmp_path: Path, mon
     # A later read (unlink working again) retries and completes the migration.
     assert secret_store.read_text(cfg, "token_cache") == "legacy-value"
     assert not cfg.token_cache_path.exists()
-    assert fake.store[_account(cfg, "token_cache")] == "legacy-value"
+    assert _bundle_value(fake, cfg, "token_cache") == "legacy-value"
 
 
 def test_read_reconciles_a_leftover_plaintext_file_once_the_keyring_has_a_value(
@@ -293,11 +314,134 @@ def test_read_reconciles_a_leftover_plaintext_file_once_the_keyring_has_a_value(
     cfg.profile_dir.mkdir(parents=True)
     cfg.token_cache_path.write_text("stale-file-value")
     fake = _FakeKeyring()
-    fake.store[_account(cfg, "token_cache")] = "keyring-value"
+    _bundle_seed(fake, cfg, "token_cache", "keyring-value")
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
 
     assert secret_store.read_text(cfg, "token_cache") == "keyring-value"
     assert not cfg.token_cache_path.exists()
+
+
+# --- auth_record / token_cache share one keychain item ("bundling") -----------------
+
+
+@pytest.mark.parametrize("order", [("auth_record", "token_cache"), ("token_cache", "auth_record")])
+def test_bundled_kinds_share_one_keychain_item(
+    tmp_path: Path, monkeypatch, order: tuple[secret_store.SecretKind, secret_store.SecretKind]
+) -> None:
+    """Writing both bundled kinds lands in exactly one keychain item, not two.
+
+    This is the whole point of bundling: one macOS Keychain item means one
+    authorization prompt for what is, from the operator's point of view, one
+    sign-in - two items (the pre-bundle behavior) meant two prompts.
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    first, second = order
+    secret_store.write_text(cfg, first, f"{first}-value")
+    secret_store.write_text(cfg, second, f"{second}-value")
+
+    assert len(fake.store) == 1
+    (raw,) = fake.store.values()
+    assert json.loads(raw) == {
+        "auth_record": "auth_record-value",
+        "token_cache": "token_cache-value",
+    }
+    assert secret_store.read_text(cfg, "auth_record") == "auth_record-value"
+    assert secret_store.read_text(cfg, "token_cache") == "token_cache-value"
+
+
+def test_deleting_one_bundled_kind_preserves_its_sibling(tmp_path: Path, monkeypatch) -> None:
+    """Deleting `token_cache` must not take `auth_record` down with it (and vice versa)."""
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    secret_store.write_text(cfg, "auth_record", "record-payload")
+    secret_store.write_text(cfg, "token_cache", "cache-payload")
+
+    secret_store.delete(cfg, "token_cache")
+
+    assert len(fake.store) == 1  # the shared item is still there ...
+    assert secret_store.exists(cfg, "token_cache") is False
+    assert secret_store.exists(cfg, "auth_record") is True
+    assert secret_store.read_text(cfg, "auth_record") == "record-payload"
+
+
+@pytest.mark.parametrize("order", [("auth_record", "token_cache"), ("token_cache", "auth_record")])
+def test_deleting_both_bundled_kinds_removes_the_shared_item(
+    tmp_path: Path, monkeypatch, order: tuple[secret_store.SecretKind, secret_store.SecretKind]
+) -> None:
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    secret_store.write_text(cfg, "auth_record", "record-payload")
+    secret_store.write_text(cfg, "token_cache", "cache-payload")
+
+    first, second = order
+    secret_store.delete(cfg, first)
+    secret_store.delete(cfg, second)
+
+    assert fake.store == {}
+
+
+def test_pre_bundle_per_kind_keyring_entries_are_not_carried_over(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """There is deliberately no migration from the old one-account-per-kind scheme.
+
+    A profile still holding entries under the pre-bundle account naming (one
+    keychain item per kind, keyed directly by kind name rather than
+    ``_BUNDLE_SLOT``) reads back empty here and needs a fresh `blumkin auth
+    login` - the old items are simply never read again, not folded in.
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    resolved_config_dir = str(cfg.config_dir.resolve())
+    pre_bundle_account = (
+        secret_store._KEYRING_SERVICE,
+        json.dumps([resolved_config_dir, cfg.profile, "auth_record"], separators=(",", ":")),
+    )
+    fake.store[pre_bundle_account] = "pre-bundle-value"
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    assert secret_store.exists(cfg, "auth_record") is False
+    assert secret_store.read_text(cfg, "auth_record") is None
+    assert secret_store.active_backend(cfg, "auth_record") == "keyring"
+    # The old entry is left untouched, not cleaned up or folded in.
+    assert fake.store == {pre_bundle_account: "pre-bundle-value"}
+
+
+def test_status_dict_touches_one_keychain_item_for_both_bundled_kinds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The user-facing claim: `doctor`/`auth status` cause one keychain touch, not two.
+
+    Regression for the actual complaint that motivated bundling - `auth
+    status_dict()` used to read `auth_record` and `token_cache` as two
+    separate secrets, each its own keychain item, each its own OS
+    authorization prompt.
+    """
+    from blumkin.auth import status_dict
+
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    secret_store.write_text(cfg, "auth_record", "{}")
+    secret_store.write_text(cfg, "token_cache", json.dumps({"AccessToken": {}, "RefreshToken": {}}))
+
+    touched: set[tuple[str, str]] = set()
+    real_get = fake.get_password
+
+    def _tracking_get_password(service: str, account: str) -> str | None:
+        touched.add((service, account))
+        return real_get(service, account)
+
+    monkeypatch.setattr(fake, "get_password", _tracking_get_password)
+
+    status_dict(cfg)
+
+    assert touched == {_account(cfg, "auth_record")}
 
 
 def test_delete_removes_from_both_backends(tmp_path: Path, monkeypatch) -> None:
@@ -659,7 +803,7 @@ def test_auto_leaves_the_stale_keyring_entry_intact_when_the_file_write_itself_f
     # The stale keyring entry must still be there - it was never deleted,
     # since the file write it exists to make redundant never succeeded.
     assert _account(cfg, "token_cache") in fake.store
-    assert fake.store[_account(cfg, "token_cache")] == "first-value"
+    assert _bundle_value(fake, cfg, "token_cache") == "first-value"
 
 
 def test_auto_raises_when_write_fails_and_the_stale_entry_cannot_be_cleaned_up(
@@ -675,8 +819,7 @@ def test_auto_raises_when_write_fails_and_the_stale_entry_cannot_be_cleaned_up(
     """
     cfg = _load(tmp_path, monkeypatch, token_storage="auto")
     fake = _BrokenAndUncleanableKeyring()
-    account = _account(cfg, "token_cache")
-    fake.store[account] = "stale-value"  # a value from a prior successful write
+    _bundle_seed(fake, cfg, "token_cache", "stale-value")  # a value from a prior successful write
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
 
     with pytest.raises(SecretWriteError, match="now disagree"):
@@ -765,8 +908,7 @@ def test_delete_raises_rather_than_treats_a_delete_timeout_as_resolved(
     release = threading.Event()
     cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
     fake = _HangsOnMutationKeyring(release)
-    account = _account(cfg, "auth_record")
-    fake.store[account] = "existing-value"
+    _bundle_seed(fake, cfg, "auth_record", "existing-value")
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
     monkeypatch.setattr(secret_store, "_KEYRING_IO_TIMEOUT_SECONDS", 0.05)
 

@@ -59,3 +59,11 @@ def test_status_dict_reports_token_storage_backend(tmp_path: Path, monkeypatch) 
         '[profiles.default]\nclient_id = "test-client"\ntoken_storage = "keyring"\n'
     )
     assert status_dict()["token_storage_backend"] == "keyring"
+
+
+# A regression test proving `status_dict()` makes only one keyring round trip
+# for `auth_record`/`token_cache` combined lives in
+# tests/test_secret_store_keyring_unit.py
+# (test_status_dict_touches_one_keychain_item_for_both_bundled_kinds) - it
+# needs the real `_bundle_*` shape (a shared JSON item), which belongs with
+# the rest of that module's keyring-backend tests.
