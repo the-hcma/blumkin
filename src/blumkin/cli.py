@@ -2417,7 +2417,7 @@ def mail() -> None:
     "--search",
     default=None,
     help=(
-        "Graph $search term (whole mailbox); excludes --from / --subject / --since / "
+        "Graph $search term (inbox only); excludes --from / --subject / --since / "
         "--importance / --has-attachments."
     ),
 )
@@ -2467,8 +2467,9 @@ def mail_inbox_cmd(
     `--from` / `--subject` match locally over a newest-first scan capped at 500
     (the payload then reports `complete: false`). `--importance` /
     `--has-attachments` filter server-side and compose with the sort.
-    `--search` runs on Graph over the whole mailbox and cannot combine with the
-    substring, date, importance, or attachment filters.
+    `--search` runs on Graph scoped to the inbox and cannot combine with the
+    substring, date, importance, or attachment filters. Use `mail search` to
+    search the whole mailbox.
     """
     _dispatch(
         ctx,

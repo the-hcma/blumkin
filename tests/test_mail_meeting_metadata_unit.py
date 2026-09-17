@@ -147,14 +147,16 @@ def test_mail_inbox_reports_meeting_metadata_for_a_list_item(monkeypatch) -> Non
     """The issue's own scenario: spotting an invite in an inbox listing, not `mail get`."""
     client = _client(monkeypatch)
     page = SimpleNamespace(value=[_event_message()], odata_next_link=None)
-    client.me.messages.get = AsyncMock(return_value=page)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(return_value=page)
 
     payload = asyncio.run(mail_inbox(top=5))
 
+    client.me.mail_folders.by_mail_folder_id.assert_called_with("inbox")
     (item,) = payload["items"]
     assert item["is_meeting_message"] is True
     assert item["meeting_message_type"] == "meetingRequest"
-    sent_query = client.me.messages.get.await_args_list[0].args[0].query_parameters
+    sent_query = messages.get.await_args_list[0].args[0].query_parameters
     assert "meetingMessageType" in sent_query.select
 
 
@@ -203,10 +205,12 @@ def test_mail_thread_full_reports_organizer_and_times_from_the_expanded_event(
 def test_mail_inbox_reports_no_meeting_metadata_for_a_plain_list_item(monkeypatch) -> None:
     client = _client(monkeypatch)
     page = SimpleNamespace(value=[_plain_message()], odata_next_link=None)
-    client.me.messages.get = AsyncMock(return_value=page)
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(return_value=page)
 
     payload = asyncio.run(mail_inbox(top=5))
 
+    client.me.mail_folders.by_mail_folder_id.assert_called_with("inbox")
     (item,) = payload["items"]
     assert item["is_meeting_message"] is False
     assert item["meeting_message_type"] is None

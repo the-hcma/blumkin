@@ -1042,6 +1042,7 @@ async def mail_inbox(
 ) -> dict[str, Any]:
     payload = await mail_list(
         top=top,
+        folder="inbox",
         has_attachments=has_attachments,
         importance=importance,
         search=search,
@@ -1936,7 +1937,7 @@ def _filter_notes(payload: dict[str, Any]) -> list[str]:
         # Silence here would read as "no more mail from them", which is a different claim.
         lines.append(
             f"  (stopped after scanning {filters.get('scanned')} messages; "
-            "narrow with --since, or use --search to reach the whole mailbox)"
+            "narrow with --since, or use --search for a server-side match)"
         )
     return lines
 

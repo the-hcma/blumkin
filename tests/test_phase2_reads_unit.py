@@ -248,7 +248,9 @@ def test_mail_inbox_mocked(monkeypatch) -> None:
         from_=SimpleNamespace(email_address=SimpleNamespace(name="Sam", address="sam@example.com")),
     )
     client = MagicMock()
-    client.me.messages.get = AsyncMock(return_value=SimpleNamespace(value=[msg]))
+    client.me.mail_folders.by_mail_folder_id.return_value.messages.get = AsyncMock(
+        return_value=SimpleNamespace(value=[msg])
+    )
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",

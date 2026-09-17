@@ -515,22 +515,24 @@ def test_mail_inbox_passes_filters_through(monkeypatch) -> None:
     client = _client(monkeypatch)
     messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
     messages.get = AsyncMock(return_value=_page([]))
-    client.me.messages.get = AsyncMock(return_value=_page([]))
 
     payload = asyncio.run(mail_inbox(sender="Rebecca", unread=True))
 
-    assert _query(client.me.messages.get).filter == "isRead eq false"
+    client.me.mail_folders.by_mail_folder_id.assert_called_with("inbox")
+    assert _query(messages.get).filter == "isRead eq false"
     assert payload["filters"]["from"] == "Rebecca"
 
 
 def test_mail_inbox_forwards_search(monkeypatch) -> None:
     """Dropping search from mail_inbox would silently fall back to newest-first."""
     client = _client(monkeypatch)
-    client.me.messages.get = AsyncMock(return_value=_page([]))
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(return_value=_page([]))
 
     payload = asyncio.run(mail_inbox(search="budget"))
 
-    query = _query(client.me.messages.get)
+    client.me.mail_folders.by_mail_folder_id.assert_called_with("inbox")
+    query = _query(messages.get)
     assert query.search == '"budget"'
     assert query.orderby is None
     assert payload["orderby"] is None
@@ -540,13 +542,13 @@ def test_mail_inbox_forwards_search(monkeypatch) -> None:
 def test_mail_inbox_forwards_importance_and_attachments(monkeypatch) -> None:
     """Dropping either in the inbox re-pack would silently unfilter the listing."""
     client = _client(monkeypatch)
-    client.me.messages.get = AsyncMock(return_value=_page([]))
+    messages = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    messages.get = AsyncMock(return_value=_page([]))
 
     payload = asyncio.run(mail_inbox(importance="high", has_attachments=True))
 
-    assert (
-        _query(client.me.messages.get).filter == "hasAttachments eq true and importance eq 'high'"
-    )
+    client.me.mail_folders.by_mail_folder_id.assert_called_with("inbox")
+    assert _query(messages.get).filter == "hasAttachments eq true and importance eq 'high'"
     assert payload["filters"]["importance"] == "high"
     assert payload["filters"]["has_attachments"] is True
 
@@ -586,7 +588,7 @@ def test_format_list_human_discloses_a_truncated_local_scan() -> None:
     assert lines[1] == "  filters: from='Rebecca'"
     assert lines[2] == (
         "  (stopped after scanning 500 messages; "
-        "narrow with --since, or use --search to reach the whole mailbox)"
+        "narrow with --since, or use --search for a server-side match)"
     )
 
 
@@ -630,7 +632,7 @@ def test_format_inbox_human_discloses_filters_and_a_truncated_scan() -> None:
     assert lines[1] == "  filters: from='Rebecca'"
     assert lines[2] == (
         "  (stopped after scanning 500 messages; "
-        "narrow with --since, or use --search to reach the whole mailbox)"
+        "narrow with --since, or use --search for a server-side match)"
     )
 
 

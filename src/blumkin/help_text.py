@@ -902,14 +902,15 @@ Examples:
   # High-importance mail with an attachment (both server-side)
   blumkin mail inbox --importance high --has-attachments --json
 \b
-  # Full-text search across the whole mailbox (server-side)
+  # Full-text search within the inbox (server-side)
   blumkin mail inbox --search "quarterly report" --json
 
 `--from` / `--subject` match locally over a newest-first scan capped at 500
 messages (payload then says `complete: false`). `--importance` /
 `--has-attachments` filter server-side and keep the sort. `--search` runs on
-Graph and cannot be combined with `--from` / `--subject` / date / importance /
-attachment filters.
+Graph scoped to the inbox and cannot be combined with `--from` / `--subject` /
+date / importance / attachment filters. Use `mail search` to search the whole
+mailbox.
 """
 
 MAIL_LIST_EPILOG = """
