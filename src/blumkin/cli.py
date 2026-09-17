@@ -47,6 +47,7 @@ from blumkin.output import emit_error, emit_json, emit_lines
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
+from blumkin.secret_store import macos_keychain_missing
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
     format_calendar_get_human,
@@ -1243,10 +1244,22 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         problems.append(
             "missing scopes: " + ", ".join(missing_scopes) + " — run: blumkin auth login"
         )
+    # Non-fatal: like the rest of `token_storage = "auto"`, a keychain that can't be
+    # used (missing `keyring`, or installed but no real backend reachable - headless
+    # session, locked keychain, etc.) must never turn into a hard failure for a
+    # non-interactive agent shell; it only means secrets fall back to the file, which
+    # `doctor` should surface, not block on (issue #308).
+    warnings: list[str] = []
+    if macos_keychain_missing(cfg):
+        warnings.append(
+            "macOS Keychain support (`keyring`) is missing or unreachable — tokens are "
+            "stored in a plaintext file instead; reinstall to restore it: "
+            '`pipx install --force blumkin` (or set token_storage = "file" in '
+            "config.toml to opt out knowingly)"
+        )
     # Non-fatal: config.toml's email is a label written once at onboarding, so a
     # mismatch means the profile was re-authenticated as somebody else. Report it;
     # rewriting the operator's config on their behalf is not doctor's call.
-    warnings: list[str] = []
     if cfg.email:
         live = ""
         try:
@@ -3372,8 +3385,8 @@ def mcp_group() -> None:
     `install` registers `blumkin mcp serve` with your agent CLIs (Claude Code,
     Cursor, GitHub Copilot CLI), `status` shows where it is registered, and
     `serve` is the stdio server itself. Every skill becomes a typed MCP tool
-    dispatched through the same `run_skill` path the CLI uses. Running the server
-    needs the optional `mcp` extra: `pipx install 'blumkin[mcp]'`.
+    dispatched through the same `run_skill` path the CLI uses. The `mcp`
+    dependency is a core install (no extra to opt into) as of 1.4.0.
     """
 
 
@@ -3394,16 +3407,17 @@ def mcp_serve_cmd(
     try:
         from blumkin import mcp_server
     except ModuleNotFoundError as exc:
-        # The wrapper in blumkin.mcp_server re-raises with name=None; a genuinely
-        # missing non-`mcp` module is a real bug, not a missing optional extra.
+        # `mcp` is a core dependency since 1.4.0, so this only fires for a stale
+        # install (e.g. an editable checkout that hasn't re-synced) - a genuinely
+        # missing non-`mcp` module is a real bug and must still propagate.
         if exc.name is not None and exc.name != "mcp" and not exc.name.startswith("mcp."):
             raise
         _emit_error(
             error="usage_error",
-            message="the MCP server needs the optional `mcp` dependency",
+            message="the MCP server needs the `mcp` package, which is missing from this install",
             as_json=_cli_as_json(),
-            hint="Install it with `pipx install 'blumkin[mcp]'` "
-            "(or `uv tool install 'blumkin[mcp]'`), then retry.",
+            hint="Reinstall to pick it up: `pipx install --force blumkin` "
+            "(or `uv tool install --force blumkin`; from a checkout, `uv sync`).",
         )
         raise SystemExit(EXIT_USAGE) from exc
     # A command-level --profile wins; otherwise honour the global `blumkin --profile`.

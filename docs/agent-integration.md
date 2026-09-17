@@ -506,11 +506,8 @@ method becomes a typed tool named by its id (`calendar.today`,
 from `skills list --json` and dispatched through the same `run_skill` path the
 CLI uses, so the CLI stays the single source of truth.
 
-Running the server needs the optional extra:
-
-```bash
-pipx install 'blumkin[mcp]'        # or: uv tool install 'blumkin[mcp]'
-```
+Running the server needs no extra install step: `mcp` is a core dependency
+of `blumkin` (as of 1.4.0).
 
 Auth is unchanged — run `blumkin auth login` on a TTY once; every registered
 server shares the same `~/.config/blumkin/` token cache. The host spawns
