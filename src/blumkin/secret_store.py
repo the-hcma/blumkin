@@ -4,10 +4,12 @@ The MSAL token cache, Entra auth record, and Google token JSON were each a
 plain ``0600`` file under ``~/.config/blumkin/profiles/<name>/`` (see
 ``blumkin.auth`` / ``blumkin.providers.google_auth``). That protects them only
 by filesystem permission — no encryption at rest, no OS-native access control.
-This module adds an OS-keychain-backed alternative via the optional
-``keychain`` extra (``pipx install 'blumkin[keychain]'``, which pulls in the
-``keyring`` package - macOS Keychain, Windows Credential Manager, Linux Secret
-Service), selected per profile by ``token_storage`` in ``config.toml``:
+This module adds an OS-keychain-backed alternative via ``keyring`` (macOS
+Keychain, Windows Credential Manager, Linux Secret Service) - a core
+dependency on macOS (installed unconditionally, since Keychain is the
+platform's standard secure credential store) and the optional ``keychain``
+extra elsewhere (``pipx install 'blumkin[keychain]'``). Selected per profile
+by ``token_storage`` in ``config.toml``:
 
 - ``"auto"`` (default): prefer the keychain when a real backend is usable at
   runtime, silently fall back to the file for most write trouble (headless
@@ -44,6 +46,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Literal
@@ -56,6 +59,24 @@ SecretKind = Literal["auth_record", "google_token", "token_cache"]
 
 class SecretWriteError(OSError):
     """Failed to persist a secret (symlink at the path, keyring backend error, etc.)."""
+
+
+def macos_keychain_missing(cfg: BlumkinConfig) -> bool:
+    """True when this is macOS, this profile prefers a keychain, but none is usable.
+
+    ``keyring`` is a core dependency on macOS (see ``pyproject.toml``), so this
+    should only fire for a stale install that predates that change, one
+    installed with ``--no-deps`` / a hand-edited lockfile, or a real backend
+    that simply cannot be reached right now (headless session, locked
+    keychain). It never fires for a profile explicitly pinned to
+    ``token_storage = "file"`` - that is a deliberate, informed opt-out, not
+    something `doctor` should nag about. Surfaced as a non-fatal `doctor`
+    warning, not a hard failure: the same `token_storage = "auto"` promise
+    that a non-interactive agent shell must never fail just because no
+    keychain backend can service it (issue #287) applies here too
+    (issue #308).
+    """
+    return sys.platform == "darwin" and cfg.token_storage != "file" and _keyring_module() is None
 
 
 def active_backend(cfg: BlumkinConfig, kind: SecretKind) -> str:

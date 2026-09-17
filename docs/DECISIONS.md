@@ -82,7 +82,7 @@ catalog the CLI publishes and dispatched through the same `run_skill` /
 It is an ephemeral stdio process the host spawns and reaps per session (Claude
 Code, Cursor CLI, GitHub Copilot CLI are all MCP-native stdio clients now), not a
 daemon, and it reuses the CLI's on-disk token cache, so there is no new auth
-surface. `mcp` is an optional extra (`pipx install 'blumkin[mcp]'`); the CLI-only
+surface. `mcp` is a core dependency (as of 1.4.0, not an optional extra); the CLI-only
 verbs (`auth *`, `doctor`, `skills *`, `mail signature`, `mcp serve`) are not
 exposed; every tool whose CLI form needs `--yes` requires a server-enforced
 `confirm: true` argument (the MCP mirror of `--yes`). `blumkin mcp install` is a

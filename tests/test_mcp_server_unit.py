@@ -287,7 +287,7 @@ def test_cli_guard_when_the_mcp_extra_is_absent() -> None:
     with _reimport_mcp_server_with(missing):
         result = CliRunner().invoke(main, ["mcp", "serve"])
     assert result.exit_code == EXIT_USAGE
-    assert "blumkin[mcp]" in result.output
+    assert "pipx install --force blumkin" in result.output
 
 
 def test_cli_guard_does_not_swallow_an_unrelated_import_error() -> None:

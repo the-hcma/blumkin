@@ -37,10 +37,16 @@ dependencies = [
     "google-auth-oauthlib>=1.4.1",
     "httplib2>=0.32.0",
     "icalendar>=7.3.0",
+    "mcp>=2.2.0",
     "msal>=1.38.0",
     "msgraph-sdk>=1.62.0",
     "python-docx>=1.2.0",
     "tomlkit>=0.15.1",
+    # macOS Keychain is the OS-native, encrypted-at-rest credential store; on
+    # macOS it is always installed (not opt-in) so tokens never land on a
+    # plaintext file by default. Other platforms keep it as the `keychain`
+    # extra below (see secret_store.py, issue #308).
+    "keyring>=25.7.0; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +58,10 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.6",
 ]
+# `keychain` and `mcp` are kept as no-op aliases for anyone still typing
+# `pipx install 'blumkin[keychain]'` / `'blumkin[mcp]'` from older docs/scripts:
+# `mcp` is now always a core dependency, and `keyring` is a core dependency on
+# macOS (see `dependencies` above) and remains opt-in elsewhere.
 keychain = ["keyring>=25.7.0"]
 mcp = ["mcp>=2.2.0"]
 ocr = ["pytesseract>=0.3", "pdf2image>=1.17", "pillow>=12.3.0"]

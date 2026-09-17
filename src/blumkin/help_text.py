@@ -1048,8 +1048,8 @@ Example:
   # or in .cursor/mcp.json / ~/.copilot/mcp-config.json:
   #   { "command": "blumkin", "args": ["mcp", "serve"] }
 
-Needs the optional `mcp` extra: `pipx install 'blumkin[mcp]'` (or
-`uv tool install 'blumkin[mcp]'`). Auth stays a CLI step - run `blumkin auth
+Needs no extra install step - `mcp` is a core `blumkin` dependency. Auth
+stays a CLI step - run `blumkin auth
 login` on a TTY once; the server shares the same token cache.
 """
 
@@ -1094,8 +1094,8 @@ Re-running is safe: an entry that already matches is reported "already current",
 a stale one is updated. `--force` rewrites even a matching entry.
 
 Auth is unchanged - run `blumkin auth login` on a TTY once; every registered
-server shares that token cache. The `mcp` extra (`pipx install 'blumkin[mcp]'`)
-is needed to *run* the server, not to install it here.
+server shares that token cache. `mcp` is a core `blumkin` dependency - no
+extra install step needed to run the server.
 """
 
 MCP_STATUS_EPILOG = """

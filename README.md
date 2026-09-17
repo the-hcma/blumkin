@@ -38,6 +38,10 @@ pipx install blumkin
 pipx ensurepath          # first pipx install only; opens a new shell
 ```
 
+This always includes the MCP server (`mcp`) and, on macOS, `keyring` for
+storing tokens in the OS Keychain rather than a plaintext file (`blumkin
+doctor` warns if either is somehow missing from your install).
+
 Then invoke the binary directly — **not** `uv run blumkin`:
 
 ```bash
@@ -79,10 +83,10 @@ the editable install and prints (or, with `--yes`, runs) `git pull --ff-only`
 followed by `uv tool install -e . --force` to re-bake the metadata; `blumkin
 doctor` warns when a pull left the installed version stale.
 
-To expose every skill as a typed **MCP tool** for MCP-aware agents, install the
-`mcp` extra (`pipx install 'blumkin[mcp]'`) and run **`blumkin mcp install`** — a
-guided setup that registers `blumkin mcp serve` with Claude Code, Cursor, and the
-GitHub Copilot CLI, confirming each. See
+To expose every skill as a typed **MCP tool** for MCP-aware agents, run
+**`blumkin mcp install`** — a guided setup that registers `blumkin mcp serve`
+with Claude Code, Cursor, and the GitHub Copilot CLI, confirming each. `mcp` is
+a core dependency (no extra install step needed). See
 [`docs/agent-integration.md`](./docs/agent-integration.md#mcp-server).
 
 To use blumkin from agent sessions in **other** repos (Cursor personal skill, or

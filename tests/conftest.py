@@ -22,9 +22,16 @@ def _force_file_secret_backend(
     """
     if request.node.get_closest_marker("live") is not None:
         return
-    from blumkin import secret_store
+    from blumkin import cli, secret_store
 
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    # `doctor`'s macOS-keychain-missing warning (issue #308) is about a *real*
+    # absence (stale install, unreachable backend) - not this fixture's own
+    # stubbing of `_keyring_module` above, which would otherwise make every
+    # hermetic test on a macOS runner look like it has no keychain. Tests that
+    # specifically exercise that warning patch `cli.macos_keychain_missing`
+    # back themselves.
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
 
 
 @pytest.fixture(autouse=True)

@@ -30,9 +30,12 @@ try:
     from mcp.server.lowlevel import Server
     from mcp.server.stdio import stdio_server
 except ModuleNotFoundError as exc:  # pragma: no cover - the CLI wrapper re-raises with a hint
+    # `mcp` is a core dependency since 1.4.0; reaching here means this install is
+    # stale (e.g. an editable checkout that hasn't re-synced), not a missing extra.
     raise ModuleNotFoundError(
-        "the blumkin MCP server needs the optional `mcp` dependency; "
-        "install it with `pipx install 'blumkin[mcp]'`"
+        "the blumkin MCP server needs the `mcp` package, which is missing from "
+        "this install; reinstall with `pipx install --force blumkin` "
+        "(or `uv sync` from a checkout)"
     ) from exc
 
 # BESPOKE_SKILLS (auth verbs, doctor, skills.*, mail.signature, mcp.serve) have no
