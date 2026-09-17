@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.3.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.2.1...blumkin-v1.3.0) (2026-09-17)
+
+
+### Features
+
+* make blumkin's skill discoverable by pi.dev ([#299](https://github.com/the-hcma/blumkin/issues/299)) ([#301](https://github.com/the-hcma/blumkin/issues/301)) ([9f3338d](https://github.com/the-hcma/blumkin/commit/9f3338d6d426d05b48f2d0fa1a418a56cf7f4f0f))
+* **release:** automate npm publishing for the pi.dev skill package ([#303](https://github.com/the-hcma/blumkin/issues/303)) ([736977b](https://github.com/the-hcma/blumkin/commit/736977b78d8fa3d8ca188ef732d1e5fd6486faae))
+* store token cache/auth record in OS keychain when available ([#289](https://github.com/the-hcma/blumkin/issues/289)) ([5d45184](https://github.com/the-hcma/blumkin/commit/5d45184a68c29575d08b69cc878d75b91a83887e))
+
+
+### Bug Fixes
+
+* **mail:** add a reflowed html alternative to Gmail body_type=text sends ([#305](https://github.com/the-hcma/blumkin/issues/305)) ([01907d1](https://github.com/the-hcma/blumkin/commit/01907d1f6b6abe14ffcd6ae07b2f2f711eb90a34))
+* make list_profiles() tolerate a single profile's config errors ([#295](https://github.com/the-hcma/blumkin/issues/295)) ([40fc7cc](https://github.com/the-hcma/blumkin/commit/40fc7cc1352da5cf6068949336af3b8afd9b082e))
+
+
+### Documentation
+
+* add Microsoft app registration hardening checklist ([#296](https://github.com/the-hcma/blumkin/issues/296)) ([db38242](https://github.com/the-hcma/blumkin/commit/db382428f84831d822fbc136e3c8f37eb0a820ca))
+
 ## [1.2.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.2.0...blumkin-v1.2.1) (2026-09-15)
 
 
