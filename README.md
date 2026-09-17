@@ -38,9 +38,10 @@ pipx install blumkin
 pipx ensurepath          # first pipx install only; opens a new shell
 ```
 
-This always includes the MCP server (`mcp`) and, on macOS, `keyring` for
-storing tokens in the OS Keychain rather than a plaintext file (`blumkin
-doctor` warns if either is somehow missing from your install).
+This always includes the MCP server (`mcp`) and, on macOS, `keyring` so
+tokens prefer OS Keychain storage over a plaintext file (`token_storage =
+"auto"` still falls back to the file if no real backend is reachable at
+runtime; `blumkin doctor` warns if that happens).
 
 Then invoke the binary directly — **not** `uv run blumkin`:
 

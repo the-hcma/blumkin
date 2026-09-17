@@ -49,36 +49,14 @@ def _provider() -> MagicMock:
     return provider
 
 
-def test_macos_keychain_missing_true_when_darwin_and_no_backend(monkeypatch) -> None:
-    from blumkin import secret_store
-
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
-    assert macos_keychain_missing(_cfg()) is True
-
-
-def test_macos_keychain_missing_false_off_darwin(monkeypatch) -> None:
-    from blumkin import secret_store
-
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
-    assert macos_keychain_missing(_cfg()) is False
-
-
-def test_macos_keychain_missing_false_when_opted_into_file(monkeypatch) -> None:
-    from blumkin import secret_store
-
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
-    assert macos_keychain_missing(_cfg(token_storage="file")) is False
-
-
-def test_macos_keychain_missing_false_when_backend_usable(monkeypatch) -> None:
-    from blumkin import secret_store
-
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: object())
-    assert macos_keychain_missing(_cfg()) is False
+def test_doctor_is_quiet_when_macos_keychain_is_present(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+    with patch("blumkin.cli._workspace", return_value=_provider()):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    payload = json.loads(result.stdout)
+    assert payload["warnings"] == []
 
 
 def test_doctor_warns_when_macos_keychain_is_missing(tmp_path: Path, monkeypatch) -> None:
@@ -96,11 +74,33 @@ def test_doctor_warns_when_macos_keychain_is_missing(tmp_path: Path, monkeypatch
     assert any("keychain" in warning.lower() for warning in payload["warnings"])
 
 
-def test_doctor_is_quiet_when_macos_keychain_is_present(tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / "config.toml").write_text(_CONFIG)
-    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
-    with patch("blumkin.cli._workspace", return_value=_provider()):
-        result = CliRunner().invoke(main, ["doctor", "--json"])
-    payload = json.loads(result.stdout)
-    assert payload["warnings"] == []
+def test_macos_keychain_missing_false_off_darwin(monkeypatch) -> None:
+    from blumkin import secret_store
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    assert macos_keychain_missing(_cfg()) is False
+
+
+def test_macos_keychain_missing_false_when_backend_usable(monkeypatch) -> None:
+    from blumkin import secret_store
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: object())
+    assert macos_keychain_missing(_cfg()) is False
+
+
+def test_macos_keychain_missing_false_when_opted_into_file(monkeypatch) -> None:
+    from blumkin import secret_store
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    assert macos_keychain_missing(_cfg(token_storage="file")) is False
+
+
+def test_macos_keychain_missing_true_when_darwin_and_no_backend(monkeypatch) -> None:
+    from blumkin import secret_store
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    assert macos_keychain_missing(_cfg()) is True

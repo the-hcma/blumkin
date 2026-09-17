@@ -43,9 +43,11 @@ dependencies = [
     "python-docx>=1.2.0",
     "tomlkit>=0.15.1",
     # macOS Keychain is the OS-native, encrypted-at-rest credential store; on
-    # macOS it is always installed (not opt-in) so tokens never land on a
-    # plaintext file by default. Other platforms keep it as the `keychain`
-    # extra below (see secret_store.py, issue #308).
+    # macOS `keyring` is always installed (not opt-in) so tokens prefer the
+    # Keychain by default instead of a plaintext file - `token_storage =
+    # "auto"` still falls back to the file if no real backend is reachable
+    # at runtime (locked keychain, headless session, etc.). Other platforms
+    # keep it as the `keychain` extra below (see secret_store.py, issue #308).
     "keyring>=25.7.0; sys_platform == 'darwin'",
 ]
 
