@@ -50,6 +50,36 @@ credential.
 3. The first successful `Publish PyPI` run creates the project and converts the
    pending publisher into a normal one.
 
+## Pi npm package (`integrations/pi`)
+
+`@the-hcma/blumkin-pi-skill` (the [pi.dev](https://pi.dev) package wrapping
+blumkin's Agent Skill, see [`../docs/agent-integration.md`](agent-integration.md#pi))
+is a second, independently versioned Release Please package in the same
+manifest, scoped to `integrations/pi/**`. It follows the same flow as above:
+a `feat`/`fix` commit touching that path gets its own release PR
+(`CHANGELOG.md` under `integrations/pi/`), its own tag
+(`blumkin-pi-skill-v<version>`), and its own `Publish npm` job gated on the
+protected `npm` environment (required reviewer, `main` + `blumkin-pi-skill-v*`
+only) — mirroring `pypi` above, including OIDC trusted publishing (no npm
+token or repository secret; `id-token: write` plus the environment mint the
+credential).
+
+**One-time bootstrap, before trusted publishing can take over:** unlike
+PyPI, npm has no "pending trusted publisher" for a package that has never
+been published — the trust relationship can only be attached to a package
+that already exists on the registry. So the very first publish of
+`@the-hcma/blumkin-pi-skill` has to happen manually:
+
+1. `cd integrations/pi && npm login && npm publish --access public` (creates
+   the package on the registry; runs the `prepack` script that materializes
+   `skills/blumkin/` from `.agents/skills/blumkin/`).
+2. On npmjs.com: package → Settings → Trusted Publisher → add GitHub Actions,
+   with Owner `the-hcma`, Repository `blumkin`, Workflow `release-please.yml`,
+   Environment `npm`.
+3. From the next release onward, the `Publish npm` job in this workflow
+   takes over — same as `Publish PyPI` does once its pending publisher
+   converts.
+
 ## Install a published release
 
 ```bash

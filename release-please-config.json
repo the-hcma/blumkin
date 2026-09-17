@@ -12,6 +12,11 @@
           "jsonpath": "$.package[?(@.name.value=='blumkin')].version"
         }
       ]
+    },
+    "integrations/pi": {
+      "release-type": "node",
+      "package-name": "@the-hcma/blumkin-pi-skill",
+      "component": "blumkin-pi-skill"
     }
   }
 }

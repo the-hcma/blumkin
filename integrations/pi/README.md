@@ -30,6 +30,11 @@ Or, once published to npm:
 pi install npm:@the-hcma/blumkin-pi-skill
 ```
 
+Publishing is automated via Release Please + npm OIDC trusted publishing,
+gated on a one-time manual bootstrap publish — see
+[`docs/RELEASING.md`](../../docs/RELEASING.md#pi-npm-package-integrationspi)
+for the mechanism and current status.
+
 See [`docs/agent-integration.md`](../../docs/agent-integration.md#pi) for the
 full walkthrough, including the zero-install path (pi auto-discovers
 `.agents/skills/` when a session is opened inside this repo).
