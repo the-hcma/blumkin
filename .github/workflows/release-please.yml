@@ -43,12 +43,14 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
           RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
           RELEASE_PR: ${{ steps.release.outputs.pr }}
+          PI_RELEASE_CREATED: ${{ steps.release.outputs['integrations/pi--release_created'] }}
         run: |
           commit_title=$(git log -1 --format='%s' "$COMMIT_SHA")
           if echo "$commit_title" | grep -qE '^(feat|fix)(\([^)]*\))?!?:' && \
              [[ "$RELEASE_CREATED" != "true" ]] && \
-             [[ -z "$RELEASE_PR" ]]; then
-            echo "ERROR: Commit '$commit_title' is releasable, but Release Please neither cut a release nor opened or updated a release PR." >&2
+             [[ -z "$RELEASE_PR" ]] && \
+             [[ "$PI_RELEASE_CREATED" != "true" ]]; then
+            echo "ERROR: Commit '$commit_title' is releasable, but Release Please neither cut a release nor opened or updated a release PR (root or integrations/pi)." >&2
             echo "Check the commit format and that squash_merge_commit_message=BLANK is configured on the repo." >&2
             exit 1
           fi
