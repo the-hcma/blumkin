@@ -272,12 +272,14 @@ def test_migration_rolls_back_keyring_copy_when_unlink_fails(tmp_path: Path, mon
 
     Otherwise the plaintext file lingers untracked forever: the keyring copy
     is served on every subsequent read, so cleanup of the stale file never
-    happens (issue #287 review).
+    happens (issue #287 review). Rollback must also scope the keyring delete
+    to just this kind - a sibling already in the shared bundle must survive.
     """
     cfg = _load(tmp_path, monkeypatch, token_storage="auto")
     cfg.profile_dir.mkdir(parents=True)
     cfg.token_cache_path.write_text("legacy-value")
     fake = _FakeKeyring()
+    _bundle_seed(fake, cfg, "auth_record", "sibling-record")
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
 
     real_unlink = Path.unlink
@@ -288,8 +290,10 @@ def test_migration_rolls_back_keyring_copy_when_unlink_fails(tmp_path: Path, mon
     monkeypatch.setattr(Path, "unlink", reject_unlink)
 
     assert secret_store.read_text(cfg, "token_cache") == "legacy-value"
-    # Rolled back - the keyring must not hold a copy while the file still does.
-    assert _account(cfg, "token_cache") not in fake.store
+    # Rolled back - the keyring must not hold a token_cache copy while the
+    # file still does, but the sibling auth_record must remain.
+    assert _bundle_value(fake, cfg, "token_cache") is None
+    assert _bundle_value(fake, cfg, "auth_record") == "sibling-record"
     assert cfg.token_cache_path.is_file()
 
     monkeypatch.setattr(Path, "unlink", real_unlink)
@@ -297,6 +301,7 @@ def test_migration_rolls_back_keyring_copy_when_unlink_fails(tmp_path: Path, mon
     assert secret_store.read_text(cfg, "token_cache") == "legacy-value"
     assert not cfg.token_cache_path.exists()
     assert _bundle_value(fake, cfg, "token_cache") == "legacy-value"
+    assert _bundle_value(fake, cfg, "auth_record") == "sibling-record"
 
 
 def test_read_reconciles_a_leftover_plaintext_file_once_the_keyring_has_a_value(
@@ -488,6 +493,38 @@ def test_status_dict_touches_one_keychain_item_for_both_bundled_kinds(
 
     assert call_count == 1
     assert touched == {_account(cfg, "auth_record")}
+
+
+def test_status_dict_reports_token_cache_backend_when_auth_record_is_on_keyring(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """token_storage_backend must follow token_cache, not a sibling on keyring.
+
+    Under ``auto``, auth_record can land in the shared keychain item while a
+    later token_cache write falls back to the plaintext file. doctor/auth
+    status must still report ``file`` for that cache, not ``keyring`` from
+    the sibling. Seed the split directly and refuse further keyring writes
+    so the status read cannot migrate the cache file into the bundle.
+    """
+    from blumkin.auth import status_dict
+
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    fake = _FakeKeyring()
+    _bundle_seed(fake, cfg, "auth_record", "{}")
+
+    def refuse_set_password(service: str, account: str, password: str) -> None:
+        raise RuntimeError("keyring write refused")
+
+    fake.set_password = refuse_set_password  # type: ignore[method-assign]
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    cfg.profile_dir.mkdir(parents=True, exist_ok=True)
+    cfg.token_cache_path.write_text(json.dumps({"AccessToken": {}, "RefreshToken": {}}))
+
+    payload = status_dict(cfg)
+
+    assert payload["auth_record"] is True
+    assert payload["token_cache"] is True
+    assert payload["token_storage_backend"] == "file"
 
 
 def test_delete_removes_from_both_backends(tmp_path: Path, monkeypatch) -> None:

@@ -310,14 +310,14 @@ def read_ms_bundle_and_backend(cfg: BlumkinConfig) -> tuple[dict[str, str], str]
     exactly once (or reads the two independent files, for the file backend)
     and resolves both kinds from it. The returned dict has a key only for a
     kind that actually has a value - a fresh, never-logged-in profile returns
-    ``{}``. ``backend`` is ``"file"`` only when *neither* kind came from the
-    keyring; a real split (one kind migrated to the keyring file-backend-side,
-    the other not) is possible on the file backend, since it keeps them as
-    two independent files, and is reported as ``"keyring"`` since a keyring
-    entry is present for at least one of them.
+    ``{}``. The companion backend string is specifically ``token_cache``'s
+    backend (not "keyring if either kind came from the keyring"): callers
+    that surface ``token_storage_backend`` in ``doctor`` / ``auth status``
+    need the cache's own backend so a file-fallback refresh token is not
+    masked by an ``auth_record`` that still lives in the keyring.
     """
     result: dict[str, str] = {}
-    backend = "file"
+    token_cache_backend = "file"
     for kind in ("auth_record", "token_cache"):
         path = _file_path(cfg, kind)
         if path.is_file():
@@ -339,9 +339,9 @@ def read_ms_bundle_and_backend(cfg: BlumkinConfig) -> tuple[dict[str, str], str]
                 )
                 if value is not None:
                     result[kind] = value
-                if kind_backend == "keyring":
-                    backend = "keyring"
-    return result, backend
+                if kind == "token_cache":
+                    token_cache_backend = kind_backend
+    return result, token_cache_backend
 
 
 def read_text(cfg: BlumkinConfig, kind: SecretKind) -> str | None:
