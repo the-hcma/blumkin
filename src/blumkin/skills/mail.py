@@ -1599,6 +1599,20 @@ def render_markdown_email(markdown: str) -> str:
     return _render_email_html(_parse_doc_body(markdown, body_format="markdown", hard_breaks=True))
 
 
+def render_plain_text_email(text: str) -> str:
+    """Render an authored ``--body-type text`` body to a ``multipart/alternative``
+    HTML companion, so an HTML-capable client does not display it hard-wrapped.
+
+    Blank-line-separated paragraphs are kept; a single newline inside one is
+    folded to a space, undoing manual word-wrap - the wire ``text/plain`` part
+    is untouched, this is only the fallback for clients that prefer HTML. No
+    Markdown interpretation: unlike :func:`render_markdown_email`, ``**text**``
+    stays literal, matching ``--body-type text``'s "send exactly what I typed"
+    contract.
+    """
+    return _render_email_html(_parse_doc_body(text, body_format="text"))
+
+
 def _compose_item_body(graph_body_type: BodyType, content: str) -> ItemBody:
     """Build the Graph body, forcing CRLF on a text body.
 

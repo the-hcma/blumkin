@@ -95,6 +95,176 @@ def test_mail_draft_html_adds_alternative(tmp_path: Path) -> None:
     assert "Hello there" in _content(sent, "plain")
 
 
+def test_mail_draft_text_adds_reflowed_html_alternative(tmp_path: Path) -> None:
+    # Issue #304: a hand-wrapped body_type=text send went out text/plain only,
+    # so any HTML-capable client displayed the hard wrap as mid-sentence breaks.
+    service = _service(create_result={"id": "d"})
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com",
+                subject="Notes",
+                body="Wanted to flag\nwhat is still open.\n\nSecond para.",
+                body_type="text",
+            )
+        )
+    assert payload["draft"]["body_type"] == "text"
+    sent = _sent_message(service, "create")
+    # The wire text/plain part is untouched - still hard-wrapped as authored (Gmail's
+    # raw MIME normalizes \n to \r\n, same as every other text-mode send).
+    plain = _content(sent, "plain").strip().replace("\r\n", "\n")
+    assert plain == "Wanted to flag\nwhat is still open.\n\nSecond para."
+    # The html alternative reflows the wrapped paragraph into flowing prose.
+    assert (
+        _content(sent, "html").strip()
+        == "<p>Wanted to flag what is still open.</p><p>Second para.</p>"
+    )
+
+
+def test_mail_draft_text_html_alternative_does_not_interpret_markdown(tmp_path: Path) -> None:
+    # --body-type text is "send exactly what I typed" - the html alternative must
+    # not run authored text through the markdown renderer.
+    service = _service(create_result={"id": "d"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com", subject="S", body="**not bold**", body_type="text"
+            )
+        )
+    sent = _sent_message(service, "create")
+    html = _content(sent, "html")
+    assert "**not bold**" in html
+    assert "<strong>" not in html
+
+
+def test_mail_draft_text_no_body_adds_no_html_alternative(tmp_path: Path) -> None:
+    # No signature configured and an empty (default) body: nothing to render, so
+    # _build_message must not add a spurious empty html alternative.
+    service = _service(create_result={"id": "d"})
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com", subject="S", body="", body_type="text"
+            )
+        )
+    sent = _sent_message(service, "create")
+    assert not sent.is_multipart()
+
+
+def test_mail_draft_text_html_alternative_keeps_signature_lines_separate(tmp_path: Path) -> None:
+    # The text-mode signature is "Name\nTitle" (no blank line between them) - naively
+    # reflowing the whole body+signature blob as one paragraph-joined blob would
+    # squash it into "Name Title" on one run-on line.
+    service = _service(create_result={"id": "d"})
+    signature = MailSignatureConfig(enabled=True, name="Ada", title="Engineer")
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path, signature=signature)).mail_draft(
+                to="a@example.com", subject="S", body="Hello there", body_type="text"
+            )
+        )
+    sent = _sent_message(service, "create")
+    plain = _content(sent, "plain").strip().replace("\r\n", "\n")
+    assert plain == "Hello there\n\nAda\nEngineer"
+    html = _content(sent, "html")
+    assert "<p>Hello there</p>" in html
+    assert "Ada" in html
+    assert "Engineer" in html
+    assert "Ada Engineer" not in html
+
+
+def test_mail_reply_text_html_alternative_blockquotes_the_original(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(
+            subject="Q", sender="Ada <ada@example.com>", body="line a\nline b"
+        ),
+        create_result={"id": "draft-1"},
+    )
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_reply(
+                message_id="m-1", body="my reply\nstill one para", body_type="text"
+            )
+        )
+    sent = _sent_message(service, "create")
+    # Plain part keeps blumkin's own "> "-per-line quoting, untouched.
+    plain = _content(sent, "plain").replace("\r\n", "\n")
+    assert "my reply\nstill one para" in plain
+    assert "> line a\n> line b" in plain
+    # The html alternative reflows the new comment and blockquotes the original,
+    # matching the shape _quote_for_reply already produces for --body-type html -
+    # not a paragraph-joined run-on of the comment and every quoted line.
+    html = _content(sent, "html")
+    assert "<p>my reply still one para</p>" in html
+    assert "<blockquote>" in html
+    assert "line a<br>line b" in html
+
+
+def test_mail_forward_text_html_alternative_blockquotes_the_original(tmp_path: Path) -> None:
+    service = _service(
+        message_result=_full_message(
+            subject="Doc", sender="Ada <ada@example.com>", body="orig one\norig two"
+        ),
+        create_result={"id": "d", "message": {"threadId": "t"}},
+    )
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_forward(
+                message_id="m-1", to="dana@example.com", body="fyi\nsee below", body_type="text"
+            )
+        )
+    sent = _sent_message(service, "create")
+    assert "fyi\nsee below" in _content(sent, "plain").replace("\r\n", "\n")
+    html = _content(sent, "html")
+    assert "<p>fyi see below</p>" in html
+    assert "<blockquote>" in html
+    assert "orig one<br>orig two" in html
+
+
+def test_mail_update_draft_subject_only_reports_text_after_prior_text_draft(
+    tmp_path: Path,
+) -> None:
+    # Regression: a text draft's auto html alternative must not make a later
+    # subject-only update mistake the stored draft for an html body - both are,
+    # structurally, a multipart/alternative with a plain part and an html part.
+    create_service = _service(create_result={"id": "d-t"})
+    with _patched(create_service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com", subject="S", body="hello there", body_type="text"
+            )
+        )
+    created = _sent_message(create_service, "create")
+    stored_raw = base64.urlsafe_b64encode(created.as_bytes()).decode()
+    update_service = _service(
+        get_result={"id": "d-t", "message": {"raw": stored_raw}},
+        update_result={"id": "d-t"},
+    )
+    with _patched(update_service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(draft_id="d-t", subject="S2")
+        )
+    assert payload["draft"]["body_type"] == "text"
+
+
+def test_mail_update_draft_text_body_replace_adds_html_alternative(tmp_path: Path) -> None:
+    service = _service(
+        get_result=_raw_draft(subject="S", to="a@example.com", body="old body"),
+        update_result={"id": "d"},
+    )
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d", body="new one\nstill one para\n\nnew two", body_type="text"
+            )
+        )
+    assert payload["draft"]["body_type"] == "text"
+    sent = _sent_message(service, "update")
+    plain = _content(sent, "plain").strip().replace("\r\n", "\n")
+    assert plain == "new one\nstill one para\n\nnew two"
+    assert _content(sent, "html").strip() == "<p>new one still one para</p><p>new two</p>"
+
+
 def test_mail_draft_defaults_to_markdown_rendered_as_html(tmp_path: Path) -> None:
     # No --body-type: the Gmail path must render markdown to HTML on the wire and
     # report body_type "html", and the text/plain alternative must not collapse
