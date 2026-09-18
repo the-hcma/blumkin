@@ -129,49 +129,6 @@ class _BrokenAndUncleanableKeyring(_BrokenKeyring):
         raise RuntimeError("keychain deletion denied")
 
 
-class _LockedKeyring(_FakeKeyring):
-    """A backend present but entirely unreachable (locked login keychain over SSH, etc.).
-
-    Every call - read, write, or delete - fails with the same access error;
-    there is no way to distinguish "there is a stale value we can't reach"
-    from "there was never anything here" from the outside (issue #287
-    review, round 7: the single root cause behind a failed write and a
-    failed stale-entry probe/cleanup must not, on its own, be treated as
-    evidence of a real disagreement between the two backends).
-    """
-
-    def get_password(self, service: str, username: str) -> str | None:
-        raise RuntimeError("keychain locked")
-
-    def set_password(self, service: str, username: str, password: str) -> None:
-        raise RuntimeError("keychain locked")
-
-    def delete_password(self, service: str, username: str) -> None:
-        raise RuntimeError("keychain locked")
-
-
-class _LegacyAccountLockedKeyring(_FakeKeyring):
-    """Fails get/delete only for one pre-bundle account; the shared bundle stays usable.
-
-    Lets tests exercise ``_delete_legacy_per_kind_account``'s failure taxonomy
-    without the main bundled-account delete path raising first.
-    """
-
-    def __init__(self, legacy_account: str) -> None:
-        super().__init__()
-        self._legacy_account = legacy_account
-
-    def get_password(self, service: str, username: str) -> str | None:
-        if username == self._legacy_account:
-            raise RuntimeError("keychain locked")
-        return super().get_password(service, username)
-
-    def delete_password(self, service: str, username: str) -> None:
-        if username == self._legacy_account:
-            raise RuntimeError("keychain locked")
-        super().delete_password(service, username)
-
-
 class _HangsOnMutationKeyring(_FakeKeyring):
     """A backend whose ``set_password``/``delete_password`` never return in time.
 
@@ -186,13 +143,56 @@ class _HangsOnMutationKeyring(_FakeKeyring):
         super().__init__()
         self._release = release
 
+    def delete_password(self, service: str, username: str) -> None:
+        self._release.wait(timeout=5)
+        super().delete_password(service, username)
+
     def set_password(self, service: str, username: str, password: str) -> None:
         self._release.wait(timeout=5)
         super().set_password(service, username, password)
 
+
+class _LegacyAccountLockedKeyring(_FakeKeyring):
+    """Fails get/delete only for one pre-bundle account; the shared bundle stays usable.
+
+    Lets tests exercise ``_delete_legacy_per_kind_account``'s failure taxonomy
+    without the main bundled-account delete path raising first.
+    """
+
+    def __init__(self, legacy_account: str) -> None:
+        super().__init__()
+        self._legacy_account = legacy_account
+
     def delete_password(self, service: str, username: str) -> None:
-        self._release.wait(timeout=5)
+        if username == self._legacy_account:
+            raise RuntimeError("keychain locked")
         super().delete_password(service, username)
+
+    def get_password(self, service: str, username: str) -> str | None:
+        if username == self._legacy_account:
+            raise RuntimeError("keychain locked")
+        return super().get_password(service, username)
+
+
+class _LockedKeyring(_FakeKeyring):
+    """A backend present but entirely unreachable (locked login keychain over SSH, etc.).
+
+    Every call - read, write, or delete - fails with the same access error;
+    there is no way to distinguish "there is a stale value we can't reach"
+    from "there was never anything here" from the outside (issue #287
+    review, round 7: the single root cause behind a failed write and a
+    failed stale-entry probe/cleanup must not, on its own, be treated as
+    evidence of a real disagreement between the two backends).
+    """
+
+    def delete_password(self, service: str, username: str) -> None:
+        raise RuntimeError("keychain locked")
+
+    def get_password(self, service: str, username: str) -> str | None:
+        raise RuntimeError("keychain locked")
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        raise RuntimeError("keychain locked")
 
 
 def _account(cfg, kind: secret_store.SecretKind) -> tuple[str, str]:
@@ -347,28 +347,6 @@ def test_migration_rolls_back_keyring_copy_when_unlink_fails(tmp_path: Path, mon
     assert _bundle_value(fake, cfg, "auth_record") == "sibling-record"
 
 
-def test_read_reconciles_a_leftover_plaintext_file_once_the_keyring_has_a_value(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """A stale plaintext file next to a live keyring value must not linger forever.
-
-    This models a prior "auto" write that fell back to the file, whose own
-    best-effort stale-keyring cleanup didn't land (a delayed unlock, a
-    racing process, etc.) - the keyring still holds a value, so it wins, but
-    the leftover file must still get cleaned up once it is safe to do so
-    (issue #287 review).
-    """
-    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
-    cfg.profile_dir.mkdir(parents=True)
-    cfg.token_cache_path.write_text("stale-file-value")
-    fake = _FakeKeyring()
-    _bundle_seed(fake, cfg, "token_cache", "keyring-value")
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
-
-    assert secret_store.read_text(cfg, "token_cache") == "keyring-value"
-    assert not cfg.token_cache_path.exists()
-
-
 # --- auth_record / token_cache share one keychain item ("bundling") -----------------
 
 
@@ -398,6 +376,28 @@ def test_bundled_kinds_share_one_keychain_item(
     }
     assert secret_store.read_text(cfg, "auth_record") == "auth_record-value"
     assert secret_store.read_text(cfg, "token_cache") == "token_cache-value"
+
+
+def test_read_reconciles_a_leftover_plaintext_file_once_the_keyring_has_a_value(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A stale plaintext file next to a live keyring value must not linger forever.
+
+    This models a prior "auto" write that fell back to the file, whose own
+    best-effort stale-keyring cleanup didn't land (a delayed unlock, a
+    racing process, etc.) - the keyring still holds a value, so it wins, but
+    the leftover file must still get cleaned up once it is safe to do so
+    (issue #287 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    cfg.profile_dir.mkdir(parents=True)
+    cfg.token_cache_path.write_text("stale-file-value")
+    fake = _FakeKeyring()
+    _bundle_seed(fake, cfg, "token_cache", "keyring-value")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    assert secret_store.read_text(cfg, "token_cache") == "keyring-value"
+    assert not cfg.token_cache_path.exists()
 
 
 def test_deleting_one_bundled_kind_preserves_its_sibling(tmp_path: Path, monkeypatch) -> None:

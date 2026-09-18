@@ -213,40 +213,6 @@ def test_status_dict_missing_scopes_empty_before_first_login(tmp_path: Path) -> 
     assert payload["missing_scopes"] == []
 
 
-def test_status_dict_reports_granted_and_missing_scopes(tmp_path: Path) -> None:
-    cfg = _cfg(tmp_path)
-    _write_valid_token(cfg, scopes=["https://www.googleapis.com/auth/gmail.readonly"])
-    payload = google_auth.status_dict(cfg)
-    assert payload["granted_scopes"] == ["https://www.googleapis.com/auth/gmail.readonly"]
-    assert payload["missing_scopes"] == sorted(
-        GOOGLE_REQUIRED_SCOPES - {"https://www.googleapis.com/auth/gmail.readonly"}
-    )
-
-
-def test_status_dict_reports_token_storage_backend(tmp_path: Path, monkeypatch) -> None:
-    """`doctor` prints this key verbatim - a drop or rename must fail loudly (issue #287 review)."""
-    cfg = _cfg(tmp_path)
-    assert google_auth.status_dict(cfg)["token_storage_backend"] == "file"
-
-    from blumkin import secret_store
-
-    class _FakeKeyring:
-        def get_password(self, service: str, username: str) -> str | None:
-            return None
-
-        def set_password(self, service: str, username: str, password: str) -> None:
-            pass
-
-        def delete_password(self, service: str, username: str) -> None:
-            pass
-
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
-    keyring_dir = tmp_path / "keyring-profile"
-    keyring_dir.mkdir()
-    keyring_cfg = dataclasses.replace(_cfg(keyring_dir), token_storage="keyring")
-    assert google_auth.status_dict(keyring_cfg)["token_storage_backend"] == "keyring"
-
-
 def test_status_dict_reads_google_token_from_keyring_once(tmp_path: Path, monkeypatch) -> None:
     """A single `status_dict()` call (`doctor` / `auth status`) must not re-probe
     the same keychain item more than once - each extra round trip is a separate
@@ -268,6 +234,9 @@ def test_status_dict_reads_google_token_from_keyring_once(tmp_path: Path, monkey
     calls: list[str] = []
 
     class _FakeKeyring:
+        def delete_password(self, service: str, account: str) -> None:
+            pass
+
         def get_password(self, service: str, account: str) -> str | None:
             calls.append(account)
             kind = json.loads(account)[2]
@@ -276,14 +245,45 @@ def test_status_dict_reads_google_token_from_keyring_once(tmp_path: Path, monkey
         def set_password(self, service: str, account: str, value: str) -> None:
             pass
 
-        def delete_password(self, service: str, account: str) -> None:
-            pass
-
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
     cfg = dataclasses.replace(_cfg(tmp_path), token_storage="keyring")
     google_auth.status_dict(cfg)
     google_token_touches = [c for c in calls if json.loads(c)[2] == "google_token"]
     assert len(google_token_touches) == 1
+
+
+def test_status_dict_reports_granted_and_missing_scopes(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _write_valid_token(cfg, scopes=["https://www.googleapis.com/auth/gmail.readonly"])
+    payload = google_auth.status_dict(cfg)
+    assert payload["granted_scopes"] == ["https://www.googleapis.com/auth/gmail.readonly"]
+    assert payload["missing_scopes"] == sorted(
+        GOOGLE_REQUIRED_SCOPES - {"https://www.googleapis.com/auth/gmail.readonly"}
+    )
+
+
+def test_status_dict_reports_token_storage_backend(tmp_path: Path, monkeypatch) -> None:
+    """`doctor` prints this key verbatim - a drop or rename must fail loudly (issue #287 review)."""
+    cfg = _cfg(tmp_path)
+    assert google_auth.status_dict(cfg)["token_storage_backend"] == "file"
+
+    from blumkin import secret_store
+
+    class _FakeKeyring:
+        def delete_password(self, service: str, username: str) -> None:
+            pass
+
+        def get_password(self, service: str, username: str) -> str | None:
+            return None
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            pass
+
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+    keyring_dir = tmp_path / "keyring-profile"
+    keyring_dir.mkdir()
+    keyring_cfg = dataclasses.replace(_cfg(keyring_dir), token_storage="keyring")
+    assert google_auth.status_dict(keyring_cfg)["token_storage_backend"] == "keyring"
 
 
 def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
