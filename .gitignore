@@ -14,6 +14,12 @@ build/
 .pytest_cache/
 .mypy_cache/
 
+# rust-agent/ build output (issue #328) - `hatch_build.py` compiles this on
+# install and copies the result into src/blumkin/agent/bin/; neither the
+# Cargo target dir nor the copied binary belong in version control.
+rust-agent/target/
+src/blumkin/agent/bin/
+
 # Credential / token material — never committed (blumkin keeps these under
 # ~/.config/blumkin/, but guard the repo tree too).
 *token*.json

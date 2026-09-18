@@ -11,6 +11,42 @@ Authoring style: ASCII hyphens only (no em/en dashes), matching
 
 from __future__ import annotations
 
+AGENT_EPILOG = """
+Examples:
+
+\b
+  blumkin agent status
+  blumkin agent lock
+
+The agent (issue #328) is a background process that will hold time-boxed,
+decrypted credentials so blumkin only needs local presence re-verification
+(Touch ID / device password) roughly once a day, instead of on every
+command. This build is the foundation layer only - no secrets flow through
+it yet; `status`/`lock` just manage the process's lifecycle.
+"""
+
+AGENT_LOCK_EPILOG = """
+Example:
+
+\b
+  blumkin agent lock
+
+Drops the agent's cached state immediately instead of waiting for its TTL
+to expire, and exits the process. A no-op if no agent is running - nothing
+is cached either way.
+"""
+
+AGENT_STATUS_EPILOG = """
+Examples:
+
+\b
+  blumkin agent status
+  blumkin agent status --json
+
+Shows whether the agent is currently running, and if so its pid, version,
+and which profiles have cached state - without starting one just to check.
+"""
+
 AUTH_EPILOG = """
 Examples:
 

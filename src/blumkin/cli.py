@@ -15,6 +15,7 @@ import click
 from click.shell_completion import get_completion_class
 
 from blumkin import help_text
+from blumkin.agent import client as agent_client
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
 from blumkin.capabilities import capability_summary
 from blumkin.config import BlumkinConfig, list_profiles, load_config, set_profile_email
@@ -203,6 +204,74 @@ _INSTALL_METHOD_LABELS: dict[str, str] = {
 # One `git pull` / `pipx|uv` step in `blumkin upgrade`. A cold reinstall builds
 # no wheels (blumkin is pure Python) but still resolves and downloads deps.
 _UPGRADE_STEP_TIMEOUT_S = 300
+
+
+def _agent_lock_payload() -> dict[str, Any]:
+    """Ask the agent to drop cached state and exit; a no-op if none is running.
+
+    `spawn=False`: locking must never itself spawn a fresh, unlocked agent -
+    that would be the opposite of what an operator asking to lock down
+    access wants.
+    """
+    try:
+        response = agent_client.call("lock", spawn=False)
+    except agent_client.AgentUnreachableError as exc:
+        # A process is listening but did not answer in time - it may still
+        # be alive and holding cached state, so this is not the same as
+        # "nothing was cached" (see PR #329 review). `ok: False` is set
+        # explicitly so `--json` output cannot be misread as success (
+        # `emit_json` only defaults `ok` to True when the payload omits it).
+        return {
+            "agent_running": True,
+            "reachable": False,
+            "locked": False,
+            "error": str(exc),
+            "ok": False,
+        }
+    except agent_client.AgentUnavailableError:
+        return {"agent_running": False, "locked": True}
+    except RuntimeError as exc:
+        # `paths._ensure_private_owned_dir` fails loudly on a hostile runtime
+        # dir (planted symlink / wrong owner) by design, rather than
+        # `agent_client`'s narrower `OSError` handling silently degrading to
+        # "no agent" - but that means it is not caught anywhere below this,
+        # so left alone it would surface as a raw traceback instead of a
+        # clean CLI error (see PR #329 review).
+        return {
+            "agent_running": False,
+            "reachable": False,
+            "locked": False,
+            "error": str(exc),
+            "ok": False,
+        }
+    locked = bool(response.get("ok"))
+    payload: dict[str, Any] = {"agent_running": True, "locked": locked, "ok": locked}
+    if not locked and response.get("error"):
+        # e.g. a `protocol_mismatch` reply with `spawn=False`: the agent
+        # answered but declined to lock, so this is a real failure, not a
+        # successful no-op (see PR #329 review).
+        payload["error"] = response["error"]
+    return payload
+
+
+def _agent_status_payload() -> dict[str, Any]:
+    """Report whether the agent is running, without spawning one just to check."""
+    try:
+        response = agent_client.call("status", spawn=False)
+    except agent_client.AgentUnreachableError as exc:
+        return {"agent_running": True, "reachable": False, "error": str(exc)}
+    except agent_client.AgentUnavailableError:
+        return {"agent_running": False}
+    except RuntimeError as exc:
+        # See the matching handler in `_agent_lock_payload` - a hostile
+        # runtime dir must not surface as an unhandled traceback here either.
+        return {"agent_running": False, "reachable": False, "error": str(exc)}
+    return {
+        "agent_running": True,
+        "agent_version": response.get("agent_version"),
+        "agent_pid": response.get("agent_pid"),
+        "cached_profiles": response.get("cached_profiles", []),
+    }
 
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
@@ -943,6 +1012,78 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
     available = [family for family, ok in payload["capabilities"].items() if ok]
     lines.append(f"available: {', '.join(available) or 'none'}")
     emit_lines(lines)
+
+
+@main.group(epilog=help_text.AGENT_EPILOG)
+def agent() -> None:
+    """Check on / lock the blumkin-agent background process.
+
+    The agent (issue #328) is the background process that will hold
+    time-boxed, decrypted credentials so blumkin only needs to re-verify
+    local presence (Touch ID / device password) roughly once a day rather
+    than on every command. This foundation build has no secrets flowing
+    through it yet - `status`/`lock` only manage the process's lifecycle.
+    """
+
+
+@agent.command("lock", epilog=help_text.AGENT_LOCK_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def agent_lock(ctx: click.Context, as_json_flag: bool) -> None:
+    """Drop the agent's cached state now, instead of waiting for its TTL.
+
+    A no-op (not an error) if no agent is currently running - either way,
+    nothing is cached afterward.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    payload = _agent_lock_payload()
+    if as_json:
+        emit_json(payload)
+        if payload.get("reachable") is False or not payload.get("locked", True):
+            raise SystemExit(EXIT_OTHER)
+        return
+    if payload.get("reachable") is False:
+        emit_lines([f"lock failed: could not reach the agent - {payload.get('error')}"])
+        raise SystemExit(EXIT_OTHER)
+    if payload["agent_running"] and not payload["locked"]:
+        detail = f" - {payload['error']}" if payload.get("error") else ""
+        emit_lines([f"lock failed: agent did not confirm the lock{detail}"])
+        raise SystemExit(EXIT_OTHER)
+    elif payload["agent_running"]:
+        emit_lines(["locked: the agent will exit and forget any cached state"])
+    else:
+        emit_lines(["locked: no agent was running (nothing was cached)"])
+
+
+@agent.command("status", epilog=help_text.AGENT_STATUS_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def agent_status(ctx: click.Context, as_json_flag: bool) -> None:
+    """Show whether the agent is running, without starting one just to check."""
+    as_json = _as_json(ctx, as_json_flag)
+    payload = _agent_status_payload()
+    if as_json:
+        emit_json(payload)
+        return
+    if payload.get("reachable") is False:
+        emit_lines(
+            [
+                f"agent_running: {str(payload['agent_running']).lower()}",
+                f"reachable: false ({payload.get('error')})",
+            ]
+        )
+        return
+    if not payload["agent_running"]:
+        emit_lines(["agent_running: false"])
+        return
+    emit_lines(
+        [
+            "agent_running: true",
+            f"agent_version: {payload.get('agent_version')}",
+            f"agent_pid: {payload.get('agent_pid')}",
+            f"cached_profiles: {', '.join(payload.get('cached_profiles') or []) or '(none)'}",
+        ]
+    )
 
 
 @main.group(epilog=help_text.PROFILES_EPILOG)
