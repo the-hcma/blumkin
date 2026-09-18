@@ -80,8 +80,9 @@ token cache / auth record exist plus the access-token expiry. Read this before
 assuming a hang is a login problem. `--json` also carries `granted_scopes` and
 `missing_scopes`, so a scope gap is visible before a command fails on it.
 
-`account` is the signed-in account email (best-effort; `null`/`(unknown)` on a
-cold profile). `capabilities` (JSON) / `available:` (text) is the same
+`account` is the signed-in account email, read from the cached `config.toml`
+label written once at onboarding (`null` on a profile that has never
+completed a login). `capabilities` (JSON) / `available:` (text) is the same
 per-family usability summary as `blumkin doctor` and `blumkin capabilities`.
 """
 

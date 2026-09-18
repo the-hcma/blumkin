@@ -213,17 +213,17 @@ def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
 def _auth_status_payload(config: BlumkinConfig | None = None) -> dict[str, Any]:
     """Auth-status fields plus the resolved build, account, and capabilities.
 
-    ``account`` best-effort resolves the signed-in account email (same call
-    `doctor` makes); a cold/never-logged-in profile leaves it ``None`` rather
-    than raising, same as `doctor`'s own probe.
+    ``account`` reads the cached ``config.toml`` label (written once at
+    onboarding by `_populate_profile_email_once`) rather than probing live -
+    on Google, ``account_email()`` is a live Gmail call, which would make
+    `auth status` block on the network and contradict the "cached data only"
+    contract this command and `capabilities` both advertise. A never-logged-in
+    or drifted profile leaves it ``None``.
     """
     cfg = config or _load_config()
     payload = dict(_workspace(cfg).auth_status())
     payload.update(build_status_fields())
-    try:
-        payload["account"] = _workspace(cfg).account_email() or None
-    except Exception:
-        payload["account"] = None
+    payload["account"] = cfg.email or None
     payload["capabilities"] = capability_summary(
         provider=cfg.provider, granted_scopes=payload.get("granted_scopes") or []
     )
