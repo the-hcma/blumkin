@@ -444,10 +444,11 @@ report "no output" — the explanation is there, in the stream you did not read.
 `doctor` also exits 3 when `client_id` is missing from `config.toml`, which no
 amount of logging in will fix. Read `problems` before advising the user.
 
-`blumkin capabilities --json` is not in that table: unlike `doctor`, it always
-exits 0 with `ok` absent from its payload - it reports the same per-family
-usability flags without the health-check semantics, so there is nothing to
-diagnose on stdout.
+`blumkin capabilities --json` is not in that table: it exits 0 on the success
+path (same `emit_json` envelope as everything else, so `ok` is always `true` -
+there is no health-check failure state to report, unlike `doctor`). A bad
+`--provider` in `config.toml` still exits 2 with `usage_error` before the
+payload is built, same as any other command.
 
 Three caveats worth wiring in up front:
 
