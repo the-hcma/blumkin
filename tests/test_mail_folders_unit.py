@@ -105,8 +105,10 @@ def test_mail_list_not_found_mentions_a_truncated_listing(monkeypatch) -> None:
         return_value=_page([_folder("Inbox", "inbox-id"), _folder("Deep", "deep-id")])
     )
 
-    with pytest.raises(MailFolderNotFoundError, match="truncated"):
+    with pytest.raises(MailFolderNotFoundError, match="truncated") as excinfo:
         asyncio.run(mail_list(folder="Deep"))
+    assert excinfo.value.hint and "mail folders --json" in excinfo.value.hint
+    assert "--path" not in excinfo.value.hint
 
 
 def test_mail_folders_follows_pagination(monkeypatch) -> None:
@@ -255,8 +257,11 @@ def test_mail_list_reports_ambiguous_folder_names(monkeypatch) -> None:
     child = client.me.mail_folders.by_mail_folder_id.return_value.child_folders
     child.get = AsyncMock(return_value=_page([_folder("Receipts", "receipts-b")]))
 
-    with pytest.raises(MailFolderNotFoundError, match="ambiguous"):
+    with pytest.raises(MailFolderNotFoundError, match="ambiguous") as excinfo:
         asyncio.run(mail_list(folder="Receipts"))
+    assert excinfo.value.hint
+    assert "receipts-a" in excinfo.value.hint
+    assert "receipts-b" in excinfo.value.hint
 
 
 def test_mail_list_explicit_orderby_overrides_the_folder_default(monkeypatch) -> None:

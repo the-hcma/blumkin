@@ -122,6 +122,36 @@ def test_not_found_hint_suggests_listing(monkeypatch) -> None:
     assert "Re-check the id" in out
 
 
+def test_mail_get_not_found_hint_flags_a_possible_thread_id(monkeypatch) -> None:
+    """The mail.py raise site attaches a specific hint (issue #314); it must reach the CLI."""
+    from blumkin.skills.mail import MailMessageNotFoundError
+
+    async def _boom(**_kwargs):
+        raise MailMessageNotFoundError(
+            "message not found: conv123", hint="conversation/thread id, not a message id"
+        )
+
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_get", _boom)
+    payload = _json_err(["mail", "get", "--id", "conv123", "--json"])
+    assert payload["error"] == "not_found"
+    assert "conversation/thread id" in payload["hint"]
+
+
+def test_mail_folder_ambiguous_hint_lists_the_matching_ids(monkeypatch) -> None:
+    from blumkin.skills.mail import MailFolderNotFoundError
+
+    async def _boom(**_kwargs):
+        raise MailFolderNotFoundError(
+            "mail folder name is ambiguous: 'Receipts'",
+            hint="Pass one of these folder ids instead of the display name: a, b.",
+        )
+
+    monkeypatch.setattr("blumkin.providers.microsoft.mail_list", _boom)
+    payload = _json_err(["mail", "list", "--folder", "Receipts", "--json"])
+    assert payload["error"] == "not_found"
+    assert "folder ids instead" in payload["hint"]
+
+
 @pytest.mark.parametrize(
     "args",
     [

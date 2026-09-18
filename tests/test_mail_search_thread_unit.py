@@ -264,8 +264,9 @@ def test_graph_thread_missing_message_is_not_found(monkeypatch) -> None:
     err = ODataError()
     err.response_status_code = 404
     client.me.messages.by_message_id.return_value.get = AsyncMock(side_effect=err)
-    with pytest.raises(MailMessageNotFoundError):
+    with pytest.raises(MailMessageNotFoundError) as excinfo:
         asyncio.run(mail_thread(message_id="nope"))
+    assert excinfo.value.hint and "conversation/thread id" in excinfo.value.hint
 
 
 # --------------------------------------------------------------------------- Google
