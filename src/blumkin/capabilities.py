@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from blumkin.providers.google_auth import (
-    CALENDAR_SCOPES as _GOOGLE_CALENDAR_SCOPES,
+    CALENDAR_READ_SCOPES as _GOOGLE_CALENDAR_READ_SCOPES,
 )
 from blumkin.providers.google_auth import (
     CHAT_READ_SCOPES as _GOOGLE_CHAT_SCOPES,
@@ -25,7 +25,7 @@ from blumkin.providers.google_auth import (
     DRIVE_SCOPES as _GOOGLE_DRIVE_SCOPES,
 )
 from blumkin.providers.google_auth import (
-    MAIL_WRITE_SCOPES as _GOOGLE_MAIL_SCOPES,
+    MAIL_READ_SCOPES as _GOOGLE_MAIL_SCOPES,
 )
 from blumkin.providers.google_auth import (
     PEOPLE_SCOPES as _GOOGLE_PEOPLE_SCOPES,
@@ -58,15 +58,24 @@ _MICROSOFT_FAMILY_SCOPES: dict[str, frozenset[str]] = {
     "docs": frozenset({"Files.ReadWrite"}),
     "drive": frozenset({"Files.ReadWrite"}),
     "mail": frozenset({"Mail.ReadWrite", "Mail.Send"}),
-    "meeting": frozenset({"OnlineMeetings.ReadWrite"}),
+    # meeting.get / meeting.transcription resolve the calendar event first
+    # (skills/__init__.py declares both scopes on each), so OnlineMeetings.ReadWrite
+    # alone is not enough.
+    "meeting": frozenset({"Calendars.ReadWrite", "OnlineMeetings.ReadWrite"}),
     "people": frozenset({"People.Read"}),
 }
 
-# Google scopes needed for a family's baseline commands - reusing the exact
-# per-skill-area constants google_auth.py already defines for its own
-# fail-fast gates, so this never drifts from what the provider actually checks.
+# Google scopes needed for a family's baseline commands - the narrowest subset
+# that already lets that family's read commands succeed (`mail list`/`mail get`
+# only need MAIL_READ_SCOPES; `calendar today`/`calendar view` only need
+# CALENDAR_READ_SCOPES), not the write-capable constants those provider modules
+# use for their own broader fail-fast gates. A `gmail.readonly`-only or
+# `calendar.readonly`-only grant is a supported state (google_auth.py's own
+# admin-restricted-Workspace / granular-consent note) where those commands
+# still work, so baselining on the write scopes would report the family
+# unavailable while it demonstrably isn't.
 _GOOGLE_FAMILY_SCOPES: dict[str, frozenset[str]] = {
-    "calendar": frozenset(_GOOGLE_CALENDAR_SCOPES),
+    "calendar": frozenset(_GOOGLE_CALENDAR_READ_SCOPES),
     "chat": frozenset(_GOOGLE_CHAT_SCOPES),
     "docs": frozenset(_GOOGLE_DOCS_SCOPES),
     "drive": frozenset(_GOOGLE_DRIVE_SCOPES),
