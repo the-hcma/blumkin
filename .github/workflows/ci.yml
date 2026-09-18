@@ -204,6 +204,28 @@ jobs:
       - name: Shellcheck
         run: bash .github/ci/shellcheck
 
+  # Not (yet) a required check - rust-agent/ is new (issue #328); add it to
+  # branch protection once it has proven stable on a few PRs.
+  rust-static:
+    name: Rust lint & test (blumkin-agent)
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
+    # macOS, not ubuntu-latest: rust-agent/ only ever ships on macOS (see
+    # hatch_build.py), and its host target here (aarch64-apple-darwin) is
+    # one of the two the release wheel actually cross-compiles.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - name: Rust lint & test
+        run: bash .github/ci/rust-static
+
   secret-scan:
     name: Secret Scan
     needs: guard
