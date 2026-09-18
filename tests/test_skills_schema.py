@@ -503,6 +503,7 @@ _CONSENT = {
     "calendar.today": (False, False),
     "calendar.update": (True, True),
     "calendar.view": (False, False),
+    "capabilities": (False, False),
     "chat.attachments": (False, False),
     "chat.attachments.download": (False, False),
     "chat.delete": (True, True),

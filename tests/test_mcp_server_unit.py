@@ -60,6 +60,7 @@ def test_catalog_maps_to_tools_one_to_one() -> None:
         "auth.logout",
         "auth.refresh",
         "auth.status",
+        "capabilities",
         "doctor",
         "mail.signature",
         "mcp.serve",
