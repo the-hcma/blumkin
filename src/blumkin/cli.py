@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -787,6 +788,12 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         raise SystemExit(EXIT_AUTH) from exc
     populated = _populate_profile_email_once()
     cfg = _load_config()
+    if populated and not cfg.email:
+        # _load_config() is cached on the Click context for the life of this
+        # invocation and never re-reads config.toml, so the email
+        # _populate_profile_email_once() just wrote is invisible to it - patch
+        # it in here rather than reporting a stale (null) account below.
+        cfg = replace(cfg, email=populated)
     _refresh_signature_probe(cfg)
     signature_state = load_signature_state(cfg)
     if as_json:
@@ -795,7 +802,7 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
                 "ok": True,
                 "email_written": populated,
                 "outlook_signature_detected": signature_state.detected,
-                "status": _auth_status_payload(),
+                "status": _auth_status_payload(cfg),
             }
         )
     else:

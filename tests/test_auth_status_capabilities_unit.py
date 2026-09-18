@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
 
@@ -70,3 +70,25 @@ def test_auth_status_human_output_lists_account_and_available(tmp_path: Path, mo
         result = CliRunner().invoke(main, ["auth", "status"])
     assert "account: rivera@example.com" in result.stdout
     assert "available: tasks" in result.stdout
+
+
+def test_auth_login_json_reports_account_from_the_login_just_recorded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """First-ever login: the just-written email must not read back as null.
+
+    ``_load_config()`` caches the config on the Click context for the life of
+    the invocation, so a naive re-read after ``_populate_profile_email_once()``
+    writes ``config.toml`` would still see the pre-write (empty) email.
+    """
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    provider = _provider()
+    provider.account_email.return_value = "rivera@example.com"
+    provider.probe_mail_signature = AsyncMock(return_value=None)
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "login", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    payload = json.loads(result.stdout)
+    assert payload["email_written"] == "rivera@example.com"
+    assert payload["status"]["account"] == "rivera@example.com"
