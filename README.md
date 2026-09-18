@@ -60,6 +60,17 @@ blumkin chat last --with "Sam Rivera" --n 3 --json
 `pipx` puts `blumkin` in its bin dir (usually `~/.local/bin`); `pipx ensurepath`
 makes sure that is on `PATH`.
 
+On macOS, the wheel also bundles a small compiled `blumkin-agent` daemon
+(issue #328 - an `ssh-agent`-style background process intended to make
+re-authentication happen roughly once a day instead of on every command,
+once the secret-caching layers land). This foundation layer only wires up
+the process lifecycle (spawn/status/lock); no secret material flows through
+it yet. It ships as a prebuilt universal2 binary; installing from PyPI
+needs no Rust toolchain. Building from a clone does (see "From a clone"
+below) - without one, or on non-macOS platforms, `blumkin` still works
+fully, just without that feature (`blumkin agent status` reports it as
+unavailable).
+
 ### Upgrade
 
 ```bash
@@ -85,6 +96,13 @@ uv tool install -e .        # editable; `blumkin` now points at the checkout
 the editable install and prints (or, with `--yes`, runs) `git pull --ff-only`
 followed by `uv tool install -e . --force` to re-bake the metadata; `blumkin
 doctor` warns when a pull left the installed version stale.
+
+On macOS, `uv sync`/`uv tool install` compile the `blumkin-agent` daemon (see
+[`rust-agent/README.md`](./rust-agent/README.md)) via a `hatchling` build
+hook (`hatch_build.py`) — a Rust toolchain (`brew install rust` or
+[rustup](https://rustup.rs)) must be on `PATH`. No toolchain, or a
+non-macOS platform, degrades gracefully: the install still succeeds, just
+without that binary.
 
 To expose every skill as a typed **MCP tool** for MCP-aware agents, run
 **`blumkin mcp install`** — a guided setup that registers `blumkin mcp serve`
