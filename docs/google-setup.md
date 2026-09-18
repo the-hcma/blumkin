@@ -292,5 +292,5 @@ blumkin --profile personal auth logout
 - Post-MVP Google surface: [#89](https://github.com/the-hcma/blumkin/issues/89)
   (delivered A-F; Meet/transcription stubbed by [DECISIONS.md D8](./DECISIONS.md))
 - Multi-provider agent context protocol: [#91](https://github.com/the-hcma/blumkin/issues/91)
-- Agent skill notes: [`.cursor/skills/blumkin/SKILL.md`](../.cursor/skills/blumkin/SKILL.md)
+- Agent skill notes: [`.agents/skills/blumkin/SKILL.md`](../.agents/skills/blumkin/SKILL.md)
 - Agent integration overview: [`agent-integration.md`](./agent-integration.md)

@@ -6,7 +6,7 @@ options block. Paragraphs are rewrapped by Click unless they start with a ``\\b`
 marker, so each preformatted example block is prefixed with ``\\b``.
 
 Authoring style: ASCII hyphens only (no em/en dashes), matching
-``.cursor/skills/blumkin/SKILL.md``.
+``.agents/skills/blumkin/SKILL.md``.
 """
 
 from __future__ import annotations

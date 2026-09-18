@@ -101,7 +101,7 @@ def test_representative_examples_present(path: list[str], needle: str) -> None:
 
 @pytest.mark.parametrize("path", SUBCOMMAND_PATHS, ids=lambda p: " ".join(p))
 def test_help_text_uses_ascii_hyphens_only(path: list[str]) -> None:
-    """Authoring style: no em/en dashes anywhere in help output (.cursor/skills/blumkin)."""
+    """Authoring style: no em/en dashes anywhere in help output (.agents/skills/blumkin)."""
     out = CliRunner().invoke(main, [*path, "--help"]).output
     assert "—" not in out  # em dash
     assert "–" not in out  # en dash

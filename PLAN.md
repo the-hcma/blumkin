@@ -346,7 +346,7 @@ there is no new auth surface. The CLI-only verbs (`auth *`, `doctor`, `skills *`
 | Piece | Role |
 |-------|------|
 | **CLI binary** | `blumkin` on `PATH` (e.g. `uv tool install`) |
-| **Skill** | Project skill `.cursor/skills/blumkin/SKILL.md` and/or personal `~/.cursor/skills/blumkin/` so *any* repo session can use it |
+| **Skill** | Project skill `.agents/skills/blumkin/SKILL.md` and/or personal `~/.agents/skills/blumkin/` so *any* repo session can use it |
 | **When to trigger** | Description: Microsoft 365, Outlook calendar/mail, Teams chat, free/busy, Graph “as me” |
 | **Behavior** | Skill instructs: discover via `blumkin skills list --json`; always pass `--json` in agent mode; never invent Graph calls if Blumkin covers the job; require `--yes` for notify-others; on exit 3 run/login guidance |
 
@@ -392,7 +392,7 @@ Auth stays **on the machine** where the Copilot CLI runs (same token cache as Cu
 | Deliverable | Phase |
 |-------------|--------|
 | Stable `blumkin skills list --json` + exit codes | 1–2 ✅ |
-| `.cursor/skills/blumkin/SKILL.md` (project) | 5 ✅ |
+| `.agents/skills/blumkin/SKILL.md` (project) | 5 ✅ |
 | Optional install notes: personal skill symlink / copy to `~/.cursor/skills/` | 5 ✅ |
 | Copilot instructions snippet in `docs/agent-integration.md` | 5 ✅ |
 | `blumkin mcp serve` — stdio MCP adapter over `run_skill` (issue #113) | shipped |
@@ -502,7 +502,7 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 - [x] Port auth/cache pattern from the private Graph lab  
 - [x] Ruff/pyright/pytest wired; `.github/ci/python-static` + hermetic pytest + secret-scan  
 - [x] First skill: `calendar.today` (M1 Graph scopes: `Calendars.ReadWrite`, `User.Read`)  
-- [x] Project Cursor skill: `.cursor/skills/blumkin/SKILL.md`  
+- [x] Project Cursor skill: `.agents/skills/blumkin/SKILL.md`  
 
 ### Phase 2 — Read skills
 - [x] `calendar.view|freebusy` (today already shipped)  
@@ -522,8 +522,8 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 
 ### Phase 5 — Agent DX (Cursor Agent CLI + Copilot CLI)
 - [x] Freeze `skills list --json` schema — [`docs/agent-integration.md`](./docs/agent-integration.md), pinned by `tests/test_skills_schema.py`  
-- [x] Ship `.cursor/skills/blumkin/SKILL.md` (shell-first; see §6)  
-- [x] Document personal `~/.cursor/skills/blumkin/` install + Copilot CLI custom-instructions snippet — [`docs/agent-integration.md`](./docs/agent-integration.md)  
+- [x] Ship `.agents/skills/blumkin/SKILL.md` (shell-first; see §6)  
+- [x] Document personal `~/.agents/skills/blumkin/` install + Copilot CLI custom-instructions snippet — [`docs/agent-integration.md`](./docs/agent-integration.md)  
 - [x] `blumkin mcp serve` — stdio MCP adapter over `run_skill` (issue #113); see §6.1  
 
 ---
