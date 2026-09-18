@@ -310,7 +310,7 @@ Each arg has `name`, `required`, `type`, and `param`; optionally `coerce`,
 value is never passed to a worker method as a direct argument — it is consumed by
 a gate, folded into another argument (`calendar view`'s `--from` / `--to` become
 a single `[start, end)` range), or the command is bespoke CLI-only plumbing
-(`auth *`, `doctor`, `skills *`, `mail signature`, `mcp serve`). Agents driving
+(`auth *`, `doctor`, `capabilities`, `skills *`, `mail signature`, `mcp serve`). Agents driving
 the CLI pass `name`; the MCP server (`blumkin mcp serve`) uses `param`-derived
 tool schemas. The catalog is pinned against the live code so `param` cannot drift.
 
@@ -444,6 +444,12 @@ report "no output" — the explanation is there, in the stream you did not read.
 `doctor` also exits 3 when `client_id` is missing from `config.toml`, which no
 amount of logging in will fix. Read `problems` before advising the user.
 
+`blumkin capabilities --json` is not in that table: it exits 0 on the success
+path (same `emit_json` envelope as everything else, so `ok` is always `true` -
+there is no health-check failure state to report, unlike `doctor`). A bad
+`--provider` in `config.toml` still exits 2 with `usage_error` before the
+payload is built, same as any other command.
+
 Three caveats worth wiring in up front:
 
 - **`error` values are not the exit-code names.** They are `graph_error`,
@@ -501,10 +507,10 @@ argument rather than a frozen list.
 `blumkin mcp serve` runs a stdio [Model Context
 Protocol](https://modelcontextprotocol.io) server: every skill with a worker
 method becomes a typed tool named by its id (`calendar.today`,
-`mail.send-draft`, …). The CLI-only verbs — `auth *`, `doctor`, `skills *`,
-`mail signature`, and `mcp serve` itself — are not exposed. Tools are generated
-from `skills list --json` and dispatched through the same `run_skill` path the
-CLI uses, so the CLI stays the single source of truth.
+`mail.send-draft`, …). The CLI-only verbs — `auth *`, `doctor`, `capabilities`,
+`skills *`, `mail signature`, and `mcp serve` itself — are not exposed. Tools
+are generated from `skills list --json` and dispatched through the same
+`run_skill` path the CLI uses, so the CLI stays the single source of truth.
 
 Running the server needs no extra install step: `mcp` is a core dependency
 of `blumkin` (as of 1.4.0).

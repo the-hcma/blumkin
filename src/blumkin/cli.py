@@ -1342,6 +1342,40 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         raise SystemExit(EXIT_AUTH)
 
 
+@main.command(epilog=help_text.CAPABILITIES_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def capabilities(ctx: click.Context, as_json_flag: bool) -> None:
+    """Report which service families the active profile can use right now.
+
+    The same per-family signal as `doctor`'s `capabilities` block, on its own -
+    for an agent or external tool that only needs "what works", not the full
+    health check. Does not probe Graph/Google on every call: this is derived
+    from cached config/token-scope data, same as `doctor`.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    cfg = _load_config()
+    status = _workspace(cfg).auth_status()
+    summary = capability_summary(
+        provider=cfg.provider, granted_scopes=status.get("granted_scopes") or []
+    )
+    payload = {
+        "profile": cfg.profile,
+        "provider": cfg.provider.value,
+        "version": build_version(),
+        "capabilities": summary,
+    }
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines([f"profile: {payload['profile']}"])
+        emit_lines([f"provider: {payload['provider']}"])
+        emit_lines([f"version: {payload['version']}"])
+        available = [family for family, ok in summary.items() if ok]
+        emit_lines([f"available: {', '.join(available) or 'none'}"])
+    raise SystemExit(EXIT_SUCCESS)
+
+
 @main.command(epilog=help_text.UPGRADE_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option(

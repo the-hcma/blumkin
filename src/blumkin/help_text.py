@@ -81,6 +81,23 @@ assuming a hang is a login problem. `--json` also carries `granted_scopes` and
 `missing_scopes`, so a scope gap is visible before a command fails on it.
 """
 
+CAPABILITIES_EPILOG = """
+Examples:
+
+\b
+  blumkin capabilities
+  blumkin capabilities --json
+
+Reports which service families (mail, calendar, chat, tasks, docs, drive,
+people, meeting) the active profile can use right now, alongside the
+provider, profile name, and blumkin version - a machine-readable "what can
+this install do" surface for an agent or external tool, without probing
+Graph/Google on every call (this is derived from cached config/token-scope
+data, same as `blumkin doctor`). `tasks` is always available (local files, no
+scope); `meeting` is Microsoft-only. Use `--profile` to check a profile other
+than the default.
+"""
+
 CALENDAR_ACCEPT_EPILOG = """
 Examples:
 
@@ -577,7 +594,7 @@ is behind the checkout's `pyproject.toml` - a `git pull` without a reinstall;
 (mail, calendar, chat, tasks, docs, drive, people, meeting) this profile's
 granted scopes actually unlock right now - `tasks` is always available (local
 files, no scope); `meeting` is Microsoft-only. Same helper as
-`blumkin capabilities --json` and `auth status --json`.
+`blumkin capabilities --json`.
 """
 
 DRIVE_EPILOG = """

@@ -27,7 +27,9 @@ One config file, one or more **named profiles** (Microsoft, Google, or both), se
 | `people` | `resolve` |
 | `mcp` | `serve`, `install`, `status` |
 
-Plus `blumkin doctor` (setup check), `skills` / `profiles` (discovery), `upgrade` (self-update via pipx / uv tool / an editable checkout), and `completion`.
+Plus `blumkin doctor` (setup check), `capabilities` (structured capability/status
+discovery), `skills` / `profiles` (discovery), `upgrade` (self-update via pipx /
+uv tool / an editable checkout), and `completion`.
 
 Reads work with the base scope set. Anything that reaches another person (mail send, calendar invite, chat message) needs an explicit `--yes`. Google support is at near-parity with Microsoft — the **Google Workspace** section below has the exact verb list and the handful of provider differences.
 

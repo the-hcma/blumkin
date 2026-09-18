@@ -53,6 +53,7 @@ BESPOKE_SKILLS: frozenset[str] = frozenset(
         "auth.logout",
         "auth.refresh",
         "auth.status",
+        "capabilities",
         "doctor",
         "mail.signature",
         "mcp.serve",
@@ -584,6 +585,15 @@ SKILLS: list[SkillSpec] = [
                 "note": "repeatable or comma-separated; restrict each item to only these fields",
             },
         ],
+    ),
+    SkillSpec(
+        id="capabilities",
+        cli=["blumkin", "capabilities"],
+        summary="Report which service families the active profile can use right now",
+        mutates=False,
+        notifies_others=False,
+        scopes=[],
+        args=[],
     ),
     SkillSpec(
         id="chat.attachments",
