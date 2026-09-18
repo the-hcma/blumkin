@@ -1994,7 +1994,7 @@ def _folder_not_found_hint(*, truncated: bool = False) -> str:
     known = ", ".join(WELL_KNOWN_MAIL_FOLDERS)
     hint = f"Use one of the well-known names ({known}), or run `blumkin mail folders --json`"
     if truncated:
-        hint += " (the listing is truncated, so search a deeper --path)"
+        hint += " (the listing is truncated, so the folder may sit beyond it)"
     return hint + " to get a folder id or display name."
 
 

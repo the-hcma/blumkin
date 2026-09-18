@@ -108,6 +108,7 @@ def test_mail_list_not_found_mentions_a_truncated_listing(monkeypatch) -> None:
     with pytest.raises(MailFolderNotFoundError, match="truncated") as excinfo:
         asyncio.run(mail_list(folder="Deep"))
     assert excinfo.value.hint and "mail folders --json" in excinfo.value.hint
+    assert "--path" not in excinfo.value.hint
 
 
 def test_mail_folders_follows_pagination(monkeypatch) -> None:
