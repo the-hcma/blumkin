@@ -262,9 +262,15 @@ def refresh_silent(config: BlumkinConfig | None = None) -> dict[str, Any]:
 def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     """Auth status without secrets (aligned keys with Microsoft status where possible)."""
     cfg = config or load_config()
-    access = _access_token_expiry(cfg)
-    granted = persisted_granted_scopes(cfg)
-    token_present = secret_store.exists(cfg, "google_token")
+    # Read the token once and reuse it below - `_access_token_expiry`,
+    # `persisted_granted_scopes`, the presence flag, and `token_storage_backend`
+    # each used to make their own independent keyring round trip for this same
+    # secret, so a single `doctor` / `auth status` call could hit the OS
+    # keychain for one item up to four times.
+    raw_token, token_backend = secret_store.read_text_and_backend(cfg, "google_token")
+    access = _access_token_expiry(cfg, raw_token)
+    granted = frozenset(_scopes_from_raw(raw_token) or ())
+    token_present = raw_token is not None
     return {
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
@@ -285,18 +291,21 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "tenant_id": "",
         # Google stores the OAuth session in one token JSON (no separate MSAL auth record).
         "token_cache": token_present,
-        "token_storage_backend": secret_store.active_backend(cfg, "google_token"),
+        "token_storage_backend": token_backend,
     }
 
 
-def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
+def _access_token_expiry(cfg: BlumkinConfig, raw: str | None) -> dict[str, Any]:
+    """Takes the already-read ``google_token`` text rather than reading it itself,
+    so ``status_dict`` does not pay for a second keyring round trip on top of
+    its own read of the same secret."""
     out: dict[str, Any] = {
         "expired": None,
         "expires_at": None,
         "expires_in_seconds": None,
         "refresh_token_present": False,
     }
-    creds = _load_credentials(cfg)
+    creds = _credentials_from_raw(cfg, raw)
     if creds is None:
         return out
     out["refresh_token_present"] = bool(creds.refresh_token)
@@ -411,7 +420,17 @@ def _consent_once(cfg: BlumkinConfig, *, force_consent: bool) -> Credentials:
 
 
 def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
-    raw = secret_store.read_text(cfg, "google_token")
+    return _credentials_from_raw(cfg, secret_store.read_text(cfg, "google_token"))
+
+
+def _credentials_from_raw(cfg: BlumkinConfig, raw: str | None) -> Credentials | None:
+    """Parse an already-read ``google_token`` payload into ``Credentials``.
+
+    Split out of ``_load_credentials`` so a caller that already has the raw
+    text (``status_dict``, building its payload from one
+    ``read_text_and_backend`` call) does not pay for a second keyring round
+    trip on top of its own read of the same secret.
+    """
     if raw is None:
         return None
     try:
@@ -470,7 +489,16 @@ def _needs_additional_scopes(cfg: BlumkinConfig, required: frozenset[str]) -> bo
 
 
 def _read_persisted_scopes(cfg: BlumkinConfig) -> list[str] | None:
-    raw = secret_store.read_text(cfg, "google_token")
+    return _scopes_from_raw(secret_store.read_text(cfg, "google_token"))
+
+
+def _scopes_from_raw(raw: str | None) -> list[str] | None:
+    """Parse an already-read ``google_token`` payload's granted scopes.
+
+    Split out of ``_read_persisted_scopes`` so a caller that already has the
+    raw text (``status_dict``) does not pay for a second keyring round trip
+    on top of its own read of the same secret.
+    """
     if raw is None:
         return None
     try:
@@ -479,10 +507,10 @@ def _read_persisted_scopes(cfg: BlumkinConfig) -> list[str] | None:
         return None
     if not isinstance(data, dict):
         return None
-    raw = data.get("scopes")
-    if not isinstance(raw, list):
+    raw_scopes = data.get("scopes")
+    if not isinstance(raw_scopes, list):
         return None
-    scopes = [scope for scope in raw if isinstance(scope, str) and scope]
+    scopes = [scope for scope in raw_scopes if isinstance(scope, str) and scope]
     return scopes if scopes else None
 
 

@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  path_instructions:
+    - path: "**/*.py"
+      instructions: |
+        This repository targets Python 3.14+ (see AGENTS.md and ruff
+        target-version = py314). Bare multi-exception handlers of the form
+        `except A, B:` are valid syntax on 3.14; do not flag them as
+        SyntaxError or ask to parenthesize them. `ruff format` may strip
+        parentheses from `except (A, B):` on this toolchain.

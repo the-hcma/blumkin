@@ -235,14 +235,24 @@ def save_token_cache(config: BlumkinConfig | None = None) -> None:
 
 def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     cfg = config or load_config()
-    access = _access_token_expiry(cfg)
+    # Read auth_record and token_cache together in one round trip and reuse
+    # it below - they share one keychain item (see
+    # `secret_store._BUNDLED_KINDS`), so `_access_token_expiry`,
+    # `_granted_scopes_from_cache`, both presence flags, and
+    # `token_storage_backend` each independently reading/probing their own
+    # kind would still cost a second keyring round trip (and, on a Keychain
+    # that reprompts on every access rather than remembering "Always Allow",
+    # a second authorization prompt) for the exact same item.
+    bundle, cache_backend = secret_store.read_ms_bundle_and_backend(cfg)
+    raw_cache = bundle.get("token_cache")
+    access = _access_token_expiry(raw_cache)
     requested = effective_scopes(cfg)
-    granted = _granted_scopes_from_cache(cfg, requested)
+    granted = _granted_scopes_from_cache(raw_cache, cfg, requested)
     return {
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
         "access_token_expired": access.get("expired"),
-        "auth_record": secret_store.exists(cfg, "auth_record"),
+        "auth_record": "auth_record" in bundle,
         "client_id_configured": bool(cfg.client_id),
         "config_dir": str(cfg.config_dir),
         "config_path": str(cfg.config_path),
@@ -256,24 +266,28 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "refresh_token_present": access.get("refresh_token_present", False),
         "requested_scopes": requested,
         "tenant_id": cfg.tenant_id,
-        "token_cache": secret_store.exists(cfg, "token_cache"),
+        "token_cache": raw_cache is not None,
         # token_cache (not auth_record): it is the one refreshed - and thus
         # re-serialized/re-persisted - on virtually every silent auth call,
         # so it is the secret most likely to reveal a backend that only
         # falls back to the file at write time (issue #287 review).
-        "token_storage_backend": secret_store.active_backend(cfg, "token_cache"),
+        "token_storage_backend": cache_backend,
     }
 
 
-def _access_token_expiry(cfg: BlumkinConfig) -> dict[str, Any]:
-    """Read earliest access-token expires_on from the MSAL cache (no secrets)."""
+def _access_token_expiry(raw: str | None) -> dict[str, Any]:
+    """Read earliest access-token expires_on from the MSAL cache (no secrets).
+
+    Takes the already-read cache text rather than reading it itself, so a
+    caller building a full status payload (``status_dict``) does not pay for
+    a second keyring round trip on top of its own read of the same secret.
+    """
     out: dict[str, Any] = {
         "expired": None,
         "expires_at": None,
         "expires_in_seconds": None,
         "refresh_token_present": False,
     }
-    raw = secret_store.read_text(cfg, "token_cache")
     if raw is None:
         return out
     try:
@@ -360,7 +374,9 @@ def _ensure_cache(cfg: BlumkinConfig) -> None:
         _atexit_registered = True
 
 
-def _granted_scopes_from_cache(cfg: BlumkinConfig, requested: Iterable[str]) -> frozenset[str]:
+def _granted_scopes_from_cache(
+    raw: str | None, cfg: BlumkinConfig, requested: Iterable[str]
+) -> frozenset[str]:
     """Bare scope names granted per the MSAL cache's ``AccessToken`` ``target`` claims.
 
     Empty when there is no cache yet — nothing to diff a fresh, never-logged-in
@@ -377,8 +393,11 @@ def _granted_scopes_from_cache(cfg: BlumkinConfig, requested: Iterable[str]) -> 
     in the routine post-expiry steady state (issue #133 review, round 2) -
     Google's equivalent (``persisted_granted_scopes``, reading the token file)
     has no expiry filter either, for the same reason.
+
+    Takes the already-read cache text (``raw``) rather than reading it itself,
+    so ``status_dict`` does not pay for a second keyring round trip on top of
+    its own read of the same secret.
     """
-    raw = secret_store.read_text(cfg, "token_cache")
     if raw is None:
         return frozenset()
     try:
