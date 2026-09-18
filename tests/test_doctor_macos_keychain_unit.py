@@ -74,6 +74,37 @@ def test_doctor_warns_when_macos_keychain_is_missing(tmp_path: Path, monkeypatch
     assert any("keychain" in warning.lower() for warning in payload["warnings"])
 
 
+def test_doctor_json_reports_a_capability_summary(tmp_path: Path, monkeypatch) -> None:
+    """`doctor --json`'s `capabilities` block reuses capability_summary (issue #313)."""
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+    provider = _provider()
+    provider.auth_status.return_value["granted_scopes"] = [
+        "Calendars.ReadWrite",
+        "Mail.ReadWrite",
+        "Mail.Send",
+    ]
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    payload = json.loads(result.stdout)
+    assert payload["capabilities"]["mail"] is True
+    assert payload["capabilities"]["calendar"] is True
+    assert payload["capabilities"]["tasks"] is True
+    assert payload["capabilities"]["docs"] is False
+
+
+def test_doctor_human_output_lists_available_families(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+    provider = _provider()
+    provider.auth_status.return_value["granted_scopes"] = ["Mail.ReadWrite", "Mail.Send"]
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["doctor"])
+    assert "available: mail, tasks" in result.stdout
+
+
 def test_macos_keychain_missing_false_off_darwin(monkeypatch) -> None:
     from blumkin import secret_store
 

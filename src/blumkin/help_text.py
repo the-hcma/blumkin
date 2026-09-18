@@ -572,6 +572,12 @@ fix (usually: run `blumkin auth login`).
 `-e` checkout / unmanaged). A warning fires when the baked `.dist-info` version
 is behind the checkout's `pyproject.toml` - a `git pull` without a reinstall;
 `blumkin upgrade` prints the fix.
+
+`capabilities` (JSON) / `available:` (text) reports which service families
+(mail, calendar, chat, tasks, docs, drive, people, meeting) this profile's
+granted scopes actually unlock right now - `tasks` is always available (local
+files, no scope); `meeting` is Microsoft-only. Same helper as
+`blumkin capabilities --json` and `auth status --json`.
 """
 
 DRIVE_EPILOG = """
