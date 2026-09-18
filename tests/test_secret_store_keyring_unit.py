@@ -94,6 +94,27 @@ class _BreaksAfterFirstWriteKeyring(_FakeKeyring):
         super().set_password(service, username, password)
 
 
+class _BreaksOnSecondTokenCacheWriteKeyring(_FakeKeyring):
+    """Accepts one token_cache write, then refuses further token_cache payloads.
+
+    Sibling-only updates (e.g. stale-entry cleanup that rewrites the shared
+    bundle without ``token_cache``) still succeed - that is what lets a test
+    pin that kind-scoped cleanup preserves ``auth_record``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._token_cache_writes = 0
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        bundle = secret_store._bundle_dict_from_raw(password)
+        if "token_cache" in bundle:
+            self._token_cache_writes += 1
+            if self._token_cache_writes > 1:
+                raise RuntimeError("keychain access denied")
+        super().set_password(service, username, password)
+
+
 class _BrokenAndUncleanableKeyring(_BrokenKeyring):
     """A backend whose write *and* stale-entry cleanup both fail.
 
@@ -866,18 +887,21 @@ def test_auto_fallback_deletes_a_stale_keyring_entry_so_the_file_is_actually_rea
     read_text() always prefers a present keyring value over the file, so if
     the old value from a prior successful write is left behind, the fresh
     value that was just written to the file (the whole point of the "auto"
-    fallback) can never be read back (issue #287 review).
+    fallback) can never be read back (issue #287 review). Cleanup is
+    kind-scoped: a sibling already in the shared bundle must survive.
     """
     cfg = _load(tmp_path, monkeypatch, token_storage="auto")
-    fake = _BreaksAfterFirstWriteKeyring()
+    fake = _BreaksOnSecondTokenCacheWriteKeyring()
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
 
     secret_store.write_text(cfg, "token_cache", "first-value")
     assert secret_store.read_text(cfg, "token_cache") == "first-value"
+    _bundle_seed(fake, cfg, "auth_record", "record-payload")
 
     secret_store.write_text(cfg, "token_cache", "second-value")
 
-    assert _account(cfg, "token_cache") not in fake.store
+    assert _bundle_value(fake, cfg, "token_cache") is None
+    assert _bundle_value(fake, cfg, "auth_record") == "record-payload"
     assert secret_store.read_text(cfg, "token_cache") == "second-value"
 
 
