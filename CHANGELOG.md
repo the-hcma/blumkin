@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.4.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.3.0...blumkin-v1.4.0) (2026-09-18)
+
+
+### Features
+
+* **auth:** enrich auth status --json with account and capabilities ([#326](https://github.com/the-hcma/blumkin/issues/326)) ([14f6404](https://github.com/the-hcma/blumkin/commit/14f6404fa0c546fbecc7a93eeabc70109e330041))
+* **auth:** merge auth_record and token_cache into one keychain item ([#319](https://github.com/the-hcma/blumkin/issues/319)) ([1031078](https://github.com/the-hcma/blumkin/commit/103107807a6a29cff6fdaba2607ed6dc4b70c5ef))
+* **cli:** add blumkin capabilities --json command ([#325](https://github.com/the-hcma/blumkin/issues/325)) ([ed46874](https://github.com/the-hcma/blumkin/commit/ed4687471d54e8644d09b399990e7b30f28e58a8))
+* **doctor:** report per-family capability summary ([#324](https://github.com/the-hcma/blumkin/issues/324)) ([cc4da48](https://github.com/the-hcma/blumkin/commit/cc4da483dc1e1deea5d4005e211605386a4b9b64))
+* **mail:** add actionable hints for known wrong-id/wrong-folder errors ([#314](https://github.com/the-hcma/blumkin/issues/314)) ([#322](https://github.com/the-hcma/blumkin/issues/322)) ([870614c](https://github.com/the-hcma/blumkin/commit/870614c01d52d2d76efee37257f6e10bffde1990))
+
+
+### Bug Fixes
+
+* **mail:** scope mail inbox to the Inbox folder ([#309](https://github.com/the-hcma/blumkin/issues/309)) ([#310](https://github.com/the-hcma/blumkin/issues/310)) ([72e65ac](https://github.com/the-hcma/blumkin/commit/72e65ac77b77c1086c441c7d64f4a72c8d1fc643))
+
+
+### Documentation
+
+* add CLI epilog convention rule ([#312](https://github.com/the-hcma/blumkin/issues/312)) ([#321](https://github.com/the-hcma/blumkin/issues/321)) ([b93fda9](https://github.com/the-hcma/blumkin/commit/b93fda9714ef63b32be46066bd590c6324652906))
+
 ## [1.3.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.2.1...blumkin-v1.3.0) (2026-09-17)
 
 
