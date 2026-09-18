@@ -124,9 +124,11 @@ Always implement in `.worktrees/<stack-name>-wt`.
 - Skill reference:
   [gh-stack](https://github.com/the-hcma/repository-helpers/blob/main/.agents/skills/gh-stack/SKILL.md)
 - Worktree-per-stack via `start-development` (above).
-- Prefer `scripts/dev/submit-stack` from repository-helpers with `--auto`
-  (and prefer `--open`). Never interactive `gh stack submit` / `gh stack view`
-  without `--json`.
+- Prefer bare `gh stack submit --auto --open` after
+  `"${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}/scripts/dev/pre-pr-checks"`.
+  Never interactive `gh stack submit` / `gh stack view` without `--json`.
+  Do **not** run helpers `scripts/dev/submit-stack` from this consumer (it
+  targets the helpers clone).
 - Merge path: GitHub merge queue — `gh pr merge --auto --squash` only when the
   operator asks. **Always ask before enabling auto-merge.**
 - Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:`.
@@ -147,9 +149,9 @@ Always implement in `.worktrees/<stack-name>-wt`.
   (or `--repo OWNER/NAME --suggest` once a GitHub remote exists).
 - Onboard / fix with `--new-repo` / `--apply-fix` as documented in
   repository-helpers.
-- Keep cursor rules in sync with
-  `repository-helpers/scripts/lib/repo-practices-cursor/` templates when those
-  templates change.
+- Keep agent rules in sync with
+  `repository-helpers/scripts/lib/repo-practices-agents/` templates when those
+  templates change (Cursor `.cursor/rules/*.mdc` shims stay thin pointers).
 
 ---
 
@@ -165,9 +167,10 @@ layout (imports, symbols, sections ordered for skimmability).
 From the stack worktree:
 
 ```bash
-~/work/ai/repository-helpers/scripts/dev/pre-pr-checks
-# or full ship path:
-~/work/ai/repository-helpers/scripts/dev/submit-stack --auto --open
+rh="${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}"
+"${rh}/scripts/dev/pre-pr-checks"
+# then submit from this worktree (not helpers submit-stack):
+gh stack submit --auto --open
 ```
 
 Expect secret-scan (gitleaks) once `.github/ci/secret-scan` is adopted.

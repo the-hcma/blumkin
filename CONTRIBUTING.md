@@ -18,7 +18,7 @@ pushes, and a PR must be up to date with `main` before it merges.
   `Shellcheck` (see the table below). This is the hard merge gate;
   `enforce_admins` is off so a green run is the only thing routinely bypassed.
 - **Agent review runs on every PR head.** `mergestorm-vortex` reviews each push;
-  [`.cursor/rules/pr-ship-and-review.mdc`](.cursor/rules/pr-ship-and-review.mdc)
+  [`.agents/rules/pr-ship-and-review.md`](.agents/rules/pr-ship-and-review.md)
   requires an on-thread human reply before any review thread is resolved.
   Threads are addressed before merge.
 - **Code-owner review.** [`.github/CODEOWNERS`](.github/CODEOWNERS) is
@@ -64,7 +64,7 @@ diff before merge, so a real finding is caught there.
 
 New behaviour needs tests. Do not merge a red suite. Live Graph tests
 (`-m live`) run on an operator machine, never in CI - see
-[`.cursor/rules/local-live-graph-tests.mdc`](.cursor/rules/local-live-graph-tests.mdc).
+[`.agents/rules/local-live-graph-tests.md`](.agents/rules/local-live-graph-tests.md).
 
 ### Workflows and Actions
 
@@ -93,24 +93,28 @@ contributor uses:
 - [`pre-pr-checks`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/dev/pre-pr-checks)
   - the local gate (must be green before submit); runs the `.github/ci/*`
     scripts plus `repo-practices-lint` and verified-commits.
-- [`submit-stack`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/dev/submit-stack)
-  / the [`gh-stack`](https://github.com/the-hcma/repository-helpers/blob/main/.cursor/skills/gh-stack/SKILL.md)
-  skill - stacked-PR submit (`.github/stacking-tool` = `gh-stack`).
+- Bare `gh stack submit --auto` (after `pre-pr-checks`) / the
+  [`gh-stack`](https://github.com/the-hcma/repository-helpers/blob/main/.agents/skills/gh-stack/SKILL.md)
+  skill - stacked-PR submit (`.github/stacking-tool` = `gh-stack`). Do not run
+  helpers `submit-stack` from this consumer (it targets the helpers clone).
 - [`wait-for-agent-review`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/wait-for-agent-review)
-  / the [`ship-and-review`](https://github.com/the-hcma/repository-helpers/blob/main/.cursor/skills/ship-and-review/SKILL.md)
+  / the [`ship-and-review`](https://github.com/the-hcma/repository-helpers/blob/main/.agents/skills/ship-and-review/SKILL.md)
   skill - the agent-review loop (reply-before-resolve, CI wait).
 - [`github-repo-lint`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/github-repo-lint)
   - enforces branch-protection shape, required workflows, CODEOWNERS, Dependabot
-    cooldown, and that the [`.cursor/rules/*.mdc`](.cursor/rules) here still
-    match the [canonical templates](https://github.com/the-hcma/repository-helpers/tree/main/scripts/lib/repo-practices-cursor).
+    cooldown, and that canonical [`.agents/rules/*.md`](.agents/rules) (plus thin
+    [`.cursor/rules/*.mdc`](.cursor/rules) shims) match the
+    [canonical templates](https://github.com/the-hcma/repository-helpers/tree/main/scripts/lib/repo-practices-agents).
     Re-run `github-repo-lint --suggest` after touching `.github/workflows/**`,
     `.github/dependabot.yml`, or the stacking marker
-    (`.cursor/rules/repo-practices-after-config-change.mdc`).
+    (`.agents/rules/repo-practices-after-config-change.md`).
 
-The [`.cursor/rules/*.mdc`](.cursor/rules) themselves (secret handling,
-no-third-party-side-effects, remote timeouts, commit identity, stacking, the
-pre-PR gate) are consumer copies of those templates - edit them upstream, not
-here. `.github/ci/secret-scan` is likewise byte-identical to
+Canonical coding/workflow rules live under [`.agents/rules/*.md`](.agents/rules)
+(secret handling, no-third-party-side-effects, remote timeouts, commit identity,
+stacking, the pre-PR gate) — edit them upstream in
+`repository-helpers/scripts/lib/repo-practices-agents/`, not here.
+[`.cursor/rules/*.mdc`](.cursor/rules) are Cursor injection shims only
+(frontmatter + pointer). `.github/ci/secret-scan` is likewise byte-identical to
 [`scripts/lib/ci-secret-scan`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/lib/ci-secret-scan);
 sync it with `github-repo-lint --apply-fix`, never by hand.
 See [`SECURITY.md` › Governance tooling](SECURITY.md#governance-tooling-repository-helpers)
@@ -121,14 +125,14 @@ for the same list framed as security controls.
 - [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`,
   `chore:`, `docs:`, `test:`, `refactor:`. `feat:` / `fix:` drive releases.
 - Attribution is the committer only - no `Co-authored-by` / agent trailers
-  ([`.cursor/rules/git-commit-identity.mdc`](.cursor/rules/git-commit-identity.mdc)).
+  ([`.agents/rules/git-commit-identity.md`](.agents/rules/git-commit-identity.md)).
 - Stacking backend is `gh-stack` ([`.github/stacking-tool`](.github/stacking-tool));
   worktree-per-stack via `start-development`. Do not use Graphite.
-  ([`.cursor/rules/stacking-tool.mdc`](.cursor/rules/stacking-tool.mdc))
+  ([`.agents/rules/stacking-tool.md`](.agents/rules/stacking-tool.md))
 - Never verify a change by running a skill that notifies other people
-  ([`.cursor/rules/no-third-party-side-effects.mdc`](.cursor/rules/no-third-party-side-effects.mdc)).
+  ([`.agents/rules/no-third-party-side-effects.md`](.agents/rules/no-third-party-side-effects.md)).
 - Never put a secret in a commit, log, PR body, or review reply
-  ([`.cursor/rules/no-secret-exposure.mdc`](.cursor/rules/no-secret-exposure.mdc)).
+  ([`.agents/rules/no-secret-exposure.md`](.agents/rules/no-secret-exposure.md)).
 
 ## Design and decisions
 

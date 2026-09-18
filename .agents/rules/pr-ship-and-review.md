@@ -7,7 +7,7 @@ alwaysApply: true
 
 When the user asks to **ship**, **submit**, **open a PR**, or **follow the flow**, run this
 sequence in a **stack worktree** (never the primary clone). Read `.github/stacking-tool` and
-`.cursor/rules/stacking-tool.mdc` before creating branches or submitting.
+`.agents/rules/stacking-tool.md` before creating branches or submitting.
 
 Helper scripts live in **repository-helpers** (canonical agent review loop):
 
@@ -40,17 +40,17 @@ Run this repository's quality gates from the stack worktree (tests, linters, etc
 ## 2. Commit and submit
 
 Only after §1 quality gates pass. **Read** `.github/stacking-tool` (`graphite` or `gh-stack`)
-and follow `.cursor/rules/stacking-tool.mdc` — do not mix backends on the same stack.
+and follow `.agents/rules/stacking-tool.md` — do not mix backends on the same stack.
 
 ```bash
 # When marker is graphite (apply-fix comments the inactive backend):
-gt create <stack>/<topic> -m 'feat: …'   # or gt modify -m '…'
-gt submit --publish --no-interactive
+# gt create <stack>/<topic> -m 'feat: …'   # or gt modify -m '…'
+# gt submit --publish --no-interactive
 
 # When marker is gh-stack:
-# gh stack init <stack>/<topic>   # or gh stack add for a higher layer
-# git add -A && git commit -m 'feat: …'
-# gh stack submit --auto --open --remote origin
+gh stack init <stack>/<topic>   # or gh stack add for a higher layer
+git add -A && git commit -m 'feat: …'
+gh stack submit --auto --open --remote origin
 ```
 
 Wait for CI:

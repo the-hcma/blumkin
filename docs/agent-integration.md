@@ -104,14 +104,14 @@ not the `.agents/skills/blumkin/` directory, so clone the repo somewhere stable
 **Symlink** — tracks the clone, so the skill follows `git pull`:
 
 ```bash
-mkdir -p ~/.cursor/skills
+mkdir -p ~/.agents/skills
 ln -s ~/work/ai/blumkin/.agents/skills/blumkin ~/.agents/skills/blumkin
 ```
 
 **Copy** — pinned, and survives moving or deleting the clone:
 
 ```bash
-mkdir -p ~/.cursor/skills
+mkdir -p ~/.agents/skills
 cp -R ~/work/ai/blumkin/.agents/skills/blumkin ~/.agents/skills/blumkin
 ```
 
@@ -134,7 +134,7 @@ refresh it by re-running the `cp -R` above.
 coding-agent harness that consumes the same [Agent Skills
 standard](https://agentskills.io) Cursor does. The canonical skill content
 lives at [`.agents/skills/blumkin/SKILL.md`](../.agents/skills/blumkin/SKILL.md)
-— `.agents/skills/blumkin` is a symlink to it, so both agents read one file.
+— Cursor and Pi both read that canonical path (no in-repo symlink).
 
 ### Project skill (shipped, zero install)
 
@@ -319,7 +319,7 @@ dash — `skills.describe` takes `skill-id`. Build the command from `cli` plus t
 args rather than assuming every name is a flag.
 
 `notifies_others` is the field to key safety decisions on — it is the same flag
-[`.cursor/rules/no-third-party-side-effects.mdc`](../.cursor/rules/no-third-party-side-effects.mdc)
+[`.agents/rules/no-third-party-side-effects.md`](../.agents/rules/no-third-party-side-effects.md)
 uses to decide what must never run as a test. Every skill carrying it also
 declares a required `--yes`, which the schema tests enforce. Those tests also
 require each skill to be classified explicitly, so the flag cannot be left unset

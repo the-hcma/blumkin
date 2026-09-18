@@ -340,7 +340,7 @@ never committed.
 - [`docs/operator-config.md`](./docs/operator-config.md) — optional `~/.config/blumkin/*.md` operator-context files (`email-context.md`)  
 - [`docs/RELEASING.md`](./docs/RELEASING.md) — release flow, PyPI trusted publishing, rollback  
 - [`docs/google-setup.md`](./docs/google-setup.md) — Google Cloud Desktop OAuth + blumkin Google profile  
-- [`.agents/skills/blumkin/SKILL.md`](./.agents/skills/blumkin/SKILL.md) — Cursor agent skill (symlink to the canonical `.agents/skills/blumkin/SKILL.md`, also consumed directly by [pi.dev](https://pi.dev) — see [`integrations/pi/`](./integrations/pi/))  
+- [`.agents/skills/blumkin/SKILL.md`](./.agents/skills/blumkin/SKILL.md) — canonical Cursor / Pi agent skill (also consumed directly by [pi.dev](https://pi.dev) — see [`integrations/pi/`](./integrations/pi/))  
 
 ## License
 

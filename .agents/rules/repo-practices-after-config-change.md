@@ -1,6 +1,8 @@
 ---
 description: Run github-repo-lint after repo config or workflow changes
 globs:
+  - .agents/rules/**
+  - .agents/skills/**
   - .cursor/rules/**
   - .github/**
   - pnpm-workspace.yaml
@@ -14,7 +16,7 @@ alwaysApply: false
 # Repo practices lint after config changes
 
 When you edit **repo-practices-sensitive** paths — workflows, dependabot, Release
-Please config, pnpm release age, org cursor rules, `.github/ci/*`, or canonical workflow
+Please config, pnpm release age, org agent rules/skills, `.github/ci/*`, or canonical workflow
 templates under `scripts/lib/repo-practices-workflows/` — **before submit**:
 
 ## 1. Audit (required)
