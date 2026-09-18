@@ -15,6 +15,7 @@ from click.shell_completion import get_completion_class
 
 from blumkin import help_text
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
+from blumkin.capabilities import capability_summary
 from blumkin.config import BlumkinConfig, list_profiles, load_config, set_profile_email
 from blumkin.contacts import format_people_context_human
 from blumkin.exit_codes import (
@@ -1291,9 +1292,13 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
             f"installed metadata ({stale[0]}) is stale vs the checkout ({stale[1]}) - a "
             f"`git pull` did not re-bake it; run: {reinstall}"
         )
+    capabilities = capability_summary(
+        provider=cfg.provider, granted_scopes=status.get("granted_scopes") or []
+    )
     payload = {
         "ok": not problems,
         "build": build,
+        "capabilities": capabilities,
         "wo1162425_scopes": cfg.wo1162425_scopes,
         "problems": problems,
         "warnings": warnings,
@@ -1326,6 +1331,8 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
         emit_lines([f"token_storage_backend: {status.get('token_storage_backend', 'file')}"])
+        available = [family for family, ok in capabilities.items() if ok]
+        emit_lines([f"available: {', '.join(available) or 'none'}"])
         for problem in problems:
             emit_lines([f"problem: {problem}"])
         for warning in warnings:
