@@ -101,6 +101,10 @@ class MailBodyFileError(Exception):
 class MailFolderNotFoundError(Exception):
     """--folder did not resolve to a mail folder (not_found)."""
 
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint
+
 
 class MailDraftNotFoundError(Exception):
     """Draft id missing or not a draft (not_found)."""
@@ -109,8 +113,21 @@ class MailDraftNotFoundError(Exception):
 class MailMessageNotFoundError(Exception):
     """Message id missing (not_found)."""
 
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint
+
 
 MAIL_IMPORTANCE_VALUES = ("high", "normal", "low")
+
+# A message-id lookup that 404s is often a conversation/thread id passed by
+# mistake (both look like opaque Graph ids), so point at the actual mismatch
+# instead of just "re-check the id" (issue #314).
+_MESSAGE_ID_HINT = (
+    "If this is a conversation/thread id (e.g. from `mail thread`'s "
+    "`conversation_id` field), pass a message id instead - get one from "
+    "`blumkin mail list --json` or `blumkin mail get --id ... --json`."
+)
 
 # Upper bound on the mail thread walk; a conversation this long is pathological.
 _MAX_THREAD_MESSAGES = 500
@@ -1002,7 +1019,9 @@ async def mail_get(
         )
     except ODataError as exc:
         if is_id_lookup_failure(exc):
-            raise MailMessageNotFoundError(f"message not found: {mid}") from exc
+            raise MailMessageNotFoundError(
+                f"message not found: {mid}", hint=_MESSAGE_ID_HINT
+            ) from exc
         if not _is_query_shape_rejection(exc):
             raise
         # Drop both the subtype cast/expand *and* the bare `meetingMessageType` select
@@ -1017,10 +1036,12 @@ async def mail_get(
             )
         except ODataError as retry_exc:
             if is_id_lookup_failure(retry_exc):
-                raise MailMessageNotFoundError(f"message not found: {mid}") from retry_exc
+                raise MailMessageNotFoundError(
+                    f"message not found: {mid}", hint=_MESSAGE_ID_HINT
+                ) from retry_exc
             raise
     if msg is None or not msg.id:
-        raise MailMessageNotFoundError(f"message not found: {mid}")
+        raise MailMessageNotFoundError(f"message not found: {mid}", hint=_MESSAGE_ID_HINT)
     detail = _message_detail(msg, wanted=wanted)
     if detail["has_attachments"]:
         detail["attachments"] = await _collect_attachments(client, mid)
@@ -1145,7 +1166,8 @@ async def mail_list(
         target, well_known, truncated = await _resolve_folder_fallback(client, label)
         if target is None:
             raise MailFolderNotFoundError(
-                _folder_not_found_message(label, truncated=truncated)
+                _folder_not_found_message(label, truncated=truncated),
+                hint=_folder_not_found_hint(truncated=bool(truncated)),
             ) from exc
         sort = requested_sort or _default_orderby(well_known)
         items, scanned, complete = await _fetch(target, sort)
@@ -1327,10 +1349,10 @@ async def mail_thread(
     except ODataError as exc:
         if not is_id_lookup_failure(exc):
             raise
-        raise MailMessageNotFoundError(f"message not found: {mid}") from exc
+        raise MailMessageNotFoundError(f"message not found: {mid}", hint=_MESSAGE_ID_HINT) from exc
     conversation_id = None if anchor is None else getattr(anchor, "conversation_id", None)
     if not conversation_id:
-        raise MailMessageNotFoundError(f"message not found: {mid}")
+        raise MailMessageNotFoundError(f"message not found: {mid}", hint=_MESSAGE_ID_HINT)
     escaped = str(conversation_id).replace("'", "''")
     list_query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
         top=100,
@@ -1968,6 +1990,14 @@ def _folder_not_found_message(folder: str, *, truncated: bool = False) -> str:
     return message
 
 
+def _folder_not_found_hint(*, truncated: bool = False) -> str:
+    known = ", ".join(WELL_KNOWN_MAIL_FOLDERS)
+    hint = f"Use one of the well-known names ({known}), or run `blumkin mail folders --json`"
+    if truncated:
+        hint += " (the listing is truncated, so search a deeper --path)"
+    return hint + " to get a folder id or display name."
+
+
 def _format_participant(person: dict[str, Any]) -> str:
     name = sanitize_terminal(str(person.get("name") or ""))
     email = sanitize_terminal(str(person.get("email") or ""))
@@ -2503,7 +2533,11 @@ async def _resolve_folder_fallback(client: Any, label: str) -> tuple[str | None,
         }
     ]
     if len(matches) > 1:
-        raise MailFolderNotFoundError(_ambiguous_folder_message(label, matches))
+        ids = ", ".join(str(item.get("id")) for item in matches)
+        raise MailFolderNotFoundError(
+            _ambiguous_folder_message(label, matches),
+            hint=f"Pass one of these folder ids instead of the display name: {ids}.",
+        )
     if matches:
         return str(matches[0]["id"]), None, truncated
     alias = _MAIL_FOLDER_ALIASES.get(key)

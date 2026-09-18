@@ -178,16 +178,18 @@ def test_mail_get_reports_a_malformed_id_as_not_found(monkeypatch) -> None:
     item = client.me.messages.by_message_id.return_value
     item.get = AsyncMock(side_effect=_odata_error(400, "ErrorInvalidIdMalformed"))
 
-    with pytest.raises(MailMessageNotFoundError, match="not-a-real-id"):
+    with pytest.raises(MailMessageNotFoundError, match="not-a-real-id") as excinfo:
         asyncio.run(mail_get(message_id="not-a-real-id"))
+    assert excinfo.value.hint and "conversation/thread id" in excinfo.value.hint
 
 
 def test_mail_get_reports_a_missing_message_as_not_found(monkeypatch) -> None:
     client = _client(monkeypatch)
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=None)
 
-    with pytest.raises(MailMessageNotFoundError, match="msg-gone"):
+    with pytest.raises(MailMessageNotFoundError, match="msg-gone") as excinfo:
         asyncio.run(mail_get(message_id="msg-gone"))
+    assert excinfo.value.hint and "conversation/thread id" in excinfo.value.hint
 
 
 def test_mail_get_reports_participants_and_timestamps(monkeypatch) -> None:

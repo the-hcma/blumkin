@@ -131,7 +131,11 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
         | MailDraftNotFoundError
         | MailAttachmentNotFoundError,
     ):
-        return ErrorInfo("not_found", EXIT_NOT_FOUND, str(exc))
+        # MailFolderNotFoundError / MailMessageNotFoundError carry an optional
+        # `hint` for the specific-wrong-call patterns (issue #314); the other
+        # `not_found` classes here have none, so fall back to the CLI's generic
+        # not_found hint via getattr.
+        return ErrorInfo("not_found", EXIT_NOT_FOUND, str(exc), getattr(exc, "hint", None))
     if isinstance(exc, MailAttachError | MailBodyFileError | MailAttachmentSkippedError):
         return ErrorInfo("usage_error", EXIT_USAGE, str(exc))
 

@@ -2,8 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
-[options]
-
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -156,6 +154,8 @@ dependencies = [
     { name = "google-auth-oauthlib" },
     { name = "httplib2" },
     { name = "icalendar" },
+    { name = "keyring", marker = "sys_platform == 'darwin'" },
+    { name = "mcp" },
     { name = "msal" },
     { name = "msgraph-sdk" },
     { name = "python-docx" },
@@ -210,8 +210,10 @@ requires-dist = [
     { name = "google-auth-oauthlib", specifier = ">=1.4.1" },
     { name = "httplib2", specifier = ">=0.32.0" },
     { name = "icalendar", specifier = ">=7.3.0" },
+    { name = "keyring", marker = "sys_platform == 'darwin'", specifier = ">=25.7.0" },
     { name = "keyring", marker = "extra == 'dev'", specifier = ">=25.7.0" },
     { name = "keyring", marker = "extra == 'keychain'", specifier = ">=25.7.0" },
+    { name = "mcp", specifier = ">=2.2.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.2.0" },
     { name = "msal", specifier = ">=1.38.0" },
     { name = "msgraph-sdk", specifier = ">=1.62.0" },
