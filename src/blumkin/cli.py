@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -211,9 +212,22 @@ def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
 
 
 def _auth_status_payload(config: BlumkinConfig | None = None) -> dict[str, Any]:
-    """Auth-status fields plus the resolved build (version, commit, binary path)."""
-    payload = dict(_workspace(config).auth_status())
+    """Auth-status fields plus the resolved build, account, and capabilities.
+
+    ``account`` reads the cached ``config.toml`` label (written once at
+    onboarding by `_populate_profile_email_once`) rather than probing live -
+    on Google, ``account_email()`` is a live Gmail call, which would make
+    `auth status` block on the network and contradict the "cached data only"
+    contract this command and `capabilities` both advertise. A never-logged-in
+    or drifted profile leaves it ``None``.
+    """
+    cfg = config or _load_config()
+    payload = dict(_workspace(cfg).auth_status())
     payload.update(build_status_fields())
+    payload["account"] = cfg.email or None
+    payload["capabilities"] = capability_summary(
+        provider=cfg.provider, granted_scopes=payload.get("granted_scopes") or []
+    )
     return payload
 
 
@@ -774,6 +788,12 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         raise SystemExit(EXIT_AUTH) from exc
     populated = _populate_profile_email_once()
     cfg = _load_config()
+    if populated and not cfg.email:
+        # _load_config() is cached on the Click context for the life of this
+        # invocation and never re-reads config.toml, so the email
+        # _populate_profile_email_once() just wrote is invisible to it - patch
+        # it in here rather than reporting a stale (null) account below.
+        cfg = replace(cfg, email=populated)
     _refresh_signature_probe(cfg)
     signature_state = load_signature_state(cfg)
     if as_json:
@@ -782,7 +802,7 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
                 "ok": True,
                 "email_written": populated,
                 "outlook_signature_detected": signature_state.detected,
-                "status": _auth_status_payload(),
+                "status": _auth_status_payload(cfg),
             }
         )
     else:
@@ -890,6 +910,7 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
     lines = [
         f"config_dir: {payload['config_dir']}",
         f"config_path: {payload['config_path']}",
+        f"account: {payload['account'] or '(unknown)'}",
         f"client_id_configured: {payload['client_id_configured']}",
         f"tenant_id: {payload['tenant_id']}",
         f"token_cache: {payload['token_cache']}",
@@ -897,6 +918,7 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
         f"refresh_token_present: {payload['refresh_token_present']}",
         f"build: {payload['build_version']} ({payload['build_commit']})",
         f"running_from: {payload['running_from']}",
+        f"granted_scopes: {', '.join(payload.get('granted_scopes') or []) or '(none)'}",
     ]
     expires_at = payload.get("access_token_expires_at")
     if expires_at is None:
@@ -918,6 +940,8 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
         lines.append(
             "note: access tokens are short-lived; a refresh token renews them without a browser"
         )
+    available = [family for family, ok in payload["capabilities"].items() if ok]
+    lines.append(f"available: {', '.join(available) or 'none'}")
     emit_lines(lines)
 
 
