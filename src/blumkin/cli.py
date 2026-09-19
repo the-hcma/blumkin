@@ -207,7 +207,12 @@ _UPGRADE_STEP_TIMEOUT_S = 300
 
 
 def _agent_lock_payload() -> dict[str, Any]:
-    """Ask the agent to drop cached state and exit; a no-op if none is running.
+    """Ask the agent to wipe its cached secrets now; a no-op if none is running.
+
+    Unlike `shutdown`, `lock` no longer exits the agent process (see PR
+    #341/issue #339: with a real secret cache to wipe, "drop cached state"
+    and "exit the daemon" are distinct operations) - the agent stays up and
+    reachable, just with nothing cached until the next `unlock`.
 
     `spawn=False`: locking must never itself spawn a fresh, unlocked agent -
     that would be the opposite of what an operator asking to lock down
@@ -1018,11 +1023,12 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
 def agent() -> None:
     """Check on / lock the blumkin-agent background process.
 
-    The agent (issue #328) is the background process that will hold
+    The agent (issue #328/#339) is the background process that holds
     time-boxed, decrypted credentials so blumkin only needs to re-verify
-    local presence (Touch ID / device password) roughly once a day rather
-    than on every command. This foundation build has no secrets flowing
-    through it yet - `status`/`lock` only manage the process's lifecycle.
+    local presence (Touch ID / device password) roughly once per TTL
+    rather than on every command. `status` reports which profiles are
+    currently cached; `lock` wipes cached secrets (one profile, or all of
+    them) without shutting the agent down.
     """
 
 
@@ -1030,10 +1036,11 @@ def agent() -> None:
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def agent_lock(ctx: click.Context, as_json_flag: bool) -> None:
-    """Drop the agent's cached state now, instead of waiting for its TTL.
+    """Drop the agent's cached secrets now, instead of waiting for their TTL.
 
-    A no-op (not an error) if no agent is currently running - either way,
-    nothing is cached afterward.
+    The agent itself keeps running (see PR #341) - only its cached state
+    is wiped. A no-op (not an error) if no agent is currently running -
+    either way, nothing is cached afterward.
     """
     as_json = _as_json(ctx, as_json_flag)
     payload = _agent_lock_payload()
@@ -1050,7 +1057,7 @@ def agent_lock(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"lock failed: agent did not confirm the lock{detail}"])
         raise SystemExit(EXIT_OTHER)
     elif payload["agent_running"]:
-        emit_lines(["locked: the agent will exit and forget any cached state"])
+        emit_lines(["locked: cached state was wiped; the agent is still running"])
     else:
         emit_lines(["locked: no agent was running (nothing was cached)"])
 
