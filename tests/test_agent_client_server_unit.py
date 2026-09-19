@@ -174,23 +174,27 @@ def test_ensure_agent_running_spawns_a_real_agent_process() -> None:
     response = agent_client.call("ping", spawn=False)
     assert response["ok"] is True
     assert response["protocol_version"] == 1
-    agent_client.call("lock")
+    agent_client.call("shutdown")
 
 
 @pytest.mark.skipif(not _real_agent_binary_available(), reason=_REAL_AGENT_UNAVAILABLE_REASON)
-def test_lock_shuts_down_a_running_agent() -> None:
+def test_lock_wipes_cached_state_without_shutting_down_the_agent() -> None:
+    # `lock` used to be the only way to make a running agent exit (issue
+    # #328's foundation layer had nothing else to wipe); now that a real
+    # secret cache exists (issue #339/PR #341), `lock` only wipes it - the
+    # agent keeps running and answering `ping` afterward.
     agent_client.ensure_agent_running()
+
     lock_response = agent_client.call("lock", spawn=False)
     assert lock_response["ok"] is True
 
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        try:
-            agent_client.call("ping", spawn=False)
-        except agent_client.AgentUnavailableError:
-            return
-        time.sleep(0.05)
-    pytest.fail("agent did not shut down after lock")
+    ping_response = agent_client.call("ping", spawn=False)
+    assert ping_response["ok"] is True
+
+    status_response = agent_client.call("status", spawn=False)
+    assert status_response["cached_profiles"] == []
+
+    agent_client.call("shutdown")
 
 
 def test_lock_without_a_running_agent_is_reported_as_unavailable(
@@ -215,12 +219,12 @@ def test_spawn_raises_a_clear_error_when_the_binary_is_missing(
 
 
 @pytest.mark.skipif(not _real_agent_binary_available(), reason=_REAL_AGENT_UNAVAILABLE_REASON)
-def test_status_reports_no_cached_profiles_in_the_foundation_layer() -> None:
+def test_status_reports_no_cached_profiles_for_a_freshly_spawned_agent() -> None:
     agent_client.ensure_agent_running()
     response = agent_client.call("status", spawn=False)
     assert response["ok"] is True
     assert response["cached_profiles"] == []
-    agent_client.call("lock")
+    agent_client.call("shutdown")
 
 
 def test_wait_for_socket_gone_does_not_delete_the_path_after_its_deadline(

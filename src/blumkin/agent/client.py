@@ -163,8 +163,9 @@ def _wait_for_socket_gone() -> None:
     """Wait for a shut-down agent to release its socket before respawning.
 
     `AgentServer._cleanup` always unlinks its socket file on the way out
-    (whether exiting due to `shutdown`/`lock`, a protocol mismatch, or its
-    own idle timeout), so polling for the path to disappear is sufficient.
+    (whether exiting due to `shutdown`, a protocol mismatch, or its own
+    idle timeout - `lock` no longer exits the process, see PR #341), so
+    polling for the path to disappear is sufficient.
 
     If the deadline is reached, the path is left alone rather than unlinked:
     a re-check-then-unlink here cannot tell a mismatched agent that is just

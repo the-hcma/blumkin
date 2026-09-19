@@ -223,12 +223,16 @@ impl SecretCache {
         let locked_secret = LockedSecret::new(secret);
         let generation = self.generations.lock().unwrap().begin(profile);
         self.verifier.verify(reason)?;
-        if !self
-            .generations
-            .lock()
-            .unwrap()
-            .is_current(profile, generation)
-        {
+        // `generations` is held across *both* the `is_current` check and
+        // the `entries` insert below, not just the check - `lock`/
+        // `lock_all` take this same lock before touching `entries`
+        // themselves, so holding it here too closes the window where a
+        // `lock`/`lock_all` that starts and finishes strictly between
+        // "checked current" and "inserted" would otherwise let this
+        // now-stale `unlock` re-cache a secret an operator was just told
+        // was wiped (see PR #341 review).
+        let generations = self.generations.lock().unwrap();
+        if !generations.is_current(profile, generation) {
             // Superseded while `verify` was pending - `locked_secret` is
             // dropped (and zeroed) here without ever being committed.
             return Ok(());
@@ -268,20 +272,25 @@ impl SecretCache {
     }
 
     /// Wipes exactly one profile's cached secret, if any. Also bumps its
-    /// generation, so a still-pending `unlock` for the same profile that
-    /// started before this call can never commit afterward (see
-    /// [`CacheGenerations`]'s docs).
+    /// generation *before* removing it - and holds `generations` locked
+    /// across both steps - so a still-pending `unlock` for the same
+    /// profile can never commit either before or after this call (see
+    /// [`CacheGenerations`]'s docs and the race this closes in
+    /// [`Self::unlock`]'s own docs).
     pub fn lock(&self, profile: &str) {
-        self.generations.lock().unwrap().begin(profile);
+        let mut generations = self.generations.lock().unwrap();
+        generations.begin(profile);
         self.entries.lock().unwrap().remove(profile);
     }
 
     /// Wipes every cached secret - backs the daemon-wide `lock` command.
     /// Also bumps every profile's generation (see
-    /// [`CacheGenerations::invalidate_all`]), so no `unlock` in flight for
-    /// any profile can commit afterward.
+    /// [`CacheGenerations::invalidate_all`]) while `generations` stays
+    /// locked across both steps, so no `unlock` in flight for any profile
+    /// can commit either before or after this call.
     pub fn lock_all(&self) {
-        self.generations.lock().unwrap().invalidate_all();
+        let mut generations = self.generations.lock().unwrap();
+        generations.invalidate_all();
         self.entries.lock().unwrap().clear();
     }
 

@@ -31,9 +31,10 @@ Example:
 \b
   blumkin agent lock
 
-Drops the agent's cached state immediately instead of waiting for its TTL
-to expire, and exits the process. A no-op if no agent is running - nothing
-is cached either way.
+Drops the agent's cached secrets immediately instead of waiting for their
+TTL to expire. The agent process itself keeps running - only its cached
+state is wiped. A no-op if no agent is running - nothing is cached either
+way.
 """
 
 AGENT_STATUS_EPILOG = """
