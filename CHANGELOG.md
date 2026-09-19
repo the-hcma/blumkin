@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.5.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.4.0...blumkin-v1.5.0) (2026-09-19)
+
+
+### Features
+
+* **agent:** add blumkin-agent daemon foundation (issue [#328](https://github.com/the-hcma/blumkin/issues/328)) ([#329](https://github.com/the-hcma/blumkin/issues/329)) ([cd28f29](https://github.com/the-hcma/blumkin/commit/cd28f2951f0ba44b78364750bb5300dd48c2d9f3))
+* **release:** publish a macOS wheel bundling blumkin-agent (issue [#328](https://github.com/the-hcma/blumkin/issues/328)) ([#331](https://github.com/the-hcma/blumkin/issues/331)) ([b872faf](https://github.com/the-hcma/blumkin/commit/b872faf47bd79c01bfc19bd9abe9a7f2a8fa2577))
+
+
+### Continuous Integration
+
+* **agent:** lint and test rust-agent/ (issue [#328](https://github.com/the-hcma/blumkin/issues/328)) ([#330](https://github.com/the-hcma/blumkin/issues/330)) ([9b4c33a](https://github.com/the-hcma/blumkin/commit/9b4c33a))
+
+
+### Documentation
+
+* document the Rust agent exception and its install requirement ([#332](https://github.com/the-hcma/blumkin/issues/332)) ([9c10c66](https://github.com/the-hcma/blumkin/commit/9c10c666738005df28d906b13e463b5d788ec10a))
+
 ## [1.4.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.3.0...blumkin-v1.4.0) (2026-09-18)
 
 
