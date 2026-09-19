@@ -58,6 +58,15 @@ Always implement in `.worktrees/<stack-name>-wt`.
 - **Ruff `target-version = "py314"`:** bare `except A, B:` is valid on 3.14 and
   `ruff format` may strip parentheses from `except (A, B):`. Do not “fix” that
   style for older Python — this repo requires 3.14+.
+- **Exception — `rust-agent/`:** the `blumkin-agent` daemon (issue #328) is
+  Rust, not Python, because it is designed to be the sole holder of
+  decrypted, time-boxed secrets once later layers land, needing real
+  `mlock`/zeroing guarantees Python's string/GC model can't provide. It's a
+  private implementation detail (`publish = false`, never a standalone crate
+  release) built by a `hatchling` build hook (`hatch_build.py`) and bundled
+  into the macOS wheel; see
+  `rust-agent/README.md`. `cargo fmt` / `cargo clippy -- -D warnings` /
+  `cargo test` (via `.github/ci/rust-static`) gate it instead of Ruff/Pyright.
 
 ---
 
