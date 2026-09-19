@@ -10,6 +10,18 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      force_publish_pypi:
+        description: >-
+          Force the Publish PyPI job to run even though Release Please
+          didn't report release_created=true this run. Escape hatch for
+          when release-please's component-matching breaks on an
+          already-merged, already-tagged manual release (see #337); the
+          job still builds off whatever pyproject.toml/tag main has, so
+          only run this right after confirming the intended version is
+          tagged.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -204,7 +216,9 @@ jobs:
   publish-pypi:
     name: Publish PyPI (${{ matrix.os }})
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: >-
+      ${{ needs.release-please.outputs.release_created == 'true' ||
+      github.event.inputs.force_publish_pypi == 'true' }}
     # Two legs, one release: ubuntu-latest builds the sdist plus a
     # `py3-none-any` wheel (everyone else); macos-14 builds a second,
     # macOS-tagged wheel bundling the compiled `blumkin-agent` binary
