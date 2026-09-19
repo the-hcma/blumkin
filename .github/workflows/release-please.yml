@@ -202,10 +202,25 @@ jobs:
         run: npm publish --access public
 
   publish-pypi:
-    name: Publish PyPI
+    name: Publish PyPI (${{ matrix.os }})
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: ubuntu-latest
+    # Two legs, one release: ubuntu-latest builds the sdist plus a
+    # `py3-none-any` wheel (everyone else); macos-14 builds a second,
+    # macOS-tagged wheel bundling the compiled `blumkin-agent` binary
+    # (issue #328 - see hatch_build.py). `--wheel`/`--sdist` keep each leg
+    # from re-uploading the identical sdist filename twice.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            build_args: --sdist --wheel
+            verify: true
+          - os: macos-14
+            build_args: --wheel
+            verify: false
+    runs-on: ${{ matrix.os }}
     environment: pypi
     permissions:
       contents: read
@@ -223,6 +238,16 @@ jobs:
       - name: Set up Python 3.14
         run: uv python install 3.14
 
+      # Both Apple Silicon and Intel targets so hatch_build.py can `lipo`
+      # a true universal2 blumkin-agent binary, not the native-arch-only
+      # fallback it uses on a bare `brew install rust` dev machine.
+      - name: Install Rust toolchain
+        if: matrix.os == 'macos-14'
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
       - name: Install dependencies
         run: uv sync --group dev
 
@@ -234,12 +259,17 @@ jobs:
           uv run python scripts/embed_build_metadata
 
       - name: Build distributions
-        run: uv build
+        # macOS must stay `--wheel`-only: if this ever grows an `--sdist`
+        # leg, both jobs would try to publish the identical
+        # `blumkin-<version>.tar.gz` and one would fail on the duplicate
+        # filename (see PR #331 review).
+        run: uv build ${{ matrix.build_args }}
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
       - name: Verify PyPI release
+        if: matrix.verify
         run: |
           version="$(uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           ./scripts/verify-pypi-release "$version"
