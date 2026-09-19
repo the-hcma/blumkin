@@ -40,18 +40,18 @@ use crate::protocol::{self, ProtocolError};
 use crate::secret_cache::SecretCache;
 use crate::{paths, version};
 
-/// How long the agent runs with no requests before exiting on its own, so
-/// an abandoned agent does not linger as a forgotten background process
-/// forever. Comfortably above `DEFAULT_SECRET_TTL` - an idle-exiting agent
-/// is never the reason a still-valid cached secret disappears early.
-const IDLE_EXIT_SECONDS: u64 = 60 * 60 * 26;
-
 /// The TTL a freshly cached secret is held for before `get_secret` treats
 /// it as gone and `unlock` must re-run the presence check. Matches issue
 /// #339's stated default (24h); a later layer (PR3) makes this
 /// configurable via the `token_reverify_after` config knob - until then,
 /// every profile shares this one hardcoded default.
 const DEFAULT_SECRET_TTL: Duration = Duration::from_secs(60 * 60 * 24);
+
+/// How long the agent runs with no requests before exiting on its own, so
+/// an abandoned agent does not linger as a forgotten background process
+/// forever. Comfortably above `DEFAULT_SECRET_TTL` - an idle-exiting agent
+/// is never the reason a still-valid cached secret disappears early.
+const IDLE_EXIT_SECONDS: u64 = 60 * 60 * 26;
 
 /// How often the accept loop wakes up to re-check the idle/shutdown
 /// conditions when nothing is connecting. Small enough that `lock`/idle
@@ -279,15 +279,44 @@ fn handle_connection(mut stream: UnixStream, cache: &SecretCache, shutdown_reque
     let _ = protocol::send_message(&mut stream, &response);
 }
 
+/// Returns `profile`'s cached secret if `unlock` has verified it and its
+/// TTL has not yet elapsed.
+fn handle_get_secret(request: &Value, cache: &SecretCache) -> Value {
+    let profile = match non_empty_str_field(request, "profile") {
+        Ok(profile) => profile,
+        Err(response) => return response,
+    };
+    match cache.get(profile) {
+        Some(handle) => match std::str::from_utf8(&handle) {
+            Ok(secret) => json!({"ok": true, "secret": secret}),
+            Err(_) => json!({
+                "ok": false,
+                "error": "corrupt_secret",
+                "message": "cached secret is not valid UTF-8",
+            }),
+        },
+        None => json!({"ok": false, "error": "not_cached"}),
+    }
+}
+
 /// Wipe cached secret state: one profile if `request` names it, every
 /// profile otherwise. No longer requests shutdown - now that a real secret
 /// cache exists, "lock" and "shut down" are distinct operations (an
 /// operator wiping a stale credential from memory should not also have to
 /// wait for a fresh agent to respawn on their next command).
 fn handle_lock(request: &Value, cache: &SecretCache) -> Value {
-    match request.get("profile").and_then(Value::as_str) {
-        Some(profile) => cache.lock(profile),
+    // An absent `profile` field means "lock everything"; a *present* one
+    // must be a non-empty string - `{"profile": 1}` or `{"profile": ""}`
+    // are rejected rather than silently falling through to `lock_all` (a
+    // malformed non-string) or to a no-op `lock("")` (an empty string),
+    // either of which would otherwise misreport what was actually locked
+    // (see PR #341 review).
+    match request.get("profile") {
         None => cache.lock_all(),
+        Some(_) => match non_empty_str_field(request, "profile") {
+            Ok(profile) => cache.lock(profile),
+            Err(response) => return response,
+        },
     }
     json!({"ok": true})
 }
@@ -342,24 +371,8 @@ fn handle_unlock(request: &Value, cache: &SecretCache) -> Value {
     }
 }
 
-/// Returns `profile`'s cached secret if `unlock` has verified it and its
-/// TTL has not yet elapsed.
-fn handle_get_secret(request: &Value, cache: &SecretCache) -> Value {
-    let profile = match non_empty_str_field(request, "profile") {
-        Ok(profile) => profile,
-        Err(response) => return response,
-    };
-    match cache.get(profile) {
-        Some(handle) => match std::str::from_utf8(&handle) {
-            Ok(secret) => json!({"ok": true, "secret": secret}),
-            Err(_) => json!({
-                "ok": false,
-                "error": "corrupt_secret",
-                "message": "cached secret is not valid UTF-8",
-            }),
-        },
-        None => json!({"ok": false, "error": "not_cached"}),
-    }
+fn invalid_request(message: &str) -> Value {
+    json!({"ok": false, "error": "invalid_request", "message": message})
 }
 
 /// Extracts a required, non-empty string field, or an `invalid_request`
@@ -371,10 +384,6 @@ fn non_empty_str_field<'a>(request: &'a Value, field: &str) -> Result<&'a str, V
             "{field} must be present and a non-empty string"
         ))),
     }
-}
-
-fn invalid_request(message: &str) -> Value {
-    json!({"ok": false, "error": "invalid_request", "message": message})
 }
 
 fn presence_error_response(err: PresenceError) -> Value {
@@ -392,22 +401,6 @@ mod tests {
     use crate::paths::tests::ENV_LOCK;
 
     #[test]
-    fn dispatch_rejects_a_protocol_version_mismatch_and_requests_shutdown() {
-        let shutdown_requested = AtomicBool::new(false);
-        let cache = SecretCache::with_verifier(
-            Duration::from_secs(60),
-            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
-        );
-        let request = json!({"cmd": "ping", "protocol_version": protocol::PROTOCOL_VERSION + 1});
-
-        let response = dispatch(&request, &shutdown_requested, &cache);
-
-        assert_eq!(response["ok"], false);
-        assert_eq!(response["error"], "protocol_mismatch");
-        assert!(shutdown_requested.load(Ordering::SeqCst));
-    }
-
-    #[test]
     fn dispatch_accepts_a_matching_protocol_version() {
         let shutdown_requested = AtomicBool::new(false);
         let cache = SecretCache::with_verifier(
@@ -423,19 +416,22 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_reports_an_unknown_command() {
+    fn dispatch_get_secret_reports_not_cached_for_an_unknown_profile() {
         let shutdown_requested = AtomicBool::new(false);
         let cache = SecretCache::with_verifier(
             Duration::from_secs(60),
             Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
         );
-        let request =
-            json!({"cmd": "not_a_real_command", "protocol_version": protocol::PROTOCOL_VERSION});
+        let request = json!({
+            "cmd": "get_secret",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "never-unlocked",
+        });
 
         let response = dispatch(&request, &shutdown_requested, &cache);
 
         assert_eq!(response["ok"], false);
-        assert_eq!(response["error"], "unknown_command");
+        assert_eq!(response["error"], "not_cached");
     }
 
     #[test]
@@ -477,6 +473,62 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_lock_rejects_a_malformed_profile_without_wiping_anything() {
+        // A non-string `profile` (e.g. `1`) must not silently fall through
+        // to `lock_all` - that would wipe every profile in response to a
+        // malformed request instead of rejecting it (see PR #341 review).
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        cache.unlock("work", "unlock", b"work".to_vec()).unwrap();
+        let request = json!({
+            "cmd": "lock",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": 1,
+        });
+
+        let response = dispatch(&request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "invalid_request");
+        assert_eq!(cache.get("work").as_deref(), Some(b"work".as_slice()));
+    }
+
+    #[test]
+    fn dispatch_rejects_a_protocol_version_mismatch_and_requests_shutdown() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        let request = json!({"cmd": "ping", "protocol_version": protocol::PROTOCOL_VERSION + 1});
+
+        let response = dispatch(&request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "protocol_mismatch");
+        assert!(shutdown_requested.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn dispatch_reports_an_unknown_command() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        let request =
+            json!({"cmd": "not_a_real_command", "protocol_version": protocol::PROTOCOL_VERSION});
+
+        let response = dispatch(&request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "unknown_command");
+    }
+
+    #[test]
     fn dispatch_shutdown_requests_shutdown() {
         let shutdown_requested = AtomicBool::new(false);
         let cache = SecretCache::with_verifier(
@@ -492,32 +544,39 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_unlock_then_get_secret_roundtrips_the_secret() {
+    fn dispatch_status_reports_cached_profiles() {
         let shutdown_requested = AtomicBool::new(false);
         let cache = SecretCache::with_verifier(
             Duration::from_secs(60),
             Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
         );
-        let unlock_request = json!({
+        cache.unlock("work", "unlock", b"s3cr3t".to_vec()).unwrap();
+        let request = json!({"cmd": "status", "protocol_version": protocol::PROTOCOL_VERSION});
+
+        let response = dispatch(&request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["cached_profiles"], json!(["work"]));
+    }
+
+    #[test]
+    fn dispatch_unlock_rejects_a_missing_profile_field() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        let request = json!({
             "cmd": "unlock",
             "protocol_version": protocol::PROTOCOL_VERSION,
-            "profile": "work",
-            "reason": "unlock the work profile cache",
+            "reason": "unlock",
             "secret": "s3cr3t",
         });
 
-        let unlock_response = dispatch(&unlock_request, &shutdown_requested, &cache);
-        assert_eq!(unlock_response["ok"], true);
+        let response = dispatch(&request, &shutdown_requested, &cache);
 
-        let get_request = json!({
-            "cmd": "get_secret",
-            "protocol_version": protocol::PROTOCOL_VERSION,
-            "profile": "work",
-        });
-        let get_response = dispatch(&get_request, &shutdown_requested, &cache);
-
-        assert_eq!(get_response["ok"], true);
-        assert_eq!(get_response["secret"], "s3cr3t");
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "invalid_request");
     }
 
     #[test]
@@ -553,58 +612,32 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_unlock_rejects_a_missing_profile_field() {
+    fn dispatch_unlock_then_get_secret_roundtrips_the_secret() {
         let shutdown_requested = AtomicBool::new(false);
         let cache = SecretCache::with_verifier(
             Duration::from_secs(60),
             Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
         );
-        let request = json!({
+        let unlock_request = json!({
             "cmd": "unlock",
             "protocol_version": protocol::PROTOCOL_VERSION,
-            "reason": "unlock",
+            "profile": "work",
+            "reason": "unlock the work profile cache",
             "secret": "s3cr3t",
         });
 
-        let response = dispatch(&request, &shutdown_requested, &cache);
+        let unlock_response = dispatch(&unlock_request, &shutdown_requested, &cache);
+        assert_eq!(unlock_response["ok"], true);
 
-        assert_eq!(response["ok"], false);
-        assert_eq!(response["error"], "invalid_request");
-    }
-
-    #[test]
-    fn dispatch_get_secret_reports_not_cached_for_an_unknown_profile() {
-        let shutdown_requested = AtomicBool::new(false);
-        let cache = SecretCache::with_verifier(
-            Duration::from_secs(60),
-            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
-        );
-        let request = json!({
+        let get_request = json!({
             "cmd": "get_secret",
             "protocol_version": protocol::PROTOCOL_VERSION,
-            "profile": "never-unlocked",
+            "profile": "work",
         });
+        let get_response = dispatch(&get_request, &shutdown_requested, &cache);
 
-        let response = dispatch(&request, &shutdown_requested, &cache);
-
-        assert_eq!(response["ok"], false);
-        assert_eq!(response["error"], "not_cached");
-    }
-
-    #[test]
-    fn dispatch_status_reports_cached_profiles() {
-        let shutdown_requested = AtomicBool::new(false);
-        let cache = SecretCache::with_verifier(
-            Duration::from_secs(60),
-            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
-        );
-        cache.unlock("work", "unlock", b"s3cr3t".to_vec()).unwrap();
-        let request = json!({"cmd": "status", "protocol_version": protocol::PROTOCOL_VERSION});
-
-        let response = dispatch(&request, &shutdown_requested, &cache);
-
-        assert_eq!(response["ok"], true);
-        assert_eq!(response["cached_profiles"], json!(["work"]));
+        assert_eq!(get_response["ok"], true);
+        assert_eq!(get_response["secret"], "s3cr3t");
     }
 
     #[test]

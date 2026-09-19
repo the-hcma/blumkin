@@ -1023,11 +1023,12 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
 def agent() -> None:
     """Check on / lock the blumkin-agent background process.
 
-    The agent (issue #328) is the background process that will hold
+    The agent (issue #328/#339) is the background process that holds
     time-boxed, decrypted credentials so blumkin only needs to re-verify
-    local presence (Touch ID / device password) roughly once a day rather
-    than on every command. This foundation build has no secrets flowing
-    through it yet - `status`/`lock` only manage the process's lifecycle.
+    local presence (Touch ID / device password) roughly once per TTL
+    rather than on every command. `status` reports which profiles are
+    currently cached; `lock` wipes cached secrets (one profile, or all of
+    them) without shutting the agent down.
     """
 
 

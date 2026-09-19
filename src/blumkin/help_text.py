@@ -18,11 +18,12 @@ Examples:
   blumkin agent status
   blumkin agent lock
 
-The agent (issue #328) is a background process that will hold time-boxed,
+The agent (issue #328/#339) is a background process that holds time-boxed,
 decrypted credentials so blumkin only needs local presence re-verification
-(Touch ID / device password) roughly once a day, instead of on every
-command. This build is the foundation layer only - no secrets flow through
-it yet; `status`/`lock` just manage the process's lifecycle.
+(Touch ID / device password) roughly once per TTL, instead of on every
+command. `status` reports which profiles are currently cached; `lock`
+wipes cached secrets (one profile, or all of them) without shutting the
+agent down.
 """
 
 AGENT_LOCK_EPILOG = """

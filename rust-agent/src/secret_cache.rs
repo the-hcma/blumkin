@@ -257,6 +257,26 @@ impl SecretCache {
     /// exactly like the one still resident in the cache, rather than
     /// leaking an unprotected second copy on the heap (see PR #340
     /// review).
+    /// Lists every profile with a still-live (non-expired) cached secret -
+    /// backs `status`'s `cached_profiles` field. Expired entries are wiped
+    /// as a side effect of checking them here, same as [`Self::get`],
+    /// rather than reported as live and then silently expiring the moment
+    /// a caller actually tries to [`Self::get`] them.
+    pub fn cached_profiles(&self) -> Vec<String> {
+        let mut entries = self.entries.lock().unwrap();
+        let expired: Vec<String> = entries
+            .iter()
+            .filter(|(_, entry)| entry.verified_at.elapsed() > self.ttl)
+            .map(|(profile, _)| profile.clone())
+            .collect();
+        for profile in &expired {
+            entries.remove(profile);
+        }
+        let mut profiles: Vec<String> = entries.keys().cloned().collect();
+        profiles.sort();
+        profiles
+    }
+
     pub fn get(&self, profile: &str) -> Option<SecretHandle> {
         let mut entries = self.entries.lock().unwrap();
         let is_expired = entries
@@ -294,26 +314,6 @@ impl SecretCache {
         self.entries.lock().unwrap().clear();
     }
 
-    /// Lists every profile with a still-live (non-expired) cached secret -
-    /// backs `status`'s `cached_profiles` field. Expired entries are wiped
-    /// as a side effect of checking them here, same as [`Self::get`],
-    /// rather than reported as live and then silently expiring the moment
-    /// a caller actually tries to [`Self::get`] them.
-    pub fn cached_profiles(&self) -> Vec<String> {
-        let mut entries = self.entries.lock().unwrap();
-        let expired: Vec<String> = entries
-            .iter()
-            .filter(|(_, entry)| entry.verified_at.elapsed() > self.ttl)
-            .map(|(profile, _)| profile.clone())
-            .collect();
-        for profile in &expired {
-            entries.remove(profile);
-        }
-        let mut profiles: Vec<String> = entries.keys().cloned().collect();
-        profiles.sort();
-        profiles
-    }
-
     /// Whether `profile` currently has *any* cached entry, expired or not -
     /// for tests only; production callers must go through [`Self::get`] so
     /// TTL expiry is always honored.
@@ -334,28 +334,138 @@ mod tests {
     }
 
     #[test]
-    fn unlock_then_get_roundtrips_the_secret() {
-        let cache = cache_with(Ok(()), Duration::from_secs(60));
+    fn a_slow_unlock_does_not_overwrite_a_secret_committed_by_a_newer_unlock() {
+        use crate::presence::tests::GatedPresenceVerifier;
+        use std::sync::Arc;
 
-        cache
-            .unlock("work", "unlock the work profile cache", b"s3cr3t".to_vec())
-            .unwrap();
+        let (verifier, release) = GatedPresenceVerifier::new();
+        let cache = Arc::new(SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(verifier),
+        ));
 
-        assert_eq!(cache.get("work").as_deref(), Some(b"s3cr3t".as_slice()));
+        let slow_cache = Arc::clone(&cache);
+        let slow_unlock =
+            thread::spawn(move || slow_cache.unlock("work", "unlock", b"stale".to_vec()));
+
+        // See the sibling test above for why this sleep is only
+        // best-effort, not a strict happens-before guarantee.
+        thread::sleep(Duration::from_millis(50));
+        cache.unlock("work", "unlock", b"fresh".to_vec()).unwrap();
+
+        release.send(()).unwrap();
+        slow_unlock.join().unwrap().unwrap();
+
+        // The slow unlock's presence check succeeded too, but the second,
+        // faster unlock already committed "fresh" - the stale value must
+        // not overwrite it once the slow check finally completes.
+        assert_eq!(cache.get("work").as_deref(), Some(b"fresh".as_slice()));
     }
 
     #[test]
-    fn unlock_passes_the_reason_through_to_the_presence_check_unchanged() {
-        let verifier = std::sync::Arc::new(FakePresenceVerifier::always(Ok(())));
-        let cache = SecretCache::with_verifier(Duration::from_secs(60), Box::new(verifier.clone()));
+    fn a_slow_unlock_does_not_resurrect_a_profile_a_concurrent_lock_already_wiped() {
+        use crate::presence::tests::GatedPresenceVerifier;
+        use std::sync::Arc;
 
+        let (verifier, release) = GatedPresenceVerifier::new();
+        let cache = Arc::new(SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(verifier),
+        ));
+
+        let slow_cache = Arc::clone(&cache);
+        let slow_unlock =
+            thread::spawn(move || slow_cache.unlock("work", "unlock", b"stale".to_vec()));
+
+        // Best-effort: give the spawned unlock time to enter `verify` and
+        // block on the gate before racing `lock` in ahead of it - there is
+        // no observable "now blocked" signal short of a short sleep.
+        thread::sleep(Duration::from_millis(50));
+        cache.lock("work");
+
+        release.send(()).unwrap();
+        slow_unlock.join().unwrap().unwrap();
+
+        // The slow unlock's presence check did succeed, but by the time it
+        // went to commit, `lock` had already superseded it - its secret
+        // must not resurrect the profile `lock` just wiped (see PR #340
+        // review).
+        assert_eq!(cache.get("work").as_deref(), None);
+    }
+
+    #[test]
+    fn cached_profiles_lists_only_still_live_profiles_sorted() {
+        let cache = cache_with(Ok(()), Duration::from_secs(60));
         cache
-            .unlock("work", "unlock the work profile cache", b"x".to_vec())
+            .unlock("work", "unlock", b"work-secret".to_vec())
+            .unwrap();
+        cache
+            .unlock("aaa", "unlock", b"aaa-secret".to_vec())
             .unwrap();
 
+        assert_eq!(cache.cached_profiles(), vec!["aaa", "work"]);
+    }
+
+    #[test]
+    fn cached_profiles_omits_and_wipes_an_expired_entry() {
+        let cache = cache_with(Ok(()), Duration::from_millis(50));
+        cache
+            .unlock("work", "unlock", b"work-secret".to_vec())
+            .unwrap();
+        thread::sleep(Duration::from_millis(120));
+
+        let profiles = cache.cached_profiles();
+
+        assert!(profiles.is_empty());
+        assert!(!cache.is_cached("work"));
+    }
+
+    #[test]
+    fn get_wipes_and_returns_none_once_the_ttl_has_elapsed() {
+        let cache = cache_with(Ok(()), Duration::from_millis(20));
+        cache.unlock("work", "unlock", b"s3cr3t".to_vec()).unwrap();
+        assert!(cache.is_cached("work"));
+
+        thread::sleep(Duration::from_millis(60));
+
+        assert_eq!(cache.get("work").as_deref(), None);
+        // The expired entry must be actually removed (and thus wiped via
+        // `Drop`), not merely reported as absent while still resident.
+        assert!(!cache.is_cached("work"));
+    }
+
+    #[test]
+    fn lock_all_wipes_every_profile() {
+        let cache = cache_with(Ok(()), Duration::from_secs(60));
+        cache
+            .unlock("work", "unlock", b"work-secret".to_vec())
+            .unwrap();
+        cache
+            .unlock("home", "unlock", b"home-secret".to_vec())
+            .unwrap();
+
+        cache.lock_all();
+
+        assert!(!cache.is_cached("work"));
+        assert!(!cache.is_cached("home"));
+    }
+
+    #[test]
+    fn lock_wipes_only_the_named_profile() {
+        let cache = cache_with(Ok(()), Duration::from_secs(60));
+        cache
+            .unlock("work", "unlock", b"work-secret".to_vec())
+            .unwrap();
+        cache
+            .unlock("home", "unlock", b"home-secret".to_vec())
+            .unwrap();
+
+        cache.lock("work");
+
+        assert!(!cache.is_cached("work"));
         assert_eq!(
-            verifier.reasons_seen(),
-            vec!["unlock the work profile cache".to_string()]
+            cache.get("home").as_deref(),
+            Some(b"home-secret".as_slice())
         );
     }
 
@@ -392,79 +502,18 @@ mod tests {
     }
 
     #[test]
-    fn get_wipes_and_returns_none_once_the_ttl_has_elapsed() {
-        let cache = cache_with(Ok(()), Duration::from_millis(20));
-        cache.unlock("work", "unlock", b"s3cr3t".to_vec()).unwrap();
-        assert!(cache.is_cached("work"));
+    fn unlock_passes_the_reason_through_to_the_presence_check_unchanged() {
+        let verifier = std::sync::Arc::new(FakePresenceVerifier::always(Ok(())));
+        let cache = SecretCache::with_verifier(Duration::from_secs(60), Box::new(verifier.clone()));
 
-        thread::sleep(Duration::from_millis(60));
-
-        assert_eq!(cache.get("work").as_deref(), None);
-        // The expired entry must be actually removed (and thus wiped via
-        // `Drop`), not merely reported as absent while still resident.
-        assert!(!cache.is_cached("work"));
-    }
-
-    #[test]
-    fn lock_wipes_only_the_named_profile() {
-        let cache = cache_with(Ok(()), Duration::from_secs(60));
         cache
-            .unlock("work", "unlock", b"work-secret".to_vec())
-            .unwrap();
-        cache
-            .unlock("home", "unlock", b"home-secret".to_vec())
+            .unlock("work", "unlock the work profile cache", b"x".to_vec())
             .unwrap();
 
-        cache.lock("work");
-
-        assert!(!cache.is_cached("work"));
         assert_eq!(
-            cache.get("home").as_deref(),
-            Some(b"home-secret".as_slice())
+            verifier.reasons_seen(),
+            vec!["unlock the work profile cache".to_string()]
         );
-    }
-
-    #[test]
-    fn lock_all_wipes_every_profile() {
-        let cache = cache_with(Ok(()), Duration::from_secs(60));
-        cache
-            .unlock("work", "unlock", b"work-secret".to_vec())
-            .unwrap();
-        cache
-            .unlock("home", "unlock", b"home-secret".to_vec())
-            .unwrap();
-
-        cache.lock_all();
-
-        assert!(!cache.is_cached("work"));
-        assert!(!cache.is_cached("home"));
-    }
-
-    #[test]
-    fn cached_profiles_lists_only_still_live_profiles_sorted() {
-        let cache = cache_with(Ok(()), Duration::from_secs(60));
-        cache
-            .unlock("work", "unlock", b"work-secret".to_vec())
-            .unwrap();
-        cache
-            .unlock("aaa", "unlock", b"aaa-secret".to_vec())
-            .unwrap();
-
-        assert_eq!(cache.cached_profiles(), vec!["aaa", "work"]);
-    }
-
-    #[test]
-    fn cached_profiles_omits_and_wipes_an_expired_entry() {
-        let cache = cache_with(Ok(()), Duration::from_millis(50));
-        cache
-            .unlock("work", "unlock", b"work-secret".to_vec())
-            .unwrap();
-        thread::sleep(Duration::from_millis(120));
-
-        let profiles = cache.cached_profiles();
-
-        assert!(profiles.is_empty());
-        assert!(!cache.is_cached("work"));
     }
 
     #[test]
@@ -490,62 +539,13 @@ mod tests {
     }
 
     #[test]
-    fn a_slow_unlock_does_not_resurrect_a_profile_a_concurrent_lock_already_wiped() {
-        use crate::presence::tests::GatedPresenceVerifier;
-        use std::sync::Arc;
+    fn unlock_then_get_roundtrips_the_secret() {
+        let cache = cache_with(Ok(()), Duration::from_secs(60));
 
-        let (verifier, release) = GatedPresenceVerifier::new();
-        let cache = Arc::new(SecretCache::with_verifier(
-            Duration::from_secs(60),
-            Box::new(verifier),
-        ));
+        cache
+            .unlock("work", "unlock the work profile cache", b"s3cr3t".to_vec())
+            .unwrap();
 
-        let slow_cache = Arc::clone(&cache);
-        let slow_unlock =
-            thread::spawn(move || slow_cache.unlock("work", "unlock", b"stale".to_vec()));
-
-        // Best-effort: give the spawned unlock time to enter `verify` and
-        // block on the gate before racing `lock` in ahead of it - there is
-        // no observable "now blocked" signal short of a short sleep.
-        thread::sleep(Duration::from_millis(50));
-        cache.lock("work");
-
-        release.send(()).unwrap();
-        slow_unlock.join().unwrap().unwrap();
-
-        // The slow unlock's presence check did succeed, but by the time it
-        // went to commit, `lock` had already superseded it - its secret
-        // must not resurrect the profile `lock` just wiped (see PR #340
-        // review).
-        assert_eq!(cache.get("work").as_deref(), None);
-    }
-
-    #[test]
-    fn a_slow_unlock_does_not_overwrite_a_secret_committed_by_a_newer_unlock() {
-        use crate::presence::tests::GatedPresenceVerifier;
-        use std::sync::Arc;
-
-        let (verifier, release) = GatedPresenceVerifier::new();
-        let cache = Arc::new(SecretCache::with_verifier(
-            Duration::from_secs(60),
-            Box::new(verifier),
-        ));
-
-        let slow_cache = Arc::clone(&cache);
-        let slow_unlock =
-            thread::spawn(move || slow_cache.unlock("work", "unlock", b"stale".to_vec()));
-
-        // See the sibling test above for why this sleep is only
-        // best-effort, not a strict happens-before guarantee.
-        thread::sleep(Duration::from_millis(50));
-        cache.unlock("work", "unlock", b"fresh".to_vec()).unwrap();
-
-        release.send(()).unwrap();
-        slow_unlock.join().unwrap().unwrap();
-
-        // The slow unlock's presence check succeeded too, but the second,
-        // faster unlock already committed "fresh" - the stale value must
-        // not overwrite it once the slow check finally completes.
-        assert_eq!(cache.get("work").as_deref(), Some(b"fresh".as_slice()));
+        assert_eq!(cache.get("work").as_deref(), Some(b"s3cr3t".as_slice()));
     }
 }
