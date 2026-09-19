@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# .github/ci/ gate — the-hcma/repository-helpers convention; run by ci.yml.
+# Lints/tests rust-agent/ (issue #328's blumkin-agent daemon). Not part of the
+# upstream repository-helpers template (this repo's only Rust code), kept in
+# this directory purely for the same "one script, ci.yml calls it" pattern as
+# python-static/shellcheck.
+set -euo pipefail
+cd rust-agent
+cargo fmt --check
+cargo clippy --release --all-targets -- -D warnings
+cargo test --release
