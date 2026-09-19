@@ -91,32 +91,32 @@ itself). blumkin selects nothing and runs no model.
 
 ### Project skill (shipped)
 
-[`.cursor/skills/blumkin/SKILL.md`](../.cursor/skills/blumkin/SKILL.md) is checked
+[`.agents/skills/blumkin/SKILL.md`](../.agents/skills/blumkin/SKILL.md) is checked
 into this repo, so sessions **in this repo** pick it up with no setup.
 
 ### Personal skill (any repo)
 
 To use blumkin from sessions in *other* repos, install it as a personal skill.
 This needs a clone of the source — a `pipx install blumkin` ships the CLI but
-not the `.cursor/skills/blumkin/` directory, so clone the repo somewhere stable
+not the `.agents/skills/blumkin/` directory, so clone the repo somewhere stable
 (it does not have to be the install you run) and point the skill at it.
 
 **Symlink** — tracks the clone, so the skill follows `git pull`:
 
 ```bash
-mkdir -p ~/.cursor/skills
-ln -s ~/work/ai/blumkin/.cursor/skills/blumkin ~/.cursor/skills/blumkin
+mkdir -p ~/.agents/skills
+ln -s ~/work/ai/blumkin/.agents/skills/blumkin ~/.agents/skills/blumkin
 ```
 
 **Copy** — pinned, and survives moving or deleting the clone:
 
 ```bash
-mkdir -p ~/.cursor/skills
-cp -R ~/work/ai/blumkin/.cursor/skills/blumkin ~/.cursor/skills/blumkin
+mkdir -p ~/.agents/skills
+cp -R ~/work/ai/blumkin/.agents/skills/blumkin ~/.agents/skills/blumkin
 ```
 
 Prefer the symlink unless you need the skill to outlive the clone; a copy goes
-stale silently as commands are added. Verify with `ls ~/.cursor/skills/blumkin/`
+stale silently as commands are added. Verify with `ls ~/.agents/skills/blumkin/`
 and by asking a session in an unrelated repo what's on your calendar.
 
 Both skills come from the same source file, so in a session inside this repo
@@ -134,7 +134,7 @@ refresh it by re-running the `cp -R` above.
 coding-agent harness that consumes the same [Agent Skills
 standard](https://agentskills.io) Cursor does. The canonical skill content
 lives at [`.agents/skills/blumkin/SKILL.md`](../.agents/skills/blumkin/SKILL.md)
-— `.cursor/skills/blumkin` is a symlink to it, so both agents read one file.
+— Cursor and Pi both read that canonical path (no in-repo symlink).
 
 ### Project skill (shipped, zero install)
 
@@ -319,7 +319,7 @@ dash — `skills.describe` takes `skill-id`. Build the command from `cli` plus t
 args rather than assuming every name is a flag.
 
 `notifies_others` is the field to key safety decisions on — it is the same flag
-[`.cursor/rules/no-third-party-side-effects.mdc`](../.cursor/rules/no-third-party-side-effects.mdc)
+[`.agents/rules/no-third-party-side-effects.md`](../.agents/rules/no-third-party-side-effects.md)
 uses to decide what must never run as a test. Every skill carrying it also
 declares a required `--yes`, which the schema tests enforce. Those tests also
 require each skill to be classified explicitly, so the flag cannot be left unset
