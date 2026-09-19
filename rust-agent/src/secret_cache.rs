@@ -1,10 +1,10 @@
 //! In-memory, TTL-gated, presence-verified secret cache (issue #328/#339).
 //!
-//! This is the core the later stack layers build on: PR2 wires new
-//! `unlock`/`get_secret` protocol commands to [`SecretCache::unlock`] and
-//! [`SecretCache::get`]; PR3 has `secret_store.py`/`auth.py` call those
-//! commands instead of reading the keychain/file backend directly. Nothing
-//! in *this* layer talks to protocol messages or the real keychain yet -
+//! This is the core `server.rs`'s `unlock`/`get_secret` protocol commands
+//! are wired to (via [`SecretCache::unlock`] and [`SecretCache::get`]); a
+//! later layer (PR3) has `secret_store.py`/`auth.py` call those commands
+//! instead of reading the keychain/file backend directly. Nothing in
+//! *this* layer talks to protocol messages or the real keychain itself -
 //! callers already have the plaintext secret bytes in hand (from wherever
 //! a later layer fetched them) and are only asking this cache to gate and
 //! time-box holding them in memory.
@@ -172,7 +172,6 @@ impl CacheGenerations {
 }
 
 /// A presence-gated, TTL-bounded, per-profile secret cache.
-#[allow(dead_code)] // wired to new `unlock`/`get_secret` protocol commands in PR2 (#339).
 pub struct SecretCache {
     ttl: Duration,
     verifier: Box<dyn PresenceVerifier>,
@@ -180,7 +179,6 @@ pub struct SecretCache {
     generations: Mutex<CacheGenerations>,
 }
 
-#[allow(dead_code)] // wired to new `unlock`/`get_secret` protocol commands in PR2 (#339).
 impl SecretCache {
     /// Builds a cache backed by the real OS presence check.
     pub fn new(ttl: Duration) -> Self {
@@ -285,6 +283,26 @@ impl SecretCache {
     pub fn lock_all(&self) {
         self.generations.lock().unwrap().invalidate_all();
         self.entries.lock().unwrap().clear();
+    }
+
+    /// Lists every profile with a still-live (non-expired) cached secret -
+    /// backs `status`'s `cached_profiles` field. Expired entries are wiped
+    /// as a side effect of checking them here, same as [`Self::get`],
+    /// rather than reported as live and then silently expiring the moment
+    /// a caller actually tries to [`Self::get`] them.
+    pub fn cached_profiles(&self) -> Vec<String> {
+        let mut entries = self.entries.lock().unwrap();
+        let expired: Vec<String> = entries
+            .iter()
+            .filter(|(_, entry)| entry.verified_at.elapsed() > self.ttl)
+            .map(|(profile, _)| profile.clone())
+            .collect();
+        for profile in &expired {
+            entries.remove(profile);
+        }
+        let mut profiles: Vec<String> = entries.keys().cloned().collect();
+        profiles.sort();
+        profiles
     }
 
     /// Whether `profile` currently has *any* cached entry, expired or not -
@@ -411,6 +429,33 @@ mod tests {
 
         assert!(!cache.is_cached("work"));
         assert!(!cache.is_cached("home"));
+    }
+
+    #[test]
+    fn cached_profiles_lists_only_still_live_profiles_sorted() {
+        let cache = cache_with(Ok(()), Duration::from_secs(60));
+        cache
+            .unlock("work", "unlock", b"work-secret".to_vec())
+            .unwrap();
+        cache
+            .unlock("aaa", "unlock", b"aaa-secret".to_vec())
+            .unwrap();
+
+        assert_eq!(cache.cached_profiles(), vec!["aaa", "work"]);
+    }
+
+    #[test]
+    fn cached_profiles_omits_and_wipes_an_expired_entry() {
+        let cache = cache_with(Ok(()), Duration::from_millis(50));
+        cache
+            .unlock("work", "unlock", b"work-secret".to_vec())
+            .unwrap();
+        thread::sleep(Duration::from_millis(120));
+
+        let profiles = cache.cached_profiles();
+
+        assert!(profiles.is_empty());
+        assert!(!cache.is_cached("work"));
     }
 
     #[test]

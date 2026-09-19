@@ -1,38 +1,57 @@
-//! The blumkin-agent daemon itself (foundation layer, issue #328).
+//! The blumkin-agent daemon itself (issue #328/#339).
 //!
-//! A small, lazily-spawned background process that will become the sole
-//! holder of decrypted, time-boxed secrets once later layers land (macOS
-//! `LocalAuthentication` presence check + keychain-backed cache). This
-//! foundation layer only implements the daemon's lifecycle and control
-//! surface - version handshake, health check, and a `lock` command that
-//! already does the one thing it can meaningfully do yet: ask the agent to
-//! exit (there is nothing cached to drop in memory until the secret-serving
-//! layer exists, so "lock" and "shut down" are the same operation for now).
+//! A small, lazily-spawned background process that is the sole holder of
+//! decrypted, time-boxed secrets: `unlock` gates a fresh secret behind a
+//! macOS `LocalAuthentication` presence check (Touch ID/device password)
+//! and caches it, `mlock`ed and TTL-bounded, in a [`SecretCache`];
+//! `get_secret` serves it back out until that TTL elapses or `lock`/
+//! `lock_all` wipes it early.
 //!
-//! Behavior mirrors `blumkin.agent.server` (the Python prototype this
-//! replaces) exactly: same idle-exit timeout, same stale-socket detection
-//! by connect-probe, same self-shutdown-on-protocol-mismatch trick that
+//! Behavior otherwise mirrors `blumkin.agent.server` (the Python prototype
+//! this replaces): same idle-exit timeout, same stale-socket detection by
+//! connect-probe, same self-shutdown-on-protocol-mismatch trick that
 //! avoids the chicken-and-egg problem of asking a version-rejecting agent
 //! to shut down.
+//!
+//! **Threading**: each accepted connection is handled on its own spawned
+//! thread rather than inline in the accept loop. This is required, not
+//! merely nice-to-have: `unlock`'s presence check can block its calling
+//! thread for up to [`crate::presence::PRESENCE_TIMEOUT`] (120s) waiting on
+//! the user to respond to a Touch ID/password prompt, and a single-threaded
+//! accept loop blocked that long would misreport every other, unrelated
+//! connection as a wedged/dead agent (see `PRESENCE_TIMEOUT`'s docs and PR
+//! #340 review). `shutdown_requested` is therefore a shared
+//! [`AtomicBool`], not a plain `bool` local to the accept loop, and
+//! [`SecretCache`] is shared via [`Arc`] across every connection's thread.
 
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{fs, process, thread};
 
 use serde_json::{json, Value};
 
+use crate::presence::PresenceError;
 use crate::protocol::{self, ProtocolError};
+use crate::secret_cache::SecretCache;
 use crate::{paths, version};
 
 /// How long the agent runs with no requests before exiting on its own, so
 /// an abandoned agent does not linger as a forgotten background process
-/// forever. Comfortably above the eventual default 24h re-verify TTL (a
-/// later layer) - this foundation layer has no per-profile TTL of its own
-/// yet, only this blanket idle exit.
+/// forever. Comfortably above `DEFAULT_SECRET_TTL` - an idle-exiting agent
+/// is never the reason a still-valid cached secret disappears early.
 const IDLE_EXIT_SECONDS: u64 = 60 * 60 * 26;
+
+/// The TTL a freshly cached secret is held for before `get_secret` treats
+/// it as gone and `unlock` must re-run the presence check. Matches issue
+/// #339's stated default (24h); a later layer (PR3) makes this
+/// configurable via the `token_reverify_after` config knob - until then,
+/// every profile shares this one hardcoded default.
+const DEFAULT_SECRET_TTL: Duration = Duration::from_secs(60 * 60 * 24);
 
 /// How often the accept loop wakes up to re-check the idle/shutdown
 /// conditions when nothing is connecting. Small enough that `lock`/idle
@@ -41,7 +60,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// How long a single accepted connection is given to send its request
 /// before the agent gives up on it - a slow/stuck client must never wedge
-/// the single-threaded accept loop indefinitely.
+/// its handler thread indefinitely. Bounds only `recv_message`'s wait for
+/// the request to arrive, not `dispatch`'s own processing of it once
+/// received (an `unlock`'s presence check runs on this same handler
+/// thread and may legitimately take up to `PRESENCE_TIMEOUT` - see the
+/// module docs above).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long `bind` waits for a just-probed, exiting-but-not-yet-dead agent
@@ -68,12 +91,19 @@ pub fn run() {
         .set_nonblocking(true)
         .expect("set_nonblocking failed");
 
+    let cache = Arc::new(SecretCache::new(DEFAULT_SECRET_TTL));
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
     let mut last_activity = Instant::now();
-    let mut shutdown_requested = false;
-    while !shutdown_requested {
+    // Reaped opportunistically on each loop iteration (never joined
+    // eagerly - a still-prompting `unlock` must not hold up accepting new
+    // connections) so this does not grow unbounded over a long-lived
+    // agent's life.
+    let mut connection_threads: Vec<thread::JoinHandle<()>> = Vec::new();
+    while !shutdown_requested.load(Ordering::SeqCst) {
         if last_activity.elapsed().as_secs() > IDLE_EXIT_SECONDS {
             break;
         }
+        connection_threads.retain(|handle| !handle.is_finished());
         match listener.accept() {
             Ok((stream, _addr)) => {
                 last_activity = Instant::now();
@@ -91,12 +121,20 @@ pub fn run() {
                     );
                     continue;
                 }
-                handle_connection(stream, &mut shutdown_requested);
+                let cache = Arc::clone(&cache);
+                let shutdown_requested = Arc::clone(&shutdown_requested);
+                connection_threads.push(thread::spawn(move || {
+                    handle_connection(stream, &cache, &shutdown_requested);
+                }));
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => thread::sleep(POLL_INTERVAL),
             Err(_) => thread::sleep(POLL_INTERVAL),
         }
     }
+    // Best-effort: wipe every cached secret before exiting rather than
+    // just letting the process's memory go away, in case anything ever
+    // reads this process's freed pages before the OS reclaims them.
+    cache.lock_all();
     cleanup(&sock_path);
 }
 
@@ -195,7 +233,7 @@ fn cleanup(sock_path: &Path) {
     let _ = fs::remove_file(sock_path);
 }
 
-fn dispatch(request: &Value, shutdown_requested: &mut bool) -> Value {
+fn dispatch(request: &Value, shutdown_requested: &AtomicBool, cache: &SecretCache) -> Value {
     let client_protocol_version = request.get("protocol_version").and_then(Value::as_u64);
     if client_protocol_version != Some(protocol::PROTOCOL_VERSION) {
         // A mismatch almost always means *this* agent is the stale one -
@@ -207,7 +245,7 @@ fn dispatch(request: &Value, shutdown_requested: &mut bool) -> Value {
         // client can simply wait for the socket to clear and spawn a
         // fresh one (see the "Installation & upgrade" section of issue
         // #328).
-        *shutdown_requested = true;
+        shutdown_requested.store(true, Ordering::SeqCst);
         return json!({
             "ok": false,
             "error": "protocol_mismatch",
@@ -217,10 +255,12 @@ fn dispatch(request: &Value, shutdown_requested: &mut bool) -> Value {
         });
     }
     match request.get("cmd").and_then(Value::as_str) {
-        Some("lock") => handle_lock(shutdown_requested),
+        Some("get_secret") => handle_get_secret(request, cache),
+        Some("lock") => handle_lock(request, cache),
         Some("ping") => handle_ping(),
         Some("shutdown") => handle_shutdown(shutdown_requested),
-        Some("status") => handle_status(),
+        Some("status") => handle_status(cache),
+        Some("unlock") => handle_unlock(request, cache),
         other => json!({
             "ok": false,
             "error": "unknown_command",
@@ -229,9 +269,9 @@ fn dispatch(request: &Value, shutdown_requested: &mut bool) -> Value {
     }
 }
 
-fn handle_connection(mut stream: UnixStream, shutdown_requested: &mut bool) {
+fn handle_connection(mut stream: UnixStream, cache: &SecretCache, shutdown_requested: &AtomicBool) {
     let response = match protocol::recv_message(&mut stream, Some(REQUEST_TIMEOUT)) {
-        Ok(request) => dispatch(&request, shutdown_requested),
+        Ok(request) => dispatch(&request, shutdown_requested, cache),
         Err(ProtocolError(message)) => {
             json!({"ok": false, "error": "protocol_error", "message": message})
         }
@@ -239,16 +279,16 @@ fn handle_connection(mut stream: UnixStream, shutdown_requested: &mut bool) {
     let _ = protocol::send_message(&mut stream, &response);
 }
 
-/// Drop all cached state and exit.
-///
-/// There is nothing cached to drop yet in this foundation layer, so this is
-/// equivalent to `shutdown` today; once the secret cache exists, this
-/// becomes "wipe every profile's cached secret" without necessarily exiting
-/// the process. Kept as its own command name now (rather than introduced
-/// later) so the CLI surface (`blumkin agent lock`) and its tests do not
-/// need to change shape when that lands.
-fn handle_lock(shutdown_requested: &mut bool) -> Value {
-    *shutdown_requested = true;
+/// Wipe cached secret state: one profile if `request` names it, every
+/// profile otherwise. No longer requests shutdown - now that a real secret
+/// cache exists, "lock" and "shut down" are distinct operations (an
+/// operator wiping a stale credential from memory should not also have to
+/// wait for a fresh agent to respawn on their next command).
+fn handle_lock(request: &Value, cache: &SecretCache) -> Value {
+    match request.get("profile").and_then(Value::as_str) {
+        Some(profile) => cache.lock(profile),
+        None => cache.lock_all(),
+    }
     json!({"ok": true})
 }
 
@@ -262,22 +302,88 @@ fn handle_ping() -> Value {
     })
 }
 
-fn handle_shutdown(shutdown_requested: &mut bool) -> Value {
-    *shutdown_requested = true;
+fn handle_shutdown(shutdown_requested: &AtomicBool) -> Value {
+    shutdown_requested.store(true, Ordering::SeqCst);
     json!({"ok": true})
 }
 
-fn handle_status() -> Value {
+fn handle_status(cache: &SecretCache) -> Value {
     json!({
         "ok": true,
         "agent_version": version::package_version(),
         "agent_commit": version::source_commit(),
         "agent_pid": process::id(),
         "protocol_version": protocol::PROTOCOL_VERSION,
-        // No per-profile cache exists in this foundation layer yet -
-        // always reported empty until the secret-serving layer lands.
-        "cached_profiles": Vec::<String>::new(),
+        "cached_profiles": cache.cached_profiles(),
     })
+}
+
+/// Runs the presence check for `profile` (the OS prompt shown to the user
+/// is `request`'s `reason` field) and, only on success, caches `secret` for
+/// it. Runs on this connection's own handler thread - which may block for
+/// up to `PRESENCE_TIMEOUT` waiting on the prompt - never on the shared
+/// accept loop (see this module's docs).
+fn handle_unlock(request: &Value, cache: &SecretCache) -> Value {
+    let profile = match non_empty_str_field(request, "profile") {
+        Ok(profile) => profile,
+        Err(response) => return response,
+    };
+    let reason = match non_empty_str_field(request, "reason") {
+        Ok(reason) => reason,
+        Err(response) => return response,
+    };
+    let secret = match request.get("secret").and_then(Value::as_str) {
+        Some(secret) => secret,
+        None => return invalid_request("unlock requires a \"secret\" string"),
+    };
+    match cache.unlock(profile, reason, secret.as_bytes().to_vec()) {
+        Ok(()) => json!({"ok": true}),
+        Err(err) => presence_error_response(err),
+    }
+}
+
+/// Returns `profile`'s cached secret if `unlock` has verified it and its
+/// TTL has not yet elapsed.
+fn handle_get_secret(request: &Value, cache: &SecretCache) -> Value {
+    let profile = match non_empty_str_field(request, "profile") {
+        Ok(profile) => profile,
+        Err(response) => return response,
+    };
+    match cache.get(profile) {
+        Some(handle) => match std::str::from_utf8(&handle) {
+            Ok(secret) => json!({"ok": true, "secret": secret}),
+            Err(_) => json!({
+                "ok": false,
+                "error": "corrupt_secret",
+                "message": "cached secret is not valid UTF-8",
+            }),
+        },
+        None => json!({"ok": false, "error": "not_cached"}),
+    }
+}
+
+/// Extracts a required, non-empty string field, or an `invalid_request`
+/// response describing exactly what was missing/malformed.
+fn non_empty_str_field<'a>(request: &'a Value, field: &str) -> Result<&'a str, Value> {
+    match request.get(field).and_then(Value::as_str) {
+        Some(value) if !value.is_empty() => Ok(value),
+        _ => Err(invalid_request(&format!(
+            "{field} must be present and a non-empty string"
+        ))),
+    }
+}
+
+fn invalid_request(message: &str) -> Value {
+    json!({"ok": false, "error": "invalid_request", "message": message})
+}
+
+fn presence_error_response(err: PresenceError) -> Value {
+    let error = match err {
+        PresenceError::Denied(_) => "presence_denied",
+        PresenceError::TimedOut => "presence_timed_out",
+        PresenceError::Unsupported => "presence_unsupported",
+    };
+    json!({"ok": false, "error": error, "message": err.to_string()})
 }
 
 #[cfg(test)]
@@ -287,48 +393,218 @@ mod tests {
 
     #[test]
     fn dispatch_rejects_a_protocol_version_mismatch_and_requests_shutdown() {
-        let mut shutdown_requested = false;
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
         let request = json!({"cmd": "ping", "protocol_version": protocol::PROTOCOL_VERSION + 1});
 
-        let response = dispatch(&request, &mut shutdown_requested);
+        let response = dispatch(&request, &shutdown_requested, &cache);
 
         assert_eq!(response["ok"], false);
         assert_eq!(response["error"], "protocol_mismatch");
-        assert!(shutdown_requested);
+        assert!(shutdown_requested.load(Ordering::SeqCst));
     }
 
     #[test]
     fn dispatch_accepts_a_matching_protocol_version() {
-        let mut shutdown_requested = false;
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
         let request = json!({"cmd": "ping", "protocol_version": protocol::PROTOCOL_VERSION});
 
-        let response = dispatch(&request, &mut shutdown_requested);
+        let response = dispatch(&request, &shutdown_requested, &cache);
 
         assert_eq!(response["ok"], true);
-        assert!(!shutdown_requested);
+        assert!(!shutdown_requested.load(Ordering::SeqCst));
     }
 
     #[test]
     fn dispatch_reports_an_unknown_command() {
-        let mut shutdown_requested = false;
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
         let request =
             json!({"cmd": "not_a_real_command", "protocol_version": protocol::PROTOCOL_VERSION});
 
-        let response = dispatch(&request, &mut shutdown_requested);
+        let response = dispatch(&request, &shutdown_requested, &cache);
 
         assert_eq!(response["ok"], false);
         assert_eq!(response["error"], "unknown_command");
     }
 
     #[test]
-    fn dispatch_lock_requests_shutdown() {
-        let mut shutdown_requested = false;
+    fn dispatch_lock_wipes_the_cache_without_requesting_shutdown() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        cache.unlock("work", "unlock", b"s3cr3t".to_vec()).unwrap();
         let request = json!({"cmd": "lock", "protocol_version": protocol::PROTOCOL_VERSION});
 
-        let response = dispatch(&request, &mut shutdown_requested);
+        let response = dispatch(&request, &shutdown_requested, &cache);
 
         assert_eq!(response["ok"], true);
-        assert!(shutdown_requested);
+        assert!(!shutdown_requested.load(Ordering::SeqCst));
+        assert_eq!(cache.get("work").as_deref(), None);
+    }
+
+    #[test]
+    fn dispatch_lock_with_a_profile_wipes_only_that_profile() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        cache.unlock("work", "unlock", b"work".to_vec()).unwrap();
+        cache.unlock("home", "unlock", b"home".to_vec()).unwrap();
+        let request = json!({
+            "cmd": "lock",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "work",
+        });
+
+        dispatch(&request, &shutdown_requested, &cache);
+
+        assert_eq!(cache.get("work").as_deref(), None);
+        assert_eq!(cache.get("home").as_deref(), Some(b"home".as_slice()));
+    }
+
+    #[test]
+    fn dispatch_shutdown_requests_shutdown() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        let request = json!({"cmd": "shutdown", "protocol_version": protocol::PROTOCOL_VERSION});
+
+        let response = dispatch(&request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], true);
+        assert!(shutdown_requested.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn dispatch_unlock_then_get_secret_roundtrips_the_secret() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        let unlock_request = json!({
+            "cmd": "unlock",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "work",
+            "reason": "unlock the work profile cache",
+            "secret": "s3cr3t",
+        });
+
+        let unlock_response = dispatch(&unlock_request, &shutdown_requested, &cache);
+        assert_eq!(unlock_response["ok"], true);
+
+        let get_request = json!({
+            "cmd": "get_secret",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "work",
+        });
+        let get_response = dispatch(&get_request, &shutdown_requested, &cache);
+
+        assert_eq!(get_response["ok"], true);
+        assert_eq!(get_response["secret"], "s3cr3t");
+    }
+
+    #[test]
+    fn dispatch_unlock_reports_presence_denial_without_caching_anything() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Err(
+                PresenceError::Denied("wrong password".to_string()),
+            ))),
+        );
+        let unlock_request = json!({
+            "cmd": "unlock",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "work",
+            "reason": "unlock the work profile cache",
+            "secret": "s3cr3t",
+        });
+
+        let response = dispatch(&unlock_request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "presence_denied");
+
+        let get_request = json!({
+            "cmd": "get_secret",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "work",
+        });
+        let get_response = dispatch(&get_request, &shutdown_requested, &cache);
+        assert_eq!(get_response["ok"], false);
+        assert_eq!(get_response["error"], "not_cached");
+    }
+
+    #[test]
+    fn dispatch_unlock_rejects_a_missing_profile_field() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        let request = json!({
+            "cmd": "unlock",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "reason": "unlock",
+            "secret": "s3cr3t",
+        });
+
+        let response = dispatch(&request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "invalid_request");
+    }
+
+    #[test]
+    fn dispatch_get_secret_reports_not_cached_for_an_unknown_profile() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        let request = json!({
+            "cmd": "get_secret",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "never-unlocked",
+        });
+
+        let response = dispatch(&request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "not_cached");
+    }
+
+    #[test]
+    fn dispatch_status_reports_cached_profiles() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        cache.unlock("work", "unlock", b"s3cr3t".to_vec()).unwrap();
+        let request = json!({"cmd": "status", "protocol_version": protocol::PROTOCOL_VERSION});
+
+        let response = dispatch(&request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["cached_profiles"], json!(["work"]));
     }
 
     #[test]
@@ -374,8 +650,12 @@ mod tests {
                     stream.set_nonblocking(false).unwrap();
                     if let Ok(request) = protocol::recv_message(&mut stream, Some(REQUEST_TIMEOUT))
                     {
-                        let mut shutdown_requested = false;
-                        let response = dispatch(&request, &mut shutdown_requested);
+                        let shutdown_requested = AtomicBool::new(false);
+                        let cache = SecretCache::with_verifier(
+                            Duration::from_secs(60),
+                            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+                        );
+                        let response = dispatch(&request, &shutdown_requested, &cache);
                         let _ = protocol::send_message(&mut stream, &response);
                     }
                     return;

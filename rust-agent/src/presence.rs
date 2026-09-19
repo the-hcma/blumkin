@@ -27,14 +27,14 @@ use std::time::Duration;
 /// REQUEST_TIMEOUT + 1s` = 6s) - deliberately, because a real Touch
 /// ID/password prompt can take much longer than either to answer than a
 /// pure protocol round-trip. **[`PresenceVerifier::verify`] blocks the
-/// calling thread for up to this long**, so whichever later layer wires it
-/// into `server::dispatch` (PR2) must run it on a dedicated thread, never
-/// directly on the single-threaded accept loop - otherwise a pending
-/// prompt makes this agent look unresponsive to every other connection
-/// within `REQUEST_TIMEOUT`, and a concurrently spawned second agent's
-/// stale-socket probe (`server::agent_is_alive`) would then declare the
-/// still-live (merely prompting) agent dead, delete its socket, and bind
-/// over it (see PR #340 review).
+/// calling thread for up to this long**, so `server::dispatch`'s `unlock`
+/// handler runs on its own connection's dedicated thread, never directly
+/// on the shared accept loop (see `server`'s module docs) - otherwise a
+/// pending prompt makes this agent look unresponsive to every other
+/// connection within `REQUEST_TIMEOUT`, and a concurrently spawned second
+/// agent's stale-socket probe (`server::agent_is_alive`) would then declare
+/// the still-live (merely prompting) agent dead, delete its socket, and
+/// bind over it (see PR #340 review).
 pub const PRESENCE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
