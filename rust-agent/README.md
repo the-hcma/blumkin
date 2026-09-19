@@ -47,7 +47,7 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 Without `rustup` (e.g. a bare `brew install rust`), `hatch_build.py` falls
 back to a native-arch-only build for local development and prints a
 warning; the release workflow's macOS leg (`.github/workflows/release-please.yml`,
-`publish-pypi`'s `macos-14` matrix entry - lands alongside this foundation
+`build-dists`'s `macos-14` matrix entry - lands alongside this foundation
 layer in issue #328's stacked PRs, not in this crate's own diff) installs
 both targets via `dtolnay/rust-toolchain`, so the actual published wheel
 gets a true universal2 binary.

@@ -213,8 +213,8 @@ jobs:
       - name: Publish to npm
         run: npm publish --access public
 
-  publish-pypi:
-    name: Publish PyPI (${{ matrix.os }})
+  build-dists:
+    name: Build distributions (${{ matrix.os }})
     needs: release-please
     if: >-
       ${{ needs.release-please.outputs.release_created == 'true' ||
@@ -223,22 +223,21 @@ jobs:
     # `py3-none-any` wheel (everyone else); macos-14 builds a second,
     # macOS-tagged wheel bundling the compiled `blumkin-agent` binary
     # (issue #328 - see hatch_build.py). `--wheel`/`--sdist` keep each leg
-    # from re-uploading the identical sdist filename twice.
+    # from re-uploading the identical sdist filename twice. Each leg only
+    # builds; a single downstream `publish-pypi` job does the actual
+    # upload, because `pypa/gh-action-pypi-publish` only runs on Linux
+    # runners (macos-14 can't call it directly - see #337 review).
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             build_args: --sdist --wheel
-            verify: true
           - os: macos-14
             build_args: --wheel
-            verify: false
     runs-on: ${{ matrix.os }}
-    environment: pypi
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -274,16 +273,59 @@ jobs:
 
       - name: Build distributions
         # macOS must stay `--wheel`-only: if this ever grows an `--sdist`
-        # leg, both jobs would try to publish the identical
-        # `blumkin-<version>.tar.gz` and one would fail on the duplicate
-        # filename (see PR #331 review).
+        # leg, both jobs would try to build the identical
+        # `blumkin-<version>.tar.gz` and the merged dist/ would collide
+        # (see PR #331 review).
         run: uv build ${{ matrix.build_args }}
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.os }}
+          path: dist/
+          retention-days: 1
+
+  publish-pypi:
+    name: Publish PyPI
+    needs: build-dists
+    # build-dists already re-evaluated the release_created/force_publish_pypi
+    # gate; needs: build-dists is enough here.
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: latest
+
+      - name: Set up Python 3.14
+        run: uv python install 3.14
+
+      # Merges both legs' artifacts into one dist/ so a single Linux-only
+      # gh-action-pypi-publish call can upload the sdist plus both wheels.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          path: dist/
+          merge-multiple: true
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          # force_publish_pypi's recovery case (see #338 review) is a
+          # version whose sdist/py3-none-any wheel are already on PyPI
+          # (uploaded before the macOS leg's publish step existed, or
+          # before this split); without skip-existing, twine's first
+          # "400 File already exists" on those aborts the whole call
+          # before the actually-missing macOS wheel ever uploads.
+          skip-existing: true
 
       - name: Verify PyPI release
-        if: matrix.verify
         run: |
           version="$(uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           ./scripts/verify-pypi-release "$version"
