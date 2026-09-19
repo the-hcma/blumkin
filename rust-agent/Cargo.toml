@@ -1,0 +1,21 @@
+[package]
+name = "blumkin-agent"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "blumkin-agent background daemon (issue #328) - not published as a crate; built and bundled by the blumkin Python package's hatchling build hook."
+
+[[bin]]
+name = "blumkin-agent"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+serde_json = "1"
+
+[profile.release]
+# Small, simple daemon - optimize for binary size over raw speed, and strip
+# symbols so nothing about the build environment leaks into the shipped
+# binary.
+opt-level = "s"
+strip = true

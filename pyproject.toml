@@ -79,6 +79,16 @@ Homepage = "https://github.com/the-hcma/blumkin"
 Issues = "https://github.com/the-hcma/blumkin/issues"
 Repository = "https://github.com/the-hcma/blumkin"
 
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.wheel]
+# `blumkin/agent/bin/` only exists after `hatch_build.py`'s cargo build runs
+# (on macOS with a Rust toolchain); on other platforms/without cargo the
+# directory does not exist and this pattern simply matches nothing, which
+# hatchling accepts (it is not an error for an artifact glob to be empty).
+artifacts = ["src/blumkin/agent/bin/*"]
+
 [tool.pytest.ini_options]
 markers = [
     "live: live Graph read tests (needs ~/.config/blumkin and network)",
@@ -87,7 +97,7 @@ markers = [
 testpaths = ["tests"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "hatch_build.py"]
 pythonVersion = "3.14"
 typeCheckingMode = "basic"
 
@@ -110,4 +120,5 @@ dev = [
     "ruff>=0.16.6",
     "mcp>=2.2.0",
     "keyring>=25.7.0",
+    "hatchling>=1.28.0",
 ]

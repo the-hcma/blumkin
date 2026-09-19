@@ -29,6 +29,7 @@ ALL_PATHS = _command_paths(main)
 SUBCOMMAND_PATHS = [p[1:] for p in ALL_PATHS if len(p) > 1]
 
 GROUP_PATHS = [
+    ("agent",),
     ("auth",),
     ("calendar",),
     ("chat",),
