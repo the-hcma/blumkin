@@ -162,20 +162,31 @@ mod macos {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    /// A [`PresenceVerifier`] whose outcome is fixed at construction time,
-    /// so [`crate::secret_cache::SecretCache`] tests never touch the real,
-    /// interactive OS prompt.
+    /// A [`PresenceVerifier`] whose outcome is fixed (or queued) at
+    /// construction time, so [`crate::secret_cache::SecretCache`] tests
+    /// never touch the real, interactive OS prompt.
     pub struct FakePresenceVerifier {
-        result: Mutex<Result<(), PresenceError>>,
+        results: Mutex<VecDeque<Result<(), PresenceError>>>,
         calls: Mutex<Vec<String>>,
     }
 
     impl FakePresenceVerifier {
+        /// Returns `result` from every `verify` call.
         pub fn always(result: Result<(), PresenceError>) -> Self {
+            Self::sequence(vec![result])
+        }
+
+        /// Returns each queued result in order, one per `verify` call - the
+        /// final queued result repeats for any calls beyond the queue's
+        /// length, so a test asserting "then it stays denied" does not need
+        /// to size the queue to an exact call count.
+        pub fn sequence(results: Vec<Result<(), PresenceError>>) -> Self {
+            assert!(!results.is_empty(), "sequence needs at least one result");
             Self {
-                result: Mutex::new(result),
+                results: Mutex::new(results.into()),
                 calls: Mutex::new(Vec::new()),
             }
         }
@@ -188,7 +199,12 @@ pub mod tests {
     impl PresenceVerifier for FakePresenceVerifier {
         fn verify(&self, reason: &str) -> Result<(), PresenceError> {
             self.calls.lock().unwrap().push(reason.to_string());
-            self.result.lock().unwrap().clone()
+            let mut results = self.results.lock().unwrap();
+            if results.len() > 1 {
+                results.pop_front().unwrap()
+            } else {
+                results.front().unwrap().clone()
+            }
         }
     }
 }

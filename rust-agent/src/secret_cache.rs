@@ -134,11 +134,19 @@ impl SecretCache {
         reason: &str,
         secret: Vec<u8>,
     ) -> Result<(), PresenceError> {
+        // Wrap `secret` before verifying, not after: `LockedSecret::new`
+        // takes ownership immediately, so on a `verify` failure (denial,
+        // timeout, or an unsupported platform) the early return below
+        // drops `locked_secret` - zeroing it via `Drop` - instead of
+        // returning early on the bare `Vec<u8>`, whose bytes would
+        // otherwise be freed unzeroed straight out of `unlock`'s caller
+        // (see PR #340 review).
+        let locked_secret = LockedSecret::new(secret);
         self.verifier.verify(reason)?;
         self.entries.lock().unwrap().insert(
             profile.to_string(),
             CachedEntry {
-                secret: LockedSecret::new(secret),
+                secret: locked_secret,
                 verified_at: Instant::now(),
             },
         );
@@ -235,6 +243,24 @@ mod tests {
     }
 
     #[test]
+    fn unlock_failure_leaves_a_prior_entry_for_the_same_profile_untouched() {
+        // A denial after an already-successful unlock must not clear the
+        // existing, still-live cached secret - only a fresh success may
+        // replace it (see PR #340 review).
+        let verifier = FakePresenceVerifier::sequence(vec![
+            Ok(()),
+            Err(PresenceError::Denied("wrong password".to_string())),
+        ]);
+        let cache = SecretCache::with_verifier(Duration::from_secs(60), Box::new(verifier));
+        cache.unlock("work", "unlock", b"first".to_vec()).unwrap();
+
+        let result = cache.unlock("work", "unlock", b"second".to_vec());
+
+        assert!(result.is_err());
+        assert_eq!(cache.get("work"), Some(b"first".to_vec()));
+    }
+
+    #[test]
     fn get_wipes_and_returns_none_once_the_ttl_has_elapsed() {
         let cache = cache_with(Ok(()), Duration::from_millis(20));
         cache.unlock("work", "unlock", b"s3cr3t".to_vec()).unwrap();
@@ -282,15 +308,22 @@ mod tests {
 
     #[test]
     fn unlock_replaces_a_prior_entry_and_resets_its_ttl_clock() {
-        let cache = cache_with(Ok(()), Duration::from_millis(200));
+        // Both the TTL and the margin between "did reset" and "did not
+        // reset" are wide (2s TTL, 1.4s sleeps, so a bug that skips the
+        // reset would only be caught after 2.8s total elapsed, well past
+        // the 2s TTL) so this only fails if the clock genuinely was not
+        // reset, never merely because a loaded CI runner overshot a tight
+        // sleep window (see PR #340 review: the original 200ms TTL / 120ms
+        // sleeps left only an ~80ms margin).
+        let cache = cache_with(Ok(()), Duration::from_secs(2));
         cache.unlock("work", "unlock", b"first".to_vec()).unwrap();
-        thread::sleep(Duration::from_millis(120));
+        thread::sleep(Duration::from_millis(1400));
 
         // Re-unlocking must reset the TTL clock, not just replace the
         // bytes - otherwise a profile re-verified just before its old TTL
         // would expire could still be wiped by the *original* deadline.
         cache.unlock("work", "unlock", b"second".to_vec()).unwrap();
-        thread::sleep(Duration::from_millis(120));
+        thread::sleep(Duration::from_millis(1400));
 
         assert_eq!(cache.get("work"), Some(b"second".to_vec()));
     }
