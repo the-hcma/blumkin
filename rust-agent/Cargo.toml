@@ -19,3 +19,9 @@ serde_json = "1"
 # binary.
 opt-level = "s"
 strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "0.6.2", default-features = false, features = ["std", "alloc"] }
+objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSError", "NSObjCRuntime"] }
+objc2-local-authentication = { version = "0.3.2", default-features = false, features = ["std", "block2", "LAContext", "LAPublicDefines", "LAError"] }
