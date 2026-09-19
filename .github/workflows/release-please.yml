@@ -316,6 +316,14 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          # force_publish_pypi's recovery case (see #338 review) is a
+          # version whose sdist/py3-none-any wheel are already on PyPI
+          # (uploaded before the macOS leg's publish step existed, or
+          # before this split); without skip-existing, twine's first
+          # "400 File already exists" on those aborts the whole call
+          # before the actually-missing macOS wheel ever uploads.
+          skip-existing: true
 
       - name: Verify PyPI release
         run: |
