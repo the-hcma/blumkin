@@ -182,14 +182,18 @@ pub mod tests {
     /// construction time, so [`crate::secret_cache::SecretCache`] tests
     /// never touch the real, interactive OS prompt.
     pub struct FakePresenceVerifier {
-        results: Mutex<VecDeque<Result<(), PresenceError>>>,
         calls: Mutex<Vec<String>>,
+        results: Mutex<VecDeque<Result<(), PresenceError>>>,
     }
 
     impl FakePresenceVerifier {
         /// Returns `result` from every `verify` call.
         pub fn always(result: Result<(), PresenceError>) -> Self {
             Self::sequence(vec![result])
+        }
+
+        pub fn reasons_seen(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
         }
 
         /// Returns each queued result in order, one per `verify` call - the
@@ -199,13 +203,9 @@ pub mod tests {
         pub fn sequence(results: Vec<Result<(), PresenceError>>) -> Self {
             assert!(!results.is_empty(), "sequence needs at least one result");
             Self {
-                results: Mutex::new(results.into()),
                 calls: Mutex::new(Vec::new()),
+                results: Mutex::new(results.into()),
             }
-        }
-
-        pub fn reasons_seen(&self) -> Vec<String> {
-            self.calls.lock().unwrap().clone()
         }
     }
 
@@ -218,6 +218,45 @@ pub mod tests {
             } else {
                 results.front().unwrap().clone()
             }
+        }
+    }
+
+    /// A [`PresenceVerifier`] whose *first* `verify` call blocks until
+    /// released via the paired [`std::sync::mpsc::Sender`] (always
+    /// succeeding once unblocked); every call after the first returns
+    /// immediately without blocking. Used to deterministically simulate a
+    /// slow-to-answer presence prompt racing against a second, faster
+    /// operation on the same [`crate::secret_cache::SecretCache`] (see PR
+    /// #340 review).
+    pub struct GatedPresenceVerifier {
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        first_call_started: std::sync::atomic::AtomicBool,
+    }
+
+    impl GatedPresenceVerifier {
+        pub fn new() -> (Self, std::sync::mpsc::Sender<()>) {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            (
+                Self {
+                    release: Mutex::new(Some(receiver)),
+                    first_call_started: std::sync::atomic::AtomicBool::new(false),
+                },
+                sender,
+            )
+        }
+    }
+
+    impl PresenceVerifier for GatedPresenceVerifier {
+        fn verify(&self, _reason: &str) -> Result<(), PresenceError> {
+            let is_first_call = !self
+                .first_call_started
+                .swap(true, std::sync::atomic::Ordering::SeqCst);
+            if is_first_call {
+                if let Some(receiver) = self.release.lock().unwrap().take() {
+                    let _ = receiver.recv();
+                }
+            }
+            Ok(())
         }
     }
 }
