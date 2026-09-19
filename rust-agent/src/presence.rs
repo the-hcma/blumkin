@@ -16,12 +16,25 @@
 use std::time::Duration;
 
 /// How long a single presence check is allowed to wait on the user actually
-/// responding to the Touch ID/password prompt before giving up. Bounded so
+/// responding to the Touch ID/password prompt before giving up - bounded so
 /// a request that will never be answered (e.g. the user stepped away, or a
 /// non-interactive `SSH_TTY`-less session with no way to show a prompt at
-/// all) does not wedge the daemon's single-threaded accept loop - callers
-/// still see a timely, clearly-a-timeout error instead of the request
-/// itself never returning.
+/// all) still gets a timely, clearly-a-timeout error instead of blocking
+/// forever.
+///
+/// This is 24x `server::REQUEST_TIMEOUT` (5s, the daemon's own
+/// single-connection budget) and 20x its spawn-probe budget (`
+/// REQUEST_TIMEOUT + 1s` = 6s) - deliberately, because a real Touch
+/// ID/password prompt can take much longer than either to answer than a
+/// pure protocol round-trip. **[`PresenceVerifier::verify`] blocks the
+/// calling thread for up to this long**, so whichever later layer wires it
+/// into `server::dispatch` (PR2) must run it on a dedicated thread, never
+/// directly on the single-threaded accept loop - otherwise a pending
+/// prompt makes this agent look unresponsive to every other connection
+/// within `REQUEST_TIMEOUT`, and a concurrently spawned second agent's
+/// stale-socket probe (`server::agent_is_alive`) would then declare the
+/// still-live (merely prompting) agent dead, delete its socket, and bind
+/// over it (see PR #340 review).
 pub const PRESENCE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
