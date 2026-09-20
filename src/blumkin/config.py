@@ -147,25 +147,30 @@ def list_profiles() -> list[dict[str, Any]]:
     """Return safe summaries of configured profiles (no secrets).
 
     Loading the provider, resolving tags, resolving the Google OAuth client
-    id, parsing preferences, and checking ``auth_present`` are five
-    independent ways a single profile's table can be malformed; each gets
-    its own try/except so a failure in one does not suppress the others -
-    a bad ``provider`` typo must not blank out an otherwise valid
-    ``auth_present``, and no single misconfigured profile aborts the whole
-    listing (issue #293). Each of these mirrors a validation
+    id, parsing preferences, parsing ``token_reverify_after``, and checking
+    ``auth_present`` are six independent ways a single profile's table can be
+    malformed; each gets its own try/except so a failure in one does not
+    suppress the others - a bad ``provider`` typo must not blank out an
+    otherwise valid ``auth_present``, and no single misconfigured profile
+    aborts the whole listing (issue #293). Each of these mirrors a validation
     ``load_config()`` itself performs per-profile table - google_oauth
-    client id resolution (``_client_id_from_google_oauth_file``) and
-    ``[profiles.<name>.preferences]`` parsing (``_preferences_config``) can
-    each raise ``ProviderConfigError`` too, and must be just as tolerated
-    here as ``provider``/``tags`` (issue #293 review). ``auth_present`` is
-    computed via ``_auth_present_probe_cfg`` rather than the full
+    client id resolution (``_client_id_from_google_oauth_file``),
+    ``[profiles.<name>.preferences]`` parsing (``_preferences_config``), and
+    ``token_reverify_after`` parsing (``_token_reverify_after``, which can
+    now also reject a value over the 1-week cap, PR #346 review) can each
+    raise ``ProviderConfigError`` too, and must be just as tolerated here as
+    ``provider``/``tags`` (issue #293 review). ``auth_present`` is computed
+    via ``_auth_present_probe_cfg`` rather than the full
     ``load_config(profile=name)`` used elsewhere, specifically so it stays
-    accurate even for a profile whose ``provider``/``tags`` are invalid -
-    the credential's on-disk location never depended on either being valid
-    (issue #293). ``load_config()`` itself is never called here - doing so
-    would reach ``_resolve_by_selector``, which scans *every* profile's
-    tags to detect name/tag collisions, reintroducing the very "one broken
-    profile hides every other profile" bug this function exists to avoid.
+    accurate even for a profile whose ``provider``/``tags``/
+    ``token_reverify_after`` are invalid - the credential's on-disk location
+    never depended on any of them being valid (issue #293); the probe cfg
+    always hardcodes ``token_reverify_after=None`` rather than parsing it
+    for that same reason. ``load_config()`` itself is never called here -
+    doing so would reach ``_resolve_by_selector``, which scans *every*
+    profile's tags to detect name/tag collisions, reintroducing the very
+    "one broken profile hides every other profile" bug this function exists
+    to avoid.
     """
     # Local import: blumkin.secret_store imports BlumkinConfig from this module,
     # so importing it at module level here would be circular.
@@ -210,6 +215,11 @@ def list_profiles() -> list[dict[str, Any]]:
 
         try:
             _preferences_config(table, _top_level_preferences(file_data), profile=name)
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
+        try:
+            _token_reverify_after(table)
         except ProviderConfigError as exc:
             errors.append(str(exc))
 
@@ -343,7 +353,13 @@ def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]
     aborting the whole `list_profiles()` call) for a profile that is, in
     fact, still fully logged in (issue #293). Every field this probe cfg does
     not need is filled with a cheap, valid placeholder purely to satisfy the
-    dataclass's required arguments.
+    dataclass's required arguments. ``token_reverify_after`` is hardcoded to
+    ``None`` rather than parsed from ``table`` for the same reason: this
+    probe is built outside ``list_profiles()``'s per-field try/except
+    guards, so an invalid or over-the-cap value (``_token_reverify_after``
+    can raise ``ProviderConfigError``) would abort the whole listing instead
+    of just that one profile's summary - and the agent cache TTL is
+    irrelevant to a plain on-disk/keyring existence check anyway.
     """
     return BlumkinConfig(
         client_id="",
@@ -359,7 +375,7 @@ def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]
         provider=ProviderKind.MICROSOFT,
         tags=(),
         tenant_id="",
-        token_reverify_after=_token_reverify_after(table),
+        token_reverify_after=None,
         token_storage=_token_storage_preference(table),
         wo1162425_scopes=False,
     )

@@ -367,6 +367,33 @@ def test_list_profiles_reports_auth_present_despite_an_invalid_provider(
     assert "error" in summaries["broken"]
 
 
+def test_list_profiles_does_not_abort_on_an_invalid_token_reverify_after(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An invalid/over-cap `token_reverify_after` must not abort the whole listing.
+
+    `auth_present` is computed via a probe cfg built outside `list_profiles`'s
+    per-field try/except guards, so it must never parse `token_reverify_after`
+    itself (PR #346 review) - a bad value here would otherwise raise
+    `ProviderConfigError` while building the probe and hide every profile's
+    summary, not just this one's.
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.broken]\n"
+        'client_id = "xyz"\n'
+        'token_reverify_after = "2w"\n'  # exceeds the 1w cap
+        "\n"
+        "[profiles.fine]\n"
+        'client_id = "abc"\n'
+    )
+
+    summaries = {item["name"]: item for item in list_profiles()}
+
+    assert "error" in summaries["broken"]
+    assert summaries["fine"].get("error") is None
+
+
 def test_list_profiles_reports_malformed_tags_as_a_per_profile_error(
     tmp_path: Path, monkeypatch
 ) -> None:
