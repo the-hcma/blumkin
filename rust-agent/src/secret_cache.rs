@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::presence::{PresenceError, PresenceVerifier, SystemPresenceVerifier};
@@ -171,12 +171,33 @@ impl CacheGenerations {
     }
 }
 
+/// A presence check for one profile, shared by every `unlock` call
+/// concurrent with the one actually running it - see
+/// [`SecretCache::verify_presence_once`].
+struct PresenceCheckShare {
+    result: Mutex<Option<Result<(), PresenceError>>>,
+    done: Condvar,
+}
+
 /// A presence-gated, TTL-bounded, per-profile secret cache.
 pub struct SecretCache {
     ttl: Duration,
     verifier: Box<dyn PresenceVerifier>,
     entries: Mutex<HashMap<String, CachedEntry>>,
     generations: Mutex<CacheGenerations>,
+    // Presence checks currently running, keyed by profile - lets a second,
+    // concurrent `unlock` for the *same* profile share the one prompt
+    // already in flight (do it once, confirm, move on) instead of starting
+    // a redundant `evaluatePolicy` of its own, which macOS would cancel
+    // the first prompt for (issue #343). A profile's entry is removed as
+    // soon as its one real check finishes.
+    presence_inflight: Mutex<HashMap<String, Arc<PresenceCheckShare>>>,
+    // Serializes the *actual* `verify` calls across different profiles:
+    // coalescing above only dedupes repeats of the *same* profile, but two
+    // genuinely different profiles unlocked at the same moment would still
+    // each start their own `evaluatePolicy` and cancel one another if run
+    // concurrently - this keeps those to one at a time too.
+    presence_lock: Mutex<()>,
 }
 
 impl SecretCache {
@@ -191,13 +212,65 @@ impl SecretCache {
             verifier,
             entries: Mutex::new(HashMap::new()),
             generations: Mutex::new(CacheGenerations::new()),
+            presence_inflight: Mutex::new(HashMap::new()),
+            presence_lock: Mutex::new(()),
         }
+    }
+
+    /// Runs the presence check for `profile` exactly once even if several
+    /// `unlock` calls for it arrive concurrently: the first caller in
+    /// becomes the "leader" and actually runs `verifier.verify`; every
+    /// other concurrent caller for the same profile is a "follower" that
+    /// blocks on the leader's own result and reuses it verbatim, rather
+    /// than starting a second, redundant prompt (issue #343) - there is
+    /// never more than one real `evaluatePolicy` per profile in flight,
+    /// and no caller waits any longer than the one real check takes.
+    fn verify_presence_once(&self, profile: &str, reason: &str) -> Result<(), PresenceError> {
+        let share = {
+            let mut inflight = self.presence_inflight.lock().unwrap();
+            if let Some(existing) = inflight.get(profile) {
+                (Arc::clone(existing), false)
+            } else {
+                let share = Arc::new(PresenceCheckShare {
+                    result: Mutex::new(None),
+                    done: Condvar::new(),
+                });
+                inflight.insert(profile.to_string(), Arc::clone(&share));
+                (share, true)
+            }
+        };
+        let (share, is_leader) = share;
+
+        if !is_leader {
+            let mut result = share.result.lock().unwrap();
+            while result.is_none() {
+                result = share.done.wait(result).unwrap();
+            }
+            return result.clone().unwrap();
+        }
+
+        // Only the leader ever calls the real verifier - still serialized
+        // against other profiles' leaders via `presence_lock`, since
+        // macOS's LocalAuthentication only tolerates one `evaluatePolicy`
+        // in flight per process regardless of which profile it is for.
+        let result = {
+            let _presence_guard = self.presence_lock.lock().unwrap();
+            self.verifier.verify(reason)
+        };
+        *share.result.lock().unwrap() = Some(result.clone());
+        share.done.notify_all();
+        self.presence_inflight.lock().unwrap().remove(profile);
+        result
     }
 
     /// Runs the presence check (`reason` is shown to the user) and, only on
     /// success, caches `secret` for `profile` - replacing any prior entry
     /// and (re)starting its TTL clock from now. On failure, nothing is
     /// cached and any prior entry for `profile` is left exactly as it was.
+    ///
+    /// The presence check itself is deduplicated per-profile via
+    /// [`Self::verify_presence_once`]: a second, concurrent `unlock` for
+    /// the same profile never starts a redundant prompt of its own.
     ///
     /// If a newer `unlock`/`lock`/`lock_all` call starts (and, for
     /// `unlock`, finishes) for this same `profile` while this call's
@@ -222,7 +295,7 @@ impl SecretCache {
         // (see PR #340 review).
         let locked_secret = LockedSecret::new(secret);
         let generation = self.generations.lock().unwrap().begin(profile);
-        self.verifier.verify(reason)?;
+        self.verify_presence_once(profile, reason)?;
         // `generations` is held across *both* the `is_current` check and
         // the `entries` insert below, not just the check - `lock`/
         // `lock_all` take this same lock before touching `entries`
@@ -329,6 +402,66 @@ mod tests {
     use crate::presence::tests::FakePresenceVerifier;
     use std::thread;
 
+    #[test]
+    fn concurrent_unlocks_for_the_same_profile_share_one_presence_check() {
+        use crate::presence::tests::GatedPresenceVerifier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        /// Wraps `GatedPresenceVerifier` (whose first call blocks until
+        /// released) to also count how many times `verify` is actually
+        /// entered - proving a concurrent, same-profile `unlock` never
+        /// triggers its own redundant presence check (issue #343).
+        struct CountingVerifier {
+            inner: GatedPresenceVerifier,
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl PresenceVerifier for CountingVerifier {
+            fn verify(&self, reason: &str) -> Result<(), PresenceError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.inner.verify(reason)
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (gated, release) = GatedPresenceVerifier::new();
+        let verifier = CountingVerifier {
+            inner: gated,
+            calls: Arc::clone(&calls),
+        };
+        let cache = Arc::new(SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(verifier),
+        ));
+
+        let leader_cache = Arc::clone(&cache);
+        let leader =
+            thread::spawn(move || leader_cache.unlock("work", "unlock", b"secret".to_vec()));
+
+        // Best-effort: give the leader time to enter `verify` (and block on
+        // the gate) before the follower starts - see the sibling tests
+        // above for why this is only best-effort, not a strict guarantee.
+        thread::sleep(Duration::from_millis(50));
+
+        let follower_cache = Arc::clone(&cache);
+        let follower =
+            thread::spawn(move || follower_cache.unlock("work", "unlock", b"secret".to_vec()));
+
+        thread::sleep(Duration::from_millis(50));
+        release.send(()).unwrap();
+
+        leader.join().unwrap().unwrap();
+        follower.join().unwrap().unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a concurrent unlock for the same profile must not start its own presence check"
+        );
+        assert_eq!(cache.get("work").as_deref(), Some(b"secret".as_slice()));
+    }
+
     fn cache_with(result: Result<(), PresenceError>, ttl: Duration) -> SecretCache {
         SecretCache::with_verifier(ttl, Box::new(FakePresenceVerifier::always(result)))
     }
@@ -351,14 +484,28 @@ mod tests {
         // See the sibling test above for why this sleep is only
         // best-effort, not a strict happens-before guarantee.
         thread::sleep(Duration::from_millis(50));
-        cache.unlock("work", "unlock", b"fresh".to_vec()).unwrap();
 
+        // Also on its own thread, not the main one: a concurrent unlock
+        // for the *same* profile now shares the one presence check already
+        // in flight (see `SecretCache::verify_presence_once`) rather than
+        // running its own, so it blocks until `release` fires too - only
+        // the *order the two calls began* (captured by `generations`
+        // before either one blocks on the shared check), not which one
+        // happens to finish first, decides which secret ultimately wins.
+        let fresh_cache = Arc::clone(&cache);
+        let fresh_unlock =
+            thread::spawn(move || fresh_cache.unlock("work", "unlock", b"fresh".to_vec()));
+
+        thread::sleep(Duration::from_millis(50));
         release.send(()).unwrap();
-        slow_unlock.join().unwrap().unwrap();
 
-        // The slow unlock's presence check succeeded too, but the second,
-        // faster unlock already committed "fresh" - the stale value must
-        // not overwrite it once the slow check finally completes.
+        slow_unlock.join().unwrap().unwrap();
+        fresh_unlock.join().unwrap().unwrap();
+
+        // The stale unlock's presence check succeeded too (shared with the
+        // fresh one, coalesced into a single real check), but it began
+        // before the fresh unlock did - the stale value must not overwrite
+        // the fresher one that began after it.
         assert_eq!(cache.get("work").as_deref(), Some(b"fresh".as_slice()));
     }
 
