@@ -388,10 +388,10 @@ fn non_empty_str_field<'a>(request: &'a Value, field: &str) -> Result<&'a str, V
 
 fn presence_error_response(err: PresenceError) -> Value {
     let error = match err {
+        PresenceError::Busy => "presence_busy",
         PresenceError::Denied(_) => "presence_denied",
         PresenceError::TimedOut => "presence_timed_out",
         PresenceError::Unsupported => "presence_unsupported",
-        PresenceError::Busy => "presence_busy",
     };
     json!({"ok": false, "error": error, "message": err.to_string()})
 }

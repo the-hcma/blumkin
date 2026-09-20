@@ -246,83 +246,6 @@ impl SecretCache {
         }
     }
 
-    /// Runs the presence check for `profile` exactly once even if several
-    /// `unlock` calls for it arrive concurrently: the first caller in
-    /// becomes the "leader" and actually runs `verifier.verify`; every
-    /// other concurrent caller for the same profile is a "follower" that
-    /// blocks on the leader's own result and reuses it verbatim, rather
-    /// than starting a second, redundant prompt (issue #343) - there is
-    /// never more than one real `evaluatePolicy` per profile in flight,
-    /// and a same-profile follower never waits any longer than the one
-    /// real check takes (bounded by [`crate::presence::PRESENCE_TIMEOUT`]).
-    ///
-    /// A leader for a *different* profile never queues behind another
-    /// profile's in-flight check: `presence_lock` is only ever
-    /// `try_lock`ed, never blockingly `lock`ed, so a leader that loses the
-    /// race fails fast with [`PresenceError::Busy`] instead of waiting an
-    /// unbounded amount of time (which could exceed `client.py`'s own
-    /// recv timeout for `unlock` and be reported as an unreachable agent -
-    /// see PR review on #343's fix) - the only bound this cache ever
-    /// enforces cross-profile is "at most one real prompt at a time",
-    /// never "wait your turn".
-    fn verify_presence_once(&self, profile: &str, reason: &str) -> Result<(), PresenceError> {
-        let share = {
-            let mut inflight = self.presence_inflight.lock().unwrap();
-            if let Some(existing) = inflight.get(profile) {
-                (Arc::clone(existing), false)
-            } else {
-                let share = Arc::new(PresenceCheckShare {
-                    result: Mutex::new(None),
-                    done: Condvar::new(),
-                });
-                inflight.insert(profile.to_string(), Arc::clone(&share));
-                (share, true)
-            }
-        };
-        let (share, is_leader) = share;
-
-        if !is_leader {
-            let mut result = share.result.lock().unwrap();
-            while result.is_none() {
-                result = share.done.wait(result).unwrap();
-            }
-            return result.clone().unwrap();
-        }
-
-        // `cleanup` finalizes `share` (and removes this profile's
-        // `presence_inflight` entry) exactly once, whether `verify` below
-        // returns normally or panics - see [`LeaderCleanup`]'s docs.
-        let mut cleanup = LeaderCleanup {
-            inflight: &self.presence_inflight,
-            profile,
-            share: Arc::clone(&share),
-            result: None,
-        };
-
-        // Only the leader ever calls the real verifier - and only if no
-        // other profile's leader is already running one; see this
-        // method's docs for why this is `try_lock`, not `lock`.
-        let result = match self.presence_lock.try_lock() {
-            Ok(_guard) => self.verifier.verify(reason),
-            Err(std::sync::TryLockError::WouldBlock) => Err(PresenceError::Busy),
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                // A prior presence check panicked while holding this
-                // lock - `std::sync::Mutex` poisoning is otherwise
-                // permanent, which would wedge *every future* `unlock`
-                // behind `Busy` forever (see PR review on #343's fix).
-                // That panic says nothing about whether *this* check can
-                // succeed, so reclaim the guard (keeping it held for the
-                // duration of `verify`, same as the non-poisoned path) and
-                // proceed normally instead of treating poisoning as a
-                // lasting condition.
-                let _guard = poisoned.into_inner();
-                self.verifier.verify(reason)
-            }
-        };
-        cleanup.result = Some(result.clone());
-        result
-    }
-
     /// Runs the presence check (`reason` is shown to the user) and, only on
     /// success, caches `secret` for `profile` - replacing any prior entry
     /// and (re)starting its TTL clock from now. On failure, nothing is
@@ -453,6 +376,83 @@ impl SecretCache {
     #[cfg(test)]
     fn is_cached(&self, profile: &str) -> bool {
         self.entries.lock().unwrap().contains_key(profile)
+    }
+
+    /// Runs the presence check for `profile` exactly once even if several
+    /// `unlock` calls for it arrive concurrently: the first caller in
+    /// becomes the "leader" and actually runs `verifier.verify`; every
+    /// other concurrent caller for the same profile is a "follower" that
+    /// blocks on the leader's own result and reuses it verbatim, rather
+    /// than starting a second, redundant prompt (issue #343) - there is
+    /// never more than one real `evaluatePolicy` per profile in flight,
+    /// and a same-profile follower never waits any longer than the one
+    /// real check takes (bounded by [`crate::presence::PRESENCE_TIMEOUT`]).
+    ///
+    /// A leader for a *different* profile never queues behind another
+    /// profile's in-flight check: `presence_lock` is only ever
+    /// `try_lock`ed, never blockingly `lock`ed, so a leader that loses the
+    /// race fails fast with [`PresenceError::Busy`] instead of waiting an
+    /// unbounded amount of time (which could exceed `client.py`'s own
+    /// recv timeout for `unlock` and be reported as an unreachable agent -
+    /// see PR review on #343's fix) - the only bound this cache ever
+    /// enforces cross-profile is "at most one real prompt at a time",
+    /// never "wait your turn".
+    fn verify_presence_once(&self, profile: &str, reason: &str) -> Result<(), PresenceError> {
+        let share = {
+            let mut inflight = self.presence_inflight.lock().unwrap();
+            if let Some(existing) = inflight.get(profile) {
+                (Arc::clone(existing), false)
+            } else {
+                let share = Arc::new(PresenceCheckShare {
+                    result: Mutex::new(None),
+                    done: Condvar::new(),
+                });
+                inflight.insert(profile.to_string(), Arc::clone(&share));
+                (share, true)
+            }
+        };
+        let (share, is_leader) = share;
+
+        if !is_leader {
+            let mut result = share.result.lock().unwrap();
+            while result.is_none() {
+                result = share.done.wait(result).unwrap();
+            }
+            return result.clone().unwrap();
+        }
+
+        // `cleanup` finalizes `share` (and removes this profile's
+        // `presence_inflight` entry) exactly once, whether `verify` below
+        // returns normally or panics - see [`LeaderCleanup`]'s docs.
+        let mut cleanup = LeaderCleanup {
+            inflight: &self.presence_inflight,
+            profile,
+            share: Arc::clone(&share),
+            result: None,
+        };
+
+        // Only the leader ever calls the real verifier - and only if no
+        // other profile's leader is already running one; see this
+        // method's docs for why this is `try_lock`, not `lock`.
+        let result = match self.presence_lock.try_lock() {
+            Ok(_guard) => self.verifier.verify(reason),
+            Err(std::sync::TryLockError::WouldBlock) => Err(PresenceError::Busy),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                // A prior presence check panicked while holding this
+                // lock - `std::sync::Mutex` poisoning is otherwise
+                // permanent, which would wedge *every future* `unlock`
+                // behind `Busy` forever (see PR review on #343's fix).
+                // That panic says nothing about whether *this* check can
+                // succeed, so reclaim the guard (keeping it held for the
+                // duration of `verify`, same as the non-poisoned path) and
+                // proceed normally instead of treating poisoning as a
+                // lasting condition.
+                let _guard = poisoned.into_inner();
+                self.verifier.verify(reason)
+            }
+        };
+        cleanup.result = Some(result.clone());
+        result
     }
 }
 
@@ -723,9 +723,34 @@ mod tests {
     #[test]
     fn a_slow_unlock_does_not_overwrite_a_secret_committed_by_a_newer_unlock() {
         use crate::presence::tests::GatedPresenceVerifier;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
-        let (verifier, release) = GatedPresenceVerifier::new();
+        /// Wraps `GatedPresenceVerifier` to signal, via `entered`, the
+        /// exact moment `verify` is entered - which only happens after
+        /// `unlock` has already recorded its generation (see
+        /// `SecretCache::unlock`). A fixed sleep here previously let
+        /// `fresh_unlock` start (and possibly record its generation)
+        /// before `slow_unlock` did, defeating the very ordering this
+        /// test exists to check (see PR #345 review).
+        struct SignalingVerifier {
+            inner: GatedPresenceVerifier,
+            entered: Arc<AtomicBool>,
+        }
+
+        impl PresenceVerifier for SignalingVerifier {
+            fn verify(&self, reason: &str) -> Result<(), PresenceError> {
+                self.entered.store(true, Ordering::SeqCst);
+                self.inner.verify(reason)
+            }
+        }
+
+        let entered = Arc::new(AtomicBool::new(false));
+        let (gated, release) = GatedPresenceVerifier::new();
+        let verifier = SignalingVerifier {
+            inner: gated,
+            entered: Arc::clone(&entered),
+        };
         let cache = Arc::new(SecretCache::with_verifier(
             Duration::from_secs(60),
             Box::new(verifier),
@@ -735,9 +760,14 @@ mod tests {
         let slow_unlock =
             thread::spawn(move || slow_cache.unlock("work", "unlock", b"stale".to_vec()));
 
-        // See the sibling test above for why this sleep is only
-        // best-effort, not a strict happens-before guarantee.
-        thread::sleep(Duration::from_millis(50));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !entered.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "the slow unlock's presence check never started"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
 
         // Also on its own thread, not the main one: a concurrent unlock
         // for the *same* profile now shares the one presence check already

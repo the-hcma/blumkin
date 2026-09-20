@@ -96,17 +96,6 @@ _SPAWN_TIMEOUT_SECONDS = 5.0
 _UNLOCK_TIMEOUT_SECONDS = 125.0
 
 
-def _response_timeout_seconds(request: dict[str, Any]) -> float:
-    """The recv budget for `request`'s reply - `unlock` alone needs the
-    long, presence-check-sized budget; every other command answers almost
-    immediately and should keep the short default so a genuinely wedged
-    agent is still detected quickly (see `AgentUnreachableError`'s docs).
-    """
-    if request.get("cmd") == "unlock":
-        return _UNLOCK_TIMEOUT_SECONDS
-    return _SPAWN_TIMEOUT_SECONDS
-
-
 def _call_once(request: dict[str, Any], *, spawn: bool) -> dict[str, Any]:
     sock_path = str(socket_path())
     try:
@@ -153,6 +142,17 @@ def _can_connect(sock_path: str) -> bool:
         return False
     finally:
         probe.close()
+
+
+def _response_timeout_seconds(request: dict[str, Any]) -> float:
+    """The recv budget for `request`'s reply - `unlock` alone needs the
+    long, presence-check-sized budget; every other command answers almost
+    immediately and should keep the short default so a genuinely wedged
+    agent is still detected quickly (see `AgentUnreachableError`'s docs).
+    """
+    if request.get("cmd") == "unlock":
+        return _UNLOCK_TIMEOUT_SECONDS
+    return _SPAWN_TIMEOUT_SECONDS
 
 
 def _send(sock_path: str, request: dict[str, Any]) -> dict[str, Any]:
