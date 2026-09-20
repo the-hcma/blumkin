@@ -552,9 +552,36 @@ mod tests {
     #[test]
     fn a_different_profiles_unlock_fails_fast_instead_of_queueing_behind_another() {
         use crate::presence::tests::GatedPresenceVerifier;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
         use std::sync::Arc;
 
-        let (verifier, release) = GatedPresenceVerifier::new();
+        /// Wraps `GatedPresenceVerifier` to also signal, via `entered`,
+        /// the exact moment `verify` is actually entered (and
+        /// `presence_lock` is therefore held) - a deterministic
+        /// happens-before instead of a fixed sleep, so "work" is
+        /// guaranteed to have already become leader before "home" tries
+        /// to unlock (see PR #345 review: a losing race would otherwise
+        /// make *this test* the one blocked on `GatedPresenceVerifier`'s
+        /// gate).
+        struct SignalingVerifier {
+            inner: GatedPresenceVerifier,
+            entered: Arc<AtomicBool>,
+        }
+
+        impl PresenceVerifier for SignalingVerifier {
+            fn verify(&self, reason: &str) -> Result<(), PresenceError> {
+                self.entered.store(true, Ordering::SeqCst);
+                self.inner.verify(reason)
+            }
+        }
+
+        let entered = Arc::new(AtomicBool::new(false));
+        let (gated, release) = GatedPresenceVerifier::new();
+        let verifier = SignalingVerifier {
+            inner: gated,
+            entered: Arc::clone(&entered),
+        };
         let cache = Arc::new(SecretCache::with_verifier(
             Duration::from_secs(60),
             Box::new(verifier),
@@ -564,21 +591,32 @@ mod tests {
         let work_unlock =
             thread::spawn(move || work_cache.unlock("work", "unlock", b"work-secret".to_vec()));
 
-        // Best-effort: give "work"'s leader time to actually enter
-        // `verify` (and block on the gate) before "home" tries to unlock
-        // too - see the sibling tests above for why this is only
-        // best-effort, not a strict happens-before guarantee.
-        thread::sleep(Duration::from_millis(50));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !entered.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "work's presence check never started"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
 
-        // A concurrent unlock for a *different* profile must not block
-        // waiting its turn - it fails fast with `Busy` instead (see
-        // `verify_presence_once`'s docs on why an unbounded cross-profile
-        // queue could exceed `client.py`'s own recv timeout for
-        // `unlock`).
-        assert_eq!(
-            cache.unlock("home", "unlock", b"home-secret".to_vec()),
-            Err(PresenceError::Busy)
-        );
+        // Also on its own thread, received with a bounded timeout rather
+        // than joined outright: a concurrent unlock for a *different*
+        // profile must not block waiting its turn - it fails fast with
+        // `Busy` instead (see `verify_presence_once`'s docs on why an
+        // unbounded cross-profile queue could exceed `client.py`'s own
+        // recv timeout for `unlock`) - and if that guarantee ever
+        // regressed, this reports a clean assertion failure rather than
+        // hanging the test (see PR #345 review).
+        let home_cache = Arc::clone(&cache);
+        let (home_tx, home_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = home_tx.send(home_cache.unlock("home", "unlock", b"home-secret".to_vec()));
+        });
+        let home_result = home_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a different profile's unlock must return quickly with Busy, not block");
+        assert_eq!(home_result, Err(PresenceError::Busy));
 
         release.send(()).unwrap();
         work_unlock.join().unwrap().unwrap();
