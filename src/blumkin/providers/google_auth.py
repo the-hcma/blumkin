@@ -228,6 +228,13 @@ def get_credentials(
         )
 
     creds = _run_interactive_consent(cfg)
+    # A fresh interactive consent may be a different Google account (or a
+    # re-grant after a revoked refresh token), so the previous agent-cached
+    # token must not keep being served for the rest of its TTL (PR #346
+    # review, mirroring auth.create_credential's Microsoft interactive
+    # branch). The silent-refresh save above (preserve_granted_scopes=True)
+    # deliberately skips this, since it is the same credential.
+    secret_store.invalidate_agent_cache(cfg)
     _save_credentials(cfg, creds)
     return creds
 
