@@ -18,7 +18,7 @@ use serde_json::Value;
 /// (e.g. still resident from before a `pipx upgrade`/`uv tool upgrade`
 /// replaced the binary), so it can wait for this agent to exit and spawn a
 /// fresh one.
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u64 = 2;
 
 /// Generous but bounded: every message here is a small control/status
 /// object today, and even once secret payloads flow over this protocol in a

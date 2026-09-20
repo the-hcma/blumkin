@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from blumkin import auth
-from blumkin.config import list_profiles, load_config
+from blumkin.config import DEFAULT_TOKEN_REVERIFY_AFTER, list_profiles, load_config
 from blumkin.providers import google_auth
 from blumkin.providers.kind import ProviderConfigError
 
@@ -30,6 +30,70 @@ def test_load_config_from_toml(tmp_path: Path, monkeypatch) -> None:
     assert cfg.token_cache_path == tmp_path / "profiles" / "default" / "msal_token_cache.json"
     assert cfg.wo1162425_scopes is False
     assert cfg.google_oauth_client_file is None
+
+
+def test_token_reverify_after_defaults_to_24_hours(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+
+    cfg = load_config()
+
+    assert cfg.token_reverify_after == DEFAULT_TOKEN_REVERIFY_AFTER
+
+
+@pytest.mark.parametrize(
+    ("raw", "seconds"),
+    [('"24h"', 24 * 60 * 60), ('"30m"', 30 * 60), ("0", None), ('"never"', None)],
+)
+def test_token_reverify_after_parses_supported_forms(
+    raw: str, seconds: int | None, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        f'[profiles.default]\nclient_id = "abc-123"\ntoken_reverify_after = {raw}\n'
+    )
+
+    cfg = load_config()
+
+    if seconds is None:
+        assert cfg.token_reverify_after is None
+    else:
+        assert cfg.token_reverify_after is not None
+        assert int(cfg.token_reverify_after.total_seconds()) == seconds
+
+
+def test_token_reverify_after_rejects_invalid_values(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc-123"\ntoken_reverify_after = "later"\n'
+    )
+
+    with pytest.raises(ProviderConfigError, match="invalid token_reverify_after"):
+        load_config()
+
+
+def test_token_reverify_after_rejects_values_over_one_week(tmp_path: Path, monkeypatch) -> None:
+    """The agent's idle-exit window only covers up to 1w (rust-agent/src/server.rs)."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc-123"\ntoken_reverify_after = "2w"\n'
+    )
+
+    with pytest.raises(ProviderConfigError, match="exceeds the maximum of 1w"):
+        load_config()
+
+
+def test_token_reverify_after_rejects_an_absurdly_large_amount_without_overflowing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A huge amount must raise `ProviderConfigError`, not a bare `OverflowError`."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc-123"\ntoken_reverify_after = "1000000000w"\n'
+    )
+
+    with pytest.raises(ProviderConfigError, match="exceeds the maximum of 1w"):
+        load_config()
 
 
 def test_credential_env_vars_do_not_override_toml(tmp_path: Path, monkeypatch) -> None:
@@ -314,6 +378,33 @@ def test_list_profiles_reports_auth_present_despite_an_invalid_provider(
     assert summaries["broken"]["auth_present"]["msal_token_cache"] is True
     assert summaries["broken"]["auth_present"]["auth_record"] is True
     assert "error" in summaries["broken"]
+
+
+def test_list_profiles_does_not_abort_on_an_invalid_token_reverify_after(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An invalid/over-cap `token_reverify_after` must not abort the whole listing.
+
+    `auth_present` is computed via a probe cfg built outside `list_profiles`'s
+    per-field try/except guards, so it must never parse `token_reverify_after`
+    itself (PR #346 review) - a bad value here would otherwise raise
+    `ProviderConfigError` while building the probe and hide every profile's
+    summary, not just this one's.
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.broken]\n"
+        'client_id = "xyz"\n'
+        'token_reverify_after = "2w"\n'  # exceeds the 1w cap
+        "\n"
+        "[profiles.fine]\n"
+        'client_id = "abc"\n'
+    )
+
+    summaries = {item["name"]: item for item in list_profiles()}
+
+    assert "error" in summaries["broken"]
+    assert summaries["fine"].get("error") is None
 
 
 def test_list_profiles_reports_malformed_tags_as_a_per_profile_error(

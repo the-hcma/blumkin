@@ -113,6 +113,7 @@ fn secure_zero(buf: &mut [u8]) {
 
 struct CachedEntry {
     secret: LockedSecret,
+    ttl: Duration,
     verified_at: Instant,
 }
 
@@ -207,7 +208,7 @@ impl Drop for LeaderCleanup<'_> {
 
 /// A presence-gated, TTL-bounded, per-profile secret cache.
 pub struct SecretCache {
-    ttl: Duration,
+    default_ttl: Duration,
     verifier: Box<dyn PresenceVerifier>,
     entries: Mutex<HashMap<String, CachedEntry>>,
     generations: Mutex<CacheGenerations>,
@@ -237,7 +238,7 @@ impl SecretCache {
 
     pub fn with_verifier(ttl: Duration, verifier: Box<dyn PresenceVerifier>) -> Self {
         Self {
-            ttl,
+            default_ttl: ttl,
             verifier,
             entries: Mutex::new(HashMap::new()),
             generations: Mutex::new(CacheGenerations::new()),
@@ -268,6 +269,7 @@ impl SecretCache {
         profile: &str,
         reason: &str,
         secret: Vec<u8>,
+        ttl: Option<Duration>,
     ) -> Result<(), PresenceError> {
         // Wrap `secret` before verifying, not after: `LockedSecret::new`
         // takes ownership immediately, so on a `verify` failure (denial,
@@ -279,6 +281,7 @@ impl SecretCache {
         let locked_secret = LockedSecret::new(secret);
         let generation = self.generations.lock().unwrap().begin(profile);
         self.verify_presence_once(profile, reason)?;
+        let ttl = ttl.unwrap_or(self.default_ttl);
         // `generations` is held across *both* the `is_current` check and
         // the `entries` insert below, not just the check - `lock`/
         // `lock_all` take this same lock before touching `entries`
@@ -297,6 +300,7 @@ impl SecretCache {
             profile.to_string(),
             CachedEntry {
                 secret: locked_secret,
+                ttl,
                 verified_at: Instant::now(),
             },
         );
@@ -322,7 +326,7 @@ impl SecretCache {
         let mut entries = self.entries.lock().unwrap();
         let expired: Vec<String> = entries
             .iter()
-            .filter(|(_, entry)| entry.verified_at.elapsed() > self.ttl)
+            .filter(|(_, entry)| entry.verified_at.elapsed() > entry.ttl)
             .map(|(profile, _)| profile.clone())
             .collect();
         for profile in &expired {
@@ -337,7 +341,7 @@ impl SecretCache {
         let mut entries = self.entries.lock().unwrap();
         let is_expired = entries
             .get(profile)
-            .map(|entry| entry.verified_at.elapsed() > self.ttl)?;
+            .map(|entry| entry.verified_at.elapsed() > entry.ttl)?;
         if is_expired {
             entries.remove(profile);
             return None;
@@ -497,7 +501,7 @@ mod tests {
 
         let leader_cache = Arc::clone(&cache);
         let leader =
-            thread::spawn(move || leader_cache.unlock("work", "unlock", b"secret".to_vec()));
+            thread::spawn(move || leader_cache.unlock("work", "unlock", b"secret".to_vec(), None));
 
         // Best-effort: give the leader time to enter `verify` (and block on
         // the gate) before the follower starts - see the sibling tests
@@ -505,8 +509,9 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
 
         let follower_cache = Arc::clone(&cache);
-        let follower =
-            thread::spawn(move || follower_cache.unlock("work", "unlock", b"secret".to_vec()));
+        let follower = thread::spawn(move || {
+            follower_cache.unlock("work", "unlock", b"secret".to_vec(), None)
+        });
 
         thread::sleep(Duration::from_millis(50));
         release.send(()).unwrap();
@@ -572,13 +577,14 @@ mod tests {
 
         let leader_cache = Arc::clone(&cache);
         let leader =
-            thread::spawn(move || leader_cache.unlock("work", "unlock", b"secret".to_vec()));
+            thread::spawn(move || leader_cache.unlock("work", "unlock", b"secret".to_vec(), None));
 
         thread::sleep(Duration::from_millis(50));
 
         let follower_cache = Arc::clone(&cache);
-        let follower =
-            thread::spawn(move || follower_cache.unlock("work", "unlock", b"secret".to_vec()));
+        let follower = thread::spawn(move || {
+            follower_cache.unlock("work", "unlock", b"secret".to_vec(), None)
+        });
 
         thread::sleep(Duration::from_millis(50));
         release.send(()).unwrap();
@@ -628,8 +634,9 @@ mod tests {
         ));
 
         let work_cache = Arc::clone(&cache);
-        let work_unlock =
-            thread::spawn(move || work_cache.unlock("work", "unlock", b"work-secret".to_vec()));
+        let work_unlock = thread::spawn(move || {
+            work_cache.unlock("work", "unlock", b"work-secret".to_vec(), None)
+        });
 
         let deadline = Instant::now() + Duration::from_secs(5);
         while !entered.load(Ordering::SeqCst) {
@@ -651,7 +658,8 @@ mod tests {
         let home_cache = Arc::clone(&cache);
         let (home_tx, home_rx) = mpsc::channel();
         thread::spawn(move || {
-            let _ = home_tx.send(home_cache.unlock("home", "unlock", b"home-secret".to_vec()));
+            let _ =
+                home_tx.send(home_cache.unlock("home", "unlock", b"home-secret".to_vec(), None));
         });
         let home_result = home_rx
             .recv_timeout(Duration::from_secs(5))
@@ -699,8 +707,9 @@ mod tests {
         ));
 
         let panicking_cache = Arc::clone(&cache);
-        let leader =
-            thread::spawn(move || panicking_cache.unlock("work", "unlock", b"first".to_vec()));
+        let leader = thread::spawn(move || {
+            panicking_cache.unlock("work", "unlock", b"first".to_vec(), None)
+        });
         assert!(
             leader.join().is_err(),
             "the leader's own panic should propagate to its own caller"
@@ -711,7 +720,7 @@ mod tests {
         // leave a same-profile follower waiting forever) nor be
         // permanently denied (a poisoned `presence_lock` would otherwise
         // fail every future unlock, for every profile, with `Busy`).
-        let result = cache.unlock("work", "unlock", b"second".to_vec());
+        let result = cache.unlock("work", "unlock", b"second".to_vec(), None);
         assert_eq!(result, Ok(()));
         assert_eq!(cache.get("work").as_deref(), Some(b"second".as_slice()));
     }
@@ -758,7 +767,7 @@ mod tests {
 
         let slow_cache = Arc::clone(&cache);
         let slow_unlock =
-            thread::spawn(move || slow_cache.unlock("work", "unlock", b"stale".to_vec()));
+            thread::spawn(move || slow_cache.unlock("work", "unlock", b"stale".to_vec(), None));
 
         let deadline = Instant::now() + Duration::from_secs(5);
         while !entered.load(Ordering::SeqCst) {
@@ -778,7 +787,7 @@ mod tests {
         // happens to finish first, decides which secret ultimately wins.
         let fresh_cache = Arc::clone(&cache);
         let fresh_unlock =
-            thread::spawn(move || fresh_cache.unlock("work", "unlock", b"fresh".to_vec()));
+            thread::spawn(move || fresh_cache.unlock("work", "unlock", b"fresh".to_vec(), None));
 
         thread::sleep(Duration::from_millis(50));
         release.send(()).unwrap();
@@ -806,7 +815,7 @@ mod tests {
 
         let slow_cache = Arc::clone(&cache);
         let slow_unlock =
-            thread::spawn(move || slow_cache.unlock("work", "unlock", b"stale".to_vec()));
+            thread::spawn(move || slow_cache.unlock("work", "unlock", b"stale".to_vec(), None));
 
         // Best-effort: give the spawned unlock time to enter `verify` and
         // block on the gate before racing `lock` in ahead of it - there is
@@ -828,10 +837,10 @@ mod tests {
     fn cached_profiles_lists_only_still_live_profiles_sorted() {
         let cache = cache_with(Ok(()), Duration::from_secs(60));
         cache
-            .unlock("work", "unlock", b"work-secret".to_vec())
+            .unlock("work", "unlock", b"work-secret".to_vec(), None)
             .unwrap();
         cache
-            .unlock("aaa", "unlock", b"aaa-secret".to_vec())
+            .unlock("aaa", "unlock", b"aaa-secret".to_vec(), None)
             .unwrap();
 
         assert_eq!(cache.cached_profiles(), vec!["aaa", "work"]);
@@ -841,7 +850,7 @@ mod tests {
     fn cached_profiles_omits_and_wipes_an_expired_entry() {
         let cache = cache_with(Ok(()), Duration::from_millis(50));
         cache
-            .unlock("work", "unlock", b"work-secret".to_vec())
+            .unlock("work", "unlock", b"work-secret".to_vec(), None)
             .unwrap();
         thread::sleep(Duration::from_millis(120));
 
@@ -854,7 +863,9 @@ mod tests {
     #[test]
     fn get_wipes_and_returns_none_once_the_ttl_has_elapsed() {
         let cache = cache_with(Ok(()), Duration::from_millis(20));
-        cache.unlock("work", "unlock", b"s3cr3t".to_vec()).unwrap();
+        cache
+            .unlock("work", "unlock", b"s3cr3t".to_vec(), None)
+            .unwrap();
         assert!(cache.is_cached("work"));
 
         thread::sleep(Duration::from_millis(60));
@@ -866,13 +877,31 @@ mod tests {
     }
 
     #[test]
+    fn get_uses_a_per_unlock_ttl_override_when_one_is_supplied() {
+        let cache = cache_with(Ok(()), Duration::from_secs(60));
+        cache
+            .unlock(
+                "work",
+                "unlock",
+                b"s3cr3t".to_vec(),
+                Some(Duration::from_millis(50)),
+            )
+            .unwrap();
+
+        thread::sleep(Duration::from_millis(120));
+
+        assert_eq!(cache.get("work").as_deref(), None);
+        assert!(!cache.is_cached("work"));
+    }
+
+    #[test]
     fn lock_all_wipes_every_profile() {
         let cache = cache_with(Ok(()), Duration::from_secs(60));
         cache
-            .unlock("work", "unlock", b"work-secret".to_vec())
+            .unlock("work", "unlock", b"work-secret".to_vec(), None)
             .unwrap();
         cache
-            .unlock("home", "unlock", b"home-secret".to_vec())
+            .unlock("home", "unlock", b"home-secret".to_vec(), None)
             .unwrap();
 
         cache.lock_all();
@@ -885,10 +914,10 @@ mod tests {
     fn lock_wipes_only_the_named_profile() {
         let cache = cache_with(Ok(()), Duration::from_secs(60));
         cache
-            .unlock("work", "unlock", b"work-secret".to_vec())
+            .unlock("work", "unlock", b"work-secret".to_vec(), None)
             .unwrap();
         cache
-            .unlock("home", "unlock", b"home-secret".to_vec())
+            .unlock("home", "unlock", b"home-secret".to_vec(), None)
             .unwrap();
 
         cache.lock("work");
@@ -907,7 +936,12 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        let result = cache.unlock("work", "unlock the work profile cache", b"s3cr3t".to_vec());
+        let result = cache.unlock(
+            "work",
+            "unlock the work profile cache",
+            b"s3cr3t".to_vec(),
+            None,
+        );
 
         assert!(result.is_err());
         assert_eq!(cache.get("work").as_deref(), None);
@@ -924,9 +958,11 @@ mod tests {
             Err(PresenceError::Denied("wrong password".to_string())),
         ]);
         let cache = SecretCache::with_verifier(Duration::from_secs(60), Box::new(verifier));
-        cache.unlock("work", "unlock", b"first".to_vec()).unwrap();
+        cache
+            .unlock("work", "unlock", b"first".to_vec(), None)
+            .unwrap();
 
-        let result = cache.unlock("work", "unlock", b"second".to_vec());
+        let result = cache.unlock("work", "unlock", b"second".to_vec(), None);
 
         assert!(result.is_err());
         assert_eq!(cache.get("work").as_deref(), Some(b"first".as_slice()));
@@ -938,7 +974,7 @@ mod tests {
         let cache = SecretCache::with_verifier(Duration::from_secs(60), Box::new(verifier.clone()));
 
         cache
-            .unlock("work", "unlock the work profile cache", b"x".to_vec())
+            .unlock("work", "unlock the work profile cache", b"x".to_vec(), None)
             .unwrap();
 
         assert_eq!(
@@ -957,13 +993,17 @@ mod tests {
         // sleep window (see PR #340 review: the original 200ms TTL / 120ms
         // sleeps left only an ~80ms margin).
         let cache = cache_with(Ok(()), Duration::from_secs(2));
-        cache.unlock("work", "unlock", b"first".to_vec()).unwrap();
+        cache
+            .unlock("work", "unlock", b"first".to_vec(), None)
+            .unwrap();
         thread::sleep(Duration::from_millis(1400));
 
         // Re-unlocking must reset the TTL clock, not just replace the
         // bytes - otherwise a profile re-verified just before its old TTL
         // would expire could still be wiped by the *original* deadline.
-        cache.unlock("work", "unlock", b"second".to_vec()).unwrap();
+        cache
+            .unlock("work", "unlock", b"second".to_vec(), None)
+            .unwrap();
         thread::sleep(Duration::from_millis(1400));
 
         assert_eq!(cache.get("work").as_deref(), Some(b"second".as_slice()));
@@ -974,7 +1014,12 @@ mod tests {
         let cache = cache_with(Ok(()), Duration::from_secs(60));
 
         cache
-            .unlock("work", "unlock the work profile cache", b"s3cr3t".to_vec())
+            .unlock(
+                "work",
+                "unlock the work profile cache",
+                b"s3cr3t".to_vec(),
+                None,
+            )
             .unwrap();
 
         assert_eq!(cache.get("work").as_deref(), Some(b"s3cr3t".as_slice()));

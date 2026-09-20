@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tomllib
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,7 @@ from blumkin.output import emit_warning
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
+DEFAULT_TOKEN_REVERIFY_AFTER = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +49,11 @@ class BlumkinConfig:
     # "file" force one and warn once if "keyring" is unusable. See
     # blumkin.secret_store.
     token_storage: str = "auto"
+    # How long a profile's agent-cached secret may be reused before the
+    # next read must re-verify local presence again. `None` disables the
+    # agent cache entirely for this profile (`token_reverify_after = 0` /
+    # `"never"` in config.toml).
+    token_reverify_after: timedelta | None = DEFAULT_TOKEN_REVERIFY_AFTER
 
     @property
     def auth_record_path(self) -> Path:
@@ -139,25 +147,30 @@ def list_profiles() -> list[dict[str, Any]]:
     """Return safe summaries of configured profiles (no secrets).
 
     Loading the provider, resolving tags, resolving the Google OAuth client
-    id, parsing preferences, and checking ``auth_present`` are five
-    independent ways a single profile's table can be malformed; each gets
-    its own try/except so a failure in one does not suppress the others -
-    a bad ``provider`` typo must not blank out an otherwise valid
-    ``auth_present``, and no single misconfigured profile aborts the whole
-    listing (issue #293). Each of these mirrors a validation
+    id, parsing preferences, parsing ``token_reverify_after``, and checking
+    ``auth_present`` are six independent ways a single profile's table can be
+    malformed; each gets its own try/except so a failure in one does not
+    suppress the others - a bad ``provider`` typo must not blank out an
+    otherwise valid ``auth_present``, and no single misconfigured profile
+    aborts the whole listing (issue #293). Each of these mirrors a validation
     ``load_config()`` itself performs per-profile table - google_oauth
-    client id resolution (``_client_id_from_google_oauth_file``) and
-    ``[profiles.<name>.preferences]`` parsing (``_preferences_config``) can
-    each raise ``ProviderConfigError`` too, and must be just as tolerated
-    here as ``provider``/``tags`` (issue #293 review). ``auth_present`` is
-    computed via ``_auth_present_probe_cfg`` rather than the full
+    client id resolution (``_client_id_from_google_oauth_file``),
+    ``[profiles.<name>.preferences]`` parsing (``_preferences_config``), and
+    ``token_reverify_after`` parsing (``_token_reverify_after``, which can
+    now also reject a value over the 1-week cap, PR #346 review) can each
+    raise ``ProviderConfigError`` too, and must be just as tolerated here as
+    ``provider``/``tags`` (issue #293 review). ``auth_present`` is computed
+    via ``_auth_present_probe_cfg`` rather than the full
     ``load_config(profile=name)`` used elsewhere, specifically so it stays
-    accurate even for a profile whose ``provider``/``tags`` are invalid -
-    the credential's on-disk location never depended on either being valid
-    (issue #293). ``load_config()`` itself is never called here - doing so
-    would reach ``_resolve_by_selector``, which scans *every* profile's
-    tags to detect name/tag collisions, reintroducing the very "one broken
-    profile hides every other profile" bug this function exists to avoid.
+    accurate even for a profile whose ``provider``/``tags``/
+    ``token_reverify_after`` are invalid - the credential's on-disk location
+    never depended on any of them being valid (issue #293); the probe cfg
+    always hardcodes ``token_reverify_after=None`` rather than parsing it
+    for that same reason. ``load_config()`` itself is never called here -
+    doing so would reach ``_resolve_by_selector``, which scans *every*
+    profile's tags to detect name/tag collisions, reintroducing the very
+    "one broken profile hides every other profile" bug this function exists
+    to avoid.
     """
     # Local import: blumkin.secret_store imports BlumkinConfig from this module,
     # so importing it at module level here would be circular.
@@ -202,6 +215,11 @@ def list_profiles() -> list[dict[str, Any]]:
 
         try:
             _preferences_config(table, _top_level_preferences(file_data), profile=name)
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
+        try:
+            _token_reverify_after(table)
         except ProviderConfigError as exc:
             errors.append(str(exc))
 
@@ -258,6 +276,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         provider=_provider_kind(table),
         tags=_tags_from_table(table),
         tenant_id=string_values.get("tenant_id", "").strip(),
+        token_reverify_after=_token_reverify_after(table),
         token_storage=_token_storage_preference(table),
         wo1162425_scopes=_wo1162425_scopes_enabled(table),
     )
@@ -334,7 +353,13 @@ def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]
     aborting the whole `list_profiles()` call) for a profile that is, in
     fact, still fully logged in (issue #293). Every field this probe cfg does
     not need is filled with a cheap, valid placeholder purely to satisfy the
-    dataclass's required arguments.
+    dataclass's required arguments. ``token_reverify_after`` is hardcoded to
+    ``None`` rather than parsed from ``table`` for the same reason: this
+    probe is built outside ``list_profiles()``'s per-field try/except
+    guards, so an invalid or over-the-cap value (``_token_reverify_after``
+    can raise ``ProviderConfigError``) would abort the whole listing instead
+    of just that one profile's summary - and the agent cache TTL is
+    irrelevant to a plain on-disk/keyring existence check anyway.
     """
     return BlumkinConfig(
         client_id="",
@@ -350,6 +375,7 @@ def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]
         provider=ProviderKind.MICROSOFT,
         tags=(),
         tenant_id="",
+        token_reverify_after=None,
         token_storage=_token_storage_preference(table),
         wo1162425_scopes=False,
     )
@@ -714,6 +740,78 @@ def _top_level_preferences(file_data: dict[str, Any]) -> dict[str, Any]:
             f"preferences must be a table in config.toml, got {type(raw).__name__}"
         )
     return raw
+
+
+_TOKEN_REVERIFY_AFTER_RE = re.compile(r"^(\d+)\s*([mhdw])$", re.IGNORECASE)
+
+#: The `blumkin-agent` daemon exits after this long with no requests (its own
+#: `IDLE_EXIT_SECONDS`, `rust-agent/src/server.rs`) so an abandoned agent never
+#: lingers forever - and that idle window is only kept comfortably above this
+#: cap, not above an arbitrary caller-chosen TTL. A `token_reverify_after`
+#: longer than the agent is guaranteed to stay alive for would let an
+#: unrelated idle-exit silently drop an still-in-TTL cached secret early
+#: (review finding on PR #346), so this is enforced here rather than only
+#: documented as a suggested maximum.
+_MAX_TOKEN_REVERIFY_AFTER = timedelta(weeks=1)
+
+
+def _token_reverify_after(file_data: dict[str, Any]) -> timedelta | None:
+    """Parse ``token_reverify_after``.
+
+    Accepts the same compact duration forms blumkin already uses elsewhere
+    (`30m`, `24h`, `7d`, `1w`; `1w` is the maximum - see
+    `_MAX_TOKEN_REVERIFY_AFTER`). `0`/`"never"` disable agent-mode for this
+    profile entirely.
+    """
+    raw = file_data.get("token_reverify_after")
+    if raw is None:
+        return DEFAULT_TOKEN_REVERIFY_AFTER
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        if raw == 0:
+            return None
+        raise ProviderConfigError(
+            "token_reverify_after must be a duration like 30m/24h, or 0/never to disable"
+        )
+    if not isinstance(raw, str):
+        raise ProviderConfigError(
+            "token_reverify_after must be a string like 30m/24h, or 0/never to disable"
+        )
+    text = raw.strip().lower()
+    if text in {"0", "never"}:
+        return None
+    match = _TOKEN_REVERIFY_AFTER_RE.fullmatch(text)
+    if match is None:
+        raise ProviderConfigError(
+            f"invalid token_reverify_after {raw!r}; use forms like 30m, 24h, 7d, 1w, or 0/never"
+        )
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if amount <= 0:
+        raise ProviderConfigError("token_reverify_after must be positive, or 0/never to disable")
+    try:
+        if unit == "w":
+            value = timedelta(weeks=amount)
+        elif unit == "d":
+            value = timedelta(days=amount)
+        elif unit == "h":
+            value = timedelta(hours=amount)
+        else:
+            value = timedelta(minutes=amount)
+    except OverflowError:
+        # An absurdly large amount (e.g. "1000000000w") would otherwise raise
+        # timedelta's own OverflowError before the cap check below runs,
+        # surfacing an unclassified traceback instead of the friendly
+        # ProviderConfigError every other invalid form gets.
+        raise ProviderConfigError(
+            f"token_reverify_after {raw!r} exceeds the maximum of 1w "
+            "(the agent's idle-exit window only covers up to that long)"
+        ) from None
+    if value > _MAX_TOKEN_REVERIFY_AFTER:
+        raise ProviderConfigError(
+            f"token_reverify_after {raw!r} exceeds the maximum of 1w "
+            "(the agent's idle-exit window only covers up to that long)"
+        )
+    return value
 
 
 def _token_storage_preference(file_data: dict[str, Any]) -> str:

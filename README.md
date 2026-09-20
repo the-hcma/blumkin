@@ -61,15 +61,16 @@ blumkin chat last --with "Sam Rivera" --n 3 --json
 makes sure that is on `PATH`.
 
 On macOS, the wheel also bundles a small compiled `blumkin-agent` daemon
-(issue #328 - an `ssh-agent`-style background process intended to make
-re-authentication happen roughly once a day instead of on every command,
-once the secret-caching layers land). This foundation layer only wires up
-the process lifecycle (spawn/status/lock); no secret material flows through
-it yet. It ships as a prebuilt universal2 binary; installing from PyPI
-needs no Rust toolchain. Building from a clone does (see "From a clone"
-below) - without one, or on non-macOS platforms, `blumkin` still works
-fully, just without that feature (`blumkin agent status` reports it as
-unavailable).
+(issue #328/#339 - an `ssh-agent`-style background process that can cache
+decrypted Microsoft/Google credentials behind a local presence check so
+re-verification happens roughly once per `token_reverify_after` window
+(default 24h) instead of on every command). The cache is best-effort and
+macOS-only: non-macOS platforms, `token_reverify_after = 0` / `"never"`,
+or an unavailable agent all fall back to the direct keychain/file backend.
+It ships as a prebuilt universal2 binary; installing from PyPI needs no
+Rust toolchain. Building from a clone does (see "From a clone" below) -
+without one, or on non-macOS platforms, `blumkin` still works fully, just
+without that feature (`blumkin agent status` reports it as unavailable).
 
 ### Upgrade
 
@@ -175,6 +176,8 @@ tenant_id = "<your-entra-tenant>"
 default_tz = "<IANA timezone, e.g. America/New_York>"
 provider = "microsoft"
 tags = ["@work", "work", "microsoft", "m365"]
+token_storage = "auto"         # auto | keyring | file
+token_reverify_after = "24h"   # 30m, 24h, 7d, 1w; 0 / "never" disables agent-mode
 
 [profiles.personal]
 provider = "google"
@@ -204,6 +207,10 @@ font_size = 13  # overrides just this key for this profile
 
 Set `tenant_id`, `default_tz`, and `provider` in the profile table (there are no
 org-specific code defaults). `provider` defaults to `microsoft` when omitted.
+`token_storage` defaults to `"auto"`. `token_reverify_after` defaults to
+`"24h"` and accepts the same compact duration forms blumkin already uses
+elsewhere (`30m`, `24h`, `7d`, `1w`); `0` or `"never"` disables agent-mode for
+that profile entirely.
 
 Interactive browser auth is public-client only (`client_id`; plus `tenant_id` for
 Microsoft). Do not set a client secret for these flows. Set `tenant_id` to your

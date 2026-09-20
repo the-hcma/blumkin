@@ -22,7 +22,10 @@ from typing import Any
 #: memory from before a `pipx upgrade` replaced the venv's code) so the
 #: client can ask it to shut down and spawn a fresh one - see the
 #: "Installation & upgrade" section of issue #328.
-PROTOCOL_VERSION = 1
+#: v2 (PR #346): `unlock` requests may carry a `ttl_seconds` override; a v1
+#: agent would silently ignore it and keep serving the default TTL, so the
+#: version is bumped to force a stale v1 agent to restart instead.
+PROTOCOL_VERSION = 2
 
 _ENCODING = "utf-8"
 #: Generous but bounded: every message here is a small control/status

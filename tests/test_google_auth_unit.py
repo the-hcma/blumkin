@@ -207,6 +207,27 @@ def test_interactive_consent_stops_after_second_partial_grant(tmp_path: Path) ->
     assert excinfo.value.missing == GOOGLE_SCOPES - excinfo.value.current
 
 
+def test_get_credentials_invalidates_the_agent_cache_after_a_fresh_interactive_consent(
+    tmp_path: Path,
+) -> None:
+    """A fresh interactive consent may be a different account (PR #346 review) - the
+    previous agent-cached token must not keep being served for the rest of its TTL."""
+    from blumkin import secret_store
+
+    cfg = _cfg(tmp_path)
+    fake_creds = MagicMock()
+
+    with (
+        patch.object(google_auth, "_run_interactive_consent", return_value=fake_creds),
+        patch.object(secret_store, "invalidate_agent_cache") as invalidate,
+        patch.object(google_auth, "_save_credentials") as save_credentials,
+    ):
+        google_auth.get_credentials(cfg, allow_interactive=True)
+
+    invalidate.assert_called_once_with(cfg)
+    save_credentials.assert_called_once_with(cfg, fake_creds)
+
+
 def test_status_dict_missing_scopes_empty_before_first_login(tmp_path: Path) -> None:
     payload = google_auth.status_dict(_cfg(tmp_path))
     assert payload["granted_scopes"] == []

@@ -211,7 +211,7 @@ def test_ensure_agent_running_spawns_a_real_agent_process() -> None:
     agent_client.ensure_agent_running()
     response = agent_client.call("ping", spawn=False)
     assert response["ok"] is True
-    assert response["protocol_version"] == 1
+    assert response["protocol_version"] == protocol.PROTOCOL_VERSION
     agent_client.call("shutdown")
 
 

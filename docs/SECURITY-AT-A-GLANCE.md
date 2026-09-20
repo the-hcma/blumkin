@@ -14,6 +14,7 @@ permissions, no multi-tenant anything.
 |------|----------|---------|
 | OAuth client id (public client) | `~/.config/blumkin/config.toml` (mode `0600`) | never |
 | Token cache + auth record / Google token | `~/.config/blumkin/profiles/<name>/` (file backend), or the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) when `token_storage` selects it - see below | never |
+| Optional in-memory re-verify cache | macOS `blumkin-agent` process only, for up to `token_reverify_after` per profile (default `24h`); an expired entry is lazily wiped on the next access, not on an active timer | never |
 | Google desktop-client JSON (holds `client_secret`) | operator-chosen path, mode `0600` | never |
 | The user's mail / calendar / chat content | fetched on demand, printed to stdout, not persisted | n/a |
 
@@ -68,6 +69,14 @@ data anywhere.
   tenant-side (or remove the app grant) if it leaks. See issue #287.
 - Silent refresh renews access tokens without a browser; deleting the cache
   (`blumkin auth logout`) forces a fresh sign-in.
+- On macOS, a profile whose `token_reverify_after` is not `0`/`"never"`
+  may also use `blumkin-agent` as a short-lived, in-memory cache in front
+  of the real backend. The agent stores decrypted credentials only in RAM,
+  behind a local presence check, and wipes an entry once its TTL has
+  elapsed - lazily, on the next `get`/status check/`blumkin agent lock`/
+  process exit, rather than via an active expiry sweep the instant the TTL
+  ends. If the agent is unavailable, blumkin falls back to the direct
+  backend path above.
 
 ## Microsoft app registration hardening
 

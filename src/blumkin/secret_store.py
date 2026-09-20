@@ -38,8 +38,13 @@ mutating call - see ``_pending_mutations``) so a subsequent operation for the
 same account within this process waits for it before trusting a probe,
 narrowing the window where it could otherwise land invisibly and resurrect a
 credential just removed by a `delete()` moments earlier.
-Tracked in issue #287; a further macOS-only access-control layer (Touch
-ID / passphrase-cache style re-auth) is a separate, follow-up enhancement.
+Tracked in issue #287. On macOS, issue #339 layers a best-effort,
+Touch-ID-gated `blumkin-agent` cache in front of whichever backend this
+module resolves to, so repeated reads within one `token_reverify_after`
+window can reuse a decrypted secret from memory instead of re-reading the
+keychain/file backend directly. A non-macOS platform, a disabled
+`token_reverify_after`, or an unavailable agent all degrade back to the
+direct backend path here without raising.
 
 ``auth_record`` and ``token_cache`` are not each a keychain item of their
 own: every real MSAL flow (login, silent refresh, ``doctor``) reads or writes
@@ -73,9 +78,11 @@ import json
 import os
 import sys
 import threading
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
+from blumkin.agent import client as agent_client
 from blumkin.config import BlumkinConfig
 from blumkin.output import emit_warning
 
@@ -176,7 +183,17 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
     anyway meant a locked/unreachable keychain could fail, or multi-second
     stall, a logout that had already fully succeeded on the only backend
     such a profile actually uses (issue #287 review, round 10).
+
+    On macOS with agent-mode enabled (issue #339), this also drops this
+    profile's agent-cached entry *before* touching either backend below -
+    unconditionally, best-effort, regardless of what ``kind`` was asked
+    for - so a subsequent read never serves a stale, pre-delete secret back
+    from the in-memory cache for the rest of its TTL window (review finding
+    on PR #346: without this, `auth logout` followed immediately by a read
+    - or by `auth login` re-populating the backends - would silently keep
+    serving the old, just-deleted credential from the agent).
     """
+    _agent_lock_profile(cfg)
     path = _file_path(cfg, kind)
     if path.is_file():
         try:
@@ -299,6 +316,21 @@ def exists(cfg: BlumkinConfig, kind: SecretKind) -> bool:
     return _file_path(cfg, kind).is_file()
 
 
+def invalidate_agent_cache(cfg: BlumkinConfig) -> None:
+    """Best-effort drop of this profile's agent-cached entry, without touching either backend.
+
+    For a caller that is about to replace an on-disk/keyring credential
+    outright (a genuine re-``authenticate()``, not a routine silent-refresh
+    write) - see ``auth.create_credential``'s interactive branch - so the
+    live agent entry from the *previous* account/credential is not served
+    back to a different process for the rest of its TTL (PR #346 review).
+    ``delete()`` already does this as a side effect of removing a secret;
+    this exists for callers that need only the cache invalidation, with the
+    write to follow via the normal ``write_text`` priming path.
+    """
+    _agent_lock_profile(cfg)
+
+
 def ms_bundle_exists(cfg: BlumkinConfig) -> dict[str, bool]:
     """Presence of ``auth_record`` and ``token_cache`` from one keyring round trip.
 
@@ -349,32 +381,21 @@ def read_ms_bundle_and_backend(cfg: BlumkinConfig) -> tuple[dict[str, str], str]
     need the cache's own backend so a file-fallback refresh token is not
     masked by an ``auth_record`` that still lives in the keyring.
     """
-    result: dict[str, str] = {}
-    token_cache_backend = "file"
-    for kind in ("auth_record", "token_cache"):
-        path = _file_path(cfg, kind)
-        if path.is_file():
-            try:
-                result[kind] = path.read_text()
-            except OSError:
-                pass
-    if _backend_for(cfg) != "file":
-        keyring = _keyring_module()
-        if keyring is not None:
-            account = _keyring_account(cfg, "auth_record")  # same account as token_cache
-            try:
-                raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
-            except Exception:
-                raw = None
-            for kind in ("auth_record", "token_cache"):
-                value, kind_backend = _resolve_keyring_value(
-                    keyring, kind, _file_path(cfg, kind), account, raw
-                )
-                if value is not None:
-                    result[kind] = value
-                if kind == "token_cache":
-                    token_cache_backend = kind_backend
-    return result, token_cache_backend
+    if not _agent_enabled(cfg):
+        return _read_ms_bundle_and_backend_direct(cfg)
+    payload, cache_miss = _agent_get_cached_payload(cfg)
+    cached = _agent_ms_bundle_from_payload(payload)
+    if cached is not None:
+        return cached
+    cache_miss = cache_miss or payload is not None
+    bundle, backend = _read_ms_bundle_and_backend_direct(cfg)
+    if cache_miss and bundle:
+        _agent_unlock_payload(
+            cfg,
+            _ms_agent_payload(bundle, backend),
+            reason=_agent_reason(cfg, None),
+        )
+    return bundle, backend
 
 
 def read_text(cfg: BlumkinConfig, kind: SecretKind) -> str | None:
@@ -393,24 +414,31 @@ def read_text_and_backend(cfg: BlumkinConfig, kind: SecretKind) -> tuple[str | N
     read the value, since every branch below already knows which backend it
     is about to return from.
     """
-    path = _file_path(cfg, kind)
-    if _backend_for(cfg) == "file":
-        if not path.is_file():
-            return None, "file"
-        try:
-            return path.read_text(), "file"
-        except OSError:
-            return None, "file"
-    keyring = _keyring_module()
-    if keyring is None:
-        # _backend_for only returns "keyring" when a real backend is usable.
-        return None, "file"
-    account = _keyring_account(cfg, kind)
-    try:
-        raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
-    except Exception:
-        raw = None
-    return _resolve_keyring_value(keyring, kind, path, account, raw)
+    if not _agent_enabled(cfg):
+        return _read_text_and_backend_direct(cfg, kind)
+    payload, cache_miss = _agent_get_cached_payload(cfg)
+    cached = _agent_value_from_payload(kind, payload)
+    if cached is not None:
+        return cached
+    cache_miss = cache_miss or payload is not None
+    if kind in _BUNDLED_KINDS:
+        bundle, backend = _read_ms_bundle_and_backend_direct(cfg)
+        value = bundle.get(kind)
+        if cache_miss and bundle:
+            _agent_unlock_payload(
+                cfg,
+                _ms_agent_payload(bundle, backend),
+                reason=_agent_reason(cfg, None),
+            )
+        return value, backend
+    value, backend = _read_text_and_backend_direct(cfg, kind)
+    if cache_miss and value is not None:
+        _agent_unlock_payload(
+            cfg,
+            _single_secret_agent_payload(kind, value, backend),
+            reason=_agent_reason(cfg, kind),
+        )
+    return value, backend
 
 
 def _resolve_keyring_value(
@@ -498,7 +526,253 @@ def _resolve_keyring_value(
 
 
 def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
-    """Persist the secret for ``kind`` to the active backend for this profile."""
+    """Persist the secret for ``kind`` to the active backend for this profile.
+
+    A successful direct write best-effort primes a *missing* agent cache
+    entry for the same profile when agent-mode is enabled, so the next read
+    in this TTL window can stay in-memory. An already-live cache entry is
+    left alone rather than forcing a fresh Touch ID prompt on every silent
+    token refresh just to update bytes the current process already proved it
+    can still re-read from disk/keychain if needed.
+    """
+    _write_text_direct(cfg, kind, text)
+    if not _agent_enabled(cfg) or not _agent_cache_missing(cfg, kind):
+        return
+    try:
+        if kind in _BUNDLED_KINDS:
+            bundle, backend = _read_ms_bundle_and_backend_direct(cfg)
+            if _BUNDLED_KINDS.issubset(bundle):
+                _agent_unlock_payload(
+                    cfg,
+                    _ms_agent_payload(bundle, backend),
+                    reason=_agent_reason(cfg, None),
+                )
+            return
+        value, backend = _read_text_and_backend_direct(cfg, kind)
+        if value is not None:
+            _agent_unlock_payload(
+                cfg,
+                _single_secret_agent_payload(kind, value, backend),
+                reason=_agent_reason(cfg, kind),
+            )
+    except OSError:
+        # The write itself already succeeded above; agent priming is
+        # strictly best-effort and must never turn that success into a
+        # failure.
+        return
+
+
+_AGENT_BACKENDS = frozenset({"file", "keyring"})
+_AGENT_MS_SLOT = "ms_credentials"
+
+
+def _agent_cache_missing(cfg: BlumkinConfig, kind: SecretKind) -> bool:
+    payload, cache_miss = _agent_get_cached_payload(cfg, spawn=False)
+    if kind in _BUNDLED_KINDS:
+        return cache_miss or _agent_ms_bundle_from_payload(payload) is None
+    return cache_miss or _agent_value_from_payload(kind, payload) is None
+
+
+def _agent_enabled(cfg: BlumkinConfig) -> bool:
+    return sys.platform == "darwin" and cfg.token_reverify_after is not None
+
+
+def _agent_get_cached_payload(
+    cfg: BlumkinConfig, *, spawn: bool = True
+) -> tuple[dict[str, Any] | None, bool]:
+    try:
+        response = agent_client.call(
+            "get_secret",
+            extra={"profile": _agent_profile_key(cfg)},
+            spawn=spawn,
+        )
+    except agent_client.AgentUnavailableError:
+        return None, False
+    if response.get("ok") is not True:
+        return None, response.get("error") == "not_cached"
+    secret = response.get("secret")
+    if not isinstance(secret, str):
+        return None, True
+    try:
+        payload = json.loads(secret)
+    except json.JSONDecodeError:
+        return None, True
+    if not isinstance(payload, dict):
+        return None, True
+    return payload, False
+
+
+def _agent_lock_profile(cfg: BlumkinConfig) -> None:
+    """Best-effort wipes this profile's agent-cached entry, if any.
+
+    Never spawns the agent just to drop a cache entry it doesn't have -
+    `spawn=False` makes this a no-op (not an error) when the agent is not
+    already running.
+    """
+    if not _agent_enabled(cfg):
+        return
+    try:
+        agent_client.call("lock", extra={"profile": _agent_profile_key(cfg)}, spawn=False)
+    except agent_client.AgentUnavailableError:
+        return
+
+
+def _agent_ms_bundle_from_payload(
+    payload: dict[str, Any] | None,
+) -> tuple[dict[str, str], str] | None:
+    """Reads a cached MS bundle, requiring every bundled kind to be present.
+
+    The two bundled kinds are always primed together, from one
+    ``_read_ms_bundle_and_backend_direct`` snapshot - but `auth_record` and
+    `token_cache` are still written one at a time (see `auth.create_credential`),
+    so a cache entry primed between those two writes would otherwise cache
+    (and keep serving) a bundle missing the kind not yet written. Treating
+    that as "not cached" here, rather than a hit with a missing key, forces
+    a fresh direct read - and a re-prime with the now-complete bundle -
+    instead of a caller silently getting `None` for a kind that has since
+    been written to disk/keychain (review finding on PR #346).
+    """
+    if payload is None or payload.get("slot") != _AGENT_MS_SLOT:
+        return None
+    backend = payload.get("backend")
+    values = payload.get("values")
+    if backend not in _AGENT_BACKENDS or not isinstance(values, dict):
+        return None
+    bundle = {
+        kind: value
+        for kind, value in values.items()
+        if kind in _BUNDLED_KINDS and isinstance(value, str)
+    }
+    if not _BUNDLED_KINDS.issubset(bundle):
+        return None
+    return bundle, backend
+
+
+def _agent_profile_key(cfg: BlumkinConfig) -> str:
+    """Scopes the agent cache key to this profile *and* its config dir.
+
+    The agent's socket is per-uid (`rust-agent/src/paths.rs::socket_path`),
+    so it is shared across every `BLUMKIN_CONFIG_DIR` a user runs - unlike
+    the file/keyring backends this cache fronts, which are already
+    namespaced by the resolved config dir (see `_keyring_account`). Without
+    this, two config dirs with a same-named profile (e.g. a sandbox/CI
+    tenant vs. the primary one) would collide on one cached entry and one
+    could read the other's decrypted credentials (review finding on
+    PR #346). The digest is truncated only to keep `blumkin agent status`'s
+    `cached_profiles` listing short - it is not a security boundary itself,
+    just a stable, human-scale collision-avoidance prefix.
+    """
+    digest = sha256(str(cfg.config_dir.resolve()).encode()).hexdigest()[:16]
+    return f"{digest}:{cfg.profile}"
+
+
+def _agent_reason(cfg: BlumkinConfig, kind: SecretKind | None) -> str:
+    if kind is None:
+        subject = "your Microsoft credentials"
+    elif kind == "google_token":
+        subject = "your Google credentials"
+    else:
+        subject = "your Microsoft credentials"
+    return f"Verify local presence so blumkin can cache {subject} for profile {cfg.profile!r}"
+
+
+def _agent_unlock_payload(cfg: BlumkinConfig, payload: dict[str, Any], *, reason: str) -> None:
+    ttl = cfg.token_reverify_after
+    if ttl is None:
+        return
+    try:
+        agent_client.call(
+            "unlock",
+            extra={
+                "profile": _agent_profile_key(cfg),
+                "reason": reason,
+                "secret": json.dumps(payload, separators=(",", ":")),
+                "ttl_seconds": max(1, int(ttl.total_seconds())),
+            },
+        )
+    except agent_client.AgentUnavailableError:
+        return
+
+
+def _agent_value_from_payload(
+    kind: SecretKind, payload: dict[str, Any] | None
+) -> tuple[str | None, str] | None:
+    if kind in _BUNDLED_KINDS:
+        cached = _agent_ms_bundle_from_payload(payload)
+        if cached is None:
+            return None
+        bundle, backend = cached
+        return bundle.get(kind), backend
+    if payload is None or payload.get("slot") != kind:
+        return None
+    backend = payload.get("backend")
+    values = payload.get("values")
+    if backend not in _AGENT_BACKENDS or not isinstance(values, dict):
+        return None
+    value = values.get(kind)
+    return (value, backend) if isinstance(value, str) else None
+
+
+def _ms_agent_payload(values: dict[str, str], backend: str) -> dict[str, Any]:
+    return {"backend": backend, "slot": _AGENT_MS_SLOT, "values": values}
+
+
+def _read_ms_bundle_and_backend_direct(cfg: BlumkinConfig) -> tuple[dict[str, str], str]:
+    result: dict[str, str] = {}
+    token_cache_backend = "file"
+    for kind in ("auth_record", "token_cache"):
+        path = _file_path(cfg, kind)
+        if path.is_file():
+            try:
+                result[kind] = path.read_text()
+            except OSError:
+                pass
+    if _backend_for(cfg) != "file":
+        keyring = _keyring_module()
+        if keyring is not None:
+            account = _keyring_account(cfg, "auth_record")  # same account as token_cache
+            try:
+                raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
+            except Exception:
+                raw = None
+            for kind in ("auth_record", "token_cache"):
+                value, kind_backend = _resolve_keyring_value(
+                    keyring, kind, _file_path(cfg, kind), account, raw
+                )
+                if value is not None:
+                    result[kind] = value
+                if kind == "token_cache":
+                    token_cache_backend = kind_backend
+    return result, token_cache_backend
+
+
+def _read_text_and_backend_direct(cfg: BlumkinConfig, kind: SecretKind) -> tuple[str | None, str]:
+    path = _file_path(cfg, kind)
+    if _backend_for(cfg) == "file":
+        if not path.is_file():
+            return None, "file"
+        try:
+            return path.read_text(), "file"
+        except OSError:
+            return None, "file"
+    keyring = _keyring_module()
+    if keyring is None:
+        # _backend_for only returns "keyring" when a real backend is usable.
+        return None, "file"
+    account = _keyring_account(cfg, kind)
+    try:
+        raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
+    except Exception:
+        raw = None
+    return _resolve_keyring_value(keyring, kind, path, account, raw)
+
+
+def _single_secret_agent_payload(kind: SecretKind, value: str, backend: str) -> dict[str, Any]:
+    return {"backend": backend, "slot": kind, "values": {kind: value}}
+
+
+def _write_text_direct(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
+    """Persist the secret for ``kind`` to the configured backend only."""
     path = _file_path(cfg, kind)
     # Populated only when an "auto" keyring write failed and a keyring
     # cleanup of a possibly-stale entry still needs attempting *after* the
