@@ -56,9 +56,9 @@ dev = [
     "keyring>=25.7.0",
     "openpyxl>=3.1.5",
     "pdfplumber>=0.11.10",
-    "pyright>=1.1.413",
+    "pyright>=1.1.414",
     "pytest>=9.1.1",
-    "ruff>=0.16.6",
+    "ruff>=0.16.7",
 ]
 # `keychain` and `mcp` are kept as no-op aliases for anyone still typing
 # `pipx install 'blumkin[keychain]'` / `'blumkin[mcp]'` from older docs/scripts:
@@ -115,9 +115,9 @@ package = true
 dev = [
     "openpyxl>=3.1.5",
     "pdfplumber>=0.11.10",
-    "pyright>=1.1.413",
+    "pyright>=1.1.414",
     "pytest>=9.1.1",
-    "ruff>=0.16.6",
+    "ruff>=0.16.7",
     "mcp>=2.2.0",
     "keyring>=25.7.0",
     "hatchling>=1.32.0",
