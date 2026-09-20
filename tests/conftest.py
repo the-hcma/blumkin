@@ -35,6 +35,29 @@ def _force_file_secret_backend(
 
 
 @pytest.fixture(autouse=True)
+def _disable_agent_secret_cache(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never let the hermetic test suite spawn the real `blumkin-agent` (issue #339).
+
+    `_agent_enabled` is true by default on macOS (`token_reverify_after`
+    defaults to 24h, not `None`), so any test that exercises `read_text` /
+    `read_text_and_backend` / `read_ms_bundle_and_backend` would otherwise
+    spawn the real, compiled agent binary and trigger a real Touch ID/device
+    password prompt - the exact "agent keeps asking for authentication"
+    disruption from issue #343, just via a different code path. Tests that
+    specifically exercise the secret_store<->agent wiring patch
+    `secret_store._agent_enabled` back themselves; `test_agent_client_server_unit.py`
+    talks to `blumkin.agent.client` directly and is unaffected by this.
+    """
+    if request.node.get_closest_marker("live") is not None:
+        return
+    from blumkin import secret_store
+
+    monkeypatch.setattr(secret_store, "_agent_enabled", lambda cfg: False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_blumkin_config(
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,

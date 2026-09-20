@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tomllib
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,7 @@ from blumkin.output import emit_warning
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
+DEFAULT_TOKEN_REVERIFY_AFTER = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +49,11 @@ class BlumkinConfig:
     # "file" force one and warn once if "keyring" is unusable. See
     # blumkin.secret_store.
     token_storage: str = "auto"
+    # How long a profile's agent-cached secret may be reused before the
+    # next read must re-verify local presence again. `None` disables the
+    # agent cache entirely for this profile (`token_reverify_after = 0` /
+    # `"never"` in config.toml).
+    token_reverify_after: timedelta | None = DEFAULT_TOKEN_REVERIFY_AFTER
 
     @property
     def auth_record_path(self) -> Path:
@@ -258,6 +266,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         provider=_provider_kind(table),
         tags=_tags_from_table(table),
         tenant_id=string_values.get("tenant_id", "").strip(),
+        token_reverify_after=_token_reverify_after(table),
         token_storage=_token_storage_preference(table),
         wo1162425_scopes=_wo1162425_scopes_enabled(table),
     )
@@ -350,6 +359,7 @@ def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]
         provider=ProviderKind.MICROSOFT,
         tags=(),
         tenant_id="",
+        token_reverify_after=_token_reverify_after(table),
         token_storage=_token_storage_preference(table),
         wo1162425_scopes=False,
     )
@@ -714,6 +724,50 @@ def _top_level_preferences(file_data: dict[str, Any]) -> dict[str, Any]:
             f"preferences must be a table in config.toml, got {type(raw).__name__}"
         )
     return raw
+
+
+_TOKEN_REVERIFY_AFTER_RE = re.compile(r"^(\d+)\s*([mhdw])$", re.IGNORECASE)
+
+
+def _token_reverify_after(file_data: dict[str, Any]) -> timedelta | None:
+    """Parse ``token_reverify_after``.
+
+    Accepts the same compact duration forms blumkin already uses elsewhere
+    (`30m`, `24h`, `7d`, `1w`). `0`/`"never"` disable agent-mode for this
+    profile entirely.
+    """
+    raw = file_data.get("token_reverify_after")
+    if raw is None:
+        return DEFAULT_TOKEN_REVERIFY_AFTER
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        if raw == 0:
+            return None
+        raise ProviderConfigError(
+            "token_reverify_after must be a duration like 30m/24h, or 0/never to disable"
+        )
+    if not isinstance(raw, str):
+        raise ProviderConfigError(
+            "token_reverify_after must be a string like 30m/24h, or 0/never to disable"
+        )
+    text = raw.strip().lower()
+    if text in {"0", "never"}:
+        return None
+    match = _TOKEN_REVERIFY_AFTER_RE.fullmatch(text)
+    if match is None:
+        raise ProviderConfigError(
+            f"invalid token_reverify_after {raw!r}; use forms like 30m, 24h, 7d, 1w, or 0/never"
+        )
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if amount <= 0:
+        raise ProviderConfigError("token_reverify_after must be positive, or 0/never to disable")
+    if unit == "w":
+        return timedelta(weeks=amount)
+    if unit == "d":
+        return timedelta(days=amount)
+    if unit == "h":
+        return timedelta(hours=amount)
+    return timedelta(minutes=amount)
 
 
 def _token_storage_preference(file_data: dict[str, Any]) -> str:

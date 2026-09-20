@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from blumkin import auth
-from blumkin.config import list_profiles, load_config
+from blumkin.config import DEFAULT_TOKEN_REVERIFY_AFTER, list_profiles, load_config
 from blumkin.providers import google_auth
 from blumkin.providers.kind import ProviderConfigError
 
@@ -30,6 +30,46 @@ def test_load_config_from_toml(tmp_path: Path, monkeypatch) -> None:
     assert cfg.token_cache_path == tmp_path / "profiles" / "default" / "msal_token_cache.json"
     assert cfg.wo1162425_scopes is False
     assert cfg.google_oauth_client_file is None
+
+
+def test_token_reverify_after_defaults_to_24_hours(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+
+    cfg = load_config()
+
+    assert cfg.token_reverify_after == DEFAULT_TOKEN_REVERIFY_AFTER
+
+
+@pytest.mark.parametrize(
+    ("raw", "seconds"),
+    [('"24h"', 24 * 60 * 60), ('"30m"', 30 * 60), ("0", None), ('"never"', None)],
+)
+def test_token_reverify_after_parses_supported_forms(
+    raw: str, seconds: int | None, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        f'[profiles.default]\nclient_id = "abc-123"\ntoken_reverify_after = {raw}\n'
+    )
+
+    cfg = load_config()
+
+    if seconds is None:
+        assert cfg.token_reverify_after is None
+    else:
+        assert cfg.token_reverify_after is not None
+        assert int(cfg.token_reverify_after.total_seconds()) == seconds
+
+
+def test_token_reverify_after_rejects_invalid_values(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc-123"\ntoken_reverify_after = "later"\n'
+    )
+
+    with pytest.raises(ProviderConfigError, match="invalid token_reverify_after"):
+        load_config()
 
 
 def test_credential_env_vars_do_not_override_toml(tmp_path: Path, monkeypatch) -> None:

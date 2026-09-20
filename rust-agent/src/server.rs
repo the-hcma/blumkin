@@ -43,8 +43,9 @@ use crate::{paths, version};
 /// The TTL a freshly cached secret is held for before `get_secret` treats
 /// it as gone and `unlock` must re-run the presence check. Matches issue
 /// #339's stated default (24h); a later layer (PR3) makes this
-/// configurable via the `token_reverify_after` config knob - until then,
-/// every profile shares this one hardcoded default.
+/// configurable via the `token_reverify_after` config knob - individual
+/// `unlock` requests may override it, but profiles that do not send an
+/// override still use this default.
 const DEFAULT_SECRET_TTL: Duration = Duration::from_secs(60 * 60 * 24);
 
 /// How long the agent runs with no requests before exiting on its own, so
@@ -365,7 +366,11 @@ fn handle_unlock(request: &Value, cache: &SecretCache) -> Value {
         Some(secret) => secret,
         None => return invalid_request("unlock requires a \"secret\" string"),
     };
-    match cache.unlock(profile, reason, secret.as_bytes().to_vec()) {
+    let ttl = match optional_ttl_seconds_field(request) {
+        Ok(ttl) => ttl,
+        Err(response) => return response,
+    };
+    match cache.unlock(profile, reason, secret.as_bytes().to_vec(), ttl) {
         Ok(()) => json!({"ok": true}),
         Err(err) => presence_error_response(err),
     }
@@ -383,6 +388,18 @@ fn non_empty_str_field<'a>(request: &'a Value, field: &str) -> Result<&'a str, V
         _ => Err(invalid_request(&format!(
             "{field} must be present and a non-empty string"
         ))),
+    }
+}
+
+fn optional_ttl_seconds_field(request: &Value) -> Result<Option<Duration>, Value> {
+    match request.get("ttl_seconds") {
+        None => Ok(None),
+        Some(value) => match value.as_u64() {
+            Some(seconds) if seconds > 0 => Ok(Some(Duration::from_secs(seconds))),
+            _ => Err(invalid_request(
+                "ttl_seconds must be absent or a positive integer number of seconds",
+            )),
+        },
     }
 }
 
@@ -442,7 +459,9 @@ mod tests {
             Duration::from_secs(60),
             Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
         );
-        cache.unlock("work", "unlock", b"s3cr3t".to_vec()).unwrap();
+        cache
+            .unlock("work", "unlock", b"s3cr3t".to_vec(), None)
+            .unwrap();
         let request = json!({"cmd": "lock", "protocol_version": protocol::PROTOCOL_VERSION});
 
         let response = dispatch(&request, &shutdown_requested, &cache);
@@ -459,8 +478,12 @@ mod tests {
             Duration::from_secs(60),
             Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
         );
-        cache.unlock("work", "unlock", b"work".to_vec()).unwrap();
-        cache.unlock("home", "unlock", b"home".to_vec()).unwrap();
+        cache
+            .unlock("work", "unlock", b"work".to_vec(), None)
+            .unwrap();
+        cache
+            .unlock("home", "unlock", b"home".to_vec(), None)
+            .unwrap();
         let request = json!({
             "cmd": "lock",
             "protocol_version": protocol::PROTOCOL_VERSION,
@@ -483,7 +506,9 @@ mod tests {
             Duration::from_secs(60),
             Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
         );
-        cache.unlock("work", "unlock", b"work".to_vec()).unwrap();
+        cache
+            .unlock("work", "unlock", b"work".to_vec(), None)
+            .unwrap();
         let request = json!({
             "cmd": "lock",
             "protocol_version": protocol::PROTOCOL_VERSION,
@@ -551,7 +576,9 @@ mod tests {
             Duration::from_secs(60),
             Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
         );
-        cache.unlock("work", "unlock", b"s3cr3t".to_vec()).unwrap();
+        cache
+            .unlock("work", "unlock", b"s3cr3t".to_vec(), None)
+            .unwrap();
         let request = json!({"cmd": "status", "protocol_version": protocol::PROTOCOL_VERSION});
 
         let response = dispatch(&request, &shutdown_requested, &cache);
@@ -572,6 +599,28 @@ mod tests {
             "protocol_version": protocol::PROTOCOL_VERSION,
             "reason": "unlock",
             "secret": "s3cr3t",
+        });
+
+        let response = dispatch(&request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "invalid_request");
+    }
+
+    #[test]
+    fn dispatch_unlock_rejects_a_non_positive_ttl_override() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        let request = json!({
+            "cmd": "unlock",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "work",
+            "reason": "unlock",
+            "secret": "s3cr3t",
+            "ttl_seconds": 0,
         });
 
         let response = dispatch(&request, &shutdown_requested, &cache);
@@ -668,6 +717,38 @@ mod tests {
 
         assert_eq!(get_response["ok"], true);
         assert_eq!(get_response["secret"], "s3cr3t");
+    }
+
+    #[test]
+    fn dispatch_unlock_honors_a_ttl_override() {
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        let unlock_request = json!({
+            "cmd": "unlock",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "work",
+            "reason": "unlock the work profile cache",
+            "secret": "s3cr3t",
+            "ttl_seconds": 1,
+        });
+
+        let unlock_response = dispatch(&unlock_request, &shutdown_requested, &cache);
+        assert_eq!(unlock_response["ok"], true);
+
+        thread::sleep(Duration::from_millis(1200));
+
+        let get_request = json!({
+            "cmd": "get_secret",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "work",
+        });
+        let get_response = dispatch(&get_request, &shutdown_requested, &cache);
+
+        assert_eq!(get_response["ok"], false);
+        assert_eq!(get_response["error"], "not_cached");
     }
 
     #[test]

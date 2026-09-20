@@ -122,6 +122,10 @@ def _call_once(request: dict[str, Any], *, spawn: bool) -> dict[str, Any]:
     _wait_for_socket_ready(sock_path)
     try:
         return _send(sock_path, request)
+    except TimeoutError as exc:
+        raise AgentUnreachableError(
+            f"agent at {sock_path} accepted the connection but did not reply in time"
+        ) from exc
     except OSError as exc:
         raise AgentUnavailableError(
             f"spawned blumkin-agent but could not connect at {sock_path}: {exc}"
