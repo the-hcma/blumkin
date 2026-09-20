@@ -206,6 +206,25 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
             # `auth logout` as a bare, unclassified traceback instead of the
             # documented secret_write_failed error (issue #287 review).
             raise SecretWriteError(f"cannot delete {kind} file {path}: {exc}") from exc
+    _delete_keyring_entry(cfg, kind)
+
+
+def delete_keyring_entry(cfg: BlumkinConfig, kind: SecretKind) -> None:
+    """Remove just the keyring/Keychain copy of ``kind`` for ``cfg``'s profile,
+    leaving any plaintext file backend untouched.
+
+    Used by ``blumkin uninstall``'s keyring category (issue #344), which is
+    deliberately separate from wiping the on-disk config directory (its own
+    category): an operator who declines local-state deletion but confirms
+    keyring cleanup must not also lose plaintext secrets they explicitly
+    kept. ``delete()`` remains the one used by ``auth logout`` and removes
+    both backends.
+    """
+    _agent_lock_profile(cfg)
+    _delete_keyring_entry(cfg, kind)
+
+
+def _delete_keyring_entry(cfg: BlumkinConfig, kind: SecretKind) -> None:
     if _backend_for(cfg) == "file":
         return
     keyring = _keyring_module()

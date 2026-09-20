@@ -406,6 +406,60 @@ def _apply_file(plan: ClientPlan) -> str:
     return "added" if plan.action == "add" else "updated"
 
 
+def remove_entry(client: str, scope: Scope, cwd: Path) -> Literal["removed", "absent"]:
+    """Remove blumkin's entry for ``(client, scope)`` if present. Idempotent -
+    an already-absent entry is reported, not an error.
+
+    Mirrors ``apply_plan``'s two write paths in reverse: ``claude`` and
+    ``copilot`` (user scope) go through their own ``mcp remove`` command;
+    Cursor and any project-scope entry go through a direct JSON merge-out,
+    leaving every other server in that config file untouched. Raises
+    ``McpInstallError`` on failure, matching ``apply_plan``'s error contract.
+    """
+    if current_entry(client, scope, cwd) is None:
+        return "absent"
+    if _via(client, scope) == "cli":
+        remove = (
+            ["claude", "mcp", "remove", "blumkin", "-s", scope]
+            if client == "claude"
+            else ["copilot", "mcp", "remove", "blumkin"]
+        )
+        proc = _run(remove)
+        if proc.returncode != 0:
+            raise McpInstallError(
+                f"{_LABELS[client]}: could not remove the entry"
+                + (f" - {_last_line(proc)}" if _last_line(proc) else ""),
+                hint=f"Run `{' '.join(remove)}` to see the error.",
+            )
+        return "removed"
+    path = config_path(client, scope, cwd)
+    assert path is not None
+    if scope == "project":
+        _reject_symlinked_target(path)
+    target = path.resolve() if scope == "user" and path.is_symlink() else path
+    data = _read_config(path)
+    servers = data.get("mcpServers")
+    if isinstance(servers, dict) and "blumkin" in servers:
+        del servers["blumkin"]
+        body = json.dumps(data, indent=2) + "\n"
+        tmp = target.with_name(f".{target.name}.blumkin-{os.getpid()}")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(body, "utf-8")
+            if target.is_file():
+                shutil.copymode(target, tmp)
+            else:
+                tmp.chmod(0o600)
+            os.replace(tmp, target)
+        except OSError as exc:
+            tmp.unlink(missing_ok=True)
+            raise McpInstallError(
+                f"{_LABELS[client]}: could not write {target}: {exc}",
+                hint=f"Check that {target} is a regular file you own.",
+            ) from exc
+    return "removed"
+
+
 def apply_plan(plan: ClientPlan, *, binary: str, force: bool = False) -> str:
     """Carry out one :class:`ClientPlan`. Returns the outcome word.
 

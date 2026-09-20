@@ -1329,3 +1329,19 @@ def test_keyring_io_call_re_raises_the_backend_exception(monkeypatch: pytest.Mon
 
 def test_keyring_io_call_returns_the_backend_result(monkeypatch: pytest.MonkeyPatch) -> None:
     assert secret_store._call_keyring_with_timeout(lambda a, b: a + b, 1, 2) == 3
+
+
+def test_delete_keyring_entry_leaves_plaintext_file_untouched(tmp_path: Path, monkeypatch) -> None:
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    key = _account(cfg, "google_token")
+    fake.store[key] = "keyring-value"
+    cfg.google_token_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.google_token_path.write_text("file-value")
+
+    secret_store.delete_keyring_entry(cfg, "google_token")
+
+    assert cfg.google_token_path.read_text() == "file-value"
+    assert key not in fake.store
+    assert secret_store.read_text(cfg, "google_token") == "file-value"

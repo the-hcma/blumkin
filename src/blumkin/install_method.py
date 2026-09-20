@@ -148,6 +148,24 @@ def suggested_commands(install: Install) -> list[str]:
     return [shlex.join(step) for step in upgrade_steps(install)]
 
 
+def uninstall_steps(install: Install) -> list[list[str]]:
+    """argv that would uninstall the managed package itself - empty when
+    there is no package manager to hand off to (an unmanaged install, or a
+    bare source checkout with no `uv tool`/`pipx` entry).
+
+    Deliberately does not special-case editable installs the way
+    `upgrade_steps` does: `uv tool uninstall` / `pipx uninstall` remove an
+    editable install's shim/venv exactly the same as a normal one - the
+    checkout on disk is untouched either way (uninstalling the tool has
+    never meant deleting the operator's git clone).
+    """
+    if install.manager == "uv":
+        return [["uv", "tool", "uninstall", "blumkin"]]
+    if install.manager == "pipx":
+        return [["pipx", "uninstall", "blumkin"]]
+    return []
+
+
 def upgrade_steps(install: Install) -> list[list[str]]:
     """argv lists that would advance ``install`` - empty for a package upgrade.
 

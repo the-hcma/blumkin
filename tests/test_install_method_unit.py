@@ -431,3 +431,18 @@ def test_doctor_reports_method_and_warns_on_stale_metadata(tmp_path, monkeypatch
     assert payload["install"]["metadata_stale"] is True
     assert any("stale vs the checkout (0.6.0)" in w for w in payload["warnings"])
     assert any("uv tool install -e /co --force" in w for w in payload["warnings"])
+
+
+def test_uninstall_steps_cover_uv_pipx_and_unmanaged() -> None:
+    assert install_method.uninstall_steps(
+        Install(checkout=None, managed_path=Path("/x"), method=METHOD_UV_TOOL)
+    ) == [["uv", "tool", "uninstall", "blumkin"]]
+    assert install_method.uninstall_steps(
+        Install(checkout=None, managed_path=Path("/x"), method=METHOD_PIPX)
+    ) == [["pipx", "uninstall", "blumkin"]]
+    assert (
+        install_method.uninstall_steps(
+            Install(checkout=None, managed_path=Path("/x"), method=METHOD_UNMANAGED)
+        )
+        == []
+    )
