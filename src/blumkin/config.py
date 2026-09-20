@@ -728,12 +728,23 @@ def _top_level_preferences(file_data: dict[str, Any]) -> dict[str, Any]:
 
 _TOKEN_REVERIFY_AFTER_RE = re.compile(r"^(\d+)\s*([mhdw])$", re.IGNORECASE)
 
+#: The `blumkin-agent` daemon exits after this long with no requests (its own
+#: `IDLE_EXIT_SECONDS`, `rust-agent/src/server.rs`) so an abandoned agent never
+#: lingers forever - and that idle window is only kept comfortably above this
+#: cap, not above an arbitrary caller-chosen TTL. A `token_reverify_after`
+#: longer than the agent is guaranteed to stay alive for would let an
+#: unrelated idle-exit silently drop an still-in-TTL cached secret early
+#: (review finding on PR #346), so this is enforced here rather than only
+#: documented as a suggested maximum.
+_MAX_TOKEN_REVERIFY_AFTER = timedelta(weeks=1)
+
 
 def _token_reverify_after(file_data: dict[str, Any]) -> timedelta | None:
     """Parse ``token_reverify_after``.
 
     Accepts the same compact duration forms blumkin already uses elsewhere
-    (`30m`, `24h`, `7d`, `1w`). `0`/`"never"` disable agent-mode for this
+    (`30m`, `24h`, `7d`, `1w`; `1w` is the maximum - see
+    `_MAX_TOKEN_REVERIFY_AFTER`). `0`/`"never"` disable agent-mode for this
     profile entirely.
     """
     raw = file_data.get("token_reverify_after")
@@ -762,12 +773,19 @@ def _token_reverify_after(file_data: dict[str, Any]) -> timedelta | None:
     if amount <= 0:
         raise ProviderConfigError("token_reverify_after must be positive, or 0/never to disable")
     if unit == "w":
-        return timedelta(weeks=amount)
-    if unit == "d":
-        return timedelta(days=amount)
-    if unit == "h":
-        return timedelta(hours=amount)
-    return timedelta(minutes=amount)
+        value = timedelta(weeks=amount)
+    elif unit == "d":
+        value = timedelta(days=amount)
+    elif unit == "h":
+        value = timedelta(hours=amount)
+    else:
+        value = timedelta(minutes=amount)
+    if value > _MAX_TOKEN_REVERIFY_AFTER:
+        raise ProviderConfigError(
+            f"token_reverify_after {raw!r} exceeds the maximum of 1w "
+            "(the agent's idle-exit window only covers up to that long)"
+        )
+    return value
 
 
 def _token_storage_preference(file_data: dict[str, Any]) -> str:

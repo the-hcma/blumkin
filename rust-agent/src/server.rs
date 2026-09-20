@@ -50,9 +50,14 @@ const DEFAULT_SECRET_TTL: Duration = Duration::from_secs(60 * 60 * 24);
 
 /// How long the agent runs with no requests before exiting on its own, so
 /// an abandoned agent does not linger as a forgotten background process
-/// forever. Comfortably above `DEFAULT_SECRET_TTL` - an idle-exiting agent
-/// is never the reason a still-valid cached secret disappears early.
-const IDLE_EXIT_SECONDS: u64 = 60 * 60 * 26;
+/// forever. Comfortably above the largest TTL a profile can actually
+/// request - `blumkin.config._MAX_TOKEN_REVERIFY_AFTER` caps
+/// `token_reverify_after` (and therefore any `unlock`'s `ttl_seconds`) at
+/// one week, so an idle-exiting agent is never the reason a still-valid
+/// cached secret disappears early (review finding on PR #346: this was
+/// previously sized only against the 24h *default*, not the maximum a
+/// profile could configure).
+const IDLE_EXIT_SECONDS: u64 = 60 * 60 * 24 * 8;
 
 /// How often the accept loop wakes up to re-check the idle/shutdown
 /// conditions when nothing is connecting. Small enough that `lock`/idle

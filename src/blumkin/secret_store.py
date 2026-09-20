@@ -78,6 +78,7 @@ import json
 import os
 import sys
 import threading
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
@@ -182,7 +183,17 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
     anyway meant a locked/unreachable keychain could fail, or multi-second
     stall, a logout that had already fully succeeded on the only backend
     such a profile actually uses (issue #287 review, round 10).
+
+    On macOS with agent-mode enabled (issue #339), this also drops this
+    profile's agent-cached entry *before* touching either backend below -
+    unconditionally, best-effort, regardless of what ``kind`` was asked
+    for - so a subsequent read never serves a stale, pre-delete secret back
+    from the in-memory cache for the rest of its TTL window (review finding
+    on PR #346: without this, `auth logout` followed immediately by a read
+    - or by `auth login` re-populating the backends - would silently keep
+    serving the old, just-deleted credential from the agent).
     """
+    _agent_lock_profile(cfg)
     path = _file_path(cfg, kind)
     if path.is_file():
         try:
@@ -557,7 +568,7 @@ def _agent_get_cached_payload(
     try:
         response = agent_client.call(
             "get_secret",
-            extra={"profile": cfg.profile},
+            extra={"profile": _agent_profile_key(cfg)},
             spawn=spawn,
         )
     except agent_client.AgentUnavailableError:
@@ -576,9 +587,36 @@ def _agent_get_cached_payload(
     return payload, False
 
 
+def _agent_lock_profile(cfg: BlumkinConfig) -> None:
+    """Best-effort wipes this profile's agent-cached entry, if any.
+
+    Never spawns the agent just to drop a cache entry it doesn't have -
+    `spawn=False` makes this a no-op (not an error) when the agent is not
+    already running.
+    """
+    if not _agent_enabled(cfg):
+        return
+    try:
+        agent_client.call("lock", extra={"profile": _agent_profile_key(cfg)}, spawn=False)
+    except agent_client.AgentUnavailableError:
+        return
+
+
 def _agent_ms_bundle_from_payload(
     payload: dict[str, Any] | None,
 ) -> tuple[dict[str, str], str] | None:
+    """Reads a cached MS bundle, requiring every bundled kind to be present.
+
+    The two bundled kinds are always primed together, from one
+    ``_read_ms_bundle_and_backend_direct`` snapshot - but `auth_record` and
+    `token_cache` are still written one at a time (see `auth.create_credential`),
+    so a cache entry primed between those two writes would otherwise cache
+    (and keep serving) a bundle missing the kind not yet written. Treating
+    that as "not cached" here, rather than a hit with a missing key, forces
+    a fresh direct read - and a re-prime with the now-complete bundle -
+    instead of a caller silently getting `None` for a kind that has since
+    been written to disk/keychain (review finding on PR #346).
+    """
     if payload is None or payload.get("slot") != _AGENT_MS_SLOT:
         return None
     backend = payload.get("backend")
@@ -590,7 +628,27 @@ def _agent_ms_bundle_from_payload(
         for kind, value in values.items()
         if kind in _BUNDLED_KINDS and isinstance(value, str)
     }
+    if not _BUNDLED_KINDS.issubset(bundle):
+        return None
     return bundle, backend
+
+
+def _agent_profile_key(cfg: BlumkinConfig) -> str:
+    """Scopes the agent cache key to this profile *and* its config dir.
+
+    The agent's socket is per-uid (`rust-agent/src/paths.rs::socket_path`),
+    so it is shared across every `BLUMKIN_CONFIG_DIR` a user runs - unlike
+    the file/keyring backends this cache fronts, which are already
+    namespaced by the resolved config dir (see `_keyring_account`). Without
+    this, two config dirs with a same-named profile (e.g. a sandbox/CI
+    tenant vs. the primary one) would collide on one cached entry and one
+    could read the other's decrypted credentials (review finding on
+    PR #346). The digest is truncated only to keep `blumkin agent status`'s
+    `cached_profiles` listing short - it is not a security boundary itself,
+    just a stable, human-scale collision-avoidance prefix.
+    """
+    digest = sha256(str(cfg.config_dir.resolve()).encode()).hexdigest()[:16]
+    return f"{digest}:{cfg.profile}"
 
 
 def _agent_reason(cfg: BlumkinConfig, kind: SecretKind | None) -> str:
@@ -611,7 +669,7 @@ def _agent_unlock_payload(cfg: BlumkinConfig, payload: dict[str, Any], *, reason
         agent_client.call(
             "unlock",
             extra={
-                "profile": cfg.profile,
+                "profile": _agent_profile_key(cfg),
                 "reason": reason,
                 "secret": json.dumps(payload, separators=(",", ":")),
                 "ttl_seconds": max(1, int(ttl.total_seconds())),
