@@ -73,6 +73,13 @@ def test_a_non_unlock_command_still_times_out_at_the_short_default(
     """Only `unlock` gets the long budget - every other command still fails
     fast against a genuinely wedged agent (see `AgentUnreachableError`'s
     docs on why a long default everywhere would be its own regression).
+
+    Asserts on elapsed time, not just on *some* timeout firing: with the
+    peer parked well past both budgets, a regression that used the long
+    `_UNLOCK_TIMEOUT_SECONDS` budget for every command (not just `unlock`)
+    would still raise `AgentUnreachableError` eventually - it just wouldn't
+    do it quickly. Only measuring how long the short default actually took
+    tells the two apart (see PR #345 review).
     """
     monkeypatch.setattr(agent_client, "_SPAWN_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(agent_client, "_UNLOCK_TIMEOUT_SECONDS", 5.0)
@@ -80,12 +87,18 @@ def test_a_non_unlock_command_still_times_out_at_the_short_default(
     release = threading.Event()
 
     def _wait_then_never_reply(_conn: socket.socket) -> None:
-        release.wait(5)
+        release.wait(10)
 
     thread = _serve_once(sock_path, _wait_then_never_reply)
     try:
+        started = time.monotonic()
         with pytest.raises(agent_client.AgentUnreachableError, match="did not reply in time"):
             agent_client._call_once({"cmd": "ping"}, spawn=False)
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.0, (
+            f"a non-unlock command must fail fast on the short default, not the long "
+            f"unlock-only budget (took {elapsed:.2f}s)"
+        )
     finally:
         release.set()
         thread.join(timeout=5)
