@@ -179,6 +179,32 @@ struct PresenceCheckShare {
     done: Condvar,
 }
 
+/// Finalizes a leader's presence check exactly once - on a normal return
+/// *or* on an unwind - so a `verifier.verify` panic can never leave
+/// followers parked on [`PresenceCheckShare::done`] forever, nor its
+/// profile's `presence_inflight` entry orphaned (see PR review on #343's
+/// fix: without this, a single panicking check would wedge every future
+/// `unlock` for that profile). `result` is set just before this drops on
+/// the success path; if it is still `None` when dropped (the panic case),
+/// followers are woken with [`PresenceError::Busy`] instead - accurate
+/// enough (something *did* go wrong) without over-claiming a specific
+/// cause for a check that never got to finish.
+struct LeaderCleanup<'a> {
+    inflight: &'a Mutex<HashMap<String, Arc<PresenceCheckShare>>>,
+    profile: &'a str,
+    share: Arc<PresenceCheckShare>,
+    result: Option<Result<(), PresenceError>>,
+}
+
+impl Drop for LeaderCleanup<'_> {
+    fn drop(&mut self) {
+        let result = self.result.take().unwrap_or(Err(PresenceError::Busy));
+        *self.share.result.lock().unwrap() = Some(result);
+        self.share.done.notify_all();
+        self.inflight.lock().unwrap().remove(self.profile);
+    }
+}
+
 /// A presence-gated, TTL-bounded, per-profile secret cache.
 pub struct SecretCache {
     ttl: Duration,
@@ -263,6 +289,16 @@ impl SecretCache {
             return result.clone().unwrap();
         }
 
+        // `cleanup` finalizes `share` (and removes this profile's
+        // `presence_inflight` entry) exactly once, whether `verify` below
+        // returns normally or panics - see [`LeaderCleanup`]'s docs.
+        let mut cleanup = LeaderCleanup {
+            inflight: &self.presence_inflight,
+            profile,
+            share: Arc::clone(&share),
+            result: None,
+        };
+
         // Only the leader ever calls the real verifier - and only if no
         // other profile's leader is already running one; see this
         // method's docs for why this is `try_lock`, not `lock`.
@@ -270,16 +306,20 @@ impl SecretCache {
             Ok(_guard) => self.verifier.verify(reason),
             Err(std::sync::TryLockError::WouldBlock) => Err(PresenceError::Busy),
             Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                // A prior presence check panicked mid-flight - still
-                // fail this one closed rather than let a poisoned lock
-                // propagate as an ambiguous panic here too.
-                drop(poisoned);
-                Err(PresenceError::Busy)
+                // A prior presence check panicked while holding this
+                // lock - `std::sync::Mutex` poisoning is otherwise
+                // permanent, which would wedge *every future* `unlock`
+                // behind `Busy` forever (see PR review on #343's fix).
+                // That panic says nothing about whether *this* check can
+                // succeed, so reclaim the guard (keeping it held for the
+                // duration of `verify`, same as the non-poisoned path) and
+                // proceed normally instead of treating poisoning as a
+                // lasting condition.
+                let _guard = poisoned.into_inner();
+                self.verifier.verify(reason)
             }
         };
-        *share.result.lock().unwrap() = Some(result.clone());
-        share.done.notify_all();
-        self.presence_inflight.lock().unwrap().remove(profile);
+        cleanup.result = Some(result.clone());
         result
     }
 
@@ -626,6 +666,54 @@ mod tests {
             Some(b"work-secret".as_slice())
         );
         assert!(cache.get("home").is_none());
+    }
+
+    #[test]
+    fn a_presence_check_panic_does_not_permanently_wedge_the_cache() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        /// Panics on its first call (as a leader's real `verify` might,
+        /// e.g. an FFI failure), then behaves normally - proving neither
+        /// the panic-poisoned `presence_lock` nor an orphaned
+        /// `presence_inflight` entry wedges *later* unlocks, for this or
+        /// any other profile (see PR #345 review).
+        struct PanicOnceVerifier {
+            panicked: AtomicBool,
+        }
+
+        impl PresenceVerifier for PanicOnceVerifier {
+            fn verify(&self, _reason: &str) -> Result<(), PresenceError> {
+                if !self.panicked.swap(true, Ordering::SeqCst) {
+                    panic!("simulated presence-check failure");
+                }
+                Ok(())
+            }
+        }
+
+        let cache = Arc::new(SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(PanicOnceVerifier {
+                panicked: AtomicBool::new(false),
+            }),
+        ));
+
+        let panicking_cache = Arc::clone(&cache);
+        let leader =
+            thread::spawn(move || panicking_cache.unlock("work", "unlock", b"first".to_vec()));
+        assert!(
+            leader.join().is_err(),
+            "the leader's own panic should propagate to its own caller"
+        );
+
+        // A later unlock, for the *same* profile the panic happened on,
+        // must neither hang (an orphaned `presence_inflight` entry would
+        // leave a same-profile follower waiting forever) nor be
+        // permanently denied (a poisoned `presence_lock` would otherwise
+        // fail every future unlock, for every profile, with `Busy`).
+        let result = cache.unlock("work", "unlock", b"second".to_vec());
+        assert_eq!(result, Ok(()));
+        assert_eq!(cache.get("work").as_deref(), Some(b"second".as_slice()));
     }
 
     fn cache_with(result: Result<(), PresenceError>, ttl: Duration) -> SecretCache {
