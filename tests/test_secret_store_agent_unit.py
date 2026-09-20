@@ -11,7 +11,6 @@ re-enable the agent path deliberately and install a small fake in-memory
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -77,8 +76,15 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 def test_agent_enabled_is_false_when_token_reverify_after_is_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Exercises the real `_agent_enabled`, restored past the autouse stub."""
+    """Exercises the real `_agent_enabled`, restored past the autouse stub.
+
+    Monkeypatches `sys.platform` (rather than skipping off-macOS) so the
+    `token_reverify_after is not None` half of `_agent_enabled` actually gets
+    asserted on every CI runner, not just macOS (PR #346 review) - skipping
+    would let this half silently break without ever failing CI.
+    """
     monkeypatch.setattr(secret_store, "_agent_enabled", _REAL_AGENT_ENABLED)
+    monkeypatch.setattr(secret_store.sys, "platform", "darwin")
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text(
         '[profiles.default]\nclient_id = "test-client"\ntoken_reverify_after = 0\n'
@@ -88,14 +94,25 @@ def test_agent_enabled_is_false_when_token_reverify_after_is_disabled(
     assert secret_store._agent_enabled(cfg) is False
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="_agent_enabled is macOS-only")
 def test_agent_enabled_is_true_on_macos_with_the_default_ttl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(secret_store, "_agent_enabled", _REAL_AGENT_ENABLED)
+    monkeypatch.setattr(secret_store.sys, "platform", "darwin")
     cfg = _load(tmp_path, monkeypatch)
 
     assert secret_store._agent_enabled(cfg) is True
+
+
+def test_agent_enabled_is_false_on_a_non_macos_platform_even_with_a_live_ttl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `sys.platform == "darwin"` half must also fail CI if it regresses."""
+    monkeypatch.setattr(secret_store, "_agent_enabled", _REAL_AGENT_ENABLED)
+    monkeypatch.setattr(secret_store.sys, "platform", "linux")
+    cfg = _load(tmp_path, monkeypatch)
+
+    assert secret_store._agent_enabled(cfg) is False
 
 
 def test_read_text_and_backend_unlocks_the_agent_on_a_cache_miss(
@@ -136,6 +153,28 @@ def test_read_text_and_backend_falls_back_to_the_direct_backend_when_disabled(
     secret_store._write_text_direct(cfg, "google_token", "secret-value")
 
     value, backend = secret_store.read_text_and_backend(cfg, "google_token")
+
+    assert (value, backend) == ("secret-value", "file")
+
+
+def test_falls_back_to_the_direct_backend_when_the_agent_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`AgentUnavailableError` (agent enabled but unreachable/unspawnable) must
+    degrade to the direct backend rather than raise, for every entry point
+    that touches the agent (PR #346 review: this path was previously
+    untested)."""
+
+    def _unavailable(*args: Any, **kwargs: Any) -> Any:
+        raise secret_store.agent_client.AgentUnavailableError("no agent listening")
+
+    monkeypatch.setattr(secret_store, "_agent_enabled", lambda cfg: True)
+    monkeypatch.setattr(secret_store.agent_client, "call", _unavailable)
+    cfg = _load(tmp_path, monkeypatch)
+
+    secret_store.write_text(cfg, "google_token", "secret-value")
+    value, backend = secret_store.read_text_and_backend(cfg, "google_token")
+    secret_store.delete(cfg, "google_token")
 
     assert (value, backend) == ("secret-value", "file")
 

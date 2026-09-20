@@ -160,6 +160,7 @@ def create_credential(
         )
 
     record = credential.authenticate(scopes=scopes)
+    secret_store.invalidate_agent_cache(cfg)
     _save_auth_record(cfg, record)
     save_token_cache(cfg)
     return credential

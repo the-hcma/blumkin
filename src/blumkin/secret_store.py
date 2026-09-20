@@ -316,6 +316,21 @@ def exists(cfg: BlumkinConfig, kind: SecretKind) -> bool:
     return _file_path(cfg, kind).is_file()
 
 
+def invalidate_agent_cache(cfg: BlumkinConfig) -> None:
+    """Best-effort drop of this profile's agent-cached entry, without touching either backend.
+
+    For a caller that is about to replace an on-disk/keyring credential
+    outright (a genuine re-``authenticate()``, not a routine silent-refresh
+    write) - see ``auth.create_credential``'s interactive branch - so the
+    live agent entry from the *previous* account/credential is not served
+    back to a different process for the rest of its TTL (PR #346 review).
+    ``delete()`` already does this as a side effect of removing a secret;
+    this exists for callers that need only the cache invalidation, with the
+    write to follow via the normal ``write_text`` priming path.
+    """
+    _agent_lock_profile(cfg)
+
+
 def ms_bundle_exists(cfg: BlumkinConfig) -> dict[str, bool]:
     """Presence of ``auth_record`` and ``token_cache`` from one keyring round trip.
 
@@ -526,7 +541,7 @@ def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
     try:
         if kind in _BUNDLED_KINDS:
             bundle, backend = _read_ms_bundle_and_backend_direct(cfg)
-            if bundle:
+            if _BUNDLED_KINDS.issubset(bundle):
                 _agent_unlock_payload(
                     cfg,
                     _ms_agent_payload(bundle, backend),

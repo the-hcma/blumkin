@@ -788,14 +788,24 @@ def _token_reverify_after(file_data: dict[str, Any]) -> timedelta | None:
     unit = match.group(2)
     if amount <= 0:
         raise ProviderConfigError("token_reverify_after must be positive, or 0/never to disable")
-    if unit == "w":
-        value = timedelta(weeks=amount)
-    elif unit == "d":
-        value = timedelta(days=amount)
-    elif unit == "h":
-        value = timedelta(hours=amount)
-    else:
-        value = timedelta(minutes=amount)
+    try:
+        if unit == "w":
+            value = timedelta(weeks=amount)
+        elif unit == "d":
+            value = timedelta(days=amount)
+        elif unit == "h":
+            value = timedelta(hours=amount)
+        else:
+            value = timedelta(minutes=amount)
+    except OverflowError:
+        # An absurdly large amount (e.g. "1000000000w") would otherwise raise
+        # timedelta's own OverflowError before the cap check below runs,
+        # surfacing an unclassified traceback instead of the friendly
+        # ProviderConfigError every other invalid form gets.
+        raise ProviderConfigError(
+            f"token_reverify_after {raw!r} exceeds the maximum of 1w "
+            "(the agent's idle-exit window only covers up to that long)"
+        ) from None
     if value > _MAX_TOKEN_REVERIFY_AFTER:
         raise ProviderConfigError(
             f"token_reverify_after {raw!r} exceeds the maximum of 1w "

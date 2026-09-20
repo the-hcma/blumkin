@@ -83,6 +83,19 @@ def test_token_reverify_after_rejects_values_over_one_week(tmp_path: Path, monke
         load_config()
 
 
+def test_token_reverify_after_rejects_an_absurdly_large_amount_without_overflowing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A huge amount must raise `ProviderConfigError`, not a bare `OverflowError`."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc-123"\ntoken_reverify_after = "1000000000w"\n'
+    )
+
+    with pytest.raises(ProviderConfigError, match="exceeds the maximum of 1w"):
+        load_config()
+
+
 def test_credential_env_vars_do_not_override_toml(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("BLUMKIN_CLIENT_ID", "from-env")
