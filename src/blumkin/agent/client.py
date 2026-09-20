@@ -74,6 +74,27 @@ def ensure_agent_running() -> None:
 _SPAWN_POLL_INTERVAL_SECONDS = 0.05
 _SPAWN_TIMEOUT_SECONDS = 5.0
 
+#: How long the client waits for an `unlock` reply specifically. Must cover
+#: the agent's LocalAuthentication budget (`PRESENCE_TIMEOUT` = 120s in
+#: `rust-agent/src/presence.rs`) plus a small protocol margin - a bare
+#: `_SPAWN_TIMEOUT_SECONDS` (5s) recv timeout here abandons a still-showing
+#: Touch ID/password prompt long before the user can respond to it. The
+#: abandoned request keeps running server-side (nothing here cancels it),
+#: so a caller that then retries opens a *second* connection, which the
+#: agent dispatches on its own thread and therefore starts a *second*,
+#: concurrent `evaluatePolicy` call - and macOS's LocalAuthentication
+#: cancels whichever evaluation was already in flight the moment a new one
+#: starts in the same process ("Canceled by another authentication"). The
+#: result observed in issue #343: prompts stealing focus from each other
+#: every ~5s, forever, with the user never getting a chance to actually
+#: authenticate. Matching this to the server's own budget means the client
+#: only ever needs to send one `unlock` and wait for the one real answer:
+#: the agent never makes a caller wait *longer* than one real presence
+#: check for any reason - a concurrent unlock for a different profile
+#: fails fast with `presence_busy` instead of queuing behind it (see
+#: `SecretCache::verify_presence_once` on the Rust side).
+_UNLOCK_TIMEOUT_SECONDS = 125.0
+
 
 def _call_once(request: dict[str, Any], *, spawn: bool) -> dict[str, Any]:
     sock_path = str(socket_path())
@@ -123,13 +144,31 @@ def _can_connect(sock_path: str) -> bool:
         probe.close()
 
 
+def _response_timeout_seconds(request: dict[str, Any]) -> float:
+    """The recv budget for `request`'s reply - `unlock` alone needs the
+    long, presence-check-sized budget; every other command answers almost
+    immediately and should keep the short default so a genuinely wedged
+    agent is still detected quickly (see `AgentUnreachableError`'s docs).
+    """
+    if request.get("cmd") == "unlock":
+        return _UNLOCK_TIMEOUT_SECONDS
+    return _SPAWN_TIMEOUT_SECONDS
+
+
 def _send(sock_path: str, request: dict[str, Any]) -> dict[str, Any]:
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
+        # The *connect* timeout stays short (a listening socket accepts
+        # near-instantly; a long budget here would only slow down
+        # detecting a genuinely wedged/dead agent) - only the *response*
+        # wait is widened, and only for the one command that can
+        # legitimately take a while to answer (see
+        # `_response_timeout_seconds`'s docs).
         connection.settimeout(_SPAWN_TIMEOUT_SECONDS)
         connection.connect(sock_path)
         protocol.send_message(connection, request)
-        return protocol.recv_message(connection, timeout=_SPAWN_TIMEOUT_SECONDS)
+        connection.settimeout(_response_timeout_seconds(request))
+        return protocol.recv_message(connection, timeout=_response_timeout_seconds(request))
     finally:
         connection.close()
 

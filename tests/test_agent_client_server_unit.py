@@ -15,6 +15,7 @@ import pytest
 
 from blumkin.agent import client as agent_client
 from blumkin.agent import paths as agent_paths
+from blumkin.agent import protocol
 
 _REAL_AGENT_UNAVAILABLE_REASON = (
     "blumkin-agent binary not built for this platform (macOS only today - see "
@@ -64,6 +65,43 @@ def _serve_once(sock_path: Path, handle: Callable[[socket.socket], None]) -> thr
     thread = threading.Thread(target=_serve)
     thread.start()
     return thread
+
+
+def test_a_non_unlock_command_still_times_out_at_the_short_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only `unlock` gets the long budget - every other command still fails
+    fast against a genuinely wedged agent (see `AgentUnreachableError`'s
+    docs on why a long default everywhere would be its own regression).
+
+    Asserts on elapsed time, not just on *some* timeout firing: with the
+    peer parked well past both budgets, a regression that used the long
+    `_UNLOCK_TIMEOUT_SECONDS` budget for every command (not just `unlock`)
+    would still raise `AgentUnreachableError` eventually - it just wouldn't
+    do it quickly. Only measuring how long the short default actually took
+    tells the two apart (see PR #345 review).
+    """
+    monkeypatch.setattr(agent_client, "_SPAWN_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(agent_client, "_UNLOCK_TIMEOUT_SECONDS", 5.0)
+    sock_path = agent_paths.socket_path()
+    release = threading.Event()
+
+    def _wait_then_never_reply(_conn: socket.socket) -> None:
+        release.wait(10)
+
+    thread = _serve_once(sock_path, _wait_then_never_reply)
+    try:
+        started = time.monotonic()
+        with pytest.raises(agent_client.AgentUnreachableError, match="did not reply in time"):
+            agent_client._call_once({"cmd": "ping"}, spawn=False)
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.0, (
+            f"a non-unlock command must fail fast on the short default, not the long "
+            f"unlock-only budget (took {elapsed:.2f}s)"
+        )
+    finally:
+        release.set()
+        thread.join(timeout=5)
 
 
 def test_agent_unreachable_error_is_an_agent_unavailable_error() -> None:
@@ -225,6 +263,37 @@ def test_status_reports_no_cached_profiles_for_a_freshly_spawned_agent() -> None
     assert response["ok"] is True
     assert response["cached_profiles"] == []
     agent_client.call("shutdown")
+
+
+def test_unlock_still_waits_past_the_short_default_timeout_for_its_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`unlock` must not be abandoned on the short, non-presence-check budget.
+
+    Regression test for issue #343: a fixed, short recv timeout for every
+    command (including `unlock`) abandons a still-showing Touch ID/password
+    prompt long before the user can respond, and the retry that follows
+    starts a second, concurrent presence check that cancels the first -
+    prompts stealing focus from each other forever. Here the peer replies
+    only *after* `_SPAWN_TIMEOUT_SECONDS` (the short default) has already
+    elapsed but well before `_UNLOCK_TIMEOUT_SECONDS` (the long, `unlock`-
+    only budget) - the call must still succeed, not time out.
+    """
+    monkeypatch.setattr(agent_client, "_SPAWN_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(agent_client, "_UNLOCK_TIMEOUT_SECONDS", 5.0)
+    sock_path = agent_paths.socket_path()
+
+    def _reply_after_the_short_timeout_elapses(conn: socket.socket) -> None:
+        time.sleep(0.4)
+        protocol.recv_message(conn)
+        protocol.send_message(conn, {"ok": True})
+
+    thread = _serve_once(sock_path, _reply_after_the_short_timeout_elapses)
+    try:
+        response = agent_client._call_once({"cmd": "unlock", "profile": "work"}, spawn=False)
+        assert response == {"ok": True}
+    finally:
+        thread.join(timeout=5)
 
 
 def test_wait_for_socket_gone_does_not_delete_the_path_after_its_deadline(
