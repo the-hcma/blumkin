@@ -88,7 +88,11 @@ _SPAWN_TIMEOUT_SECONDS = 5.0
 #: result observed in issue #343: prompts stealing focus from each other
 #: every ~5s, forever, with the user never getting a chance to actually
 #: authenticate. Matching this to the server's own budget means the client
-#: only ever needs to send one `unlock` and wait for the one real answer.
+#: only ever needs to send one `unlock` and wait for the one real answer:
+#: the agent never makes a caller wait *longer* than one real presence
+#: check for any reason - a concurrent unlock for a different profile
+#: fails fast with `presence_busy` instead of queuing behind it (see
+#: `SecretCache::verify_presence_once` on the Rust side).
 _UNLOCK_TIMEOUT_SECONDS = 125.0
 
 

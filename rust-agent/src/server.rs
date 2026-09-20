@@ -391,6 +391,7 @@ fn presence_error_response(err: PresenceError) -> Value {
         PresenceError::Denied(_) => "presence_denied",
         PresenceError::TimedOut => "presence_timed_out",
         PresenceError::Unsupported => "presence_unsupported",
+        PresenceError::Busy => "presence_busy",
     };
     json!({"ok": false, "error": error, "message": err.to_string()})
 }
@@ -609,6 +610,35 @@ mod tests {
         let get_response = dispatch(&get_request, &shutdown_requested, &cache);
         assert_eq!(get_response["ok"], false);
         assert_eq!(get_response["error"], "not_cached");
+    }
+
+    #[test]
+    fn dispatch_unlock_reports_presence_busy_when_another_profile_is_checking() {
+        // `presence_error_response` maps every `PresenceError` variant to
+        // a distinct protocol error code - this exercises `Busy`
+        // specifically (see `SecretCache::verify_presence_once`'s docs on
+        // why a cross-profile presence check fails fast instead of
+        // queuing), separately from `FakePresenceVerifier`'s own coverage
+        // of `Denied`/`TimedOut` elsewhere in this file.
+        let shutdown_requested = AtomicBool::new(false);
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Err(
+                PresenceError::Busy,
+            ))),
+        );
+        let unlock_request = json!({
+            "cmd": "unlock",
+            "protocol_version": protocol::PROTOCOL_VERSION,
+            "profile": "work",
+            "reason": "unlock the work profile cache",
+            "secret": "s3cr3t",
+        });
+
+        let response = dispatch(&unlock_request, &shutdown_requested, &cache);
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "presence_busy");
     }
 
     #[test]

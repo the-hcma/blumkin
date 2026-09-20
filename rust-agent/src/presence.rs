@@ -54,6 +54,16 @@ pub enum PresenceError {
     /// though it is real, reachable API surface on every other one.
     #[allow(dead_code)]
     Unsupported,
+    /// A presence check for a *different* profile is already running.
+    /// Only ever constructed by [`crate::secret_cache::SecretCache`] (not
+    /// this module) - macOS's `LocalAuthentication` only tolerates one
+    /// `evaluatePolicy` in flight per process, so a second, concurrent
+    /// `unlock` for a different profile fails fast with this instead of
+    /// queuing for an unbounded time (which could exceed the client's own
+    /// recv timeout for `unlock`) or starting a second prompt that would
+    /// cancel the first (issue #343). The caller is expected to retry
+    /// once the other profile's check has finished.
+    Busy,
 }
 
 impl std::fmt::Display for PresenceError {
@@ -63,6 +73,12 @@ impl std::fmt::Display for PresenceError {
             PresenceError::TimedOut => write!(f, "presence check timed out"),
             PresenceError::Unsupported => {
                 write!(f, "presence check is not supported on this platform")
+            }
+            PresenceError::Busy => {
+                write!(
+                    f,
+                    "a presence check for a different profile is already in progress"
+                )
             }
         }
     }
