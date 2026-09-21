@@ -152,17 +152,20 @@ def test_doctor_re_probe_clears_a_stale_positive(tmp_path: Path, monkeypatch) ->
     assert load_signature_state(load_config()).detected is False
 
 
-def test_auth_login_runs_the_probe_and_reports_it(tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / "config.toml").write_text(_CONFIG + 'email = "ada@example.com"\n')
+def test_auth_login_human_message_names_the_file_backend(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(_CONFIG)
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     provider = MagicMock()
-    provider.auth_status.return_value = {"token_cache": True, "auth_record": True}
-    provider.probe_mail_signature = AsyncMock(return_value=True)
+    provider.auth_status.return_value = {
+        "token_cache": True,
+        "auth_record": True,
+        "token_storage_backend": "file",
+    }
+    provider.probe_mail_signature = AsyncMock(return_value=None)
     with patch("blumkin.cli._workspace", return_value=provider):
-        result = CliRunner().invoke(main, ["auth", "login", "--json"])
+        result = CliRunner().invoke(main, ["auth", "login"])
     assert result.exit_code == 0
-    assert json.loads(result.stdout)["outlook_signature_detected"] is True
-    assert load_signature_state(load_config()).detected is True
+    assert "Signed in. Token cache written under ~/.config/blumkin/." in result.output
 
 
 def test_auth_login_human_message_names_the_keyring_backend(tmp_path: Path, monkeypatch) -> None:
@@ -183,20 +186,17 @@ def test_auth_login_human_message_names_the_keyring_backend(tmp_path: Path, monk
     assert "Token cache written under" not in result.output
 
 
-def test_auth_login_human_message_names_the_file_backend(tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / "config.toml").write_text(_CONFIG)
+def test_auth_login_runs_the_probe_and_reports_it(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(_CONFIG + 'email = "ada@example.com"\n')
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     provider = MagicMock()
-    provider.auth_status.return_value = {
-        "token_cache": True,
-        "auth_record": True,
-        "token_storage_backend": "file",
-    }
-    provider.probe_mail_signature = AsyncMock(return_value=None)
+    provider.auth_status.return_value = {"token_cache": True, "auth_record": True}
+    provider.probe_mail_signature = AsyncMock(return_value=True)
     with patch("blumkin.cli._workspace", return_value=provider):
-        result = CliRunner().invoke(main, ["auth", "login"])
+        result = CliRunner().invoke(main, ["auth", "login", "--json"])
     assert result.exit_code == 0
-    assert "Signed in. Token cache written under ~/.config/blumkin/." in result.output
+    assert json.loads(result.stdout)["outlook_signature_detected"] is True
+    assert load_signature_state(load_config()).detected is True
 
 
 def test_auth_logout_clears_the_probe_state(tmp_path: Path, monkeypatch) -> None:
