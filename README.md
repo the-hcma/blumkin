@@ -222,6 +222,30 @@ tenant's specific GUID or verified domain, never `common` / `organizations` /
 [`docs/SECURITY-AT-A-GLANCE.md`](./docs/SECURITY-AT-A-GLANCE.md#microsoft-app-registration-hardening)
 before your first login.
 
+`account_type` defaults to `"organizational"`. Set `account_type = "personal"`
+on a Microsoft profile that logs into a personal Microsoft account
+(`outlook.com` / `live.com` / `hotmail.com`, an MSA). blumkin never infers this
+from `tenant_id` - set it explicitly. Personal accounts cannot be granted
+Teams/People-directory Graph scopes, so blumkin drops `Chat.Read`,
+`Chat.ReadWrite`, `OnlineMeetings.ReadWrite`, and `People.Read` from the
+requested scope set for that profile, and `chat.*`, `meeting.*`, and
+`people.resolve` fail closed with a usage error explaining why. Calendar,
+mail, and mail auto-reply/signature skills are unaffected. A personal-account
+profile also needs `tenant_id = "consumers"` (or `"common"`) since personal
+accounts have no dedicated tenant GUID - that reopens the wider
+device-code-phishing surface the hardening checklist warns against for
+work/school tenants, so only set it for a profile you know is a personal
+account. Setting `account_type` and `tenant_id` alone is not enough: the
+Entra app registration's "Supported account types" also has to allow personal
+Microsoft accounts (either "Personal Microsoft accounts" only, or the
+multi-tenant + personal option) - the single-tenant "this organizational
+directory only" setting the hardening checklist recommends for work/school
+profiles will refuse a personal-account sign-in outright, regardless of
+`account_type` / `tenant_id`. Register a **separate** app for personal-account
+profiles rather than loosening a work/school registration's account-type
+setting. See
+[`docs/SECURITY-AT-A-GLANCE.md`](./docs/SECURITY-AT-A-GLANCE.md#microsoft-app-registration-hardening).
+
 Microsoft token cache files (under `profiles/<name>/`):
 
 - `msal_token_cache.json`

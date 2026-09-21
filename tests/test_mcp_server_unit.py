@@ -27,7 +27,12 @@ from mcp.client import Client  # noqa: E402  (after importorskip)
 
 from blumkin.mcp_server import build_server, build_tools  # noqa: E402
 
-_CFG = SimpleNamespace(default_tz="UTC", provider=ProviderKind.MICROSOFT, wo1162425_scopes=True)
+_CFG = SimpleNamespace(
+    account_type="organizational",
+    default_tz="UTC",
+    provider=ProviderKind.MICROSOFT,
+    wo1162425_scopes=True,
+)
 
 
 def _drive(coro_factory: Any) -> Any:

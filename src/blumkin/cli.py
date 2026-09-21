@@ -1475,6 +1475,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         "ok": not problems,
         "build": build,
         "capabilities": capabilities,
+        "account_type": cfg.account_type,
         "wo1162425_scopes": cfg.wo1162425_scopes,
         "problems": problems,
         "warnings": warnings,
@@ -1504,6 +1505,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"build: {build['build_version']} ({build['build_commit']})"])
         emit_lines([f"install: {install.method}"])
         emit_lines([f"running_from: {build['running_from']}"])
+        emit_lines([f"account_type: {cfg.account_type}"])
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
         emit_lines([f"token_storage_backend: {status.get('token_storage_backend', 'file')}"])

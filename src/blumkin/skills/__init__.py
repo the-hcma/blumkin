@@ -45,6 +45,25 @@ WO1162425_SKILLS: frozenset[str] = frozenset(
     }
 )
 
+# Teams-backed skills a personal Microsoft Account (`account_type = "personal"`,
+# issue #297) can never use - Chat.Read/Chat.ReadWrite/OnlineMeetings.ReadWrite/
+# People.Read are work/school-only, so these fail closed with a clear message
+# in the dispatch layer instead of hitting a Graph 400/403.
+PERSONAL_ACCOUNT_UNSUPPORTED_SKILLS: frozenset[str] = frozenset(
+    {
+        "chat.attachments",
+        "chat.attachments.download",
+        "chat.delete",
+        "chat.edit",
+        "chat.find",
+        "chat.last",
+        "chat.send",
+        "meeting.get",
+        "meeting.transcription",
+        "people.resolve",
+    }
+)
+
 # Skills with no `WorkspaceProvider` method - the CLI keeps a bespoke callback and
 # the MCP server does not expose them.
 BESPOKE_SKILLS: frozenset[str] = frozenset(

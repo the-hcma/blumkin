@@ -61,6 +61,18 @@ def test_status_dict_reports_token_storage_backend(tmp_path: Path, monkeypatch) 
     assert status_dict()["token_storage_backend"] == "keyring"
 
 
+def test_status_dict_reports_account_type(tmp_path: Path, monkeypatch) -> None:
+    """`doctor` prints this key verbatim - a drop or rename must fail loudly (issue #297)."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\naccount_type = "personal"\n'
+    )
+    assert status_dict()["account_type"] == "personal"
+
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "test-client"\n')
+    assert status_dict()["account_type"] == "organizational"
+
+
 # A regression test proving `status_dict()` makes only one keyring round trip
 # for `auth_record`/`token_cache` combined lives in
 # tests/test_secret_store_keyring_unit.py

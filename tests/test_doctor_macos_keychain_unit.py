@@ -74,6 +74,26 @@ def test_doctor_warns_when_macos_keychain_is_missing(tmp_path: Path, monkeypatch
     assert any("keychain" in warning.lower() for warning in payload["warnings"])
 
 
+def test_doctor_json_reports_account_type(tmp_path: Path, monkeypatch) -> None:
+    """`doctor --json` builds its own `account_type` key from `cfg` directly
+    (cli.py), independently of `status_dict()` - must not drift/rename
+    silently (issue #297 review)."""
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\ntenant_id = "consumers"\n'
+        'default_tz = "UTC"\naccount_type = "personal"\n'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+    with patch("blumkin.cli._workspace", return_value=_provider()):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    payload = json.loads(result.stdout)
+    assert payload["account_type"] == "personal"
+
+    with patch("blumkin.cli._workspace", return_value=_provider()):
+        result = CliRunner().invoke(main, ["doctor"])
+    assert "account_type: personal" in result.stdout
+
+
 def test_doctor_json_reports_a_capability_summary(tmp_path: Path, monkeypatch) -> None:
     """`doctor --json`'s `capabilities` block reuses capability_summary (issue #313)."""
     (tmp_path / "config.toml").write_text(_CONFIG)

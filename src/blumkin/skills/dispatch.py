@@ -23,6 +23,7 @@ from blumkin.skills import (
     CONFIG_SKILLS,
     DOCS_SKILLS,
     DRIVE_SKILLS,
+    PERSONAL_ACCOUNT_UNSUPPORTED_SKILLS,
     SKILL_METHOD_OVERRIDES,
     WO1162425_SKILLS,
     describe_skill,
@@ -75,6 +76,14 @@ _WO1162425_HINT = (
     "OnlineMeetings.ReadWrite, People.Read; see HANDOFF.md, some asks may still "
     "be pending), then delete "
     "the token cache and auth record and run `blumkin auth login`."
+)
+_PERSONAL_ACCOUNT_MESSAGE = (
+    "This skill needs Teams/People-directory Graph scopes that a personal "
+    'Microsoft Account (account_type = "personal") can never be granted.'
+)
+_PERSONAL_ACCOUNT_HINT = (
+    "Not available for personal Microsoft accounts. Use a work/school profile "
+    '(account_type = "organizational") for chat, meeting, and people resolve skills.'
 )
 _YES_HINT_DEFAULT = "This action notifies other people. Re-run the command with --yes to confirm."
 _YES_HINT_AUTO_REPLY = (
@@ -271,6 +280,16 @@ def _run_gates(
         and not config.docs_scopes
     ):
         raise ScopeAddonDisabledError(_DRIVE_SCOPES_MESSAGE, hint=_DRIVE_SCOPES_HINT)
+
+    # personal Microsoft Account (account_type = "personal", issue #297): chat/
+    # meeting/people.resolve skills need Teams/People-directory scopes an MSA can
+    # never be granted - fail closed instead of a Graph 400/403.
+    if (
+        skill_id in PERSONAL_ACCOUNT_UNSUPPORTED_SKILLS
+        and config.provider is ProviderKind.MICROSOFT
+        and config.account_type == "personal"
+    ):
+        raise ScopeAddonDisabledError(_PERSONAL_ACCOUNT_MESSAGE, hint=_PERSONAL_ACCOUNT_HINT)
 
     # wo1162425 add-on scopes (Microsoft only)
     needs_addon = skill_id in WO1162425_SKILLS

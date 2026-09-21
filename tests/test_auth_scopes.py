@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from blumkin.auth import (
     BASE_SCOPES,
     DOCS_SCOPES,
@@ -12,7 +14,7 @@ from blumkin.auth import (
     effective_scopes,
 )
 from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig, load_config
-from blumkin.providers.kind import ProviderKind
+from blumkin.providers.kind import ProviderConfigError, ProviderKind
 
 
 def test_docs_scopes_from_toml_and_off_by_default(tmp_path: Path, monkeypatch) -> None:
@@ -92,10 +94,73 @@ def test_scope_env_vars_do_not_override_toml(tmp_path: Path, monkeypatch) -> Non
     assert cfg.wo1162425_scopes is True
 
 
+def test_effective_scopes_personal_account_excludes_chat_read() -> None:
+    scopes = effective_scopes(_cfg(wo1162425_scopes=False, account_type="personal"))
+    assert "Chat.Read" not in scopes
+    assert scopes == [s for s in BASE_SCOPES if s != "Chat.Read"]
+
+
+def test_effective_scopes_personal_account_excludes_teams_addons() -> None:
+    scopes = effective_scopes(_cfg(wo1162425_scopes=True, account_type="personal"))
+    assert "Chat.ReadWrite" not in scopes
+    assert "OnlineMeetings.ReadWrite" not in scopes
+    assert "People.Read" not in scopes
+    # MailboxSettings.ReadWrite is a plain mailbox setting, not Teams-only -
+    # still requested for a personal account with the add-on toggle on.
+    assert "MailboxSettings.ReadWrite" in scopes
+
+
+def test_effective_scopes_organizational_default_keeps_chat_read() -> None:
+    assert "Chat.Read" in effective_scopes(_cfg(wo1162425_scopes=False))
+
+
+def test_personal_account_unsupported_skills_match_the_unsupported_scopes() -> None:
+    """PERSONAL_ACCOUNT_UNSUPPORTED_SKILLS (skills/__init__.py) and
+    PERSONAL_ACCOUNT_UNSUPPORTED_SCOPES (auth.py) are two hand-maintained lists
+    that must stay in lockstep: a skill is in the former iff its declared
+    scopes intersect the latter. Mirrors
+    test_drive_catalog_scopes_match_the_docs_scopes_gate for the docs_scopes
+    gate."""
+    from blumkin.auth import PERSONAL_ACCOUNT_UNSUPPORTED_SCOPES
+    from blumkin.skills import PERSONAL_ACCOUNT_UNSUPPORTED_SKILLS, skills_catalog
+
+    for spec in skills_catalog()["skills"]:
+        needs_gate = bool(PERSONAL_ACCOUNT_UNSUPPORTED_SCOPES & set(spec["scopes"]))
+        assert needs_gate == (spec["id"] in PERSONAL_ACCOUNT_UNSUPPORTED_SKILLS), spec["id"]
+
+
+def test_account_type_from_toml(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\naccount_type = "personal"\n'
+    )
+    assert load_config().account_type == "personal"
+
+
+def test_account_type_defaults_to_organizational(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    assert load_config().account_type == "organizational"
+
+
+def test_account_type_rejects_unknown_value(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\naccount_type = "consumer"\n'
+    )
+    with pytest.raises(ProviderConfigError, match="account_type"):
+        load_config()
+
+
 def _cfg(
-    *, wo1162425_scopes: bool, files_scopes: bool = False, docs_scopes: bool = False
+    *,
+    wo1162425_scopes: bool,
+    files_scopes: bool = False,
+    docs_scopes: bool = False,
+    account_type: str = "organizational",
 ) -> BlumkinConfig:
     return BlumkinConfig(
+        account_type=account_type,
         client_id="abc",
         config_dir=Path("unused"),
         default_tz="UTC",
