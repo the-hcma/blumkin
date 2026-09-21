@@ -29,8 +29,11 @@ from blumkin.mcp_install import (
     CLIENTS,
     McpInstallError,
     Scope,
-    current_entry,
+    config_path,
     remove_entry,
+)
+from blumkin.mcp_install import (
+    _read_config as read_config,
 )
 from blumkin.providers.kind import ProviderConfigError
 from blumkin.secret_store import (
@@ -230,6 +233,8 @@ def remove_keyring(
             detail="no keyring-backed secrets detected for configured profiles",
         )
     failures: list[str] = []
+    removed_profiles: list[str] = []
+    attempted_profiles: list[str] = []
     for name, cfg in profiles:
         state = states[name]
         if not (state.present or state.unknown):
@@ -237,11 +242,19 @@ def remove_keyring(
         if state.backend_unavailable:
             failures.append(f"{name}: OS keychain backend unavailable")
             continue
+        failed = False
         for kind in _SECRET_KINDS:
             try:
                 delete_keyring_entry(cfg, kind)
             except Exception as exc:
+                failed = True
                 failures.append(f"{name}:{kind}: {exc}")
+        if failed:
+            continue
+        if state.present:
+            removed_profiles.append(name)
+        else:
+            attempted_profiles.append(name)
     if failures:
         return Outcome(
             category="keyring",
@@ -249,7 +262,15 @@ def remove_keyring(
             outcome="failed",
             detail="; ".join(failures),
         )
-    detail = "removed keyring entries for " + ", ".join(touched)
+    detail_parts: list[str] = []
+    if removed_profiles:
+        detail_parts.append("removed keyring entries for " + ", ".join(removed_profiles))
+    if attempted_profiles:
+        detail_parts.append(
+            "attempted cleanup where keyring presence could not be confirmed for "
+            + ", ".join(attempted_profiles)
+        )
+    detail = "; ".join(detail_parts)
     return Outcome(category="keyring", label=label, outcome="removed", detail=detail)
 
 
@@ -398,8 +419,20 @@ def _build_keyring_target(
 
 
 def _build_mcp_target(client: str, scope: Scope, *, cwd: Path) -> Target:
-    present = current_entry(client, scope, cwd) is not None
-    detail = "registration present" if present else "no registration present"
+    path = config_path(client, scope, cwd)
+    if path is None or not path.is_file():
+        present = False
+        detail = "no registration present"
+    else:
+        try:
+            data = read_config(path)
+        except McpInstallError as exc:
+            present = True
+            detail = str(exc)
+        else:
+            servers = data.get("mcpServers")
+            present = isinstance(servers, dict) and isinstance(servers.get("blumkin"), dict)
+            detail = "registration present" if present else "no registration present"
     return Target(
         category="mcp",
         client=client,

@@ -703,6 +703,20 @@ def test_remove_entry_file_driven_invalid_servers_returns_absent(
     assert json.loads(path.read_text()) == {"mcpServers": []}
 
 
+def test_remove_entry_file_driven_invalid_json_raises(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    path = cwd / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text("{ not json")
+
+    with pytest.raises(mi.McpInstallError, match="not valid JSON"):
+        mi.remove_entry("cursor", "project", cwd)
+
+
 def test_remove_entry_cli_clients_fall_back_to_file_when_binary_is_missing(
     home: Path, monkeypatch: pytest.MonkeyPatch, fake_subprocess: list[list[str]]
 ) -> None:

@@ -148,6 +148,18 @@ def test_cli_uninstall_noninteractive_without_yes_is_usage_error(monkeypatch) ->
     assert json.loads(result.output)["error"] == "usage_error"
 
 
+def test_cli_uninstall_noninteractive_with_yes_but_without_flags_is_usage_error(
+    monkeypatch,
+) -> None:
+    calls = _wire(monkeypatch)
+
+    result = _invoke(["uninstall", "--yes", "--json"])
+
+    assert result.exit_code == EXIT_USAGE
+    assert calls == []
+    assert "at least one category flag" in json.loads(result.output)["message"]
+
+
 def test_cli_uninstall_noninteractive_with_agent_flag_only_runs_agent(monkeypatch) -> None:
     calls = _wire(monkeypatch)
 

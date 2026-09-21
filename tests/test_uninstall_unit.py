@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -84,13 +85,10 @@ def test_build_plan_reports_present_targets(
         "call",
         lambda *args, **kwargs: (_ for _ in ()).throw(AgentUnavailableError("down")),
     )
-    monkeypatch.setattr(
-        uninstall,
-        "current_entry",
-        lambda client, scope, cwd: (
-            {"command": "blumkin"} if (client, scope) == ("cursor", "user") else None
-        ),
-    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cursor_user = tmp_path / ".cursor" / "mcp.json"
+    cursor_user.parent.mkdir(parents=True)
+    cursor_user.write_text(json.dumps({"mcpServers": {"blumkin": {"command": "blumkin"}}}))
     monkeypatch.setattr(
         uninstall,
         "detect_install",
@@ -117,6 +115,27 @@ def test_build_plan_reports_present_targets(
     assert plan.package.present is True
     assert plan.config.present is True
     assert plan.keyring.present is True
+
+
+def test_build_plan_marks_malformed_mcp_configs_as_present_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(uninstall, "list_profiles", lambda: [])
+    monkeypatch.setattr(
+        uninstall,
+        "detect_install",
+        lambda: Install(checkout=None, managed_path=Path("/x"), method=METHOD_UNMANAGED),
+    )
+    (tmp_path / ".claude.json").write_text("{ not json")
+
+    plan = uninstall.build_plan(cwd=tmp_path)
+
+    claude_user = next(
+        target for target in plan.mcp if target.client == "claude" and target.scope == "user"
+    )
+    assert claude_user.present is True
+    assert "not valid JSON" in claude_user.detail
 
 
 def test_build_plan_degrades_keyring_probe_errors_to_the_keyring_category(
@@ -310,6 +329,25 @@ def test_remove_keyring_removes_keyring_but_keeps_plaintext_files(
     assert outcome.outcome == "removed"
     assert cfg.google_token_path.read_text() == "file-value"
     assert key not in fake.store
+
+
+def test_remove_keyring_removes_bundled_ms_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    bundle_key = (
+        secret_store._KEYRING_SERVICE,
+        secret_store._keyring_account(cfg, "auth_record"),
+    )
+    fake.store[bundle_key] = json.dumps({"auth_record": "record", "token_cache": "cache"})
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    outcome = uninstall.remove_keyring(((cfg.profile, cfg),))
+
+    assert outcome.outcome == "removed"
+    assert bundle_key not in fake.store
 
 
 def test_remove_keyring_reports_backend_unavailable_for_keyring_profiles(

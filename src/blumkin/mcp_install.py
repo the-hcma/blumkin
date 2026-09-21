@@ -416,8 +416,6 @@ def remove_entry(client: str, scope: Scope, cwd: Path) -> Literal["removed", "ab
     leaving every other server in that config file untouched. Raises
     ``McpInstallError`` on failure, matching ``apply_plan``'s error contract.
     """
-    if current_entry(client, scope, cwd) is None:
-        return "absent"
     path = config_path(client, scope, cwd)
     assert path is not None  # config_path covers every client
     if scope == "project":
@@ -427,7 +425,15 @@ def remove_entry(client: str, scope: Scope, cwd: Path) -> Literal["removed", "ab
         if client == "claude"
         else ["copilot", "mcp", "remove", "blumkin"]
     )
-    if _via(client, scope) == "cli" and shutil.which(remove[0]):
+    use_cli = _via(client, scope) == "cli" and shutil.which(remove[0]) is not None
+    if use_cli:
+        if current_entry(client, scope, cwd) is None:
+            try:
+                _read_config(path)
+            except McpInstallError:
+                pass
+            else:
+                return "absent"
         proc = _run(remove)
         if proc.returncode != 0:
             raise McpInstallError(
