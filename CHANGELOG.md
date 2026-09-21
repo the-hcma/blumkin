@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.7.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.6.0...blumkin-v1.7.0) (2026-09-21)
+
+
+### Features
+
+* support personal Microsoft accounts via account_type profile setting ([#362](https://github.com/the-hcma/blumkin/issues/362)) ([a8a16b0](https://github.com/the-hcma/blumkin/commit/a8a16b0919377ef2c1d52e516073e80ba21b1249))
+
+
+### Documentation
+
+* add blumkin brand icon and link Rose Blumkin's Wikipedia page ([#361](https://github.com/the-hcma/blumkin/issues/361)) ([c53e006](https://github.com/the-hcma/blumkin/commit/c53e006e309d683ca3a04c84ece31cf85b50d623))
+
 ## [1.6.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.5.0...blumkin-v1.6.0) (2026-09-21)
 
 
