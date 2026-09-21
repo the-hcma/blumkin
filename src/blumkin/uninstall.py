@@ -35,7 +35,6 @@ from blumkin.mcp_install import (
 from blumkin.providers.kind import ProviderConfigError
 from blumkin.secret_store import (
     SecretKind,
-    SecretWriteError,
     delete_keyring_entry,
 )
 
@@ -238,7 +237,7 @@ def remove_keyring(
         for kind in _SECRET_KINDS:
             try:
                 delete_keyring_entry(cfg, kind)
-            except SecretWriteError as exc:
+            except Exception as exc:
                 failures.append(f"{name}:{kind}: {exc}")
     if failures:
         return Outcome(

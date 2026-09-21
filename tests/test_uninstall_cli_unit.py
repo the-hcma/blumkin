@@ -208,6 +208,80 @@ def test_cli_uninstall_mcp_specific_flag_overrides_blanket_decline(monkeypatch) 
     assert payload["categories"]["mcp"][1]["outcome"] == "skipped"
 
 
+def test_cli_uninstall_mcp_specific_flags_target_each_client(monkeypatch) -> None:
+    calls = _wire(monkeypatch)
+
+    result = _invoke(["uninstall", "--mcp-claude", "--yes", "--json"])
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert calls == ["mcp:claude:user"]
+
+    calls = _wire(monkeypatch)
+    plan = _plan()
+    monkeypatch.setattr(
+        un,
+        "build_plan",
+        lambda **kwargs: un.Plan(
+            agent=plan.agent,
+            config=plan.config,
+            keyring=plan.keyring,
+            mcp=(
+                un.Target(
+                    category="mcp",
+                    client="copilot",
+                    detail="copilot user",
+                    label="copilot user",
+                    present=True,
+                    scope="user",
+                ),
+            ),
+            package=plan.package,
+            _install=plan._install,
+            _keyring_probe_error=plan._keyring_probe_error,
+            _profiles=plan._profiles,
+        ),
+    )
+
+    result = _invoke(["uninstall", "--mcp-copilot", "--yes", "--json"])
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert calls == ["mcp:copilot:user"]
+
+
+def test_cli_uninstall_mcp_failure_sets_ok_false_and_exit_other(monkeypatch) -> None:
+    def _remove_mcp(client: str, scope: un.Scope, *, cwd: Path | None = None) -> un.Outcome:
+        return un.Outcome(
+            category="mcp",
+            client=client,
+            detail="boom",
+            label=f"{client}:{scope}",
+            outcome="failed",
+            scope=scope,
+        )
+
+    monkeypatch.setattr(un, "build_plan", lambda cwd=None: _plan())
+    monkeypatch.setattr(un, "remove_agent", lambda: _outcome("agent", "agent", "removed"))
+    monkeypatch.setattr(un, "remove_mcp", _remove_mcp)
+    monkeypatch.setattr(
+        un,
+        "remove_package",
+        lambda install: _outcome("package", "package", "removed"),
+    )
+    monkeypatch.setattr(un, "remove_config", lambda: _outcome("config", "config", "removed"))
+    monkeypatch.setattr(
+        un,
+        "remove_keyring",
+        lambda profiles, **kwargs: _outcome("keyring", "keyring", "removed"),
+    )
+
+    result = _invoke(["uninstall", "--mcp-cursor", "--yes", "--json"])
+
+    assert result.exit_code == EXIT_OTHER
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["categories"]["mcp"][0]["outcome"] == "failed"
+
+
 def test_format_uninstall_human_renders_mcp_labels_and_failure_trailer() -> None:
     payload = {
         "ok": False,

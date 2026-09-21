@@ -268,6 +268,8 @@ def test_delete_invalidates_the_agent_cache_for_that_profile(
 def test_delete_keyring_entry_invalidates_the_agent_cache_even_for_probe_cfg(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_agent: _FakeAgent
 ) -> None:
+    monkeypatch.setattr(secret_store, "_agent_enabled", _REAL_AGENT_ENABLED)
+    monkeypatch.setattr(secret_store.sys, "platform", "darwin")
     cfg = _load(tmp_path, monkeypatch)
     probe_cfg = replace(cfg, token_reverify_after=None)
     profile_key = secret_store._agent_profile_key(probe_cfg)

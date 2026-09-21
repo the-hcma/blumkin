@@ -644,9 +644,11 @@ def test_remove_entry_file_driven_preserves_other_servers(
     path.write_text(
         json.dumps({"mcpServers": {"blumkin": {"command": "blumkin"}, "other": {"command": "x"}}})
     )
+    path.chmod(0o600)
 
     assert mi.remove_entry("cursor", "project", cwd) == "removed"
     assert json.loads(path.read_text()) == {"mcpServers": {"other": {"command": "x"}}}
+    assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_remove_entry_absent_returns_absent(home: Path, fake_subprocess: list[list[str]]) -> None:
@@ -699,3 +701,15 @@ def test_remove_entry_file_driven_invalid_servers_returns_absent(
 
     assert mi.remove_entry("cursor", "project", cwd) == "absent"
     assert json.loads(path.read_text()) == {"mcpServers": []}
+
+
+def test_remove_entry_cli_clients_fall_back_to_file_when_binary_is_missing(
+    home: Path, monkeypatch: pytest.MonkeyPatch, fake_subprocess: list[list[str]]
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    path = home / ".claude.json"
+    path.write_text(json.dumps({"mcpServers": {"blumkin": {"command": "blumkin"}}}))
+
+    assert mi.remove_entry("claude", "user", home) == "removed"
+    assert json.loads(path.read_text()) == {"mcpServers": {}}
+    assert fake_subprocess == []

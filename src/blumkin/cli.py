@@ -4134,11 +4134,11 @@ def _format_uninstall_human(payload: dict[str, Any]) -> list[str]:
         if name == "mcp":
             lines.append("MCP registrations:")
             for target in row:
-                mark = marks.get(target["outcome"], target["outcome"])
+                mark = marks[target["outcome"]]
                 detail = f" - {target['detail']}" if target["detail"] else ""
                 lines.append(f"  {target['label']}: {mark}{detail}")
             continue
-        mark = marks.get(row["outcome"], row["outcome"])
+        mark = marks[row["outcome"]]
         detail = f" - {row['detail']}" if row["detail"] else ""
         lines.append(f"{row['label']}: {mark}{detail}")
     if not payload["ok"]:

@@ -422,12 +422,12 @@ def remove_entry(client: str, scope: Scope, cwd: Path) -> Literal["removed", "ab
     assert path is not None  # config_path covers every client
     if scope == "project":
         _reject_symlinked_target(path)
-    if _via(client, scope) == "cli":
-        remove = (
-            ["claude", "mcp", "remove", "blumkin", "-s", scope]
-            if client == "claude"
-            else ["copilot", "mcp", "remove", "blumkin"]
-        )
+    remove = (
+        ["claude", "mcp", "remove", "blumkin", "-s", scope]
+        if client == "claude"
+        else ["copilot", "mcp", "remove", "blumkin"]
+    )
+    if _via(client, scope) == "cli" and shutil.which(remove[0]):
         proc = _run(remove)
         if proc.returncode != 0:
             raise McpInstallError(

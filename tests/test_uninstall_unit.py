@@ -338,6 +338,32 @@ def test_remove_keyring_still_attempts_delete_when_probe_fails(
     assert key not in fake.store
 
 
+def test_remove_keyring_converts_unexpected_delete_errors_to_failed_outcomes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        uninstall,
+        "_profile_keyring_state",
+        lambda cfg: uninstall._KeyringState(
+            backend_unavailable=False,
+            present=False,
+            unknown=True,
+        ),
+    )
+    monkeypatch.setattr(
+        uninstall,
+        "delete_keyring_entry",
+        lambda cfg, kind: (_ for _ in ()).throw(TimeoutError("timed out")),
+    )
+
+    outcome = uninstall.remove_keyring(((cfg.profile, cfg),))
+
+    assert outcome.outcome == "failed"
+    assert "timed out" in outcome.detail
+
+
 def test_remove_keyring_reports_not_present_and_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
