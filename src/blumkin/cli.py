@@ -870,17 +870,21 @@ def auth_login(ctx: click.Context, as_json_flag: bool) -> None:
         cfg = replace(cfg, email=populated)
     _refresh_signature_probe(cfg)
     signature_state = load_signature_state(cfg)
+    status = _auth_status_payload(cfg)
     if as_json:
         emit_json(
             {
                 "ok": True,
                 "email_written": populated,
                 "outlook_signature_detected": signature_state.detected,
-                "status": _auth_status_payload(cfg),
+                "status": status,
             }
         )
     else:
-        emit_lines(["Signed in. Token cache written under ~/.config/blumkin/."])
+        if status.get("token_storage_backend") == "keyring":
+            emit_lines(["Signed in. Credentials stored in the OS keychain."])
+        else:
+            emit_lines(["Signed in. Token cache written under ~/.config/blumkin/."])
         if populated:
             emit_lines([f"Recorded account email in config.toml: {populated}"])
         if signature_state.suppresses_signature:
