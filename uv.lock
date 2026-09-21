@@ -2,8 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
-[options]
-
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -158,6 +156,7 @@ dependencies = [
     { name = "icalendar" },
     { name = "keyring", marker = "sys_platform == 'darwin'" },
     { name = "mcp" },
+    { name = "microsoft-kiota-http" },
     { name = "msal" },
     { name = "msgraph-sdk" },
     { name = "python-docx" },
@@ -218,6 +217,7 @@ requires-dist = [
     { name = "keyring", marker = "extra == 'keychain'", specifier = ">=25.7.0" },
     { name = "mcp", specifier = ">=2.2.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.2.0" },
+    { name = "microsoft-kiota-http", specifier = ">=1.11.6,<1.13.0" },
     { name = "msal", specifier = ">=1.38.0" },
     { name = "msgraph-sdk", specifier = ">=1.62.0" },
     { name = "openpyxl", marker = "extra == 'dev'", specifier = ">=3.1.5" },
