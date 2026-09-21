@@ -1630,6 +1630,244 @@ def upgrade(ctx: click.Context, as_json_flag: bool, yes: bool) -> None:
     )
 
 
+@main.command("uninstall", epilog=help_text.UNINSTALL_EPILOG)
+@click.option(
+    "--agent/--no-agent",
+    "agent_flag",
+    default=None,
+    help="Stop and remove the blumkin-agent runtime.",
+)
+@click.option(
+    "--mcp/--no-mcp",
+    "mcp_flag",
+    default=None,
+    help="All MCP registrations across every supported client/scope.",
+)
+@click.option(
+    "--mcp-claude/--no-mcp-claude",
+    "mcp_claude_flag",
+    default=None,
+    help="Claude Code MCP registrations at every scope.",
+)
+@click.option(
+    "--mcp-cursor/--no-mcp-cursor",
+    "mcp_cursor_flag",
+    default=None,
+    help="Cursor MCP registrations at every scope.",
+)
+@click.option(
+    "--mcp-copilot/--no-mcp-copilot",
+    "mcp_copilot_flag",
+    default=None,
+    help="GitHub Copilot CLI MCP registrations at every scope.",
+)
+@click.option(
+    "--package/--no-package",
+    "package_flag",
+    default=None,
+    help="Uninstall the managed blumkin package itself.",
+)
+@click.option(
+    "--config/--no-config",
+    "config_flag",
+    default=None,
+    help="Delete ~/.config/blumkin/ (or $BLUMKIN_CONFIG_DIR).",
+)
+@click.option(
+    "--keyring/--no-keyring",
+    "keyring_flag",
+    default=None,
+    help="Delete blumkin-owned keychain/keyring entries.",
+)
+@click.option("--dry-run", "dry_run", is_flag=True, help="List pending targets; remove nothing.")
+@click.option("--yes", "yes", is_flag=True, help="Skip interactive confirmation prompts.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def uninstall_cmd(
+    ctx: click.Context,
+    agent_flag: bool | None,
+    mcp_flag: bool | None,
+    mcp_claude_flag: bool | None,
+    mcp_cursor_flag: bool | None,
+    mcp_copilot_flag: bool | None,
+    package_flag: bool | None,
+    config_flag: bool | None,
+    keyring_flag: bool | None,
+    dry_run: bool,
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Tear down blumkin in independent categories, each with its own confirm.
+
+    MCP registrations confirm per client/scope rather than as one blanket step.
+    `--yes` only skips prompts - it never implies "remove everything" on its own.
+    """
+    from blumkin import uninstall as un
+
+    as_json = _as_json(ctx, as_json_flag)
+    tty = _stdio_is_tty()
+    interactive = tty and not yes and not dry_run
+    requested = (
+        agent_flag,
+        mcp_flag,
+        mcp_claude_flag,
+        mcp_cursor_flag,
+        mcp_copilot_flag,
+        package_flag,
+        config_flag,
+        keyring_flag,
+    )
+    if not dry_run and not tty and not yes:
+        _emit_error(
+            error="usage_error",
+            message="non-interactive uninstall needs --yes and one or more category flags",
+            as_json=as_json,
+            hint="Example: `blumkin uninstall --agent --package --yes` "
+            "or `blumkin uninstall --dry-run --json`.",
+        )
+        raise SystemExit(EXIT_USAGE)
+    if not dry_run and not interactive and not any(flag is not None for flag in requested):
+        _emit_error(
+            error="usage_error",
+            message=(
+                "non-interactive uninstall needs at least one category flag; "
+                "use --dry-run to inspect only"
+            ),
+            as_json=as_json,
+            hint=(
+                "Example: `blumkin uninstall --agent --package --yes` "
+                "or `blumkin uninstall --dry-run --json`."
+            ),
+        )
+        raise SystemExit(EXIT_USAGE)
+
+    plan = un.build_plan(cwd=Path.cwd())
+    mcp_client_flags = {
+        "claude": mcp_claude_flag,
+        "copilot": mcp_copilot_flag,
+        "cursor": mcp_cursor_flag,
+    }
+
+    def _dry_run_outcome(target: un.Target) -> un.Outcome:
+        outcome = "would_remove" if target.present else "not_present"
+        return un.Outcome(
+            category=target.category,
+            client=target.client,
+            detail=target.detail,
+            label=target.label,
+            outcome=outcome,
+            scope=target.scope,
+        )
+
+    def _skip_outcome(target: un.Target, detail: str) -> un.Outcome:
+        return un.Outcome(
+            category=target.category,
+            client=target.client,
+            detail=detail,
+            label=target.label,
+            outcome="skipped",
+            scope=target.scope,
+        )
+
+    def _not_present_outcome(target: un.Target) -> un.Outcome:
+        return un.Outcome(
+            category=target.category,
+            client=target.client,
+            detail=target.detail,
+            label=target.label,
+            outcome="not_present",
+            scope=target.scope,
+        )
+
+    def _confirm(target: un.Target) -> bool:
+        if not as_json:
+            click.echo(f"{target.label}: {target.detail}")
+        return click.confirm(f"Proceed with {target.label}?", default=False, err=as_json)
+
+    def _noninteractive_skip(flag_name: str) -> str:
+        return f"not confirmed (non-interactive; pass {flag_name} to include it)"
+
+    def _resolve_target(
+        target: un.Target,
+        *,
+        explicit: bool | None,
+        flag_name: str,
+        remove: Any,
+    ) -> un.Outcome:
+        if dry_run:
+            return _dry_run_outcome(target)
+        if not target.present:
+            return _not_present_outcome(target)
+        if explicit is False:
+            return _skip_outcome(target, f"excluded by {flag_name.replace('--', '--no-', 1)}")
+        if explicit is True:
+            return remove()
+        if interactive:
+            return remove() if _confirm(target) else _skip_outcome(target, "not confirmed")
+        return _skip_outcome(target, _noninteractive_skip(flag_name))
+
+    agent = _resolve_target(
+        plan.agent,
+        explicit=agent_flag,
+        flag_name="--agent",
+        remove=un.remove_agent,
+    )
+
+    mcp_results: list[dict[str, Any]] = []
+    any_failed = agent.outcome == "failed"
+    for target in plan.mcp:
+        explicit = mcp_client_flags[target.client or ""]
+        flag_name = f"--mcp-{target.client}" if explicit is not None else "--mcp"
+        explicit = mcp_flag if explicit is None else explicit
+        outcome = _resolve_target(
+            target,
+            explicit=explicit,
+            flag_name=flag_name,
+            remove=lambda target=target: un.remove_mcp(
+                target.client or "", target.scope or "user", cwd=Path.cwd()
+            ),
+        )
+        any_failed = any_failed or outcome.outcome == "failed"
+        mcp_results.append(outcome.as_dict())
+
+    package = _resolve_target(
+        plan.package,
+        explicit=package_flag,
+        flag_name="--package",
+        remove=lambda: un.remove_package(plan._install),
+    )
+    config = _resolve_target(
+        plan.config,
+        explicit=config_flag,
+        flag_name="--config",
+        remove=un.remove_config,
+    )
+    keyring = _resolve_target(
+        plan.keyring,
+        explicit=keyring_flag,
+        flag_name="--keyring",
+        remove=lambda: un.remove_keyring(plan._profiles, probe_error=plan._keyring_probe_error),
+    )
+    any_failed = any_failed or any(row.outcome == "failed" for row in (package, config, keyring))
+
+    payload = {
+        "ok": not any_failed,
+        "dry_run": dry_run,
+        "categories": {
+            "agent": agent.as_dict(),
+            "mcp": mcp_results,
+            "package": package.as_dict(),
+            "config": config.as_dict(),
+            "keyring": keyring.as_dict(),
+        },
+    }
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines(_format_uninstall_human(payload))
+    raise SystemExit(EXIT_OTHER if any_failed else EXIT_SUCCESS)
+
+
 @main.group(epilog=help_text.CALENDAR_EPILOG)
 def calendar() -> None:
     """Read your calendar and schedule, and create or respond to events.
@@ -3879,6 +4117,32 @@ def _format_mcp_status_human(payload: dict[str, Any]) -> list[str]:
         cmd = " ".join([row["command"], *row["args"]])
         stale = "" if row["resolves_to_blumkin"] else "  (command does not resolve to this blumkin)"
         lines.append(f"  {row['label']} ({row['scope']}): {cmd}{stale}")
+    return lines
+
+
+def _format_uninstall_human(payload: dict[str, Any]) -> list[str]:
+    marks = {
+        "failed": "FAILED",
+        "not_present": "not present",
+        "removed": "removed",
+        "skipped": "skipped",
+        "would_remove": "would remove",
+    }
+    lines: list[str] = []
+    for name in ("agent", "mcp", "package", "config", "keyring"):
+        row = payload["categories"][name]
+        if name == "mcp":
+            lines.append("MCP registrations:")
+            for target in row:
+                mark = marks[target["outcome"]]
+                detail = f" - {target['detail']}" if target["detail"] else ""
+                lines.append(f"  {target['label']}: {mark}{detail}")
+            continue
+        mark = marks[row["outcome"]]
+        detail = f" - {row['detail']}" if row["detail"] else ""
+        lines.append(f"{row['label']}: {mark}{detail}")
+    if not payload["ok"]:
+        lines.append("one or more uninstall steps failed")
     return lines
 
 

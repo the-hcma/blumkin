@@ -1317,6 +1317,20 @@ TASKS_LIST_EPILOG = TASKS_EPILOG
 
 TASKS_SHOW_EPILOG = TASKS_EPILOG
 
+UNINSTALL_EPILOG = """
+Examples:
+
+\b
+  blumkin uninstall --dry-run --json
+  blumkin uninstall --agent --mcp-cursor --package --yes
+
+Each removal category keeps its own confirmation boundary: on a TTY the
+command prompts per category, and MCP registrations prompt per
+client/scope. Outside a TTY, only categories explicitly enabled by flags
+are acted on, and destructive work also requires `--yes`; `--yes` just
+skips prompts, it does not imply "remove all".
+"""
+
 UPGRADE_EPILOG = """
 Examples:
 

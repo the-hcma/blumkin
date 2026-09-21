@@ -604,3 +604,185 @@ def test_apply_file_keeps_a_locked_down_file_private(
     mi.apply_plan(plan, binary="blumkin")
     assert (path.stat().st_mode & 0o777) == 0o600
     assert json.loads(path.read_text())["mcpServers"]["secret"] == {"env": {"TOKEN": "x"}}
+
+
+@pytest.mark.parametrize(
+    ("client", "path_parts", "expected"),
+    [
+        ("claude", (".claude.json",), ["claude", "mcp", "remove", "blumkin", "-s", "user"]),
+        (
+            "copilot",
+            (".copilot", "mcp-config.json"),
+            ["copilot", "mcp", "remove", "blumkin"],
+        ),
+    ],
+)
+def test_remove_entry_cli_driven_runs_client_remove(
+    home: Path,
+    all_clients: None,
+    fake_subprocess: list[list[str]],
+    client: str,
+    path_parts: tuple[str, ...],
+    expected: list[str],
+) -> None:
+    path = home.joinpath(*path_parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"mcpServers": {"blumkin": {"command": "blumkin", "args": []}}}))
+
+    assert mi.remove_entry(client, "user", home) == "removed"
+    assert expected in fake_subprocess
+
+
+def test_remove_entry_cli_driven_invalid_json_still_runs_client_remove(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]]
+) -> None:
+    path = home / ".claude.json"
+    path.write_text("{ not json")
+
+    assert mi.remove_entry("claude", "user", home) == "removed"
+    assert ["claude", "mcp", "remove", "blumkin", "-s", "user"] in fake_subprocess
+    assert path.read_text() == "{ not json"
+
+
+def test_remove_entry_file_driven_preserves_other_servers(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    path = cwd / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text(
+        json.dumps({"mcpServers": {"blumkin": {"command": "blumkin"}, "other": {"command": "x"}}})
+    )
+    path.chmod(0o600)
+
+    assert mi.remove_entry("cursor", "project", cwd) == "removed"
+    assert json.loads(path.read_text()) == {"mcpServers": {"other": {"command": "x"}}}
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_remove_entry_file_driven_write_is_atomic_and_cleans_up(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    path = cwd / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"mcpServers": {"blumkin": {"command": "blumkin"}}}))
+
+    def _boom(src: str, dst: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mi.os, "replace", _boom)
+
+    with pytest.raises(mi.McpInstallError, match="could not write"):
+        mi.remove_entry("cursor", "project", cwd)
+
+    assert json.loads(path.read_text()) == {"mcpServers": {"blumkin": {"command": "blumkin"}}}
+    assert list(path.parent.glob(".*.blumkin-*")) == []
+
+
+def test_remove_entry_absent_returns_absent(home: Path, fake_subprocess: list[list[str]]) -> None:
+    assert mi.remove_entry("claude", "user", home) == "absent"
+    assert fake_subprocess == []
+
+
+def test_remove_entry_cli_branch_returns_absent_for_a_readable_non_blumkin_config(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]]
+) -> None:
+    path = home / ".claude.json"
+    path.write_text(json.dumps({"mcpServers": {"other": {"command": "other"}}}))
+
+    assert mi.remove_entry("claude", "user", home) == "absent"
+    assert fake_subprocess == []
+
+
+def test_remove_entry_cli_failure_raises(
+    home: Path, all_clients: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = home / ".claude.json"
+    path.write_text(json.dumps({"mcpServers": {"blumkin": {"command": "blumkin", "args": []}}}))
+
+    def _run(cmd: list[str], **_kw: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(mi.subprocess, "run", _run)
+
+    with pytest.raises(mi.McpInstallError, match="could not remove"):
+        mi.remove_entry("claude", "user", home)
+
+
+def test_remove_entry_claude_project_scope_refuses_a_symlink_on_remove(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]]
+) -> None:
+    cwd = home / "repo"
+    cwd.mkdir()
+    victim = home / "secret"
+    victim.write_text(
+        json.dumps({"mcpServers": {"blumkin": {"command": "blumkin", "args": ["mcp", "serve"]}}})
+    )
+    (cwd / ".mcp.json").symlink_to(victim)
+
+    with pytest.raises(mi.McpInstallError, match="symlink"):
+        mi.remove_entry("claude", "project", cwd)
+
+    assert fake_subprocess == []
+    assert json.loads(victim.read_text())["mcpServers"]["blumkin"]["command"] == "blumkin"
+
+
+def test_remove_entry_file_driven_invalid_servers_returns_absent(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    path = cwd / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"mcpServers": []}))
+
+    assert mi.remove_entry("cursor", "project", cwd) == "absent"
+    assert json.loads(path.read_text()) == {"mcpServers": []}
+
+
+def test_remove_entry_file_driven_invalid_json_raises(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    path = cwd / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text("{ not json")
+
+    with pytest.raises(mi.McpInstallError, match="not valid JSON"):
+        mi.remove_entry("cursor", "project", cwd)
+
+
+def test_remove_entry_cli_clients_fall_back_to_file_when_binary_is_missing(
+    home: Path, monkeypatch: pytest.MonkeyPatch, fake_subprocess: list[list[str]]
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    path = home / ".claude.json"
+    path.write_text(json.dumps({"mcpServers": {"blumkin": {"command": "blumkin"}}}))
+
+    assert mi.remove_entry("claude", "user", home) == "removed"
+    assert json.loads(path.read_text()) == {"mcpServers": {}}
+    assert fake_subprocess == []
+
+
+def test_remove_entry_user_scope_honours_a_dotfile_symlink(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    real = home / "dotfiles" / "cursor-mcp.json"
+    real.parent.mkdir(parents=True)
+    real.write_text(json.dumps({"mcpServers": {"blumkin": {"command": "blumkin"}}}))
+    path = home / ".cursor" / "mcp.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(real)
+
+    assert mi.remove_entry("cursor", "user", home) == "removed"
+    assert path.is_symlink()
+    assert json.loads(real.read_text()) == {"mcpServers": {}}

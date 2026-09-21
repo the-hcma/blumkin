@@ -238,6 +238,22 @@ def list_profiles() -> list[dict[str, Any]]:
     return summaries
 
 
+def profile_probe_config(name: str) -> BlumkinConfig:
+    """Public entry point for the same minimal, secrets-only probe config
+    ``list_profiles`` builds internally via ``_auth_present_probe_cfg`` -
+    exposed so ``blumkin uninstall``'s keyring category can locate and
+    remove a profile's keyring/Keychain items without needing the profile's
+    full config (``provider``, etc.) to validate first (mirrors the
+    ``list_profiles`` issue #293 rationale: a malformed profile must not
+    block cleanup of its still-real, on-disk/keyring secret).
+    """
+    directory = config_dir()
+    file_data = _read_toml(directory / "config.toml")
+    tables, _ = _profile_tables(file_data)
+    table = tables.get(name, {})
+    return _auth_present_probe_cfg(directory, name, table)
+
+
 def load_config(*, profile: str | None = None) -> BlumkinConfig:
     """Return config from ``config.toml`` only (no credential env overrides).
 

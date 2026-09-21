@@ -206,6 +206,25 @@ def delete(cfg: BlumkinConfig, kind: SecretKind) -> None:
             # `auth logout` as a bare, unclassified traceback instead of the
             # documented secret_write_failed error (issue #287 review).
             raise SecretWriteError(f"cannot delete {kind} file {path}: {exc}") from exc
+    _delete_keyring_entry(cfg, kind)
+
+
+def delete_keyring_entry(cfg: BlumkinConfig, kind: SecretKind) -> None:
+    """Remove just the keyring/Keychain copy of ``kind`` for ``cfg``'s profile,
+    leaving any plaintext file backend untouched.
+
+    Used by ``blumkin uninstall``'s keyring category (issue #344), which is
+    deliberately separate from wiping the on-disk config directory (its own
+    category): an operator who declines local-state deletion but confirms
+    keyring cleanup must not also lose plaintext secrets they explicitly
+    kept. ``delete()`` remains the one used by ``auth logout`` and removes
+    both backends.
+    """
+    invalidate_agent_cache(cfg)
+    _delete_keyring_entry(cfg, kind)
+
+
+def _delete_keyring_entry(cfg: BlumkinConfig, kind: SecretKind) -> None:
     if _backend_for(cfg) == "file":
         return
     keyring = _keyring_module()
@@ -328,7 +347,7 @@ def invalidate_agent_cache(cfg: BlumkinConfig) -> None:
     this exists for callers that need only the cache invalidation, with the
     write to follow via the normal ``write_text`` priming path.
     """
-    _agent_lock_profile(cfg)
+    _agent_lock_profile_unguarded(cfg)
 
 
 def ms_bundle_exists(cfg: BlumkinConfig) -> dict[str, bool]:
@@ -611,6 +630,17 @@ def _agent_lock_profile(cfg: BlumkinConfig) -> None:
     """
     if not _agent_enabled(cfg):
         return
+    _agent_lock_profile_unguarded(cfg)
+
+
+def _agent_lock_profile_unguarded(cfg: BlumkinConfig) -> None:
+    """Best-effort cache invalidation for ``cfg``'s profile, ignoring TTL policy.
+
+    Used by explicit cleanup paths (`invalidate_agent_cache`,
+    `delete_keyring_entry`) that must drop any live agent entry even when the
+    ``BlumkinConfig`` came from a probe helper that deliberately disables
+    `token_reverify_after`.
+    """
     try:
         agent_client.call("lock", extra={"profile": _agent_profile_key(cfg)}, spawn=False)
     except agent_client.AgentUnavailableError:
