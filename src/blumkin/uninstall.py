@@ -146,10 +146,11 @@ def remove_agent() -> Outcome:
         runtime = runtime_dir()
     except (OSError, RuntimeError) as exc:
         return Outcome(category="agent", label=label, outcome="failed", detail=str(exc))
+    shutdown_detail: str | None = None
     try:
         agent_client.call("shutdown", spawn=False)
     except agent_client.AgentUnreachableError as exc:
-        return Outcome(category="agent", label=label, outcome="failed", detail=str(exc))
+        shutdown_detail = str(exc)
     except agent_client.AgentUnavailableError:
         pass
     try:
@@ -163,14 +164,16 @@ def remove_agent() -> Outcome:
             category="agent",
             label=label,
             outcome="failed",
-            detail=f"runtime directory still exists at {runtime}",
+            detail=(
+                f"{shutdown_detail}; runtime directory still exists at {runtime}"
+                if shutdown_detail
+                else f"runtime directory still exists at {runtime}"
+            ),
         )
-    return Outcome(
-        category="agent",
-        label=label,
-        outcome="removed",
-        detail=f"removed runtime directory {runtime}",
-    )
+    detail = f"removed runtime directory {runtime}"
+    if shutdown_detail:
+        detail = f"{shutdown_detail}; {detail}"
+    return Outcome(category="agent", label=label, outcome="removed", detail=detail)
 
 
 def remove_config() -> Outcome:

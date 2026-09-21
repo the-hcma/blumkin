@@ -140,6 +140,25 @@ def test_build_plan_degrades_keyring_probe_errors_to_the_keyring_category(
     assert plan._keyring_probe_error == "bad profiles"
 
 
+def test_build_plan_reports_toml_decode_errors_as_keyring_probe_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config.toml").write_text("[profiles.default\n")
+    monkeypatch.setattr(
+        uninstall,
+        "detect_install",
+        lambda: Install(checkout=None, managed_path=Path("/x"), method=METHOD_UNMANAGED),
+    )
+
+    plan = uninstall.build_plan(cwd=tmp_path)
+
+    assert plan.keyring.present is True
+    assert plan._keyring_probe_error is not None
+    assert plan._keyring_probe_error.startswith("config.toml is not valid TOML")
+
+
 def test_remove_agent_succeeds_and_deletes_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -154,7 +173,7 @@ def test_remove_agent_succeeds_and_deletes_runtime(
     assert not runtime.exists()
 
 
-def test_remove_agent_reports_a_wedged_agent(
+def test_remove_agent_removes_runtime_for_a_wedged_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = _runtime(tmp_path, monkeypatch)
@@ -167,8 +186,9 @@ def test_remove_agent_reports_a_wedged_agent(
 
     outcome = uninstall.remove_agent()
 
-    assert outcome.outcome == "failed"
-    assert runtime.exists()
+    assert outcome.outcome == "removed"
+    assert "wedged" in outcome.detail
+    assert not runtime.exists()
 
 
 def test_remove_agent_reports_runtime_dir_errors(
@@ -302,6 +322,13 @@ def test_remove_keyring_reports_backend_unavailable_for_keyring_profiles(
     outcome = uninstall.remove_keyring(((cfg.profile, cfg),))
 
     assert outcome.outcome == "failed"
+
+
+def test_remove_keyring_reports_probe_errors_directly() -> None:
+    outcome = uninstall.remove_keyring((), probe_error="boom")
+
+    assert outcome.outcome == "failed"
+    assert outcome.detail == "boom"
 
 
 def test_remove_keyring_reports_not_present_for_file_backed_profiles(

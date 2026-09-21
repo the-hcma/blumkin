@@ -282,6 +282,54 @@ def test_cli_uninstall_mcp_failure_sets_ok_false_and_exit_other(monkeypatch) -> 
     assert payload["categories"]["mcp"][0]["outcome"] == "failed"
 
 
+def test_cli_uninstall_passes_keyring_probe_error_to_remove_keyring(monkeypatch) -> None:
+    seen: dict[str, str | None] = {}
+    plan = _plan()
+
+    monkeypatch.setattr(
+        un,
+        "build_plan",
+        lambda **kwargs: un.Plan(
+            agent=plan.agent,
+            config=plan.config,
+            keyring=plan.keyring,
+            mcp=plan.mcp,
+            package=plan.package,
+            _install=plan._install,
+            _keyring_probe_error="boom",
+            _profiles=plan._profiles,
+        ),
+    )
+    monkeypatch.setattr(cli, "_stdio_is_tty", lambda: False)
+    monkeypatch.setattr(un, "remove_agent", lambda: _outcome("agent", "agent", "removed"))
+    monkeypatch.setattr(
+        un,
+        "remove_mcp",
+        lambda client, scope, **kwargs: _outcome(
+            "mcp", f"{client} {scope}", "skipped", client=client, scope=scope
+        ),
+    )
+    monkeypatch.setattr(
+        un,
+        "remove_package",
+        lambda install: _outcome("package", "package", "skipped"),
+    )
+    monkeypatch.setattr(un, "remove_config", lambda: _outcome("config", "config", "skipped"))
+
+    def _remove_keyring(
+        profiles: tuple[tuple[str, Any], ...], *, probe_error: str | None = None
+    ) -> un.Outcome:
+        seen["probe_error"] = probe_error
+        return _outcome("keyring", "keyring", "failed", detail=str(probe_error))
+
+    monkeypatch.setattr(un, "remove_keyring", _remove_keyring)
+
+    result = _invoke(["uninstall", "--keyring", "--yes", "--json"])
+
+    assert result.exit_code == EXIT_OTHER
+    assert seen["probe_error"] == "boom"
+
+
 def test_format_uninstall_human_renders_mcp_labels_and_failure_trailer() -> None:
     payload = {
         "ok": False,
