@@ -633,6 +633,17 @@ def test_remove_entry_cli_driven_runs_client_remove(
     assert expected in fake_subprocess
 
 
+def test_remove_entry_cli_driven_invalid_json_still_runs_client_remove(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]]
+) -> None:
+    path = home / ".claude.json"
+    path.write_text("{ not json")
+
+    assert mi.remove_entry("claude", "user", home) == "removed"
+    assert ["claude", "mcp", "remove", "blumkin", "-s", "user"] in fake_subprocess
+    assert path.read_text() == "{ not json"
+
+
 def test_remove_entry_file_driven_preserves_other_servers(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
