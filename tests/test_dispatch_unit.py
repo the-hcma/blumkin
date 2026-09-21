@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timedelta
+import json
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
+from blumkin.compose_state import seconds_since_composed
+from blumkin.config import load_config
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.dispatch import run_skill, skill_method_name
-from blumkin.skills.errors import ConsentRequiredError, ScopeAddonDisabledError
+from blumkin.skills.errors import ConsentRequiredError, EmitCooldownError, ScopeAddonDisabledError
 
 _MS = SimpleNamespace(
     account_type="organizational",
@@ -635,3 +638,112 @@ def test_postprocess_truncation_and_fields_compose() -> None:
     item = result["items"][0]
     assert set(item) == {"body_preview", "subject"}
     assert item["body_preview"] == "z" * 150 + "..."
+
+
+# -------------------------------------------------------------- confirm cooldown (issue #365)
+
+
+def _cooldown_cfg(tmp_path, monkeypatch, *, cooldown_seconds: int | None = None):
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    prefs = "" if cooldown_seconds is None else f"confirm_cooldown_seconds = {cooldown_seconds}\n"
+    understand = "i_understand_the_risk = true\n" if cooldown_seconds == 0 else ""
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        f"[profiles.default.preferences]\n{prefs}{understand}"
+    )
+    return load_config()
+
+
+def test_mail_send_draft_blocked_before_cooldown_elapses(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = _provider("mail_draft", "mail_send_draft")
+    _run(
+        "mail.draft",
+        {"to": ["a@x.com"], "subject": "s"},
+        config=cfg,
+        provider=SimpleNamespace(
+            mail_draft=AsyncMock(return_value={"draft": {"id": "d1"}}),
+        ),
+    )
+    with pytest.raises(EmitCooldownError) as exc:
+        _run("mail.send-draft", {"id": "d1", "yes": True}, config=cfg, provider=prov)
+    assert exc.value.retry_after_seconds is not None
+    assert 0 < exc.value.retry_after_seconds <= 60
+    prov.mail_send_draft.assert_not_awaited()
+
+
+def test_mail_send_draft_allowed_once_cooldown_elapses(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
+    cfg.compose_state_path.write_text(json.dumps({"d1": stale}))
+    prov = _provider("mail_send_draft")
+    _run("mail.send-draft", {"id": "d1", "yes": True}, config=cfg, provider=prov)
+    prov.mail_send_draft.assert_awaited_once()
+
+
+def test_mail_send_draft_allowed_when_never_composed_fails_open(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = _provider("mail_send_draft")
+    _run("mail.send-draft", {"id": "unknown-draft", "yes": True}, config=cfg, provider=prov)
+    prov.mail_send_draft.assert_awaited_once()
+
+
+def test_mail_send_draft_cooldown_zero_disables_the_gate(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=0)
+    prov = SimpleNamespace(
+        mail_draft=AsyncMock(return_value={"draft": {"id": "d1"}}),
+        mail_send_draft=AsyncMock(return_value={"ok": True}),
+    )
+    _run("mail.draft", {"to": ["a@x.com"], "subject": "s"}, config=cfg, provider=prov)
+    _run("mail.send-draft", {"id": "d1", "yes": True}, config=cfg, provider=prov)
+    prov.mail_send_draft.assert_awaited_once()
+
+
+def test_mail_draft_records_a_compose_timestamp(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = SimpleNamespace(mail_draft=AsyncMock(return_value={"draft": {"id": "d1"}}))
+    _run("mail.draft", {"to": ["a@x.com"], "subject": "s"}, config=cfg, provider=prov)
+    elapsed = seconds_since_composed(cfg, "d1")
+    assert elapsed is not None
+    assert elapsed < 2
+
+
+def test_mail_update_draft_resets_the_compose_clock(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
+    cfg.compose_state_path.write_text(json.dumps({"d1": stale}))
+    prov = SimpleNamespace(mail_update_draft=AsyncMock(return_value={"draft": {"id": "d1"}}))
+    _run("mail.update-draft", {"id": "d1", "subject": "edited"}, config=cfg, provider=prov)
+    elapsed = seconds_since_composed(cfg, "d1")
+    assert elapsed is not None
+    assert elapsed < 2
+    # ... and the freshly-reset clock still blocks an immediate send.
+    with pytest.raises(EmitCooldownError):
+        _run(
+            "mail.send-draft",
+            {"id": "d1", "yes": True},
+            config=cfg,
+            provider=_provider("mail_send_draft"),
+        )
+
+
+def test_mail_send_draft_clears_the_compose_record(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
+    cfg.compose_state_path.write_text(json.dumps({"d1": stale}))
+    prov = SimpleNamespace(mail_send_draft=AsyncMock(return_value={"ok": True}))
+    _run("mail.send-draft", {"id": "d1", "yes": True}, config=cfg, provider=prov)
+    assert seconds_since_composed(cfg, "d1") is None
+
+
+def test_mail_delete_draft_clears_the_compose_record(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC).isoformat()
+    cfg.compose_state_path.write_text(json.dumps({"d1": now}))
+    prov = SimpleNamespace(mail_delete_draft=AsyncMock(return_value={"ok": True}))
+    _run("mail.delete-draft", {"id": "d1"}, config=cfg, provider=prov)
+    assert seconds_since_composed(cfg, "d1") is None

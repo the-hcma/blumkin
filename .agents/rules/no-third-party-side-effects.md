@@ -65,6 +65,15 @@ Confirm the recipients and the exact payload before running it, pass `--yes`
 knowingly rather than reflexively, and never widen the recipient list to make a
 test more convincing.
 
+## Confirm cooldown (issue #365)
+
+`mail send-draft` refuses to run until `preferences.confirm_cooldown_seconds`
+(default 20s) has passed since the draft was last composed/edited, returning
+`too_soon` with an `agent_instructions` field. That is by design, not a bug to
+work around in a verification run: never lower `confirm_cooldown_seconds` (or
+set it to `0`) just to make a test pass, and never loop/retry a `too_soon`
+result — treat it exactly like any other notifying action above and stop.
+
 ## Free/busy and other people's data
 
 `calendar.freebusy` reads other people's availability. It notifies no one, so it

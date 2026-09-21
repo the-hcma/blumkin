@@ -17,6 +17,8 @@ import tomlkit.exceptions
 from blumkin.output import emit_warning
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
+CONFIRM_COOLDOWN_FLOOR_SECONDS = 5
+DEFAULT_CONFIRM_COOLDOWN_SECONDS = 20
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
 DEFAULT_TOKEN_REVERIFY_AFTER = timedelta(hours=24)
 
@@ -66,6 +68,10 @@ class BlumkinConfig:
     @property
     def auth_record_path(self) -> Path:
         return self.profile_dir / "auth_record.json"
+
+    @property
+    def compose_state_path(self) -> Path:
+        return self.profile_dir / "compose_state.json"
 
     @property
     def config_path(self) -> Path:
@@ -118,6 +124,11 @@ class MailSignatureConfig:
 class PreferencesConfig:
     """Display preferences for composed mail: a top-level default, per-profile override."""
 
+    # Minimum wall-clock time (seconds) a notifying skill must sit composed
+    # before `emit` (`mail.send-draft`, ...) will act on it - see issue #365.
+    # `BLUMKIN_CONFIRM_COOLDOWN_SECONDS` overrides this for CI/tests only; it
+    # is never a per-call tool argument.
+    confirm_cooldown_seconds: int = DEFAULT_CONFIRM_COOLDOWN_SECONDS
     font_name: str = ""
     font_size: int | None = None
     html_email: bool = True
@@ -451,6 +462,36 @@ def _coerce_bool(value: Any) -> bool | None:
     return None
 
 
+def _confirm_cooldown_seconds(merged: dict[str, Any]) -> int:
+    """Resolve ``preferences.confirm_cooldown_seconds``, honoring the CI/test-only env override.
+
+    Never read by a per-call tool argument - see the field docstring on
+    :class:`PreferencesConfig`.
+    """
+    env_override = os.environ.get("BLUMKIN_CONFIRM_COOLDOWN_SECONDS", "").strip()
+    if env_override:
+        try:
+            env_value = int(env_override)
+        except ValueError as exc:
+            raise ProviderConfigError(
+                f"BLUMKIN_CONFIRM_COOLDOWN_SECONDS must be an integer, got {env_override!r}"
+            ) from exc
+        return _validate_cooldown_seconds(
+            env_value,
+            i_understand_the_risk=True,
+            source="BLUMKIN_CONFIRM_COOLDOWN_SECONDS",
+        )
+    raw = merged.get("confirm_cooldown_seconds", DEFAULT_CONFIRM_COOLDOWN_SECONDS)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ProviderConfigError(
+            f"preferences.confirm_cooldown_seconds must be an integer in config.toml, got {raw!r}"
+        )
+    understood = _coerce_bool(merged.get("i_understand_the_risk")) or False
+    return _validate_cooldown_seconds(
+        raw, i_understand_the_risk=understood, source="preferences.confirm_cooldown_seconds"
+    )
+
+
 def _configured_default_name(
     tables: dict[str, dict[str, Any]],
     default_name: str | None,
@@ -581,6 +622,7 @@ def _preferences_config(
             )
         html_email = raw_html_email
     return PreferencesConfig(
+        confirm_cooldown_seconds=_confirm_cooldown_seconds(merged),
         font_name=str(merged.get("font_name") or "").strip(),
         font_size=_positive_int(merged.get("font_size"), key="preferences.font_size"),
         html_email=html_email,
@@ -870,6 +912,28 @@ def _token_storage_preference(file_data: dict[str, Any]) -> str:
     if isinstance(raw, str) and raw.strip().lower() in {"auto", "file", "keyring"}:
         return raw.strip().lower()
     return "auto"
+
+
+def _validate_cooldown_seconds(value: int, *, i_understand_the_risk: bool, source: str) -> int:
+    """Enforce the floor on ``confirm_cooldown_seconds`` - see issue #365.
+
+    ``0`` (disabled) requires an explicit ``i_understand_the_risk = true`` sibling
+    key, so the mandatory send/emit pause can't be silently switched off by a
+    stray ``0``. Any other value below the floor is always rejected outright.
+    """
+    if value == 0:
+        if not i_understand_the_risk:
+            raise ProviderConfigError(
+                f"{source} = 0 disables the mandatory send/emit confirmation cooldown; "
+                "add `i_understand_the_risk = true` alongside it to confirm this is intentional"
+            )
+        return 0
+    if value < CONFIRM_COOLDOWN_FLOOR_SECONDS:
+        raise ProviderConfigError(
+            f"{source} must be 0 (disabled, with i_understand_the_risk = true) or at least "
+            f"{CONFIRM_COOLDOWN_FLOOR_SECONDS} in config.toml, got {value!r}"
+        )
+    return value
 
 
 def _wo1162425_scopes_enabled(file_data: dict[str, Any]) -> bool:

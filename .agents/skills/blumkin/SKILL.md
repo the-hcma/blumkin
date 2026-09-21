@@ -180,7 +180,18 @@ original's attachments.
      `prompt` yourself against the input it implies (fetch that input with the
      `mail` / `drive` reads above). blumkin picks nothing and runs no model. A
      template with `conflict: true` has clashing copies — ask the user.
-5. Writes (require `--yes` when they notify others):
+5. Writes (require `--yes` when they notify others). **Before every single call
+   to a skill that notifies someone else** (an event invite/RSVP/cancel, a sent
+   or forwarded/replied email once it is actually sent, a chat message/edit),
+   restate exactly what will go out (recipients, subject/text, timing) and get
+   the user's explicit go-ahead in that turn — a decision made earlier in the
+   conversation, or on a similar-looking action, does not carry over. Passing
+   `--yes` is not the confirmation; it must follow one. `mail send-draft` also
+   enforces a minimum wall-clock gap after the draft was last composed/edited
+   (`preferences.confirm_cooldown_seconds`, default 20s): calling it too soon
+   fails with `too_soon` and an `agent_instructions` field telling you not to
+   retry automatically — show the user the exact drafted content and wait for
+   a real confirmation instead of looping on the same call.
    - `blumkin calendar accept --event-id '<id>' [--comment TEXT] --yes`
    - `blumkin calendar decline --event-id '<id>' [--comment TEXT] --yes` /
      `blumkin calendar tentative …` - RSVP no / maybe. Both take

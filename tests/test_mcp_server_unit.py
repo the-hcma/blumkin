@@ -11,6 +11,7 @@ import asyncio
 import sys
 import tomllib
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -222,6 +223,33 @@ def test_provider_exception_is_classified_into_structured_content() -> None:
     assert result.is_error is True
     assert result.structured_content["error"] == "missing_scope"
     assert result.structured_content["hint"]
+
+
+def test_emit_cooldown_surfaces_too_soon_with_agent_instructions(tmp_path) -> None:
+    """A too-soon `mail.send-draft` (issue #365) must carry the directive fields,
+    not just a slug - an agent must be told to confirm with the user, not retry."""
+    from blumkin.config import load_config
+
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nconfirm_cooldown_seconds = 60\n"
+    )
+    with patch.dict("os.environ", {"BLUMKIN_CONFIG_DIR": str(tmp_path)}):
+        cfg = load_config()
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC).isoformat()
+    cfg.compose_state_path.write_text('{"d1": "' + now + '"}')
+    prov = SimpleNamespace(mail_send_draft=AsyncMock(return_value={"ok": True}))
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=cfg),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        result = _drive(lambda c: c.call_tool("mail.send-draft", {"id": "d1", "confirm": True}))
+    assert result.is_error is True
+    assert result.structured_content["error"] == "too_soon"
+    assert result.structured_content["retry_after_seconds"] > 0
+    assert "confirm" in result.structured_content["agent_instructions"].lower()
+    prov.mail_send_draft.assert_not_awaited()
 
 
 def test_unknown_tool_is_a_domain_error() -> None:

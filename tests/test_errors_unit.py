@@ -24,6 +24,7 @@ from blumkin.skills.calendar import (
 from blumkin.skills.chat import ChatAttachmentScopeError, ChatAttachmentSkippedError
 from blumkin.skills.errors import (
     ConsentRequiredError,
+    EmitCooldownError,
     ScopeAddonDisabledError,
     classify_exception,
 )
@@ -41,6 +42,14 @@ def test_gate_exceptions_are_usage_errors_with_their_hint() -> None:
     assert (info.slug, info.exit_code, info.hint) == ("usage_error", EXIT_USAGE, "do it with --yes")
     info = classify_exception(ScopeAddonDisabledError("off", hint="turn it on"))
     assert (info.slug, info.exit_code) == ("usage_error", EXIT_USAGE)
+
+
+def test_emit_cooldown_error_is_too_soon_with_agent_instructions_and_retry_after() -> None:
+    info = classify_exception(EmitCooldownError("too soon", retry_after_seconds=12.5))
+    assert (info.slug, info.exit_code) == ("too_soon", EXIT_USAGE)
+    assert info.retry_after_seconds == 12.5
+    assert info.agent_instructions
+    assert "confirm" in info.agent_instructions.lower()
 
 
 def test_zoneinfo_not_found_is_a_usage_error_despite_subclassing_lookuperror() -> None:

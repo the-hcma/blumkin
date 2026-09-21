@@ -10,7 +10,13 @@ from pathlib import Path
 import pytest
 
 from blumkin import auth
-from blumkin.config import DEFAULT_TOKEN_REVERIFY_AFTER, list_profiles, load_config
+from blumkin.config import (
+    CONFIRM_COOLDOWN_FLOOR_SECONDS,
+    DEFAULT_CONFIRM_COOLDOWN_SECONDS,
+    DEFAULT_TOKEN_REVERIFY_AFTER,
+    list_profiles,
+    load_config,
+)
 from blumkin.providers import google_auth
 from blumkin.providers.kind import ProviderConfigError
 
@@ -731,6 +737,74 @@ def test_preferences_font_size_must_be_a_positive_int(tmp_path: Path, monkeypatc
     )
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     with pytest.raises(ProviderConfigError, match="positive integer"):
+        load_config()
+
+
+def test_confirm_cooldown_seconds_default_when_unset(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    cfg = load_config()
+    assert cfg.preferences.confirm_cooldown_seconds == DEFAULT_CONFIRM_COOLDOWN_SECONDS
+
+
+def test_confirm_cooldown_seconds_from_config(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nconfirm_cooldown_seconds = 45\n"
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    cfg = load_config()
+    assert cfg.preferences.confirm_cooldown_seconds == 45
+
+
+def test_confirm_cooldown_seconds_below_floor_rejected(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nconfirm_cooldown_seconds = 1\n"
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    with pytest.raises(ProviderConfigError, match="at least"):
+        load_config()
+
+
+def test_confirm_cooldown_seconds_zero_requires_understood_risk(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nconfirm_cooldown_seconds = 0\n"
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    with pytest.raises(ProviderConfigError, match="i_understand_the_risk"):
+        load_config()
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nconfirm_cooldown_seconds = 0\n"
+        "i_understand_the_risk = true\n"
+    )
+    cfg = load_config()
+    assert cfg.preferences.confirm_cooldown_seconds == 0
+
+
+def test_confirm_cooldown_seconds_env_override(tmp_path: Path, monkeypatch) -> None:
+    """The CI/test-only env override bypasses the file's floor/opt-out ceremony for 0."""
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nconfirm_cooldown_seconds = 45\n"
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BLUMKIN_CONFIRM_COOLDOWN_SECONDS", "0")
+    cfg = load_config()
+    assert cfg.preferences.confirm_cooldown_seconds == 0
+
+
+def test_confirm_cooldown_seconds_env_override_still_enforces_floor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BLUMKIN_CONFIRM_COOLDOWN_SECONDS", str(CONFIRM_COOLDOWN_FLOOR_SECONDS - 1))
+    with pytest.raises(ProviderConfigError, match="at least"):
         load_config()
 
 

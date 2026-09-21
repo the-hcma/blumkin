@@ -1025,7 +1025,11 @@ Example:
   blumkin mail send-draft --id AAMk... --yes
 
 Sends an existing draft (from `mail draft` / `mail reply` / `mail forward`).
-Requires `--yes` - this is the step that actually delivers mail.
+Requires `--yes` - this is the step that actually delivers mail. Also enforced:
+a minimum wait since the draft was last composed/edited
+(`preferences.confirm_cooldown_seconds`, default 20s) - calling this too soon
+fails with `too_soon` rather than sending, so you have a real chance to review
+the draft first.
 """
 
 MAIL_SIGNATURE_EPILOG = """

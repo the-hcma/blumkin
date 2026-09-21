@@ -188,6 +188,10 @@ def _error_result(exc: BaseException) -> types.CallToolResult:
     body: dict[str, Any] = {"ok": False, "error": info.slug, "message": info.message}
     if info.hint:
         body["hint"] = info.hint
+    if info.agent_instructions:
+        body["agent_instructions"] = info.agent_instructions
+    if info.retry_after_seconds is not None:
+        body["retry_after_seconds"] = info.retry_after_seconds
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=json.dumps(body))],
         structured_content=body,
