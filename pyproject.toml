@@ -39,6 +39,15 @@ dependencies = [
     "icalendar>=7.3.0",
     "mcp>=2.2.0",
     "msal>=1.38.0",
+    # msgraph-core 1.5.1 (the current release) declares compatibility with
+    # microsoft-kiota-http<2.0.0, but its AsyncGraphTransport gates the whole
+    # middleware pipeline (including the .me URL-rewrite handler) on a
+    # hasattr(request, 'options') check that kiota-http >=1.13.0 no longer
+    # satisfies (it moved to request.extensions instead). That silently
+    # breaks every `.me`-based Graph call (404 on the literal placeholder
+    # path). Pin below the break until msgraph-core catches up; see issue
+    # #354 and upstream microsoftgraph/msgraph-sdk-python-core#1128.
+    "microsoft-kiota-http>=1.11.6,<1.13.0",
     "msgraph-sdk>=1.62.0",
     "python-docx>=1.2.0",
     "tomlkit>=0.15.1",
