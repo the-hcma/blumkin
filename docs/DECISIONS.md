@@ -242,3 +242,27 @@ context without a provider round-trip. See `docs/operator-config.md`.
   tool surface, the model does the ambiguous interpretation" split as `#209`'s
   trigger matching. Explicit Graph directory search stays `blumkin people
   resolve`.
+
+### D13 - brand icon: where `blumkin.png` can and cannot be wired in ([#360](https://github.com/the-hcma/blumkin/issues/360))
+
+`docs/assets/blumkin-icon.png` (a downscaled copy of the source artwork) is the
+canonical brand asset. Spike results on the candidate spots from #360:
+
+- **README.md / PyPI project page.** Works today - `README.md` links the raw
+  GitHub URL so it renders both on GitHub and on PyPI (PyPI does not resolve
+  relative repo paths in the long description).
+- **macOS Keychain / Touch ID prompts.** Not achievable with a loose PNG. Those
+  dialogs derive their icon from the requesting process's code-signed `.app`
+  bundle (`CFBundleIconFile` in `Info.plist`); a bare CLI binary invoked from a
+  shell has no bundle to brand. Revisit only if blumkin ever ships as a signed
+  `.app` (it does not today).
+- **`blumkin-agent` (rust-agent).** Same constraint - it is a plain daemon
+  binary, not a LaunchAgent-registered, code-signed bundle, so it has no
+  OS-level icon slot yet either.
+- **MCP client registration (`blumkin mcp install`).** No icon field exists in
+  blumkin's MCP server manifest or in the client configs it writes today; the
+  hosts checked (Claude, Cursor, Copilot) do not expose a per-server icon in
+  their registration format as of this writing.
+- **GitHub repo social preview.** No public REST API for this - it is a
+  Settings -> General -> Social preview upload, done once by hand from
+  `docs/assets/blumkin-icon.png`.

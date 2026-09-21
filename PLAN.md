@@ -7,7 +7,8 @@
 > for the original rationale (§1–§10) and because `docs/agent-integration.md`
 > cites §6.1's skill-vs-MCP tradeoff.
 
-Personal Microsoft 365 / Graph **skills CLI**. Named after Rose “Mrs. B” Blumkin.
+Personal Microsoft 365 / Graph **skills CLI**. Named after
+[Rose "Mrs. B" Blumkin](https://en.wikipedia.org/wiki/Rose_Blumkin).
 
 **Language decision:** **Python 3.14+** with **`uv`** for packaging and local gates (Blumkin is a Graph skills CLI, not a Bot Framework host). End users and agents invoke **`blumkin` on `PATH`**, not `uv run blumkin`.
 
