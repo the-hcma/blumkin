@@ -11,6 +11,7 @@ re-enable the agent path deliberately and install a small fake in-memory
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -262,6 +263,21 @@ def test_delete_invalidates_the_agent_cache_for_that_profile(
     assert secret_store._agent_profile_key(cfg) not in fake_agent.cached
     value, _ = secret_store.read_text_and_backend(cfg, "google_token")
     assert value is None, "a deleted secret must not still be served from the agent cache"
+
+
+def test_delete_keyring_entry_invalidates_the_agent_cache_even_for_probe_cfg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_agent: _FakeAgent
+) -> None:
+    cfg = _load(tmp_path, monkeypatch)
+    probe_cfg = replace(cfg, token_reverify_after=None)
+    profile_key = secret_store._agent_profile_key(probe_cfg)
+    fake_agent.cached[profile_key] = json.dumps(
+        {"backend": "keyring", "slot": "google_token", "values": {"google_token": "secret-value"}}
+    )
+
+    secret_store.delete_keyring_entry(probe_cfg, "google_token")
+
+    assert profile_key not in fake_agent.cached
 
 
 def test_read_ms_bundle_and_backend_unlocks_and_then_reuses_the_cache(

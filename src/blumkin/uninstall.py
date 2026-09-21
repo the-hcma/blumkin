@@ -14,10 +14,12 @@ import os
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
+from blumkin import secret_store as secret_store_mod
 from blumkin.agent import client as agent_client
 from blumkin.agent.paths import is_supported_platform, runtime_dir
 from blumkin.config import BlumkinConfig, config_dir, list_profiles, profile_probe_config
@@ -30,12 +32,11 @@ from blumkin.mcp_install import (
     current_entry,
     remove_entry,
 )
+from blumkin.providers.kind import ProviderConfigError
 from blumkin.secret_store import (
     SecretKind,
     SecretWriteError,
     delete_keyring_entry,
-    exists,
-    ms_bundle_exists,
 )
 
 Category = Literal["agent", "mcp", "package", "config", "keyring"]
@@ -85,6 +86,7 @@ class Plan:
     config: Target
     keyring: Target
     _install: Install
+    _keyring_probe_error: str | None
     _profiles: tuple[tuple[str, BlumkinConfig], ...]
 
 
@@ -104,13 +106,21 @@ def build_plan(*, cwd: Path | None = None) -> Plan:
     """Compute every uninstall target without deleting or deregistering anything."""
     worktree = Path.cwd() if cwd is None else cwd
     install = detect_install()
-    profiles = tuple(
-        (row["name"], profile_probe_config(str(row["name"]))) for row in list_profiles()
-    )
+    keyring_probe_error: str | None = None
+    try:
+        profiles = tuple(
+            (row["name"], profile_probe_config(str(row["name"]))) for row in list_profiles()
+        )
+    except ProviderConfigError as exc:
+        profiles = ()
+        keyring_probe_error = str(exc)
+    except tomllib.TOMLDecodeError as exc:
+        profiles = ()
+        keyring_probe_error = f"config.toml is not valid TOML: {exc}"
     return Plan(
         agent=_build_agent_target(),
         config=_build_config_target(),
-        keyring=_build_keyring_target(profiles),
+        keyring=_build_keyring_target(profiles, probe_error=keyring_probe_error),
         mcp=tuple(
             _build_mcp_target(client, scope, cwd=worktree)
             for client in CLIENTS
@@ -118,6 +128,7 @@ def build_plan(*, cwd: Path | None = None) -> Plan:
         ),
         package=_build_package_target(install),
         _install=install,
+        _keyring_probe_error=keyring_probe_error,
         _profiles=profiles,
     )
 
@@ -132,14 +143,29 @@ def remove_agent() -> Outcome:
             outcome="not_present",
             detail="blumkin-agent is not supported on this platform",
         )
-    runtime = runtime_dir()
+    try:
+        runtime = runtime_dir()
+    except (OSError, RuntimeError) as exc:
+        return Outcome(category="agent", label=label, outcome="failed", detail=str(exc))
     try:
         agent_client.call("shutdown", spawn=False)
     except agent_client.AgentUnreachableError as exc:
         return Outcome(category="agent", label=label, outcome="failed", detail=str(exc))
     except agent_client.AgentUnavailableError:
         pass
-    shutil.rmtree(runtime, ignore_errors=True)
+    try:
+        shutil.rmtree(runtime)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        return Outcome(category="agent", label=label, outcome="failed", detail=str(exc))
+    if runtime.exists():
+        return Outcome(
+            category="agent",
+            label=label,
+            outcome="failed",
+            detail=f"runtime directory still exists at {runtime}",
+        )
     return Outcome(
         category="agent",
         label=label,
@@ -185,11 +211,15 @@ def remove_config() -> Outcome:
     )
 
 
-def remove_keyring(profiles: tuple[tuple[str, BlumkinConfig], ...]) -> Outcome:
+def remove_keyring(
+    profiles: tuple[tuple[str, BlumkinConfig], ...], *, probe_error: str | None = None
+) -> Outcome:
     """Delete keyring entries for every captured profile, leaving files untouched."""
     label = "Delete blumkin-owned keyring items"
-    before = {name: _profile_secret_presence(cfg) for name, cfg in profiles}
-    touched = sorted(name for name, presence in before.items() if any(presence.values()))
+    if probe_error is not None:
+        return Outcome(category="keyring", label=label, outcome="failed", detail=probe_error)
+    states = {name: _profile_keyring_state(cfg) for name, cfg in profiles}
+    touched = sorted(name for name, state in states.items() if state.present or state.unknown)
     if not touched:
         return Outcome(
             category="keyring",
@@ -199,6 +229,12 @@ def remove_keyring(profiles: tuple[tuple[str, BlumkinConfig], ...]) -> Outcome:
         )
     failures: list[str] = []
     for name, cfg in profiles:
+        state = states[name]
+        if not (state.present or state.unknown):
+            continue
+        if state.backend_unavailable:
+            failures.append(f"{name}: OS keychain backend unavailable")
+            continue
         for kind in _SECRET_KINDS:
             try:
                 delete_keyring_entry(cfg, kind)
@@ -332,8 +368,21 @@ def _build_config_target() -> Target:
     return Target(category="config", label="Delete local state", present=present, detail=detail)
 
 
-def _build_keyring_target(profiles: tuple[tuple[str, BlumkinConfig], ...]) -> Target:
-    touched = sorted(name for name, cfg in profiles if any(_profile_secret_presence(cfg).values()))
+def _build_keyring_target(
+    profiles: tuple[tuple[str, BlumkinConfig], ...], *, probe_error: str | None
+) -> Target:
+    if probe_error is not None:
+        return Target(
+            category="keyring",
+            label="Delete blumkin-owned keyring items",
+            present=True,
+            detail=probe_error,
+        )
+    touched = sorted(
+        name
+        for name, cfg in profiles
+        if (state := _profile_keyring_state(cfg)).present or state.unknown
+    )
     if touched:
         detail = "profiles: " + ", ".join(touched)
     else:
@@ -377,13 +426,53 @@ def _mcp_label(client: str, scope: Scope) -> str:
     return f"Remove MCP registration for {_LABELS[client]} ({scope})"
 
 
-def _profile_secret_presence(cfg: BlumkinConfig) -> dict[SecretKind, bool]:
-    ms = ms_bundle_exists(cfg)
-    return {
-        "auth_record": ms["auth_record"],
-        "google_token": exists(cfg, "google_token"),
-        "token_cache": ms["token_cache"],
-    }
+@dataclass(frozen=True, slots=True)
+class _KeyringState:
+    backend_unavailable: bool
+    present: bool
+    unknown: bool
+
+
+def _keyring_kind_present(
+    cfg: BlumkinConfig, keyring_module: Any, kind: SecretKind
+) -> tuple[bool, bool]:
+    account = secret_store_mod._keyring_account(cfg, kind)
+    try:
+        if kind in secret_store_mod._BUNDLED_KINDS:
+            if secret_store_mod._bundled_item_present_for_delete(keyring_module, account, kind):
+                return (True, False)
+            legacy = secret_store_mod._legacy_per_kind_keyring_account(cfg, kind)
+            return (
+                secret_store_mod._call_keyring_with_timeout(
+                    keyring_module.get_password, secret_store_mod._KEYRING_SERVICE, legacy
+                )
+                is not None,
+                False,
+            )
+        return (
+            secret_store_mod._call_keyring_with_timeout(
+                keyring_module.get_password, secret_store_mod._KEYRING_SERVICE, account
+            )
+            is not None,
+            False,
+        )
+    except Exception:
+        return (False, True)
+
+
+def _profile_keyring_state(cfg: BlumkinConfig) -> _KeyringState:
+    if cfg.token_storage == "file":
+        return _KeyringState(backend_unavailable=False, present=False, unknown=False)
+    keyring_module = secret_store_mod._keyring_module()
+    if keyring_module is None:
+        return _KeyringState(backend_unavailable=True, present=False, unknown=True)
+    present = False
+    unknown = False
+    for kind in _SECRET_KINDS:
+        kind_present, kind_unknown = _keyring_kind_present(cfg, keyring_module, kind)
+        present = present or kind_present
+        unknown = unknown or kind_unknown
+    return _KeyringState(backend_unavailable=False, present=present, unknown=unknown)
 
 
 def _runtime_dir_path() -> Path:

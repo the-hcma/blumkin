@@ -667,3 +667,35 @@ def test_remove_entry_cli_failure_raises(
 
     with pytest.raises(mi.McpInstallError, match="could not remove"):
         mi.remove_entry("claude", "user", home)
+
+
+def test_remove_entry_claude_project_scope_refuses_a_symlink_on_remove(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]]
+) -> None:
+    cwd = home / "repo"
+    cwd.mkdir()
+    victim = home / "secret"
+    victim.write_text(
+        json.dumps({"mcpServers": {"blumkin": {"command": "blumkin", "args": ["mcp", "serve"]}}})
+    )
+    (cwd / ".mcp.json").symlink_to(victim)
+
+    with pytest.raises(mi.McpInstallError, match="symlink"):
+        mi.remove_entry("claude", "project", cwd)
+
+    assert fake_subprocess == []
+    assert json.loads(victim.read_text())["mcpServers"]["blumkin"]["command"] == "blumkin"
+
+
+def test_remove_entry_file_driven_invalid_servers_returns_absent(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
+    cwd = home / "repo"
+    cwd.mkdir()
+    path = cwd / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"mcpServers": []}))
+
+    assert mi.remove_entry("cursor", "project", cwd) == "absent"
+    assert json.loads(path.read_text()) == {"mcpServers": []}

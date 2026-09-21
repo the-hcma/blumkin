@@ -1327,7 +1327,8 @@ Examples:
 Each removal category keeps its own confirmation boundary: on a TTY the
 command prompts per category, and MCP registrations prompt per
 client/scope. Outside a TTY, only categories explicitly enabled by flags
-are acted on; `--yes` just skips prompts, it does not imply "remove all".
+are acted on, and destructive work also requires `--yes`; `--yes` just
+skips prompts, it does not imply "remove all".
 """
 
 UPGRADE_EPILOG = """

@@ -418,6 +418,10 @@ def remove_entry(client: str, scope: Scope, cwd: Path) -> Literal["removed", "ab
     """
     if current_entry(client, scope, cwd) is None:
         return "absent"
+    path = config_path(client, scope, cwd)
+    assert path is not None  # config_path covers every client
+    if scope == "project":
+        _reject_symlinked_target(path)
     if _via(client, scope) == "cli":
         remove = (
             ["claude", "mcp", "remove", "blumkin", "-s", scope]
@@ -432,31 +436,28 @@ def remove_entry(client: str, scope: Scope, cwd: Path) -> Literal["removed", "ab
                 hint=f"Run `{' '.join(remove)}` to see the error.",
             )
         return "removed"
-    path = config_path(client, scope, cwd)
-    assert path is not None
-    if scope == "project":
-        _reject_symlinked_target(path)
     target = path.resolve() if scope == "user" and path.is_symlink() else path
     data = _read_config(path)
     servers = data.get("mcpServers")
-    if isinstance(servers, dict) and "blumkin" in servers:
-        del servers["blumkin"]
-        body = json.dumps(data, indent=2) + "\n"
-        tmp = target.with_name(f".{target.name}.blumkin-{os.getpid()}")
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(body, "utf-8")
-            if target.is_file():
-                shutil.copymode(target, tmp)
-            else:
-                tmp.chmod(0o600)
-            os.replace(tmp, target)
-        except OSError as exc:
-            tmp.unlink(missing_ok=True)
-            raise McpInstallError(
-                f"{_LABELS[client]}: could not write {target}: {exc}",
-                hint=f"Check that {target} is a regular file you own.",
-            ) from exc
+    if not (isinstance(servers, dict) and "blumkin" in servers):
+        return "absent"
+    del servers["blumkin"]
+    body = json.dumps(data, indent=2) + "\n"
+    tmp = target.with_name(f".{target.name}.blumkin-{os.getpid()}")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(body, "utf-8")
+        if target.is_file():
+            shutil.copymode(target, tmp)
+        else:
+            tmp.chmod(0o600)
+        os.replace(tmp, target)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise McpInstallError(
+            f"{_LABELS[client]}: could not write {target}: {exc}",
+            hint=f"Check that {target} is a regular file you own.",
+        ) from exc
     return "removed"
 
 

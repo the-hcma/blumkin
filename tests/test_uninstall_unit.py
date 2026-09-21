@@ -14,6 +14,7 @@ from blumkin.agent.client import AgentUnavailableError, AgentUnreachableError
 from blumkin.config import load_config
 from blumkin.install_method import METHOD_PIPX, METHOD_UNMANAGED, METHOD_UV_TOOL, Install
 from blumkin.mcp_install import McpInstallError
+from blumkin.providers.kind import ProviderConfigError
 from blumkin.secret_store import SecretWriteError
 
 
@@ -97,10 +98,13 @@ def test_build_plan_reports_present_targets(
     )
     monkeypatch.setattr(
         uninstall,
-        "ms_bundle_exists",
-        lambda cfg: {"auth_record": True, "token_cache": False},
+        "_profile_keyring_state",
+        lambda cfg: uninstall._KeyringState(
+            backend_unavailable=False,
+            present=True,
+            unknown=False,
+        ),
     )
-    monkeypatch.setattr(uninstall, "exists", lambda cfg, kind: kind == "google_token")
 
     plan = uninstall.build_plan(cwd=tmp_path)
 
@@ -113,6 +117,27 @@ def test_build_plan_reports_present_targets(
     assert plan.package.present is True
     assert plan.config.present is True
     assert plan.keyring.present is True
+
+
+def test_build_plan_degrades_keyring_probe_errors_to_the_keyring_category(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        uninstall,
+        "list_profiles",
+        lambda: (_ for _ in ()).throw(ProviderConfigError("bad profiles")),
+    )
+    monkeypatch.setattr(
+        uninstall,
+        "detect_install",
+        lambda: Install(checkout=None, managed_path=Path("/x"), method=METHOD_UNMANAGED),
+    )
+
+    plan = uninstall.build_plan(cwd=tmp_path)
+
+    assert plan.package.present is False
+    assert plan.keyring.present is True
+    assert plan._keyring_probe_error == "bad profiles"
 
 
 def test_remove_agent_succeeds_and_deletes_runtime(
@@ -144,6 +169,22 @@ def test_remove_agent_reports_a_wedged_agent(
 
     assert outcome.outcome == "failed"
     assert runtime.exists()
+
+
+def test_remove_agent_reports_runtime_dir_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _runtime(tmp_path, monkeypatch)
+    monkeypatch.setattr(uninstall, "is_supported_platform", lambda: True)
+    monkeypatch.setattr(
+        uninstall,
+        "runtime_dir",
+        lambda: (_ for _ in ()).throw(RuntimeError("bad")),
+    )
+
+    outcome = uninstall.remove_agent()
+
+    assert outcome.outcome == "failed"
 
 
 @pytest.mark.parametrize(
@@ -192,6 +233,28 @@ def test_remove_package_covers_success_failure_and_not_present(
     assert uninstall.remove_package(unmanaged).outcome == "not_present"
 
 
+def test_remove_package_reports_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
+    install = Install(checkout=None, managed_path=Path("/x"), method=METHOD_PIPX)
+
+    def _oserror(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("missing")
+
+    monkeypatch.setattr(uninstall.subprocess, "run", _oserror)
+
+    assert uninstall.remove_package(install).outcome == "failed"
+
+
+def test_remove_package_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    install = Install(checkout=None, managed_path=Path("/x"), method=METHOD_PIPX)
+
+    def _timeout(*args: Any, **kwargs: Any) -> Any:
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=60)
+
+    monkeypatch.setattr(uninstall.subprocess, "run", _timeout)
+
+    assert uninstall.remove_package(install).outcome == "failed"
+
+
 def test_remove_config_covers_success_failure_and_not_present(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -229,18 +292,67 @@ def test_remove_keyring_removes_keyring_but_keeps_plaintext_files(
     assert key not in fake.store
 
 
+def test_remove_keyring_reports_backend_unavailable_for_keyring_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path, monkeypatch)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+
+    outcome = uninstall.remove_keyring(((cfg.profile, cfg),))
+
+    assert outcome.outcome == "failed"
+
+
+def test_remove_keyring_reports_not_present_for_file_backed_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path, monkeypatch, token_storage="file")
+    cfg.google_token_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.google_token_path.write_text("file-value")
+
+    outcome = uninstall.remove_keyring(((cfg.profile, cfg),))
+
+    assert outcome.outcome == "not_present"
+
+
+def test_remove_keyring_still_attempts_delete_when_probe_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    key = (secret_store._KEYRING_SERVICE, secret_store._keyring_account(cfg, "google_token"))
+    fake.store[key] = "keyring-value"
+
+    def _probe_fails(service: str, username: str) -> str | None:
+        raise RuntimeError("locked")
+
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    monkeypatch.setattr(fake, "get_password", _probe_fails)
+
+    outcome = uninstall.remove_keyring(((cfg.profile, cfg),))
+
+    assert outcome.outcome == "removed"
+    assert key not in fake.store
+
+
 def test_remove_keyring_reports_not_present_and_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = _config(tmp_path, monkeypatch)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
     assert uninstall.remove_keyring(((cfg.profile, cfg),)).outcome == "not_present"
-
-    monkeypatch.setattr(uninstall, "exists", lambda cfg, kind: kind == "google_token")
     monkeypatch.setattr(
         uninstall,
-        "ms_bundle_exists",
-        lambda cfg: {"auth_record": False, "token_cache": False},
+        "_profile_keyring_state",
+        lambda cfg: uninstall._KeyringState(
+            backend_unavailable=False,
+            present=True,
+            unknown=False,
+        ),
     )
 
     def _boom(cfg: Any, kind: Any) -> None:

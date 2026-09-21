@@ -1717,6 +1717,15 @@ def uninstall_cmd(
         config_flag,
         keyring_flag,
     )
+    if not dry_run and not tty and not yes:
+        _emit_error(
+            error="usage_error",
+            message="non-interactive uninstall needs --yes and one or more category flags",
+            as_json=as_json,
+            hint="Example: `blumkin uninstall --agent --package --yes` "
+            "or `blumkin uninstall --dry-run --json`.",
+        )
+        raise SystemExit(EXIT_USAGE)
     if not dry_run and not interactive and not any(flag is not None for flag in requested):
         _emit_error(
             error="usage_error",
@@ -1837,7 +1846,7 @@ def uninstall_cmd(
         plan.keyring,
         explicit=keyring_flag,
         flag_name="--keyring",
-        remove=lambda: un.remove_keyring(plan._profiles),
+        remove=lambda: un.remove_keyring(plan._profiles, probe_error=plan._keyring_probe_error),
     )
     any_failed = any_failed or any(row.outcome == "failed" for row in (package, config, keyring))
 

@@ -68,6 +68,7 @@ def _plan() -> un.Plan:
             category="package", label="package", present=True, detail="package detail"
         ),
         _install=Install(checkout=None, managed_path=Path("/x"), method=METHOD_UV_TOOL),
+        _keyring_probe_error=None,
         _profiles=(),
     )
 
@@ -110,7 +111,9 @@ def _wire(monkeypatch, *, package_outcome: un.OutcomeName = "removed") -> list[s
     monkeypatch.setattr(
         un,
         "remove_keyring",
-        lambda profiles: calls.append("keyring") or _outcome("keyring", "keyring", "removed"),
+        lambda profiles, **kwargs: (
+            calls.append("keyring") or _outcome("keyring", "keyring", "removed")
+        ),
     )
     return calls
 
@@ -131,6 +134,15 @@ def test_cli_uninstall_noninteractive_without_flags_is_usage_error(monkeypatch) 
     _wire(monkeypatch)
 
     result = _invoke(["uninstall", "--json"])
+
+    assert result.exit_code == EXIT_USAGE
+    assert json.loads(result.output)["error"] == "usage_error"
+
+
+def test_cli_uninstall_noninteractive_without_yes_is_usage_error(monkeypatch) -> None:
+    _wire(monkeypatch)
+
+    result = _invoke(["uninstall", "--agent", "--json"])
 
     assert result.exit_code == EXIT_USAGE
     assert json.loads(result.output)["error"] == "usage_error"
@@ -194,3 +206,50 @@ def test_cli_uninstall_mcp_specific_flag_overrides_blanket_decline(monkeypatch) 
     payload = json.loads(result.output)
     assert payload["categories"]["mcp"][0]["outcome"] == "removed"
     assert payload["categories"]["mcp"][1]["outcome"] == "skipped"
+
+
+def test_format_uninstall_human_renders_mcp_labels_and_failure_trailer() -> None:
+    payload = {
+        "ok": False,
+        "dry_run": False,
+        "categories": {
+            "agent": {
+                "label": "agent",
+                "outcome": "removed",
+                "detail": "runtime removed",
+            },
+            "mcp": [
+                {
+                    "label": "Remove MCP registration for Cursor (user)",
+                    "outcome": "removed",
+                    "detail": "registration removed",
+                },
+                {
+                    "label": "Remove MCP registration for Claude Code (project)",
+                    "outcome": "failed",
+                    "detail": "boom",
+                },
+            ],
+            "package": {
+                "label": "package",
+                "outcome": "skipped",
+                "detail": "not confirmed",
+            },
+            "config": {
+                "label": "config",
+                "outcome": "not_present",
+                "detail": "already absent",
+            },
+            "keyring": {
+                "label": "keyring",
+                "outcome": "failed",
+                "detail": "locked",
+            },
+        },
+    }
+
+    lines = cli._format_uninstall_human(payload)
+
+    assert "  Remove MCP registration for Cursor (user): removed - registration removed" in lines
+    assert "  Remove MCP registration for Claude Code (project): FAILED - boom" in lines
+    assert lines[-1] == "one or more uninstall steps failed"
