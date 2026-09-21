@@ -1798,12 +1798,18 @@ def uninstall_cmd(
         flag_name: str,
         remove: Any,
     ) -> un.Outcome:
+        # A category excluded by --no-<category> is honored before the
+        # dry-run preview, not after: otherwise `--dry-run` reports
+        # "would_remove" for a category the same command's non-dry-run
+        # run would skip (issue #349).
+        if explicit is False:
+            if not target.present:
+                return _not_present_outcome(target)
+            return _skip_outcome(target, f"excluded by {flag_name.replace('--', '--no-', 1)}")
         if dry_run:
             return _dry_run_outcome(target)
         if not target.present:
             return _not_present_outcome(target)
-        if explicit is False:
-            return _skip_outcome(target, f"excluded by {flag_name.replace('--', '--no-', 1)}")
         if explicit is True:
             return remove()
         if interactive:
