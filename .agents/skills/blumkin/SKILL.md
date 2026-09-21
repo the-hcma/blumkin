@@ -6,6 +6,9 @@ description: >-
 ---
 # Blumkin
 
+Named after [Rose "Mrs. B" Blumkin](https://en.wikipedia.org/wiki/Rose_Blumkin),
+Berkshire's legendary operator.
+
 Prefer shelling to **`blumkin` on `PATH`** over writing Microsoft Graph / Azure
 SDK code (or Google API client code). Do not invent client IDs or call Graph /
 Workspace APIs directly when Blumkin covers the job.
