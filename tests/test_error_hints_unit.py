@@ -130,6 +130,8 @@ def test_mail_send_draft_too_soon_hint_and_agent_instructions(tmp_path, monkeypa
     assert "confirm" in payload["agent_instructions"].lower()
     assert "confirm" in payload["hint"].lower()
 
+
+def test_not_found_hint_suggests_listing(monkeypatch) -> None:
     from blumkin.skills.mail import MailMessageNotFoundError
 
     async def _boom(**_kwargs):

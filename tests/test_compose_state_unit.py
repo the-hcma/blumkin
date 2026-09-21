@@ -15,9 +15,12 @@ from blumkin.compose_state import (
 from blumkin.config import load_config
 
 
-def _cfg(tmp_path: Path, monkeypatch):
+def _cfg(tmp_path: Path, monkeypatch, *, cooldown_seconds: int | None = None):
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    prefs = "" if cooldown_seconds is None else f"confirm_cooldown_seconds = {cooldown_seconds}\n"
+    (tmp_path / "config.toml").write_text(
+        f'[profiles.default]\nclient_id = "abc"\n[profiles.default.preferences]\n{prefs}'
+    )
     return load_config()
 
 
@@ -69,6 +72,24 @@ def test_no_profile_dir_yet_does_not_raise(tmp_path: Path, monkeypatch) -> None:
     cfg = _cfg(tmp_path, monkeypatch)
     assert seconds_since_composed(cfg, "draft-1") is None
     clear_composed(cfg, "draft-1")  # no-op, must not raise
+
+
+def test_prune_window_extends_to_cover_a_longer_configured_cooldown(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression: a cooldown longer than _MAX_ENTRY_AGE_SECONDS must not be
+    starved by the prune - the entry has to outlive the cooldown it gates
+    (see issue #365 review)."""
+    long_cooldown = _MAX_ENTRY_AGE_SECONDS + 3600
+    cfg = _cfg(tmp_path, monkeypatch, cooldown_seconds=long_cooldown)
+    past_default_prune = (
+        datetime.now(UTC) - timedelta(seconds=_MAX_ENTRY_AGE_SECONDS + 60)
+    ).isoformat()
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.compose_state_path.write_text(json.dumps({"draft-1": past_default_prune}))
+    elapsed = seconds_since_composed(cfg, "draft-1")
+    assert elapsed is not None
+    assert elapsed < long_cooldown
 
 
 def test_a_naive_timestamp_in_the_state_file_fails_open_not_typeerror(

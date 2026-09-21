@@ -23,9 +23,12 @@ from typing import Any
 
 from blumkin.config import BlumkinConfig
 
-# Entries older than this are pruned on every load/save - a composed artifact
-# that has sat this long was either sent through another path or abandoned;
-# either way it no longer needs to gate anything, so there's no reason to keep it.
+# Floor for how long entries are kept - the effective prune window is
+# max(this, preferences.confirm_cooldown_seconds), so a configured cooldown
+# longer than this floor cannot be starved by the prune (issue #365 review).
+# A composed artifact that has sat past the effective window either went out
+# through another path or was abandoned; either way it no longer needs to
+# gate anything, so there is no reason to keep it.
 _MAX_ENTRY_AGE_SECONDS = 24 * 60 * 60
 
 
@@ -69,6 +72,10 @@ def _load(config: BlumkinConfig) -> dict[str, str]:
         return {}
     if not isinstance(raw, dict):
         return {}
+    # The prune window must outlive the configured cooldown, or a draft composed
+    # longer ago than _MAX_ENTRY_AGE_SECONDS but less than confirm_cooldown_seconds
+    # would get pruned first and then fail open (issue #365 review).
+    max_age = max(_MAX_ENTRY_AGE_SECONDS, config.preferences.confirm_cooldown_seconds)
     cutoff = datetime.now(UTC)
     fresh: dict[str, str] = {}
     for key, value in raw.items():
@@ -79,7 +86,7 @@ def _load(config: BlumkinConfig) -> dict[str, str]:
             age = (cutoff - composed_at).total_seconds()
         except ValueError, TypeError:
             continue
-        if age <= _MAX_ENTRY_AGE_SECONDS:
+        if age <= max_age:
             fresh[key] = value
     return fresh
 
