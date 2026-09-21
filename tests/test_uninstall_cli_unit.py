@@ -130,6 +130,41 @@ def test_cli_uninstall_dry_run_never_removes(monkeypatch) -> None:
     assert payload["categories"]["agent"]["outcome"] == "would_remove"
 
 
+def test_cli_uninstall_dry_run_honors_no_category_flags(monkeypatch) -> None:
+    """`--dry-run` combined with `--no-<category>` must skip that category, not
+    report it as `would_remove` (issue #349)."""
+    calls = _wire(monkeypatch)
+
+    result = _invoke(
+        [
+            "uninstall",
+            "--no-mcp",
+            "--no-package",
+            "--no-config",
+            "--no-keyring",
+            "--dry-run",
+            "--json",
+        ]
+    )
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert calls == []
+    payload = json.loads(result.output)
+    categories = payload["categories"]
+    assert categories["package"]["outcome"] == "skipped"
+    assert categories["package"]["detail"] == "excluded by --no-package"
+    assert categories["config"]["outcome"] == "skipped"
+    assert categories["config"]["detail"] == "excluded by --no-config"
+    assert categories["keyring"]["outcome"] == "skipped"
+    assert categories["keyring"]["detail"] == "excluded by --no-keyring"
+    for mcp_result in categories["mcp"]:
+        if mcp_result["outcome"] != "not_present":
+            assert mcp_result["outcome"] == "skipped"
+            assert mcp_result["detail"] == "excluded by --no-mcp"
+    # A category left included (no --no-agent here) still previews normally.
+    assert categories["agent"]["outcome"] == "would_remove"
+
+
 def test_cli_uninstall_noninteractive_without_flags_is_usage_error(monkeypatch) -> None:
     _wire(monkeypatch)
 
