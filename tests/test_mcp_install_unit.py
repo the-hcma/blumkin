@@ -689,6 +689,16 @@ def test_remove_entry_absent_returns_absent(home: Path, fake_subprocess: list[li
     assert fake_subprocess == []
 
 
+def test_remove_entry_cli_branch_returns_absent_for_a_readable_non_blumkin_config(
+    home: Path, all_clients: None, fake_subprocess: list[list[str]]
+) -> None:
+    path = home / ".claude.json"
+    path.write_text(json.dumps({"mcpServers": {"other": {"command": "other"}}}))
+
+    assert mi.remove_entry("claude", "user", home) == "absent"
+    assert fake_subprocess == []
+
+
 def test_remove_entry_cli_failure_raises(
     home: Path, all_clients: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
