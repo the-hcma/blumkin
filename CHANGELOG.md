@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.6.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.5.0...blumkin-v1.6.0) (2026-09-21)
+
+
+### Features
+
+* add uninstall command with per-category teardown ([#344](https://github.com/the-hcma/blumkin/issues/344)) ([#347](https://github.com/the-hcma/blumkin/issues/347)) ([426b957](https://github.com/the-hcma/blumkin/commit/426b9576db7711015e9ac54a44df97aea65ed080))
+* **agent:** add LocalAuthentication + TTL + mlock secret cache core ([#340](https://github.com/the-hcma/blumkin/issues/340)) ([9b346c3](https://github.com/the-hcma/blumkin/commit/9b346c3bed034e57c7a0b48c175089962d6052ba))
+* **agent:** wire unlock/get_secret protocol commands to the secret cache ([#341](https://github.com/the-hcma/blumkin/issues/341)) ([cdc18cc](https://github.com/the-hcma/blumkin/commit/cdc18cc364db19b465d622daa0b7f21b35475873))
+* cache decrypted MS/Google credentials in blumkin-agent ([#339](https://github.com/the-hcma/blumkin/issues/339)) ([#346](https://github.com/the-hcma/blumkin/issues/346)) ([3503ae9](https://github.com/the-hcma/blumkin/commit/3503ae90e01ca7c6a9ffdf133a29f8a2617cd0b8))
+
+
+### Bug Fixes
+
+* honor --no-&lt;category&gt; flags in uninstall --dry-run preview ([#352](https://github.com/the-hcma/blumkin/issues/352)) ([3f4c2be](https://github.com/the-hcma/blumkin/commit/3f4c2be04651b418bbb09fcdc4d485dd84e87870))
+* pin microsoft-kiota-http below the msgraph-core break ([#357](https://github.com/the-hcma/blumkin/issues/357)) ([407c7e3](https://github.com/the-hcma/blumkin/commit/407c7e3b0fe3a27d14386aa96c3300bf125974bd))
+* report keyring-backed storage accurately in auth login message ([#351](https://github.com/the-hcma/blumkin/issues/351)) ([db38148](https://github.com/the-hcma/blumkin/commit/db3814891a8d7eb8db29eff60432f9e2015c967c))
+* stop concurrent unlock presence checks from canceling each other ([#343](https://github.com/the-hcma/blumkin/issues/343)) ([#345](https://github.com/the-hcma/blumkin/issues/345)) ([ad0114c](https://github.com/the-hcma/blumkin/commit/ad0114c1f45d651405b38cd58ad0f40ee7a90944))
+
 ## [1.5.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.4.0...blumkin-v1.5.0) (2026-09-19)
 
 
