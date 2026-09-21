@@ -709,6 +709,28 @@ def test_mail_draft_records_a_compose_timestamp(tmp_path, monkeypatch) -> None:
     assert elapsed < 2
 
 
+@pytest.mark.parametrize(
+    ("skill_id", "method", "args"),
+    [
+        ("mail.draft", "mail_draft", {"to": ["a@x.com"], "subject": "s"}),
+        ("mail.reply", "mail_reply", {"id": "m1", "body": "thanks"}),
+        ("mail.forward", "mail_forward", {"id": "m1", "to": ["a@x.com"], "body": "fyi"}),
+        ("mail.update-draft", "mail_update_draft", {"id": "d1", "subject": "edited"}),
+    ],
+)
+def test_every_compose_record_skill_stamps_the_cooldown(
+    tmp_path, monkeypatch, skill_id, method, args
+) -> None:
+    """Pins _COMPOSE_RECORD_SKILLS membership by behavior, not just the literal set -
+    a typo/rename here must fail loudly rather than silently drop the cooldown."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = SimpleNamespace(**{method: AsyncMock(return_value={"draft": {"id": "d1"}})})
+    _run(skill_id, args, config=cfg, provider=prov)
+    elapsed = seconds_since_composed(cfg, "d1")
+    assert elapsed is not None
+    assert elapsed < 2
+
+
 def test_mail_update_draft_resets_the_compose_clock(tmp_path, monkeypatch) -> None:
     cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
     cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)

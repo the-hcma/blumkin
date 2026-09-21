@@ -69,3 +69,20 @@ def test_no_profile_dir_yet_does_not_raise(tmp_path: Path, monkeypatch) -> None:
     cfg = _cfg(tmp_path, monkeypatch)
     assert seconds_since_composed(cfg, "draft-1") is None
     clear_composed(cfg, "draft-1")  # no-op, must not raise
+
+
+def test_a_naive_timestamp_in_the_state_file_fails_open_not_typeerror(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression: a hand-edited/tz-less ISO timestamp parses fine via
+    ``fromisoformat`` but cannot be subtracted from an aware ``now()`` -
+    this must be treated as unknown, not raise (see issue #365 review)."""
+    cfg = _cfg(tmp_path, monkeypatch)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.compose_state_path.write_text(json.dumps({"draft-naive": "2026-09-21T10:00:00"}))
+    assert seconds_since_composed(cfg, "draft-naive") is None
+    # And the load-time prune must not raise either, pruning the unusable entry.
+    record_composed(cfg, "draft-fresh")
+    on_disk = json.loads(cfg.compose_state_path.read_text())
+    assert "draft-naive" not in on_disk
+    assert "draft-fresh" in on_disk

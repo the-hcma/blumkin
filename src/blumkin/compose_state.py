@@ -54,9 +54,11 @@ def seconds_since_composed(config: BlumkinConfig, artifact_id: str) -> float | N
         return None
     try:
         composed_at = datetime.fromisoformat(raw)
-    except ValueError:
+        return (datetime.now(UTC) - composed_at).total_seconds()
+    except ValueError, TypeError:
+        # A naive (tz-less) timestamp parses fine but cannot be subtracted from
+        # an aware ``now()`` - treat it the same as any other unprovable value.
         return None
-    return (datetime.now(UTC) - composed_at).total_seconds()
 
 
 def _load(config: BlumkinConfig) -> dict[str, str]:
@@ -74,9 +76,10 @@ def _load(config: BlumkinConfig) -> dict[str, str]:
             continue
         try:
             composed_at = datetime.fromisoformat(value)
-        except ValueError:
+            age = (cutoff - composed_at).total_seconds()
+        except ValueError, TypeError:
             continue
-        if (cutoff - composed_at).total_seconds() <= _MAX_ENTRY_AGE_SECONDS:
+        if age <= _MAX_ENTRY_AGE_SECONDS:
             fresh[key] = value
     return fresh
 
