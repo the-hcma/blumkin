@@ -483,6 +483,30 @@ def test_list_profiles_reports_invalid_preferences_as_an_error(tmp_path: Path, m
     assert "error" in summaries["broken"]
 
 
+def test_list_profiles_reports_invalid_account_type_as_an_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An invalid ``account_type`` must surface as a per-profile error, not only later via
+    ``load_config()`` (issue #297 review) - otherwise ``blumkin profiles list`` reports the
+    profile as healthy and the typo only bites on first actual use.
+    """
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.broken]\n"
+        'client_id = "abc"\n'
+        'account_type = "consumer"\n'  # typo: should be "personal"
+        "\n"
+        "[profiles.fine]\n"
+        'client_id = "xyz"\n'
+        'account_type = "personal"\n'
+    )
+
+    summaries = {item["name"]: item for item in list_profiles()}
+
+    assert "account_type" in summaries["broken"]["error"]
+    assert summaries["fine"].get("error") is None
+
+
 def test_resolve_by_selector_still_rejects_a_sibling_profiles_malformed_tags(
     tmp_path: Path, monkeypatch
 ) -> None:

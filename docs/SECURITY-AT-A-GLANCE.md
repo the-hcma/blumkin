@@ -90,14 +90,18 @@ request using the known `client_id`, then tricks a real user into completing
 it on Microsoft's genuine login page; the resulting token goes to the
 attacker, not to blumkin. blumkin's requested scopes are sensitive enough
 that this is worth configuring against, not just accepting: `BASE_SCOPES`
-(always requested) covers `Calendars.ReadWrite`, `Chat.Read`,
-`Mail.ReadWrite`, `Mail.Send`, `User.Read`; opt-in config flags can add
-`Files.ReadWrite` (`docs_scopes`), `Files.Read` (`files_scopes`), or
-`Chat.ReadWrite` / `MailboxSettings.ReadWrite` / `OnlineMeetings.ReadWrite` /
-`People.Read` (`wo1162425_scopes` - `MailboxSettings.ReadWrite` in
-particular grants control over mailbox auto-forward/auto-reply rules, so
-treat it as the most sensitive of the set). See `src/blumkin/auth.py` for the
-authoritative, current lists. blumkin itself never uses device-code or ROPC flows -
+(always requested for an `account_type = "organizational"` profile) covers
+`Calendars.ReadWrite`, `Chat.Read`, `Mail.ReadWrite`, `Mail.Send`, `User.Read`;
+opt-in config flags can add `Files.ReadWrite` (`docs_scopes`), `Files.Read`
+(`files_scopes`), or `Chat.ReadWrite` / `MailboxSettings.ReadWrite` /
+`OnlineMeetings.ReadWrite` / `People.Read` (`wo1162425_scopes` -
+`MailboxSettings.ReadWrite` in particular grants control over mailbox
+auto-forward/auto-reply rules, so treat it as the most sensitive of the set).
+A profile with `account_type = "personal"` never gets `Chat.Read`,
+`Chat.ReadWrite`, `OnlineMeetings.ReadWrite`, or `People.Read` - personal
+Microsoft accounts cannot be granted them, so blumkin drops them from the
+requested set instead of requesting and failing. See `src/blumkin/auth.py`
+for the authoritative, current lists. blumkin itself never uses device-code or ROPC flows -
 only interactive browser sign-in (auth code + PKCE, `localhost` redirect) -
 so the mitigations below narrow this registration's exposure without
 changing how blumkin signs in:
@@ -110,6 +114,20 @@ changing how blumkin signs in:
   restricting yours has no effect on anyone else's ability to run blumkin.
   It bounds who can even attempt to sign in to *this* registration to actual
   members of *your* tenant, rather than anyone on the internet.
+  A profile with `account_type = "personal"` (issue #297) is the one
+  deliberate exception: personal Microsoft accounts have no dedicated tenant
+  GUID, so that profile needs `tenant_id = "consumers"` (or `"common"`) and
+  reopens the wider device-code-phishing surface this bullet otherwise
+  narrows. Only set `account_type = "personal"` / a non-tenant-scoped
+  `tenant_id` on a profile you know signs into a personal account - never as
+  a default or a work/school tenant's fallback. Such a profile also needs its
+  **own, separate** Entra app registration with "Supported account types" set
+  to allow personal Microsoft accounts - a registration whose "Supported
+  account types" is scoped to *this organizational directory only* (as this
+  bullet recommends for work/school profiles) will refuse a personal-account
+  sign-in outright, regardless of `account_type` / `tenant_id`. Do not loosen
+  a work/school registration's account-type setting to accommodate a
+  personal-account profile; register a second app instead.
 - **Leave "Allow public client flows" enabled, but rely on the other
   mitigations here instead of disabling it.** `InteractiveBrowserCredential`'s
   auth-code-plus-PKCE flow is *itself* a public client flow and needs this

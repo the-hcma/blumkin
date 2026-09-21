@@ -37,6 +37,14 @@ class BlumkinConfig:
     tags: tuple[str, ...]
     tenant_id: str
     wo1162425_scopes: bool
+    # Microsoft only (issue #297). Explicit per-profile opt-in - never inferred
+    # from `tenant_id`'s value - for whether this profile's Entra app
+    # registration is a work/school org tenant or a personal Microsoft Account
+    # (`consumers`/`common`). "personal" excludes Teams-only scopes
+    # (Chat.Read, and the WO1162425 add-ons) from effective_scopes() and gates
+    # chat/meeting/people-resolve skills closed instead of letting them hit a
+    # Graph 400/403 - see docs/SECURITY-AT-A-GLANCE.md.
+    account_type: str = "organizational"
     # Opt-in Microsoft add-on: Files.ReadWrite for `docs create` (uploads a .docx
     # to OneDrive). Separate from files_scopes, which only unlocks chat-file
     # *reads* - see docs/DECISIONS.md D10. Defaulted so existing construction
@@ -223,6 +231,11 @@ def list_profiles() -> list[dict[str, Any]]:
         except ProviderConfigError as exc:
             errors.append(str(exc))
 
+        try:
+            _account_type(table)
+        except ProviderConfigError as exc:
+            errors.append(str(exc))
+
         summary: dict[str, Any] = {
             "auth_present": auth_present,
             "default_tz": _string_values(table).get("default_tz", "").strip(),
@@ -278,6 +291,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
     if not client_id and google_oauth_client_file is not None:
         client_id = _client_id_from_google_oauth_file(google_oauth_client_file)
     return BlumkinConfig(
+        account_type=_account_type(table),
         client_id=client_id,
         config_dir=directory,
         default_tz=string_values.get("default_tz", "").strip(),
@@ -378,6 +392,7 @@ def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]
     irrelevant to a plain on-disk/keyring existence check anyway.
     """
     return BlumkinConfig(
+        account_type="organizational",
         client_id="",
         config_dir=directory,
         default_tz="",
@@ -394,6 +409,25 @@ def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]
         token_reverify_after=None,
         token_storage=_token_storage_preference(table),
         wo1162425_scopes=False,
+    )
+
+
+def _account_type(file_data: dict[str, Any]) -> str:
+    """Parse ``account_type`` (issue #297); explicit opt-in, never inferred from ``tenant_id``.
+
+    Unlike ``token_storage`` (an implementation detail that silently falls
+    back to "auto" on an unrecognized value), an invalid ``account_type`` is a
+    security-relevant typo the operator needs to see immediately - a silent
+    fallback to "organizational" here would mean a personal-account profile
+    quietly keeps requesting Teams-only scopes it can never be granted.
+    """
+    if "account_type" not in file_data:
+        return "organizational"
+    raw = file_data["account_type"]
+    if isinstance(raw, str) and raw.strip().lower() in {"organizational", "personal"}:
+        return raw.strip().lower()
+    raise ProviderConfigError(
+        f"account_type must be 'organizational' or 'personal' in config.toml, got {raw!r}"
     )
 
 

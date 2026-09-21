@@ -96,6 +96,16 @@ WO1162425_SCOPES = [
     "People.Read",
 ]
 
+# Teams/People-directory features are work/school-only - Entra will never grant
+# these to a personal Microsoft Account (MSA), so effective_scopes() drops them
+# for an `account_type = "personal"` profile (issue #297) rather than requesting
+# a scope that would break silent refresh entirely. MailboxSettings.ReadWrite is
+# deliberately not in this set - auto-reply is a plain mailbox setting, not a
+# Teams/org-only feature.
+PERSONAL_ACCOUNT_UNSUPPORTED_SCOPES = frozenset(
+    {"Chat.Read", "Chat.ReadWrite", "OnlineMeetings.ReadWrite", "People.Read"}
+)
+
 _token_cache = SerializableTokenCache()
 _atexit_registered = False
 _cache_bound_cfg: BlumkinConfig | None = None
@@ -176,6 +186,8 @@ def effective_scopes(config: BlumkinConfig | None = None) -> list[str]:
         scopes.extend(FILES_SCOPES)
     if cfg.wo1162425_scopes:
         scopes.extend(WO1162425_SCOPES)
+    if cfg.account_type == "personal":
+        scopes = [s for s in scopes if s not in PERSONAL_ACCOUNT_UNSUPPORTED_SCOPES]
     return scopes
 
 
@@ -253,6 +265,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
         "access_token_expires_at": access.get("expires_at"),
         "access_token_expires_in_seconds": access.get("expires_in_seconds"),
         "access_token_expired": access.get("expired"),
+        "account_type": cfg.account_type,
         "auth_record": "auth_record" in bundle,
         "client_id_configured": bool(cfg.client_id),
         "config_dir": str(cfg.config_dir),

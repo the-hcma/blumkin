@@ -369,3 +369,14 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
   auth record and `blumkin auth login`. While off, `chat attachments` listing
   works but `chat attachments download` exits `4` / `missing_scope` with the
   share URL.
+- **Personal Microsoft accounts:** set `account_type = "personal"` on a
+  Microsoft profile signing into an MSA (`outlook.com` / `live.com` /
+  `hotmail.com`); defaults to `"organizational"` and is never inferred from
+  `tenant_id`. Personal accounts cannot be granted Teams/People-directory
+  scopes, so blumkin drops `Chat.Read`, `Chat.ReadWrite`,
+  `OnlineMeetings.ReadWrite`, and `People.Read` from that profile's requested
+  scopes, and `chat.*`, `meeting.*`, and `people.resolve` fail closed with a
+  usage error. Calendar, mail, and mail auto-reply/signature skills are
+  unaffected. Needs `tenant_id = "consumers"` (or `"common"`) too, which
+  widens the device-code-phishing surface - see
+  `docs/SECURITY-AT-A-GLANCE.md#microsoft-app-registration-hardening`.

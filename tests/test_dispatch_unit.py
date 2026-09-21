@@ -14,11 +14,30 @@ from blumkin.providers.kind import ProviderKind
 from blumkin.skills.dispatch import run_skill, skill_method_name
 from blumkin.skills.errors import ConsentRequiredError, ScopeAddonDisabledError
 
-_MS = SimpleNamespace(default_tz="UTC", provider=ProviderKind.MICROSOFT, wo1162425_scopes=True)
-_MS_NO_ADDON = SimpleNamespace(
-    default_tz="UTC", provider=ProviderKind.MICROSOFT, wo1162425_scopes=False
+_MS = SimpleNamespace(
+    account_type="organizational",
+    default_tz="UTC",
+    provider=ProviderKind.MICROSOFT,
+    wo1162425_scopes=True,
 )
-_GOOGLE = SimpleNamespace(default_tz="UTC", provider=ProviderKind.GOOGLE, wo1162425_scopes=False)
+_MS_NO_ADDON = SimpleNamespace(
+    account_type="organizational",
+    default_tz="UTC",
+    provider=ProviderKind.MICROSOFT,
+    wo1162425_scopes=False,
+)
+_MS_PERSONAL = SimpleNamespace(
+    account_type="personal",
+    default_tz="UTC",
+    provider=ProviderKind.MICROSOFT,
+    wo1162425_scopes=True,
+)
+_GOOGLE = SimpleNamespace(
+    account_type="organizational",
+    default_tz="UTC",
+    provider=ProviderKind.GOOGLE,
+    wo1162425_scopes=False,
+)
 
 
 def _provider(*methods: str) -> SimpleNamespace:
@@ -323,6 +342,54 @@ def test_wo1162425_gate_runs_before_consent() -> None:
             config=_MS_NO_ADDON,
             provider=_provider("chat_send"),
         )
+
+
+def test_personal_account_gate_blocks_chat_and_meeting_and_people_resolve() -> None:
+    for skill_id, args, method in (
+        ("chat.find", {"with": "Ada"}, "chat_find"),
+        ("chat.send", {"with": "Ada", "text": "hi", "yes": True}, "chat_send"),
+        ("meeting.get", {"event_id": "e1"}, "meeting_get"),
+        ("people.resolve", {"name": "Ada"}, "people_resolve"),
+    ):
+        with pytest.raises(ScopeAddonDisabledError, match="personal Microsoft Account"):
+            _run(skill_id, args, config=_MS_PERSONAL, provider=_provider(method))
+
+
+def test_personal_account_gate_runs_before_wo1162425_gate() -> None:
+    # A personal account is also missing the add-on scopes by construction (issue
+    # #297), but the clearer "not available for personal accounts" message should
+    # win over the generic add-on-disabled one.
+    with pytest.raises(ScopeAddonDisabledError, match="personal Microsoft Account"):
+        _run(
+            "chat.send",
+            {"with": "Ada", "text": "hi", "yes": True},
+            config=SimpleNamespace(
+                account_type="personal",
+                default_tz="UTC",
+                provider=ProviderKind.MICROSOFT,
+                wo1162425_scopes=False,
+            ),
+            provider=_provider("chat_send"),
+        )
+
+
+def test_personal_account_gate_is_microsoft_only() -> None:
+    # account_type = "personal" is read for every profile, not just Microsoft
+    # ones - the gate must still not fire when the provider is Google, so give
+    # this config account_type = "personal" (unlike the shared _GOOGLE
+    # fixture) to actually exercise the provider check.
+    google_personal = SimpleNamespace(
+        account_type="personal",
+        default_tz="UTC",
+        provider=ProviderKind.GOOGLE,
+        wo1162425_scopes=False,
+    )
+    _run(
+        "people.resolve",
+        {"name": "Ada"},
+        config=google_personal,
+        provider=_provider("people_resolve"),
+    )
 
 
 # --------------------------------------------------------------------------- issue #257
