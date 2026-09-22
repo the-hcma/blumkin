@@ -110,6 +110,27 @@ class EmitCooldownError(ValueError):
         )
 
 
+class FreshnessRequiredError(ValueError):
+    """`calendar.accept` / `decline` / `tentative` / `cancel` was called on an
+    event id that was not just freshly read with `calendar.get`.
+
+    See ``blumkin.read_state`` and issue #365: acting on an id read (or never
+    read) too long ago risks approving, declining, or cancelling based on
+    stale attendees, a since-moved time, or a since-cancelled event - the
+    RSVP/cancel equivalent of the emit cooldown, gated on a *read* instead of
+    a *compose*.
+    """
+
+    def __init__(self, message: str, *, event_id: str) -> None:
+        super().__init__(message)
+        self.agent_instructions = (
+            f"Do not retry automatically. Call `calendar.get --event-id {event_id}` "
+            "now, show the user the event's current subject/time/attendees/status, "
+            "and only then retry this action. Acting on event data that was not "
+            "just freshly read is a policy violation."
+        )
+
+
 class ScopeAddonDisabledError(ValueError):
     """A skill needs the WO1162425 add-on scopes but ``wo1162425_scopes`` is off."""
 
@@ -143,6 +164,13 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
             str(exc),
             agent_instructions=exc.agent_instructions,
             retry_after_seconds=exc.retry_after_seconds,
+        )
+    if isinstance(exc, FreshnessRequiredError):
+        return ErrorInfo(
+            "stale_or_unread",
+            EXIT_USAGE,
+            str(exc),
+            agent_instructions=exc.agent_instructions,
         )
     if isinstance(exc, ConsentRequiredError | ScopeAddonDisabledError):
         return ErrorInfo("usage_error", EXIT_USAGE, str(exc), exc.hint)

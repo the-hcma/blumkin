@@ -20,7 +20,9 @@ from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_prov
 CONFIRM_COOLDOWN_FLOOR_SECONDS = 5
 DEFAULT_CONFIRM_COOLDOWN_SECONDS = 20
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
+DEFAULT_RSVP_FRESHNESS_SECONDS = 300
 DEFAULT_TOKEN_REVERIFY_AFTER = timedelta(hours=24)
+RSVP_FRESHNESS_FLOOR_SECONDS = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +96,10 @@ class BlumkinConfig:
         return self.config_dir / "profiles" / self.profile
 
     @property
+    def read_state_path(self) -> Path:
+        return self.profile_dir / "read_state.json"
+
+    @property
     def token_cache_path(self) -> Path:
         return self.profile_dir / "msal_token_cache.json"
 
@@ -132,6 +138,14 @@ class PreferencesConfig:
     font_name: str = ""
     font_size: int | None = None
     html_email: bool = True
+    # Maximum age (seconds) a `calendar.get` read of a given event may be before
+    # `calendar.accept` / `decline` / `tentative` / `cancel` on that same event
+    # refuse to act - see issue #365. The agent must look at current, unstale
+    # event data (attendees, time, cancellation status) immediately before an
+    # RSVP/cancel, not act on a stale id from earlier in the conversation.
+    # `BLUMKIN_RSVP_FRESHNESS_SECONDS` overrides this for CI/tests only; it is
+    # never a per-call tool argument.
+    rsvp_freshness_seconds: int = DEFAULT_RSVP_FRESHNESS_SECONDS
 
 
 def config_dir() -> Path:
@@ -626,6 +640,7 @@ def _preferences_config(
         font_name=str(merged.get("font_name") or "").strip(),
         font_size=_positive_int(merged.get("font_size"), key="preferences.font_size"),
         html_email=html_email,
+        rsvp_freshness_seconds=_rsvp_freshness_seconds(merged),
     )
 
 
@@ -721,6 +736,42 @@ def _read_toml(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     return tomllib.loads(path.read_text())
+
+
+def _rsvp_freshness_seconds(merged: dict[str, Any]) -> int:
+    """Resolve ``preferences.rsvp_freshness_seconds``, honoring the CI/test-only env override.
+
+    Never read by a per-call tool argument - see the field docstring on
+    :class:`PreferencesConfig`.
+    """
+    env_override = os.environ.get("BLUMKIN_RSVP_FRESHNESS_SECONDS", "").strip()
+    if env_override:
+        try:
+            env_value = int(env_override)
+        except ValueError as exc:
+            raise ProviderConfigError(
+                f"BLUMKIN_RSVP_FRESHNESS_SECONDS must be an integer, got {env_override!r}"
+            ) from exc
+        return _validate_cooldown_seconds(
+            env_value,
+            i_understand_the_risk=True,
+            source="BLUMKIN_RSVP_FRESHNESS_SECONDS",
+            floor=RSVP_FRESHNESS_FLOOR_SECONDS,
+            disabled_description="the mandatory RSVP/cancel freshness check",
+        )
+    raw = merged.get("rsvp_freshness_seconds", DEFAULT_RSVP_FRESHNESS_SECONDS)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ProviderConfigError(
+            f"preferences.rsvp_freshness_seconds must be an integer in config.toml, got {raw!r}"
+        )
+    understood = _coerce_bool(merged.get("i_understand_the_risk")) or False
+    return _validate_cooldown_seconds(
+        raw,
+        i_understand_the_risk=understood,
+        source="preferences.rsvp_freshness_seconds",
+        floor=RSVP_FRESHNESS_FLOOR_SECONDS,
+        disabled_description="the mandatory RSVP/cancel freshness check",
+    )
 
 
 def _resolve_by_selector(
@@ -914,24 +965,32 @@ def _token_storage_preference(file_data: dict[str, Any]) -> str:
     return "auto"
 
 
-def _validate_cooldown_seconds(value: int, *, i_understand_the_risk: bool, source: str) -> int:
-    """Enforce the floor on ``confirm_cooldown_seconds`` - see issue #365.
+def _validate_cooldown_seconds(
+    value: int,
+    *,
+    i_understand_the_risk: bool,
+    source: str,
+    floor: int = CONFIRM_COOLDOWN_FLOOR_SECONDS,
+    disabled_description: str = "the mandatory send/emit confirmation cooldown",
+) -> int:
+    """Enforce a floor on a "must dwell at least N seconds" preference - see issue #365.
 
-    ``0`` (disabled) requires an explicit ``i_understand_the_risk = true`` sibling
-    key, so the mandatory send/emit pause can't be silently switched off by a
-    stray ``0``. Any other value below the floor is always rejected outright.
+    Shared by ``confirm_cooldown_seconds`` and ``rsvp_freshness_seconds``: ``0``
+    (disabled) requires an explicit ``i_understand_the_risk = true`` sibling key,
+    so the mandatory pause can't be silently switched off by a stray ``0``. Any
+    other value below ``floor`` is always rejected outright.
     """
     if value == 0:
         if not i_understand_the_risk:
             raise ProviderConfigError(
-                f"{source} = 0 disables the mandatory send/emit confirmation cooldown; "
+                f"{source} = 0 disables {disabled_description}; "
                 "add `i_understand_the_risk = true` alongside it to confirm this is intentional"
             )
         return 0
-    if value < CONFIRM_COOLDOWN_FLOOR_SECONDS:
+    if value < floor:
         raise ProviderConfigError(
             f"{source} must be 0 (disabled, with i_understand_the_risk = true) or at least "
-            f"{CONFIRM_COOLDOWN_FLOOR_SECONDS} in config.toml, got {value!r}"
+            f"{floor} in config.toml, got {value!r}"
         )
     return value
 

@@ -172,6 +172,10 @@ _DEFAULT_HINTS: dict[str, str] = {
         "The token cache or auth record could not be written. Remove any symlink at "
         "~/.config/blumkin/ (or the cache files), fix the directory permissions, then retry."
     ),
+    "stale_or_unread": (
+        "Call `calendar.get --event-id <id>` (or `calendar get --event-id <id>`) to see the "
+        "event's current state, show it to the user, then retry this command."
+    ),
     "timeout": (
         "Raise graph_timeout_seconds in config.toml, kill any stuck blumkin processes "
         "(`pkill -f blumkin`), then run `blumkin auth refresh` if the access token expired."

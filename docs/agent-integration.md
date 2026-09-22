@@ -215,6 +215,12 @@ client id or call Graph directly when a blumkin skill covers the job.
   retry automatically; show the user the exact drafted content (or, for
   `calendar update`, the event as `calendar create` / `calendar get` shows it)
   and wait for their explicit go-ahead.
+- Exit 2 (`stale_or_unread`): a single `--event-id` on `calendar
+  accept`/`decline`/`tentative`/`cancel` was called without a fresh
+  `calendar get --event-id ...` first (within
+  `preferences.rsvp_freshness_seconds`, default 5 minutes). The payload
+  carries `agent_instructions` telling you to re-run `calendar get`, show the
+  user the event's current state, then retry. `--today-pending` is exempt.
 - Exit 1 (`transient_error`): a network/server hiccup talking to the auth
   provider, not a bad grant. Safe to retry the same command once.
 ```
@@ -346,7 +352,7 @@ failure path.
 |------|---------------|---------|
 | 0 | — | Success |
 | 1 | `graph_error`, `install_failed`, `secret_write_failed`, `timeout`, `transient_error`, `upgrade_failed` | Unexpected Graph failure; `completion --install` could not write the script (directory at the path, unwritable dir); local secret cache/auth-record write failed (e.g. symlink at the path); Graph/token HTTP timed out; a transient network/server error talking to the auth provider (safe to retry, not a bad grant); or a `blumkin upgrade` step (pipx / uv tool / git pull / reinstall) could not run or exited non-zero |
-| 2 | `usage_error`, `too_soon`, or none | Bad arguments; **`wo1162425_scopes` switched off**; **an emit skill (`mail send-draft`, `chat send`, `chat edit`, `calendar update` adding/replacing attendees) called before its confirm cooldown elapsed** (`too_soon` - carries `agent_instructions` and `retry_after_seconds`; do not retry automatically, get real user confirmation first); or **`people resolve` ambiguous** (`ok: false` + `ambiguous: true` + candidates on **stdout**, no stderr envelope) |
+| 2 | `usage_error`, `too_soon`, `stale_or_unread`, or none | Bad arguments; **`wo1162425_scopes` switched off**; **an emit skill (`mail send-draft`, `chat send`, `chat edit`, `calendar update` adding/replacing attendees) called before its confirm cooldown elapsed** (`too_soon` - carries `agent_instructions` and `retry_after_seconds`; do not retry automatically, get real user confirmation first); **a single-`--event-id` `calendar accept`/`decline`/`tentative`/`cancel` called without a fresh `calendar get` first** (`stale_or_unread` - carries `agent_instructions`; re-run `calendar get`, show the user the current state, then retry); or **`people resolve` ambiguous** (`ok: false` + `ambiguous: true` + candidates on **stdout**, no stderr envelope) |
 | 3 | `auth_required` | Run `blumkin auth login` on this machine |
 | 4 | `missing_scope` | A scope is unavailable — the tenant has not granted it, or `files_scopes` is off |
 | 5 | `not_found` | The named thing does not exist |

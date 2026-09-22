@@ -202,6 +202,16 @@ original's attachments.
      skips) like `calendar accept`. `--propose-time <start> [--propose-duration]`
      suggests another slot **on Microsoft only** (fails closed on Google) and
      needs a single `--event-id`.
+   - **Freshness gate (issue #365):** a single `--event-id` on `calendar
+     accept`/`decline`/`tentative`/`cancel` requires a `calendar get
+     --event-id '<id>'` you ran within the last
+     `preferences.rsvp_freshness_seconds` (default 5 minutes) — read the
+     event's current state (attendees, time, cancellation) right before
+     acting on it, do not rely on an older listing. Missing/expired reads
+     fail with `stale_or_unread` and an `agent_instructions` field telling
+     you to re-run `calendar get` and show the user the current state before
+     retrying. `--today-pending` is exempt — it reads each event via
+     `calendar today` immediately before acting on it.
    - `blumkin calendar create --subject … --start …`
      (Teams online meeting by default; pass `--no-teams` for an offline hold.
      Never takes attendees and never needs `--yes` - it can only ever produce
@@ -227,7 +237,8 @@ original's attachments.
      attendee list)] [--teams|--no-teams (attach/remove online meeting)]
      [--all-day|--no-all-day] --yes` - only the flags you pass change; editing a
      recurring series edits the whole series
-   - `blumkin calendar cancel --event-id '<id>' --yes`
+   - `blumkin calendar cancel --event-id '<id>' --yes` - subject to the same
+     freshness gate as accept/decline/tentative above (no bulk mode to exempt).
    - `blumkin mail draft --to … --subject … --body …` (draft only; `--body-type html` / `--body-file` optional)
      `--to` / `--cc` / `--bcc` are repeatable or comma-separated for multiple recipients.
      Add files with `--attach <path>`, repeated once per file. Each file goes up in a

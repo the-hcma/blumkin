@@ -25,6 +25,7 @@ from blumkin.skills.chat import ChatAttachmentScopeError, ChatAttachmentSkippedE
 from blumkin.skills.errors import (
     ConsentRequiredError,
     EmitCooldownError,
+    FreshnessRequiredError,
     ScopeAddonDisabledError,
     classify_exception,
 )
@@ -50,6 +51,13 @@ def test_emit_cooldown_error_is_too_soon_with_agent_instructions_and_retry_after
     assert info.retry_after_seconds == 12.5
     assert info.agent_instructions
     assert "confirm" in info.agent_instructions.lower()
+
+
+def test_freshness_required_error_is_stale_or_unread_with_agent_instructions() -> None:
+    info = classify_exception(FreshnessRequiredError("has never been read", event_id="e1"))
+    assert (info.slug, info.exit_code) == ("stale_or_unread", EXIT_USAGE)
+    assert info.agent_instructions
+    assert "calendar.get --event-id e1" in info.agent_instructions
 
 
 def test_zoneinfo_not_found_is_a_usage_error_despite_subclassing_lookuperror() -> None:

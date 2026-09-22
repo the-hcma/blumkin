@@ -14,11 +14,12 @@ from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.cli import main
-from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig, load_config
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_USAGE
 from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
+from blumkin.read_state import record_read
 from blumkin.skills.calendar import CalendarEventNotFoundError
 from blumkin.skills.calendar_writes import (
     calendar_accept,
@@ -132,10 +133,13 @@ def test_graph_decline_propose_duration_zero_rejected(monkeypatch) -> None:
         )
 
 
-def test_cli_decline_bad_timezone_with_propose_is_usage_error(monkeypatch) -> None:
+def test_cli_decline_bad_timezone_with_propose_is_usage_error(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "blumkin.cli._workspace", lambda: SimpleNamespace(calendar_decline=AsyncMock())
     )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    record_read(load_config(), "e")
     result = CliRunner().invoke(
         main,
         [
@@ -152,6 +156,10 @@ def test_cli_decline_bad_timezone_with_propose_is_usage_error(monkeypatch) -> No
         ],
     )
     assert result.exit_code == EXIT_USAGE
+    # Discriminate from `stale_or_unread` (same exit code) - the freshness gate
+    # (fed by the `record_read` above) must have let this reach the ZoneInfo
+    # precheck, not merely failed for an unrelated reason.
+    assert json.loads(result.stderr)["error"] == "usage_error"
 
 
 def test_graph_decline_single_event_needs_no_timezone(monkeypatch) -> None:
@@ -328,11 +336,14 @@ def test_cli_decline_requires_yes() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
-def test_cli_decline_routes_not_found(monkeypatch) -> None:
+def test_cli_decline_routes_not_found(tmp_path, monkeypatch) -> None:
     async def _raise(**_kwargs):
         raise CalendarEventNotFoundError("event not found: e")
 
     monkeypatch.setattr("blumkin.cli._workspace", lambda: SimpleNamespace(calendar_decline=_raise))
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    record_read(load_config(), "e")
     result = CliRunner().invoke(main, ["calendar", "decline", "--event-id", "e", "--yes", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
     assert json.loads(result.stderr)["error"] == "not_found"
