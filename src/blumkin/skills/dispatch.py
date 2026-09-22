@@ -96,7 +96,12 @@ _COOLDOWN_GATED_SKILLS: dict[str, str] = {
 # composed. Note: an *explicit* empty list (`with: []`, clearing all
 # attendees) still counts as present - it is a real attendee-list change
 # (Google patches an empty attendees array with sendUpdates="all", which
-# notifies removed attendees) and must not silently bypass the gate.
+# notifies removed attendees) and must not silently bypass the gate. The CLI's
+# repeated `--with EMAIL` flag can never itself produce this shape (each
+# occurrence requires a value, so it is either omitted -> None, or has at
+# least one address); an MCP caller passing a literal `with: []` is the only
+# way to reach it, which is exactly what this `is None` check (not a
+# truthiness check) is guarding.
 _COOLDOWN_GATE_REQUIRES_ARG: dict[str, str] = {
     "calendar.update": "with",
 }

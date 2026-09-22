@@ -929,10 +929,12 @@ def test_calendar_update_blocked_before_cooldown_elapses(tmp_path, monkeypatch) 
 
 
 def test_calendar_update_empty_attendee_list_is_still_gated(tmp_path, monkeypatch) -> None:
-    """issue #365 review (CodeRabbit): an *explicit* `--with` with no emails
-    (`with: []`) still replaces the attendee list - Google patches an empty
-    attendees array with sendUpdates="all", which can notify removed attendees -
-    so `_COOLDOWN_GATE_REQUIRES_ARG` must key off "argument present" (`is None`),
+    """issue #365 review (CodeRabbit): a literal `with: []` (an MCP caller
+    explicitly clearing all attendees - the CLI's repeated `--with EMAIL` flag
+    can never produce this shape, only omitted-entirely or non-empty) still
+    replaces the attendee list - Google patches an empty attendees array with
+    sendUpdates="all", which can notify removed attendees - so
+    `_COOLDOWN_GATE_REQUIRES_ARG` must key off "argument present" (`is None`),
     not "argument truthy", or this would silently bypass the gate."""
     cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
     record_composed(cfg, "e1")
