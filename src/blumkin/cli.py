@@ -2752,8 +2752,8 @@ def chat_delete_cmd(
     """Soft-delete one of your chat messages. Requires --yes.
 
     `--expected-text` must match the message's current body exactly - re-read
-    it with `chat last` / `chat find` first; a mismatch is refused rather than
-    deleting the wrong message. Every participant sees the message disappear.
+    it with `chat last` first; a mismatch is refused rather than deleting the
+    wrong message. Every participant sees the message disappear.
     Needs `wo1162425_scopes = true` (Chat.ReadWrite).
     """
     _dispatch(

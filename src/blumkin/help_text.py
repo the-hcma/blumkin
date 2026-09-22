@@ -417,8 +417,8 @@ Example:
 
 Soft-deletes one of your messages; every participant sees it vanish, so `--yes`
 is required. `--expected-text` must match the message's current body exactly
-(after trimming) - it must come from a fresh read (`chat last` / `chat find`),
-not a guess, so the wrong message is never deleted by mistake. Needs
+(after trimming) - it must come from a fresh read (`chat last`), not a guess,
+so the wrong message is never deleted by mistake. Needs
 `wo1162425_scopes = true` (Chat.ReadWrite).
 """
 
@@ -438,6 +438,18 @@ ambiguous, use `--chat-id` from `chat find`. Use ASCII hyphens in `--text`, not
 em dashes.
 """
 
+CHAT_EDIT_DRAFT_EPILOG = """
+Example:
+
+\b
+  blumkin chat edit-draft --chat-id 19:abc... --message-id 17... \\
+    --text "Updated: moving the sync to 3pm" --json
+
+Composes the replacement body only; apply it with
+`chat edit --draft-id ... --yes`. No one is notified by this step. Use ASCII
+hyphens in `--text`, not em dashes.
+"""
+
 CHAT_EDIT_EPILOG = """
 Example:
 
@@ -449,18 +461,6 @@ Example:
 Rewrites a message other people have already read, so `--yes` is required.
 Prepare the replacement text first with `chat edit-draft`. Needs
 `wo1162425_scopes = true` (Chat.ReadWrite).
-"""
-
-CHAT_EDIT_DRAFT_EPILOG = """
-Example:
-
-\b
-  blumkin chat edit-draft --chat-id 19:abc... --message-id 17... \\
-    --text "Updated: moving the sync to 3pm" --json
-
-Composes the replacement body only; apply it with
-`chat edit --draft-id ... --yes`. No one is notified by this step. Use ASCII
-hyphens in `--text`, not em dashes.
 """
 
 CHAT_EPILOG = """

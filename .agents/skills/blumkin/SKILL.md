@@ -276,8 +276,8 @@ original's attachments.
     (same cooldown as `chat send`)
   - `blumkin chat delete --chat-id … --message-id … --expected-text "…" --yes` -
     `--expected-text` must match the message's *current* body exactly (a fresh
-    `chat last` / `chat find` read, not a guess) or the call is refused; there is
-    no compose step to delete since nothing is being sent
+    `chat last` read, not a guess) or the call is refused; there is no compose
+    step to delete since nothing is being sent
   - `blumkin meeting get --event-id '<id>'` (organizer-only online meetings)
   - `blumkin meeting transcription --event-id '<id>'` (show flags)
   - `blumkin meeting transcription --event-id '<id>' --enable --yes`

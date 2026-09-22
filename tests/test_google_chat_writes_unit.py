@@ -93,18 +93,35 @@ def test_chat_edit_patches_only_the_text_field(tmp_path: Path) -> None:
     assert kwargs["body"] == {"text": "corrected"}
 
 
-def test_chat_delete_removes_the_message(tmp_path: Path) -> None:
-    service = _service(message=_message("spaces/AAA/messages/9", "hi"))
+def test_chat_edit_refuses_a_message_from_a_different_chat(tmp_path: Path) -> None:
+    """Issue #365 review: a stashed edit draft must never patch a message whose
+    resource name lives under a different space than the draft's --chat-id."""
+    service = _service(message=_message("spaces/BBB/messages/9", "hi"))
+    cfg = _cfg(tmp_path)
     with _patched(service):
-        payload = asyncio.run(
-            GoogleWorkspaceProvider(_cfg(tmp_path)).chat_delete(
-                chat_id="spaces/AAA", message_id="spaces/AAA/messages/9", expected_text="hi"
+        draft = asyncio.run(
+            GoogleWorkspaceProvider(cfg).chat_edit_draft(
+                chat_id="spaces/AAA", message_id="spaces/BBB/messages/9", text="corrected"
             )
         )
-    assert payload == {"chat_id": "spaces/AAA", "deleted": "spaces/AAA/messages/9"}
-    service.spaces.return_value.messages.return_value.delete.assert_called_once_with(
-        name="spaces/AAA/messages/9"
-    )
+        with pytest.raises(ValueError, match="does not belong to"):
+            asyncio.run(GoogleWorkspaceProvider(cfg).chat_edit(draft_id=draft["draft"]["id"]))
+    service.spaces.return_value.messages.return_value.patch.assert_not_called()
+
+
+def test_chat_delete_refuses_a_message_from_a_different_chat(tmp_path: Path) -> None:
+    """Issue #365 review: a message id from another space must never be
+    deleted just because it happens to match --expected-text."""
+    service = _service(message=_message("spaces/BBB/messages/9", "hi"))
+    with _patched(service), pytest.raises(ValueError, match="does not belong to"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).chat_delete(
+                chat_id="spaces/AAA",
+                message_id="spaces/BBB/messages/9",
+                expected_text="hi",
+            )
+        )
+    service.spaces.return_value.messages.return_value.delete.assert_not_called()
 
 
 def test_chat_delete_refuses_a_stale_expected_text(tmp_path: Path) -> None:
@@ -120,6 +137,20 @@ def test_chat_delete_refuses_a_stale_expected_text(tmp_path: Path) -> None:
             )
         )
     service.spaces.return_value.messages.return_value.delete.assert_not_called()
+
+
+def test_chat_delete_removes_the_message(tmp_path: Path) -> None:
+    service = _service(message=_message("spaces/AAA/messages/9", "hi"))
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).chat_delete(
+                chat_id="spaces/AAA", message_id="spaces/AAA/messages/9", expected_text="hi"
+            )
+        )
+    assert payload == {"chat_id": "spaces/AAA", "deleted": "spaces/AAA/messages/9"}
+    service.spaces.return_value.messages.return_value.delete.assert_called_once_with(
+        name="spaces/AAA/messages/9"
+    )
 
 
 def test_chat_attachments_list_marks_drive_files_as_not_downloadable(tmp_path: Path) -> None:

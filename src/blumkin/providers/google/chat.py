@@ -327,12 +327,12 @@ async def chat_delete(
         raise ValueError("--expected-text must be non-empty")
     cfg = config or load_config()
     service = _chat_service(cfg)
-    message = _require_message(service, mid)
+    message = _require_message_in_chat(service, cid, mid)
     actual_text = str(_message_to_dict(message)["body_text"]).strip()
     if actual_text != want_text:
         raise ValueError(
             "--expected-text does not match the current message body; re-read it with "
-            "`chat last` / `chat find` first to confirm you are deleting the right message"
+            "`chat last` first to confirm you are deleting the right message"
         )
     execute(service.spaces().messages().delete(name=mid), num_retries=0)
     return {"chat_id": cid, "deleted": mid}
@@ -379,6 +379,7 @@ async def chat_edit(
     mid = str(draft["message_id"])
     body_text = str(draft["text"])
     service = _chat_service(cfg)
+    _require_message_in_chat(service, cid, mid)
     updated = execute(
         service.spaces().messages().patch(name=mid, updateMask="text", body={"text": body_text}),
         num_retries=0,
@@ -604,6 +605,18 @@ def _require_message(service: Any, message_id: str) -> Mapping[str, Any]:
         if status == 404:
             raise ChatMessageNotFoundError(f"chat message not found: {message_id}") from exc
         raise
+
+
+def _require_message_in_chat(service: Any, chat_id: str, message_id: str) -> Mapping[str, Any]:
+    """Like ``_require_message``, but refuses a message that does not belong to
+    ``chat_id`` - a message's resource name is always ``{space}/messages/{id}``,
+    so this holds regardless of whether the response happens to echo back a
+    ``space`` field (issue #365 review)."""
+    message = _require_message(service, message_id)
+    message_name = str(message.get("name") or "")
+    if not message_name.startswith(f"{chat_id}/messages/"):
+        raise ValueError("--message-id does not belong to --chat-id")
+    return message
 
 
 async def _resolve_chat_target(
