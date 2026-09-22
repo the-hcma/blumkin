@@ -359,6 +359,36 @@ def test_calendar_create_inserts_solo_event_with_email_reminder(tmp_path: Path) 
     }
 
 
+def test_calendar_create_keeps_length_across_dst_fallback(tmp_path: Path) -> None:
+    """A one-hour event starting inside the Nov 2026 fall-back stays one real hour."""
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.events.return_value.insert.return_value.execute.return_value = {
+        "id": "evt-dst",
+        "summary": "Overlap",
+        "start": {"dateTime": "2026-11-01T01:30:00-04:00"},
+        "end": {"dateTime": "2026-11-01T01:30:00-05:00"},
+        "organizer": {"email": "me@example.com", "self": True},
+    }
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        asyncio.run(
+            provider.calendar_create(
+                subject="Overlap",
+                start_raw="2026-11-01T01:30",
+                duration="1h",
+                tz_name="America/New_York",
+            )
+        )
+    body = service.events.return_value.insert.call_args.kwargs["body"]
+    # 01:30 EDT + 1h == 01:30 EST (one elapsed hour), not 02:30 wall time.
+    assert body["start"]["dateTime"] == "2026-11-01T01:30:00-04:00"
+    assert body["end"]["dateTime"] == "2026-11-01T01:30:00-05:00"
+
+
 def test_calendar_create_records_a_compose_timestamp(tmp_path: Path) -> None:
     """issue #365 piece 2: a successful create must stamp the new event's id so
     `calendar.update`'s cooldown gate (dispatch's `_COOLDOWN_GATED_SKILLS`) can
@@ -421,36 +451,6 @@ def test_calendar_create_survives_compose_record_write_failure(tmp_path: Path, c
         )
     assert result["event"]["id"] == "evt-new"
     assert "confirm-cooldown record was not saved" in capsys.readouterr().err
-
-
-def test_calendar_create_keeps_length_across_dst_fallback(tmp_path: Path) -> None:
-    """A one-hour event starting inside the Nov 2026 fall-back stays one real hour."""
-    cfg = _cfg(tmp_path)
-    service = MagicMock()
-    service.events.return_value.insert.return_value.execute.return_value = {
-        "id": "evt-dst",
-        "summary": "Overlap",
-        "start": {"dateTime": "2026-11-01T01:30:00-04:00"},
-        "end": {"dateTime": "2026-11-01T01:30:00-05:00"},
-        "organizer": {"email": "me@example.com", "self": True},
-    }
-    with (
-        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
-        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
-    ):
-        provider = GoogleWorkspaceProvider(cfg)
-        asyncio.run(
-            provider.calendar_create(
-                subject="Overlap",
-                start_raw="2026-11-01T01:30",
-                duration="1h",
-                tz_name="America/New_York",
-            )
-        )
-    body = service.events.return_value.insert.call_args.kwargs["body"]
-    # 01:30 EDT + 1h == 01:30 EST (one elapsed hour), not 02:30 wall time.
-    assert body["start"]["dateTime"] == "2026-11-01T01:30:00-04:00"
-    assert body["end"]["dateTime"] == "2026-11-01T01:30:00-05:00"
 
 
 def test_calendar_suggest_rejects_treat_tentative_free(tmp_path: Path) -> None:

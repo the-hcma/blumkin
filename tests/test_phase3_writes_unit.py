@@ -208,83 +208,6 @@ def test_calendar_create_mocked(monkeypatch) -> None:
     assert end - start == timedelta(minutes=30)
 
 
-def test_calendar_create_records_a_compose_timestamp(monkeypatch) -> None:
-    """issue #365 piece 2: a successful create must stamp the new event's id so
-    `calendar.update`'s cooldown gate (dispatch's `_COOLDOWN_GATED_SKILLS`) can
-    find it if attendees are added right after."""
-    created = SimpleNamespace(
-        id="evt-new",
-        subject="Sync",
-        start=None,
-        end=None,
-        is_all_day=False,
-        is_organizer=True,
-        location=None,
-        organizer=None,
-        response_status=None,
-        online_meeting=SimpleNamespace(join_url="https://teams.example/join"),
-    )
-    client = MagicMock()
-    client.me.events.post = AsyncMock(return_value=created)
-    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.calendar_writes.load_config",
-        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
-    )
-    record_composed = MagicMock()
-    monkeypatch.setattr("blumkin.skills.calendar_writes.record_composed", record_composed)
-    asyncio.run(
-        calendar_create(
-            subject="Sync",
-            start_raw="2026-08-26T11:00",
-            duration="30m",
-            tz_name="America/New_York",
-        )
-    )
-    record_composed.assert_called_once()
-    assert record_composed.call_args.args[1] == "evt-new"
-
-
-def test_calendar_create_survives_compose_record_write_failure(monkeypatch, capsys) -> None:
-    """issue #365 review: an OSError persisting the cooldown record must never
-    turn an already-created event into a reported failure (mirrors dispatch's
-    _apply_compose_state guard for mail/chat)."""
-    created = SimpleNamespace(
-        id="evt-new",
-        subject="Sync",
-        start=None,
-        end=None,
-        is_all_day=False,
-        is_organizer=True,
-        location=None,
-        organizer=None,
-        response_status=None,
-        online_meeting=SimpleNamespace(join_url="https://teams.example/join"),
-    )
-    client = MagicMock()
-    client.me.events.post = AsyncMock(return_value=created)
-    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.calendar_writes.load_config",
-        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
-    )
-
-    def _boom(*_args, **_kwargs):
-        raise OSError("disk full")
-
-    monkeypatch.setattr("blumkin.skills.calendar_writes.record_composed", _boom)
-    result = asyncio.run(
-        calendar_create(
-            subject="Sync",
-            start_raw="2026-08-26T11:00",
-            duration="30m",
-            tz_name="America/New_York",
-        )
-    )
-    assert result["event"]["id"] == "evt-new"
-    assert "confirm-cooldown record was not saved" in capsys.readouterr().err
-
-
 def test_calendar_create_refetch_when_join_url_missing(monkeypatch) -> None:
     post_body = SimpleNamespace(
         id="evt-new",
@@ -424,6 +347,83 @@ def test_calendar_create_raises_when_refetch_returns_none(monkeypatch) -> None:
                 tz_name="America/New_York",
             )
         )
+
+
+def test_calendar_create_records_a_compose_timestamp(monkeypatch) -> None:
+    """issue #365 piece 2: a successful create must stamp the new event's id so
+    `calendar.update`'s cooldown gate (dispatch's `_COOLDOWN_GATED_SKILLS`) can
+    find it if attendees are added right after."""
+    created = SimpleNamespace(
+        id="evt-new",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=SimpleNamespace(join_url="https://teams.example/join"),
+    )
+    client = MagicMock()
+    client.me.events.post = AsyncMock(return_value=created)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+    record_composed = MagicMock()
+    monkeypatch.setattr("blumkin.skills.calendar_writes.record_composed", record_composed)
+    asyncio.run(
+        calendar_create(
+            subject="Sync",
+            start_raw="2026-08-26T11:00",
+            duration="30m",
+            tz_name="America/New_York",
+        )
+    )
+    record_composed.assert_called_once()
+    assert record_composed.call_args.args[1] == "evt-new"
+
+
+def test_calendar_create_survives_compose_record_write_failure(monkeypatch, capsys) -> None:
+    """issue #365 review: an OSError persisting the cooldown record must never
+    turn an already-created event into a reported failure (mirrors dispatch's
+    _apply_compose_state guard for mail/chat)."""
+    created = SimpleNamespace(
+        id="evt-new",
+        subject="Sync",
+        start=None,
+        end=None,
+        is_all_day=False,
+        is_organizer=True,
+        location=None,
+        organizer=None,
+        response_status=None,
+        online_meeting=SimpleNamespace(join_url="https://teams.example/join"),
+    )
+    client = MagicMock()
+    client.me.events.post = AsyncMock(return_value=created)
+    monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.load_config",
+        lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
+    )
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("blumkin.skills.calendar_writes.record_composed", _boom)
+    result = asyncio.run(
+        calendar_create(
+            subject="Sync",
+            start_raw="2026-08-26T11:00",
+            duration="30m",
+            tz_name="America/New_York",
+        )
+    )
+    assert result["event"]["id"] == "evt-new"
+    assert "confirm-cooldown record was not saved" in capsys.readouterr().err
 
 
 def test_calendar_create_remind_email_sets_outlook_popup(monkeypatch) -> None:

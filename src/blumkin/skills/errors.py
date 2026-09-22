@@ -93,15 +93,20 @@ class EmitCooldownError(ValueError):
     actually showed the human what is about to go out.
     """
 
-    def __init__(self, message: str, *, retry_after_seconds: float) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: float,
+        artifact_summary: str = "recipients/subject/body or message text",
+    ) -> None:
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
         self.agent_instructions = (
-            "Do not retry automatically. Show the user the exact composed content "
-            "(recipients/subject/body or message text) now, in this turn, and wait "
-            "for their explicit go-ahead before calling emit again. Retrying "
-            "immediately or silently without a real user confirmation is a policy "
-            "violation."
+            f"Do not retry automatically. Show the user the exact composed content "
+            f"({artifact_summary}) now, in this turn, and wait for their explicit "
+            "go-ahead before calling emit again. Retrying immediately or silently "
+            "without a real user confirmation is a policy violation."
         )
 
 

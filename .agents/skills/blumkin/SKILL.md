@@ -216,11 +216,12 @@ original's attachments.
      Teams link; a date-only `--start` without `--all-day` is rejected).)
    - **Compose/emit split (issue #365):** add attendees only with a follow-up
      `blumkin calendar update --event-id '<id>' --with email [--with email ...] --yes`.
-     That is the only way `calendar` ever notifies anyone, and it is gated on
-     the confirm cooldown against the event's own create time - review the
-     event (subject, time, agenda) before running it, and re-run `calendar get`
-     to double-check first if any doubt remains. Editing a pre-existing event
-     you did not just create in this session is never gated.
+     `calendar update --with` is the only way to add or replace attendees after
+     `calendar create`, and it is gated on the confirm cooldown against the
+     event's own create time - review the event (subject, time, agenda) before
+     running it, and re-run `calendar get` to double-check first if any doubt
+     remains. Editing a pre-existing event you did not just create in this
+     session is never gated.
    - `blumkin calendar update --event-id '<id>' [--subject …] [--start …]
      [--duration …|--end …] [--location …] [--body …] [--with … (replaces the
      attendee list)] [--teams|--no-teams (attach/remove online meeting)]

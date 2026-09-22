@@ -91,10 +91,25 @@ _COOLDOWN_GATED_SKILLS: dict[str, str] = {
     "mail.send-draft": "id",
 }
 
-# Skill id -> raw argument key that must be present (truthy) for the cooldown
-# gate to apply at all. Skills absent here are always gated once composed.
+# Skill id -> raw argument key that must be present (not None) for the
+# cooldown gate to apply at all. Skills absent here are always gated once
+# composed. Note: an *explicit* empty list (`with: []`, clearing all
+# attendees) still counts as present - it is a real attendee-list change
+# (Google patches an empty attendees array with sendUpdates="all", which
+# notifies removed attendees) and must not silently bypass the gate.
 _COOLDOWN_GATE_REQUIRES_ARG: dict[str, str] = {
     "calendar.update": "with",
+}
+
+# Skill id -> what EmitCooldownError.agent_instructions tells the agent to show
+# the user before confirming (issue #365 review): calendar.update's cooldown is
+# only ever about attendees, so point at the event details relevant to that
+# decision (subject/start/end/agenda/attendees), same shape `calendar
+# create`/`calendar get` already print - not the mail/chat-flavoured default.
+_COOLDOWN_ARTIFACT_SUMMARY: dict[str, str] = {
+    "calendar.update": (
+        "the event's subject, start/end time, agenda, and the attendees about to be added/replaced"
+    ),
 }
 
 _DOCS_SCOPES_MESSAGE = (
@@ -197,7 +212,7 @@ def _cooldown_gate(skill_id: str, arguments: dict[str, Any], config: BlumkinConf
     if arg_key is None:
         return
     required_arg = _COOLDOWN_GATE_REQUIRES_ARG.get(skill_id)
-    if required_arg is not None and not arguments.get(required_arg):
+    if required_arg is not None and arguments.get(required_arg) is None:
         return
     cooldown = config.preferences.confirm_cooldown_seconds
     if cooldown <= 0:
@@ -214,6 +229,9 @@ def _cooldown_gate(skill_id: str, arguments: dict[str, Any], config: BlumkinConf
         f"({remaining:.0f}s remaining). This is not a signal to just wait and retry - "
         "confirm with the user first.",
         retry_after_seconds=remaining,
+        artifact_summary=_COOLDOWN_ARTIFACT_SUMMARY.get(
+            skill_id, "recipients/subject/body or message text"
+        ),
     )
 
 

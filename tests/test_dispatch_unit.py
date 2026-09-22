@@ -869,31 +869,6 @@ def test_chat_send_clears_the_compose_record(tmp_path, monkeypatch) -> None:
     assert seconds_since_composed(cfg, "d1") is None
 
 
-def test_calendar_update_blocked_before_cooldown_elapses(tmp_path, monkeypatch) -> None:
-    """Pins the `calendar.create` -> `calendar.update` cooldown wiring in
-    `_COOLDOWN_GATED_SKILLS` (issue #365 piece 2): adding attendees right after
-    creating the event must refuse until the confirm cooldown has elapsed.
-    `calendar.create` stamps its own compose record inside the real provider
-    implementation (not dispatch's generic `_COMPOSE_RECORD_SKILLS` hook, since
-    its payload shape is `{"event": {"id": ...}}` not `{"draft": {"id": ...}}`),
-    so seed it directly with `record_composed` the same way that implementation
-    does."""
-    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
-    record_composed(cfg, "e1")
-
-    prov = _provider("calendar_update")
-    with pytest.raises(EmitCooldownError) as exc:
-        _run(
-            "calendar.update",
-            {"event_id": "e1", "with": ["sam@example.com"], "yes": True},
-            config=cfg,
-            provider=prov,
-        )
-    assert exc.value.retry_after_seconds is not None
-    assert 0 < exc.value.retry_after_seconds <= 60
-    prov.calendar_update.assert_not_awaited()
-
-
 def test_calendar_update_allowed_once_cooldown_elapses(tmp_path, monkeypatch) -> None:
     cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
     cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -926,6 +901,50 @@ def test_calendar_update_allowed_when_never_composed_fails_open(tmp_path, monkey
         provider=prov,
     )
     prov.calendar_update.assert_awaited_once()
+
+
+def test_calendar_update_blocked_before_cooldown_elapses(tmp_path, monkeypatch) -> None:
+    """Pins the `calendar.create` -> `calendar.update` cooldown wiring in
+    `_COOLDOWN_GATED_SKILLS` (issue #365 piece 2): adding attendees right after
+    creating the event must refuse until the confirm cooldown has elapsed.
+    `calendar.create` stamps its own compose record inside the real provider
+    implementation (not dispatch's generic `_COMPOSE_RECORD_SKILLS` hook, since
+    its payload shape is `{"event": {"id": ...}}` not `{"draft": {"id": ...}}`),
+    so seed it directly with `record_composed` the same way that implementation
+    does."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    record_composed(cfg, "e1")
+
+    prov = _provider("calendar_update")
+    with pytest.raises(EmitCooldownError) as exc:
+        _run(
+            "calendar.update",
+            {"event_id": "e1", "with": ["sam@example.com"], "yes": True},
+            config=cfg,
+            provider=prov,
+        )
+    assert exc.value.retry_after_seconds is not None
+    assert 0 < exc.value.retry_after_seconds <= 60
+    prov.calendar_update.assert_not_awaited()
+
+
+def test_calendar_update_empty_attendee_list_is_still_gated(tmp_path, monkeypatch) -> None:
+    """issue #365 review (CodeRabbit): an *explicit* `--with` with no emails
+    (`with: []`) still replaces the attendee list - Google patches an empty
+    attendees array with sendUpdates="all", which can notify removed attendees -
+    so `_COOLDOWN_GATE_REQUIRES_ARG` must key off "argument present" (`is None`),
+    not "argument truthy", or this would silently bypass the gate."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    record_composed(cfg, "e1")
+    prov = _provider("calendar_update")
+    with pytest.raises(EmitCooldownError):
+        _run(
+            "calendar.update",
+            {"event_id": "e1", "with": [], "yes": True},
+            config=cfg,
+            provider=prov,
+        )
+    prov.calendar_update.assert_not_awaited()
 
 
 def test_calendar_update_without_attendees_is_never_gated(tmp_path, monkeypatch) -> None:
