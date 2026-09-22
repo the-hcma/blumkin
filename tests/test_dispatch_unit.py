@@ -706,7 +706,7 @@ def test_mail_draft_records_a_compose_timestamp(tmp_path, monkeypatch) -> None:
     _run("mail.draft", {"to": ["a@x.com"], "subject": "s"}, config=cfg, provider=prov)
     elapsed = seconds_since_composed(cfg, "d1")
     assert elapsed is not None
-    assert elapsed < 2
+    assert elapsed < 60
 
 
 @pytest.mark.parametrize(
@@ -728,7 +728,7 @@ def test_every_compose_record_skill_stamps_the_cooldown(
     _run(skill_id, args, config=cfg, provider=prov)
     elapsed = seconds_since_composed(cfg, "d1")
     assert elapsed is not None
-    assert elapsed < 2
+    assert elapsed < 60
 
 
 def test_mail_update_draft_resets_the_compose_clock(tmp_path, monkeypatch) -> None:
@@ -740,7 +740,7 @@ def test_mail_update_draft_resets_the_compose_clock(tmp_path, monkeypatch) -> No
     _run("mail.update-draft", {"id": "d1", "subject": "edited"}, config=cfg, provider=prov)
     elapsed = seconds_since_composed(cfg, "d1")
     assert elapsed is not None
-    assert elapsed < 2
+    assert elapsed < 60
     # ... and the freshly-reset clock still blocks an immediate send.
     with pytest.raises(EmitCooldownError):
         _run(

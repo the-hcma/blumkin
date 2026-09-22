@@ -35,6 +35,17 @@ from blumkin.skills.docs_read import docs_read
 from blumkin.skills.errors import ConsentRequiredError, EmitCooldownError, ScopeAddonDisabledError
 from blumkin.tasks import tasks_list, tasks_show
 
+# Skills that retire a draft id for good - its compose-cooldown record is no
+# longer meaningful once the draft is sent or deleted.
+_COMPOSE_CLEAR_SKILLS: frozenset[str] = frozenset({"mail.delete-draft", "mail.send-draft"})
+
+# Skills whose payload carries a fresh/edited ``{"draft": {"id": ...}}`` - each
+# call (re)stamps that draft's compose timestamp, so an edit right before send
+# restarts the cooldown rather than grandfathering in the original compose time.
+_COMPOSE_RECORD_SKILLS: frozenset[str] = frozenset(
+    {"mail.draft", "mail.forward", "mail.reply", "mail.update-draft"}
+)
+
 # CONFIG_SKILLS handlers: async, take the resolved kwargs plus `config`, touch no
 # provider. Keyed by skill id.
 _CONFIG_HANDLERS: dict[str, Callable[..., Any]] = {
@@ -52,19 +63,8 @@ _CONSENT_KEYS = ("yes", "confirm")
 # argument key holding the id of the artifact that must have sat composed for
 # at least ``preferences.confirm_cooldown_seconds``. Skills that produce or edit
 # such an artifact stamp/clear it via ``_COMPOSE_RECORD_SKILLS`` /
-# ``_COMPOSE_CLEAR_SKILLS`` below.
+# ``_COMPOSE_CLEAR_SKILLS`` above.
 _COOLDOWN_GATED_SKILLS: dict[str, str] = {"mail.send-draft": "id"}
-
-# Skills whose payload carries a fresh/edited ``{"draft": {"id": ...}}`` - each
-# call (re)stamps that draft's compose timestamp, so an edit right before send
-# restarts the cooldown rather than grandfathering in the original compose time.
-_COMPOSE_RECORD_SKILLS: frozenset[str] = frozenset(
-    {"mail.draft", "mail.forward", "mail.reply", "mail.update-draft"}
-)
-
-# Skills that retire a draft id for good - its compose-cooldown record is no
-# longer meaningful once the draft is sent or deleted.
-_COMPOSE_CLEAR_SKILLS: frozenset[str] = frozenset({"mail.delete-draft", "mail.send-draft"})
 
 _DOCS_SCOPES_MESSAGE = (
     "docs create / docs update need the Files.ReadWrite Graph scope, which is off. "

@@ -91,6 +91,21 @@ def test_a_placeholder_url_round_trips_through_str_format() -> None:
     )
 
 
+def test_emit_error_human_readable_prints_agent_instructions(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    emit_error(
+        error="too_soon",
+        message="mail.send-draft was composed 3s ago",
+        as_json=False,
+        agent_instructions="Do not retry automatically. Confirm with the user first.",
+        retry_after_seconds=17.0,
+    )
+    err = capsys.readouterr().err
+    assert "mail.send-draft was composed 3s ago" in err
+    assert "Do not retry automatically" in err
+
+
 def test_emit_error_json_carries_agent_instructions_and_retry_after_seconds(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -111,21 +126,6 @@ def test_emit_error_json_carries_agent_instructions_and_retry_after_seconds(
         "Do not retry automatically. Confirm with the user first."
     )
     assert payload["retry_after_seconds"] == 17.0
-
-
-def test_emit_error_human_readable_prints_agent_instructions(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    emit_error(
-        error="too_soon",
-        message="mail.send-draft was composed 3s ago",
-        as_json=False,
-        agent_instructions="Do not retry automatically. Confirm with the user first.",
-        retry_after_seconds=17.0,
-    )
-    err = capsys.readouterr().err
-    assert "mail.send-draft was composed 3s ago" in err
-    assert "Do not retry automatically" in err
 
 
 def test_emit_error_omits_optional_fields_when_absent(
