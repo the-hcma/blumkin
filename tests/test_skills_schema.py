@@ -524,6 +524,7 @@ _CONSENT = {
     "mail.attachments": (False, False),
     "mail.attachments.download": (False, False),
     "mail.auto-reply": (True, False),
+    "mail.cancel-send": (True, False),
     "mail.delete-draft": (True, False),
     "mail.draft": (True, False),
     "mail.folders": (False, False),

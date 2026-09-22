@@ -48,6 +48,7 @@ from blumkin.tasks import tasks_list, tasks_show
 _COMPOSE_CLEAR_SKILLS: dict[str, str] = {
     "chat.edit": "draft_id",
     "chat.send": "draft_id",
+    "mail.cancel-send": "id",
     "mail.delete-draft": "id",
     "mail.send-draft": "id",
 }

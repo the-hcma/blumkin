@@ -106,6 +106,7 @@ from blumkin.skills.mail import (
     WELL_KNOWN_MAIL_FOLDERS,
     format_attachments_download_human,
     format_attachments_human,
+    format_cancel_send_human,
     format_delete_draft_human,
     format_draft_human,
     format_folders_human,
@@ -3499,6 +3500,25 @@ def mail_auto_reply_cmd(
 
 
 mail.add_command(mail_auto_reply_cmd, "oof")
+
+
+@mail.command("cancel-send", epilog=help_text.MAIL_CANCEL_SEND_EPILOG)
+@click.option("--id", "message_id", required=True, help="Message id (still in Outbox).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_cancel_send_cmd(ctx: click.Context, message_id: str, as_json_flag: bool) -> None:
+    """Cancel a message still held in Outbox. No --yes needed - stops a send.
+
+    Fails not_found once the deferred-delivery window has passed and Exchange
+    has already delivered the message (Microsoft accounts only).
+    """
+    _dispatch(
+        ctx,
+        "mail.cancel-send",
+        {"id": message_id},
+        human=format_cancel_send_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @mail.command("delete-draft", epilog=help_text.MAIL_DELETE_DRAFT_EPILOG)

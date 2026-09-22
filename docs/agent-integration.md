@@ -215,6 +215,17 @@ client id or call Graph directly when a blumkin skill covers the job.
   retry automatically; show the user the exact drafted content (or, for
   `calendar update`, the event as `calendar create` / `calendar get` shows it)
   and wait for their explicit go-ahead.
+- `mail send-draft` succeeding is not necessarily the end of the story on a
+  Microsoft (work/school) account: the response's `held_until` field, when
+  present, means the message is being held in Outbox until that time
+  (deferred delivery, at least the confirm cooldown) instead of delivering
+  immediately. If the user says "wait, don't send that" right after
+  confirming, run `mail cancel-send --id <the same id>` before `held_until` -
+  a real undo, unlike Outlook's own message recall (which silently fails once
+  the recipient has opened the mail). After `held_until` passes, or on Gmail
+  (`held_until` is always `null` there - no such hold exists), the message is
+  gone; `mail cancel-send` then fails `not_found` rather than deleting the
+  delivered copy and falsely claiming success.
 - Exit 2 (`stale_or_unread`): a single `--event-id` on `calendar
   accept`/`decline`/`tentative`/`cancel` was called without a fresh
   `calendar get --event-id ...` first (within
