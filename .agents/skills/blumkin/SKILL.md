@@ -186,12 +186,13 @@ original's attachments.
    restate exactly what will go out (recipients, subject/text, timing) and get
    the user's explicit go-ahead in that turn — a decision made earlier in the
    conversation, or on a similar-looking action, does not carry over. Passing
-   `--yes` is not the confirmation; it must follow one. `mail send-draft` also
-   enforces a minimum wall-clock gap after the draft was last composed/edited
-   (`preferences.confirm_cooldown_seconds`, default 20s): calling it too soon
-   fails with `too_soon` and an `agent_instructions` field telling you not to
-   retry automatically — show the user the exact drafted content and wait for
-   a real confirmation instead of looping on the same call.
+   `--yes` is not the confirmation; it must follow one. `mail send-draft` /
+   `chat send` / `chat edit` also enforce a minimum wall-clock gap after the
+   draft was last composed/edited (`preferences.confirm_cooldown_seconds`,
+   default 20s): calling it too soon fails with `too_soon` and an
+   `agent_instructions` field telling you not to retry automatically — show
+   the user the exact drafted content and wait for a real confirmation
+   instead of looping on the same call.
    - `blumkin calendar accept --event-id '<id>' [--comment TEXT] --yes`
    - `blumkin calendar decline --event-id '<id>' [--comment TEXT] --yes` /
      `blumkin calendar tentative …` - RSVP no / maybe. Both take
@@ -266,9 +267,17 @@ original's attachments.
     it never replaces. It is also valid on its own, without any other field.
   - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
   - `blumkin mail send-draft --id '<draft-id>' --yes`
-  - `blumkin chat send --with "Name" --text "…" --yes` (or `--chat-id` if ambiguous)
-  - `blumkin chat edit --chat-id … --message-id … --text "…" --yes`
-  - `blumkin chat delete --chat-id … --message-id … --yes`
+  - `blumkin chat draft --with "Name" --text "…"` (or `--chat-id` if ambiguous) - composes
+    only, resolving the target now; no one is notified. `blumkin chat send --draft-id
+    '<draft-id>' --yes` sends it. Like `mail send-draft`, `chat send` enforces the
+    `confirm_cooldown_seconds` wall-clock gap since the draft was composed.
+  - `blumkin chat edit-draft --chat-id … --message-id … --text "…"` (composes a
+    replacement body only) then `blumkin chat edit --draft-id '<draft-id>' --yes`
+    (same cooldown as `chat send`)
+  - `blumkin chat delete --chat-id … --message-id … --expected-text "…" --yes` -
+    `--expected-text` must match the message's *current* body exactly (a fresh
+    `chat last` read, not a guess) or the call is refused; there is no compose
+    step to delete since nothing is being sent
   - `blumkin meeting get --event-id '<id>'` (organizer-only online meetings)
   - `blumkin meeting transcription --event-id '<id>'` (show flags)
   - `blumkin meeting transcription --event-id '<id>' --enable --yes`

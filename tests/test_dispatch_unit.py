@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from blumkin.compose_state import seconds_since_composed
+from blumkin.compose_state import record_composed, seconds_since_composed
 from blumkin.config import load_config
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.dispatch import run_skill, skill_method_name
@@ -786,4 +786,74 @@ def test_mail_delete_draft_clears_the_compose_record(tmp_path, monkeypatch) -> N
     cfg.compose_state_path.write_text(json.dumps({"d1": now}))
     prov = SimpleNamespace(mail_delete_draft=AsyncMock(return_value={"ok": True}))
     _run("mail.delete-draft", {"id": "d1"}, config=cfg, provider=prov)
+    assert seconds_since_composed(cfg, "d1") is None
+
+
+def _chat_cooldown_cfg(tmp_path, monkeypatch, *, cooldown_seconds: int = 60):
+    """Like `_cooldown_cfg` but with `wo1162425_scopes = true` - chat.draft/chat.send
+    sit behind the WO1162425 addon gate, unlike the mail skills above."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\nwo1162425_scopes = true\n'
+        f"[profiles.default.preferences]\nconfirm_cooldown_seconds = {cooldown_seconds}\n"
+    )
+    return load_config()
+
+
+def test_chat_edit_blocked_before_cooldown_elapses(tmp_path, monkeypatch) -> None:
+    """Pins the `chat.edit-draft` -> `chat.edit` cooldown wiring in
+    `_COOLDOWN_GATED_SKILLS`: a freshly composed edit draft must still block an
+    immediate `chat.edit` (issue #365 review). `chat.edit-draft` stamps its own
+    compose record inside the real provider implementation (not dispatch's
+    generic `_COMPOSE_RECORD_SKILLS` hook), so seed it directly with
+    `record_composed` the same way that implementation does."""
+    cfg = _chat_cooldown_cfg(tmp_path, monkeypatch)
+    record_composed(cfg, "d1")
+
+    edit_prov = _provider("chat_edit")
+    with pytest.raises(EmitCooldownError) as exc:
+        _run("chat.edit", {"draft_id": "d1", "yes": True}, config=cfg, provider=edit_prov)
+    assert exc.value.retry_after_seconds is not None
+    assert 0 < exc.value.retry_after_seconds <= 60
+    edit_prov.chat_edit.assert_not_awaited()
+
+
+def test_chat_edit_clears_the_compose_record(tmp_path, monkeypatch) -> None:
+    """Pins that `chat.edit` reads `draft_id` (not a typo'd key) into
+    `_COOLDOWN_GATED_SKILLS`/`_COMPOSE_CLEAR_SKILLS` - a successful emit must clear
+    the stashed cooldown record (issue #365 review)."""
+    cfg = _chat_cooldown_cfg(tmp_path, monkeypatch)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
+    cfg.compose_state_path.write_text(json.dumps({"d1": stale}))
+    prov = _provider("chat_edit")
+    _run("chat.edit", {"draft_id": "d1", "yes": True}, config=cfg, provider=prov)
+    prov.chat_edit.assert_awaited_once()
+    assert seconds_since_composed(cfg, "d1") is None
+
+
+def test_chat_send_blocked_before_cooldown_elapses(tmp_path, monkeypatch) -> None:
+    """Mirrors `test_chat_edit_blocked_before_cooldown_elapses` for `chat.send`'s own
+    `_COOLDOWN_GATED_SKILLS` entry (issue #365 review)."""
+    cfg = _chat_cooldown_cfg(tmp_path, monkeypatch)
+    record_composed(cfg, "d1")
+
+    send_prov = _provider("chat_send")
+    with pytest.raises(EmitCooldownError) as exc:
+        _run("chat.send", {"draft_id": "d1", "yes": True}, config=cfg, provider=send_prov)
+    assert exc.value.retry_after_seconds is not None
+    assert 0 < exc.value.retry_after_seconds <= 60
+    send_prov.chat_send.assert_not_awaited()
+
+
+def test_chat_send_clears_the_compose_record(tmp_path, monkeypatch) -> None:
+    """Mirrors `test_chat_edit_clears_the_compose_record` for `chat.send`'s own
+    `_COMPOSE_CLEAR_SKILLS` entry (issue #365 review)."""
+    cfg = _chat_cooldown_cfg(tmp_path, monkeypatch)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
+    cfg.compose_state_path.write_text(json.dumps({"d1": stale}))
+    prov = _provider("chat_send")
+    _run("chat.send", {"draft_id": "d1", "yes": True}, config=cfg, provider=prov)
+    prov.chat_send.assert_awaited_once()
     assert seconds_since_composed(cfg, "d1") is None

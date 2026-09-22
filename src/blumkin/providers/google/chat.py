@@ -13,6 +13,7 @@ Ids in the skill payload are Google resource names (``spaces/AAA``,
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
@@ -26,6 +27,7 @@ from blumkin.attachments import (
     sanitize_attachment_filename,
     unique_filename,
 )
+from blumkin.compose_state import record_composed
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google_auth import CHAT_READ_SCOPES, CHAT_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
@@ -36,6 +38,7 @@ from blumkin.skills.chat import (
     ChatMessageNotFoundError,
     _chat_last_filters,
     _name_matches,
+    _require_chat_draft,
 )
 
 _MESSAGE_PAGE_SIZE = 50
@@ -309,35 +312,74 @@ async def chat_attachments_list(
 async def chat_delete(
     *,
     chat_id: str,
+    expected_text: str,
     message_id: str,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
+    """Mirrors ``blumkin.skills.chat.chat_delete``'s --expected-text content-match
+    requirement (issue #365) for a Google Chat space."""
     cid = chat_id.strip()
     mid = message_id.strip()
+    want_text = expected_text.strip()
     if not cid or not mid:
         raise ValueError("--chat-id and --message-id are required")
+    if not want_text:
+        raise ValueError("--expected-text must be non-empty")
     cfg = config or load_config()
     service = _chat_service(cfg)
+    message = _require_message_in_chat(service, cid, mid)
+    actual_text = str(_message_to_dict(message)["body_text"]).strip()
+    if actual_text != want_text:
+        raise ValueError(
+            "--expected-text does not match the current message body; re-read it with "
+            "`chat last` first to confirm you are deleting the right message"
+        )
     execute(service.spaces().messages().delete(name=mid), num_retries=0)
     return {"chat_id": cid, "deleted": mid}
 
 
-async def chat_edit(
+async def chat_draft(
     *,
-    chat_id: str,
-    message_id: str,
     text: str,
+    with_name: str | None = None,
+    chat_id: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    cid = chat_id.strip()
-    mid = message_id.strip()
+    """Mirrors ``blumkin.skills.chat.chat_draft`` (issue #365) for Google Chat -
+    same local ``compose_state`` record, resolved via this provider's own
+    ``_resolve_chat_target``."""
     body_text = text.strip()
-    if not cid or not mid:
-        raise ValueError("--chat-id and --message-id are required")
     if not body_text:
         raise ValueError("--text must be non-empty")
     cfg = config or load_config()
+    chat, target_id, partial, skipped = await _resolve_chat_target(
+        chat_id=chat_id, with_name=with_name, config=cfg
+    )
+    draft_id = f"chat-send-{uuid.uuid4().hex}"
+    record_composed(
+        cfg, draft_id, content={"chat_id": target_id, "kind": "send", "text": body_text}
+    )
+    return {
+        "chat": chat,
+        "draft": {"chat_id": target_id, "id": draft_id, "text": body_text},
+        "partial": partial,
+        "query": (with_name or "").strip() or None,
+        "skipped": skipped,
+    }
+
+
+async def chat_edit(
+    *,
+    draft_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    cfg = config or load_config()
+    draft = _require_chat_draft(cfg, draft_id, kind="edit")
+    cid = str(draft["chat_id"])
+    mid = str(draft["message_id"])
+    body_text = str(draft["text"])
     service = _chat_service(cfg)
+    _require_message_in_chat(service, cid, mid)
     updated = execute(
         service.spaces().messages().patch(name=mid, updateMask="text", body={"text": body_text}),
         num_retries=0,
@@ -345,21 +387,40 @@ async def chat_edit(
     return {"chat_id": cid, "message": _message_to_dict(updated)}
 
 
-async def chat_send(
+async def chat_edit_draft(
     *,
+    chat_id: str,
+    message_id: str,
     text: str,
-    with_name: str | None = None,
-    chat_id: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
+    """Mirrors ``blumkin.skills.chat.chat_edit_draft`` (issue #365) for Google Chat."""
+    cid = chat_id.strip()
+    mid = message_id.strip()
     body_text = text.strip()
+    if not cid or not mid:
+        raise ValueError("--chat-id and --message-id are required")
     if not body_text:
         raise ValueError("--text must be non-empty")
     cfg = config or load_config()
-    query = (with_name or "").strip() or None
-    chat, target_id, partial, skipped = await _resolve_chat_target(
-        chat_id=chat_id, with_name=with_name, config=cfg
+    draft_id = f"chat-edit-{uuid.uuid4().hex}"
+    record_composed(
+        cfg,
+        draft_id,
+        content={"chat_id": cid, "kind": "edit", "message_id": mid, "text": body_text},
     )
+    return {"draft": {"chat_id": cid, "id": draft_id, "message_id": mid, "text": body_text}}
+
+
+async def chat_send(
+    *,
+    draft_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    cfg = config or load_config()
+    draft = _require_chat_draft(cfg, draft_id, kind="send")
+    target_id = str(draft["chat_id"])
+    body_text = str(draft["text"])
     service = _chat_service(cfg)
     created = execute(
         service.spaces().messages().create(parent=target_id, body={"text": body_text}),
@@ -368,11 +429,8 @@ async def chat_send(
         num_retries=0,
     )
     return {
-        "chat": chat,
+        "chat_id": target_id,
         "message": _message_to_dict(created),
-        "partial": partial,
-        "query": query,
-        "skipped": skipped,
     }
 
 
@@ -547,6 +605,18 @@ def _require_message(service: Any, message_id: str) -> Mapping[str, Any]:
         if status == 404:
             raise ChatMessageNotFoundError(f"chat message not found: {message_id}") from exc
         raise
+
+
+def _require_message_in_chat(service: Any, chat_id: str, message_id: str) -> Mapping[str, Any]:
+    """Like ``_require_message``, but refuses a message that does not belong to
+    ``chat_id`` - a message's resource name is always ``{space}/messages/{id}``,
+    so this holds regardless of whether the response happens to echo back a
+    ``space`` field (issue #365 review)."""
+    message = _require_message(service, message_id)
+    message_name = str(message.get("name") or "")
+    if not message_name.startswith(f"{chat_id}/messages/"):
+        raise ValueError("--message-id does not belong to --chat-id")
+    return message
 
 
 async def _resolve_chat_target(

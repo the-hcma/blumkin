@@ -604,13 +604,16 @@ is read-write", run a second pinned server:
 
 Every tool whose CLI form requires `--yes` carries a **required `confirm: true`**
 argument the server enforces — the MCP mirror of the `--yes` gate. That is the
-notifying skills (calendar RSVP/create/cancel, `chat.send`, `mail.send-draft`),
+notifying skills (calendar RSVP/create/cancel, `chat.send`, `chat.edit`,
+`chat.delete`, `mail.send-draft`),
 the `mail.delete` / `mail.mark` / `mail.move` safety confirms, the
 `drive.mkdir` / `drive.move` / `drive.rename` writes, and the
 `mail.auto-reply` / `meeting.transcription` setting changes. Those tools also
 carry `anthropic/requiresUserInteraction` metadata, and every tool sets
 `readOnlyHint` / `destructiveHint`, so MCP clients can prompt appropriately.
-(`mail.forward` only drafts a forward, so it needs no confirm.) The three
+(`mail.forward`, `mail.draft`, `chat.draft`, and `chat.edit-draft` only compose
+- draft/edit-draft skills stash content for the matching send/edit step to
+read back - so none of them need confirm.) The three
 `drive` write verbs are also hidden under `--read-only`; the read verbs
 (`drive.list` / `.get` / `.download` / `.export` / `.read`) stay visible.
 

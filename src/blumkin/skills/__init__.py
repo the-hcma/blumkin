@@ -37,7 +37,9 @@ DOCS_SKILLS: frozenset[str] = frozenset({"docs.create", "docs.update"})
 WO1162425_SKILLS: frozenset[str] = frozenset(
     {
         "chat.delete",
+        "chat.draft",
         "chat.edit",
+        "chat.edit-draft",
         "chat.send",
         "meeting.get",
         "meeting.transcription",
@@ -54,7 +56,9 @@ PERSONAL_ACCOUNT_UNSUPPORTED_SKILLS: frozenset[str] = frozenset(
         "chat.attachments",
         "chat.attachments.download",
         "chat.delete",
+        "chat.draft",
         "chat.edit",
+        "chat.edit-draft",
         "chat.find",
         "chat.last",
         "chat.send",
@@ -115,9 +119,9 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("calendar.suggest", "--with"): "with_emails",
     ("chat.attachments", "--with"): "with_name",
     ("chat.attachments.download", "--with"): "with_name",
+    ("chat.draft", "--with"): "with_name",
     ("chat.find", "--with"): "with_name",
     ("chat.last", "--with"): "with_name",
-    ("chat.send", "--with"): "with_name",
     # calendar create/update take the start/end strings raw (the skill parses them);
     # calendar view folds --from/--to into a [start, end) datetime pair.
     ("calendar.create", "--start"): "start_raw",
@@ -710,28 +714,77 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="chat.delete",
         cli=["blumkin", "chat", "delete"],
-        summary="Soft-delete a chat message (requires wo1162425_scopes)",
+        summary=(
+            "Soft-delete a chat message whose current body matches --expected-text "
+            "(requires wo1162425_scopes)"
+        ),
         mutates=True,
         notifies_others=True,
         scopes=["Chat.ReadWrite"],
         args=[
             {"name": "--chat-id", "required": True, "type": "string"},
+            {
+                "name": "--expected-text",
+                "required": True,
+                "type": "string",
+                "note": "must match the message's current body exactly (after trimming)",
+            },
             {"name": "--message-id", "required": True, "type": "string"},
             {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
     SkillSpec(
+        id="chat.draft",
+        cli=["blumkin", "chat", "draft"],
+        summary=(
+            "Compose a new chat message locally without sending it "
+            "(requires wo1162425_scopes; exactly one of --with or --chat-id)"
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=["Chat.Read"],
+        args=[
+            {
+                "name": "--chat-id",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --with or --chat-id",
+            },
+            {"name": "--text", "required": True, "type": "string"},
+            {
+                "name": "--with",
+                "required": False,
+                "type": "string",
+                "note": "exactly one of --with or --chat-id; refuses if multiple matches",
+            },
+        ],
+    ),
+    SkillSpec(
         id="chat.edit",
         cli=["blumkin", "chat", "edit"],
-        summary="Edit a chat message body in place (requires wo1162425_scopes)",
+        summary="Send a message body composed by `chat.edit-draft` (requires wo1162425_scopes)",
         mutates=True,
         notifies_others=True,
+        scopes=["Chat.ReadWrite"],
+        args=[
+            {"name": "--draft-id", "required": True, "type": "string"},
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
+        id="chat.edit-draft",
+        cli=["blumkin", "chat", "edit-draft"],
+        summary=(
+            "Compose a replacement chat-message body locally without editing it yet "
+            "(requires wo1162425_scopes)"
+        ),
+        mutates=True,
+        notifies_others=False,
         scopes=["Chat.ReadWrite"],
         args=[
             {"name": "--chat-id", "required": True, "type": "string"},
             {"name": "--message-id", "required": True, "type": "string"},
             {"name": "--text", "required": True, "type": "string"},
-            {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
     SkillSpec(
@@ -775,27 +828,12 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="chat.send",
         cli=["blumkin", "chat", "send"],
-        summary=(
-            "Send a text message to a chat (requires wo1162425_scopes; "
-            "exactly one of --with or --chat-id)"
-        ),
+        summary="Send a message composed by `chat.draft` (requires wo1162425_scopes)",
         mutates=True,
         notifies_others=True,
         scopes=["Chat.ReadWrite"],
         args=[
-            {
-                "name": "--chat-id",
-                "required": False,
-                "type": "string",
-                "note": "exactly one of --with or --chat-id",
-            },
-            {"name": "--text", "required": True, "type": "string"},
-            {
-                "name": "--with",
-                "required": False,
-                "type": "string",
-                "note": "exactly one of --with or --chat-id; refuses if multiple matches",
-            },
+            {"name": "--draft-id", "required": True, "type": "string"},
             {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
