@@ -291,7 +291,10 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="calendar.accept",
         cli=["blumkin", "calendar", "accept"],
-        summary="Accept calendar invitation(s) by event id or today's pending",
+        summary=(
+            "Accept calendar invitation(s) by event id or today's pending "
+            "(single --event-id needs a fresh calendar.get first)"
+        ),
         mutates=True,
         notifies_others=True,
         scopes=["Calendars.ReadWrite"],
@@ -306,7 +309,7 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="calendar.cancel",
         cli=["blumkin", "calendar", "cancel"],
-        summary="Cancel a calendar event and notify attendees",
+        summary="Cancel a calendar event and notify attendees (needs a fresh calendar.get first)",
         mutates=True,
         notifies_others=True,
         scopes=["Calendars.ReadWrite"],
@@ -403,7 +406,10 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="calendar.decline",
         cli=["blumkin", "calendar", "decline"],
-        summary="Decline calendar invitation(s); optional --comment / --propose-time",
+        summary=(
+            "Decline calendar invitation(s); optional --comment / --propose-time "
+            "(single --event-id needs a fresh calendar.get first)"
+        ),
         mutates=True,
         notifies_others=True,
         scopes=["Calendars.ReadWrite"],
@@ -449,7 +455,10 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="calendar.get",
         cli=["blumkin", "calendar", "get"],
-        summary="Read one calendar event in full (body, attendees + responses, recurrence)",
+        summary=(
+            "Read one calendar event in full (body, attendees + responses, recurrence); "
+            "stamps the event as freshly read for accept/decline/tentative/cancel"
+        ),
         mutates=False,
         notifies_others=False,
         scopes=["Calendars.ReadWrite"],
@@ -504,7 +513,10 @@ SKILLS: list[SkillSpec] = [
     SkillSpec(
         id="calendar.tentative",
         cli=["blumkin", "calendar", "tentative"],
-        summary='Respond "tentative" to calendar invitation(s); optional --comment/--propose-time',
+        summary=(
+            'Respond "tentative" to calendar invitation(s); optional --comment/--propose-time '
+            "(single --event-id needs a fresh calendar.get first)"
+        ),
         mutates=True,
         notifies_others=True,
         scopes=["Calendars.ReadWrite"],

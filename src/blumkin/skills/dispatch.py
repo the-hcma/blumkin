@@ -21,6 +21,7 @@ from blumkin.contacts import people_context
 from blumkin.output import emit_warning
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderKind
+from blumkin.read_state import record_read, seconds_since_read
 from blumkin.skills import (
     CONFIG_SKILLS,
     DOCS_SKILLS,
@@ -33,7 +34,12 @@ from blumkin.skills import (
 from blumkin.skills.calendar import parse_local_datetime
 from blumkin.skills.calendar_writes import parse_duration, parse_recurrence
 from blumkin.skills.docs_read import docs_read
-from blumkin.skills.errors import ConsentRequiredError, EmitCooldownError, ScopeAddonDisabledError
+from blumkin.skills.errors import (
+    ConsentRequiredError,
+    EmitCooldownError,
+    FreshnessRequiredError,
+    ScopeAddonDisabledError,
+)
 from blumkin.tasks import tasks_list, tasks_show
 
 # Skills that retire a draft id for good - its compose-cooldown record (and, for
@@ -117,6 +123,27 @@ _COOLDOWN_ARTIFACT_SUMMARY: dict[str, str] = {
     ),
 }
 
+# RSVP/cancel skills gated on a fresh `calendar.get` read (issue #365): skill id
+# -> the raw argument key holding the event id that must have been read via
+# `calendar.get` within `preferences.rsvp_freshness_seconds`. Unlike the
+# cooldown gate above, a missing/expired read record is a *violation*, not an
+# unprovable-so-let-it-through case - the whole point is to stop the agent
+# acting on an id it has not just looked at. `calendar.accept` / `decline` /
+# `tentative`'s `--today-pending` bulk mode carries no explicit `event_id`
+# (each of those ids is read via `calendar.today` a moment earlier, inside the
+# same call, so freshness is inherent rather than gated here); this dict is
+# only consulted when the raw argument is present.
+_FRESHNESS_GATED_SKILLS: dict[str, str] = {
+    "calendar.accept": "event_id",
+    "calendar.cancel": "event_id",
+    "calendar.decline": "event_id",
+    "calendar.tentative": "event_id",
+}
+
+# `calendar.get`'s successful payload (`{"event": {"id": ...}}`) stamps that
+# event id's read-freshness record - see `_apply_read_state` below.
+_READ_RECORD_SKILLS: frozenset[str] = frozenset({"calendar.get"})
+
 _DOCS_SCOPES_MESSAGE = (
     "docs create / docs update need the Files.ReadWrite Graph scope, which is off. "
     "They read and write a .docx in your OneDrive."
@@ -198,6 +225,27 @@ def _apply_compose_state(
         )
 
 
+def _apply_read_state(skill_id: str, payload: dict[str, Any], config: BlumkinConfig) -> None:
+    """Stamp the read-freshness record after a successful ``calendar.get`` (issue #365).
+
+    Best-effort, same reasoning as ``_apply_compose_state``: the read already
+    succeeded, so a filesystem error here must not turn that into a reported
+    failure - just warn, since worst case a later RSVP/cancel on this event
+    re-fails the freshness gate and the agent re-reads it.
+    """
+    if skill_id not in _READ_RECORD_SKILLS:
+        return
+    try:
+        event_id = (payload.get("event") or {}).get("id")
+        if isinstance(event_id, str) and event_id:
+            record_read(config, event_id)
+    except OSError as exc:
+        emit_warning(
+            f"{skill_id} succeeded, but the read-freshness record was not saved "
+            f"({type(exc).__name__})"
+        )
+
+
 def _argkey(name: str) -> str:
     return name.lstrip("-").replace("-", "_")
 
@@ -237,6 +285,42 @@ def _cooldown_gate(skill_id: str, arguments: dict[str, Any], config: BlumkinConf
         artifact_summary=_COOLDOWN_ARTIFACT_SUMMARY.get(
             skill_id, "recipients/subject/body or message text"
         ),
+    )
+
+
+def _freshness_gate(skill_id: str, arguments: dict[str, Any], config: BlumkinConfig) -> None:
+    """Refuse an RSVP/cancel skill until its event id has been freshly read via `calendar.get`.
+
+    Unlike ``_cooldown_gate``, a missing or expired read record fails *closed*
+    (raises) rather than open - the agent must have just looked at the event's
+    current state before accepting/declining/cancelling it (see
+    ``blumkin.read_state`` and issue #365). Skipped entirely when the raw
+    argument is absent (the `--today-pending` bulk path, which reads each id
+    via `calendar.today` immediately before acting on it - freshness is
+    inherent there, not something a per-id record can usefully re-check).
+    """
+    arg_key = _FRESHNESS_GATED_SKILLS.get(skill_id)
+    if arg_key is None:
+        return
+    event_id = arguments.get(arg_key)
+    if not isinstance(event_id, str) or not event_id.strip():
+        return
+    window = config.preferences.rsvp_freshness_seconds
+    if window <= 0:
+        return
+    event_id = event_id.strip()
+    elapsed = seconds_since_read(config, event_id)
+    if elapsed is not None and elapsed <= window:
+        return
+    reason = (
+        f"was last read {elapsed:.0f}s ago; the freshness window is {window}s"
+        if elapsed is not None
+        else "has never been read with `calendar.get` this session"
+    )
+    raise FreshnessRequiredError(
+        f"{skill_id} --event-id {event_id} {reason}. This is not a signal to just "
+        "retry - read the event fresh and confirm with the user first.",
+        event_id=event_id,
     )
 
 
@@ -442,6 +526,8 @@ def _run_gates(
 
     # confirm cooldown (issue #365) - only reachable once --yes/confirm passed above.
     _cooldown_gate(skill_id, arguments, config)
+    # RSVP/cancel freshness (issue #365) - same reachability precondition.
+    _freshness_gate(skill_id, arguments, config)
 
 
 # --------------------------------------------------------------------------- entry point
@@ -487,6 +573,7 @@ async def run_skill(
         method = getattr(prov, skill_method_name(skill_id))
         payload = await method(**kwargs)
     _apply_compose_state(skill_id, arguments, payload, config)
+    _apply_read_state(skill_id, payload, config)
     return _postprocess_items(skill_id, payload, arguments)
 
 

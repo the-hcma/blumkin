@@ -156,7 +156,11 @@ Examples:
 
 Sends a response to each organizer, so `--yes` is required. Get event ids from
 `blumkin calendar today --json`. To say no or maybe, use `calendar decline` /
-`calendar tentative`.
+`calendar tentative`. A single `--event-id` also requires a fresh
+`calendar get --event-id ...` first (default: within the last 5 minutes,
+`preferences.rsvp_freshness_seconds`) so you act on the event's current state,
+not stale/unread data (issue #365); `--today-pending` is exempt since it reads
+each event via `calendar today` immediately before acting on it.
 """
 
 CALENDAR_DECLINE_EPILOG = """
@@ -177,7 +181,9 @@ Sends a response to each organizer, so `--yes` is required. `--comment` reaches
 the organizer. `--propose-time` / `--propose-duration` work on Microsoft only
 (Google Calendar has no propose-new-time - the command fails closed there);
 they need a single `--event-id`. `--today-pending` batches like
-`calendar accept`, reporting any events it had to skip.
+`calendar accept`, reporting any events it had to skip. A single `--event-id`
+also requires a fresh `calendar get --event-id ...` first (see
+`calendar accept --help`; issue #365).
 """
 
 CALENDAR_CANCEL_EPILOG = """
@@ -188,6 +194,8 @@ Example:
 
 Sends a cancellation to every attendee (requires `--yes`). Only the organizer can
 cancel an event; an attendee who wants out declines it in their calendar client.
+Also requires a fresh `calendar get --event-id ...` first (see
+`calendar accept --help`; issue #365) since there is no bulk mode to exempt.
 """
 
 CALENDAR_CREATE_EPILOG = """
@@ -287,7 +295,10 @@ recurrence (same shape `calendar create --json` emits), the online-meeting join
 URL, and `series_master_id` when it is one instance of a recurring series.
 Read-only. `--body-type` is Microsoft-only (Graph converts server-side); Google
 returns its single stored description, which may contain HTML. `--calendar
-NAME|ID` reads from a non-default calendar (see `calendar list`).
+NAME|ID` reads from a non-default calendar (see `calendar list`). A successful
+call also stamps this event id as freshly read, satisfying the
+`calendar accept`/`decline`/`tentative`/`cancel` freshness requirement for the
+next `preferences.rsvp_freshness_seconds` (issue #365).
 """
 
 CALENDAR_LIST_EPILOG = """

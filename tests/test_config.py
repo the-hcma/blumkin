@@ -13,7 +13,9 @@ from blumkin import auth
 from blumkin.config import (
     CONFIRM_COOLDOWN_FLOOR_SECONDS,
     DEFAULT_CONFIRM_COOLDOWN_SECONDS,
+    DEFAULT_RSVP_FRESHNESS_SECONDS,
     DEFAULT_TOKEN_REVERIFY_AFTER,
+    RSVP_FRESHNESS_FLOOR_SECONDS,
     list_profiles,
     load_config,
 )
@@ -808,7 +810,70 @@ def test_confirm_cooldown_seconds_zero_requires_understood_risk(
     assert cfg.preferences.confirm_cooldown_seconds == 0
 
 
-def test_preferences_html_email_must_be_a_bool(tmp_path: Path, monkeypatch) -> None:
+def test_rsvp_freshness_seconds_below_floor_rejected(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nrsvp_freshness_seconds = 1\n"
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    with pytest.raises(ProviderConfigError, match="at least"):
+        load_config()
+
+
+def test_rsvp_freshness_seconds_default_when_unset(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    cfg = load_config()
+    assert cfg.preferences.rsvp_freshness_seconds == DEFAULT_RSVP_FRESHNESS_SECONDS
+
+
+def test_rsvp_freshness_seconds_env_override(tmp_path: Path, monkeypatch) -> None:
+    """The CI/test-only env override bypasses the file's floor/opt-out ceremony for 0."""
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nrsvp_freshness_seconds = 45\n"
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BLUMKIN_RSVP_FRESHNESS_SECONDS", "0")
+    cfg = load_config()
+    assert cfg.preferences.rsvp_freshness_seconds == 0
+
+
+def test_rsvp_freshness_seconds_env_override_still_enforces_floor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("BLUMKIN_RSVP_FRESHNESS_SECONDS", str(RSVP_FRESHNESS_FLOOR_SECONDS - 1))
+    with pytest.raises(ProviderConfigError, match="at least"):
+        load_config()
+
+
+def test_rsvp_freshness_seconds_from_config(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nrsvp_freshness_seconds = 45\n"
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    cfg = load_config()
+    assert cfg.preferences.rsvp_freshness_seconds == 45
+
+
+def test_rsvp_freshness_seconds_zero_requires_understood_risk(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nrsvp_freshness_seconds = 0\n"
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    with pytest.raises(ProviderConfigError, match="i_understand_the_risk"):
+        load_config()
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\nrsvp_freshness_seconds = 0\n"
+        "i_understand_the_risk = true\n"
+    )
+    cfg = load_config()
+    assert cfg.preferences.rsvp_freshness_seconds == 0
     (tmp_path / "config.toml").write_text(
         '[profiles.default]\nclient_id = "abc"\n'
         '[profiles.default.preferences]\nhtml_email = "sometimes"\n'

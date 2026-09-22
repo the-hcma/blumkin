@@ -14,11 +14,12 @@ from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from blumkin.cli import main
-from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
+from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig, load_config
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_USAGE
 from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
+from blumkin.read_state import record_read
 from blumkin.skills.calendar import CalendarEventNotFoundError
 from blumkin.skills.calendar_writes import (
     calendar_accept,
@@ -333,6 +334,7 @@ def test_cli_decline_routes_not_found(monkeypatch) -> None:
         raise CalendarEventNotFoundError("event not found: e")
 
     monkeypatch.setattr("blumkin.cli._workspace", lambda: SimpleNamespace(calendar_decline=_raise))
+    record_read(load_config(), "e")
     result = CliRunner().invoke(main, ["calendar", "decline", "--event-id", "e", "--yes", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
     assert json.loads(result.stderr)["error"] == "not_found"
