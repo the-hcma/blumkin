@@ -44,6 +44,7 @@ from blumkin.skills.mail import (
     mail_attachments_download,
     mail_attachments_list,
     mail_auto_reply,
+    mail_cancel_send,
     mail_delete,
     mail_delete_draft,
     mail_draft,
@@ -505,6 +506,9 @@ class MicrosoftWorkspaceProvider:
 
     async def mail_attachments_list(self, *, message_id: str) -> dict[str, Any]:
         return await mail_attachments_list(message_id=message_id, config=self._config)
+
+    async def mail_cancel_send(self, *, message_id: str) -> dict[str, Any]:
+        return await mail_cancel_send(message_id=message_id, config=self._config)
 
     async def mail_delete_draft(self, *, draft_id: str) -> dict[str, Any]:
         return await mail_delete_draft(draft_id=draft_id, config=self._config)

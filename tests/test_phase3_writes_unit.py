@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from kiota_serialization_json.json_serialization_writer import JsonSerializationWriter
 from msgraph.generated.models.body_type import BodyType
+from msgraph.generated.models.o_data_errors.main_error import MainError
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
 
 from blumkin.skills.calendar import _event_to_dict
@@ -30,9 +32,12 @@ from blumkin.skills.calendar_writes import (
 from blumkin.skills.mail import (
     MailBodyFileError,
     MailDraftNotFoundError,
+    MailMessageNotFoundError,
+    format_cancel_send_human,
     format_delete_draft_human,
     format_draft_human,
     format_send_draft_human,
+    mail_cancel_send,
     mail_delete_draft,
     mail_draft,
     mail_send_draft,
@@ -698,7 +703,11 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: SimpleNamespace(
+            default_tz="UTC",
+            client_id="x",
+            preferences=SimpleNamespace(confirm_cooldown_seconds=0),
+        ),
     )
     saved = asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", body_type="text"))
     assert saved["draft"]["id"] == "draft-1"
@@ -710,9 +719,77 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
     assert posted.body.content == "Hello"
     assert posted.body.content_type == BodyType.Text
     assert posted.to_recipients[0].email_address.address == "a@b.com"
+    # confirm_cooldown_seconds=0 (i_understand_the_risk) skips the deferred-delivery
+    # hold entirely, so there is nothing for mail.cancel-send to undo.
     sent = asyncio.run(mail_send_draft(draft_id="draft-1"))
-    assert sent == {"sent": "draft-1"}
+    assert sent == {"sent": "draft-1", "held_until": None}
     client.me.messages.by_message_id.assert_called_once_with("draft-1")
+    client.me.messages.by_message_id.return_value.send.post.assert_awaited_once()
+
+
+def test_mail_send_draft_holds_deferred_delivery_when_cooldown_positive(monkeypatch) -> None:
+    call_order: list[str] = []
+
+    async def _patch(*_args, **_kwargs):
+        call_order.append("patch")
+
+    async def _send_post(*_args, **_kwargs):
+        call_order.append("send")
+
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(side_effect=_patch)
+    client.me.messages.by_message_id.return_value.send.post = AsyncMock(side_effect=_send_post)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(
+            default_tz="UTC",
+            client_id="x",
+            preferences=SimpleNamespace(confirm_cooldown_seconds=20),
+        ),
+    )
+    sent = asyncio.run(mail_send_draft(draft_id="draft-1"))
+    assert sent["sent"] == "draft-1"
+    assert sent["held_until"] is not None
+    # The Outbox hold must be set before send.post() runs - patching it after
+    # Exchange has already dispatched the message would silently defeat the
+    # whole deferred-delivery feature (issue #365).
+    assert call_order == ["patch", "send"]
+    patch_await = client.me.messages.by_message_id.return_value.patch.await_args
+    assert patch_await is not None
+    patched = patch_await.args[0]
+    [prop] = patched.single_value_extended_properties
+    assert prop.id == "SystemTime 0x3FEF"
+    assert prop.value == sent["held_until"]
+    # Pin the actual hold window against the wall clock (not just against the
+    # same value _defer_delivery returned) - a broken deferral computation
+    # (wrong sign, wrong units) must fail this test even though `held_until`
+    # would still "match itself".
+    held_at = datetime.strptime(prop.value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    expected = datetime.now(UTC) + timedelta(seconds=20)
+    assert abs((held_at - expected).total_seconds()) < 5
+    client.me.messages.by_message_id.return_value.send.post.assert_awaited_once()
+
+
+def test_mail_send_draft_sends_anyway_when_deferred_delivery_patch_fails(monkeypatch) -> None:
+    # The pre-send confirm-cooldown gate (issue #365) is the primary defense and
+    # has already been satisfied by the time mail_send_draft runs - a mailbox
+    # that rejects this extended property must not block an already-confirmed
+    # send, it just means there is nothing for mail.cancel-send to undo.
+    client = MagicMock()
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(side_effect=ODataError())
+    client.me.messages.by_message_id.return_value.send.post = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(
+            default_tz="UTC",
+            client_id="x",
+            preferences=SimpleNamespace(confirm_cooldown_seconds=20),
+        ),
+    )
+    sent = asyncio.run(mail_send_draft(draft_id="draft-1"))
+    assert sent == {"sent": "draft-1", "held_until": None}
     client.me.messages.by_message_id.return_value.send.post.assert_awaited_once()
 
 
@@ -854,6 +931,44 @@ def test_mail_draft_html_and_body_file(tmp_path, monkeypatch) -> None:
     posted_text = text_await.args[0]
     assert posted_text.body.content == "plain file body"
     assert posted_text.body.content_type == BodyType.Text
+
+
+def test_mail_cancel_send_mocked(monkeypatch) -> None:
+    client = MagicMock()
+    outbox = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    outbox.by_message_id.return_value.delete = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    payload = asyncio.run(mail_cancel_send(message_id="msg-1"))
+    assert payload == {"cancelled": "msg-1"}
+    client.me.mail_folders.by_mail_folder_id.assert_called_with("outbox")
+    outbox.by_message_id.assert_called_with("msg-1")
+    outbox.by_message_id.return_value.delete.assert_awaited_once()
+    assert format_cancel_send_human(payload) == [
+        "Send cancelled: 'msg-1' (message removed from Outbox unsent)"
+    ]
+
+
+def test_mail_cancel_send_404s_once_already_delivered(monkeypatch) -> None:
+    # Once the hold window elapses, Exchange delivers the message and moves it
+    # out of Outbox - this must 404 rather than fall back to deleting the
+    # now-delivered copy from Sent Items and falsely reporting "cancelled".
+    error = ODataError()
+    error.response_status_code = 404
+    error.error = MainError(code="ErrorItemNotFound", message="not found")
+    client = MagicMock()
+    outbox = client.me.mail_folders.by_mail_folder_id.return_value.messages
+    outbox.by_message_id.return_value.delete = AsyncMock(side_effect=error)
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.mail.load_config",
+        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+    )
+    with pytest.raises(MailMessageNotFoundError, match="not found"):
+        asyncio.run(mail_cancel_send(message_id="msg-1"))
 
 
 def test_mail_delete_draft_mocked(monkeypatch) -> None:

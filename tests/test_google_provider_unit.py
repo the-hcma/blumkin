@@ -644,6 +644,15 @@ def test_mail_has_attachments_filter_unsupported(tmp_path: Path) -> None:
         asyncio.run(provider.mail_inbox(has_attachments=True))
 
 
+def test_mail_cancel_send_unsupported(tmp_path: Path) -> None:
+    # Gmail has no deferred-delivery hold to cancel (issue #365 scopes this to
+    # Microsoft/Exchange) - the confirm cooldown before send-draft is Gmail's
+    # whole safety net, so this is a permanent gap, not a "not implemented yet".
+    provider = GoogleWorkspaceProvider(_cfg(tmp_path))
+    with pytest.raises(ValueError, match="not supported for provider=google"):
+        asyncio.run(provider.mail_cancel_send(message_id="msg-1"))
+
+
 def test_mail_list_does_not_claim_complete_when_page_truncated(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     list_body = {"messages": [{"id": "m1"}], "nextPageToken": "page2"}

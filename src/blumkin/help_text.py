@@ -1090,6 +1090,27 @@ a minimum wait since the draft was last composed/edited
 (`preferences.confirm_cooldown_seconds`, default 20s) - calling this too soon
 fails with `too_soon` rather than sending, so you have a real chance to review
 the draft first.
+
+Microsoft accounts: the message is held in Outbox for that same cooldown
+window (deferred delivery) instead of delivering immediately, so
+`mail cancel-send --id ...` is a real undo if you change your mind right after
+confirming - unlike Outlook's native message recall, which is unreliable once
+the recipient has opened the message. Gmail has no equivalent hold; the
+cooldown before this call is its whole safety net.
+"""
+
+MAIL_CANCEL_SEND_EPILOG = """
+Example:
+
+\b
+  blumkin mail cancel-send --id AAMk...
+
+Deletes a message still held in Outbox before its deferred-delivery window
+elapses (Microsoft accounts only - see `mail send-draft`'s epilog). No `--yes`
+needed - the opposite of a notification, since it stops one. Fails not_found
+once the hold window has passed and Exchange has delivered the message; at
+that point there is no reliable way to un-deliver it. Not available for Gmail,
+which has no deferred-delivery hold to cancel.
 """
 
 MAIL_SIGNATURE_EPILOG = """

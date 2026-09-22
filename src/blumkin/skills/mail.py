@@ -31,6 +31,9 @@ from msgraph.generated.models.mailbox_settings import MailboxSettings
 from msgraph.generated.models.message import Message
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.recipient import Recipient
+from msgraph.generated.models.single_value_legacy_extended_property import (
+    SingleValueLegacyExtendedProperty,
+)
 from msgraph.generated.users.item.mail_folders.item.child_folders.child_folders_request_builder import (  # noqa: E501
     ChildFoldersRequestBuilder,
 )
@@ -127,6 +130,24 @@ _MESSAGE_ID_HINT = (
     "If this is a conversation/thread id (e.g. from `mail thread`'s "
     "`conversation_id` field), pass a message id instead - get one from "
     "`blumkin mail list --json` or `blumkin mail get --id ... --json`."
+)
+
+# Deferred delivery (issue #365): the Outlook/Exchange extended property that
+# holds a just-sent message in Outbox for a while instead of delivering it
+# immediately, so `mail.cancel-send` is a real undo - unlike Outlook's native
+# message recall, which is unreliable once the recipient has opened the
+# message. MAPI property tag 0x3FEF, type PT_SYSTIME; Graph's extended
+# property id syntax for that type is "SystemTime <tag>".
+_DEFERRED_DELIVERY_PROPERTY_ID = "SystemTime 0x3FEF"
+
+# `mail.cancel-send`'s hint when the message id can no longer be found: most
+# likely the deferred-delivery hold window already elapsed and Exchange
+# delivered it, at which point there is no reliable way to un-deliver it.
+_CANCEL_SEND_HINT = (
+    "If the deferred-delivery hold window has already passed, the message has "
+    "likely already been delivered - there is no reliable way to un-deliver "
+    "it once that happens (this is why blumkin holds it instead of relying on "
+    "Outlook's native, unreliable message recall)."
 )
 
 # Upper bound on the mail thread walk; a conversation this long is pathological.
@@ -243,6 +264,10 @@ def format_attachments_human(payload: dict[str, Any]) -> list[str]:
                 f"  • {name!r} ({item.get('size')} bytes, {content_type}) id={item.get('id')}"
             )
     return lines
+
+
+def format_cancel_send_human(payload: dict[str, Any]) -> list[str]:
+    return [f"Send cancelled: {payload.get('cancelled')!r} (message removed from Outbox unsent)"]
 
 
 def format_delete_draft_human(payload: dict[str, Any]) -> list[str]:
@@ -476,7 +501,13 @@ def format_reply_human(payload: dict[str, Any]) -> list[str]:
 
 
 def format_send_draft_human(payload: dict[str, Any]) -> list[str]:
-    return [f"Sent draft {payload.get('sent')!r}"]
+    lines = [f"Sent draft {payload.get('sent')!r}"]
+    held_until = payload.get("held_until")
+    if held_until:
+        lines.append(
+            f"  held in Outbox until {held_until} - `mail cancel-send --id ...` before then to undo"
+        )
+    return lines
 
 
 async def mail_attachments_list(
@@ -738,6 +769,36 @@ def _dtz_iso(dtz: Any) -> str | None:
         return None
     tz = getattr(dtz, "time_zone", None)
     return f"{raw} {tz}" if tz else str(raw)
+
+
+async def mail_cancel_send(
+    *,
+    message_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Delete a just-sent message from Outbox before its deferred-delivery hold
+    elapses (issue #365) - a real undo, unlike Outlook's native message recall,
+    which is unreliable once the recipient has opened the message.
+
+    Scoped to the Outbox folder specifically (not a bare by-id delete anywhere
+    in the mailbox): once the hold window passes, Exchange delivers the
+    message and moves it out of Outbox, so this must 404 rather than silently
+    deleting the now-delivered copy from Sent Items and reporting a false
+    "cancelled".
+    """
+    mid = message_id.strip()
+    if not mid:
+        raise ValueError("--id is required")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    outbox_messages = client.me.mail_folders.by_mail_folder_id("outbox").messages
+    try:
+        await outbox_messages.by_message_id(mid).delete()
+    except ODataError as exc:
+        if not is_id_lookup_failure(exc):
+            raise
+        raise MailMessageNotFoundError(f"message not found: {mid}", hint=_CANCEL_SEND_HINT) from exc
+    return {"cancelled": mid}
 
 
 async def mail_delete(
@@ -1321,10 +1382,43 @@ async def mail_send_draft(
 ) -> dict[str, Any]:
     if not draft_id.strip():
         raise ValueError("--id is required")
+    mid = draft_id.strip()
     cfg = config or load_config()
     client = create_graph_client(cfg)
-    await client.me.messages.by_message_id(draft_id.strip()).send.post()
-    return {"sent": draft_id.strip()}
+    held_until = await _defer_delivery(client, mid, cfg)
+    await client.me.messages.by_message_id(mid).send.post()
+    return {"sent": mid, "held_until": held_until}
+
+
+async def _defer_delivery(client: Any, message_id: str, config: BlumkinConfig) -> str | None:
+    """Best-effort: hold ``message_id`` in Outbox until at least
+    ``preferences.confirm_cooldown_seconds`` from now, so ``mail.cancel-send``
+    has a real window to undo the send (issue #365) instead of relying on
+    Outlook's unreliable native recall.
+
+    A cooldown of ``0`` (``i_understand_the_risk``) skips the hold entirely -
+    the operator explicitly opted out of the safety net. A PATCH failure (e.g.
+    a mailbox/tenant that rejects this extended property) must not block an
+    already-confirmed send; it just means there is nothing for
+    ``mail.cancel-send`` to undo, which the ``None`` return communicates.
+    """
+    seconds = config.preferences.confirm_cooldown_seconds
+    if seconds <= 0:
+        return None
+    hold_until = (datetime.now(UTC) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        await client.me.messages.by_message_id(message_id).patch(
+            Message(
+                single_value_extended_properties=[
+                    SingleValueLegacyExtendedProperty(
+                        id=_DEFERRED_DELIVERY_PROPERTY_ID, value=hold_until
+                    )
+                ]
+            )
+        )
+    except ODataError:
+        return None
+    return hold_until
 
 
 async def mail_thread(

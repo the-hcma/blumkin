@@ -286,7 +286,18 @@ original's attachments.
     `--attach <path>` works here too and *adds* to whatever the draft already carries —
     it never replaces. It is also valid on its own, without any other field.
   - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
-  - `blumkin mail send-draft --id '<draft-id>' --yes`
+  - `blumkin mail send-draft --id '<draft-id>' --yes` - on Microsoft (work/school)
+    accounts, this holds the message in Outbox until at least
+    `preferences.confirm_cooldown_seconds` from now (deferred delivery) instead
+    of delivering it immediately; the response's `held_until` field carries that
+    time. `blumkin mail cancel-send --id '<same-id>'` (no `--yes` - it stops a
+    send, the opposite of a notification) is a real undo before then, unlike
+    Outlook's own message recall, which silently fails once the recipient has
+    opened the message. After `held_until` passes it fails `not_found` (exit 5)
+    - there is no reliable way to un-deliver a message once Exchange has sent
+    it. Gmail has no such hold at all (`held_until` is always `null`); calling
+    `mail cancel-send` there always fails `usage_error` (exit 2), not
+    `not_found` - the confirm cooldown before this call is its whole safety net.
   - `blumkin chat draft --with "Name" --text "…"` (or `--chat-id` if ambiguous) - composes
     only, resolving the target now; no one is notified. `blumkin chat send --draft-id
     '<draft-id>' --yes` sends it. Like `mail send-draft`, `chat send` enforces the

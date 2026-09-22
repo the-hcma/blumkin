@@ -164,6 +164,7 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("mail.thread", "--id"): "message_id",
     ("mail.forward", "--id"): "message_id",
     ("mail.reply", "--id"): "message_id",
+    ("mail.cancel-send", "--id"): "message_id",
     ("mail.delete", "--id"): "message_ids",
     ("mail.mark", "--id"): "message_ids",
     ("mail.move", "--id"): "message_ids",
@@ -1225,6 +1226,18 @@ SKILLS: list[SkillSpec] = [
                 "note": "required with --on/--off",
             },
         ],
+    ),
+    SkillSpec(
+        id="mail.cancel-send",
+        cli=["blumkin", "mail", "cancel-send"],
+        summary=(
+            "Cancel a message still held in Outbox before its deferred-delivery "
+            "window elapses (issue #365; does not notify recipients - the opposite)"
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=["Mail.ReadWrite"],
+        args=[{"name": "--id", "required": True, "type": "string"}],
     ),
     SkillSpec(
         id="mail.delete",

@@ -460,6 +460,17 @@ class GoogleWorkspaceProvider:
     async def mail_attachments_list(self, *, message_id: str) -> dict[str, Any]:
         return await google_mail.mail_attachments_list(message_id=message_id, config=self._config)
 
+    async def mail_cancel_send(self, *, message_id: str) -> dict[str, Any]:
+        # Deliberate, not a TODO: Gmail's API has no deferred-delivery hook (issue
+        # #365's ask #4 explicitly scopes this to Microsoft/Exchange), so there is
+        # never anything held in an outbox to cancel here - the confirm cooldown
+        # before send-draft is Gmail's whole safety net.
+        raise ValueError(
+            "mail cancel-send not supported for provider=google "
+            "(Gmail has no deferred-delivery hold to cancel; the confirm cooldown "
+            "before send-draft is the safety net for this provider)"
+        )
+
     async def mail_delete_draft(self, *, draft_id: str) -> dict[str, Any]:
         return await google_mail_writes.mail_delete_draft(draft_id=draft_id, config=self._config)
 
