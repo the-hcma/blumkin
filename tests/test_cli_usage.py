@@ -283,7 +283,36 @@ def test_calendar_cancel_without_yes_exits_usage() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
-def test_calendar_create_without_yes_exits_usage() -> None:
+def test_calendar_create_without_yes_is_allowed() -> None:
+    async def _create(**_kwargs):
+        return {
+            "event": {
+                "id": "evt-1",
+                "subject": "x",
+                "start": "2026-08-26T11:00:00",
+                "end": "2026-08-26T11:30:00",
+            }
+        }
+
+    runner = CliRunner()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("blumkin.providers.microsoft.calendar_create", _create)
+        result = runner.invoke(
+            main,
+            [
+                "calendar",
+                "create",
+                "--subject",
+                "x",
+                "--start",
+                "2026-08-26T11:00",
+                "--json",
+            ],
+        )
+    assert result.exit_code == EXIT_SUCCESS
+
+
+def test_calendar_create_unknown_removed_attendee_flag_exits_usage() -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -292,10 +321,10 @@ def test_calendar_create_without_yes_exits_usage() -> None:
             "create",
             "--subject",
             "x",
-            "--with",
-            "a@b.com",
             "--start",
             "2026-08-26T11:00",
+            "--with",
+            "a@b.com",
         ],
     )
     assert result.exit_code == EXIT_USAGE
@@ -447,11 +476,8 @@ def test_wo1162425_scopes_disabled_allows_calendar_create_teams(
             "create",
             "--subject",
             "Sync",
-            "--with",
-            "ada@example.com",
             "--start",
             "2026-08-27T10:00",
-            "--yes",
             "--json",
         ],
     )

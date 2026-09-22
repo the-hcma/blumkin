@@ -171,7 +171,6 @@ class MicrosoftWorkspaceProvider:
         self,
         *,
         subject: str,
-        with_emails: list[str],
         start_raw: str,
         all_day: bool = False,
         body: str | None = None,
@@ -180,7 +179,6 @@ class MicrosoftWorkspaceProvider:
         calendar: str | None = None,
         duration: str | None = None,
         location: str | None = None,
-        optional_emails: list[str] | None = None,
         recurrence: Recurrence | None = None,
         remind_email: str | None = None,
         teams: bool = True,
@@ -188,7 +186,6 @@ class MicrosoftWorkspaceProvider:
     ) -> dict[str, Any]:
         return await calendar_create(
             subject=subject,
-            with_emails=with_emails,
             start_raw=start_raw,
             all_day=all_day,
             body=body,
@@ -197,7 +194,6 @@ class MicrosoftWorkspaceProvider:
             calendar=calendar,
             duration=duration,
             location=location,
-            optional_emails=optional_emails,
             recurrence=recurrence,
             remind_email=remind_email,
             teams=teams,

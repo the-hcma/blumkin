@@ -2385,12 +2385,6 @@ def calendar_cancel_cmd(
 @calendar.command("create", epilog=help_text.CALENDAR_CREATE_EPILOG)
 @click.option("--subject", required=True, help="Event title.")
 @click.option(
-    "--with",
-    "with_emails",
-    multiple=True,
-    help="Attendee email; repeat once per attendee. Omit for a solo hold.",
-)
-@click.option(
     "--start",
     "start_raw",
     required=True,
@@ -2413,12 +2407,6 @@ def calendar_cancel_cmd(
     "calendar",
     default=None,
     help="Create on this calendar (name or id; default: primary).",
-)
-@click.option(
-    "--optional",
-    "optional_emails",
-    multiple=True,
-    help="Optional attendee email; repeat once per attendee (vs required --with).",
 )
 @click.option("--body", default=None, help="Event body / agenda text.")
 @click.option("--body-file", "body_file", default=None, help="Read the event body from this file.")
@@ -2483,20 +2471,17 @@ def calendar_cancel_cmd(
     default=None,
     help="Weekly only: comma list of weekdays, e.g. mon,tue,wed,thu,fri.",
 )
-@click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def calendar_create_cmd(
     ctx: click.Context,
     subject: str,
-    with_emails: tuple[str, ...],
     start_raw: str,
     duration: str | None,
     all_day: bool,
     location: str | None,
     calendar: str | None,
-    optional_emails: tuple[str, ...],
     body: str | None,
     body_file: str | None,
     body_type: str,
@@ -2507,29 +2492,29 @@ def calendar_create_cmd(
     until: str | None,
     count: int | None,
     days: str | None,
-    yes: bool,
     tz_flag: str | None,
     as_json_flag: bool,
 ) -> None:
-    """Create an event and invite the --with attendees. Requires --yes.
+    """Create an event with no attendees (issue #365: compose/emit split).
 
-    A Teams online meeting is added by default; pass --no-teams for an offline
-    hold. --start stays in the organizer timezone. For a cross-zone or external
-    attendee, check `calendar freebusy` / `calendar suggest` first. Pass --repeat
-    for a recurring series.
+    Add attendees afterward with `calendar update --with ... --yes` - that is
+    the only way to invite anyone, and it is gated on the confirm cooldown, so
+    review the event before it notifies attendees. A Teams online meeting is
+    added by default; pass --no-teams for an offline hold. --start stays in
+    the organizer timezone. For a cross-zone or external attendee, check
+    `calendar freebusy` / `calendar suggest` first. Pass --repeat for a
+    recurring series.
     """
     _dispatch(
         ctx,
         "calendar.create",
         {
             "subject": subject,
-            "with": list(with_emails),
             "start": start_raw,
             "duration": duration,
             "all_day": all_day,
             "location": location,
             "calendar": calendar,
-            "optional": list(optional_emails),
             "body": body,
             "body_file": body_file,
             "body_type": body_type,
@@ -2541,7 +2526,6 @@ def calendar_create_cmd(
             "count": count,
             "days": days,
             "tz": _tz_name(ctx, tz_flag),
-            "yes": yes,
         },
         human=format_create_human,
         as_json_flag=as_json_flag,

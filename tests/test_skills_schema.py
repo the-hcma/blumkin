@@ -92,13 +92,11 @@ def test_every_catalog_arg_maps_to_a_real_provider_kwarg() -> None:
 _ARG_PARAM_PINS = {
     "calendar.create": {
         "--subject": ("subject", None),
-        "--with": ("with_emails", "list"),
         "--start": ("start_raw", "raw"),
         "--duration": ("duration", None),
         "--all-day": ("all_day", None),
         "--location": ("location", None),
         "--calendar": ("calendar", None),
-        "--optional": ("optional_emails", "list"),
         "--body": ("body", None),
         "--body-file": ("body_file", None),
         "--body-type": ("body_type", None),
@@ -110,7 +108,6 @@ _ARG_PARAM_PINS = {
         "--count": (None, None),
         "--days": (None, None),
         "--tz": ("tz_name", None),
-        "--yes": (None, None),
     },
     "calendar.view": {
         "--from": ("start", "local_midnight"),
@@ -365,13 +362,11 @@ _ARG_REQUIRED_KEYS = {"name", "required", "type"}
 _ARG_SIGNATURES = {
     "calendar.create": [
         ("--subject", True, "string"),
-        ("--with", False, "email"),
         ("--start", True, "datetime"),
         ("--duration", False, "duration"),
         ("--all-day", False, "flag"),
         ("--location", False, "string"),
         ("--calendar", False, "string"),
-        ("--optional", False, "email"),
         ("--body", False, "string"),
         ("--body-file", False, "path"),
         ("--body-type", False, "enum"),
@@ -383,7 +378,6 @@ _ARG_SIGNATURES = {
         ("--count", False, "int"),
         ("--days", False, "string"),
         ("--tz", False, "iana_tz"),
-        ("--yes", True, "flag"),
     ],
     "mail.list": [
         ("--folder", False, "string"),
@@ -494,7 +488,7 @@ _CONSENT = {
     "auth.status": (False, False),
     "calendar.accept": (True, True),
     "calendar.cancel": (True, True),
-    "calendar.create": (True, True),
+    "calendar.create": (True, False),
     "calendar.decline": (True, True),
     "calendar.freebusy": (False, False),
     "calendar.get": (False, False),

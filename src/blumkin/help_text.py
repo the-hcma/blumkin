@@ -194,52 +194,56 @@ CALENDAR_CREATE_EPILOG = """
 Examples:
 
 \b
-  # 30-minute Teams 1:1 (Teams link added by default)
-  blumkin calendar create --subject "1:1 sync" --with sam@example.com \\
-    --start "2026-09-01T15:00" --duration 30m --yes
+  # 30-minute Teams hold (Teams link added by default)
+  blumkin calendar create --subject "1:1 sync" \\
+    --start "2026-09-01T15:00" --duration 30m
 \b
-  # Two attendees, one hour, explicit timezone
+  # One hour, explicit timezone
   blumkin calendar create --subject "Design review" \\
-    --with sam@example.com --with dana@example.com \\
-    --start "2026-09-02T09:00" --duration 1h --tz America/New_York --yes
+    --start "2026-09-02T09:00" --duration 1h --tz America/New_York
 \b
   # Offline hold on your own calendar, no Teams link
-  blumkin calendar create --subject "Focus block" --with me@example.com \\
-    --start "2026-09-02T13:00" --duration 2h --no-teams --yes
+  blumkin calendar create --subject "Focus block" \\
+    --start "2026-09-02T13:00" --duration 2h --no-teams
 \b
   # Solo hold with a reminder a day ahead (email on Google, popup on Outlook)
   blumkin calendar create --subject "Review renewal" \\
-    --start "2026-09-28T10:00" --remind-email 1d --no-teams --yes
+    --start "2026-09-28T10:00" --remind-email 1d --no-teams
 \b
-  # Weekly recurring 1:1, ending on a date
-  blumkin calendar create --subject "Henrique/Sam 1:1" --with sam@example.com \\
+  # Weekly recurring series, ending on a date
+  blumkin calendar create --subject "Henrique/Sam 1:1" \\
     --start "2026-09-22T13:05" --duration 45m \\
-    --repeat weekly --until "2026-12-31" --yes
+    --repeat weekly --until "2026-12-31"
 \b
   # Every-weekday lunch hold for the next 20 working days, no Teams link
   blumkin calendar create --subject "Lunch" --start "2026-09-22T12:00" \\
     --duration 1h --repeat weekly --days mon,tue,wed,thu,fri --count 20 \\
-    --no-teams --yes
+    --no-teams
 \b
-  # Design review with an agenda, a location, and an optional attendee
-  blumkin calendar create --subject "Design review" --with sam@example.com \\
-    --optional dana@example.com --start "2026-09-22T09:00" --duration 1h \\
-    --location "Room 4" --body "Agenda: API shape, timeline" --yes
+  # Design review with an agenda and a location
+  blumkin calendar create --subject "Design review" \\
+    --start "2026-09-22T09:00" --duration 1h \\
+    --location "Room 4" --body "Agenda: API shape, timeline"
 \b
   # All-day out-of-office hold, three days, no Teams link
   blumkin calendar create --subject "OOO" --start "2026-12-24" --all-day \\
-    --duration 3d --no-teams --yes
+    --duration 3d --no-teams
+\b
+  # Review the event, then invite attendees separately (issue #365)
+  blumkin calendar update --event-id AAMk... --with sam@example.com --yes
 
-Invites every `--with` address, so `--yes` is required (still required with no
-attendees). `--optional` attendees are invited too but marked optional.
-`--body` / `--body-file` set the agenda (`--body-type` html/text is Microsoft
-only). `--location` is free text. `--all-day` makes `--start` a date and
-`--duration` whole days, and never attaches a Teams link (an all-day online
-meeting is rejected); a date-only `--start` without `--all-day` is an error.
-`--remind-email` adds an email reminder on Google and
-an Outlook popup reminder on Microsoft. For a cross-timezone or external
-attendee, run `calendar freebusy` or `calendar suggest` first and pick a slot
-inside their working hours. `--start` stays in the organizer timezone.
+Never invites anyone - `calendar create` can only ever produce a solo hold, so
+it needs no `--yes`. Add attendees afterward with `calendar update --with ...
+--yes`; that is the "emit" step, and it is gated on the confirm cooldown so
+there is a beat to review the event before anyone is notified. `--body` /
+`--body-file` set the agenda (`--body-type` html/text is Microsoft only).
+`--location` is free text. `--all-day` makes `--start` a date and `--duration`
+whole days, and never attaches a Teams link (an all-day online meeting is
+rejected); a date-only `--start` without `--all-day` is an error.
+`--remind-email` adds an email reminder on Google and an Outlook popup
+reminder on Microsoft. For a cross-timezone or external attendee, run
+`calendar freebusy` or `calendar suggest` first and pick a slot inside their
+working hours before inviting them. `--start` stays in the organizer timezone.
 
 `--repeat {daily,weekly,monthly}` makes a recurring series (Graph
 patternedRecurrence / Google RRULE). Bound it with `--until DATE` or `--count N`
@@ -260,8 +264,9 @@ Common workflows:
   # Find and book a mutual slot
   blumkin calendar suggest --with sam@example.com --with dana@example.com \\
     --start "2026-09-01T09:00" --end "2026-09-03T18:00" --duration 45m --json
-  blumkin calendar create --subject "Planning" --with sam@example.com \\
-    --start "2026-09-01T14:00" --duration 45m --yes
+  blumkin calendar create --subject "Planning" \\
+    --start "2026-09-01T14:00" --duration 45m --json
+  blumkin calendar update --event-id AAMk... --with sam@example.com --yes
 \b
   # Clear today's pending invitations
   blumkin calendar accept --today-pending --yes
@@ -361,6 +366,13 @@ leave it. `--all-day` / `--no-all-day` convert the event type (`--start` becomes
 a date, `--duration` whole days). `--start` alone keeps the current length;
 `--duration` or `--end` (not both) sets a new one. Editing a recurring series
 edits the whole series. Uses Calendars.ReadWrite; requires `--yes`.
+
+Adding or replacing attendees on an event `calendar create` produced this
+session is gated on the confirm cooldown (issue #365): it refuses to run
+until `preferences.confirm_cooldown_seconds` has passed since the create, so
+there is a beat to review the event before anyone is notified. Editing an
+event that was not just created (or that cooldown has already elapsed for)
+proceeds normally.
 """
 
 CALENDAR_VIEW_EPILOG = """

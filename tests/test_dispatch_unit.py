@@ -235,9 +235,7 @@ def test_calendar_create_recurrence_and_require_repeat() -> None:
             "repeat": "weekly",
             "count": 3,
             "interval": 1,
-            "with": [],
             "no_teams": False,
-            "yes": True,
         },
         provider=prov,
     )
@@ -251,41 +249,53 @@ def test_calendar_create_recurrence_and_require_repeat() -> None:
                 "start": "2026-09-22T09:00",
                 "count": 3,
                 "interval": 1,
-                "with": [],
-                "teams": True,
-                "yes": True,
+                "no_teams": False,
             },
             provider=_provider("calendar_create"),
         )
 
 
-def test_calendar_create_defaults_with_emails_for_a_solo_hold() -> None:
-    # Over MCP `--with` can be omitted; the provider kwarg has no default.
+def test_calendar_create_never_passes_with_emails_for_a_solo_hold() -> None:
     prov = _provider("calendar_create")
     _run(
         "calendar.create",
-        {"subject": "Focus", "start": "2026-09-22T09:00", "no_teams": True, "yes": True},
+        {"subject": "Focus", "start": "2026-09-22T09:00", "no_teams": True},
         provider=prov,
     )
-    assert prov.calendar_create.await_args.kwargs["with_emails"] == []
+    assert "with_emails" not in prov.calendar_create.await_args.kwargs
 
 
-def test_no_teams_flag_is_negated_into_the_teams_kwarg() -> None:
+def test_no_teams_flag_is_negated_into_the_teams_kwarg(monkeypatch) -> None:
     prov = _provider("calendar_create")
     _run(
         "calendar.create",
-        {"subject": "hold", "start": "2026-09-22T09:00", "with": [], "no_teams": True, "yes": True},
+        {"subject": "hold", "start": "2026-09-22T09:00", "no_teams": True},
         provider=prov,
     )
     assert prov.calendar_create.await_args.kwargs["teams"] is False
 
+    monkeypatch.setattr(
+        "blumkin.skills.dispatch.seconds_since_composed", lambda *_args, **_kwargs: None
+    )
+    cfg = SimpleNamespace(**vars(_MS), preferences=SimpleNamespace(confirm_cooldown_seconds=20))
+
     prov = _provider("calendar_update")
-    _run("calendar.update", {"event_id": "e1", "no_teams": False, "yes": True}, provider=prov)
+    _run(
+        "calendar.update",
+        {"event_id": "e1", "no_teams": False, "yes": True},
+        config=cfg,
+        provider=prov,
+    )
     assert prov.calendar_update.await_args.kwargs["teams"] is True
 
     # omitted -> not passed, provider keeps its default (leave unchanged)
     prov = _provider("calendar_update")
-    _run("calendar.update", {"event_id": "e1", "no_teams": None, "yes": True}, provider=prov)
+    _run(
+        "calendar.update",
+        {"event_id": "e1", "no_teams": None, "yes": True},
+        config=cfg,
+        provider=prov,
+    )
     assert "teams" not in prov.calendar_update.await_args.kwargs
 
 
@@ -857,3 +867,101 @@ def test_chat_send_clears_the_compose_record(tmp_path, monkeypatch) -> None:
     _run("chat.send", {"draft_id": "d1", "yes": True}, config=cfg, provider=prov)
     prov.chat_send.assert_awaited_once()
     assert seconds_since_composed(cfg, "d1") is None
+
+
+def test_calendar_update_allowed_once_cooldown_elapses(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
+    cfg.compose_state_path.write_text(json.dumps({"e1": stale}))
+    prov = _provider("calendar_update")
+    _run(
+        "calendar.update",
+        {"event_id": "e1", "with": ["sam@example.com"], "yes": True},
+        config=cfg,
+        provider=prov,
+    )
+    prov.calendar_update.assert_awaited_once()
+
+
+def test_calendar_update_allowed_when_never_composed_fails_open(tmp_path, monkeypatch) -> None:
+    """Adding attendees to a pre-existing event (never `calendar.create`d this
+    session) has no compose record at all - the gate must fail open rather than
+    block forever on unprovable state, same as everywhere else this gate is
+    used. `with` must be present so this actually exercises the
+    seconds_since_composed lookup, not the `_COOLDOWN_GATE_REQUIRES_ARG`
+    early-return (see test_calendar_update_without_attendees_is_never_gated for
+    that branch)."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = _provider("calendar_update")
+    _run(
+        "calendar.update",
+        {"event_id": "some-old-event", "with": ["sam@example.com"], "yes": True},
+        config=cfg,
+        provider=prov,
+    )
+    prov.calendar_update.assert_awaited_once()
+
+
+def test_calendar_update_blocked_before_cooldown_elapses(tmp_path, monkeypatch) -> None:
+    """Pins the `calendar.create` -> `calendar.update` cooldown wiring in
+    `_COOLDOWN_GATED_SKILLS` (issue #365 piece 2): adding attendees right after
+    creating the event must refuse until the confirm cooldown has elapsed.
+    `calendar.create` stamps its own compose record inside the real provider
+    implementation (not dispatch's generic `_COMPOSE_RECORD_SKILLS` hook, since
+    its payload shape is `{"event": {"id": ...}}` not `{"draft": {"id": ...}}`),
+    so seed it directly with `record_composed` the same way that implementation
+    does."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    record_composed(cfg, "e1")
+
+    prov = _provider("calendar_update")
+    with pytest.raises(EmitCooldownError) as exc:
+        _run(
+            "calendar.update",
+            {"event_id": "e1", "with": ["sam@example.com"], "yes": True},
+            config=cfg,
+            provider=prov,
+        )
+    assert exc.value.retry_after_seconds is not None
+    assert 0 < exc.value.retry_after_seconds <= 60
+    prov.calendar_update.assert_not_awaited()
+
+
+def test_calendar_update_empty_attendee_list_is_still_gated(tmp_path, monkeypatch) -> None:
+    """issue #365 review (CodeRabbit): a literal `with: []` (an MCP caller
+    explicitly clearing all attendees - the CLI's repeated `--with EMAIL` flag
+    can never produce this shape, only omitted-entirely or non-empty) still
+    replaces the attendee list - Google patches an empty attendees array with
+    sendUpdates="all", which can notify removed attendees - so
+    `_COOLDOWN_GATE_REQUIRES_ARG` must key off "argument present" (`is None`),
+    not "argument truthy", or this would silently bypass the gate."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    record_composed(cfg, "e1")
+    prov = _provider("calendar_update")
+    with pytest.raises(EmitCooldownError):
+        _run(
+            "calendar.update",
+            {"event_id": "e1", "with": [], "yes": True},
+            config=cfg,
+            provider=prov,
+        )
+    prov.calendar_update.assert_not_awaited()
+
+
+def test_calendar_update_without_attendees_is_never_gated(tmp_path, monkeypatch) -> None:
+    """issue #365 review: the cooldown protects against notifying attendees
+    before the organizer has reviewed the event, not against editing it. A plain
+    edit (subject/time/location/body, no `--with`) to an event created moments
+    ago must proceed immediately - only an update that adds/replaces attendees
+    is gated (see `_COOLDOWN_GATE_REQUIRES_ARG`)."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    record_composed(cfg, "e1")
+    prov = _provider("calendar_update")
+    _run(
+        "calendar.update",
+        {"event_id": "e1", "location": "Room 7", "yes": True},
+        config=cfg,
+        provider=prov,
+    )
+    prov.calendar_update.assert_awaited_once()

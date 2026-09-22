@@ -94,13 +94,13 @@ def test_read_skill_annotations_and_schema() -> None:
 
 
 def test_notifying_skill_carries_confirm_and_interaction_meta() -> None:
-    create = _list_tools()["calendar.create"]
-    assert create.annotations.read_only_hint is False
-    assert create.annotations.destructive_hint is True
-    assert create.meta == {"anthropic/requiresUserInteraction": True}
-    props = create.input_schema["properties"]
+    update = _list_tools()["calendar.update"]
+    assert update.annotations.read_only_hint is False
+    assert update.annotations.destructive_hint is True
+    assert update.meta == {"anthropic/requiresUserInteraction": True}
+    props = update.input_schema["properties"]
     assert "confirm" in props and "yes" not in props
-    assert "confirm" in create.input_schema["required"]
+    assert "confirm" in update.input_schema["required"]
 
 
 def test_read_round_trip_returns_structured_and_text() -> None:

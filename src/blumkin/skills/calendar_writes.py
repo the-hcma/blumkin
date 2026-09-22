@@ -38,9 +38,10 @@ from msgraph.generated.users.item.events.item.tentatively_accept.tentatively_acc
     TentativelyAcceptPostRequestBody,
 )
 
+from blumkin.compose_state import record_composed
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
-from blumkin.output import sanitize_terminal
+from blumkin.output import emit_warning, sanitize_terminal
 from blumkin.skills.calendar import (
     CalendarEventNotFoundError,
     _event_to_dict,
@@ -198,7 +199,6 @@ async def calendar_cancel(
 async def calendar_create(
     *,
     subject: str,
-    with_emails: list[str],
     start_raw: str,
     all_day: bool = False,
     body: str | None = None,
@@ -207,13 +207,18 @@ async def calendar_create(
     calendar: str | None = None,
     duration: str | None = None,
     location: str | None = None,
-    optional_emails: list[str] | None = None,
     recurrence: Recurrence | None = None,
     remind_email: str | None = None,
     teams: bool = True,
     tz_name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
+    """Create an event with no attendees (issue #365: compose/emit split).
+
+    Attendees are added afterward with ``calendar update --with`` (the "emit"
+    step, gated on the confirm cooldown against this event's freshly-stamped
+    compose record below) - creation itself can never notify anyone.
+    """
     if not subject.strip():
         raise ValueError("--subject is required")
     cfg = config or load_config()
@@ -234,15 +239,7 @@ async def calendar_create(
         end = (start.astimezone(UTC) + parse_duration(duration or _DEFAULT_DURATION)).astimezone(tz)
     # Validate the recurrence against --start before any network call.
     recurrence_echo = recurrence_payload(recurrence, start) if recurrence is not None else None
-    attendees = [
-        Attendee(email_address=EmailAddress(address=email), type=AttendeeType.Required)
-        for email in with_emails
-    ] + [
-        Attendee(email_address=EmailAddress(address=email), type=AttendeeType.Optional)
-        for email in optional_emails or []
-    ]
     event = Event(
-        attendees=attendees or None,
         body=ItemBody(content=body_content, content_type=graph_body_type)
         if body_content is not None
         else None,
@@ -278,6 +275,18 @@ async def calendar_create(
                 f"Teams online meeting was not provisioned for event {created.id!r} "
                 "(no onlineMeeting.joinUrl after create); retry or use "
                 "`calendar update` after Graph finishes provisioning."
+            )
+    if created.id:
+        # Best-effort, mirroring dispatch._apply_compose_state: the event is
+        # already created, so a filesystem error here must never turn this
+        # real success into a reported failure (issue #365).
+        try:
+            record_composed(cfg, created.id)
+        except OSError as exc:
+            emit_warning(
+                f"calendar.create succeeded, but the confirm-cooldown record was not saved "
+                f"({exc}); a follow-up `calendar update --with ... --yes` on this event will "
+                "not be gated."
             )
     result: dict[str, Any] = {"event": _event_to_dict(created, tz)}
     if recurrence_echo is not None:

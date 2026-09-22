@@ -35,10 +35,12 @@ def test_calendar_create_reports_the_submitted_wall_clock(monkeypatch) -> None:
         "blumkin.skills.calendar_writes.load_config",
         lambda: SimpleNamespace(client_id="x", default_tz="America/New_York"),
     )
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.record_composed", lambda *_args, **_kwargs: None
+    )
     payload = asyncio.run(
         calendar_create(
             subject="Test",
-            with_emails=["someone@example.com"],
             start_raw="2026-08-28T14:30:00",
             duration="45m",
             tz_name="America/New_York",

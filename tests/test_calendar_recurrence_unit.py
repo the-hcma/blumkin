@@ -139,6 +139,9 @@ def _graph_client(monkeypatch) -> MagicMock:
         "blumkin.skills.calendar_writes.load_config",
         lambda: SimpleNamespace(default_tz="America/New_York", client_id="x"),
     )
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.record_composed", lambda *_args, **_kwargs: None
+    )
     return client
 
 
@@ -147,7 +150,6 @@ def test_graph_calendar_create_weekly_recurrence(monkeypatch) -> None:
     payload = asyncio.run(
         calendar_create(
             subject="1:1",
-            with_emails=["sam@example.com"],
             start_raw="2026-09-21T13:05",  # a Monday
             duration="45m",
             recurrence=parse_recurrence(repeat="weekly", days="mon,wed", until="2026-12-31"),
@@ -176,7 +178,6 @@ def test_graph_calendar_create_rejects_until_before_start_without_posting(monkey
         asyncio.run(
             calendar_create(
                 subject="1:1",
-                with_emails=[],
                 start_raw="2026-09-22T13:05",
                 recurrence=parse_recurrence(repeat="weekly", until="2020-01-01"),
                 teams=False,
@@ -191,7 +192,6 @@ def test_graph_calendar_create_monthly_count(monkeypatch) -> None:
     asyncio.run(
         calendar_create(
             subject="Review",
-            with_emails=[],
             start_raw="2026-09-22T13:05",
             recurrence=parse_recurrence(repeat="monthly", interval=2, count=6),
             teams=False,
@@ -212,7 +212,6 @@ def test_graph_calendar_create_daily_open_ended(monkeypatch) -> None:
     asyncio.run(
         calendar_create(
             subject="Standup",
-            with_emails=[],
             start_raw="2026-09-22T09:00",
             recurrence=parse_recurrence(repeat="daily", interval=3),
             teams=False,
@@ -231,7 +230,6 @@ def test_graph_calendar_create_single_event_has_no_recurrence(monkeypatch) -> No
     payload = asyncio.run(
         calendar_create(
             subject="One-off",
-            with_emails=[],
             start_raw="2026-09-22T13:05",
             teams=False,
             tz_name="America/New_York",
@@ -282,7 +280,6 @@ def test_google_calendar_create_sets_rrule_and_echo(tmp_path: Path) -> None:
         payload = asyncio.run(
             GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_create(
                 subject="1:1",
-                with_emails=["sam@example.com"],
                 start_raw="2026-09-22T13:05",
                 duration="45m",
                 recurrence=parse_recurrence(repeat="weekly", count=12),
@@ -322,7 +319,6 @@ def test_google_calendar_create_rejects_bad_recurrence_before_any_insert(
         asyncio.run(
             google_calendar.calendar_create(
                 subject="1:1",
-                with_emails=["sam@example.com"],
                 start_raw="2026-09-22T13:05",
                 recurrence=parse_recurrence(**recurrence_kwargs),
                 config=_google_cfg(tmp_path),
@@ -357,7 +353,6 @@ def test_cli_days_without_weekly_is_usage_error() -> None:
             "daily",
             "--days",
             "mon",
-            "--yes",
             "--json",
         ],
     )
@@ -391,7 +386,6 @@ def test_cli_recurrence_value_error_classifies_as_usage_not_auth(monkeypatch) ->
             "weekly",
             "--until",
             "2020-01-01",
-            "--yes",
             "--json",
         ],
     )
@@ -411,7 +405,6 @@ def test_cli_recurrence_flags_require_repeat() -> None:
             "2026-09-22T13:05",
             "--count",
             "5",
-            "--yes",
             "--json",
         ],
     )
