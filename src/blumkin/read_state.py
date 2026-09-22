@@ -7,7 +7,9 @@ cancellation status) via ``calendar.get`` within
 ``preferences.rsvp_freshness_seconds`` - see issue #365. That freshness gate
 needs to know *when* the event was last read, so ``calendar.get`` records a
 timestamp here, keyed by the event id blumkin already hands back to the
-caller.
+caller, scoped by the ``--calendar`` selector the call used (Graph/Google
+event ids are only unique *within* a calendar, so the same raw id can name a
+different event in a different calendar - see ``_key``).
 
 This is deliberately a separate store from ``blumkin.compose_state``: that
 module's records mean "an artifact was composed/drafted and must now sit for
@@ -59,28 +61,57 @@ from blumkin.config import BlumkinConfig
 _MAX_ENTRY_AGE_SECONDS = 24 * 60 * 60
 
 
-def clear_read(config: BlumkinConfig, event_id: str) -> None:
+def clear_read(config: BlumkinConfig, event_id: str, *, calendar: str | None = None) -> None:
     """Drop the recorded read timestamp for ``event_id`` (e.g. after it is cancelled)."""
     if not event_id:
         return
+    key = _key(event_id, calendar)
 
     def _pop(entries: dict[str, dict[str, Any]]) -> None:
-        entries.pop(event_id, None)
+        entries.pop(key, None)
 
     _locked_update(config, _pop)
 
 
-def record_read(config: BlumkinConfig, event_id: str) -> None:
-    """Stamp ``event_id`` as freshly read *now*; a re-read resets the clock."""
+def record_read(config: BlumkinConfig, event_id: str, *, calendar: str | None = None) -> None:
+    """Stamp ``event_id`` (scoped to ``calendar``) as freshly read *now*.
+
+    A re-read resets the clock.
+    """
     if not event_id:
         return
     entry = {"read_at": _now_iso()}
-    _locked_update(config, lambda entries: entries.__setitem__(event_id, entry))
+    key = _key(event_id, calendar)
+    _locked_update(config, lambda entries: entries.__setitem__(key, entry))
 
 
-def seconds_since_read(config: BlumkinConfig, event_id: str) -> float | None:
-    """Seconds elapsed since ``event_id`` was last read via ``calendar.get``, or ``None``."""
-    entry = _load(config).get(event_id)
+def seconds_since_read(
+    config: BlumkinConfig, event_id: str, *, calendar: str | None = None, any_calendar: bool = False
+) -> float | None:
+    """Seconds elapsed since ``event_id`` was last read via ``calendar.get``, or ``None``.
+
+    ``calendar`` scopes the lookup to the exact selector a ``--calendar``-aware
+    caller (``calendar.get``/``calendar.cancel``) used - see ``_key``. Pass
+    ``any_calendar=True`` instead for a caller with no ``--calendar`` argument
+    of its own (``calendar.accept``/``decline``/``tentative``, which always
+    act through Graph/Google's flat per-mailbox event lookup regardless of
+    calendar): this returns the freshest read of ``event_id`` recorded under
+    *any* calendar selector, since such a caller has no selector to match
+    against in the first place.
+    """
+    entries = _load(config)
+    if any_calendar:
+        candidates = [
+            _entry_elapsed(entry)
+            for key, entry in entries.items()
+            if _key_event_id(key) == event_id
+        ]
+        freshest = [elapsed for elapsed in candidates if elapsed is not None]
+        return min(freshest) if freshest else None
+    return _entry_elapsed(entries.get(_key(event_id, calendar)))
+
+
+def _entry_elapsed(entry: dict[str, Any] | None) -> float | None:
     if entry is None:
         return None
     raw = entry.get("read_at")
@@ -93,6 +124,28 @@ def seconds_since_read(config: BlumkinConfig, event_id: str) -> float | None:
         # A naive (tz-less) timestamp parses fine but cannot be subtracted from
         # an aware ``now()`` - treat it the same as any other unprovable value.
         return None
+
+
+def _key(event_id: str, calendar: str | None) -> str:
+    """Canonical on-disk key: ``event_id`` scoped by its calendar selector.
+
+    A bare ``event_id`` is ambiguous across calendars - Graph/Google event ids
+    are only unique *within* a calendar, so two different calendars could each
+    have an event id "X". Recording/checking freshness without the calendar
+    selector would let a fresh read of "X" in calendar A satisfy the gate for
+    "X" in calendar B. ``None``/empty selector means "the default calendar"
+    and is normalized to the same canonical marker every caller uses, so
+    omitting ``--calendar`` on both the read and the write still matches.
+    """
+    canonical_calendar = calendar.strip() if isinstance(calendar, str) and calendar.strip() else ""
+    return f"{canonical_calendar}\x1f{event_id}"
+
+
+def _key_event_id(key: str) -> str | None:
+    """The ``event_id`` half of a ``_key(...)`` string, or ``None`` if malformed."""
+    if "\x1f" not in key:
+        return None
+    return key.rpartition("\x1f")[2]
 
 
 def _load(config: BlumkinConfig) -> dict[str, dict[str, Any]]:
@@ -116,7 +169,7 @@ def _load(config: BlumkinConfig) -> dict[str, dict[str, Any]]:
             age = (cutoff - datetime.fromisoformat(read_at)).total_seconds()
         except ValueError, TypeError:
             continue
-        if age <= max_age:
+        if 0 <= age <= max_age:
             fresh[key] = entry
     return fresh
 

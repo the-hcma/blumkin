@@ -14,7 +14,7 @@ import pytest
 from blumkin.compose_state import record_composed, seconds_since_composed
 from blumkin.config import load_config
 from blumkin.providers.kind import ProviderKind
-from blumkin.read_state import record_read
+from blumkin.read_state import _key, record_read
 from blumkin.skills.dispatch import run_skill, skill_method_name
 from blumkin.skills.errors import (
     ConsentRequiredError,
@@ -1008,7 +1008,7 @@ def test_rsvp_blocked_when_read_is_stale(tmp_path, monkeypatch) -> None:
     cfg = _freshness_cfg(tmp_path, monkeypatch, freshness_seconds=60)
     cfg.read_state_path.parent.mkdir(parents=True, exist_ok=True)
     stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
-    cfg.read_state_path.write_text(json.dumps({"e1": {"read_at": stale}}))
+    cfg.read_state_path.write_text(json.dumps({_key("e1", None): {"read_at": stale}}))
     prov = _provider("calendar_accept")
     with pytest.raises(FreshnessRequiredError):
         _run("calendar.accept", {"event_id": "e1", "yes": True}, config=cfg, provider=prov)
@@ -1032,6 +1032,36 @@ def test_calendar_get_records_the_read_freshness(tmp_path, monkeypatch) -> None:
     accept_prov.calendar_accept.assert_awaited_once()
 
 
+def test_calendar_get_read_scoped_to_a_calendar_gates_cancel_in_that_calendar(
+    tmp_path, monkeypatch
+) -> None:
+    """End-to-end (not just via `record_read` directly): `calendar.get
+    --calendar Work` must satisfy `calendar.cancel --calendar Work`'s gate,
+    but not a `calendar.cancel` call targeting the default calendar."""
+    cfg = _freshness_cfg(tmp_path, monkeypatch, freshness_seconds=300)
+    get_prov = SimpleNamespace(calendar_get=AsyncMock(return_value={"event": {"id": "e1"}}))
+    _run("calendar.get", {"event_id": "e1", "calendar": "Work"}, config=cfg, provider=get_prov)
+
+    default_cancel_prov = _provider("calendar_cancel")
+    with pytest.raises(FreshnessRequiredError):
+        _run(
+            "calendar.cancel",
+            {"event_id": "e1", "yes": True},
+            config=cfg,
+            provider=default_cancel_prov,
+        )
+    default_cancel_prov.calendar_cancel.assert_not_awaited()
+
+    work_cancel_prov = _provider("calendar_cancel")
+    _run(
+        "calendar.cancel",
+        {"event_id": "e1", "calendar": "Work", "yes": True},
+        config=cfg,
+        provider=work_cancel_prov,
+    )
+    work_cancel_prov.calendar_cancel.assert_awaited_once()
+
+
 def test_rsvp_today_pending_bulk_mode_is_never_gated(tmp_path, monkeypatch) -> None:
     """The bulk `--today-pending` path reads each id via `calendar.today`
     immediately before acting on it - it never carries a raw `event_id`
@@ -1045,6 +1075,51 @@ def test_rsvp_today_pending_bulk_mode_is_never_gated(tmp_path, monkeypatch) -> N
 
 def test_rsvp_freshness_zero_disables_the_gate(tmp_path, monkeypatch) -> None:
     cfg = _freshness_cfg(tmp_path, monkeypatch, freshness_seconds=0)
+    prov = _provider("calendar_accept")
+    _run("calendar.accept", {"event_id": "e1", "yes": True}, config=cfg, provider=prov)
+    prov.calendar_accept.assert_awaited_once()
+
+
+def test_calendar_cancel_requires_the_same_calendar_calendar_get_read(
+    tmp_path, monkeypatch
+) -> None:
+    """`calendar.cancel` takes its own `--calendar` selector (unlike accept/
+    decline/tentative), so a fresh read of event "e1" in calendar "Work" must
+    not satisfy the gate for the (potentially different) event "e1" in the
+    default calendar - issue #365's cross-calendar identity fix."""
+    cfg = _freshness_cfg(tmp_path, monkeypatch, freshness_seconds=300)
+    record_read(cfg, "e1", calendar="Work")
+    prov = _provider("calendar_cancel")
+    with pytest.raises(FreshnessRequiredError):
+        _run(
+            "calendar.cancel",
+            {"event_id": "e1", "yes": True},  # no --calendar: targets the default calendar
+            config=cfg,
+            provider=prov,
+        )
+    prov.calendar_cancel.assert_not_awaited()
+
+
+def test_calendar_cancel_allowed_when_the_same_calendar_was_read(tmp_path, monkeypatch) -> None:
+    cfg = _freshness_cfg(tmp_path, monkeypatch, freshness_seconds=300)
+    record_read(cfg, "e1", calendar="Work")
+    prov = _provider("calendar_cancel")
+    _run(
+        "calendar.cancel",
+        {"event_id": "e1", "calendar": "Work", "yes": True},
+        config=cfg,
+        provider=prov,
+    )
+    prov.calendar_cancel.assert_awaited_once()
+
+
+def test_rsvp_accept_is_satisfied_by_a_read_from_any_calendar(tmp_path, monkeypatch) -> None:
+    """`calendar.accept`/`decline`/`tentative` have no `--calendar` argument
+    of their own - they always act through Graph/Google's flat per-mailbox
+    event lookup - so a read of "e1" recorded under a non-default calendar
+    selector must still satisfy their gate (no exact-match regression)."""
+    cfg = _freshness_cfg(tmp_path, monkeypatch, freshness_seconds=300)
+    record_read(cfg, "e1", calendar="Work")
     prov = _provider("calendar_accept")
     _run("calendar.accept", {"event_id": "e1", "yes": True}, config=cfg, provider=prov)
     prov.calendar_accept.assert_awaited_once()

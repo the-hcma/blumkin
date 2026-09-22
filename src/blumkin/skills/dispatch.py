@@ -140,6 +140,18 @@ _FRESHNESS_GATED_SKILLS: dict[str, str] = {
     "calendar.tentative": "event_id",
 }
 
+# Skills in `_FRESHNESS_GATED_SKILLS` that also accept a `--calendar` selector
+# of their own (only `calendar.cancel` - `accept`/`decline`/`tentative` always
+# act through Graph/Google's flat per-mailbox event lookup and have no
+# `--calendar` argument at all). These must match the *exact* calendar
+# `calendar.get` was read with, since a fresh read of event "X" in calendar A
+# must not satisfy the gate for a different event "X" in calendar B (Graph
+# event ids are only unique within a calendar for calendar-scoped lookups).
+# Skills without a `--calendar` argument have no selector to match against,
+# so they accept a read of that event id under *any* calendar instead - see
+# `read_state.seconds_since_read`'s `any_calendar` parameter.
+_FRESHNESS_GATED_SKILLS_WITH_CALENDAR_ARG: frozenset[str] = frozenset({"calendar.cancel"})
+
 # `calendar.get`'s successful payload (`{"event": {"id": ...}}`) stamps that
 # event id's read-freshness record - see `_apply_read_state` below.
 _READ_RECORD_SKILLS: frozenset[str] = frozenset({"calendar.get"})
@@ -225,7 +237,9 @@ def _apply_compose_state(
         )
 
 
-def _apply_read_state(skill_id: str, payload: dict[str, Any], config: BlumkinConfig) -> None:
+def _apply_read_state(
+    skill_id: str, arguments: dict[str, Any], payload: dict[str, Any], config: BlumkinConfig
+) -> None:
     """Stamp the read-freshness record after a successful ``calendar.get`` (issue #365).
 
     Best-effort, same reasoning as ``_apply_compose_state``: the read already
@@ -238,7 +252,7 @@ def _apply_read_state(skill_id: str, payload: dict[str, Any], config: BlumkinCon
     try:
         event_id = (payload.get("event") or {}).get("id")
         if isinstance(event_id, str) and event_id:
-            record_read(config, event_id)
+            record_read(config, event_id, calendar=arguments.get("calendar"))
     except OSError as exc:
         emit_warning(
             f"{skill_id} succeeded, but the read-freshness record was not saved "
@@ -309,7 +323,10 @@ def _freshness_gate(skill_id: str, arguments: dict[str, Any], config: BlumkinCon
     if window <= 0:
         return
     event_id = event_id.strip()
-    elapsed = seconds_since_read(config, event_id)
+    if skill_id in _FRESHNESS_GATED_SKILLS_WITH_CALENDAR_ARG:
+        elapsed = seconds_since_read(config, event_id, calendar=arguments.get("calendar"))
+    else:
+        elapsed = seconds_since_read(config, event_id, any_calendar=True)
     if elapsed is not None and elapsed <= window:
         return
     reason = (
@@ -573,7 +590,7 @@ async def run_skill(
         method = getattr(prov, skill_method_name(skill_id))
         payload = await method(**kwargs)
     _apply_compose_state(skill_id, arguments, payload, config)
-    _apply_read_state(skill_id, payload, config)
+    _apply_read_state(skill_id, arguments, payload, config)
     return _postprocess_items(skill_id, payload, arguments)
 
 

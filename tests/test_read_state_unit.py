@@ -9,6 +9,7 @@ from pathlib import Path
 from blumkin.config import load_config
 from blumkin.read_state import (
     _MAX_ENTRY_AGE_SECONDS,
+    _key,
     clear_read,
     record_read,
     seconds_since_read,
@@ -24,13 +25,15 @@ def test_a_naive_timestamp_in_the_state_file_fails_open_not_typeerror(
     equivalent regression test for issue #365)."""
     cfg = _cfg(tmp_path, monkeypatch)
     cfg.read_state_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg.read_state_path.write_text(json.dumps({"event-naive": {"read_at": "2026-09-21T10:00:00"}}))
+    cfg.read_state_path.write_text(
+        json.dumps({_key("event-naive", None): {"read_at": "2026-09-21T10:00:00"}})
+    )
     assert seconds_since_read(cfg, "event-naive") is None
     # And the load-time prune must not raise either, pruning the unusable entry.
     record_read(cfg, "event-fresh")
     on_disk = json.loads(cfg.read_state_path.read_text())
-    assert "event-naive" not in on_disk
-    assert "event-fresh" in on_disk
+    assert _key("event-naive", None) not in on_disk
+    assert _key("event-fresh", None) in on_disk
 
 
 def test_clear_read_forgets_the_record(tmp_path: Path, monkeypatch) -> None:
@@ -55,8 +58,8 @@ def test_concurrent_record_read_calls_do_not_clobber_each_other(
     record_read(cfg, "event-a")
     record_read(cfg, "event-b")
     on_disk = json.loads(cfg.read_state_path.read_text())
-    assert "event-a" in on_disk
-    assert "event-b" in on_disk
+    assert _key("event-a", None) in on_disk
+    assert _key("event-b", None) in on_disk
 
 
 def test_no_profile_dir_yet_does_not_raise(tmp_path: Path, monkeypatch) -> None:
@@ -69,7 +72,7 @@ def test_record_read_resets_the_clock_on_re_read(tmp_path: Path, monkeypatch) ->
     cfg = _cfg(tmp_path, monkeypatch)
     stale = (datetime.now(UTC) - timedelta(seconds=100)).isoformat()
     cfg.read_state_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg.read_state_path.write_text(json.dumps({"event-1": {"read_at": stale}}))
+    cfg.read_state_path.write_text(json.dumps({_key("event-1", None): {"read_at": stale}}))
     record_read(cfg, "event-1")
     elapsed = seconds_since_read(cfg, "event-1")
     assert elapsed is not None
@@ -93,13 +96,13 @@ def test_stale_entries_are_pruned_on_load(tmp_path: Path, monkeypatch) -> None:
     cfg = _cfg(tmp_path, monkeypatch)
     ancient = (datetime.now(UTC) - timedelta(seconds=_MAX_ENTRY_AGE_SECONDS + 60)).isoformat()
     cfg.read_state_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg.read_state_path.write_text(json.dumps({"event-old": {"read_at": ancient}}))
+    cfg.read_state_path.write_text(json.dumps({_key("event-old", None): {"read_at": ancient}}))
     assert seconds_since_read(cfg, "event-old") is None
     # And the prune persists back to disk on the next write.
     record_read(cfg, "event-new")
     on_disk = json.loads(cfg.read_state_path.read_text())
-    assert "event-old" not in on_disk
-    assert "event-new" in on_disk
+    assert _key("event-old", None) not in on_disk
+    assert _key("event-new", None) in on_disk
 
 
 def test_prune_window_extends_to_cover_a_longer_configured_freshness_window(
@@ -114,7 +117,9 @@ def test_prune_window_extends_to_cover_a_longer_configured_freshness_window(
         datetime.now(UTC) - timedelta(seconds=_MAX_ENTRY_AGE_SECONDS + 60)
     ).isoformat()
     cfg.read_state_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg.read_state_path.write_text(json.dumps({"event-1": {"read_at": past_default_prune}}))
+    cfg.read_state_path.write_text(
+        json.dumps({_key("event-1", None): {"read_at": past_default_prune}})
+    )
     elapsed = seconds_since_read(cfg, "event-1")
     assert elapsed is not None
     assert elapsed < long_window
