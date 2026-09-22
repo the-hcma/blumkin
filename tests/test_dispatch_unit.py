@@ -761,6 +761,24 @@ def test_mail_send_draft_clears_the_compose_record(tmp_path, monkeypatch) -> Non
     assert seconds_since_composed(cfg, "d1") is None
 
 
+def test_compose_state_write_failure_does_not_fail_a_successful_send(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Regression: a filesystem error persisting the cooldown record must not
+    turn an already-successful mail.send-draft into a reported failure - that
+    would invite a retry that sends the message twice (see issue #365 review)."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = SimpleNamespace(mail_send_draft=AsyncMock(return_value={"ok": True}))
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("blumkin.skills.dispatch.clear_composed", _boom)
+    _run("mail.send-draft", {"id": "d1", "yes": True}, config=cfg, provider=prov)
+    prov.mail_send_draft.assert_awaited_once()
+    assert "confirm-cooldown record was not saved" in capsys.readouterr().err
+
+
 def test_mail_delete_draft_clears_the_compose_record(tmp_path, monkeypatch) -> None:
     cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
     cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)

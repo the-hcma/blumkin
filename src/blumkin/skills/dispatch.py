@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from blumkin.compose_state import clear_composed, record_composed, seconds_since_composed
 from blumkin.config import BlumkinConfig
 from blumkin.contacts import people_context
+from blumkin.output import emit_warning
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills import (
@@ -124,15 +125,24 @@ _BODY_PREVIEW_TRUNCATE_LEN = 150
 def _apply_compose_state(
     skill_id: str, arguments: dict[str, Any], payload: dict[str, Any], config: BlumkinConfig
 ) -> None:
-    """Stamp/clear the compose-cooldown record after a successful call (issue #365)."""
-    if skill_id in _COMPOSE_RECORD_SKILLS:
-        draft_id = (payload.get("draft") or {}).get("id")
-        if isinstance(draft_id, str) and draft_id:
-            record_composed(config, draft_id)
-    elif skill_id in _COMPOSE_CLEAR_SKILLS:
-        draft_id = arguments.get("id")
-        if isinstance(draft_id, str) and draft_id:
-            clear_composed(config, draft_id)
+    """Stamp/clear the compose-cooldown record after a successful call (issue #365).
+
+    Best-effort: the provider call already succeeded by the time this runs, so a
+    filesystem error persisting the record must never turn a real success (e.g. a
+    sent email) into a reported failure - that would invite a retry that sends it
+    twice. Log a warning and move on instead of letting ``OSError`` propagate.
+    """
+    try:
+        if skill_id in _COMPOSE_RECORD_SKILLS:
+            draft_id = (payload.get("draft") or {}).get("id")
+            if isinstance(draft_id, str) and draft_id:
+                record_composed(config, draft_id)
+        elif skill_id in _COMPOSE_CLEAR_SKILLS:
+            draft_id = arguments.get("id")
+            if isinstance(draft_id, str) and draft_id:
+                clear_composed(config, draft_id)
+    except OSError as exc:
+        emit_warning(f"{skill_id} succeeded, but the confirm-cooldown record was not saved: {exc}")
 
 
 def _argkey(name: str) -> str:

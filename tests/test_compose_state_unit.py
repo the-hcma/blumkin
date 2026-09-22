@@ -39,10 +39,41 @@ def test_clear_composed_forgets_the_record(tmp_path: Path, monkeypatch) -> None:
     assert seconds_since_composed(cfg, "draft-1") is None
 
 
+def test_concurrent_record_composed_calls_do_not_clobber_each_other(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression: two overlapping load-modify-save transactions for different
+    artifact ids must both survive - the flock'd _locked_update transaction
+    prevents the second writer's save from discarding the first's entry
+    (see issue #365 review)."""
+    cfg = _cfg(tmp_path, monkeypatch)
+    record_composed(cfg, "draft-a")
+    record_composed(cfg, "draft-b")
+    on_disk = json.loads(cfg.compose_state_path.read_text())
+    assert "draft-a" in on_disk
+    assert "draft-b" in on_disk
+
+
 def test_no_profile_dir_yet_does_not_raise(tmp_path: Path, monkeypatch) -> None:
     cfg = _cfg(tmp_path, monkeypatch)
     assert seconds_since_composed(cfg, "draft-1") is None
     clear_composed(cfg, "draft-1")  # no-op, must not raise
+
+
+def test_now_iso_preserves_sub_second_precision(monkeypatch) -> None:
+    """Regression: truncating to whole seconds could let a draft composed at
+    T.999 pass a cooldown nearly a full second early (see issue #365 review)."""
+    from blumkin import compose_state
+
+    fixed = datetime(2026, 1, 1, 12, 0, 0, 999_000, tzinfo=UTC)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    monkeypatch.setattr(compose_state, "datetime", _FixedDatetime)
+    assert compose_state._now_iso() == fixed.isoformat()
 
 
 def test_prune_window_extends_to_cover_a_longer_configured_cooldown(

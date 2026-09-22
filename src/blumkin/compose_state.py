@@ -13,11 +13,21 @@ committed) and is per-profile. A missing record for a given id (never composed
 through this install, or the record was pruned/lost) is treated as "unknown" -
 ``seconds_since_composed`` returns ``None`` and the cooldown gate fails open
 rather than blocking forever on state it cannot prove.
+
+Every write goes through ``_locked_update``: an ``flock``'d lock file guards
+the load-modify-save transaction so two concurrent MCP sessions writing
+different artifact ids cannot clobber each other's timestamp (issue #365
+review), and the replacement file is written atomically (temp file + rename).
 """
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
+import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -36,18 +46,18 @@ def clear_composed(config: BlumkinConfig, artifact_id: str) -> None:
     """Drop the recorded timestamp for ``artifact_id`` (after a successful emit/delete)."""
     if not artifact_id:
         return
-    entries = _load(config)
-    if entries.pop(artifact_id, None) is not None:
-        _save(config, entries)
+
+    def _pop(entries: dict[str, str]) -> None:
+        entries.pop(artifact_id, None)
+
+    _locked_update(config, _pop)
 
 
 def record_composed(config: BlumkinConfig, artifact_id: str) -> None:
     """Stamp ``artifact_id`` as composed *now*; a re-compose/edit resets the clock."""
     if not artifact_id:
         return
-    entries = _load(config)
-    entries[artifact_id] = _now_iso()
-    _save(config, entries)
+    _locked_update(config, lambda entries: entries.__setitem__(artifact_id, _now_iso()))
 
 
 def seconds_since_composed(config: BlumkinConfig, artifact_id: str) -> float | None:
@@ -91,12 +101,42 @@ def _load(config: BlumkinConfig) -> dict[str, str]:
     return fresh
 
 
+def _locked_update(config: BlumkinConfig, mutate: Callable[[dict[str, str]], None]) -> None:
+    """Run one load-mutate-save transaction under a cross-process advisory lock.
+
+    Two MCP sessions (each its own process) can otherwise both load the state
+    file, mutate different artifact ids, and let the last writer's ``_save``
+    discard the other's timestamp - silently defeating the cooldown for the
+    discarded id (issue #365 review). The lock file is separate from the state
+    file itself so a reader never has to take the lock just to ``_load``.
+    """
+    path = config.compose_state_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            entries = _load(config)
+            mutate(entries)
+            _save(config, entries)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _save(config: BlumkinConfig, entries: dict[str, str]) -> None:
+    """Write ``entries`` atomically: a torn/partial write must never be observable."""
     path = config.compose_state_path
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = entries
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as tmp_file:
+            tmp_file.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp_name, path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)

@@ -172,7 +172,8 @@ _DEFAULT_HINTS: dict[str, str] = {
     ),
     "too_soon": (
         "Do not retry immediately. Show the user the exact composed content and wait for "
-        "their explicit confirmation before calling this again (see `retry_after_seconds`)."
+        "their explicit confirmation before calling this again - the error reports how "
+        "many seconds remain (`retry_after_seconds` in --json output)."
     ),
     "transient_error": (
         "The auth provider hit a transient network or server error - this is not a bad "
