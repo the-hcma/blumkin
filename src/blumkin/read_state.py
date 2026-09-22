@@ -54,12 +54,6 @@ else:
 
 from blumkin.config import BlumkinConfig
 
-# Floor for how long entries are kept - the effective prune window is
-# max(this, preferences.rsvp_freshness_seconds), so a configured freshness
-# window longer than this floor cannot be starved by the prune (mirrors
-# compose_state.py's _MAX_ENTRY_AGE_SECONDS reasoning).
-_MAX_ENTRY_AGE_SECONDS = 24 * 60 * 60
-
 # A read_at just barely in the future (NTP correction, VM resume, DST-adjacent
 # clock skew between the calendar.get and the RSVP) is tolerated as "now" -
 # the entry is neither pruned nor treated as more-than-fresh. A read_at
@@ -67,6 +61,12 @@ _MAX_ENTRY_AGE_SECONDS = 24 * 60 * 60
 # pruned, so the gate still fails closed rather than trusting an arbitrary
 # future timestamp as evidence of a read that hasn't happened yet.
 _CLOCK_SKEW_TOLERANCE_SECONDS = 5
+
+# Floor for how long entries are kept - the effective prune window is
+# max(this, preferences.rsvp_freshness_seconds), so a configured freshness
+# window longer than this floor cannot be starved by the prune (mirrors
+# compose_state.py's _MAX_ENTRY_AGE_SECONDS reasoning).
+_MAX_ENTRY_AGE_SECONDS = 24 * 60 * 60
 
 
 def clear_read(config: BlumkinConfig, event_id: str, *, calendar: str | None = None) -> None:

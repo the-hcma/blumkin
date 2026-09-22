@@ -43,21 +43,6 @@ def test_clear_read_forgets_the_record(tmp_path: Path, monkeypatch) -> None:
     assert seconds_since_read(cfg, "event-1") is None
 
 
-def test_a_read_at_slightly_in_the_future_is_tolerated_as_clock_skew(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """A read_at a few seconds in the future (NTP correction, VM resume,
-    clock stepped backwards between calendar.get and the RSVP) must still
-    count as a fresh read - not be pruned and force a redundant re-read."""
-    cfg = _cfg(tmp_path, monkeypatch)
-    cfg.read_state_path.parent.mkdir(parents=True, exist_ok=True)
-    future = (datetime.now(UTC) + timedelta(seconds=2)).isoformat()
-    cfg.read_state_path.write_text(json.dumps({_key("event-skew", None): {"read_at": future}}))
-    elapsed = seconds_since_read(cfg, "event-skew")
-    assert elapsed is not None
-    assert elapsed == 0.0
-
-
 def test_a_read_at_far_in_the_future_is_treated_as_unknown_not_fresh(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -72,6 +57,21 @@ def test_a_read_at_far_in_the_future_is_treated_as_unknown_not_fresh(
         json.dumps({_key("event-far-future", None): {"read_at": far_future}})
     )
     assert seconds_since_read(cfg, "event-far-future") is None
+
+
+def test_a_read_at_slightly_in_the_future_is_tolerated_as_clock_skew(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A read_at a few seconds in the future (NTP correction, VM resume,
+    clock stepped backwards between calendar.get and the RSVP) must still
+    count as a fresh read - not be pruned and force a redundant re-read."""
+    cfg = _cfg(tmp_path, monkeypatch)
+    cfg.read_state_path.parent.mkdir(parents=True, exist_ok=True)
+    future = (datetime.now(UTC) + timedelta(seconds=2)).isoformat()
+    cfg.read_state_path.write_text(json.dumps({_key("event-skew", None): {"read_at": future}}))
+    elapsed = seconds_since_read(cfg, "event-skew")
+    assert elapsed is not None
+    assert elapsed == 0.0
 
 
 def test_clear_read_on_unknown_id_is_a_no_op(tmp_path: Path, monkeypatch) -> None:
