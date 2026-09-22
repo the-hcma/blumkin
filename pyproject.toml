@@ -47,7 +47,7 @@ dependencies = [
     # breaks every `.me`-based Graph call (404 on the literal placeholder
     # path). Pin below the break until msgraph-core catches up; see issue
     # #354 and upstream microsoftgraph/msgraph-sdk-python-core#1128.
-    "microsoft-kiota-http>=1.11.6,<1.13.0",
+    "microsoft-kiota-http>=1.12.3",
     "msgraph-sdk>=1.62.0",
     "python-docx>=1.2.0",
     "tomlkit>=0.15.1",
