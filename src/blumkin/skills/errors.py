@@ -37,6 +37,7 @@ from blumkin.skills.chat import (
     ChatAttachmentNotFoundError,
     ChatAttachmentScopeError,
     ChatAttachmentSkippedError,
+    ChatDraftNotFoundError,
     ChatMessageNotFoundError,
 )
 from blumkin.skills.docs_read import DocsReadFileNotFoundError
@@ -182,7 +183,13 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
     # 3. chat attachments
     if isinstance(exc, ChatAttachmentScopeError):
         return ErrorInfo("missing_scope", EXIT_MISSING_SCOPE, str(exc))
-    if isinstance(exc, ChatAttachmentNotFoundError | ChatMessageNotFoundError | LookupError):
+    if isinstance(
+        exc,
+        ChatAttachmentNotFoundError
+        | ChatDraftNotFoundError
+        | ChatMessageNotFoundError
+        | LookupError,
+    ):
         return ErrorInfo("not_found", EXIT_NOT_FOUND, str(exc))
     if isinstance(exc, ChatAttachmentSkippedError):
         return ErrorInfo("usage_error", EXIT_USAGE, str(exc))

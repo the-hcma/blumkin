@@ -33,7 +33,9 @@ from blumkin.skills.chat import (
     chat_attachments_download,
     chat_attachments_list,
     chat_delete,
+    chat_draft,
     chat_edit,
+    chat_edit_draft,
     chat_find,
     chat_last,
     chat_send,
@@ -354,11 +356,32 @@ class MicrosoftWorkspaceProvider:
             config=self._config,
         )
 
-    async def chat_delete(self, *, chat_id: str, message_id: str) -> dict[str, Any]:
-        return await chat_delete(chat_id=chat_id, message_id=message_id, config=self._config)
+    async def chat_delete(
+        self, *, chat_id: str, expected_text: str, message_id: str
+    ) -> dict[str, Any]:
+        return await chat_delete(
+            chat_id=chat_id,
+            expected_text=expected_text,
+            message_id=message_id,
+            config=self._config,
+        )
 
-    async def chat_edit(self, *, chat_id: str, message_id: str, text: str) -> dict[str, Any]:
-        return await chat_edit(
+    async def chat_draft(
+        self,
+        *,
+        text: str,
+        with_name: str | None = None,
+        chat_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await chat_draft(
+            text=text, with_name=with_name, chat_id=chat_id, config=self._config
+        )
+
+    async def chat_edit(self, *, draft_id: str) -> dict[str, Any]:
+        return await chat_edit(draft_id=draft_id, config=self._config)
+
+    async def chat_edit_draft(self, *, chat_id: str, message_id: str, text: str) -> dict[str, Any]:
+        return await chat_edit_draft(
             chat_id=chat_id, message_id=message_id, text=text, config=self._config
         )
 
@@ -377,14 +400,8 @@ class MicrosoftWorkspaceProvider:
             with_name=with_name, chat_id=chat_id, contains=contains, n=n, config=self._config
         )
 
-    async def chat_send(
-        self,
-        *,
-        text: str,
-        with_name: str | None = None,
-        chat_id: str | None = None,
-    ) -> dict[str, Any]:
-        return await chat_send(text=text, with_name=with_name, chat_id=chat_id, config=self._config)
+    async def chat_send(self, *, draft_id: str) -> dict[str, Any]:
+        return await chat_send(draft_id=draft_id, config=self._config)
 
     async def docs_create(
         self,

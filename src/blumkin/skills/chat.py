@@ -6,6 +6,7 @@ import asyncio
 import base64
 import html as html_lib
 import re
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlparse
@@ -30,6 +31,7 @@ from blumkin.attachments import (
     unique_filename,
 )
 from blumkin.auth import effective_scopes
+from blumkin.compose_state import composed_content, record_composed
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, request_config
 from blumkin.output import sanitize_terminal
@@ -49,6 +51,11 @@ class ChatAttachmentScopeError(Exception):
 
 class ChatAttachmentSkippedError(Exception):
     """Attachment is not a downloadable file (usage)."""
+
+
+class ChatDraftNotFoundError(Exception):
+    """Draft id missing, expired past the confirm cooldown's prune window, or
+    already emitted/cleared (not_found)."""
 
 
 class ChatMessageNotFoundError(Exception):
@@ -186,34 +193,86 @@ async def chat_attachments_list(
 async def chat_delete(
     *,
     chat_id: str,
+    expected_text: str,
     message_id: str,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
+    """Soft-delete a chat message, but only once the caller proves it already read it.
+
+    ``--expected-text`` (issue #365) must match the message's current body text
+    exactly (after stripping surrounding whitespace) - a fresh `chat.last` /
+    `chat.find` read, not a guess, is what stands in for the compose/emit
+    cooldown here: there is no content to re-compose before deleting, only a
+    message to correctly identify.
+    """
     cid = chat_id.strip()
     mid = message_id.strip()
+    want_text = expected_text.strip()
     if not cid or not mid:
         raise ValueError("--chat-id and --message-id are required")
+    if not want_text:
+        raise ValueError("--expected-text must be non-empty")
     cfg = config or load_config()
     client = create_graph_client(cfg)
+    message = await _require_chat_message(client, cid, mid)
+    actual_text = str(_message_to_dict(message)["body_text"]).strip()
+    if actual_text != want_text:
+        raise ValueError(
+            "--expected-text does not match the current message body; re-read it with "
+            "`chat last` / `chat find` first to confirm you are deleting the right message"
+        )
     await client.me.chats.by_chat_id(cid).messages.by_chat_message_id(mid).soft_delete.post()
     return {"chat_id": cid, "deleted": mid}
 
 
-async def chat_edit(
+async def chat_draft(
     *,
-    chat_id: str,
-    message_id: str,
     text: str,
+    with_name: str | None = None,
+    chat_id: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    cid = chat_id.strip()
-    mid = message_id.strip()
+    """Compose a new chat message locally, without sending it (issue #365).
+
+    Teams/Graph has no server-side chat-draft concept, so the resolved target
+    and composed text are stashed in blumkin's own per-profile
+    ``compose_state``, keyed by a fresh local ``draft_id``. `chat.send
+    --draft-id ... --yes` reads this back rather than accepting inline
+    `--text` - the same compose/emit split `mail.draft` / `mail.send-draft`
+    already enforce, generalized to a provider with no drafts folder of its
+    own. The target is resolved (and an ambiguous `--with` rejected) now, at
+    compose time, not re-resolved at send time.
+    """
     body_text = text.strip()
-    if not cid or not mid:
-        raise ValueError("--chat-id and --message-id are required")
     if not body_text:
         raise ValueError("--text must be non-empty")
     cfg = config or load_config()
+    chat, target_id, partial, skipped = await _resolve_chat_target(
+        chat_id=chat_id, with_name=with_name, config=cfg
+    )
+    draft_id = f"chat-send-{uuid.uuid4().hex}"
+    record_composed(
+        cfg, draft_id, content={"chat_id": target_id, "kind": "send", "text": body_text}
+    )
+    return {
+        "chat": chat,
+        "draft": {"chat_id": target_id, "id": draft_id, "text": body_text},
+        "partial": partial,
+        "query": (with_name or "").strip() or None,
+        "skipped": skipped,
+    }
+
+
+async def chat_edit(
+    *,
+    draft_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    cfg = config or load_config()
+    draft = _require_chat_draft(cfg, draft_id, kind="edit")
+    cid = str(draft["chat_id"])
+    mid = str(draft["message_id"])
+    body_text = str(draft["text"])
     client = create_graph_client(cfg)
     patch = ChatMessage(body=ItemBody(content=body_text, content_type=BodyType.Text))
     updated = await client.me.chats.by_chat_id(cid).messages.by_chat_message_id(mid).patch(patch)
@@ -222,6 +281,35 @@ async def chat_edit(
     if updated is None:
         raise RuntimeError("chat message patch returned empty response")
     return {"chat_id": cid, "message": _message_to_dict(updated)}
+
+
+async def chat_edit_draft(
+    *,
+    chat_id: str,
+    message_id: str,
+    text: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Compose a replacement chat-message body locally, without editing it yet
+    (issue #365). Mirrors ``chat_draft``, keyed to an existing ``chat_id`` /
+    ``message_id`` rather than a resolved send target - `chat.edit --draft-id
+    ... --yes` reads the stashed text back and PATCHes in place.
+    """
+    cid = chat_id.strip()
+    mid = message_id.strip()
+    body_text = text.strip()
+    if not cid or not mid:
+        raise ValueError("--chat-id and --message-id are required")
+    if not body_text:
+        raise ValueError("--text must be non-empty")
+    cfg = config or load_config()
+    draft_id = f"chat-edit-{uuid.uuid4().hex}"
+    record_composed(
+        cfg,
+        draft_id,
+        content={"chat_id": cid, "kind": "edit", "message_id": mid, "text": body_text},
+    )
+    return {"draft": {"chat_id": cid, "id": draft_id, "message_id": mid, "text": body_text}}
 
 
 async def chat_find(
@@ -405,30 +493,21 @@ async def chat_last(
 
 async def chat_send(
     *,
-    text: str,
-    with_name: str | None = None,
-    chat_id: str | None = None,
+    draft_id: str,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    body_text = text.strip()
-    if not body_text:
-        raise ValueError("--text must be non-empty")
     cfg = config or load_config()
-    query = (with_name or "").strip() or None
-    chat, target_id, partial, skipped = await _resolve_chat_target(
-        chat_id=chat_id, with_name=with_name, config=cfg
-    )
+    draft = _require_chat_draft(cfg, draft_id, kind="send")
+    target_id = str(draft["chat_id"])
+    body_text = str(draft["text"])
     client = create_graph_client(cfg)
     message = ChatMessage(body=ItemBody(content=body_text, content_type=BodyType.Text))
     created = await client.me.chats.by_chat_id(target_id).messages.post(message)
     if created is None:
         raise RuntimeError("chat message create returned empty response")
     return {
-        "chat": chat,
+        "chat_id": target_id,
         "message": _message_to_dict(created),
-        "partial": partial,
-        "query": query,
-        "skipped": skipped,
     }
 
 
@@ -468,6 +547,28 @@ def format_delete_human(payload: dict[str, Any]) -> list[str]:
     deleted = payload.get("deleted")
     chat_id = payload.get("chat_id")
     return [f"Chat message soft-deleted: {deleted!r} (chat={chat_id!r})"]
+
+
+def format_draft_human(payload: dict[str, Any]) -> list[str]:
+    draft = payload.get("draft") or {}
+    text = sanitize_terminal(str(draft.get("text") or ""))
+    lines = [
+        f"Chat draft composed: {draft.get('id')!r} (chat={draft.get('chat_id')!r})",
+        f"  text: {text}",
+    ]
+    if payload.get("partial"):
+        lines.append("  (target resolution was partial; some chats were skipped)")
+    return lines
+
+
+def format_edit_draft_human(payload: dict[str, Any]) -> list[str]:
+    draft = payload.get("draft") or {}
+    text = sanitize_terminal(str(draft.get("text") or ""))
+    return [
+        f"Chat edit drafted: {draft.get('id')!r} "
+        f"(chat={draft.get('chat_id')!r}, message={draft.get('message_id')!r})",
+        f"  text: {text}",
+    ]
 
 
 def format_edit_human(payload: dict[str, Any]) -> list[str]:
@@ -521,19 +622,13 @@ def format_last_human(payload: dict[str, Any]) -> list[str]:
 
 
 def format_send_human(payload: dict[str, Any]) -> list[str]:
-    chat = payload.get("chat") or {}
     msg = payload.get("message") or {}
-    topic = sanitize_terminal(str(chat.get("topic") or "(no topic)"))
     text = sanitize_terminal(str(msg.get("body_text") or ""))
-    lines = [
-        f"Sent message in {topic!r} ({chat.get('id')})",
+    return [
+        f"Sent message in chat {payload.get('chat_id')!r}",
         f"  id={msg.get('id')}",
         f"  text: {text}",
     ]
-    skipped = int(payload.get("skipped") or 0)
-    if payload.get("partial") or skipped:
-        lines.append(f"  (skipped {skipped} chat(s) while matching; results may be partial)")
-    return lines
 
 
 _CARD_CONTENT_TYPE_PREFIX = "application/vnd.microsoft.card."
@@ -742,6 +837,21 @@ def _name_matches(needle: str, display_name: str) -> bool:
     if not tokens:
         return False
     return all(token in hay for token in tokens)
+
+
+def _require_chat_draft(config: BlumkinConfig, draft_id: str, *, kind: str) -> dict[str, Any]:
+    """Read back a ``chat.draft`` / ``chat.edit-draft``'s stashed content, or raise
+    ``ChatDraftNotFoundError`` - covers a typo'd id, an id of the other kind, one
+    already emitted (cleared by ``_COMPOSE_CLEAR_SKILLS``), and one pruned by
+    ``compose_state``'s age window."""
+    content = composed_content(config, draft_id)
+    if not isinstance(content, dict) or content.get("kind") != kind:
+        raise ChatDraftNotFoundError(
+            f"no composed {kind} draft found for --draft-id {draft_id!r}; it may have "
+            "already been sent/edited, expired, or never existed - run `chat draft` "
+            "or `chat edit-draft` again"
+        )
+    return content
 
 
 async def _require_chat_message(client: Any, chat_id: str, message_id: str) -> Any:

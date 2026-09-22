@@ -56,12 +56,12 @@ def _drive_attachment(content_name: str) -> dict:
 
 def test_chat_send_posts_to_the_resolved_space(tmp_path: Path) -> None:
     service = _service(created=_message("spaces/AAA/messages/9", "hello there"))
+    cfg = _cfg(tmp_path)
     with _patched(service):
-        payload = asyncio.run(
-            GoogleWorkspaceProvider(_cfg(tmp_path)).chat_send(
-                text="  hello there  ", chat_id="spaces/AAA"
-            )
+        draft = asyncio.run(
+            GoogleWorkspaceProvider(cfg).chat_draft(text="  hello there  ", chat_id="spaces/AAA")
         )
+        payload = asyncio.run(GoogleWorkspaceProvider(cfg).chat_send(draft_id=draft["draft"]["id"]))
     assert payload["message"]["body_text"] == "hello there"
     service.spaces.return_value.messages.return_value.create.assert_called_once_with(
         parent="spaces/AAA", body={"text": "hello there"}
@@ -72,19 +72,21 @@ def test_chat_send_requires_text_and_exactly_one_target(tmp_path: Path) -> None:
     provider = GoogleWorkspaceProvider(_cfg(tmp_path))
     with _patched(_service()):
         with pytest.raises(ValueError, match="--text must be non-empty"):
-            asyncio.run(provider.chat_send(text="   ", chat_id="spaces/AAA"))
+            asyncio.run(provider.chat_draft(text="   ", chat_id="spaces/AAA"))
         with pytest.raises(ValueError, match="exactly one of --with or --chat-id"):
-            asyncio.run(provider.chat_send(text="hi"))
+            asyncio.run(provider.chat_draft(text="hi"))
 
 
 def test_chat_edit_patches_only_the_text_field(tmp_path: Path) -> None:
     service = _service(patched=_message("spaces/AAA/messages/9", "corrected"))
+    cfg = _cfg(tmp_path)
     with _patched(service):
-        payload = asyncio.run(
-            GoogleWorkspaceProvider(_cfg(tmp_path)).chat_edit(
+        draft = asyncio.run(
+            GoogleWorkspaceProvider(cfg).chat_edit_draft(
                 chat_id="spaces/AAA", message_id="spaces/AAA/messages/9", text="corrected"
             )
         )
+        payload = asyncio.run(GoogleWorkspaceProvider(cfg).chat_edit(draft_id=draft["draft"]["id"]))
     assert payload["message"]["body_text"] == "corrected"
     kwargs = service.spaces.return_value.messages.return_value.patch.call_args.kwargs
     assert kwargs["updateMask"] == "text"
@@ -92,17 +94,32 @@ def test_chat_edit_patches_only_the_text_field(tmp_path: Path) -> None:
 
 
 def test_chat_delete_removes_the_message(tmp_path: Path) -> None:
-    service = _service()
+    service = _service(message=_message("spaces/AAA/messages/9", "hi"))
     with _patched(service):
         payload = asyncio.run(
             GoogleWorkspaceProvider(_cfg(tmp_path)).chat_delete(
-                chat_id="spaces/AAA", message_id="spaces/AAA/messages/9"
+                chat_id="spaces/AAA", message_id="spaces/AAA/messages/9", expected_text="hi"
             )
         )
     assert payload == {"chat_id": "spaces/AAA", "deleted": "spaces/AAA/messages/9"}
     service.spaces.return_value.messages.return_value.delete.assert_called_once_with(
         name="spaces/AAA/messages/9"
     )
+
+
+def test_chat_delete_refuses_a_stale_expected_text(tmp_path: Path) -> None:
+    """Issue #365: --expected-text must match the message's *current* body, fetched
+    fresh, so a delete never fires on a message that has since changed underneath."""
+    service = _service(message=_message("spaces/AAA/messages/9", "hi"))
+    with _patched(service), pytest.raises(ValueError, match="does not match"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).chat_delete(
+                chat_id="spaces/AAA",
+                message_id="spaces/AAA/messages/9",
+                expected_text="something else",
+            )
+        )
+    service.spaces.return_value.messages.return_value.delete.assert_not_called()
 
 
 def test_chat_attachments_list_marks_drive_files_as_not_downloadable(tmp_path: Path) -> None:
@@ -316,12 +333,14 @@ def test_chat_send_resolves_a_name_to_one_space(tmp_path: Path) -> None:
     service.spaces.return_value.members.return_value.list.return_value.execute.return_value = {
         "memberships": [{"member": {"displayName": "Vivek Kumar"}}]
     }
+    cfg = _cfg(tmp_path)
     with _patched(service):
-        payload = asyncio.run(
-            GoogleWorkspaceProvider(_cfg(tmp_path)).chat_send(text="hi", with_name="vivek")
-        )
-    assert payload["chat"]["id"] == "spaces/AAA"
-    assert payload["query"] == "vivek"
+        provider = GoogleWorkspaceProvider(cfg)
+        draft = asyncio.run(provider.chat_draft(text="hi", with_name="vivek"))
+        payload = asyncio.run(provider.chat_send(draft_id=draft["draft"]["id"]))
+    assert draft["chat"]["id"] == "spaces/AAA"
+    assert draft["query"] == "vivek"
+    assert payload["chat_id"] == "spaces/AAA"
     assert (
         service.spaces.return_value.messages.return_value.create.call_args.kwargs["parent"]
         == "spaces/AAA"
@@ -356,7 +375,7 @@ def test_chat_send_fails_closed_on_ambiguous_partial_and_missing_names(tmp_path:
     ]
     ambiguous = _with_spaces(two, {"spaces/AAA": ["Vivek Kumar"], "spaces/BBB": ["Vivek Rao"]})
     with _patched(ambiguous), pytest.raises(ValueError, match="ambiguous chat match"):
-        asyncio.run(provider.chat_send(text="hi", with_name="vivek"))
+        asyncio.run(provider.chat_draft(text="hi", with_name="vivek"))
 
     partial = _with_spaces(
         two,
@@ -364,13 +383,13 @@ def test_chat_send_fails_closed_on_ambiguous_partial_and_missing_names(tmp_path:
         {"spaces/AAA": HttpError(httplib2.Response({"status": 403}), b"{}", uri="x")},
     )
     with _patched(partial), pytest.raises(ValueError, match="is partial"):
-        asyncio.run(provider.chat_send(text="hi", with_name="vivek"))
+        asyncio.run(provider.chat_draft(text="hi", with_name="vivek"))
 
     none = _with_spaces(
         [{"name": "spaces/AAA", "spaceType": "DIRECT_MESSAGE"}], {"spaces/AAA": ["Ada"]}
     )
     with _patched(none), pytest.raises(LookupError, match="no chat matched"):
-        asyncio.run(provider.chat_send(text="hi", with_name="vivek"))
+        asyncio.run(provider.chat_draft(text="hi", with_name="vivek"))
 
 
 def test_download_attachment_falls_back_to_the_plain_media_method(tmp_path: Path) -> None:

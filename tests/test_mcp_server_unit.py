@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import tempfile
 import tomllib
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -30,7 +32,9 @@ from blumkin.mcp_server import build_server, build_tools  # noqa: E402
 
 _CFG = SimpleNamespace(
     account_type="organizational",
+    compose_state_path=Path(tempfile.mkdtemp(prefix="blumkin-mcp-test-")) / "compose_state.json",
     default_tz="UTC",
+    preferences=SimpleNamespace(confirm_cooldown_seconds=20),
     provider=ProviderKind.MICROSOFT,
     wo1162425_scopes=True,
 )
@@ -147,9 +151,7 @@ def test_confirm_true_passes_the_gate_and_is_not_forwarded() -> None:
         patch("blumkin.mcp_server.load_config", return_value=_CFG),
         patch("blumkin.skills.dispatch.get_provider", return_value=prov),
     ):
-        result = _drive(
-            lambda c: c.call_tool("chat.send", {"chat_id": "c1", "text": "hi", "confirm": True})
-        )
+        result = _drive(lambda c: c.call_tool("chat.send", {"draft_id": "d1", "confirm": True}))
     assert result.is_error is False
     assert result.structured_content == {"sent": True}
     prov.chat_send.assert_awaited_once()
@@ -169,7 +171,7 @@ def test_non_boolean_bool_args_are_rejected_never_a_silent_flip() -> None:
         patch("blumkin.skills.dispatch.get_provider", return_value=prov),
     ):
         bad_confirm = _drive(
-            lambda c: c.call_tool("chat.send", {"chat_id": "c1", "text": "hi", "confirm": "false"})
+            lambda c: c.call_tool("chat.send", {"draft_id": "d1", "confirm": "false"})
         )
         bad_flag = _drive(
             lambda c: c.call_tool(

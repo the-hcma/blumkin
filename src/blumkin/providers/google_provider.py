@@ -309,13 +309,29 @@ class GoogleWorkspaceProvider:
             config=self._config,
         )
 
-    async def chat_delete(self, *, chat_id: str, message_id: str) -> dict[str, Any]:
+    async def chat_delete(
+        self, *, chat_id: str, expected_text: str, message_id: str
+    ) -> dict[str, Any]:
         return await google_chat.chat_delete(
-            chat_id=chat_id, message_id=message_id, config=self._config
+            chat_id=chat_id, expected_text=expected_text, message_id=message_id, config=self._config
         )
 
-    async def chat_edit(self, *, chat_id: str, message_id: str, text: str) -> dict[str, Any]:
-        return await google_chat.chat_edit(
+    async def chat_draft(
+        self,
+        *,
+        text: str,
+        with_name: str | None = None,
+        chat_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await google_chat.chat_draft(
+            text=text, with_name=with_name, chat_id=chat_id, config=self._config
+        )
+
+    async def chat_edit(self, *, draft_id: str) -> dict[str, Any]:
+        return await google_chat.chat_edit(draft_id=draft_id, config=self._config)
+
+    async def chat_edit_draft(self, *, chat_id: str, message_id: str, text: str) -> dict[str, Any]:
+        return await google_chat.chat_edit_draft(
             chat_id=chat_id, message_id=message_id, text=text, config=self._config
         )
 
@@ -334,16 +350,8 @@ class GoogleWorkspaceProvider:
             with_name=with_name, chat_id=chat_id, contains=contains, n=n, config=self._config
         )
 
-    async def chat_send(
-        self,
-        *,
-        text: str,
-        with_name: str | None = None,
-        chat_id: str | None = None,
-    ) -> dict[str, Any]:
-        return await google_chat.chat_send(
-            text=text, with_name=with_name, chat_id=chat_id, config=self._config
-        )
+    async def chat_send(self, *, draft_id: str) -> dict[str, Any]:
+        return await google_chat.chat_send(draft_id=draft_id, config=self._config)
 
     async def docs_create(
         self,

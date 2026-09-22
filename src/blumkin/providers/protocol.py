@@ -173,9 +173,23 @@ class WorkspaceProvider(Protocol):
         with_name: str | None = None,
     ) -> dict[str, Any]: ...
 
-    async def chat_delete(self, *, chat_id: str, message_id: str) -> dict[str, Any]: ...
+    async def chat_delete(
+        self, *, chat_id: str, expected_text: str, message_id: str
+    ) -> dict[str, Any]: ...
 
-    async def chat_edit(self, *, chat_id: str, message_id: str, text: str) -> dict[str, Any]: ...
+    async def chat_draft(
+        self,
+        *,
+        text: str,
+        with_name: str | None = None,
+        chat_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def chat_edit(self, *, draft_id: str) -> dict[str, Any]: ...
+
+    async def chat_edit_draft(
+        self, *, chat_id: str, message_id: str, text: str
+    ) -> dict[str, Any]: ...
 
     async def chat_find(self, *, with_name: str) -> dict[str, Any]: ...
 
@@ -188,13 +202,7 @@ class WorkspaceProvider(Protocol):
         n: int = 3,
     ) -> dict[str, Any]: ...
 
-    async def chat_send(
-        self,
-        *,
-        text: str,
-        with_name: str | None = None,
-        chat_id: str | None = None,
-    ) -> dict[str, Any]: ...
+    async def chat_send(self, *, draft_id: str) -> dict[str, Any]: ...
 
     async def docs_create(
         self,

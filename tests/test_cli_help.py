@@ -88,7 +88,7 @@ def test_group_help_carries_examples(group: tuple[str, ...]) -> None:
         (["mail", "draft"], "blumkin mail draft --to sam@example.com"),
         (["mail", "reply"], "send with `mail send-draft"),
         (["mail", "inbox"], "--search"),
-        (["chat", "send"], "blumkin chat send --with"),
+        (["chat", "send"], "blumkin chat send --draft-id"),
         (["people", "resolve"], "ambiguous"),
         (["meeting", "transcription"], "--enable --yes"),
     ],

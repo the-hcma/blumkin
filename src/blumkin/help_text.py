@@ -411,21 +411,56 @@ CHAT_DELETE_EPILOG = """
 Example:
 
 \b
-  blumkin chat delete --chat-id 19:abc... --message-id 17... --yes
+  blumkin chat last --chat-id 19:abc... --n 1 --json   # read it first
+  blumkin chat delete --chat-id 19:abc... --message-id 17... \\
+    --expected-text "the exact current body text" --yes
 
 Soft-deletes one of your messages; every participant sees it vanish, so `--yes`
-is required. Needs `wo1162425_scopes = true` (Chat.ReadWrite).
+is required. `--expected-text` must match the message's current body exactly
+(after trimming) - it must come from a fresh read (`chat last` / `chat find`),
+not a guess, so the wrong message is never deleted by mistake. Needs
+`wo1162425_scopes = true` (Chat.ReadWrite).
+"""
+
+CHAT_DRAFT_EPILOG = """
+Examples:
+
+\b
+  # By display name
+  blumkin chat draft --with "Sam Rivera" --text "Sending the deck now" --json
+\b
+  # By explicit chat id when the name is ambiguous
+  blumkin chat draft --chat-id 19:abc... --text "Thanks!" --json
+
+Composes the message only; send it with `chat send --draft-id ... --yes`. No
+one is notified by this step. Needs `wo1162425_scopes = true`. If `--with` is
+ambiguous, use `--chat-id` from `chat find`. Use ASCII hyphens in `--text`, not
+em dashes.
 """
 
 CHAT_EDIT_EPILOG = """
 Example:
 
 \b
-  blumkin chat edit --chat-id 19:abc... --message-id 17... \\
-    --text "Updated: moving the sync to 3pm" --yes
+  blumkin chat edit-draft --chat-id 19:abc... --message-id 17... \\
+    --text "Updated: moving the sync to 3pm" --json
+  blumkin chat edit --draft-id chat-edit-... --yes
 
-Rewrites a message other people have already read, so `--yes` is required. Needs
+Rewrites a message other people have already read, so `--yes` is required.
+Prepare the replacement text first with `chat edit-draft`. Needs
 `wo1162425_scopes = true` (Chat.ReadWrite).
+"""
+
+CHAT_EDIT_DRAFT_EPILOG = """
+Example:
+
+\b
+  blumkin chat edit-draft --chat-id 19:abc... --message-id 17... \\
+    --text "Updated: moving the sync to 3pm" --json
+
+Composes the replacement body only; apply it with
+`chat edit --draft-id ... --yes`. No one is notified by this step. Use ASCII
+hyphens in `--text`, not em dashes.
 """
 
 CHAT_EPILOG = """
@@ -436,12 +471,13 @@ Common workflows:
   blumkin chat find --with "Sam Rivera" --json
   blumkin chat last --with "Sam Rivera" --n 5 --json
 \b
-  # Send a message (notifies the recipient)
-  blumkin chat send --with "Sam Rivera" --text "On my way" --yes
+  # Send a message (notifies the recipient) - compose, then emit
+  blumkin chat draft --with "Sam Rivera" --text "On my way" --json
+  blumkin chat send --draft-id chat-send-... --yes
 
-Reads work with the base scope set. Writes (send/edit/delete) and needing a
-specific chat id require `wo1162425_scopes = true`. When `--with` is ambiguous,
-pass `--chat-id` from `chat find`.
+Reads work with the base scope set. Writes (draft/send/edit-draft/edit/delete)
+and needing a specific chat id require `wo1162425_scopes = true`. When
+`--with` is ambiguous, pass `--chat-id` from `chat find`.
 """
 
 CHAT_FIND_EPILOG = """
@@ -479,17 +515,18 @@ Exit 5 (not_found) means no chat matched `--with`. Exit 2 (usage_error) means
 """
 
 CHAT_SEND_EPILOG = """
-Examples:
+Example:
 
 \b
-  # By display name
-  blumkin chat send --with "Sam Rivera" --text "Sending the deck now" --yes
-\b
-  # By explicit chat id when the name is ambiguous
-  blumkin chat send --chat-id 19:abc... --text "Thanks!" --yes
+  blumkin chat draft --with "Sam Rivera" --text "Sending the deck now" --json
+  blumkin chat send --draft-id chat-send-... --yes
 
-Messages a real person, so `--yes` is required. Needs `wo1162425_scopes = true`.
-Use ASCII hyphens in `--text`, not em dashes.
+Sends an existing draft (from `chat draft`). Requires `--yes` - this is the
+step that actually messages a real person. Needs `wo1162425_scopes = true`.
+Also enforced: a minimum wait since the draft was composed
+(`preferences.confirm_cooldown_seconds`, default 20s) - calling this too soon
+fails with `too_soon` rather than sending, so you have a real chance to review
+the draft first.
 """
 
 COMPLETION_EPILOG = """

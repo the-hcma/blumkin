@@ -376,17 +376,19 @@ def test_chat_send_without_yes_exits_usage(monkeypatch) -> None:
     assert result.exit_code == EXIT_USAGE
 
 
-def test_chat_send_ambiguous_exits_usage(monkeypatch) -> None:
+def test_chat_draft_ambiguous_exits_usage(monkeypatch) -> None:
+    """Target resolution now happens at `chat draft` time (issue #365 compose/emit
+    split) - an ambiguous `--with` must be rejected before anything is stashed."""
     _patch_wo1162425_enabled(monkeypatch)
 
     async def _boom(**_kwargs):
         raise ValueError("ambiguous chat match for 'dan' (2 chats); pass --chat-id")
 
-    monkeypatch.setattr("blumkin.providers.microsoft.chat_send", _boom)
+    monkeypatch.setattr("blumkin.providers.microsoft.chat_draft", _boom)
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["chat", "send", "--with", "dan", "--text", "hi", "--yes", "--json"],
+        ["chat", "draft", "--with", "dan", "--text", "hi", "--json"],
     )
     assert result.exit_code == EXIT_USAGE
     assert "usage_error" in (result.output or "")
@@ -464,7 +466,7 @@ def test_wo1162425_scopes_disabled_blocks_chat_send(tmp_path: Path, monkeypatch)
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["chat", "send", "--with", "Ada", "--text", "hi", "--yes", "--json"],
+        ["chat", "send", "--draft-id", "d1", "--yes", "--json"],
     )
     assert result.exit_code == EXIT_USAGE
     assert "WO1162425 add-on scopes are disabled" in (result.output or "")
@@ -603,22 +605,18 @@ def test_chat_send_wires_options_and_emits_json(monkeypatch) -> None:
     async def _ok(**kwargs):
         seen.update({k: v for k, v in kwargs.items() if k != "config"})
         return {
-            "chat": {"id": "chat-1", "topic": "T"},
-            "message": {"id": "msg-1", "body_text": kwargs["text"]},
-            "partial": False,
-            "query": kwargs["with_name"],
-            "skipped": 0,
+            "chat_id": kwargs["draft_id"],
+            "message": {"id": "msg-1", "body_text": "hello"},
         }
 
     monkeypatch.setattr("blumkin.providers.microsoft.chat_send", _ok)
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["chat", "send", "--with", "Ada", "--text", "hello", "--yes", "--json"],
+        ["chat", "send", "--draft-id", "chat-send-abc", "--yes", "--json"],
     )
     assert result.exit_code == 0
-    assert seen["with_name"] == "Ada"
-    assert seen["text"] == "hello"
+    assert seen["draft_id"] == "chat-send-abc"
     assert '"id": "msg-1"' in (result.output or "") or '"id":"msg-1"' in (result.output or "")
 
 

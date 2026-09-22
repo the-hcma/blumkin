@@ -177,7 +177,7 @@ def test_mail_folder_ambiguous_hint_lists_the_matching_ids(monkeypatch) -> None:
     "args",
     [
         ["calendar", "cancel", "--event-id", "x", "--json"],
-        ["chat", "send", "--with", "A", "--text", "hi", "--json"],
+        ["chat", "send", "--draft-id", "d1", "--json"],
         ["mail", "attachments", "--json"],
     ],
 )

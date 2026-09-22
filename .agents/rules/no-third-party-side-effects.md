@@ -35,9 +35,11 @@ To check the current set without trusting this list:
 blumkin skills list --json | jq -r '.skills[] | select(.notifies_others) | .id'
 ```
 
-Absence of the flag is not a blank cheque: `mail.draft`, `mail.update-draft`, and
-`mail.delete-draft` are safe because they stay in the operator's own mailbox, and
-that is the actual test — *does this reach anyone else?*
+Absence of the flag is not a blank cheque: `mail.draft`, `mail.update-draft`,
+`mail.delete-draft`, `chat.draft`, and `chat.edit-draft` are safe because they
+only stash content locally (`chat.draft` / `chat.edit-draft`) or on the
+operator's own mailbox (`mail.*`), and that is the actual test — *does this
+reach anyone else?*
 
 ## Verify with reads instead
 

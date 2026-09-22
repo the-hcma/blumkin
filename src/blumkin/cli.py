@@ -76,6 +76,12 @@ from blumkin.skills.chat import (
     format_delete_human as format_chat_delete_human,
 )
 from blumkin.skills.chat import (
+    format_draft_human as format_chat_draft_human,
+)
+from blumkin.skills.chat import (
+    format_edit_draft_human as format_chat_edit_draft_human,
+)
+from blumkin.skills.chat import (
     format_edit_human,
     format_find_human,
     format_last_human,
@@ -2638,11 +2644,14 @@ def calendar_update_cmd(
 
 @main.group(epilog=help_text.CHAT_EPILOG)
 def chat() -> None:
-    """Read Teams 1:1 chats, and send, edit, or delete your messages.
+    """Read Teams 1:1 chats, and draft/send, edit, or delete your messages.
 
     Reads (find / last / attachments) work with the base scope set. Writes
-    (send / edit / delete) need `wo1162425_scopes = true` and always require
-    --yes. When a display name is ambiguous, pass --chat-id from `chat find`.
+    (draft / send / edit-draft / edit / delete) need `wo1162425_scopes = true`.
+    Sending and editing are compose/emit pairs (`chat draft` -> `chat send
+    --draft-id ... --yes`, `chat edit-draft` -> `chat edit --draft-id ... --yes`);
+    deleting requires `--expected-text` proving you already read the message.
+    When a display name is ambiguous, pass --chat-id from `chat find`.
     """
 
 
@@ -2724,6 +2733,11 @@ def chat_attachments_download_cmd(
 @chat.command("delete", epilog=help_text.CHAT_DELETE_EPILOG)
 @click.option("--chat-id", required=True, help="Teams chat id (from `chat find`).")
 @click.option("--message-id", required=True, help="Chat message id to delete (yours).")
+@click.option(
+    "--expected-text",
+    required=True,
+    help="The message's current body text, exactly (e.g. from `chat last`); proves it was read.",
+)
 @click.option("--yes", is_flag=True, help="Confirm soft-delete (required).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -2731,48 +2745,118 @@ def chat_delete_cmd(
     ctx: click.Context,
     chat_id: str,
     message_id: str,
+    expected_text: str,
     yes: bool,
     as_json_flag: bool,
 ) -> None:
     """Soft-delete one of your chat messages. Requires --yes.
 
-    Every participant sees the message disappear. Needs
-    `wo1162425_scopes = true` (Chat.ReadWrite).
+    `--expected-text` must match the message's current body exactly - re-read
+    it with `chat last` / `chat find` first; a mismatch is refused rather than
+    deleting the wrong message. Every participant sees the message disappear.
+    Needs `wo1162425_scopes = true` (Chat.ReadWrite).
     """
     _dispatch(
         ctx,
         "chat.delete",
-        {"chat_id": chat_id, "message_id": message_id, "yes": yes},
+        {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "expected_text": expected_text,
+            "yes": yes,
+        },
         human=format_chat_delete_human,
         as_json_flag=as_json_flag,
     )
 
 
+@chat.command("draft", epilog=help_text.CHAT_DRAFT_EPILOG)
+@click.option(
+    "--with",
+    "with_name",
+    default=None,
+    help="Display-name match for the recipient (exclusive with --chat-id).",
+)
+@click.option(
+    "--chat-id",
+    "chat_id",
+    default=None,
+    help="Explicit chat id from `chat find` (exclusive with --with).",
+)
+@click.option("--text", required=True, help="Message body; use ASCII hyphens, not em dashes.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def chat_draft_cmd(
+    ctx: click.Context,
+    with_name: str | None,
+    chat_id: str | None,
+    text: str,
+    as_json_flag: bool,
+) -> None:
+    """Compose a chat message locally (by --with name or --chat-id). Does not send.
+
+    Send it with `chat send --draft-id ... --yes`. No one is notified by this
+    step. Needs `wo1162425_scopes = true`. If --with is ambiguous, use
+    --chat-id from `chat find`.
+    """
+    _dispatch(
+        ctx,
+        "chat.draft",
+        {"with": with_name, "chat_id": chat_id, "text": text},
+        human=format_chat_draft_human,
+        as_json_flag=as_json_flag,
+    )
+
+
 @chat.command("edit", epilog=help_text.CHAT_EDIT_EPILOG)
-@click.option("--chat-id", required=True, help="Teams chat id (from `chat find`).")
-@click.option("--message-id", required=True, help="Chat message id to edit (yours).")
-@click.option("--text", required=True, help="Replacement body; use ASCII hyphens, not em dashes.")
+@click.option("--draft-id", required=True, help="Draft id from `chat edit-draft`.")
 @click.option("--yes", is_flag=True, help="Confirm edit (required).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def chat_edit_cmd(
     ctx: click.Context,
-    chat_id: str,
-    message_id: str,
-    text: str,
+    draft_id: str,
     yes: bool,
     as_json_flag: bool,
 ) -> None:
     """Replace one of your chat message bodies in place. Requires --yes.
 
-    Other people have already read the message. Needs
-    `wo1162425_scopes = true` (Chat.ReadWrite).
+    Prepare the replacement text first with `chat edit-draft`. Other people
+    have already read the message. Needs `wo1162425_scopes = true`
+    (Chat.ReadWrite).
     """
     _dispatch(
         ctx,
         "chat.edit",
-        {"chat_id": chat_id, "message_id": message_id, "text": text, "yes": yes},
+        {"draft_id": draft_id, "yes": yes},
         human=format_edit_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@chat.command("edit-draft", epilog=help_text.CHAT_EDIT_DRAFT_EPILOG)
+@click.option("--chat-id", required=True, help="Teams chat id (from `chat find`).")
+@click.option("--message-id", required=True, help="Chat message id to edit (yours).")
+@click.option("--text", required=True, help="Replacement body; use ASCII hyphens, not em dashes.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def chat_edit_draft_cmd(
+    ctx: click.Context,
+    chat_id: str,
+    message_id: str,
+    text: str,
+    as_json_flag: bool,
+) -> None:
+    """Compose a replacement chat-message body locally. Does not edit yet.
+
+    Emit it with `chat edit --draft-id ... --yes`. No one is notified by this
+    step.
+    """
+    _dispatch(
+        ctx,
+        "chat.edit-draft",
+        {"chat_id": chat_id, "message_id": message_id, "text": text},
+        human=format_chat_edit_draft_human,
         as_json_flag=as_json_flag,
     )
 
@@ -2838,39 +2922,25 @@ def chat_last_cmd(
 
 
 @chat.command("send", epilog=help_text.CHAT_SEND_EPILOG)
-@click.option(
-    "--with",
-    "with_name",
-    default=None,
-    help="Display-name match for the recipient (exclusive with --chat-id).",
-)
-@click.option(
-    "--chat-id",
-    "chat_id",
-    default=None,
-    help="Explicit chat id from `chat find` (exclusive with --with).",
-)
-@click.option("--text", required=True, help="Message body; use ASCII hyphens, not em dashes.")
+@click.option("--draft-id", required=True, help="Draft id from `chat draft`.")
 @click.option("--yes", is_flag=True, help="Confirm send (required).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def chat_send_cmd(
     ctx: click.Context,
-    with_name: str | None,
-    chat_id: str | None,
-    text: str,
+    draft_id: str,
     yes: bool,
     as_json_flag: bool,
 ) -> None:
-    """Send a text message to a chat (by --with name or --chat-id). Requires --yes.
+    """Send a message composed by `chat draft`. Requires --yes.
 
     This messages a real person. Needs `wo1162425_scopes = true`
-    (Chat.ReadWrite). If --with is ambiguous, use --chat-id from `chat find`.
+    (Chat.ReadWrite).
     """
     _dispatch(
         ctx,
         "chat.send",
-        {"with": with_name, "chat_id": chat_id, "text": text, "yes": yes},
+        {"draft_id": draft_id, "yes": yes},
         human=format_send_human,
         as_json_flag=as_json_flag,
     )

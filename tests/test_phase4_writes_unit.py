@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from msgraph.generated.models.body_type import BodyType
 
+from blumkin.config import BlumkinConfig
 from blumkin.skills.chat import (
+    ChatDraftNotFoundError,
     chat_delete,
+    chat_draft,
     chat_edit,
+    chat_edit_draft,
     chat_send,
     format_delete_human,
     format_edit_human,
@@ -25,7 +31,22 @@ from blumkin.skills.meeting import (
 )
 
 
-def test_chat_send_mocked(monkeypatch) -> None:
+def _cfg(tmp_path: Path) -> BlumkinConfig:
+    """Minimal stand-in for BlumkinConfig - just enough for compose_state's
+    ``compose_state_path`` / ``preferences.confirm_cooldown_seconds`` lookups;
+    chat_draft/chat_send never touch anything else on it directly
+    (create_graph_client is monkeypatched per test)."""
+    return cast(
+        BlumkinConfig,
+        SimpleNamespace(
+            client_id="x",
+            compose_state_path=tmp_path / "compose_state.json",
+            preferences=SimpleNamespace(confirm_cooldown_seconds=20),
+        ),
+    )
+
+
+def test_chat_send_mocked(monkeypatch, tmp_path) -> None:
     async def fake_find(*, with_name: str, config=None):
         assert with_name == "daniel"
         return {
@@ -52,14 +73,12 @@ def test_chat_send_mocked(monkeypatch) -> None:
     client.me.chats.by_chat_id.return_value.messages.post = AsyncMock(return_value=created)
     monkeypatch.setattr("blumkin.skills.chat.chat_find", fake_find)
     monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.chat.load_config",
-        lambda: SimpleNamespace(client_id="x"),
-    )
-    payload = asyncio.run(chat_send(with_name="daniel", text="  use <b> tags  "))
+    cfg = _cfg(tmp_path)
+    draft = asyncio.run(chat_draft(with_name="daniel", text="  use <b> tags  ", config=cfg))
+    payload = asyncio.run(chat_send(draft_id=draft["draft"]["id"], config=cfg))
     assert payload["message"]["id"] == "msg-9"
     assert payload["message"]["body_text"] == "use <b> tags"
-    assert payload["chat"]["id"] == "chat-1"
+    assert payload["chat_id"] == "chat-1"
     post = client.me.chats.by_chat_id.return_value.messages.post
     post.assert_awaited_once()
     sent = post.await_args.args[0]  # type: ignore[union-attr]
@@ -68,7 +87,7 @@ def test_chat_send_mocked(monkeypatch) -> None:
     assert "Sent message" in format_send_human(payload)[0]
 
 
-def test_chat_send_refuses_partial_match(monkeypatch) -> None:
+def test_chat_send_refuses_partial_match(monkeypatch, tmp_path) -> None:
     async def fake_find(*, with_name: str, config=None):
         return {
             "items": [
@@ -85,28 +104,20 @@ def test_chat_send_refuses_partial_match(monkeypatch) -> None:
         }
 
     monkeypatch.setattr("blumkin.skills.chat.chat_find", fake_find)
-    monkeypatch.setattr(
-        "blumkin.skills.chat.load_config",
-        lambda: SimpleNamespace(client_id="x"),
-    )
     with pytest.raises(ValueError, match="partial"):
-        asyncio.run(chat_send(with_name="dan", text="hi"))
+        asyncio.run(chat_draft(with_name="dan", text="hi", config=_cfg(tmp_path)))
 
 
-def test_chat_send_refuses_partial_empty_match(monkeypatch) -> None:
+def test_chat_send_refuses_partial_empty_match(monkeypatch, tmp_path) -> None:
     async def fake_find(*, with_name: str, config=None):
         return {"items": [], "partial": True, "query": with_name, "skipped": 3}
 
     monkeypatch.setattr("blumkin.skills.chat.chat_find", fake_find)
-    monkeypatch.setattr(
-        "blumkin.skills.chat.load_config",
-        lambda: SimpleNamespace(client_id="x"),
-    )
     with pytest.raises(ValueError, match="partial"):
-        asyncio.run(chat_send(with_name="dan", text="hi"))
+        asyncio.run(chat_draft(with_name="dan", text="hi", config=_cfg(tmp_path)))
 
 
-def test_chat_send_refuses_ambiguous_match(monkeypatch) -> None:
+def test_chat_send_refuses_ambiguous_match(monkeypatch, tmp_path) -> None:
     async def fake_find(*, with_name: str, config=None):
         return {
             "items": [
@@ -119,15 +130,11 @@ def test_chat_send_refuses_ambiguous_match(monkeypatch) -> None:
         }
 
     monkeypatch.setattr("blumkin.skills.chat.chat_find", fake_find)
-    monkeypatch.setattr(
-        "blumkin.skills.chat.load_config",
-        lambda: SimpleNamespace(client_id="x"),
-    )
     with pytest.raises(ValueError, match="ambiguous chat match"):
-        asyncio.run(chat_send(with_name="dan", text="hi"))
+        asyncio.run(chat_draft(with_name="dan", text="hi", config=_cfg(tmp_path)))
 
 
-def test_chat_send_by_chat_id(monkeypatch) -> None:
+def test_chat_send_by_chat_id(monkeypatch, tmp_path) -> None:
     created = SimpleNamespace(
         id="msg-2",
         body=SimpleNamespace(content="hi", content_type=BodyType.Text),
@@ -137,30 +144,33 @@ def test_chat_send_by_chat_id(monkeypatch) -> None:
     client = MagicMock()
     client.me.chats.by_chat_id.return_value.messages.post = AsyncMock(return_value=created)
     monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.chat.load_config",
-        lambda: SimpleNamespace(client_id="x"),
-    )
-    payload = asyncio.run(chat_send(chat_id="chat-9", text="hi"))
-    assert payload["chat"]["id"] == "chat-9"
+    cfg = _cfg(tmp_path)
+    draft = asyncio.run(chat_draft(chat_id="chat-9", text="hi", config=cfg))
+    payload = asyncio.run(chat_send(draft_id=draft["draft"]["id"], config=cfg))
+    assert payload["chat_id"] == "chat-9"
     client.me.chats.by_chat_id.assert_called_with("chat-9")
 
 
-def test_chat_send_no_match_raises(monkeypatch) -> None:
+def test_chat_send_no_match_raises(monkeypatch, tmp_path) -> None:
     async def fake_find(*, with_name: str, config=None):
         return {"items": [], "partial": False, "query": with_name, "skipped": 0}
 
     monkeypatch.setattr("blumkin.skills.chat.chat_find", fake_find)
     with pytest.raises(LookupError, match="no chat matched"):
-        asyncio.run(chat_send(with_name="nobody", text="hi"))
+        asyncio.run(chat_draft(with_name="nobody", text="hi", config=_cfg(tmp_path)))
 
 
-def test_chat_send_empty_text_raises() -> None:
+def test_chat_send_empty_text_raises(tmp_path) -> None:
     with pytest.raises(ValueError, match="non-empty"):
-        asyncio.run(chat_send(with_name="daniel", text="   "))
+        asyncio.run(chat_draft(with_name="daniel", text="   ", config=_cfg(tmp_path)))
 
 
-def test_chat_edit_mocked(monkeypatch) -> None:
+def test_chat_send_unknown_draft_raises(tmp_path) -> None:
+    with pytest.raises(ChatDraftNotFoundError):
+        asyncio.run(chat_send(draft_id="chat-send-nope", config=_cfg(tmp_path)))
+
+
+def test_chat_edit_mocked(monkeypatch, tmp_path) -> None:
     updated = SimpleNamespace(
         id="msg-1",
         body=SimpleNamespace(content="if x < 5", content_type=BodyType.Text),
@@ -171,17 +181,17 @@ def test_chat_edit_mocked(monkeypatch) -> None:
     stub = client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value
     stub.patch = AsyncMock(return_value=updated)
     monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.chat.load_config",
-        lambda: SimpleNamespace(client_id="x"),
+    cfg = _cfg(tmp_path)
+    draft = asyncio.run(
+        chat_edit_draft(chat_id="chat-1", message_id="msg-1", text="if x < 5", config=cfg)
     )
-    payload = asyncio.run(chat_edit(chat_id="chat-1", message_id="msg-1", text="if x < 5"))
+    payload = asyncio.run(chat_edit(draft_id=draft["draft"]["id"], config=cfg))
     assert payload["message"]["body_text"] == "if x < 5"
     stub.patch.assert_awaited_once()
     assert "updated" in format_edit_human(payload)[0]
 
 
-def test_chat_edit_reget_when_patch_empty(monkeypatch) -> None:
+def test_chat_edit_reget_when_patch_empty(monkeypatch, tmp_path) -> None:
     updated = SimpleNamespace(
         id="msg-1",
         body=SimpleNamespace(content="edited"),
@@ -193,30 +203,59 @@ def test_chat_edit_reget_when_patch_empty(monkeypatch) -> None:
     stub.patch = AsyncMock(return_value=None)
     stub.get = AsyncMock(return_value=updated)
     monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.chat.load_config",
-        lambda: SimpleNamespace(client_id="x"),
-    )
-    payload = asyncio.run(chat_edit(chat_id="c", message_id="m", text="edited"))
+    cfg = _cfg(tmp_path)
+    draft = asyncio.run(chat_edit_draft(chat_id="c", message_id="m", text="edited", config=cfg))
+    payload = asyncio.run(chat_edit(draft_id=draft["draft"]["id"], config=cfg))
     assert payload["message"]["id"] == "msg-1"
     stub.get.assert_awaited_once()
 
 
-def test_chat_delete_mocked(monkeypatch) -> None:
+def test_chat_delete_mocked(monkeypatch, tmp_path) -> None:
+    message = SimpleNamespace(
+        id="msg-1",
+        body=SimpleNamespace(content="bye", content_type=BodyType.Text),
+        created_date_time=None,
+        from_=None,
+    )
     client = MagicMock()
-    soft = (
-        client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value.soft_delete
-    )
-    soft.post = AsyncMock(return_value=None)
+    stub = client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value
+    stub.get = AsyncMock(return_value=message)
+    stub.soft_delete.post = AsyncMock(return_value=None)
     monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
-    monkeypatch.setattr(
-        "blumkin.skills.chat.load_config",
-        lambda: SimpleNamespace(client_id="x"),
+    payload = asyncio.run(
+        chat_delete(
+            chat_id="chat-1", message_id="msg-1", expected_text="bye", config=_cfg(tmp_path)
+        )
     )
-    payload = asyncio.run(chat_delete(chat_id="chat-1", message_id="msg-1"))
     assert payload == {"chat_id": "chat-1", "deleted": "msg-1"}
-    soft.post.assert_awaited_once()
+    stub.soft_delete.post.assert_awaited_once()
     assert "soft-deleted" in format_delete_human(payload)[0]
+
+
+def test_chat_delete_refuses_a_stale_expected_text(monkeypatch, tmp_path) -> None:
+    """Issue #365: --expected-text must match the message's *current* body, fetched
+    fresh, so a delete never fires on a message that has since changed underneath."""
+    message = SimpleNamespace(
+        id="msg-1",
+        body=SimpleNamespace(content="bye", content_type=BodyType.Text),
+        created_date_time=None,
+        from_=None,
+    )
+    client = MagicMock()
+    stub = client.me.chats.by_chat_id.return_value.messages.by_chat_message_id.return_value
+    stub.get = AsyncMock(return_value=message)
+    stub.soft_delete.post = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", lambda _cfg: client)
+    with pytest.raises(ValueError, match="does not match"):
+        asyncio.run(
+            chat_delete(
+                chat_id="chat-1",
+                message_id="msg-1",
+                expected_text="something else",
+                config=_cfg(tmp_path),
+            )
+        )
+    stub.soft_delete.post.assert_not_awaited()
 
 
 def test_meeting_get_mocked(monkeypatch) -> None:

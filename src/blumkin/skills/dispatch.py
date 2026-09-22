@@ -36,13 +36,22 @@ from blumkin.skills.docs_read import docs_read
 from blumkin.skills.errors import ConsentRequiredError, EmitCooldownError, ScopeAddonDisabledError
 from blumkin.tasks import tasks_list, tasks_show
 
-# Skills that retire a draft id for good - its compose-cooldown record is no
-# longer meaningful once the draft is sent or deleted.
-_COMPOSE_CLEAR_SKILLS: frozenset[str] = frozenset({"mail.delete-draft", "mail.send-draft"})
+# Skills that retire a draft id for good - its compose-cooldown record (and, for
+# chat, the stashed content) is no longer meaningful once the draft is sent,
+# edited, or deleted. Value is the raw argument key holding that draft id.
+_COMPOSE_CLEAR_SKILLS: dict[str, str] = {
+    "chat.edit": "draft_id",
+    "chat.send": "draft_id",
+    "mail.delete-draft": "id",
+    "mail.send-draft": "id",
+}
 
 # Skills whose payload carries a fresh/edited ``{"draft": {"id": ...}}`` - each
 # call (re)stamps that draft's compose timestamp, so an edit right before send
 # restarts the cooldown rather than grandfathering in the original compose time.
+# Chat's compose skills (``chat.draft`` / ``chat.edit-draft``) are not listed
+# here - each provider's implementation stamps its own draft id directly (with
+# stashed content the generic hook below has no way to produce).
 _COMPOSE_RECORD_SKILLS: frozenset[str] = frozenset(
     {"mail.draft", "mail.forward", "mail.reply", "mail.update-draft"}
 )
@@ -64,8 +73,12 @@ _CONSENT_KEYS = ("yes", "confirm")
 # argument key holding the id of the artifact that must have sat composed for
 # at least ``preferences.confirm_cooldown_seconds``. Skills that produce or edit
 # such an artifact stamp/clear it via ``_COMPOSE_RECORD_SKILLS`` /
-# ``_COMPOSE_CLEAR_SKILLS`` above.
-_COOLDOWN_GATED_SKILLS: dict[str, str] = {"mail.send-draft": "id"}
+# ``_COMPOSE_CLEAR_SKILLS`` above (or, for chat, their own `CONFIG_SKILLS` handler).
+_COOLDOWN_GATED_SKILLS: dict[str, str] = {
+    "chat.edit": "draft_id",
+    "chat.send": "draft_id",
+    "mail.send-draft": "id",
+}
 
 _DOCS_SCOPES_MESSAGE = (
     "docs create / docs update need the Files.ReadWrite Graph scope, which is off. "
@@ -138,7 +151,7 @@ def _apply_compose_state(
             if isinstance(draft_id, str) and draft_id:
                 record_composed(config, draft_id)
         elif skill_id in _COMPOSE_CLEAR_SKILLS:
-            draft_id = arguments.get("id")
+            draft_id = arguments.get(_COMPOSE_CLEAR_SKILLS[skill_id])
             if isinstance(draft_id, str) and draft_id:
                 clear_composed(config, draft_id)
     except OSError as exc:
@@ -428,11 +441,11 @@ async def run_skill(
         preprocess(kwargs, arguments, config)
 
     if skill_id in CONFIG_SKILLS:
-        return await _CONFIG_HANDLERS[skill_id](config=config, **kwargs)
-
-    prov = provider if provider is not None else get_provider(config)
-    method = getattr(prov, skill_method_name(skill_id))
-    payload = await method(**kwargs)
+        payload = await _CONFIG_HANDLERS[skill_id](config=config, **kwargs)
+    else:
+        prov = provider if provider is not None else get_provider(config)
+        method = getattr(prov, skill_method_name(skill_id))
+        payload = await method(**kwargs)
     _apply_compose_state(skill_id, arguments, payload, config)
     return _postprocess_items(skill_id, payload, arguments)
 
