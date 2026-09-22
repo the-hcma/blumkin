@@ -874,6 +874,9 @@ def test_rsvp_freshness_seconds_zero_requires_understood_risk(tmp_path: Path, mo
     )
     cfg = load_config()
     assert cfg.preferences.rsvp_freshness_seconds == 0
+
+
+def test_preferences_html_email_must_be_a_bool(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "config.toml").write_text(
         '[profiles.default]\nclient_id = "abc"\n'
         '[profiles.default.preferences]\nhtml_email = "sometimes"\n'

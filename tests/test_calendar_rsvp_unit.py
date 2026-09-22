@@ -329,11 +329,13 @@ def test_cli_decline_requires_yes() -> None:
     assert result.exit_code == EXIT_USAGE
 
 
-def test_cli_decline_routes_not_found(monkeypatch) -> None:
+def test_cli_decline_routes_not_found(tmp_path, monkeypatch) -> None:
     async def _raise(**_kwargs):
         raise CalendarEventNotFoundError("event not found: e")
 
     monkeypatch.setattr("blumkin.cli._workspace", lambda: SimpleNamespace(calendar_decline=_raise))
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
     record_read(load_config(), "e")
     result = CliRunner().invoke(main, ["calendar", "decline", "--event-id", "e", "--yes", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND

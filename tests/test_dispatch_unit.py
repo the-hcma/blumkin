@@ -1008,7 +1008,7 @@ def test_rsvp_blocked_when_read_is_stale(tmp_path, monkeypatch) -> None:
     cfg = _freshness_cfg(tmp_path, monkeypatch, freshness_seconds=60)
     cfg.read_state_path.parent.mkdir(parents=True, exist_ok=True)
     stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
-    cfg.read_state_path.write_text(json.dumps({"e1": stale}))
+    cfg.read_state_path.write_text(json.dumps({"e1": {"read_at": stale}}))
     prov = _provider("calendar_accept")
     with pytest.raises(FreshnessRequiredError):
         _run("calendar.accept", {"event_id": "e1", "yes": True}, config=cfg, provider=prov)
