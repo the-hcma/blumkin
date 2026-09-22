@@ -133,10 +133,13 @@ def test_graph_decline_propose_duration_zero_rejected(monkeypatch) -> None:
         )
 
 
-def test_cli_decline_bad_timezone_with_propose_is_usage_error(monkeypatch) -> None:
+def test_cli_decline_bad_timezone_with_propose_is_usage_error(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "blumkin.cli._workspace", lambda: SimpleNamespace(calendar_decline=AsyncMock())
     )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    record_read(load_config(), "e")
     result = CliRunner().invoke(
         main,
         [
@@ -153,6 +156,10 @@ def test_cli_decline_bad_timezone_with_propose_is_usage_error(monkeypatch) -> No
         ],
     )
     assert result.exit_code == EXIT_USAGE
+    # Discriminate from `stale_or_unread` (same exit code) - the freshness gate
+    # (fed by the `record_read` above) must have let this reach the ZoneInfo
+    # precheck, not merely failed for an unrelated reason.
+    assert json.loads(result.stderr)["error"] == "usage_error"
 
 
 def test_graph_decline_single_event_needs_no_timezone(monkeypatch) -> None:

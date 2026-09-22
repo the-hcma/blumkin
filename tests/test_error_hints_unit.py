@@ -131,6 +131,23 @@ def test_mail_send_draft_too_soon_hint_and_agent_instructions(tmp_path, monkeypa
     assert "confirm" in payload["hint"].lower()
 
 
+def test_calendar_decline_stale_or_unread_hint_and_agent_instructions(
+    tmp_path, monkeypatch
+) -> None:
+    """Pins the `stale_or_unread` slug (issue #365 RSVP freshness) at the CLI
+    surface, mirroring the `too_soon` coverage above."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
+        'client_id = "00000000-0000-0000-0000-000000000001"\n'
+        'tenant_id = "example.onmicrosoft.com"\ndefault_tz = "UTC"\n'
+    )
+    payload = _json_err(["calendar", "decline", "--event-id", "e1", "--yes", "--json"])
+    assert payload["error"] == "stale_or_unread"
+    assert "calendar.get --event-id e1" in payload["agent_instructions"]
+    assert "calendar get" in payload["hint"]
+
+
 def test_not_found_hint_suggests_listing(monkeypatch) -> None:
     from blumkin.skills.mail import MailMessageNotFoundError
 
