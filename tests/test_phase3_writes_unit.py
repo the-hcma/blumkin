@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -761,6 +761,13 @@ def test_mail_send_draft_holds_deferred_delivery_when_cooldown_positive(monkeypa
     [prop] = patched.single_value_extended_properties
     assert prop.id == "SystemTime 0x3FEF"
     assert prop.value == sent["held_until"]
+    # Pin the actual hold window against the wall clock (not just against the
+    # same value _defer_delivery returned) - a broken deferral computation
+    # (wrong sign, wrong units) must fail this test even though `held_until`
+    # would still "match itself".
+    held_at = datetime.strptime(prop.value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    expected = datetime.now(UTC) + timedelta(seconds=20)
+    assert abs((held_at - expected).total_seconds()) < 5
     client.me.messages.by_message_id.return_value.send.post.assert_awaited_once()
 
 
