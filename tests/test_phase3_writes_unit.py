@@ -728,9 +728,17 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
 
 
 def test_mail_send_draft_holds_deferred_delivery_when_cooldown_positive(monkeypatch) -> None:
+    call_order: list[str] = []
+
+    async def _patch(*_args, **_kwargs):
+        call_order.append("patch")
+
+    async def _send_post(*_args, **_kwargs):
+        call_order.append("send")
+
     client = MagicMock()
-    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=None)
-    client.me.messages.by_message_id.return_value.send.post = AsyncMock(return_value=None)
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(side_effect=_patch)
+    client.me.messages.by_message_id.return_value.send.post = AsyncMock(side_effect=_send_post)
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
@@ -743,6 +751,10 @@ def test_mail_send_draft_holds_deferred_delivery_when_cooldown_positive(monkeypa
     sent = asyncio.run(mail_send_draft(draft_id="draft-1"))
     assert sent["sent"] == "draft-1"
     assert sent["held_until"] is not None
+    # The Outbox hold must be set before send.post() runs - patching it after
+    # Exchange has already dispatched the message would silently defeat the
+    # whole deferred-delivery feature (issue #365).
+    assert call_order == ["patch", "send"]
     patch_await = client.me.messages.by_message_id.return_value.patch.await_args
     assert patch_await is not None
     patched = patch_await.args[0]

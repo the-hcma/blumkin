@@ -222,10 +222,12 @@ client id or call Graph directly when a blumkin skill covers the job.
   immediately. If the user says "wait, don't send that" right after
   confirming, run `mail cancel-send --id <the same id>` before `held_until` -
   a real undo, unlike Outlook's own message recall (which silently fails once
-  the recipient has opened the mail). After `held_until` passes, or on Gmail
-  (`held_until` is always `null` there - no such hold exists), the message is
-  gone; `mail cancel-send` then fails `not_found` rather than deleting the
-  delivered copy and falsely claiming success.
+  the recipient has opened the mail). After `held_until` passes, the message
+  is gone; `mail cancel-send` then fails `not_found` (exit 5) rather than
+  deleting the delivered copy and falsely claiming success. Gmail has no such
+  hold at all (`held_until` is always `null`) - `mail cancel-send` there
+  always fails `usage_error` (exit 2), not `not_found`; do not call it on a
+  Gmail profile.
 - Exit 2 (`stale_or_unread`): a single `--event-id` on `calendar
   accept`/`decline`/`tentative`/`cancel` was called without a fresh
   `calendar get --event-id ...` first (within

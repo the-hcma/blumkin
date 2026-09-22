@@ -293,10 +293,11 @@ original's attachments.
     time. `blumkin mail cancel-send --id '<same-id>'` (no `--yes` - it stops a
     send, the opposite of a notification) is a real undo before then, unlike
     Outlook's own message recall, which silently fails once the recipient has
-    opened the message. After `held_until` passes it fails `not_found` - there
-    is no reliable way to un-deliver a message once Exchange has sent it. Gmail
-    has no such hold (`held_until` is always `null`); its whole safety net is
-    the cooldown before this call.
+    opened the message. After `held_until` passes it fails `not_found` (exit 5)
+    - there is no reliable way to un-deliver a message once Exchange has sent
+    it. Gmail has no such hold at all (`held_until` is always `null`); calling
+    `mail cancel-send` there always fails `usage_error` (exit 2), not
+    `not_found` - the confirm cooldown before this call is its whole safety net.
   - `blumkin chat draft --with "Name" --text "…"` (or `--chat-id` if ambiguous) - composes
     only, resolving the target now; no one is notified. `blumkin chat send --draft-id
     '<draft-id>' --yes` sends it. Like `mail send-draft`, `chat send` enforces the
