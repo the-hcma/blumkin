@@ -60,6 +60,14 @@ from blumkin.config import BlumkinConfig
 # compose_state.py's _MAX_ENTRY_AGE_SECONDS reasoning).
 _MAX_ENTRY_AGE_SECONDS = 24 * 60 * 60
 
+# A read_at just barely in the future (NTP correction, VM resume, DST-adjacent
+# clock skew between the calendar.get and the RSVP) is tolerated as "now" -
+# the entry is neither pruned nor treated as more-than-fresh. A read_at
+# further in the future than this is treated as unprovable/corrupt data and
+# pruned, so the gate still fails closed rather than trusting an arbitrary
+# future timestamp as evidence of a read that hasn't happened yet.
+_CLOCK_SKEW_TOLERANCE_SECONDS = 5
+
 
 def clear_read(config: BlumkinConfig, event_id: str, *, calendar: str | None = None) -> None:
     """Drop the recorded read timestamp for ``event_id`` (e.g. after it is cancelled)."""
@@ -119,7 +127,10 @@ def _entry_elapsed(entry: dict[str, Any] | None) -> float | None:
         return None
     try:
         read_at = datetime.fromisoformat(raw)
-        return (datetime.now(UTC) - read_at).total_seconds()
+        # Clamp a tiny negative elapsed (within _CLOCK_SKEW_TOLERANCE_SECONDS,
+        # already validated by _load's prune) to 0 rather than reporting a
+        # read as "before it happened".
+        return max((datetime.now(UTC) - read_at).total_seconds(), 0.0)
     except ValueError, TypeError:
         # A naive (tz-less) timestamp parses fine but cannot be subtracted from
         # an aware ``now()`` - treat it the same as any other unprovable value.
@@ -169,7 +180,7 @@ def _load(config: BlumkinConfig) -> dict[str, dict[str, Any]]:
             age = (cutoff - datetime.fromisoformat(read_at)).total_seconds()
         except ValueError, TypeError:
             continue
-        if 0 <= age <= max_age:
+        if -_CLOCK_SKEW_TOLERANCE_SECONDS <= age <= max_age:
             fresh[key] = entry
     return fresh
 
