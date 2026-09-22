@@ -910,14 +910,18 @@ def test_calendar_update_allowed_once_cooldown_elapses(tmp_path, monkeypatch) ->
 
 
 def test_calendar_update_allowed_when_never_composed_fails_open(tmp_path, monkeypatch) -> None:
-    """Editing a pre-existing event (never `calendar.create`d this session) has no
-    compose record at all - the gate must fail open rather than block forever on
-    unprovable state, same as everywhere else this gate is used."""
+    """Adding attendees to a pre-existing event (never `calendar.create`d this
+    session) has no compose record at all - the gate must fail open rather than
+    block forever on unprovable state, same as everywhere else this gate is
+    used. `with` must be present so this actually exercises the
+    seconds_since_composed lookup, not the `_COOLDOWN_GATE_REQUIRES_ARG`
+    early-return (see test_calendar_update_without_attendees_is_never_gated for
+    that branch)."""
     cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
     prov = _provider("calendar_update")
     _run(
         "calendar.update",
-        {"event_id": "some-old-event", "location": "Room 7", "yes": True},
+        {"event_id": "some-old-event", "with": ["sam@example.com"], "yes": True},
         config=cfg,
         provider=prov,
     )
