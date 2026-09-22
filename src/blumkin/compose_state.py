@@ -32,12 +32,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from blumkin.config import BlumkinConfig
-
 if sys.platform == "win32":
     import msvcrt
 else:
     import fcntl
+
+from blumkin.config import BlumkinConfig
 
 # Floor for how long entries are kept - the effective prune window is
 # max(this, preferences.confirm_cooldown_seconds), so a configured cooldown
@@ -107,6 +107,13 @@ def _load(config: BlumkinConfig) -> dict[str, str]:
     return fresh
 
 
+def _lock(lock_file: Any) -> None:
+    if sys.platform == "win32":
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+
+
 def _locked_update(config: BlumkinConfig, mutate: Callable[[dict[str, str]], None]) -> None:
     """Run one load-mutate-save transaction under a cross-process advisory lock.
 
@@ -128,13 +135,6 @@ def _locked_update(config: BlumkinConfig, mutate: Callable[[dict[str, str]], Non
             _save(config, entries)
         finally:
             _unlock(lock_file)
-
-
-def _lock(lock_file: Any) -> None:
-    if sys.platform == "win32":
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-    else:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
 
 
 def _now_iso() -> str:
