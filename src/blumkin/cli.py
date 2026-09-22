@@ -170,6 +170,11 @@ _DEFAULT_HINTS: dict[str, str] = {
         "Raise graph_timeout_seconds in config.toml, kill any stuck blumkin processes "
         "(`pkill -f blumkin`), then run `blumkin auth refresh` if the access token expired."
     ),
+    "too_soon": (
+        "Do not retry immediately. Show the user the exact composed content and wait for "
+        "their explicit confirmation before calling this again - the error reports how "
+        "many seconds remain (`retry_after_seconds` in --json output)."
+    ),
     "transient_error": (
         "The auth provider hit a transient network or server error - this is not a bad "
         "grant. Wait a moment and retry the same command."
@@ -329,6 +334,8 @@ def _emit_error(
     message: str,
     as_json: bool,
     hint: str | None = None,
+    agent_instructions: str | None = None,
+    retry_after_seconds: float | None = None,
 ) -> None:
     """`emit_error` that falls back to `_DEFAULT_HINTS[error]` when no hint is given."""
     emit_error(
@@ -336,6 +343,8 @@ def _emit_error(
         message=message,
         as_json=as_json,
         hint=hint or _DEFAULT_HINTS.get(error),
+        agent_instructions=agent_instructions,
+        retry_after_seconds=retry_after_seconds,
     )
 
 
@@ -664,7 +673,14 @@ def _refresh_signature_probe(config: BlumkinConfig) -> None:
 def _fail(exc: BaseException, *, as_json: bool) -> NoReturn:
     """Classify any exception and turn it into the documented envelope + exit code."""
     info: ErrorInfo = classify_exception(exc)
-    _emit_error(error=info.slug, message=info.message, as_json=as_json, hint=info.hint)
+    _emit_error(
+        error=info.slug,
+        message=info.message,
+        as_json=as_json,
+        hint=info.hint,
+        agent_instructions=info.agent_instructions,
+        retry_after_seconds=info.retry_after_seconds,
+    )
     raise SystemExit(info.exit_code) from exc
 
 

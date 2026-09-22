@@ -15,16 +15,24 @@ def emit_error(
     message: str,
     as_json: bool,
     hint: str | None = None,
+    agent_instructions: str | None = None,
+    retry_after_seconds: float | None = None,
 ) -> None:
     if as_json:
         payload: dict[str, Any] = {"error": error, "message": message, "ok": False}
         if hint:
             payload["hint"] = hint
+        if agent_instructions:
+            payload["agent_instructions"] = agent_instructions
+        if retry_after_seconds is not None:
+            payload["retry_after_seconds"] = retry_after_seconds
         print(json.dumps(payload, sort_keys=True), file=sys.stderr)
     else:
         print(message, file=sys.stderr)
         if hint:
             print(hint, file=sys.stderr)
+        if agent_instructions:
+            print(agent_instructions, file=sys.stderr)
 
 
 def emit_json(payload: Any) -> None:

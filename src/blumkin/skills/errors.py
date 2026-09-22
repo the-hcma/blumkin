@@ -70,6 +70,9 @@ class ErrorInfo:
     exit_code: int
     message: str
     hint: str | None = None
+    # Only set on a `too_soon` cooldown rejection (issue #365).
+    agent_instructions: str | None = None
+    retry_after_seconds: float | None = None
 
 
 class ConsentRequiredError(ValueError):
@@ -78,6 +81,27 @@ class ConsentRequiredError(ValueError):
     def __init__(self, message: str, *, hint: str | None = None) -> None:
         super().__init__(message)
         self.hint = hint
+
+
+class EmitCooldownError(ValueError):
+    """An `emit` skill was called before its composed artifact's cooldown elapsed.
+
+    See ``blumkin.compose_state`` and issue #365: this is the code-enforced half
+    of "always confirm with the user before a notifying send" - a bare
+    ``--yes`` / ``confirm: true`` proves nothing about whether the agent
+    actually showed the human what is about to go out.
+    """
+
+    def __init__(self, message: str, *, retry_after_seconds: float) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+        self.agent_instructions = (
+            "Do not retry automatically. Show the user the exact composed content "
+            "(recipients/subject/body or message text) now, in this turn, and wait "
+            "for their explicit go-ahead before calling emit again. Retrying "
+            "immediately or silently without a real user confirmation is a policy "
+            "violation."
+        )
 
 
 class ScopeAddonDisabledError(ValueError):
@@ -106,6 +130,14 @@ def graph_http_status(exc: BaseException) -> int | None:
 def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a flat ladder
     """Map any blumkin exception to its ``(slug, exit_code, message, hint)``."""
     # 0. typed gate exceptions from the dispatch layer
+    if isinstance(exc, EmitCooldownError):
+        return ErrorInfo(
+            "too_soon",
+            EXIT_USAGE,
+            str(exc),
+            agent_instructions=exc.agent_instructions,
+            retry_after_seconds=exc.retry_after_seconds,
+        )
     if isinstance(exc, ConsentRequiredError | ScopeAddonDisabledError):
         return ErrorInfo("usage_error", EXIT_USAGE, str(exc), exc.hint)
 

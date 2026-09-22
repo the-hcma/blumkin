@@ -15,8 +15,10 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from blumkin.compose_state import clear_composed, record_composed, seconds_since_composed
 from blumkin.config import BlumkinConfig
 from blumkin.contacts import people_context
+from blumkin.output import emit_warning
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills import (
@@ -31,8 +33,19 @@ from blumkin.skills import (
 from blumkin.skills.calendar import parse_local_datetime
 from blumkin.skills.calendar_writes import parse_duration, parse_recurrence
 from blumkin.skills.docs_read import docs_read
-from blumkin.skills.errors import ConsentRequiredError, ScopeAddonDisabledError
+from blumkin.skills.errors import ConsentRequiredError, EmitCooldownError, ScopeAddonDisabledError
 from blumkin.tasks import tasks_list, tasks_show
+
+# Skills that retire a draft id for good - its compose-cooldown record is no
+# longer meaningful once the draft is sent or deleted.
+_COMPOSE_CLEAR_SKILLS: frozenset[str] = frozenset({"mail.delete-draft", "mail.send-draft"})
+
+# Skills whose payload carries a fresh/edited ``{"draft": {"id": ...}}`` - each
+# call (re)stamps that draft's compose timestamp, so an edit right before send
+# restarts the cooldown rather than grandfathering in the original compose time.
+_COMPOSE_RECORD_SKILLS: frozenset[str] = frozenset(
+    {"mail.draft", "mail.forward", "mail.reply", "mail.update-draft"}
+)
 
 # CONFIG_SKILLS handlers: async, take the resolved kwargs plus `config`, touch no
 # provider. Keyed by skill id.
@@ -46,6 +59,13 @@ _CONFIG_HANDLERS: dict[str, Callable[..., Any]] = {
 # Either key satisfies the notify gate. The MCP server maps its synthetic
 # ``confirm`` boolean onto ``yes`` before calling run_skill.
 _CONSENT_KEYS = ("yes", "confirm")
+
+# `emit` skills gated on the confirm cooldown (issue #365): skill id -> the raw
+# argument key holding the id of the artifact that must have sat composed for
+# at least ``preferences.confirm_cooldown_seconds``. Skills that produce or edit
+# such an artifact stamp/clear it via ``_COMPOSE_RECORD_SKILLS`` /
+# ``_COMPOSE_CLEAR_SKILLS`` above.
+_COOLDOWN_GATED_SKILLS: dict[str, str] = {"mail.send-draft": "id"}
 
 _DOCS_SCOPES_MESSAGE = (
     "docs create / docs update need the Files.ReadWrite Graph scope, which is off. "
@@ -102,12 +122,66 @@ _ITEMS_SKILLS: frozenset[str] = frozenset(
 _BODY_PREVIEW_TRUNCATE_LEN = 150
 
 
+def _apply_compose_state(
+    skill_id: str, arguments: dict[str, Any], payload: dict[str, Any], config: BlumkinConfig
+) -> None:
+    """Stamp/clear the compose-cooldown record after a successful call (issue #365).
+
+    Best-effort: the provider call already succeeded by the time this runs, so a
+    filesystem error persisting the record must never turn a real success (e.g. a
+    sent email) into a reported failure - that would invite a retry that sends it
+    twice. Log a warning and move on instead of letting ``OSError`` propagate.
+    """
+    try:
+        if skill_id in _COMPOSE_RECORD_SKILLS:
+            draft_id = (payload.get("draft") or {}).get("id")
+            if isinstance(draft_id, str) and draft_id:
+                record_composed(config, draft_id)
+        elif skill_id in _COMPOSE_CLEAR_SKILLS:
+            draft_id = arguments.get("id")
+            if isinstance(draft_id, str) and draft_id:
+                clear_composed(config, draft_id)
+    except OSError as exc:
+        emit_warning(
+            f"{skill_id} succeeded, but the confirm-cooldown record was not saved "
+            f"({type(exc).__name__})"
+        )
+
+
 def _argkey(name: str) -> str:
     return name.lstrip("-").replace("-", "_")
 
 
 def _consent_given(arguments: dict[str, Any]) -> bool:
     return any(bool(arguments.get(key)) for key in _CONSENT_KEYS)
+
+
+def _cooldown_gate(skill_id: str, arguments: dict[str, Any], config: BlumkinConfig) -> None:
+    """Refuse an `emit` skill until its composed artifact has cleared the confirm cooldown.
+
+    A missing/unrecorded compose timestamp is treated as unknown, not a
+    violation - it fails open rather than blocking on state blumkin cannot
+    prove (see ``blumkin.compose_state``).
+    """
+    arg_key = _COOLDOWN_GATED_SKILLS.get(skill_id)
+    if arg_key is None:
+        return
+    cooldown = config.preferences.confirm_cooldown_seconds
+    if cooldown <= 0:
+        return
+    artifact_id = arguments.get(arg_key)
+    if not isinstance(artifact_id, str) or not artifact_id.strip():
+        return
+    elapsed = seconds_since_composed(config, artifact_id.strip())
+    if elapsed is None or elapsed >= cooldown:
+        return
+    remaining = cooldown - elapsed
+    raise EmitCooldownError(
+        f"{skill_id} was composed {elapsed:.0f}s ago; the confirm cooldown is {cooldown}s "
+        f"({remaining:.0f}s remaining). This is not a signal to just wait and retry - "
+        "confirm with the user first.",
+        retry_after_seconds=remaining,
+    )
 
 
 def _tristate(arguments: dict[str, Any], on_key: str, off_key: str) -> bool | None:
@@ -313,6 +387,9 @@ def _run_gates(
                 "--yes is required for this command", hint=_YES_HINT_TRANSCRIPTION
             )
 
+    # confirm cooldown (issue #365) - only reachable once --yes/confirm passed above.
+    _cooldown_gate(skill_id, arguments, config)
+
 
 # --------------------------------------------------------------------------- entry point
 
@@ -356,6 +433,7 @@ async def run_skill(
     prov = provider if provider is not None else get_provider(config)
     method = getattr(prov, skill_method_name(skill_id))
     payload = await method(**kwargs)
+    _apply_compose_state(skill_id, arguments, payload, config)
     return _postprocess_items(skill_id, payload, arguments)
 
 

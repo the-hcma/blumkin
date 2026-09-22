@@ -473,6 +473,7 @@ _ERROR_VALUES = {
     "not_found",
     "secret_write_failed",
     "timeout",
+    "too_soon",
     "transient_error",
     "upgrade_failed",
     "usage_error",

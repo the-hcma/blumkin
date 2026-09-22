@@ -110,6 +110,27 @@ def test_mail_attachments_missing_id_hint(tmp_path, monkeypatch) -> None:
     assert "mail list" in payload["hint"]
 
 
+def test_mail_send_draft_too_soon_hint_and_agent_instructions(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
+        'client_id = "00000000-0000-0000-0000-000000000001"\n'
+        'tenant_id = "example.onmicrosoft.com"\ndefault_tz = "UTC"\n'
+    )
+    from blumkin.config import load_config
+
+    cfg = load_config()
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    from datetime import UTC, datetime
+
+    cfg.compose_state_path.write_text(json.dumps({"d1": datetime.now(UTC).isoformat()}))
+    payload = _json_err(["mail", "send-draft", "--id", "d1", "--yes", "--json"])
+    assert payload["error"] == "too_soon"
+    assert payload["retry_after_seconds"] > 0
+    assert "confirm" in payload["agent_instructions"].lower()
+    assert "confirm" in payload["hint"].lower()
+
+
 def test_not_found_hint_suggests_listing(monkeypatch) -> None:
     from blumkin.skills.mail import MailMessageNotFoundError
 
