@@ -74,7 +74,14 @@ _CONSENT_KEYS = ("yes", "confirm")
 # at least ``preferences.confirm_cooldown_seconds``. Skills that produce or edit
 # such an artifact stamp/clear it via ``_COMPOSE_RECORD_SKILLS`` /
 # ``_COMPOSE_CLEAR_SKILLS`` above (or, for chat, their own `CONFIG_SKILLS` handler).
+# ``calendar.update`` is gated the same way: ``calendar.create`` stamps the new
+# event's id directly (mirroring chat's compose skills, since its payload shape
+# is ``{"event": {"id": ...}}``, not the generic ``{"draft": {"id": ...}}``), so
+# an update landing right after create (typically the one that first adds
+# attendees) must clear the cooldown first. Editing a pre-existing event (never
+# composed this session) has no record and fails open, same as everywhere else.
 _COOLDOWN_GATED_SKILLS: dict[str, str] = {
+    "calendar.update": "event_id",
     "chat.edit": "draft_id",
     "chat.send": "draft_id",
     "mail.send-draft": "id",
@@ -283,9 +290,6 @@ def _coerce(value: Any, *, arg: dict[str, Any], tz_name: str | None, config: Blu
 
 
 def _pp_calendar_create(kwargs: dict[str, Any], raw: dict[str, Any], config: BlumkinConfig) -> None:
-    # `--with` is optional in the catalog but `calendar_create(with_emails)` has no
-    # default; the CLI always passes `[]` for a solo hold, so match that over MCP.
-    kwargs.setdefault("with_emails", [])
     repeat = raw.get("repeat")
     count, days, until = raw.get("count"), raw.get("days"), raw.get("until")
     raw_interval = raw.get("interval")

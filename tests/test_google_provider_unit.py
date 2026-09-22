@@ -213,7 +213,6 @@ def test_calendar_create_cli_wires_remind_email(tmp_path: Path) -> None:
         "2026-09-28T10:00",
         "--tz",
         "America/New_York",
-        "--yes",
         "--json",
     ]
     with (
@@ -235,7 +234,7 @@ def test_calendar_create_cli_wires_remind_email(tmp_path: Path) -> None:
 
 def test_calendar_create_cli_wires_new_fields(tmp_path: Path) -> None:
     """CliRunner -> calendar_create_cmd -> provider: --location / --body-file /
-    --optional / --all-day all reach the insert body with the right names."""
+    --all-day all reach the insert body with the right names."""
     cfg = _cfg(tmp_path)
     agenda = tmp_path / "agenda.txt"
     agenda.write_text("Agenda: API shape\n")
@@ -267,11 +266,8 @@ def test_calendar_create_cli_wires_new_fields(tmp_path: Path) -> None:
                 "Room 4",
                 "--body-file",
                 str(agenda),
-                "--optional",
-                "dana@example.com",
                 "--tz",
                 "America/New_York",
-                "--yes",
                 "--json",
             ],
         )
@@ -280,7 +276,7 @@ def test_calendar_create_cli_wires_new_fields(tmp_path: Path) -> None:
     assert body["start"] == {"date": "2026-12-24"}
     assert body["location"] == "Room 4"
     assert body["description"] == "Agenda: API shape\n"
-    assert body["attendees"] == [{"email": "dana@example.com", "optional": True}]
+    assert "attendees" not in body
 
 
 def test_calendar_create_google_403_maps_to_missing_scope(tmp_path: Path) -> None:
@@ -315,7 +311,6 @@ def test_calendar_create_google_403_maps_to_missing_scope(tmp_path: Path) -> Non
                 "2026-09-28T10:00",
                 "--tz",
                 "America/New_York",
-                "--yes",
                 "--json",
             ],
         )
@@ -342,7 +337,6 @@ def test_calendar_create_inserts_solo_event_with_email_reminder(tmp_path: Path) 
         payload = asyncio.run(
             provider.calendar_create(
                 subject="Review renewal",
-                with_emails=[],
                 start_raw="2026-09-28T10:00",
                 remind_email="1d",
                 tz_name="America/New_York",
@@ -365,6 +359,36 @@ def test_calendar_create_inserts_solo_event_with_email_reminder(tmp_path: Path) 
     }
 
 
+def test_calendar_create_records_a_compose_timestamp(tmp_path: Path) -> None:
+    """issue #365 piece 2: a successful create must stamp the new event's id so
+    `calendar.update`'s cooldown gate (dispatch's `_COOLDOWN_GATED_SKILLS`) can
+    find it if attendees are added right after."""
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.events.return_value.insert.return_value.execute.return_value = {
+        "id": "evt-new",
+        "summary": "Review renewal",
+        "start": {"dateTime": "2026-09-28T10:00:00-04:00"},
+        "end": {"dateTime": "2026-09-28T10:30:00-04:00"},
+        "organizer": {"email": "me@example.com", "self": True},
+    }
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+        patch("blumkin.providers.google.calendar.record_composed") as record_composed,
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        asyncio.run(
+            provider.calendar_create(
+                subject="Review renewal",
+                start_raw="2026-09-28T10:00",
+                tz_name="America/New_York",
+            )
+        )
+    record_composed.assert_called_once()
+    assert record_composed.call_args.args[1] == "evt-new"
+
+
 def test_calendar_create_keeps_length_across_dst_fallback(tmp_path: Path) -> None:
     """A one-hour event starting inside the Nov 2026 fall-back stays one real hour."""
     cfg = _cfg(tmp_path)
@@ -384,7 +408,6 @@ def test_calendar_create_keeps_length_across_dst_fallback(tmp_path: Path) -> Non
         asyncio.run(
             provider.calendar_create(
                 subject="Overlap",
-                with_emails=[],
                 start_raw="2026-11-01T01:30",
                 duration="1h",
                 tz_name="America/New_York",
@@ -394,35 +417,6 @@ def test_calendar_create_keeps_length_across_dst_fallback(tmp_path: Path) -> Non
     # 01:30 EDT + 1h == 01:30 EST (one elapsed hour), not 02:30 wall time.
     assert body["start"]["dateTime"] == "2026-11-01T01:30:00-04:00"
     assert body["end"]["dateTime"] == "2026-11-01T01:30:00-05:00"
-
-
-def test_calendar_create_with_attendees_sends_updates(tmp_path: Path) -> None:
-    cfg = _cfg(tmp_path)
-    service = MagicMock()
-    service.events.return_value.insert.return_value.execute.return_value = {
-        "id": "evt-2",
-        "summary": "Sync",
-        "start": {"dateTime": "2026-09-28T14:00:00-04:00"},
-        "end": {"dateTime": "2026-09-28T14:30:00-04:00"},
-        "organizer": {"email": "me@example.com", "self": True},
-    }
-    with (
-        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
-        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
-    ):
-        provider = GoogleWorkspaceProvider(cfg)
-        asyncio.run(
-            provider.calendar_create(
-                subject="Sync",
-                with_emails=["peer@example.com"],
-                start_raw="2026-09-28T14:00",
-                tz_name="America/New_York",
-            )
-        )
-    kwargs = service.events.return_value.insert.call_args.kwargs
-    assert kwargs["sendUpdates"] == "all"
-    assert kwargs["body"]["attendees"] == [{"email": "peer@example.com"}]
-    assert "reminders" not in kwargs["body"]
 
 
 def test_calendar_suggest_rejects_treat_tentative_free(tmp_path: Path) -> None:

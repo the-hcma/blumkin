@@ -113,7 +113,6 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("mail.list", "--tz"): None,
     ("mail.search", "--tz"): None,
     # --with: attendee emails vs a display name to resolve.
-    ("calendar.create", "--with"): "with_emails",
     ("calendar.update", "--with"): "with_emails",
     ("calendar.freebusy", "--with"): "with_emails",
     ("calendar.suggest", "--with"): "with_emails",
@@ -125,7 +124,6 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     # calendar create/update take the start/end strings raw (the skill parses them);
     # calendar view folds --from/--to into a [start, end) datetime pair.
     ("calendar.create", "--start"): "start_raw",
-    ("calendar.create", "--optional"): "optional_emails",
     ("calendar.update", "--start"): "start_raw",
     ("calendar.update", "--end"): "end_raw",
     ("calendar.view", "--from"): "start",
@@ -217,8 +215,6 @@ _ARG_COERCE: dict[tuple[str, str], str] = {
     ("mail.search", "--until"): "local_datetime",
     ("mail.auto-reply", "--start"): "date",
     ("mail.auto-reply", "--until"): "date",
-    ("calendar.create", "--with"): "list",
-    ("calendar.create", "--optional"): "list",
     ("calendar.update", "--with"): "list",
     ("calendar.freebusy", "--with"): "list",
     ("calendar.suggest", "--with"): "list",
@@ -324,15 +320,16 @@ SKILLS: list[SkillSpec] = [
         id="calendar.create",
         cli=["blumkin", "calendar", "create"],
         summary=(
-            "Create a calendar event (Teams online meeting by default; "
-            "--no-teams for an offline hold)"
+            "Create a calendar event with no attendees (Teams online meeting by default; "
+            "--no-teams for an offline hold). Add attendees afterward with `calendar update "
+            "--with` (issue #365: create/update is a compose/emit split, same as mail.draft "
+            "/ mail.send-draft)"
         ),
         mutates=True,
-        notifies_others=True,
+        notifies_others=False,
         scopes=["Calendars.ReadWrite"],
         args=[
             {"name": "--subject", "required": True, "type": "string"},
-            {"name": "--with", "required": False, "type": "email", "multiple": True},
             {"name": "--start", "required": True, "type": "datetime"},
             {"name": "--duration", "required": False, "type": "duration"},
             {
@@ -348,7 +345,6 @@ SKILLS: list[SkillSpec] = [
                 "type": "string",
                 "note": "name or id; default primary",
             },
-            {"name": "--optional", "required": False, "type": "email", "multiple": True},
             {"name": "--body", "required": False, "type": "string"},
             {"name": "--body-file", "required": False, "type": "path"},
             {
@@ -402,7 +398,6 @@ SKILLS: list[SkillSpec] = [
                 "note": "weekly only: comma list like mon,tue,wed,thu,fri",
             },
             {"name": "--tz", "required": False, "type": "iana_tz"},
-            {"name": "--yes", "required": True, "type": "flag"},
         ],
     ),
     SkillSpec(

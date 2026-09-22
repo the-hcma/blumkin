@@ -1,4 +1,4 @@
-"""Hermetic coverage for ``calendar create`` body/location/all-day/optional (issue #175)."""
+"""Hermetic coverage for ``calendar create`` body/location/all-day fields (issue #175)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from click.testing import CliRunner
-from msgraph.generated.models.attendee_type import AttendeeType
 from msgraph.generated.models.body_type import BodyType
 
 from blumkin.cli import main
@@ -78,16 +77,17 @@ def _graph_client(monkeypatch, *, created: SimpleNamespace | None = None) -> Mag
         "blumkin.skills.calendar_writes.load_config",
         lambda: SimpleNamespace(default_tz=_NY, client_id="x"),
     )
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.record_composed", lambda *_args, **_kwargs: None
+    )
     return client
 
 
-def test_graph_create_body_location_optional(monkeypatch) -> None:
+def test_graph_create_body_location(monkeypatch) -> None:
     client = _graph_client(monkeypatch)
     asyncio.run(
         calendar_create(
             subject="Design review",
-            with_emails=["sam@example.com"],
-            optional_emails=["dana@example.com"],
             start_raw="2026-09-22T09:00",
             duration="1h",
             location="Room 4",
@@ -101,11 +101,7 @@ def test_graph_create_body_location_optional(monkeypatch) -> None:
     assert posted.body.content == "Agenda: API"
     assert posted.body.content_type == BodyType.Html
     assert posted.location.display_name == "Room 4"
-    by_addr = {a.email_address.address: a.type for a in posted.attendees}
-    assert by_addr == {
-        "sam@example.com": AttendeeType.Required,
-        "dana@example.com": AttendeeType.Optional,
-    }
+    assert posted.attendees is None
 
 
 def test_graph_create_all_day(monkeypatch) -> None:
@@ -113,7 +109,6 @@ def test_graph_create_all_day(monkeypatch) -> None:
     asyncio.run(
         calendar_create(
             subject="OOO",
-            with_emails=[],
             start_raw="2026-12-24",
             all_day=True,
             duration="3d",
@@ -137,9 +132,7 @@ def test_graph_create_all_day(monkeypatch) -> None:
 def test_graph_create_all_day_rejects(monkeypatch, kwargs: dict, match: str) -> None:
     _graph_client(monkeypatch)
     with pytest.raises(ValueError, match=match):
-        asyncio.run(
-            calendar_create(subject="x", with_emails=[], teams=False, tz_name=_NY, **kwargs)
-        )
+        asyncio.run(calendar_create(subject="x", teams=False, tz_name=_NY, **kwargs))
 
 
 @pytest.mark.parametrize("start", ["2026-12-24", "2026-12-24Z", " 2026-12-24 "])
@@ -149,7 +142,6 @@ def test_graph_create_rejects_date_only_start_without_all_day(monkeypatch, start
         asyncio.run(
             calendar_create(
                 subject="OOO",
-                with_emails=[],
                 start_raw=start,
                 teams=False,
                 tz_name=_NY,
@@ -164,7 +156,6 @@ def test_graph_create_all_day_never_attaches_teams(monkeypatch) -> None:
     asyncio.run(
         calendar_create(
             subject="OOO",
-            with_emails=[],
             start_raw="2026-12-24",
             all_day=True,
             tz_name=_NY,
@@ -194,7 +185,6 @@ def test_graph_create_all_day_human_echo_says_all_day(monkeypatch) -> None:
     result = asyncio.run(
         calendar_create(
             subject="OOO",
-            with_emails=[],
             start_raw="2026-12-24",
             all_day=True,
             duration="3d",
@@ -230,7 +220,6 @@ def test_graph_create_all_day_series_request_shape(monkeypatch) -> None:
     asyncio.run(
         calendar_create(
             subject="Weekday hold",
-            with_emails=[],
             start_raw="2026-12-24",
             all_day=True,
             recurrence=Recurrence(freq="daily", until=date(2027, 1, 2)),
@@ -285,8 +274,6 @@ def test_google_create_fields(tmp_path: Path) -> None:
         asyncio.run(
             GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_create(
                 subject="Design review",
-                with_emails=["sam@example.com"],
-                optional_emails=["dana@example.com"],
                 start_raw="2026-09-22T09:00",
                 duration="1h",
                 location="Room 4",
@@ -296,10 +283,7 @@ def test_google_create_fields(tmp_path: Path) -> None:
     body = service.events.return_value.insert.call_args.kwargs["body"]
     assert body["description"] == "Agenda: API"
     assert body["location"] == "Room 4"
-    assert body["attendees"] == [
-        {"email": "sam@example.com"},
-        {"email": "dana@example.com", "optional": True},
-    ]
+    assert "attendees" not in body
 
 
 def test_google_create_all_day(tmp_path: Path) -> None:
@@ -318,7 +302,6 @@ def test_google_create_all_day(tmp_path: Path) -> None:
         result = asyncio.run(
             GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_create(
                 subject="OOO",
-                with_emails=[],
                 start_raw="2026-12-24",
                 all_day=True,
                 duration="3d",
@@ -333,30 +316,6 @@ def test_google_create_all_day(tmp_path: Path) -> None:
     assert result["event"]["is_all_day"] is True
     echo = format_create_human(result)[0]
     assert "all day" in echo and "00:00" not in echo
-
-
-def test_google_create_optional_only_still_notifies(tmp_path: Path) -> None:
-    service = MagicMock()
-    service.events.return_value.insert.return_value.execute.return_value = {
-        "id": "g",
-        "summary": "x",
-        "start": {"dateTime": "2026-09-22T09:00:00-04:00"},
-        "end": {"dateTime": "2026-09-22T10:00:00-04:00"},
-    }
-    with patch.multiple(
-        _GOOGLE_CAL,
-        get_credentials=MagicMock(return_value=MagicMock()),
-        build_api_service=MagicMock(return_value=service),
-    ):
-        asyncio.run(
-            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_create(
-                subject="x",
-                with_emails=[],
-                optional_emails=["dana@example.com"],
-                start_raw="2026-09-22T09:00",
-            )
-        )
-    assert service.events.return_value.insert.call_args.kwargs["sendUpdates"] == "all"
 
 
 def test_google_create_all_day_recurrence_until_is_a_bare_date(tmp_path: Path) -> None:
@@ -375,7 +334,6 @@ def test_google_create_all_day_recurrence_until_is_a_bare_date(tmp_path: Path) -
         asyncio.run(
             GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_create(
                 subject="OOO",
-                with_emails=[],
                 start_raw="2026-12-24",
                 all_day=True,
                 recurrence=Recurrence(freq="daily", until=date(2027, 1, 2)),
@@ -395,7 +353,6 @@ def test_google_create_rejects_date_only_start_without_all_day(tmp_path: Path) -
             asyncio.run(
                 GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_create(
                     subject="OOO",
-                    with_emails=[],
                     start_raw="2026-12-24",
                 )
             )
@@ -406,7 +363,7 @@ def test_google_create_rejects_date_only_start_without_all_day(tmp_path: Path) -
 
 def test_cli_create_help_lists_new_flags() -> None:
     out = CliRunner().invoke(main, ["calendar", "create", "--help"]).output
-    for flag in ("--all-day", "--location", "--optional", "--body", "--body-file"):
+    for flag in ("--all-day", "--location", "--body", "--body-file", "--no-teams"):
         assert flag in out
 
 
@@ -425,7 +382,6 @@ def test_cli_all_day_with_time_start_is_usage_error(monkeypatch) -> None:
             "--start",
             "2026-12-24T09:00",
             "--all-day",
-            "--yes",
             "--json",
         ],
     )

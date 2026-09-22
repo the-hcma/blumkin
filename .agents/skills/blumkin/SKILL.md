@@ -72,7 +72,8 @@ original's attachments.
      `blumkin calendar freebusy --with email --start … --end … --json`
      Freebusy `--json` items include `timezone` and `working_hours` when Graph returns
      them (from the attendee's mailbox settings via getSchedule — no extra scope).
-     Before `calendar create` with a cross-zone or external attendee, run freebusy first,
+     Before inviting a cross-zone or external attendee via `calendar update --with`,
+     run freebusy first,
      read their `timezone` / `working_hours`, and prefer overlap with *their* business day
      (roughly 09:00-17:00 local) unless the user overrides. Do **not** rewrite `--start` /
      `--end` into the attendee's zone — organizer intent stays explicit; convert mentally
@@ -94,7 +95,8 @@ original's attachments.
         (Graph directory, Microsoft only, needs `wo1162425_scopes`).
      3. **Confirm the concrete recipient(s) with the user** ("draft to Sam —
         sam@example.com?") before you compose or invite.
-     4. Call `mail draft` / `calendar create` with the real address.
+     4. Call `mail draft` with the real address, or `calendar create` then
+        `calendar update --with` the real address to invite them.
    - People (Graph search): `blumkin people resolve --name "Display Name" --json`
      (optional `--email` for reverse / exact filter). Requires
      `wo1162425_scopes` + Graph `People.Read` (on the augmented WO1162425 ask;
@@ -200,19 +202,25 @@ original's attachments.
      skips) like `calendar accept`. `--propose-time <start> [--propose-duration]`
      suggests another slot **on Microsoft only** (fails closed on Google) and
      needs a single `--event-id`.
-   - `blumkin calendar create --subject … --start … --yes`
+   - `blumkin calendar create --subject … --start …`
      (Teams online meeting by default; pass `--no-teams` for an offline hold.
-     `--with email` is optional - omit it for a solo hold that notifies nobody;
-     `--yes` is still required. `--remind-email 30m|1h|1d|1w` adds a reminder:
-     a real email on Google, an Outlook popup on Microsoft.
+     Never takes attendees and never needs `--yes` - it can only ever produce
+     a solo hold. `--remind-email 30m|1h|1d|1w` adds a reminder: a real email
+     on Google, an Outlook popup on Microsoft.
      `--repeat daily|weekly|monthly` makes a recurring series; bound it with
      `--until YYYY-MM-DD` or `--count N` (omit both for an open-ended series),
      `--interval N` widens the gap, and `--days mon,tue,...` restricts a weekly
      pattern (must include the `--start` weekday).
-     `--body`/`--body-file` set an agenda, `--location` is free text,
-     `--optional email` adds an optional attendee, and `--all-day` makes
-     `--start` a date with `--duration` in whole days (no Teams link; a
-     date-only `--start` without `--all-day` is rejected).)
+     `--body`/`--body-file` set an agenda, `--location` is free text, and
+     `--all-day` makes `--start` a date with `--duration` in whole days (no
+     Teams link; a date-only `--start` without `--all-day` is rejected).)
+   - **Compose/emit split (issue #365):** add attendees only with a follow-up
+     `blumkin calendar update --event-id '<id>' --with email [--with email ...] --yes`.
+     That is the only way `calendar` ever notifies anyone, and it is gated on
+     the confirm cooldown against the event's own create time - review the
+     event (subject, time, agenda) before running it, and re-run `calendar get`
+     to double-check first if any doubt remains. Editing a pre-existing event
+     you did not just create in this session is never gated.
    - `blumkin calendar update --event-id '<id>' [--subject …] [--start …]
      [--duration …|--end …] [--location …] [--body …] [--with … (replaces the
      attendee list)] [--teams|--no-teams (attach/remove online meeting)]

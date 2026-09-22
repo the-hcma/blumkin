@@ -427,10 +427,11 @@ def test_graph_create_and_update_target_the_named_calendar(monkeypatch) -> None:
         "blumkin.skills.calendar_writes.load_config",
         lambda: SimpleNamespace(default_tz=_NY, client_id="x"),
     )
+    monkeypatch.setattr(
+        "blumkin.skills.calendar_writes.record_composed", lambda *_args, **_kwargs: None
+    )
     asyncio.run(
-        calendar_create(
-            subject="x", with_emails=[], start_raw="2026-09-22T09:00", calendar="Team", teams=False
-        )
+        calendar_create(subject="x", start_raw="2026-09-22T09:00", calendar="Team", teams=False)
     )
     asyncio.run(calendar_update(event_id="e1", subject="new", calendar="Team"))
     assert client.me.calendars.by_calendar_id.call_args_list[0].args == ("TEAM",)
@@ -460,7 +461,6 @@ def test_google_create_and_cancel_target_the_named_calendar(tmp_path: Path) -> N
         asyncio.run(
             google_calendar.calendar_create(
                 subject="x",
-                with_emails=[],
                 start_raw="2026-09-22T09:00",
                 calendar="Team",
                 config=_google_cfg(tmp_path),

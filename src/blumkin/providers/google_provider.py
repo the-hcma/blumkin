@@ -124,7 +124,6 @@ class GoogleWorkspaceProvider:
         self,
         *,
         subject: str,
-        with_emails: list[str],
         start_raw: str,
         all_day: bool = False,
         body: str | None = None,
@@ -133,7 +132,6 @@ class GoogleWorkspaceProvider:
         calendar: str | None = None,
         duration: str | None = None,
         location: str | None = None,
-        optional_emails: list[str] | None = None,
         recurrence: Recurrence | None = None,
         remind_email: str | None = None,
         teams: bool = True,
@@ -141,7 +139,6 @@ class GoogleWorkspaceProvider:
     ) -> dict[str, Any]:
         return await google_calendar.calendar_create(
             subject=subject,
-            with_emails=with_emails,
             start_raw=start_raw,
             all_day=all_day,
             body=body,
@@ -150,7 +147,6 @@ class GoogleWorkspaceProvider:
             calendar=calendar,
             duration=duration,
             location=location,
-            optional_emails=optional_emails,
             recurrence=recurrence,
             remind_email=remind_email,
             tz_name=tz_name,
