@@ -922,3 +922,21 @@ def test_calendar_update_allowed_when_never_composed_fails_open(tmp_path, monkey
         provider=prov,
     )
     prov.calendar_update.assert_awaited_once()
+
+
+def test_calendar_update_without_attendees_is_never_gated(tmp_path, monkeypatch) -> None:
+    """issue #365 review: the cooldown protects against notifying attendees
+    before the organizer has reviewed the event, not against editing it. A plain
+    edit (subject/time/location/body, no `--with`) to an event created moments
+    ago must proceed immediately - only an update that adds/replaces attendees
+    is gated (see `_COOLDOWN_GATE_REQUIRES_ARG`)."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    record_composed(cfg, "e1")
+    prov = _provider("calendar_update")
+    _run(
+        "calendar.update",
+        {"event_id": "e1", "location": "Room 7", "yes": True},
+        config=cfg,
+        provider=prov,
+    )
+    prov.calendar_update.assert_awaited_once()

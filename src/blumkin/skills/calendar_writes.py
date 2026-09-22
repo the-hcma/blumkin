@@ -41,7 +41,7 @@ from msgraph.generated.users.item.events.item.tentatively_accept.tentatively_acc
 from blumkin.compose_state import record_composed
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
-from blumkin.output import sanitize_terminal
+from blumkin.output import emit_warning, sanitize_terminal
 from blumkin.skills.calendar import (
     CalendarEventNotFoundError,
     _event_to_dict,
@@ -277,7 +277,17 @@ async def calendar_create(
                 "`calendar update` after Graph finishes provisioning."
             )
     if created.id:
-        record_composed(cfg, created.id)
+        # Best-effort, mirroring dispatch._apply_compose_state: the event is
+        # already created, so a filesystem error here must never turn this
+        # real success into a reported failure (issue #365).
+        try:
+            record_composed(cfg, created.id)
+        except OSError as exc:
+            emit_warning(
+                f"calendar.create succeeded, but the confirm-cooldown record was not saved "
+                f"({exc}); a follow-up `calendar update --with ... --yes` on this event will "
+                "not be gated."
+            )
     result: dict[str, Any] = {"event": _event_to_dict(created, tz)}
     if recurrence_echo is not None:
         result["recurrence"] = recurrence_echo

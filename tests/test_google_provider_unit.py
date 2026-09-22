@@ -389,6 +389,40 @@ def test_calendar_create_records_a_compose_timestamp(tmp_path: Path) -> None:
     assert record_composed.call_args.args[1] == "evt-new"
 
 
+def test_calendar_create_survives_compose_record_write_failure(tmp_path: Path, capsys) -> None:
+    """issue #365 review: an OSError persisting the cooldown record must never
+    turn an already-created event into a reported failure (mirrors dispatch's
+    _apply_compose_state guard for mail/chat)."""
+    cfg = _cfg(tmp_path)
+    service = MagicMock()
+    service.events.return_value.insert.return_value.execute.return_value = {
+        "id": "evt-new",
+        "summary": "Review renewal",
+        "start": {"dateTime": "2026-09-28T10:00:00-04:00"},
+        "end": {"dateTime": "2026-09-28T10:30:00-04:00"},
+        "organizer": {"email": "me@example.com", "self": True},
+    }
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+        patch("blumkin.providers.google.calendar.record_composed", _boom),
+    ):
+        provider = GoogleWorkspaceProvider(cfg)
+        result = asyncio.run(
+            provider.calendar_create(
+                subject="Review renewal",
+                start_raw="2026-09-28T10:00",
+                tz_name="America/New_York",
+            )
+        )
+    assert result["event"]["id"] == "evt-new"
+    assert "confirm-cooldown record was not saved" in capsys.readouterr().err
+
+
 def test_calendar_create_keeps_length_across_dst_fallback(tmp_path: Path) -> None:
     """A one-hour event starting inside the Nov 2026 fall-back stays one real hour."""
     cfg = _cfg(tmp_path)

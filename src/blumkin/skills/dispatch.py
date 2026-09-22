@@ -80,11 +80,21 @@ _CONSENT_KEYS = ("yes", "confirm")
 # an update landing right after create (typically the one that first adds
 # attendees) must clear the cooldown first. Editing a pre-existing event (never
 # composed this session) has no record and fails open, same as everywhere else.
+# ``calendar.update`` is further narrowed by ``_COOLDOWN_GATE_REQUIRES_ARG``
+# below: only an update that actually adds/replaces attendees (``--with``) is
+# gated - a plain edit (subject/time/location/body) to a just-created event is
+# not a notification and must not be blocked by this.
 _COOLDOWN_GATED_SKILLS: dict[str, str] = {
     "calendar.update": "event_id",
     "chat.edit": "draft_id",
     "chat.send": "draft_id",
     "mail.send-draft": "id",
+}
+
+# Skill id -> raw argument key that must be present (truthy) for the cooldown
+# gate to apply at all. Skills absent here are always gated once composed.
+_COOLDOWN_GATE_REQUIRES_ARG: dict[str, str] = {
+    "calendar.update": "with",
 }
 
 _DOCS_SCOPES_MESSAGE = (
@@ -185,6 +195,9 @@ def _cooldown_gate(skill_id: str, arguments: dict[str, Any], config: BlumkinConf
     """
     arg_key = _COOLDOWN_GATED_SKILLS.get(skill_id)
     if arg_key is None:
+        return
+    required_arg = _COOLDOWN_GATE_REQUIRES_ARG.get(skill_id)
+    if required_arg is not None and not arguments.get(required_arg):
         return
     cooldown = config.preferences.confirm_cooldown_seconds
     if cooldown <= 0:

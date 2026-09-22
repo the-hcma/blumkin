@@ -264,8 +264,9 @@ Common workflows:
   # Find and book a mutual slot
   blumkin calendar suggest --with sam@example.com --with dana@example.com \\
     --start "2026-09-01T09:00" --end "2026-09-03T18:00" --duration 45m --json
-  blumkin calendar create --subject "Planning" --with sam@example.com \\
-    --start "2026-09-01T14:00" --duration 45m --yes
+  blumkin calendar create --subject "Planning" \\
+    --start "2026-09-01T14:00" --duration 45m --json
+  blumkin calendar update --event-id AAMk... --with sam@example.com --yes
 \b
   # Clear today's pending invitations
   blumkin calendar accept --today-pending --yes
