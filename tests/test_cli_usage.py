@@ -372,7 +372,7 @@ def test_mail_attachments_download_wires_options_and_emits_json(tmp_path, monkey
 def test_chat_send_without_yes_exits_usage(monkeypatch) -> None:
     _patch_wo1162425_enabled(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, ["chat", "send", "--with", "Ada", "--text", "hi"])
+    result = runner.invoke(main, ["chat", "send", "--draft-id", "d1"])
     assert result.exit_code == EXIT_USAGE
 
 
@@ -397,17 +397,17 @@ def test_chat_draft_ambiguous_exits_usage(monkeypatch) -> None:
 def test_chat_edit_without_yes_exits_usage(monkeypatch) -> None:
     _patch_wo1162425_enabled(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["chat", "edit", "--chat-id", "c1", "--message-id", "m1", "--text", "x"],
-    )
+    result = runner.invoke(main, ["chat", "edit", "--draft-id", "d1"])
     assert result.exit_code == EXIT_USAGE
 
 
 def test_chat_delete_without_yes_exits_usage(monkeypatch) -> None:
     _patch_wo1162425_enabled(monkeypatch)
     runner = CliRunner()
-    result = runner.invoke(main, ["chat", "delete", "--chat-id", "c1", "--message-id", "m1"])
+    result = runner.invoke(
+        main,
+        ["chat", "delete", "--chat-id", "c1", "--message-id", "m1", "--expected-text", "bye"],
+    )
     assert result.exit_code == EXIT_USAGE
 
 
