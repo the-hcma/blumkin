@@ -142,7 +142,10 @@ def _apply_compose_state(
             if isinstance(draft_id, str) and draft_id:
                 clear_composed(config, draft_id)
     except OSError as exc:
-        emit_warning(f"{skill_id} succeeded, but the confirm-cooldown record was not saved: {exc}")
+        emit_warning(
+            f"{skill_id} succeeded, but the confirm-cooldown record was not saved "
+            f"({type(exc).__name__})"
+        )
 
 
 def _argkey(name: str) -> str:

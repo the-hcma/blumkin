@@ -14,24 +14,30 @@ through this install, or the record was pruned/lost) is treated as "unknown" -
 ``seconds_since_composed`` returns ``None`` and the cooldown gate fails open
 rather than blocking forever on state it cannot prove.
 
-Every write goes through ``_locked_update``: an ``flock``'d lock file guards
+Every write goes through ``_locked_update``: a cross-process lock file guards
 the load-modify-save transaction so two concurrent MCP sessions writing
 different artifact ids cannot clobber each other's timestamp (issue #365
-review), and the replacement file is written atomically (temp file + rename).
+review), and the replacement file is written atomically and durably (temp
+file, ``fsync``, rename).
 """
 
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
+import sys
 import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from blumkin.config import BlumkinConfig
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 # Floor for how long entries are kept - the effective prune window is
 # max(this, preferences.confirm_cooldown_seconds), so a configured cooldown
@@ -108,19 +114,27 @@ def _locked_update(config: BlumkinConfig, mutate: Callable[[dict[str, str]], Non
     file, mutate different artifact ids, and let the last writer's ``_save``
     discard the other's timestamp - silently defeating the cooldown for the
     discarded id (issue #365 review). The lock file is separate from the state
-    file itself so a reader never has to take the lock just to ``_load``.
+    file itself so a reader never has to take the lock just to ``_load``. Uses
+    ``fcntl.flock`` on POSIX and ``msvcrt.locking`` on Windows.
     """
     path = config.compose_state_path
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".lock")
     with open(lock_path, "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        _lock(lock_file)
         try:
             entries = _load(config)
             mutate(entries)
             _save(config, entries)
         finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            _unlock(lock_file)
+
+
+def _lock(lock_file: Any) -> None:
+    if sys.platform == "win32":
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
 
 
 def _now_iso() -> str:
@@ -128,7 +142,10 @@ def _now_iso() -> str:
 
 
 def _save(config: BlumkinConfig, entries: dict[str, str]) -> None:
-    """Write ``entries`` atomically: a torn/partial write must never be observable."""
+    """Write ``entries`` atomically and durably: a crash must never observe a torn
+    write, and ``fsync`` before the rename means a crash right after this call
+    cannot silently lose the just-recorded compose timestamp (a lost timestamp
+    would make the cooldown gate fail open on the next run - issue #365 review)."""
     path = config.compose_state_path
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = entries
@@ -136,7 +153,25 @@ def _save(config: BlumkinConfig, entries: dict[str, str]) -> None:
     try:
         with os.fdopen(fd, "w") as tmp_file:
             tmp_file.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
         os.replace(tmp_name, path)
+        if sys.platform != "win32":
+            # Windows has no directory-fd concept and metadata durability there is
+            # a platform-level guarantee, not something to fsync by hand here.
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     finally:
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
+
+
+def _unlock(lock_file: Any) -> None:
+    if sys.platform == "win32":
+        lock_file.seek(0)
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
