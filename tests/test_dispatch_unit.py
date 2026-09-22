@@ -830,3 +830,30 @@ def test_chat_send_clears_the_compose_record(tmp_path, monkeypatch) -> None:
     _run("chat.send", {"draft_id": "d1", "yes": True}, config=cfg, provider=prov)
     prov.chat_send.assert_awaited_once()
     assert seconds_since_composed(cfg, "d1") is None
+
+
+def test_chat_edit_blocked_before_cooldown_elapses(tmp_path, monkeypatch) -> None:
+    """Mirrors `test_chat_send_blocked_before_cooldown_elapses` for `chat.edit`'s own
+    `_COOLDOWN_GATED_SKILLS` entry (issue #365 review)."""
+    cfg = _chat_cooldown_cfg(tmp_path, monkeypatch)
+    record_composed(cfg, "d1")
+
+    edit_prov = _provider("chat_edit")
+    with pytest.raises(EmitCooldownError) as exc:
+        _run("chat.edit", {"draft_id": "d1", "yes": True}, config=cfg, provider=edit_prov)
+    assert exc.value.retry_after_seconds is not None
+    assert 0 < exc.value.retry_after_seconds <= 60
+    edit_prov.chat_edit.assert_not_awaited()
+
+
+def test_chat_edit_clears_the_compose_record(tmp_path, monkeypatch) -> None:
+    """Mirrors `test_chat_send_clears_the_compose_record` for `chat.edit`'s own
+    `_COMPOSE_CLEAR_SKILLS` entry (issue #365 review)."""
+    cfg = _chat_cooldown_cfg(tmp_path, monkeypatch)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
+    cfg.compose_state_path.write_text(json.dumps({"d1": stale}))
+    prov = _provider("chat_edit")
+    _run("chat.edit", {"draft_id": "d1", "yes": True}, config=cfg, provider=prov)
+    prov.chat_edit.assert_awaited_once()
+    assert seconds_since_composed(cfg, "d1") is None
