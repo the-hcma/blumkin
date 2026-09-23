@@ -56,6 +56,87 @@ def test_classify_refresh_error_unknown_falls_back_to_auth_required() -> None:
     assert isinstance(exc, AuthRequiredError)
 
 
+def test_client_config_defaults_when_toml_and_file_omit_endpoints(tmp_path: Path) -> None:
+    """No toml override, no endpoint in the Desktop JSON: blumkin's hardcoded defaults win."""
+    cfg = _cfg(tmp_path)
+    installed = google_auth._client_config(cfg)["installed"]
+    assert installed["auth_uri"] == "https://accounts.google.com/o/oauth2/auth"
+    assert installed["token_uri"] == "https://oauth2.googleapis.com/token"
+    assert installed["redirect_uris"] == ["http://localhost"]
+
+
+def test_client_config_prefers_desktop_json_endpoint_over_default(tmp_path: Path) -> None:
+    """No toml override, but the Desktop JSON sets an endpoint: the file wins over the default."""
+    oauth_file = tmp_path / "desktop-client.json"
+    oauth_file.write_text(
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+                    "client_secret": "fake-google-client-secret",
+                    "auth_uri": "https://file.example/auth",
+                    "token_uri": "https://file.example/token",
+                    "redirect_uris": ["http://127.0.0.1"],
+                }
+            }
+        )
+    )
+    cfg = _cfg(tmp_path, oauth_file=oauth_file)
+    installed = google_auth._client_config(cfg)["installed"]
+    assert installed["auth_uri"] == "https://file.example/auth"
+    assert installed["token_uri"] == "https://file.example/token"
+    assert installed["redirect_uris"] == ["http://127.0.0.1"]
+
+
+def test_client_config_prefers_toml_override_over_desktop_json(tmp_path: Path) -> None:
+    """A config.toml override (issue #368) beats both the Desktop JSON and the default."""
+    oauth_file = tmp_path / "desktop-client.json"
+    oauth_file.write_text(
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+                    "client_secret": "fake-google-client-secret",
+                    "auth_uri": "https://file.example/auth",
+                    "token_uri": "https://file.example/token",
+                    "redirect_uris": ["http://127.0.0.1"],
+                }
+            }
+        )
+    )
+    cfg = dataclasses.replace(
+        _cfg(tmp_path, oauth_file=oauth_file),
+        google_auth_uri="https://toml.example/auth",
+        google_token_uri="https://toml.example/token",
+        google_redirect_uris=("http://toml.example/callback",),
+    )
+    installed = google_auth._client_config(cfg)["installed"]
+    assert installed["auth_uri"] == "https://toml.example/auth"
+    assert installed["token_uri"] == "https://toml.example/token"
+    assert installed["redirect_uris"] == ["http://toml.example/callback"]
+
+
+def test_client_config_client_id_prefers_toml_over_desktop_json(tmp_path: Path) -> None:
+    """``cfg.client_id`` (already toml-or-file resolved by ``load_config``) wins over the file."""
+    oauth_file = tmp_path / "desktop-client.json"
+    oauth_file.write_text(
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "file-client-id.apps.googleusercontent.com",
+                    "client_secret": "fake-google-client-secret",
+                }
+            }
+        )
+    )
+    cfg = dataclasses.replace(
+        _cfg(tmp_path, oauth_file=oauth_file),
+        client_id="toml-client-id.apps.googleusercontent.com",
+    )
+    installed = google_auth._client_config(cfg)["installed"]
+    assert installed["client_id"] == "toml-client-id.apps.googleusercontent.com"
+
+
 def test_get_credentials_noninteractive_default_ignores_directory_readonly(
     tmp_path: Path,
 ) -> None:

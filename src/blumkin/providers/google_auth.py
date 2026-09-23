@@ -373,8 +373,13 @@ def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
     """Build InstalledAppFlow client config from the Desktop download JSON.
 
     Google Cloud Desktop clients ship a ``client_secret`` in that file; the
-    token endpoint rejects the exchange when it is omitted. Secrets stay in the
-    referenced JSON (mode 0600), never in env or ``config.toml``.
+    token endpoint rejects the exchange when it is omitted. The secret stays
+    in the referenced JSON (mode 0600), never in env or ``config.toml`` -
+    issue #368's keychain follow-up covers moving it into the OS keychain.
+    ``client_id`` and the non-secret endpoints (``auth_uri``, ``token_uri``,
+    ``redirect_uris``) prefer ``config.toml`` overrides over the file's own
+    values, then the file's values, then blumkin's hardcoded defaults (issue
+    #368: centralize non-secret profile configuration in ``config.toml``).
     """
     path = cfg.google_oauth_client_file
     if path is None:
@@ -385,8 +390,7 @@ def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
     if not path.is_file():
         raise ProviderConfigError(f"google_oauth_client_file not found: {path}")
     installed = dict(google_oauth_installed_client(path))
-    client_id = installed.get("client_id")
-    if not isinstance(client_id, str) or not client_id.strip():
+    if not cfg.client_id.strip():
         raise ProviderConfigError(f"google_oauth_client_file {path} missing client_id")
     secret = installed.get("client_secret")
     if not isinstance(secret, str) or not secret.strip():
@@ -394,10 +398,41 @@ def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
             f"google_oauth_client_file {path} missing client_secret "
             "(required for Desktop token exchange)."
         )
-    installed.setdefault("auth_uri", "https://accounts.google.com/o/oauth2/auth")
-    installed.setdefault("redirect_uris", ["http://localhost"])
-    installed.setdefault("token_uri", "https://oauth2.googleapis.com/token")
+    installed["client_id"] = cfg.client_id
+    installed["auth_uri"] = _resolved_google_endpoint(
+        cfg.google_auth_uri, installed, "auth_uri", "https://accounts.google.com/o/oauth2/auth"
+    )
+    installed["redirect_uris"] = list(cfg.google_redirect_uris) or _resolved_google_redirect_uris(
+        installed
+    )
+    installed["token_uri"] = _resolved_google_endpoint(
+        cfg.google_token_uri, installed, "token_uri", "https://oauth2.googleapis.com/token"
+    )
     return {"installed": installed}
+
+
+def _resolved_google_endpoint(
+    override: str, installed: dict[str, Any], file_key: str, default: str
+) -> str:
+    """``config.toml`` override > the Desktop JSON's own value > ``default``."""
+    if override:
+        return override
+    raw = installed.get(file_key)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return default
+
+
+def _resolved_google_redirect_uris(installed: dict[str, Any]) -> list[str]:
+    """The Desktop JSON's own ``redirect_uris`` (validated) > ``["http://localhost"]``."""
+    raw = installed.get("redirect_uris")
+    if (
+        isinstance(raw, list)
+        and raw
+        and all(isinstance(item, str) and item.strip() for item in raw)
+    ):
+        return [item.strip() for item in raw]
+    return ["http://localhost"]
 
 
 def _client_secret_from_oauth_file(cfg: BlumkinConfig) -> str:

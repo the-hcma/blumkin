@@ -54,6 +54,16 @@ class BlumkinConfig:
     # *reads* - see docs/DECISIONS.md D10. Defaulted so existing construction
     # sites (and configs) do not have to name it.
     docs_scopes: bool = False
+    # Optional toml overrides for the Google Desktop OAuth client's non-secret
+    # endpoints (issue #368: centralize non-secret profile configuration in
+    # config.toml instead of only the Desktop client JSON referenced by
+    # `google_oauth_client_file`). Empty means "not set" - callers fall back to
+    # the Desktop client JSON's own value, then blumkin's hardcoded default.
+    # `client_secret` is not here: it still only ever comes from
+    # `google_oauth_client_file` (issue #368's keychain follow-up covers it).
+    google_auth_uri: str = ""
+    google_redirect_uris: tuple[str, ...] = ()
+    google_token_uri: str = ""
     # OS keychain vs. a plain 0600 file for the token cache / auth record /
     # Google token (issue #287). "auto" prefers the keyring extra when a real
     # backend is usable at runtime, silently falling back to the file
@@ -323,7 +333,10 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         docs_scopes=_docs_scopes_enabled(table),
         email=string_values.get("email", "").strip(),
         files_scopes=_files_scopes_enabled(table),
+        google_auth_uri=_google_auth_uri(table),
         google_oauth_client_file=google_oauth_client_file,
+        google_redirect_uris=_google_redirect_uris(table),
+        google_token_uri=_google_token_uri(table),
         graph_timeout_seconds=_graph_timeout_seconds(table),
         mail_signature=_mail_signature_config(table),
         preferences=_preferences_config(table, _top_level_preferences(file_data), profile=selected),
@@ -533,11 +546,64 @@ def _files_scopes_enabled(file_data: dict[str, Any]) -> bool:
     return False
 
 
+def _google_auth_uri(file_data: dict[str, Any]) -> str:
+    """Optional toml override for the Google OAuth authorization endpoint (issue #368).
+
+    Empty string means "not set" - ``_client_config`` falls back to the
+    Desktop client JSON's own ``auth_uri``, then blumkin's hardcoded default.
+    """
+    raw = file_data.get("google_auth_uri")
+    if raw is None:
+        return ""
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    raise ProviderConfigError(
+        f"google_auth_uri must be a non-empty string in config.toml, got {raw!r}"
+    )
+
+
 def _google_oauth_client_file(file_data: dict[str, Any]) -> Path | None:
     raw = file_data.get("google_oauth_client_file")
     if not isinstance(raw, str) or not raw.strip():
         return None
     return Path(raw.strip()).expanduser()
+
+
+def _google_redirect_uris(file_data: dict[str, Any]) -> tuple[str, ...]:
+    """Optional toml override for the Google OAuth redirect URI(s) (issue #368).
+
+    Empty tuple means "not set" - ``_client_config`` falls back to the
+    Desktop client JSON's own ``redirect_uris``, then blumkin's hardcoded
+    ``["http://localhost"]``.
+    """
+    raw = file_data.get("google_redirect_uris")
+    if raw is None:
+        return ()
+    if (
+        isinstance(raw, list)
+        and raw
+        and all(isinstance(item, str) and item.strip() for item in raw)
+    ):
+        return tuple(item.strip() for item in raw)
+    raise ProviderConfigError(
+        f"google_redirect_uris must be a list of non-empty strings in config.toml, got {raw!r}"
+    )
+
+
+def _google_token_uri(file_data: dict[str, Any]) -> str:
+    """Optional toml override for the Google OAuth token endpoint (issue #368).
+
+    Empty string means "not set" - ``_client_config`` falls back to the
+    Desktop client JSON's own ``token_uri``, then blumkin's hardcoded default.
+    """
+    raw = file_data.get("google_token_uri")
+    if raw is None:
+        return ""
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    raise ProviderConfigError(
+        f"google_token_uri must be a non-empty string in config.toml, got {raw!r}"
+    )
 
 
 def _graph_timeout_seconds(file_data: dict[str, Any]) -> float:
