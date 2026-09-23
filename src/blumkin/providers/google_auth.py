@@ -391,7 +391,10 @@ def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
         raise ProviderConfigError(f"google_oauth_client_file not found: {path}")
     installed = dict(google_oauth_installed_client(path))
     if not cfg.client_id.strip():
-        raise ProviderConfigError(f"google_oauth_client_file {path} missing client_id")
+        raise ProviderConfigError(
+            "client_id is required for Google auth (set it in config.toml, "
+            f"or add it to google_oauth_client_file {path})."
+        )
     secret = installed.get("client_secret")
     if not isinstance(secret, str) or not secret.strip():
         raise ProviderConfigError(

@@ -30,7 +30,7 @@ from blumkin.providers.google_auth import (
     MAIL_WRITE_SCOPES,
     PEOPLE_SCOPES,
 )
-from blumkin.providers.kind import ProviderKind
+from blumkin.providers.kind import ProviderConfigError, ProviderKind
 
 
 def test_classify_refresh_error_invalid_grant_is_auth_required() -> None:
@@ -135,6 +135,27 @@ def test_client_config_client_id_prefers_toml_over_desktop_json(tmp_path: Path) 
     )
     installed = google_auth._client_config(cfg)["installed"]
     assert installed["client_id"] == "toml-client-id.apps.googleusercontent.com"
+
+
+def test_client_config_blank_client_id_raises_even_when_file_has_one(tmp_path: Path) -> None:
+    """``_client_config`` trusts only ``cfg.client_id`` (already toml-or-file resolved by
+    ``load_config``); constructing a ``BlumkinConfig`` directly with a blank ``client_id``
+    must fail even when the Desktop JSON's own ``client_id`` is present, and the error must
+    not misattribute the cause to the file."""
+    oauth_file = tmp_path / "desktop-client.json"
+    oauth_file.write_text(
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "file-client-id.apps.googleusercontent.com",
+                    "client_secret": "fake-google-client-secret",
+                }
+            }
+        )
+    )
+    cfg = dataclasses.replace(_cfg(tmp_path, oauth_file=oauth_file), client_id="")
+    with pytest.raises(ProviderConfigError, match="client_id is required"):
+        google_auth._client_config(cfg)
 
 
 def test_get_credentials_noninteractive_default_ignores_directory_readonly(
