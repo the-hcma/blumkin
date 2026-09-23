@@ -51,7 +51,10 @@ directory first, then register the app **inside** it.
    `*.onmicrosoft.com` tenant), which is the part you actually need.
    - Alternative: the [Microsoft 365 Developer Program](https://developer.microsoft.com/microsoft-365/dev-program)
      also provisions a directory (an M365 E5 developer tenant), if you would
-     rather have that instead of an Azure subscription.
+     rather have that instead of an Azure subscription - it requires meeting
+     the program's own eligibility/qualification path (for example an active
+     Microsoft 365 subscription in some tracks), so use Azure Free instead if
+     you do not qualify.
    - Alternative: if you already administer a work/school Entra tenant, you
      can host the app registration there instead - but it must be a
      **separate** app from any work/school blumkin profile, with "Supported
