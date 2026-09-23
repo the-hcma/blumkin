@@ -7,7 +7,7 @@ alwaysApply: true
 
 When the user asks to **ship**, **submit**, **open a PR**, or **follow the flow**, run this
 sequence in a **stack worktree** (never the primary clone). Read `.github/stacking-tool` and
-`.agents/rules/stacking-tool.md` before creating branches or submitting.
+`.cursor/rules/stacking-tool.mdc` before creating branches or submitting.
 
 Helper scripts live in **repository-helpers** (canonical agent review loop):
 
@@ -40,7 +40,7 @@ Run this repository's quality gates from the stack worktree (tests, linters, etc
 ## 2. Commit and submit
 
 Only after §1 quality gates pass. **Read** `.github/stacking-tool` (`graphite` or `gh-stack`)
-and follow `.agents/rules/stacking-tool.md` — do not mix backends on the same stack.
+and follow `.cursor/rules/stacking-tool.mdc` — do not mix backends on the same stack.
 
 ```bash
 # When marker is graphite (apply-fix comments the inactive backend):
@@ -62,7 +62,30 @@ Wait for CI:
 If stderr shows `NOTE: GITHUB_RATE_LIMIT_*`, the helpers are waiting on GitHub API
 quota reset — let them finish (do not treat as a hard local failure mid-wait).
 
-Patch title/body if stale: `gh pr edit <n> --title … --body …`
+`--auto` / publish-generated PR titles are derived from the branch name (or a single
+commit subject), **not** always from Conventional Commits. Before the review loop or
+merge, verify/set the PR title to a Conventional Commits header whenever the repo's
+squash-merge config makes the PR title the release-please signal
+(`squash_merge_commit_title=PR_TITLE`, `squash_merge_commit_message=BLANK`):
+
+```bash
+"${rh}/scripts/ensure-pr-conventional-title" --pr <n>
+# or: "${rh}/scripts/gh-api" pr edit <n> --title 'feat: …'
+```
+
+`post-pr-submission-checks` and `wait-for-agent-review complete` run this check
+automatically (auto-derive from commits when possible; fail when neither the title
+nor commits are Conventional Commits).
+
+Patch title/body if stale. For multi-paragraph bodies use `--body-file` (see
+`${rh}/.agents/rules/github-content-formatting.md`); lint first with
+`"${rh}/scripts/lint-github-markdown" <path>`. Issues: `"${rh}/scripts/gh-issue"
+create|edit` (lint before API). Do not hand-wrap paragraphs across short lines.
+
+```bash
+"${rh}/scripts/gh-api" pr edit <n> --title 'feat: …' --body-file /tmp/pr-body.md
+"${rh}/scripts/gh-issue" create --title '…' --body-file /tmp/issue.md
+```
 
 ## 3. Agent review loop
 
