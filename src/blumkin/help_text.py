@@ -124,6 +124,33 @@ completed a login). `capabilities` (JSON) / `available:` (text) is the same
 per-family usability summary as `blumkin doctor` and `blumkin capabilities`.
 """
 
+AUTH_SET_APP_SECRET_EPILOG = """
+Examples:
+
+\b
+  # Vault Google's client_secret straight from the Desktop client JSON
+  blumkin auth set-app-secret --kind google_client_secret \\
+    --from-file ~/path/to/google-oauth-desktop-client.json
+\b
+  # Vault Microsoft's client_id via stdin (scripting)
+  echo -n "$MS_CLIENT_ID" | blumkin auth set-app-secret --kind ms_client_id --stdin
+\b
+  # Remove a vaulted value
+  blumkin auth set-app-secret --kind google_client_secret --delete
+
+Vaults an app secret in the OS keychain (issue #368) so it never has to live
+in config.toml or a plaintext file. A vaulted value takes precedence over
+the equivalent file/toml value (Google's Desktop client JSON client_secret;
+Microsoft's toml client_id) - it does not replace or delete that source, so
+leave-in-place is the default; delete it yourself once you have confirmed the
+vaulted value works. Requires a usable OS keychain backend and
+token_storage != "file" for the active profile.
+
+Never pass the secret as a command-line argument - it would leak into shell
+history and `ps`. Use `--from-file`, `--stdin`, or the interactive hidden
+prompt (no flag, on a TTY).
+"""
+
 CAPABILITIES_EPILOG = """
 Examples:
 

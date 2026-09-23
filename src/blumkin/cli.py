@@ -16,9 +16,16 @@ from click.shell_completion import get_completion_class
 
 from blumkin import help_text
 from blumkin.agent import client as agent_client
+from blumkin.app_secrets import AppSecretKind, delete_app_secret, write_app_secret
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
 from blumkin.capabilities import capability_summary
-from blumkin.config import BlumkinConfig, list_profiles, load_config, set_profile_email
+from blumkin.config import (
+    BlumkinConfig,
+    google_oauth_installed_client,
+    list_profiles,
+    load_config,
+    set_profile_email,
+)
 from blumkin.contacts import format_people_context_human
 from blumkin.exit_codes import (
     EXIT_AUTH,
@@ -1048,6 +1055,110 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
     available = [family for family, ok in payload["capabilities"].items() if ok]
     lines.append(f"available: {', '.join(available) or 'none'}")
     emit_lines(lines)
+
+
+@auth.command("set-app-secret", epilog=help_text.AUTH_SET_APP_SECRET_EPILOG)
+@click.option(
+    "--kind",
+    "kind",
+    type=click.Choice(["google_client_secret", "ms_client_id"]),
+    required=True,
+    help="Which app secret to vault or remove.",
+)
+@click.option(
+    "--from-file",
+    "from_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Read the value from this file. For google_client_secret, a Desktop "
+        "client JSON's installed.client_secret is auto-extracted; any other "
+        "file is read as raw text."
+    ),
+)
+@click.option(
+    "--stdin", "from_stdin", is_flag=True, help="Read the value from stdin (for scripting)."
+)
+@click.option(
+    "--delete", "delete_flag", is_flag=True, help="Remove any vaulted value instead of writing one."
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def auth_set_app_secret(
+    ctx: click.Context,
+    kind: str,
+    from_file: Path | None,
+    from_stdin: bool,
+    delete_flag: bool,
+    as_json_flag: bool,
+) -> None:
+    """Vault (or remove) an app secret in the OS keychain (issue #368).
+
+    Never accepts the value as a command-line argument - it would otherwise
+    leak into shell history and `ps`. Use `--from-file`, `--stdin`, or the
+    interactive hidden prompt on a TTY.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    app_secret_kind: AppSecretKind = kind  # type: ignore[assignment]  # click.Choice already restricts this
+    cfg = _load_config()
+    if delete_flag:
+        if from_file is not None or from_stdin:
+            _emit_error(
+                error="usage_error",
+                message="--delete cannot be combined with --from-file or --stdin.",
+                as_json=as_json,
+            )
+            raise SystemExit(EXIT_USAGE)
+        delete_app_secret(cfg, app_secret_kind)
+        if as_json:
+            emit_json({"ok": True, "action": "deleted", "kind": kind})
+        else:
+            emit_lines([f"Removed any vaulted {kind}."])
+        return
+    try:
+        value = _read_app_secret_value(kind, from_file)
+    except ProviderConfigError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    try:
+        write_app_secret(cfg, app_secret_kind, value)
+    except SecretWriteError as exc:
+        _emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    if as_json:
+        emit_json({"ok": True, "action": "written", "kind": kind})
+    else:
+        emit_lines([f"Vaulted {kind} in the OS keychain."])
+
+
+def _read_app_secret_value(kind: str, from_file: Path | None) -> str:
+    """Resolve the secret value from ``--from-file``, ``--stdin``, or an interactive prompt.
+
+    Never a ``--value TEXT`` flag - the value would otherwise leak into shell
+    history and be visible to any other process via `ps` (issue #368).
+    """
+    if from_file is not None:
+        if kind == "google_client_secret":
+            try:
+                installed = google_oauth_installed_client(from_file)
+            except ProviderConfigError:
+                installed = None
+            if installed is not None:
+                secret = installed.get("client_secret")
+                if isinstance(secret, str) and secret.strip():
+                    return secret.strip()
+        value = from_file.read_text().strip()
+        if not value:
+            raise ProviderConfigError(f"{from_file} is empty.")
+        return value
+    if not sys.stdin.isatty():
+        value = sys.stdin.read().strip()
+        if not value:
+            raise ProviderConfigError("No value read from stdin.")
+        return value
+    value = click.prompt(f"Enter the value for {kind}", hide_input=True)
+    if not value.strip():
+        raise ProviderConfigError("A non-empty value is required.")
+    return value.strip()
 
 
 @main.group(epilog=help_text.AGENT_EPILOG)

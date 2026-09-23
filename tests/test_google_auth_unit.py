@@ -184,6 +184,64 @@ def test_client_config_blank_client_id_raises_even_when_file_has_one(tmp_path: P
         google_auth._client_config(cfg)
 
 
+def test_client_config_missing_oauth_file_path_raises(tmp_path: Path) -> None:
+    """A configured but nonexistent ``google_oauth_client_file`` is still an error - only
+    an unset (``None``) path makes the file fully optional (issue #368)."""
+    cfg = _cfg(tmp_path, oauth_file=tmp_path / "does-not-exist.json")
+    with pytest.raises(ProviderConfigError, match="not found"):
+        google_auth._client_config(cfg)
+
+
+def test_client_config_prefers_vaulted_client_secret_over_desktop_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The OS keychain's ``client_secret`` (issue #368) beats the Desktop JSON's own value."""
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(
+        google_auth,
+        "read_app_secret",
+        lambda cfg, kind: "vaulted-secret",  # noqa: ARG005
+    )
+    installed = google_auth._client_config(cfg)["installed"]
+    assert installed["client_secret"] == "vaulted-secret"
+
+
+def test_client_config_oauth_file_optional_when_secret_is_vaulted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once ``client_secret`` is vaulted, ``google_oauth_client_file`` need not be set at all -
+    the toml-only config surface issue #368 aims for."""
+    cfg = dataclasses.replace(
+        _cfg(tmp_path),
+        google_oauth_client_file=None,
+        google_auth_uri="https://toml.example/auth",
+        google_token_uri="https://toml.example/token",
+        google_redirect_uris=("http://toml.example/callback",),
+    )
+    monkeypatch.setattr(
+        google_auth,
+        "read_app_secret",
+        lambda cfg, kind: "vaulted-secret",  # noqa: ARG005
+    )
+    installed = google_auth._client_config(cfg)["installed"]
+    assert installed["client_secret"] == "vaulted-secret"
+    assert installed["client_id"] == cfg.client_id
+    assert installed["auth_uri"] == "https://toml.example/auth"
+    assert installed["token_uri"] == "https://toml.example/token"
+    assert installed["redirect_uris"] == ["http://toml.example/callback"]
+
+
+def test_client_config_raises_when_no_secret_anywhere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither the keychain nor a Desktop JSON supplies ``client_secret``: a clear,
+    actionable error, not a silent empty-string secret reaching the token endpoint."""
+    cfg = dataclasses.replace(_cfg(tmp_path), google_oauth_client_file=None)
+    monkeypatch.setattr(google_auth, "read_app_secret", lambda cfg, kind: None)  # noqa: ARG005
+    with pytest.raises(ProviderConfigError, match="client_secret is required"):
+        google_auth._client_config(cfg)
+
+
 def test_get_credentials_noninteractive_default_ignores_directory_readonly(
     tmp_path: Path,
 ) -> None:
