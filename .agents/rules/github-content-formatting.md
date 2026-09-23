@@ -5,8 +5,8 @@ alwaysApply: true
 
 # GitHub content formatting (agent-authored)
 
-Agent-authored issue bodies, PR descriptions, and PR/review comments must render
-correctly on GitHub.
+Agent-authored issue bodies, issue comments or replies, PR descriptions, and
+PR/review comments must render correctly on GitHub.
 
 Two failure modes show up as “line breaks are messed up”:
 
@@ -61,6 +61,7 @@ rm -f "$body"
 Before posting (or after drafting a body file), run:
 
 ```bash
+rh="${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}"
 "${rh}/scripts/lint-github-markdown" <path>
 ```
 
@@ -75,6 +76,7 @@ before posting.
 
 ## Scope
 
-Applies to issue bodies, PR descriptions, and PR/review comments or replies
-posted by an agent — same “validate before it ships” principle as Conventional
-Commits PR titles (see `.agents/rules/pr-ship-and-review.md`).
+Applies to issue bodies, issue comments or replies, PR descriptions, and
+PR/review comments or replies posted by an agent — same “validate before it
+ships” principle as Conventional Commits PR titles (see
+`.agents/rules/pr-ship-and-review.md`).
