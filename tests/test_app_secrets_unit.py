@@ -106,6 +106,15 @@ def test_read_app_secret_returns_none_when_token_storage_is_file(
 def test_read_app_secret_returns_none_on_backend_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`app_secret_backend` deliberately does not distinguish "the keychain
+    probe raised/timed out" from "nothing is vaulted" - both report `"none"`.
+    `doctor`'s vaulted-``ms_client_id`` check (`cli._vaulted_client_id_or_secret_present`)
+    therefore cannot tell a transient environmental read failure (a locked
+    login keychain, a denied ACL prompt) apart from a genuinely unconfigured
+    profile, and will report `client_id missing in config.toml` for both
+    (issue #368 review, round 5: documenting this as an accepted, existing
+    trade-off - not new behavior - rather than a silent implication; a
+    dedicated error/unknown third state is tracked as a #368 follow-up)."""
     cfg = _load(tmp_path, monkeypatch)
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: _BrokenKeyring())
     assert app_secrets.read_app_secret(cfg, "google_client_secret") is None
@@ -181,6 +190,25 @@ def test_delete_app_secret_tolerates_missing_entry(
     cfg = _load(tmp_path, monkeypatch)
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
     app_secrets.delete_app_secret(cfg, "google_client_secret")  # must not raise
+
+
+def test_delete_app_secret_raises_on_a_non_not_found_backend_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A delete failure that is *not* a not-found error (a locked/denied
+    keychain, say) must raise `SecretWriteError`, not be swallowed alongside
+    the idempotent missing-entry case - reporting "removed" here would be
+    the exact false-success `delete_app_secret`'s docstring guards against
+    (issue #368 review, round 5)."""
+
+    class _DenyingKeyring(_FakeKeyring):
+        def delete_password(self, service: str, username: str) -> None:
+            raise RuntimeError("keychain is locked")
+
+    cfg = _load(tmp_path, monkeypatch)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _DenyingKeyring())
+    with pytest.raises(SecretWriteError, match="could not delete"):
+        app_secrets.delete_app_secret(cfg, "google_client_secret")
 
 
 def test_delete_app_secret_removes_a_vaulted_value(
