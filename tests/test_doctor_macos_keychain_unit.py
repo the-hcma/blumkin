@@ -230,3 +230,42 @@ def test_doctor_still_flags_a_genuinely_missing_ms_client_id(tmp_path: Path, mon
         result = CliRunner().invoke(main, ["doctor", "--json"])
     payload = json.loads(result.output)
     assert "client_id missing in config.toml" in payload.get("problems", [])
+
+
+def test_doctor_flags_missing_ms_client_id_with_a_usable_but_empty_keychain(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Same as `test_doctor_still_flags_a_genuinely_missing_ms_client_id`, but
+    with a real (usable) keychain backend that simply has nothing vaulted -
+    not a `_keyring_module() is None` short-circuit. `app_secret_backend`
+    must actually probe the empty store and return `"none"`, not just fail
+    open because no backend was available at all (issue #368 review, round
+    4: the existing test above never exercised this path)."""
+    from blumkin import secret_store
+
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\ntenant_id = "example.com"\ndefault_tz = "UTC"\n'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+
+    class _FakeKeyring:
+        def get_password(self, service: str, username: str) -> str | None:
+            return None
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            pass
+
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+
+    provider = _provider()
+    provider.auth_status.return_value = {
+        "client_id_configured": False,
+        "token_cache": True,
+        "auth_record": True,
+        "requested_scopes": [],
+    }
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    payload = json.loads(result.output)
+    assert "client_id missing in config.toml" in payload.get("problems", [])

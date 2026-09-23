@@ -112,6 +112,21 @@ def test_read_app_secret_returns_none_on_backend_failure(
     assert app_secrets.app_secret_backend(cfg, "google_client_secret") == "none"
 
 
+def test_app_secret_backend_is_none_for_a_usable_but_empty_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reachable keychain with nothing vaulted must report `"none"` - not
+    just a missing/raising backend (the only two shapes the other `"none"`
+    assertions above cover). `doctor`'s `_vaulted_client_id_or_secret_present`
+    relies on this distinction to keep flagging a genuinely missing
+    `ms_client_id` on a machine with a real, working keychain (issue #368
+    review, round 4)."""
+    cfg = _load(tmp_path, monkeypatch)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+    assert app_secrets.read_app_secret(cfg, "ms_client_id") is None
+    assert app_secrets.app_secret_backend(cfg, "ms_client_id") == "none"
+
+
 def test_write_app_secret_raises_without_keyring_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
