@@ -988,6 +988,89 @@ def test_load_credentials_prefers_oauth_file_client_secret(tmp_path: Path) -> No
     assert captured["client_secret"] == "rotated-desktop-secret"
 
 
+def test_load_credentials_prefers_vaulted_client_secret_over_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A vaulted `google_client_secret` (issue #368) wins over both the Desktop
+    JSON's own value and whatever is already persisted in `google_token.json` -
+    the actual behavioral change this PR makes to the real credential path."""
+    from blumkin.providers import google_auth
+
+    oauth = tmp_path / "desktop-client.json"
+    oauth.write_text(
+        '{"installed": {'
+        '"client_id": "fake-google-desktop-client.apps.googleusercontent.com", '
+        '"client_secret": "file-secret"}}'
+    )
+    cfg = _cfg(tmp_path, oauth_file=oauth)
+    cfg.google_token_path.write_text(
+        "{"
+        '"client_id": "fake-google-desktop-client.apps.googleusercontent.com", '
+        '"client_secret": "stale-token-secret", '
+        '"refresh_token": "fake-refresh", '
+        '"token": "fake-access", '
+        '"token_uri": "https://oauth2.googleapis.com/token", '
+        '"scopes": []'
+        "}"
+    )
+    monkeypatch.setattr(
+        google_auth,
+        "read_app_secret",
+        lambda cfg, kind: "vaulted-secret" if kind == "google_client_secret" else None,
+    )
+    captured: dict = {}
+
+    def _capture(info, scopes=None):
+        captured.clear()
+        captured.update(info)
+        creds = MagicMock()
+        creds.valid = True
+        return creds
+
+    with patch.object(google_auth.Credentials, "from_authorized_user_info", side_effect=_capture):
+        creds = google_auth._load_credentials(cfg)
+    assert creds is not None
+    assert captured["client_secret"] == "vaulted-secret"
+
+
+def test_save_credentials_prefers_vaulted_client_secret_but_never_persists_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`_save_credentials` must resolve the vaulted secret when reloading the
+    saved credentials, but the token file on disk must only ever carry the
+    Desktop JSON's own secret (or empty) - never the vaulted value, since
+    `secret_store.write_text` can fall back to a plaintext file under
+    `token_storage = "auto"` (issue #368 review: sensitive-data-exposure
+    finding)."""
+    from blumkin.providers import google_auth
+
+    oauth = tmp_path / "desktop-client.json"
+    oauth.write_text(
+        '{"installed": {'
+        '"client_id": "fake-google-desktop-client.apps.googleusercontent.com", '
+        '"client_secret": "file-secret"}}'
+    )
+    cfg = _cfg(tmp_path, oauth_file=oauth)
+    monkeypatch.setattr(
+        google_auth,
+        "read_app_secret",
+        lambda cfg, kind: "vaulted-secret" if kind == "google_client_secret" else None,
+    )
+    creds = MagicMock()
+    creds.to_json.return_value = json.dumps(
+        {
+            "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+            "refresh_token": "fake-refresh",
+            "token": "fake-access",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    )
+    google_auth._save_credentials(cfg, creds)
+    saved = json.loads(cfg.google_token_path.read_text())
+    assert saved["client_secret"] == "file-secret"
+    assert "vaulted-secret" not in cfg.google_token_path.read_text()
+
+
 def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
     path = oauth_file
     if path is None:

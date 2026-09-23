@@ -276,7 +276,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     # secret, so a single `doctor` / `auth status` call could hit the OS
     # keychain for one item up to four times.
     raw_token, token_backend = secret_store.read_text_and_backend(cfg, "google_token")
-    access = _access_token_expiry(cfg, raw_token)
+    access = _access_token_expiry(raw_token)
     granted = frozenset(_scopes_from_raw(raw_token) or ())
     token_present = raw_token is not None
     return {
@@ -303,17 +303,20 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     }
 
 
-def _access_token_expiry(cfg: BlumkinConfig, raw: str | None) -> dict[str, Any]:
+def _access_token_expiry(raw: str | None) -> dict[str, Any]:
     """Takes the already-read ``google_token`` text rather than reading it itself,
     so ``status_dict`` does not pay for a second keyring round trip on top of
-    its own read of the same secret."""
+    its own read of the same secret. Uses ``_credentials_for_status`` (not
+    ``_credentials_from_raw``) so this stays to zero app-secret keychain
+    touches - it never needs a live ``client_secret``, only expiry/refresh_token
+    metadata (issue #368 review)."""
     out: dict[str, Any] = {
         "expired": None,
         "expires_at": None,
         "expires_in_seconds": None,
         "refresh_token_present": False,
     }
-    creds = _credentials_from_raw(cfg, raw)
+    creds = _credentials_for_status(raw)
     if creds is None:
         return out
     out["refresh_token_present"] = bool(creds.refresh_token)
@@ -491,20 +494,17 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
 
 
 def _credentials_from_raw(cfg: BlumkinConfig, raw: str | None) -> Credentials | None:
-    """Parse an already-read ``google_token`` payload into ``Credentials``.
+    """Parse an already-read ``google_token`` payload into ``Credentials``, resolving
+    the current (possibly vaulted) ``client_secret`` for real refresh use.
 
-    Split out of ``_load_credentials`` so a caller that already has the raw
-    text (``status_dict``, building its payload from one
-    ``read_text_and_backend`` call) does not pay for a second keyring round
-    trip on top of its own read of the same secret.
+    Only used by the actual credential-construction path (``_load_credentials``,
+    called from ``get_credentials`` on every skill invocation) - the
+    status/doctor path uses ``_credentials_for_status`` instead, which skips
+    the app-secret keychain lookup entirely so a status read stays to one
+    keychain touch (issue #368 review).
     """
-    if raw is None:
-        return None
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError, OSError:
-        return None
-    if not isinstance(data, dict):
+    data = _parse_token_payload(raw)
+    if data is None:
         return None
     # Prefer the vaulted/Desktop-JSON client_secret when present so a rotated
     # secret wins over a stale value persisted in google_token.json; fall back
@@ -513,6 +513,41 @@ def _credentials_from_raw(cfg: BlumkinConfig, raw: str | None) -> Credentials | 
     secret = _vaulted_or_file_client_secret(cfg)
     if secret:
         info["client_secret"] = secret
+    return _credentials_from_info(info)
+
+
+def _credentials_for_status(raw: str | None) -> Credentials | None:
+    """Parse an already-read ``google_token`` payload for status/doctor reporting only.
+
+    Deliberately does *not* resolve the vaulted ``client_secret`` - status only
+    reads expiry/refresh_token metadata, never refreshes, and the persisted
+    token JSON already carries a ``client_secret`` key (written by
+    ``_save_credentials``) sufficient to satisfy
+    ``Credentials.from_authorized_user_info``'s required-keys check. Adding an
+    app-secret keychain lookup here would give a status read a second keychain
+    touch (and potentially a second OS authorization prompt) for a value it
+    never uses (issue #368 review).
+    """
+    data = _parse_token_payload(raw)
+    if data is None:
+        return None
+    return _credentials_from_info(dict(data))
+
+
+def _parse_token_payload(raw: str | None) -> dict[str, Any] | None:
+    """Best-effort JSON-object parse of a ``google_token`` payload, else ``None``."""
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError, OSError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _credentials_from_info(info: dict[str, Any]) -> Credentials | None:
     try:
         return Credentials.from_authorized_user_info(info, scopes=sorted(GOOGLE_SCOPES))
     except Exception:
@@ -623,11 +658,15 @@ def _save_credentials(
         else:
             # Pre-scope-tracking token: do not stamp GOOGLE_SCOPES from to_json().
             payload.pop("scopes", None)
-    secret = _vaulted_or_file_client_secret(cfg)
-    if secret:
-        payload["client_secret"] = secret
-    else:
-        payload.setdefault("client_secret", "")
+    # Never persist the vaulted client_secret to the token file - `write_text`
+    # can fall back to plaintext under `token_storage = "auto"` if a keyring
+    # write fails, which would leak a value the operator explicitly chose to
+    # vault out of plaintext (issue #368 review). Persist only the Desktop
+    # JSON's own secret (as before this PR); real credential-refresh call
+    # sites always re-resolve the current vaulted-or-file secret at load time
+    # via `_credentials_from_raw`, so this file value is never the sole source
+    # of truth for it.
+    payload["client_secret"] = _client_secret_from_oauth_file(cfg)
     secret_store.write_text(cfg, "google_token", json.dumps(payload))
 
 

@@ -128,10 +128,21 @@ def write_app_secret(cfg: BlumkinConfig, kind: AppSecretKind, value: str) -> Non
 
 
 def delete_app_secret(cfg: BlumkinConfig, kind: AppSecretKind) -> None:
-    """Remove any vaulted value for ``kind``. A missing entry is not an error."""
+    """Remove any vaulted value for ``kind``. A missing entry is not an error.
+
+    An unavailable keyring backend *is* an error here (raises
+    ``SecretWriteError``) rather than a silent no-op: an entry may already
+    exist, and reporting "removed" while the backend is merely unreachable
+    would let the caller (``blumkin auth set-app-secret --delete``) believe
+    the secret is gone when it is still retrievable once the backend comes
+    back (issue #368 review finding).
+    """
     keyring_module = secret_store._keyring_module()
     if keyring_module is None:
-        return
+        raise SecretWriteError(
+            f"no usable OS keychain backend on this machine - cannot confirm whether "
+            f"a vaulted {kind} was removed."
+        )
     account = _account(cfg, kind)
     try:
         _await_pending_mutation(account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)

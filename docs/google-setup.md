@@ -204,8 +204,10 @@ tags = ["@personal", "personal", "google", "gmail"]
   The vaulted value then takes precedence over the file's own `client_secret`,
   and `google_oauth_client_file` itself becomes optional once `client_id` (and
   any of the endpoint overrides above, if needed) live in `config.toml`. This
-  does not delete the file - remove it yourself once you have confirmed the
-  vaulted value works (`blumkin auth refresh`).
+  does not delete the file - before removing it, set `client_id` in
+  `config.toml`, remove the `google_oauth_client_file` setting, and confirm
+  `blumkin auth refresh` still works without the JSON fallback in place; only
+  delete the original file once that verification succeeds.
 - Token files land under `~/.config/blumkin/profiles/personal/`.
 - Inspect keys without dumping secrets:
 

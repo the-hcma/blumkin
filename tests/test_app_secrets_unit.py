@@ -148,12 +148,16 @@ def test_write_app_secret_raises_on_backend_failure(
         app_secrets.write_app_secret(cfg, "google_client_secret", "s3cr3t")
 
 
-def test_delete_app_secret_is_a_no_op_without_keyring_module(
+def test_delete_app_secret_raises_without_keyring_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A missing entry is idempotent, but a missing *backend* must raise
+    rather than silently report success - an entry could already exist and
+    remain retrievable once the backend comes back (issue #368 review)."""
     cfg = _load(tmp_path, monkeypatch)
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
-    app_secrets.delete_app_secret(cfg, "google_client_secret")  # must not raise
+    with pytest.raises(SecretWriteError, match="no usable OS keychain backend"):
+        app_secrets.delete_app_secret(cfg, "google_client_secret")
 
 
 def test_delete_app_secret_tolerates_missing_entry(

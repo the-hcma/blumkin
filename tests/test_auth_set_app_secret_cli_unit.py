@@ -154,3 +154,62 @@ def test_set_app_secret_rejects_token_storage_file(tmp_path: Path, monkeypatch) 
     )
     assert result.exit_code == EXIT_OTHER
     assert 'token_storage = "file"' in result.output
+
+
+def test_set_app_secret_from_file_rejects_desktop_json_without_client_secret(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A Desktop client JSON with an `installed`/`web` object but no usable
+    `client_secret` must be rejected, not vaulted whole as raw text - the
+    latter would silently shadow the working file value with garbage (e.g. a
+    service-account key) until `--delete` is run (issue #368 review)."""
+    _configure(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    oauth_file = tmp_path / "service-account.json"
+    oauth_file.write_text(json.dumps({"installed": {"client_id": "file-client-id"}}))
+    result = CliRunner().invoke(
+        main,
+        [
+            "auth",
+            "set-app-secret",
+            "--kind",
+            "google_client_secret",
+            "--from-file",
+            str(oauth_file),
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert "no usable client_secret" in result.output
+    assert read_app_secret(load_config(), "google_client_secret") is None
+
+
+def test_set_app_secret_delete_reports_failure_when_backend_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`--delete` must not report success (and must emit the structured
+    `secret_write_failed` error, matching the write path) when the keychain
+    backend is unavailable - reporting success would let an existing vaulted
+    entry silently survive undetected (issue #368 review)."""
+    _configure(tmp_path, monkeypatch)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    result = CliRunner().invoke(
+        main,
+        ["auth", "set-app-secret", "--kind", "ms_client_id", "--delete"],
+    )
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert "no usable OS keychain" in result.output
+
+
+def test_set_app_secret_delete_json_reports_secret_write_failed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _configure(tmp_path, monkeypatch)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    result = CliRunner().invoke(
+        main,
+        ["auth", "set-app-secret", "--kind", "ms_client_id", "--delete", "--json"],
+    )
+    assert result.exit_code == EXIT_OTHER, result.output
+    payload = json.loads(result.output)
+    assert payload["error"] == "secret_write_failed"

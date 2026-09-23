@@ -16,7 +16,12 @@ from click.shell_completion import get_completion_class
 
 from blumkin import help_text
 from blumkin.agent import client as agent_client
-from blumkin.app_secrets import AppSecretKind, delete_app_secret, write_app_secret
+from blumkin.app_secrets import (
+    AppSecretKind,
+    app_secret_backend,
+    delete_app_secret,
+    write_app_secret,
+)
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
 from blumkin.capabilities import capability_summary
 from blumkin.config import (
@@ -1108,7 +1113,11 @@ def auth_set_app_secret(
                 as_json=as_json,
             )
             raise SystemExit(EXIT_USAGE)
-        delete_app_secret(cfg, app_secret_kind)
+        try:
+            delete_app_secret(cfg, app_secret_kind)
+        except SecretWriteError as exc:
+            _emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
+            raise SystemExit(EXIT_OTHER) from exc
         if as_json:
             emit_json({"ok": True, "action": "deleted", "kind": kind})
         else:
@@ -1146,7 +1155,20 @@ def _read_app_secret_value(kind: str, from_file: Path | None) -> str:
                 secret = installed.get("client_secret")
                 if isinstance(secret, str) and secret.strip():
                     return secret.strip()
-        value = from_file.read_text().strip()
+                # The file parsed as a Desktop client JSON (installed/web
+                # object present) but has no usable client_secret - do not
+                # fall through to vaulting the raw file text, which would
+                # silently shadow the working file value with something
+                # useless (e.g. an entire service-account key) until
+                # `--delete` is run (issue #368 review finding).
+                raise ProviderConfigError(
+                    f"{from_file} has an installed/web client object but no usable "
+                    "client_secret - refusing to vault the raw file contents."
+                )
+        try:
+            value = from_file.read_text().strip()
+        except UnicodeDecodeError as exc:
+            raise ProviderConfigError(f"{from_file} is not readable as text: {exc}") from exc
         if not value:
             raise ProviderConfigError(f"{from_file} is empty.")
         return value
@@ -1537,6 +1559,23 @@ def completion(
     raise SystemExit(EXIT_SUCCESS)
 
 
+def _vaulted_client_id_or_secret_present(cfg: BlumkinConfig) -> bool:
+    """Whether a vaulted ``ms_client_id`` should satisfy ``client_id_configured``.
+
+    ``status_dict``'s own ``client_id_configured`` field deliberately never
+    touches this keychain namespace (it reads ``config.toml`` directly, to
+    preserve the one-keychain-touch guarantee asserted by
+    ``test_status_dict_touches_one_keychain_item_for_both_bundled_kinds``), so
+    without this check ``doctor`` would report "client_id missing in
+    config.toml" for a fully working profile whose ``client_id`` lives only
+    in the OS keychain (issue #368 review). ``doctor`` runs far less often
+    than `auth status`, so it can afford this one extra, lenient round trip.
+    """
+    if cfg.provider is not ProviderKind.MICROSOFT:
+        return False
+    return app_secret_backend(cfg, "ms_client_id") == "keyring"
+
+
 @main.command(epilog=help_text.DOCTOR_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -1550,7 +1589,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
     cfg = _load_config()
     status = _workspace(cfg).auth_status()
     problems: list[str] = []
-    if not status["client_id_configured"]:
+    if not status["client_id_configured"] and not _vaulted_client_id_or_secret_present(cfg):
         problems.append("client_id missing in config.toml")
     if not status["token_cache"] or not status["auth_record"]:
         problems.append("auth cache incomplete — run: blumkin auth login")
