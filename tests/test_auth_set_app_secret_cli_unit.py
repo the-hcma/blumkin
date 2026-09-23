@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from click.testing import CliRunner
+import click as click_module
+from click.testing import CliRunner, _NamedTextIOWrapper
 
 from blumkin import secret_store
 from blumkin.app_secrets import read_app_secret
@@ -155,9 +156,6 @@ def test_set_app_secret_routes_interactive_prompt_to_stderr_in_json_mode(
     `--delete` confirmation prompt elsewhere in this command, otherwise a
     `--json` consumer's `json.loads(stdout)` fails (issue #368 review,
     round 3)."""
-    import click as click_module
-    from click.testing import _NamedTextIOWrapper
-
     _configure(tmp_path, monkeypatch)
     fake = _FakeKeyring()
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
@@ -314,6 +312,10 @@ def test_set_app_secret_delete_reports_failure_when_backend_unavailable(
 def test_set_app_secret_delete_json_reports_secret_write_failed(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """The `hint` must point at the OS keychain, not the generic
+    `_DEFAULT_HINTS["secret_write_failed"]` token-cache-symlink wording that
+    does not apply here - an agent reading `--json` output would otherwise
+    try to fix files instead of the keychain (issue #368 review, round 7)."""
     _configure(tmp_path, monkeypatch)
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
     result = CliRunner().invoke(
@@ -323,3 +325,5 @@ def test_set_app_secret_delete_json_reports_secret_write_failed(
     assert result.exit_code == EXIT_OTHER, result.output
     payload = json.loads(result.output)
     assert payload["error"] == "secret_write_failed"
+    assert "keychain" in payload["hint"].lower()
+    assert "token cache" not in payload["hint"].lower()

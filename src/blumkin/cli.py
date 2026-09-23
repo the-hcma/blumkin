@@ -211,6 +211,15 @@ _DEFAULT_HINTS: dict[str, str] = {
     "usage_error": "See `blumkin COMMAND --help` for the accepted arguments and examples.",
 }
 
+# Overrides _DEFAULT_HINTS["secret_write_failed"] (token cache/auth record wording) for
+# `auth_set_app_secret` specifically: a SecretWriteError there means the OS keychain
+# itself refused the write/delete, not that a token-cache file or symlink is broken.
+_APP_SECRET_WRITE_HINT = (
+    "The OS keychain could not store or remove this app secret. Install the keychain "
+    "extra (`pipx install 'blumkin[keychain]'`), unlock the login keychain, or set "
+    'token_storage = "auto"/"keyring" in config.toml, then retry.'
+)
+
 # Overrides _DEFAULT_HINTS["missing_scope"] (Microsoft/Graph-only wording) for
 # MissingScopeError specifically: it is provider-neutral, unlike the tenant-grant /
 # wo1162425_scopes / files_scopes hint that only makes sense for a Microsoft 403
@@ -1117,7 +1126,12 @@ def auth_set_app_secret(
         try:
             delete_app_secret(cfg, app_secret_kind)
         except SecretWriteError as exc:
-            _emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
+            _emit_error(
+                error="secret_write_failed",
+                message=str(exc),
+                as_json=as_json,
+                hint=_APP_SECRET_WRITE_HINT,
+            )
             raise SystemExit(EXIT_OTHER) from exc
         if as_json:
             emit_json({"ok": True, "action": "deleted", "kind": kind})
@@ -1132,7 +1146,12 @@ def auth_set_app_secret(
     try:
         write_app_secret(cfg, app_secret_kind, value)
     except SecretWriteError as exc:
-        _emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
+        _emit_error(
+            error="secret_write_failed",
+            message=str(exc),
+            as_json=as_json,
+            hint=_APP_SECRET_WRITE_HINT,
+        )
         raise SystemExit(EXIT_OTHER) from exc
     if as_json:
         emit_json({"ok": True, "action": "written", "kind": kind})

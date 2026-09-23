@@ -493,6 +493,31 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
     return _credentials_from_raw(cfg, secret_store.read_text(cfg, "google_token"))
 
 
+def _credentials_for_status(raw: str | None) -> Credentials | None:
+    """Parse an already-read ``google_token`` payload for status/doctor reporting only.
+
+    Deliberately does *not* resolve the vaulted ``client_secret`` - status only
+    reads expiry/refresh_token metadata, never refreshes, and the persisted
+    token JSON already carries a ``client_secret`` key (written by
+    ``_save_credentials``) sufficient to satisfy
+    ``Credentials.from_authorized_user_info``'s required-keys check. Adding an
+    app-secret keychain lookup here would give a status read a second keychain
+    touch (and potentially a second OS authorization prompt) for a value it
+    never uses (issue #368 review).
+    """
+    data = _parse_token_payload(raw)
+    if data is None:
+        return None
+    return _credentials_from_info(dict(data))
+
+
+def _credentials_from_info(info: dict[str, Any]) -> Credentials | None:
+    try:
+        return Credentials.from_authorized_user_info(info, scopes=sorted(GOOGLE_SCOPES))
+    except Exception:
+        return None
+
+
 def _credentials_from_raw(cfg: BlumkinConfig, raw: str | None) -> Credentials | None:
     """Parse an already-read ``google_token`` payload into ``Credentials``, resolving
     the current (possibly vaulted) ``client_secret`` for real refresh use.
@@ -514,44 +539,6 @@ def _credentials_from_raw(cfg: BlumkinConfig, raw: str | None) -> Credentials | 
     if secret:
         info["client_secret"] = secret
     return _credentials_from_info(info)
-
-
-def _credentials_for_status(raw: str | None) -> Credentials | None:
-    """Parse an already-read ``google_token`` payload for status/doctor reporting only.
-
-    Deliberately does *not* resolve the vaulted ``client_secret`` - status only
-    reads expiry/refresh_token metadata, never refreshes, and the persisted
-    token JSON already carries a ``client_secret`` key (written by
-    ``_save_credentials``) sufficient to satisfy
-    ``Credentials.from_authorized_user_info``'s required-keys check. Adding an
-    app-secret keychain lookup here would give a status read a second keychain
-    touch (and potentially a second OS authorization prompt) for a value it
-    never uses (issue #368 review).
-    """
-    data = _parse_token_payload(raw)
-    if data is None:
-        return None
-    return _credentials_from_info(dict(data))
-
-
-def _parse_token_payload(raw: str | None) -> dict[str, Any] | None:
-    """Best-effort JSON-object parse of a ``google_token`` payload, else ``None``."""
-    if raw is None:
-        return None
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError, OSError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    return data
-
-
-def _credentials_from_info(info: dict[str, Any]) -> Credentials | None:
-    try:
-        return Credentials.from_authorized_user_info(info, scopes=sorted(GOOGLE_SCOPES))
-    except Exception:
-        return None
 
 
 def _missing_scope_error(
@@ -589,6 +576,19 @@ def _needs_additional_scopes(cfg: BlumkinConfig, required: frozenset[str]) -> bo
         # and server grant align with GOOGLE_SCOPES.
         return True
     return not required.issubset(granted)
+
+
+def _parse_token_payload(raw: str | None) -> dict[str, Any] | None:
+    """Best-effort JSON-object parse of a ``google_token`` payload, else ``None``."""
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError, OSError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
 
 
 def _read_persisted_scopes(cfg: BlumkinConfig) -> list[str] | None:
