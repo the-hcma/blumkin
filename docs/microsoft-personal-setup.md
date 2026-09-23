@@ -164,8 +164,12 @@ non-interactive agent shell). Sign in as the MSA. Do **not** open
 `http://localhost:<port>` yourself while the CLI is waiting, and do not run a
 second `auth login` at the same time - both cause `state mismatch: … vs None`.
 
-On success, `~/.config/blumkin/profiles/microsoft-personal/msal_token_cache.json`
-and `auth_record.json` appear (mode `0600`).
+On success, the MSAL cache and auth record are persisted for this profile.
+With the default `token_storage = "auto"`, that means the OS keychain on
+macOS/Windows; only with an explicit `token_storage = "file"` (or on a
+headless Linux box with no Secret Service) do
+`~/.config/blumkin/profiles/microsoft-personal/msal_token_cache.json` and
+`auth_record.json` appear on disk (mode `0600`) instead.
 
 Verify:
 
@@ -207,7 +211,7 @@ why - this is by design, not a bug to work around.
 | `state mismatch: … vs None` | Opened `localhost` manually, or ran two logins at once | Close extra tabs, kill the hung `auth login`, retry once |
 | Login works but calls fail as if signed in wrong | Pasted **Object ID** instead of **Application (client) ID** into `client_id` | Re-copy the client ID from the app's Overview page (§B.5) |
 | `missing_scope` (exit 4) on mail/calendar right after first login | Portal API permissions list was incomplete for this personal-only app | Ignore the portal list; re-run `auth login` to re-consent - dynamic consent grants what the portal API blocked |
-| `chat.*` / `meeting.*` / `people.resolve` fail with a usage error | Expected - personal accounts can never be granted these scopes | Not a bug; use a work/school profile for these skills |
+| `chat.*` / `meeting.*` / `people.resolve` fail with exit 2 (`usage_error`) | Expected - personal accounts can never be granted these scopes | Not a bug; use a work/school profile for these skills |
 | Azure shows the app registered and consented, but blumkin has no token | `auth login` did not complete, or wrote to a different profile/config dir | Re-run `blumkin --profile microsoft-personal auth login`; check `BLUMKIN_CONFIG_DIR` if set |
 
 ---
