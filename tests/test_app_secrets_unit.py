@@ -249,3 +249,29 @@ def test_account_namespace_is_distinct_per_profile(
     monkeypatch.setenv("BLUMKIN_PROFILE", "work")
     other_cfg = load_config()
     assert app_secrets.read_app_secret(other_cfg, "google_client_secret") is None
+
+
+def test_account_namespace_is_distinct_per_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two config dirs (the `BLUMKIN_CONFIG_DIR` escape hatch used for e.g. a
+    sandbox/CI tenant) that both use the same profile name must not share one
+    keychain item - mirroring `test_keyring_account_is_namespaced_by_config_dir`
+    for the grant accounts. Without `config_dir` in `_account`'s namespace,
+    `blumkin auth set-app-secret --delete` in one dir would silently remove
+    the other's vaulted secret (issue #368 review, round 6)."""
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    primary = _load(tmp_path / "primary", monkeypatch)
+    app_secrets.write_app_secret(primary, "google_client_secret", "primary-secret")
+
+    alternate = _load(tmp_path / "alternate", monkeypatch)
+    assert app_secrets.read_app_secret(alternate, "google_client_secret") is None
+
+    app_secrets.write_app_secret(alternate, "google_client_secret", "alternate-secret")
+    assert app_secrets.read_app_secret(primary, "google_client_secret") == "primary-secret"
+    assert app_secrets.read_app_secret(alternate, "google_client_secret") == "alternate-secret"
+
+    app_secrets.delete_app_secret(alternate, "google_client_secret")
+    assert app_secrets.read_app_secret(primary, "google_client_secret") == "primary-secret"
