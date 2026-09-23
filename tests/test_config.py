@@ -156,6 +156,57 @@ def test_google_oauth_client_file_loads_client_id(tmp_path: Path, monkeypatch) -
     assert cfg.google_oauth_client_file == oauth
 
 
+def test_google_oauth_endpoints_default_to_empty(tmp_path: Path, monkeypatch) -> None:
+    """No toml override: the empty sentinel lets ``_client_config`` fall back (issue #368)."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    cfg = load_config()
+    assert cfg.google_auth_uri == ""
+    assert cfg.google_token_uri == ""
+    assert cfg.google_redirect_uris == ()
+
+
+def test_google_oauth_endpoints_load_from_toml(tmp_path: Path, monkeypatch) -> None:
+    """Explicit ``config.toml`` overrides for the non-secret OAuth endpoints (issue #368)."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
+        'provider = "google"\n'
+        'client_id = "abc-123"\n'
+        'google_auth_uri = "https://toml.example/auth"\n'
+        'google_token_uri = "https://toml.example/token"\n'
+        'google_redirect_uris = ["http://toml.example/callback"]\n'
+    )
+    cfg = load_config()
+    assert cfg.google_auth_uri == "https://toml.example/auth"
+    assert cfg.google_token_uri == "https://toml.example/token"
+    assert cfg.google_redirect_uris == ("http://toml.example/callback",)
+
+
+@pytest.mark.parametrize(
+    "toml_key",
+    ["google_auth_uri", "google_token_uri"],
+)
+def test_google_oauth_endpoint_rejects_non_string(
+    tmp_path: Path, monkeypatch, toml_key: str
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        f'[profiles.default]\nclient_id = "abc"\n{toml_key} = 1\n'
+    )
+    with pytest.raises(ProviderConfigError, match=toml_key):
+        load_config()
+
+
+def test_google_redirect_uris_rejects_non_list_of_strings(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\ngoogle_redirect_uris = "not-a-list"\n'
+    )
+    with pytest.raises(ProviderConfigError, match="google_redirect_uris"):
+        load_config()
+
+
 def test_missing_tenant_and_tz_have_no_code_defaults(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')

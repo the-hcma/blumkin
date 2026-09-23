@@ -188,6 +188,11 @@ tags = ["@personal", "personal", "google", "gmail"]
 - Path only — **no** `client_secret` in toml.
 - `client_id` is optional in the Google profile; when omitted, Blumkin reads it
   from the JSON.
+- `google_auth_uri`, `google_token_uri`, and `google_redirect_uris` are also
+  optional in the Google profile (issue #368): each overrides the same field
+  in the Desktop client JSON, which in turn overrides Blumkin's own defaults
+  (the `auth_uri` / `token_uri` / `redirect_uris` shown in §A.4). Most setups
+  never need these.
 - Token files land under `~/.config/blumkin/profiles/personal/`.
 - Inspect keys without dumping secrets:
 

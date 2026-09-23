@@ -288,6 +288,14 @@ signed in as a different account.
 Optional: set `client_id` in toml as well; when omitted it is read from the JSON.
 Keep the client JSON mode `0600` and outside the repo.
 
+Optional non-secret overrides (issue #368): `google_auth_uri`, `google_token_uri`,
+and `google_redirect_uris` may also be set in toml, each taking precedence over
+the same field in the Desktop client JSON, which in turn takes precedence over
+blumkin's own defaults (`https://accounts.google.com/o/oauth2/auth`,
+`https://oauth2.googleapis.com/token`, `["http://localhost"]`). Most setups never
+need these — they exist for non-standard endpoints/redirects. `client_secret`
+stays file-only; it is never accepted in toml.
+
 **Coverage.** Google runs `auth`, all of `calendar` (`update` attaches a Meet
 link instead of a Teams link; `create` takes the same `--repeat` recurrence
 flags), all of `mail` reads and writes, `people resolve` (own contacts, plus the
