@@ -226,8 +226,10 @@ why - this is by design, not a bug to work around.
   work/school app's account-type setting instead.
 - This remains a public client only (auth code + PKCE) - never add a client
   secret to this app registration or to `config.toml`.
-- Tokens land under `~/.config/blumkin/profiles/microsoft-personal/` (mode
-  `0600`); `token_storage` controls whether they also go to the OS keychain.
+- With the default `token_storage = "auto"`, tokens go to the OS keychain;
+  they only land on disk under `~/.config/blumkin/profiles/microsoft-personal/`
+  (mode `0600`) with an explicit `token_storage = "file"` or when no keychain
+  backend is usable.
 - Use only placeholder client IDs in issues, PRs, or chat - a `client_id` is
   not itself secret, but there is no reason to publish yours.
 
