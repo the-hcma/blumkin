@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -16,9 +17,21 @@ from click.shell_completion import get_completion_class
 
 from blumkin import help_text
 from blumkin.agent import client as agent_client
+from blumkin.app_secrets import (
+    AppSecretKind,
+    app_secret_backend,
+    delete_app_secret,
+    write_app_secret,
+)
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
 from blumkin.capabilities import capability_summary
-from blumkin.config import BlumkinConfig, list_profiles, load_config, set_profile_email
+from blumkin.config import (
+    BlumkinConfig,
+    google_oauth_installed_client,
+    list_profiles,
+    load_config,
+    set_profile_email,
+)
 from blumkin.contacts import format_people_context_human
 from blumkin.exit_codes import (
     EXIT_AUTH,
@@ -197,6 +210,15 @@ _DEFAULT_HINTS: dict[str, str] = {
     ),
     "usage_error": "See `blumkin COMMAND --help` for the accepted arguments and examples.",
 }
+
+# Overrides _DEFAULT_HINTS["secret_write_failed"] (token cache/auth record wording) for
+# `auth_set_app_secret` specifically: a SecretWriteError there means the OS keychain
+# itself refused the write/delete, not that a token-cache file or symlink is broken.
+_APP_SECRET_WRITE_HINT = (
+    "The OS keychain could not store or remove this app secret. Install the keychain "
+    "extra (`pipx install 'blumkin[keychain]'`), unlock the login keychain, or set "
+    'token_storage = "auto"/"keyring" in config.toml, then retry.'
+)
 
 # Overrides _DEFAULT_HINTS["missing_scope"] (Microsoft/Graph-only wording) for
 # MissingScopeError specifically: it is provider-neutral, unlike the tenant-grant /
@@ -1050,6 +1072,166 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
     emit_lines(lines)
 
 
+@auth.command("set-app-secret", epilog=help_text.AUTH_SET_APP_SECRET_EPILOG)
+@click.option(
+    "--kind",
+    "kind",
+    type=click.Choice(["google_client_secret", "ms_client_id"]),
+    required=True,
+    help="Which app secret to vault or remove.",
+)
+@click.option(
+    "--from-file",
+    "from_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Read the value from this file. For google_client_secret, a Desktop "
+        "client JSON's installed.client_secret is auto-extracted; any other "
+        "file is read as raw text."
+    ),
+)
+@click.option(
+    "--stdin", "from_stdin", is_flag=True, help="Read the value from stdin (for scripting)."
+)
+@click.option(
+    "--delete", "delete_flag", is_flag=True, help="Remove any vaulted value instead of writing one."
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def auth_set_app_secret(
+    ctx: click.Context,
+    kind: str,
+    from_file: Path | None,
+    from_stdin: bool,
+    delete_flag: bool,
+    as_json_flag: bool,
+) -> None:
+    """Vault (or remove) an app secret in the OS keychain (issue #368).
+
+    Never accepts the value as a command-line argument - it would otherwise
+    leak into shell history and `ps`. Use `--from-file`, `--stdin`, or the
+    interactive hidden prompt on a TTY.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    app_secret_kind: AppSecretKind = kind  # type: ignore[assignment]  # click.Choice already restricts this
+    cfg = _load_config()
+    if delete_flag:
+        if from_file is not None or from_stdin:
+            _emit_error(
+                error="usage_error",
+                message="--delete cannot be combined with --from-file or --stdin.",
+                as_json=as_json,
+            )
+            raise SystemExit(EXIT_USAGE)
+        try:
+            delete_app_secret(cfg, app_secret_kind)
+        except SecretWriteError as exc:
+            _emit_error(
+                error="secret_write_failed",
+                message=str(exc),
+                as_json=as_json,
+                hint=_APP_SECRET_WRITE_HINT,
+            )
+            raise SystemExit(EXIT_OTHER) from exc
+        if as_json:
+            emit_json({"ok": True, "action": "deleted", "kind": kind})
+        else:
+            emit_lines([f"Removed any vaulted {kind}."])
+        return
+    try:
+        value = _read_app_secret_value(kind, from_file, from_stdin, as_json=as_json)
+    except ProviderConfigError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    try:
+        write_app_secret(cfg, app_secret_kind, value)
+    except SecretWriteError as exc:
+        _emit_error(
+            error="secret_write_failed",
+            message=str(exc),
+            as_json=as_json,
+            hint=_APP_SECRET_WRITE_HINT,
+        )
+        raise SystemExit(EXIT_OTHER) from exc
+    if as_json:
+        emit_json({"ok": True, "action": "written", "kind": kind})
+    else:
+        emit_lines([f"Vaulted {kind} in the OS keychain."])
+
+
+def _read_app_secret_value(
+    kind: str, from_file: Path | None, from_stdin: bool, *, as_json: bool = False
+) -> str:
+    """Resolve the secret value from ``--from-file``, ``--stdin``, or an interactive prompt.
+
+    Never a ``--value TEXT`` flag - the value would otherwise leak into shell
+    history and be visible to any other process via `ps` (issue #368).
+    ``from_stdin`` is threaded through and checked explicitly rather than
+    inferred from ``sys.stdin.isatty()`` alone: a non-TTY stdin (a script or
+    agent's inherited pipe) without an explicit ``--stdin`` must not be
+    silently consumed as the value - that would let a mis-vaulted string
+    silently become the effective client_id/secret until `--delete` is run
+    (issue #368 review finding). ``as_json`` routes the interactive prompt's
+    echoed text to stderr (matching the ``--delete`` confirmation prompt
+    elsewhere in this command), so a ``--json`` consumer's stdout stays
+    parseable (issue #368 review finding).
+    """
+    if from_file is not None:
+        try:
+            text = from_file.read_text()
+        except UnicodeDecodeError as exc:
+            raise ProviderConfigError(f"{from_file} is not readable as text: {exc}") from exc
+        except OSError as exc:
+            raise ProviderConfigError(f"{from_file} could not be read: {exc}") from exc
+        if kind == "google_client_secret":
+            parsed: Any = None
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                # Any JSON object (not just one with an installed/web section -
+                # a Google service-account key is a JSON object too) must
+                # yield a real client_secret or be rejected outright; falling
+                # through to raw-text vaulting here would silently shadow the
+                # working file value with something useless (e.g. a service
+                # account's private key) until `--delete` is run (issue #368
+                # review finding).
+                try:
+                    installed = google_oauth_installed_client(from_file)
+                except ProviderConfigError as exc:
+                    raise ProviderConfigError(
+                        f"{from_file} is a JSON object but has no installed/web client "
+                        "object - refusing to vault the raw file contents."
+                    ) from exc
+                secret = installed.get("client_secret")
+                if isinstance(secret, str) and secret.strip():
+                    return secret.strip()
+                raise ProviderConfigError(
+                    f"{from_file} has an installed/web client object but no usable "
+                    "client_secret - refusing to vault the raw file contents."
+                )
+        value = text.strip()
+        if not value:
+            raise ProviderConfigError(f"{from_file} is empty.")
+        return value
+    if from_stdin:
+        value = sys.stdin.read().strip()
+        if not value:
+            raise ProviderConfigError("No value read from stdin.")
+        return value
+    if not sys.stdin.isatty():
+        raise ProviderConfigError(
+            "stdin is not a TTY and --stdin was not given - refusing to silently read "
+            "an inherited pipe as the secret value; pass --stdin explicitly or use "
+            "--from-file."
+        )
+    value = click.prompt(f"Enter the value for {kind}", hide_input=True, err=as_json)
+    if not value.strip():
+        raise ProviderConfigError("A non-empty value is required.")
+    return value.strip()
+
+
 @main.group(epilog=help_text.AGENT_EPILOG)
 def agent() -> None:
     """Check on / lock the blumkin-agent background process.
@@ -1426,6 +1608,23 @@ def completion(
     raise SystemExit(EXIT_SUCCESS)
 
 
+def _vaulted_client_id_or_secret_present(cfg: BlumkinConfig) -> bool:
+    """Whether a vaulted ``ms_client_id`` should satisfy ``client_id_configured``.
+
+    ``status_dict``'s own ``client_id_configured`` field deliberately never
+    touches this keychain namespace (it reads ``config.toml`` directly, to
+    preserve the one-keychain-touch guarantee asserted by
+    ``test_status_dict_touches_one_keychain_item_for_both_bundled_kinds``), so
+    without this check ``doctor`` would report "client_id missing in
+    config.toml" for a fully working profile whose ``client_id`` lives only
+    in the OS keychain (issue #368 review). ``doctor`` runs far less often
+    than `auth status`, so it can afford this one extra, lenient round trip.
+    """
+    if cfg.provider is not ProviderKind.MICROSOFT:
+        return False
+    return app_secret_backend(cfg, "ms_client_id") == "keyring"
+
+
 @main.command(epilog=help_text.DOCTOR_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -1439,7 +1638,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
     cfg = _load_config()
     status = _workspace(cfg).auth_status()
     problems: list[str] = []
-    if not status["client_id_configured"]:
+    if not status["client_id_configured"] and not _vaulted_client_id_or_secret_present(cfg):
         problems.append("client_id missing in config.toml")
     if not status["token_cache"] or not status["auth_record"]:
         problems.append("auth cache incomplete — run: blumkin auth login")

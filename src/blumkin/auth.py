@@ -14,6 +14,7 @@ from azure.identity import AuthenticationRecord, InteractiveBrowserCredential
 from msal import SerializableTokenCache
 
 from blumkin import secret_store
+from blumkin.app_secrets import read_app_secret
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.kind import ProviderConfigError
 from blumkin.secret_store import SecretWriteError as SecretWriteError
@@ -112,6 +113,16 @@ _cache_bound_cfg: BlumkinConfig | None = None
 _cache_bound_key: tuple[str, str] | None = None
 
 
+def _resolved_client_id(cfg: BlumkinConfig) -> str:
+    """The OS keychain's ``ms_client_id`` (issue #368) > ``config.toml``'s own value.
+
+    Mirrors Google's ``client_secret`` precedence (``_vaulted_or_file_client_secret``
+    in ``google_auth.py``): vaulting is opt-in, so an unvaulted profile is
+    unaffected and keeps reading straight from ``config.toml``.
+    """
+    return read_app_secret(cfg, "ms_client_id") or cfg.client_id
+
+
 def create_credential(
     config: BlumkinConfig | None = None,
     *,
@@ -125,9 +136,11 @@ def create_credential(
     """
     cfg = config or load_config()
     scopes = effective_scopes(cfg)
-    if not cfg.client_id:
+    client_id = _resolved_client_id(cfg)
+    if not client_id:
         raise ProviderConfigError(
-            "Missing client_id — set client_id in ~/.config/blumkin/config.toml."
+            "Missing client_id — set client_id in ~/.config/blumkin/config.toml, "
+            "or vault it with `blumkin auth set-app-secret --kind ms_client_id`."
         )
     interactive = interactive_auth_allowed() if allow_interactive is None else allow_interactive
     _ensure_cache(cfg)
@@ -135,7 +148,7 @@ def create_credential(
     timeout_s = float(cfg.graph_timeout_seconds)
     connect_s = min(30.0, timeout_s)
     kwargs: dict = {
-        "client_id": cfg.client_id,
+        "client_id": client_id,
         "tenant_id": cfg.tenant_id,
         "_cache": _token_cache,
         "_cae_cache": _token_cache,
@@ -410,7 +423,13 @@ def _granted_scopes_from_cache(
 
     Takes the already-read cache text (``raw``) rather than reading it itself,
     so ``status_dict`` does not pay for a second keyring round trip on top of
-    its own read of the same secret.
+    its own read of the same secret. Filters on ``cfg.client_id`` (the
+    ``config.toml`` value), not ``_resolved_client_id`` (issue #368's
+    keychain-first resolution) - for the same reason: ``status_dict`` must
+    stay a single keychain touch (the bundled auth_record/token_cache read),
+    so an ``ms_client_id`` vaulted-only-in-keychain profile keeps this diff
+    scoped to whatever ``config.toml`` says (doctor/status keychain-aware
+    reporting is a tracked follow-up, not this slice).
     """
     if raw is None:
         return frozenset()

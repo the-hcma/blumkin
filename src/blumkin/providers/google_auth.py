@@ -12,6 +12,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from blumkin import secret_store
+from blumkin.app_secrets import read_app_secret
 from blumkin.auth import (
     AuthRequiredError,
     AuthTransientError,
@@ -275,7 +276,7 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     # secret, so a single `doctor` / `auth status` call could hit the OS
     # keychain for one item up to four times.
     raw_token, token_backend = secret_store.read_text_and_backend(cfg, "google_token")
-    access = _access_token_expiry(cfg, raw_token)
+    access = _access_token_expiry(raw_token)
     granted = frozenset(_scopes_from_raw(raw_token) or ())
     token_present = raw_token is not None
     return {
@@ -302,17 +303,20 @@ def status_dict(config: BlumkinConfig | None = None) -> dict[str, Any]:
     }
 
 
-def _access_token_expiry(cfg: BlumkinConfig, raw: str | None) -> dict[str, Any]:
+def _access_token_expiry(raw: str | None) -> dict[str, Any]:
     """Takes the already-read ``google_token`` text rather than reading it itself,
     so ``status_dict`` does not pay for a second keyring round trip on top of
-    its own read of the same secret."""
+    its own read of the same secret. Uses ``_credentials_for_status`` (not
+    ``_credentials_from_raw``) so this stays to zero app-secret keychain
+    touches - it never needs a live ``client_secret``, only expiry/refresh_token
+    metadata (issue #368 review)."""
     out: dict[str, Any] = {
         "expired": None,
         "expires_at": None,
         "expires_in_seconds": None,
         "refresh_token_present": False,
     }
-    creds = _credentials_from_raw(cfg, raw)
+    creds = _credentials_for_status(raw)
     if creds is None:
         return out
     out["refresh_token_present"] = bool(creds.refresh_token)
@@ -370,37 +374,38 @@ def _authorization_prompt_message() -> str:
 
 
 def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
-    """Build InstalledAppFlow client config from the Desktop download JSON.
+    """Build InstalledAppFlow client config from toml, the OS keychain, and (optionally)
+    the Desktop download JSON.
 
-    Google Cloud Desktop clients ship a ``client_secret`` in that file; the
-    token endpoint rejects the exchange when it is omitted. The secret stays
-    in the referenced JSON (mode 0600), never in env or ``config.toml`` -
-    issue #368's keychain follow-up covers moving it into the OS keychain.
-    ``client_id`` and the non-secret endpoints (``auth_uri``, ``token_uri``,
-    ``redirect_uris``) prefer ``config.toml`` overrides over the file's own
-    values, then the file's values, then blumkin's hardcoded defaults (issue
-    #368: centralize non-secret profile configuration in ``config.toml``).
+    ``client_secret`` prefers the OS keychain (``blumkin auth set-app-secret``,
+    issue #368) over the Desktop client JSON's own value; at least one of the
+    two must supply it. The Desktop client JSON (``google_oauth_client_file``)
+    itself is now optional - once the keychain holds ``client_secret`` and
+    ``client_id`` / ``auth_uri`` / ``token_uri`` / ``redirect_uris`` are set in
+    ``config.toml`` (or fall back to blumkin's own defaults), no side-car file
+    is required at all (issue #368 goal: ``config.toml`` + the keychain as the
+    complete config surface, no mandatory JSON file). When the file is still
+    configured, it continues to supply anything toml/keychain do not
+    (``.setdefault()``-equivalent tolerance preserved via the ``_resolved_*``
+    helpers below).
     """
     path = cfg.google_oauth_client_file
-    if path is None:
-        raise ProviderConfigError(
-            "google_oauth_client_file is required for Google auth "
-            "(path to Cloud Console Desktop client JSON)."
-        )
-    if not path.is_file():
-        raise ProviderConfigError(f"google_oauth_client_file not found: {path}")
-    installed = dict(google_oauth_installed_client(path))
+    installed: dict[str, Any] = {}
+    if path is not None:
+        if not path.is_file():
+            raise ProviderConfigError(f"google_oauth_client_file not found: {path}")
+        installed = dict(google_oauth_installed_client(path))
     if not cfg.client_id.strip():
+        where = f"google_oauth_client_file {path}" if path is not None else "config.toml"
+        raise ProviderConfigError(f"client_id is required for Google auth (set it in {where}).")
+    secret = _resolved_client_secret(cfg, installed)
+    if not secret:
         raise ProviderConfigError(
-            "client_id is required for Google auth (set it in config.toml, "
-            f"or add it to google_oauth_client_file {path})."
+            "client_secret is required for Google auth - vault it with "
+            "`blumkin auth set-app-secret`, or set google_oauth_client_file to a "
+            "Desktop client JSON that has one."
         )
-    secret = installed.get("client_secret")
-    if not isinstance(secret, str) or not secret.strip():
-        raise ProviderConfigError(
-            f"google_oauth_client_file {path} missing client_secret "
-            "(required for Desktop token exchange)."
-        )
+    installed["client_secret"] = secret
     installed["client_id"] = cfg.client_id
     installed["auth_uri"] = _resolved_google_endpoint(
         cfg.google_auth_uri, installed, "auth_uri", "https://accounts.google.com/o/oauth2/auth"
@@ -412,6 +417,15 @@ def _client_config(cfg: BlumkinConfig) -> dict[str, Any]:
         cfg.google_token_uri, installed, "token_uri", "https://oauth2.googleapis.com/token"
     )
     return {"installed": installed}
+
+
+def _resolved_client_secret(cfg: BlumkinConfig, installed: dict[str, Any]) -> str:
+    """The OS keychain's ``client_secret`` (issue #368) > the Desktop JSON's own value."""
+    vaulted = read_app_secret(cfg, "google_client_secret")
+    if vaulted:
+        return vaulted
+    raw = installed.get("client_secret")
+    return raw.strip() if isinstance(raw, str) else ""
 
 
 def _resolved_google_endpoint(
@@ -450,6 +464,17 @@ def _client_secret_from_oauth_file(cfg: BlumkinConfig) -> str:
     return raw.strip() if isinstance(raw, str) else ""
 
 
+def _vaulted_or_file_client_secret(cfg: BlumkinConfig) -> str:
+    """The OS keychain's ``client_secret`` (issue #368) > the Desktop JSON's own value.
+
+    Used by call sites that only need the value (not the rest of an ``installed``
+    dict already in hand) - ``_client_config`` uses ``_resolved_client_secret``
+    instead so it does not re-read the file a second time.
+    """
+    vaulted = read_app_secret(cfg, "google_client_secret")
+    return vaulted if vaulted else _client_secret_from_oauth_file(cfg)
+
+
 def _consent_once(cfg: BlumkinConfig, *, force_consent: bool) -> Credentials:
     """Run the browser consent flow exactly once; let a partial-grant Warning propagate."""
     flow = InstalledAppFlow.from_client_config(_client_config(cfg), scopes=sorted(GOOGLE_SCOPES))
@@ -468,32 +493,52 @@ def _load_credentials(cfg: BlumkinConfig) -> Credentials | None:
     return _credentials_from_raw(cfg, secret_store.read_text(cfg, "google_token"))
 
 
-def _credentials_from_raw(cfg: BlumkinConfig, raw: str | None) -> Credentials | None:
-    """Parse an already-read ``google_token`` payload into ``Credentials``.
+def _credentials_for_status(raw: str | None) -> Credentials | None:
+    """Parse an already-read ``google_token`` payload for status/doctor reporting only.
 
-    Split out of ``_load_credentials`` so a caller that already has the raw
-    text (``status_dict``, building its payload from one
-    ``read_text_and_backend`` call) does not pay for a second keyring round
-    trip on top of its own read of the same secret.
+    Deliberately does *not* resolve the vaulted ``client_secret`` - status only
+    reads expiry/refresh_token metadata, never refreshes, and the persisted
+    token JSON already carries a ``client_secret`` key (written by
+    ``_save_credentials``) sufficient to satisfy
+    ``Credentials.from_authorized_user_info``'s required-keys check. Adding an
+    app-secret keychain lookup here would give a status read a second keychain
+    touch (and potentially a second OS authorization prompt) for a value it
+    never uses (issue #368 review).
     """
-    if raw is None:
+    data = _parse_token_payload(raw)
+    if data is None:
         return None
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError, OSError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    # Prefer Desktop JSON client_secret when present so rotated secrets win over
-    # a stale value persisted in google_token.json; fall back to the token file.
-    info = dict(data)
-    secret = _client_secret_from_oauth_file(cfg)
-    if secret:
-        info["client_secret"] = secret
+    return _credentials_from_info(dict(data))
+
+
+def _credentials_from_info(info: dict[str, Any]) -> Credentials | None:
     try:
         return Credentials.from_authorized_user_info(info, scopes=sorted(GOOGLE_SCOPES))
     except Exception:
         return None
+
+
+def _credentials_from_raw(cfg: BlumkinConfig, raw: str | None) -> Credentials | None:
+    """Parse an already-read ``google_token`` payload into ``Credentials``, resolving
+    the current (possibly vaulted) ``client_secret`` for real refresh use.
+
+    Only used by the actual credential-construction path (``_load_credentials``,
+    called from ``get_credentials`` on every skill invocation) - the
+    status/doctor path uses ``_credentials_for_status`` instead, which skips
+    the app-secret keychain lookup entirely so a status read stays to one
+    keychain touch (issue #368 review).
+    """
+    data = _parse_token_payload(raw)
+    if data is None:
+        return None
+    # Prefer the vaulted/Desktop-JSON client_secret when present so a rotated
+    # secret wins over a stale value persisted in google_token.json; fall back
+    # to whatever is already in the token file.
+    info = dict(data)
+    secret = _vaulted_or_file_client_secret(cfg)
+    if secret:
+        info["client_secret"] = secret
+    return _credentials_from_info(info)
 
 
 def _missing_scope_error(
@@ -531,6 +576,19 @@ def _needs_additional_scopes(cfg: BlumkinConfig, required: frozenset[str]) -> bo
         # and server grant align with GOOGLE_SCOPES.
         return True
     return not required.issubset(granted)
+
+
+def _parse_token_payload(raw: str | None) -> dict[str, Any] | None:
+    """Best-effort JSON-object parse of a ``google_token`` payload, else ``None``."""
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError, OSError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
 
 
 def _read_persisted_scopes(cfg: BlumkinConfig) -> list[str] | None:
@@ -600,9 +658,25 @@ def _save_credentials(
         else:
             # Pre-scope-tracking token: do not stamp GOOGLE_SCOPES from to_json().
             payload.pop("scopes", None)
-    secret = _client_secret_from_oauth_file(cfg)
-    if secret:
-        payload["client_secret"] = secret
+    # A vaulted client_secret (issue #368) must never reach the token file -
+    # `write_text` can fall back to plaintext under `token_storage = "auto"`
+    # if a keyring write fails, which would leak a value the operator
+    # explicitly chose to vault out of plaintext. When a vault is currently
+    # set, `payload["client_secret"]` (from `creds.to_json()`) may *be* that
+    # vaulted value - `_credentials_from_raw` injects it before constructing
+    # `Credentials` - so it must be replaced with the Desktop JSON's own
+    # value (or blanked); real credential-refresh call sites always
+    # re-resolve the current vaulted-or-file secret at load time instead.
+    # When nothing is vaulted, `payload`'s own secret came from the token
+    # file/Desktop JSON itself (never a keychain-only value) and is safe to
+    # keep as-is if the Desktop JSON does not override it - matches the
+    # pre-#368 behavior, and preserves an already-working profile whose
+    # `google_oauth_client_file` has since gone missing (issue #368 review).
+    file_secret = _client_secret_from_oauth_file(cfg)
+    if read_app_secret(cfg, "google_client_secret"):
+        payload["client_secret"] = file_secret
+    elif file_secret:
+        payload["client_secret"] = file_secret
     else:
         payload.setdefault("client_secret", "")
     secret_store.write_text(cfg, "google_token", json.dumps(payload))

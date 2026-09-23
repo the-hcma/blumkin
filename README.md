@@ -293,8 +293,22 @@ and `google_redirect_uris` may also be set in toml, each taking precedence over
 the same field in the Desktop client JSON, which in turn takes precedence over
 blumkin's own defaults (`https://accounts.google.com/o/oauth2/auth`,
 `https://oauth2.googleapis.com/token`, `["http://localhost"]`). Most setups never
-need these — they exist for non-standard endpoints/redirects. `client_secret`
-stays file-only; it is never accepted in toml.
+need these — they exist for non-standard endpoints/redirects.
+
+**Optional: vault `client_secret` in the OS keychain instead of a file (issue
+#368).** `client_secret` is never accepted in toml, but it no longer has to
+live in the Desktop client JSON either — vault it with:
+
+```bash
+blumkin auth set-app-secret --kind google_client_secret --from-file /path/to/google-oauth-desktop-client.json
+```
+
+Once vaulted, it takes precedence over any `client_secret` still in the file,
+and `google_oauth_client_file` itself becomes optional: with `client_id` (and,
+if needed, `google_auth_uri` / `google_token_uri` / `google_redirect_uris`) set
+in toml, the profile no longer needs the Desktop JSON at all. `blumkin auth
+set-app-secret --kind google_client_secret --delete` removes the vaulted value
+(the Desktop JSON, if still configured, keeps working as before).
 
 **Coverage.** Google runs `auth`, all of `calendar` (`update` attaches a Meet
 link instead of a Teams link; `create` takes the same `--repeat` recurrence

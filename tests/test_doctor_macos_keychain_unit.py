@@ -59,6 +59,120 @@ def test_doctor_is_quiet_when_macos_keychain_is_present(tmp_path: Path, monkeypa
     assert payload["warnings"] == []
 
 
+def test_doctor_flags_missing_ms_client_id_with_a_usable_but_empty_keychain(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Same as `test_doctor_still_flags_a_genuinely_missing_ms_client_id`, but
+    with a real (usable) keychain backend that simply has nothing vaulted -
+    not a `_keyring_module() is None` short-circuit. `app_secret_backend`
+    must actually probe the empty store and return `"none"`, not just fail
+    open because no backend was available at all (issue #368 review, round
+    4: the existing test above never exercised this path)."""
+    from blumkin import secret_store
+
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\ntenant_id = "example.com"\ndefault_tz = "UTC"\n'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+
+    class _FakeKeyring:
+        def get_password(self, service: str, username: str) -> str | None:
+            return None
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            pass
+
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+
+    provider = _provider()
+    provider.auth_status.return_value = {
+        "client_id_configured": False,
+        "token_cache": True,
+        "auth_record": True,
+        "requested_scopes": [],
+    }
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    payload = json.loads(result.output)
+    assert "client_id missing in config.toml" in payload.get("problems", [])
+
+
+def test_doctor_still_flags_a_genuinely_missing_ms_client_id(tmp_path: Path, monkeypatch) -> None:
+    """The `client_id missing` problem must still fire when no vaulted
+    `ms_client_id` exists either - `doctor`'s vault check must not mask a
+    real misconfiguration."""
+    from blumkin import secret_store
+
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\ntenant_id = "example.com"\ndefault_tz = "UTC"\n'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+
+    provider = _provider()
+    provider.auth_status.return_value = {
+        "client_id_configured": False,
+        "token_cache": True,
+        "auth_record": True,
+        "requested_scopes": [],
+    }
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    payload = json.loads(result.output)
+    assert "client_id missing in config.toml" in payload.get("problems", [])
+
+
+def test_doctor_treats_a_vaulted_ms_client_id_as_configured(tmp_path: Path, monkeypatch) -> None:
+    """`client_id_configured: False` (the field `status_dict` derives straight
+    from `config.toml`, never touching the keychain - see the one-touch
+    guarantee in `test_status_dict_touches_one_keychain_item_for_both_bundled_kinds`)
+    must not fail `doctor` when a `ms_client_id` is vaulted instead (issue #368
+    review): a fully working, vaulted-only profile must not be reported as
+    broken."""
+    from blumkin import secret_store
+    from blumkin.app_secrets import write_app_secret
+
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\ntenant_id = "example.com"\ndefault_tz = "UTC"\n'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+
+    class _FakeKeyring:
+        def __init__(self) -> None:
+            self.store: dict[tuple[str, str], str] = {}
+
+        class errors:
+            class PasswordDeleteError(Exception):
+                pass
+
+        def get_password(self, service: str, username: str) -> str | None:
+            return self.store.get((service, username))
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            self.store[(service, username)] = password
+
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    from blumkin.config import load_config
+
+    write_app_secret(load_config(), "ms_client_id", "vaulted-client-id")
+
+    provider = _provider()
+    provider.auth_status.return_value = {
+        "client_id_configured": False,
+        "token_cache": True,
+        "auth_record": True,
+        "requested_scopes": [],
+    }
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    payload = json.loads(result.output)
+    assert "client_id missing in config.toml" not in payload.get("problems", [])
+
+
 def test_doctor_warns_when_macos_keychain_is_missing(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "config.toml").write_text(_CONFIG)
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))

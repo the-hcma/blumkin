@@ -193,6 +193,21 @@ tags = ["@personal", "personal", "google", "gmail"]
   in the Desktop client JSON, which in turn overrides Blumkin's own defaults
   (the `auth_uri` / `token_uri` / `redirect_uris` shown in §A.4). Most setups
   never need these.
+- **Optional: vault `client_secret` in the OS keychain instead of the file**
+  (issue #368):
+
+  ```bash
+  blumkin auth set-app-secret --kind google_client_secret \
+    --from-file /absolute/or/~/path/to/google-oauth-desktop-client.json
+  ```
+
+  The vaulted value then takes precedence over the file's own `client_secret`,
+  and `google_oauth_client_file` itself becomes optional once `client_id` (and
+  any of the endpoint overrides above, if needed) live in `config.toml`. This
+  does not delete the file - before removing it, set `client_id` in
+  `config.toml`, remove the `google_oauth_client_file` setting, and confirm
+  `blumkin auth refresh` still works without the JSON fallback in place; only
+  delete the original file once that verification succeeds.
 - Token files land under `~/.config/blumkin/profiles/personal/`.
 - Inspect keys without dumping secrets:
 
