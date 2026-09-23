@@ -425,7 +425,10 @@ def test_status_dict_reads_google_token_from_keyring_once(tmp_path: Path, monkey
     the same keychain item more than once - each extra round trip is a separate
     OS Keychain authorization prompt in practice, and this used to touch
     `google_token` up to four times (once each for the access-token-expiry read,
-    the granted-scopes read, the presence check, and the backend check)."""
+    the granted-scopes read, the presence check, and the backend check). It must
+    also never touch the separate `google_client_secret` app-secret item - that
+    would add a second keychain item (and a second authorization prompt) to a
+    status read that has no use for a live client_secret (issue #368 review)."""
     from blumkin import secret_store
 
     token = json.dumps(
@@ -447,7 +450,14 @@ def test_status_dict_reads_google_token_from_keyring_once(tmp_path: Path, monkey
         def get_password(self, service: str, account: str) -> str | None:
             calls.append(account)
             kind = json.loads(account)[2]
-            return token if kind == "google_token" else None
+            if kind == "google_token":
+                return token
+            if kind == "google_client_secret":
+                # A vaulted value is present - if `status_dict` ever touches
+                # this item, the test below (asserting `touched_kinds ==
+                # {"google_token"}`) will catch it, not just a call-count bump.
+                return "vaulted-secret-must-never-be-fetched-by-status"
+            return None
 
         def set_password(self, service: str, account: str, value: str) -> None:
             pass
@@ -455,8 +465,9 @@ def test_status_dict_reads_google_token_from_keyring_once(tmp_path: Path, monkey
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
     cfg = dataclasses.replace(_cfg(tmp_path), token_storage="keyring")
     google_auth.status_dict(cfg)
-    google_token_touches = [c for c in calls if json.loads(c)[2] == "google_token"]
-    assert len(google_token_touches) == 1
+    touched_kinds = {json.loads(c)[2] for c in calls}
+    assert len(calls) == 1
+    assert touched_kinds == {"google_token"}
 
 
 def test_status_dict_reports_granted_and_missing_scopes(tmp_path: Path) -> None:

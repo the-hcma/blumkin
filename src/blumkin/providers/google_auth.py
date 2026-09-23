@@ -658,15 +658,27 @@ def _save_credentials(
         else:
             # Pre-scope-tracking token: do not stamp GOOGLE_SCOPES from to_json().
             payload.pop("scopes", None)
-    # Never persist the vaulted client_secret to the token file - `write_text`
-    # can fall back to plaintext under `token_storage = "auto"` if a keyring
-    # write fails, which would leak a value the operator explicitly chose to
-    # vault out of plaintext (issue #368 review). Persist only the Desktop
-    # JSON's own secret (as before this PR); real credential-refresh call
-    # sites always re-resolve the current vaulted-or-file secret at load time
-    # via `_credentials_from_raw`, so this file value is never the sole source
-    # of truth for it.
-    payload["client_secret"] = _client_secret_from_oauth_file(cfg)
+    # A vaulted client_secret (issue #368) must never reach the token file -
+    # `write_text` can fall back to plaintext under `token_storage = "auto"`
+    # if a keyring write fails, which would leak a value the operator
+    # explicitly chose to vault out of plaintext. When a vault is currently
+    # set, `payload["client_secret"]` (from `creds.to_json()`) may *be* that
+    # vaulted value - `_credentials_from_raw` injects it before constructing
+    # `Credentials` - so it must be replaced with the Desktop JSON's own
+    # value (or blanked); real credential-refresh call sites always
+    # re-resolve the current vaulted-or-file secret at load time instead.
+    # When nothing is vaulted, `payload`'s own secret came from the token
+    # file/Desktop JSON itself (never a keychain-only value) and is safe to
+    # keep as-is if the Desktop JSON does not override it - matches the
+    # pre-#368 behavior, and preserves an already-working profile whose
+    # `google_oauth_client_file` has since gone missing (issue #368 review).
+    file_secret = _client_secret_from_oauth_file(cfg)
+    if read_app_secret(cfg, "google_client_secret"):
+        payload["client_secret"] = file_secret
+    elif file_secret:
+        payload["client_secret"] = file_secret
+    else:
+        payload.setdefault("client_secret", "")
     secret_store.write_text(cfg, "google_token", json.dumps(payload))
 
 

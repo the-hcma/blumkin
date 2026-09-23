@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -1124,7 +1125,7 @@ def auth_set_app_secret(
             emit_lines([f"Removed any vaulted {kind}."])
         return
     try:
-        value = _read_app_secret_value(kind, from_file)
+        value = _read_app_secret_value(kind, from_file, from_stdin)
     except ProviderConfigError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -1139,44 +1140,66 @@ def auth_set_app_secret(
         emit_lines([f"Vaulted {kind} in the OS keychain."])
 
 
-def _read_app_secret_value(kind: str, from_file: Path | None) -> str:
+def _read_app_secret_value(kind: str, from_file: Path | None, from_stdin: bool) -> str:
     """Resolve the secret value from ``--from-file``, ``--stdin``, or an interactive prompt.
 
     Never a ``--value TEXT`` flag - the value would otherwise leak into shell
     history and be visible to any other process via `ps` (issue #368).
+    ``from_stdin`` is threaded through and checked explicitly rather than
+    inferred from ``sys.stdin.isatty()`` alone: a non-TTY stdin (a script or
+    agent's inherited pipe) without an explicit ``--stdin`` must not be
+    silently consumed as the value - that would let a mis-vaulted string
+    silently become the effective client_id/secret until `--delete` is run
+    (issue #368 review finding).
     """
     if from_file is not None:
+        try:
+            text = from_file.read_text()
+        except UnicodeDecodeError as exc:
+            raise ProviderConfigError(f"{from_file} is not readable as text: {exc}") from exc
         if kind == "google_client_secret":
+            parsed: Any = None
             try:
-                installed = google_oauth_installed_client(from_file)
-            except ProviderConfigError:
-                installed = None
-            if installed is not None:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                # Any JSON object (not just one with an installed/web section -
+                # a Google service-account key is a JSON object too) must
+                # yield a real client_secret or be rejected outright; falling
+                # through to raw-text vaulting here would silently shadow the
+                # working file value with something useless (e.g. a service
+                # account's private key) until `--delete` is run (issue #368
+                # review finding).
+                try:
+                    installed = google_oauth_installed_client(from_file)
+                except ProviderConfigError as exc:
+                    raise ProviderConfigError(
+                        f"{from_file} is a JSON object but has no installed/web client "
+                        "object - refusing to vault the raw file contents."
+                    ) from exc
                 secret = installed.get("client_secret")
                 if isinstance(secret, str) and secret.strip():
                     return secret.strip()
-                # The file parsed as a Desktop client JSON (installed/web
-                # object present) but has no usable client_secret - do not
-                # fall through to vaulting the raw file text, which would
-                # silently shadow the working file value with something
-                # useless (e.g. an entire service-account key) until
-                # `--delete` is run (issue #368 review finding).
                 raise ProviderConfigError(
                     f"{from_file} has an installed/web client object but no usable "
                     "client_secret - refusing to vault the raw file contents."
                 )
-        try:
-            value = from_file.read_text().strip()
-        except UnicodeDecodeError as exc:
-            raise ProviderConfigError(f"{from_file} is not readable as text: {exc}") from exc
+        value = text.strip()
         if not value:
             raise ProviderConfigError(f"{from_file} is empty.")
         return value
-    if not sys.stdin.isatty():
+    if from_stdin:
         value = sys.stdin.read().strip()
         if not value:
             raise ProviderConfigError("No value read from stdin.")
         return value
+    if not sys.stdin.isatty():
+        raise ProviderConfigError(
+            "stdin is not a TTY and --stdin was not given - refusing to silently read "
+            "an inherited pipe as the secret value; pass --stdin explicitly or use "
+            "--from-file."
+        )
     value = click.prompt(f"Enter the value for {kind}", hide_input=True)
     if not value.strip():
         raise ProviderConfigError("A non-empty value is required.")

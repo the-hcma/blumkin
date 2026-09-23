@@ -56,6 +56,27 @@ def test_set_app_secret_from_stdin(tmp_path: Path, monkeypatch) -> None:
     assert read_app_secret(load_config(), "ms_client_id") == "vaulted-client-id"
 
 
+def test_set_app_secret_refuses_non_tty_stdin_without_explicit_stdin_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A non-interactive invocation (e.g. an agent's inherited pipe) must
+    never be silently read as the secret value unless `--stdin` is given
+    explicitly - inferring stdin-vs-prompt purely from `isatty()` would let a
+    script's unrelated piped input become the effective secret (issue #368
+    review, round 2)."""
+    _configure(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    result = CliRunner().invoke(
+        main,
+        ["auth", "set-app-secret", "--kind", "ms_client_id"],
+        input="unrelated-piped-input\n",
+    )
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert "stdin is not a TTY" in result.output
+    assert read_app_secret(load_config(), "ms_client_id") is None
+
+
 def test_set_app_secret_from_file_extracts_google_desktop_json_secret(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -181,6 +202,37 @@ def test_set_app_secret_from_file_rejects_desktop_json_without_client_secret(
     )
     assert result.exit_code == EXIT_USAGE, result.output
     assert "no usable client_secret" in result.output
+    assert read_app_secret(load_config(), "google_client_secret") is None
+
+
+def test_set_app_secret_from_file_rejects_a_json_object_without_installed_or_web(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A JSON object that is not a Desktop client at all - a Google
+    service-account key is the concrete example, no `installed`/`web` key -
+    must also be rejected, not vaulted whole as raw text (issue #368 review,
+    round 2: the earlier fix only caught the `installed`-without-secret
+    case, not this one)."""
+    _configure(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    service_account_file = tmp_path / "service-account.json"
+    service_account_file.write_text(
+        json.dumps({"type": "service_account", "private_key": "-----BEGIN PRIVATE KEY-----"})
+    )
+    result = CliRunner().invoke(
+        main,
+        [
+            "auth",
+            "set-app-secret",
+            "--kind",
+            "google_client_secret",
+            "--from-file",
+            str(service_account_file),
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert "no installed/web client object" in result.output
     assert read_app_secret(load_config(), "google_client_secret") is None
 
 

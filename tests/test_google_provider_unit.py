@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1041,7 +1042,11 @@ def test_save_credentials_prefers_vaulted_client_secret_but_never_persists_it(
     Desktop JSON's own secret (or empty) - never the vaulted value, since
     `secret_store.write_text` can fall back to a plaintext file under
     `token_storage = "auto"` (issue #368 review: sensitive-data-exposure
-    finding)."""
+    finding). `creds.to_json()` here carries the vaulted value itself -
+    matching what `_credentials_from_raw` actually produces (it injects the
+    resolved secret before constructing `Credentials`) - so this test would
+    fail against the pre-fix code that trusted `creds.to_json()`'s own
+    `client_secret` (issue #368 review, round 2)."""
     from blumkin.providers import google_auth
 
     oauth = tmp_path / "desktop-client.json"
@@ -1060,6 +1065,7 @@ def test_save_credentials_prefers_vaulted_client_secret_but_never_persists_it(
     creds.to_json.return_value = json.dumps(
         {
             "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+            "client_secret": "vaulted-secret",
             "refresh_token": "fake-refresh",
             "token": "fake-access",
             "token_uri": "https://oauth2.googleapis.com/token",
@@ -1069,6 +1075,68 @@ def test_save_credentials_prefers_vaulted_client_secret_but_never_persists_it(
     saved = json.loads(cfg.google_token_path.read_text())
     assert saved["client_secret"] == "file-secret"
     assert "vaulted-secret" not in cfg.google_token_path.read_text()
+
+
+def test_save_credentials_blanks_vaulted_secret_when_no_oauth_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Same vaulted-secret-must-never-persist guarantee, but with no
+    `google_oauth_client_file` configured at all (the fully keychain-only
+    shape issue #368 adds) - there is no Desktop JSON value to fall back to,
+    so the persisted `client_secret` must be blanked, not left as the
+    vaulted value `creds.to_json()` carries."""
+    from blumkin.providers import google_auth
+
+    cfg = _cfg(tmp_path, oauth_file=None)
+    cfg = dataclasses.replace(cfg, google_oauth_client_file=None)
+    monkeypatch.setattr(
+        google_auth,
+        "read_app_secret",
+        lambda cfg, kind: "vaulted-secret" if kind == "google_client_secret" else None,
+    )
+    creds = MagicMock()
+    creds.to_json.return_value = json.dumps(
+        {
+            "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+            "client_secret": "vaulted-secret",
+            "refresh_token": "fake-refresh",
+            "token": "fake-access",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    )
+    google_auth._save_credentials(cfg, creds)
+    saved = json.loads(cfg.google_token_path.read_text())
+    assert saved["client_secret"] == ""
+    assert "vaulted-secret" not in cfg.google_token_path.read_text()
+
+
+def test_save_credentials_keeps_token_secret_when_no_vault_and_no_oauth_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When nothing is vaulted and there is no Desktop JSON, whatever
+    `client_secret` `creds.to_json()` carries came from the token file
+    itself (not the keychain) and is safe to keep as-is - matching the
+    pre-#368 behavior. A profile whose `google_oauth_client_file` has since
+    gone missing/moved must not have its still-working `client_secret`
+    silently blanked on the next refresh (issue #368 review, round 2)."""
+    from blumkin.providers import google_auth
+
+    cfg = _cfg(tmp_path, oauth_file=None)
+    cfg = dataclasses.replace(cfg, google_oauth_client_file=None)
+    monkeypatch.setattr(google_auth, "read_app_secret", lambda cfg, kind: None)
+    creds = MagicMock()
+    creds.to_json.return_value = json.dumps(
+        {
+            "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+            "client_secret": "still-good-token-file-secret",
+            "refresh_token": "fake-refresh",
+            "token": "fake-access",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    )
+    google_auth._save_credentials(cfg, creds)
+    saved = json.loads(cfg.google_token_path.read_text())
+    assert saved["client_secret"] == "still-good-token-file-secret"
 
 
 def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
