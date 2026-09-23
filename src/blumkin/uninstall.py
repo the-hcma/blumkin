@@ -19,9 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from blumkin import app_secrets as app_secrets_mod
 from blumkin import secret_store as secret_store_mod
 from blumkin.agent import client as agent_client
 from blumkin.agent.paths import is_supported_platform, runtime_dir
+from blumkin.app_secrets import AppSecretKind
 from blumkin.config import BlumkinConfig, config_dir, list_profiles, profile_probe_config
 from blumkin.install_method import Install, detect_install, uninstall_steps
 from blumkin.mcp_install import (
@@ -249,6 +251,12 @@ def remove_keyring(
             except Exception as exc:
                 failed = True
                 failures.append(f"{name}:{kind}: {exc}")
+        for app_kind in _APP_SECRET_KINDS:
+            try:
+                app_secrets_mod.delete_app_secret(cfg, app_kind)
+            except Exception as exc:
+                failed = True
+                failures.append(f"{name}:{app_kind}: {exc}")
         if failed:
             continue
         if state.present:
@@ -348,6 +356,7 @@ def remove_package(install: Install) -> Outcome:
     )
 
 
+_APP_SECRET_KINDS: tuple[AppSecretKind, ...] = ("google_client_secret", "ms_client_id")
 _PACKAGE_UNINSTALL_TIMEOUT_S = 60
 _SECRET_KINDS: tuple[SecretKind, ...] = ("auth_record", "token_cache", "google_token")
 
@@ -468,6 +477,22 @@ class _KeyringState:
     unknown: bool
 
 
+def _app_secret_kind_present(
+    cfg: BlumkinConfig, keyring_module: Any, kind: AppSecretKind
+) -> tuple[bool, bool]:
+    account = app_secrets_mod._account(cfg, kind)
+    try:
+        return (
+            secret_store_mod._call_keyring_with_timeout(
+                keyring_module.get_password, secret_store_mod._KEYRING_SERVICE, account
+            )
+            is not None,
+            False,
+        )
+    except Exception:
+        return (False, True)
+
+
 def _keyring_kind_present(
     cfg: BlumkinConfig, keyring_module: Any, kind: SecretKind
 ) -> tuple[bool, bool]:
@@ -505,6 +530,10 @@ def _profile_keyring_state(cfg: BlumkinConfig) -> _KeyringState:
     unknown = False
     for kind in _SECRET_KINDS:
         kind_present, kind_unknown = _keyring_kind_present(cfg, keyring_module, kind)
+        present = present or kind_present
+        unknown = unknown or kind_unknown
+    for app_kind in _APP_SECRET_KINDS:
+        kind_present, kind_unknown = _app_secret_kind_present(cfg, keyring_module, app_kind)
         present = present or kind_present
         unknown = unknown or kind_unknown
     return _KeyringState(backend_unavailable=False, present=present, unknown=unknown)

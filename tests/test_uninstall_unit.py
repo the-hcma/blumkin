@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from blumkin import secret_store, uninstall
+from blumkin import app_secrets, secret_store, uninstall
 from blumkin.agent.client import AgentUnavailableError, AgentUnreachableError
 from blumkin.config import load_config
 from blumkin.install_method import METHOD_PIPX, METHOD_UNMANAGED, METHOD_UV_TOOL, Install
@@ -350,6 +350,49 @@ def test_remove_keyring_removes_bundled_ms_credentials(
     assert bundle_key not in fake.store
 
 
+def test_remove_keyring_removes_vaulted_app_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`blumkin uninstall`'s keyring category must also delete vaulted
+    ``google_client_secret`` / ``ms_client_id`` app-secret items (issue
+    #368 follow-up) - these live in a separate keyring namespace from the
+    grants ``_SECRET_KINDS`` already covers, and were leaked (never
+    cleaned up) before this change."""
+    cfg = _config(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    app_secret_key = (
+        secret_store._KEYRING_SERVICE,
+        app_secrets._account(cfg, "google_client_secret"),
+    )
+    fake.store[app_secret_key] = "vaulted-secret"
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    outcome = uninstall.remove_keyring(((cfg.profile, cfg),))
+
+    assert outcome.outcome == "removed"
+    assert app_secret_key not in fake.store
+
+
+def test_build_keyring_target_detects_vaulted_app_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A profile with only a vaulted app secret (no grant ever written) must
+    still be reported as `present` so an operator does not skip cleanup and
+    unknowingly leave the app secret behind (issue #368 follow-up)."""
+    cfg = _config(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    app_secret_key = (secret_store._KEYRING_SERVICE, app_secrets._account(cfg, "ms_client_id"))
+    fake.store[app_secret_key] = "vaulted-client-id"
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    target = uninstall._build_keyring_target(((cfg.profile, cfg),), probe_error=None)
+
+    assert target.present is True
+    assert cfg.profile in target.detail
+
+
 def test_remove_keyring_reports_backend_unavailable_for_keyring_profiles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -427,6 +470,36 @@ def test_remove_keyring_converts_unexpected_delete_errors_to_failed_outcomes(
 
     assert outcome.outcome == "failed"
     assert "timed out" in outcome.detail
+
+
+def test_remove_keyring_converts_unexpected_app_secret_delete_errors_to_failed_outcomes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`delete_app_secret` raising (e.g. a locked/unavailable backend
+    discovered mid-delete) must surface as the same `failed` outcome as a
+    grant-delete error, not be swallowed silently (issue #368 follow-up)."""
+    cfg = _config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        uninstall,
+        "_profile_keyring_state",
+        lambda cfg: uninstall._KeyringState(
+            backend_unavailable=False,
+            present=False,
+            unknown=True,
+        ),
+    )
+    monkeypatch.setattr(uninstall, "delete_keyring_entry", lambda cfg, kind: None)
+    monkeypatch.setattr(
+        uninstall.app_secrets_mod,
+        "delete_app_secret",
+        lambda cfg, kind: (_ for _ in ()).throw(SecretWriteError("locked")),
+    )
+
+    outcome = uninstall.remove_keyring(((cfg.profile, cfg),))
+
+    assert outcome.outcome == "failed"
+    assert "locked" in outcome.detail
 
 
 def test_remove_keyring_reports_not_present_and_failures(
