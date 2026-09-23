@@ -1125,7 +1125,7 @@ def auth_set_app_secret(
             emit_lines([f"Removed any vaulted {kind}."])
         return
     try:
-        value = _read_app_secret_value(kind, from_file, from_stdin)
+        value = _read_app_secret_value(kind, from_file, from_stdin, as_json=as_json)
     except ProviderConfigError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -1140,7 +1140,9 @@ def auth_set_app_secret(
         emit_lines([f"Vaulted {kind} in the OS keychain."])
 
 
-def _read_app_secret_value(kind: str, from_file: Path | None, from_stdin: bool) -> str:
+def _read_app_secret_value(
+    kind: str, from_file: Path | None, from_stdin: bool, *, as_json: bool = False
+) -> str:
     """Resolve the secret value from ``--from-file``, ``--stdin``, or an interactive prompt.
 
     Never a ``--value TEXT`` flag - the value would otherwise leak into shell
@@ -1150,13 +1152,18 @@ def _read_app_secret_value(kind: str, from_file: Path | None, from_stdin: bool) 
     agent's inherited pipe) without an explicit ``--stdin`` must not be
     silently consumed as the value - that would let a mis-vaulted string
     silently become the effective client_id/secret until `--delete` is run
-    (issue #368 review finding).
+    (issue #368 review finding). ``as_json`` routes the interactive prompt's
+    echoed text to stderr (matching the ``--delete`` confirmation prompt
+    elsewhere in this command), so a ``--json`` consumer's stdout stays
+    parseable (issue #368 review finding).
     """
     if from_file is not None:
         try:
             text = from_file.read_text()
         except UnicodeDecodeError as exc:
             raise ProviderConfigError(f"{from_file} is not readable as text: {exc}") from exc
+        except OSError as exc:
+            raise ProviderConfigError(f"{from_file} could not be read: {exc}") from exc
         if kind == "google_client_secret":
             parsed: Any = None
             try:
@@ -1200,7 +1207,7 @@ def _read_app_secret_value(kind: str, from_file: Path | None, from_stdin: bool) 
             "an inherited pipe as the secret value; pass --stdin explicitly or use "
             "--from-file."
         )
-    value = click.prompt(f"Enter the value for {kind}", hide_input=True)
+    value = click.prompt(f"Enter the value for {kind}", hide_input=True, err=as_json)
     if not value.strip():
         raise ProviderConfigError("A non-empty value is required.")
     return value.strip()

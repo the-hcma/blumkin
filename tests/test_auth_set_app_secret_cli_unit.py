@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from click.testing import CliRunner
 
@@ -116,6 +117,63 @@ def test_set_app_secret_from_file_uses_raw_text_for_ms_client_id(
     )
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert read_app_secret(load_config(), "ms_client_id") == "raw-client-id"
+
+
+def test_set_app_secret_from_file_reports_unreadable_file_as_usage_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An I/O failure reading `--from-file` (e.g. a permission error, or the
+    file vanishing between Click's `exists=True` check and the read) must
+    surface as this command's structured usage error, not an unhandled
+    traceback (issue #368 review, round 3)."""
+    _configure(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    raw_file = tmp_path / "client-id.txt"
+    raw_file.write_text("raw-client-id")
+    original_read_text = Path.read_text
+
+    def _raising_read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == raw_file:
+            raise OSError("Permission denied")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _raising_read_text)
+    result = CliRunner().invoke(
+        main,
+        ["auth", "set-app-secret", "--kind", "ms_client_id", "--from-file", str(raw_file)],
+    )
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert "could not be read" in result.output
+
+
+def test_set_app_secret_routes_interactive_prompt_to_stderr_in_json_mode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`--json` output must stay parseable: the interactive prompt's echoed
+    text (not just the typed value) has to go to stderr, matching the
+    `--delete` confirmation prompt elsewhere in this command, otherwise a
+    `--json` consumer's `json.loads(stdout)` fails (issue #368 review,
+    round 3)."""
+    import click as click_module
+    from click.testing import _NamedTextIOWrapper
+
+    _configure(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    captured: dict[str, object] = {}
+
+    def _fake_prompt(text: str, *, hide_input: bool, err: bool) -> str:
+        captured["err"] = err
+        return "prompted-value"
+
+    monkeypatch.setattr(_NamedTextIOWrapper, "isatty", lambda self: True)
+    monkeypatch.setattr(click_module, "prompt", _fake_prompt)
+    result = CliRunner().invoke(
+        main, ["auth", "set-app-secret", "--kind", "ms_client_id", "--json"]
+    )
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert captured["err"] is True
 
 
 def test_set_app_secret_delete_removes_vaulted_value(tmp_path: Path, monkeypatch) -> None:
