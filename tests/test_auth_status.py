@@ -79,3 +79,56 @@ def test_status_dict_reports_account_type(tmp_path: Path, monkeypatch) -> None:
 # (test_status_dict_touches_one_keychain_item_for_both_bundled_kinds) - it
 # needs the real `_bundle_*` shape (a shared JSON item), which belongs with
 # the rest of that module's keyring-backend tests.
+
+
+def test_status_dict_counts_granted_scopes_for_a_vaulted_only_client_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A profile whose ``ms_client_id`` lives only in the OS keychain (no
+    ``client_id`` in ``config.toml``) must still get an accurate
+    ``granted_scopes`` / capabilities read.
+
+    The cache diff used to filter on ``cfg.client_id`` directly, which is
+    the empty string for a vaulted-only profile - every real
+    ``AccessToken`` entry (always carrying a non-empty ``client_id``) was
+    therefore excluded, so a fully logged-in vaulted-only profile silently
+    reported zero granted scopes and every capability as unavailable
+    (issue #368 review, round 4)."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\ntenant_id = "example.com"\n')
+
+    from blumkin import secret_store
+    from blumkin.app_secrets import write_app_secret
+    from blumkin.config import load_config
+
+    class _FakeKeyring:
+        def __init__(self) -> None:
+            self.store: dict[tuple[str, str], str] = {}
+
+        def get_password(self, service: str, username: str) -> str | None:
+            return self.store.get((service, username))
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            self.store[(service, username)] = password
+
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    cfg = load_config()
+    write_app_secret(cfg, "ms_client_id", "vaulted-client-id")
+    cache = {
+        "AccessToken": {
+            "entry1": {
+                "client_id": "vaulted-client-id",
+                "target": "https://graph.microsoft.com/User.Read",
+            }
+        },
+        "RefreshToken": {},
+    }
+    secret_store.write_text(cfg, "auth_record", "{}")
+    secret_store.write_text(cfg, "token_cache", json.dumps(cache))
+
+    payload = status_dict(cfg)
+
+    assert "User.Read" in payload["granted_scopes"]
+    assert "User.Read" not in payload["missing_scopes"]

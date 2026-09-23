@@ -123,6 +123,24 @@ def _resolved_client_id(cfg: BlumkinConfig) -> str:
     return read_app_secret(cfg, "ms_client_id") or cfg.client_id
 
 
+def _status_client_id(cfg: BlumkinConfig) -> str:
+    """Same precedence as ``_resolved_client_id``, reordered for a status/doctor
+    read: ``config.toml`` first, a vaulted ``ms_client_id`` only when toml has
+    none.
+
+    ``create_credential`` always needs the *current* client_id and can afford
+    an unconditional keychain read on every login/refresh. A status peek is
+    read far more often (every ``auth status`` / ``doctor`` call) and must
+    stay a single keychain touch for the common case (``client_id`` already in
+    ``config.toml``) - see
+    ``test_status_dict_touches_one_keychain_item_for_both_bundled_kinds``. The
+    extra read only happens for a vaulted-only profile, matching the one
+    ``doctor`` already pays via ``_vaulted_client_id_or_secret_present``
+    (issue #368 review, round 4).
+    """
+    return cfg.client_id or read_app_secret(cfg, "ms_client_id") or ""
+
+
 def create_credential(
     config: BlumkinConfig | None = None,
     *,
@@ -423,13 +441,16 @@ def _granted_scopes_from_cache(
 
     Takes the already-read cache text (``raw``) rather than reading it itself,
     so ``status_dict`` does not pay for a second keyring round trip on top of
-    its own read of the same secret. Filters on ``cfg.client_id`` (the
-    ``config.toml`` value), not ``_resolved_client_id`` (issue #368's
-    keychain-first resolution) - for the same reason: ``status_dict`` must
-    stay a single keychain touch (the bundled auth_record/token_cache read),
-    so an ``ms_client_id`` vaulted-only-in-keychain profile keeps this diff
-    scoped to whatever ``config.toml`` says (doctor/status keychain-aware
-    reporting is a tracked follow-up, not this slice).
+    its own read of the same secret. The *active* client_id for this filter is
+    ``_status_client_id`` (``config.toml``'s value, falling back to a vaulted
+    ``ms_client_id`` only when toml has none) rather than always ``cfg.client_id``
+    directly - an ``ms_client_id`` vaulted-only-in-keychain profile logs in with
+    the vaulted id, so filtering on the (empty) toml value alone always excluded
+    every cache entry, silently reporting zero granted scopes / capabilities for
+    an otherwise fully working profile (issue #368 review, round 4). The extra
+    keychain read only happens for that vaulted-only case - a toml-configured
+    profile (the common case) still costs ``status_dict`` exactly one keychain
+    touch, per ``test_status_dict_touches_one_keychain_item_for_both_bundled_kinds``.
     """
     if raw is None:
         return frozenset()
@@ -437,12 +458,13 @@ def _granted_scopes_from_cache(
         data = json.loads(raw)
     except json.JSONDecodeError, OSError:
         return frozenset()
+    active_client_id = _status_client_id(cfg)
     requested_casefold = {s.casefold() for s in requested}
     scopes: set[str] = set()
     for entry in (data.get("AccessToken") or {}).values():
         if not isinstance(entry, dict):
             continue
-        if entry.get("client_id") != cfg.client_id:
+        if entry.get("client_id") != active_client_id:
             continue
         target = entry.get("target")
         if not isinstance(target, str):
