@@ -65,6 +65,32 @@ def test_client_config_defaults_when_toml_and_file_omit_endpoints(tmp_path: Path
     assert installed["redirect_uris"] == ["http://localhost"]
 
 
+def test_client_config_falls_back_to_default_when_desktop_json_endpoint_is_malformed(
+    tmp_path: Path,
+) -> None:
+    """A *present-but-blank/invalid* endpoint in the Desktop JSON must not be trusted as-is —
+    it still falls back to blumkin's hardcoded default, the same as an absent key."""
+    oauth_file = tmp_path / "desktop-client.json"
+    oauth_file.write_text(
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "fake-google-desktop-client.apps.googleusercontent.com",
+                    "client_secret": "fake-google-client-secret",
+                    "auth_uri": "",
+                    "token_uri": "",
+                    "redirect_uris": [""],
+                }
+            }
+        )
+    )
+    cfg = _cfg(tmp_path, oauth_file=oauth_file)
+    installed = google_auth._client_config(cfg)["installed"]
+    assert installed["auth_uri"] == "https://accounts.google.com/o/oauth2/auth"
+    assert installed["token_uri"] == "https://oauth2.googleapis.com/token"
+    assert installed["redirect_uris"] == ["http://localhost"]
+
+
 def test_client_config_prefers_desktop_json_endpoint_over_default(tmp_path: Path) -> None:
     """No toml override, but the Desktop JSON sets an endpoint: the file wins over the default."""
     oauth_file = tmp_path / "desktop-client.json"
