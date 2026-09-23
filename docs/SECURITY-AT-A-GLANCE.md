@@ -127,7 +127,10 @@ changing how blumkin signs in:
   bullet recommends for work/school profiles) will refuse a personal-account
   sign-in outright, regardless of `account_type` / `tenant_id`. Do not loosen
   a work/school registration's account-type setting to accommodate a
-  personal-account profile; register a second app instead.
+  personal-account profile; register a second app instead. For a full
+  walkthrough of registering that second app and configuring the profile
+  from scratch, see
+  [`docs/microsoft-personal-setup.md`](./microsoft-personal-setup.md).
 - **Leave "Allow public client flows" enabled, but rely on the other
   mitigations here instead of disabling it.** `InteractiveBrowserCredential`'s
   auth-code-plus-PKCE flow is *itself* a public client flow and needs this

@@ -245,6 +245,10 @@ profiles will refuse a personal-account sign-in outright, regardless of
 profiles rather than loosening a work/school registration's account-type
 setting. See
 [`docs/SECURITY-AT-A-GLANCE.md`](./docs/SECURITY-AT-A-GLANCE.md#microsoft-app-registration-hardening).
+For a full walkthrough starting from a bare personal Microsoft account with
+no Entra directory yet (Azure Free signup, app registration, first login,
+troubleshooting), see
+[`docs/microsoft-personal-setup.md`](./docs/microsoft-personal-setup.md).
 
 Microsoft token cache files (under `profiles/<name>/`):
 

@@ -430,4 +430,9 @@ When composing text for `mail draft`, `mail update-draft`, `mail reply`,
   usage error. Calendar, mail, and mail auto-reply/signature skills are
   unaffected. Needs `tenant_id = "consumers"` (or `"common"`) too, which
   widens the device-code-phishing surface - see
-  `docs/SECURITY-AT-A-GLANCE.md#microsoft-app-registration-hardening`.
+  `docs/SECURITY-AT-A-GLANCE.md#microsoft-app-registration-hardening`. If the
+  operator mentions `live.com` / `outlook.com` / `hotmail.com` / `msn.com`, or
+  says they have no Entra directory/app registration yet, point them at
+  `docs/microsoft-personal-setup.md` for the full from-scratch walkthrough
+  (Azure Free signup, app registration, `config.toml`, first login,
+  troubleshooting) rather than improvising Azure/Entra steps yourself.
