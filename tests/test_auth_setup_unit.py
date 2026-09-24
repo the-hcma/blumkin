@@ -207,6 +207,19 @@ def test_set_profile_fields_raises_on_missing_profile(tmp_path: Path) -> None:
         set_profile_fields(path, profile="default", fields={"client_id": "abc"})
 
 
+def test_set_profile_fields_always_overwrites_an_existing_value(tmp_path: Path) -> None:
+    """Unlike ``set_profile_email``'s fill-in-a-blank semantics, `auth setup`
+    replacing a stale/incorrect `client_id` must actually land - a regression
+    to fill-in-a-blank would silently keep the old value paired with the
+    newly vaulted secret (issue #368 review)."""
+    path = tmp_path / "config.toml"
+    path.write_text('[profiles.default]\nprovider = "google"\nclient_id = "old-client-id"\n')
+    set_profile_fields(path, profile="default", fields={"client_id": "new-client-id"})
+    text = path.read_text()
+    assert "new-client-id" in text
+    assert "old-client-id" not in text
+
+
 def test_set_profile_fields_raises_on_missing_file(tmp_path: Path) -> None:
     with pytest.raises(ProviderConfigError, match="does not exist"):
         set_profile_fields(tmp_path / "absent.toml", profile="default", fields={"client_id": "x"})
