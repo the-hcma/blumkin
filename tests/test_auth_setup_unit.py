@@ -116,6 +116,58 @@ def test_apply_microsoft_setup_vaults_client_id_and_writes_toml_fields(
     assert written.client_id == "12345678-1234-1234-1234-123456789012"
 
 
+def test_apply_microsoft_setup_is_best_effort_when_no_stale_value_shadows_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A keychain write failure with nothing already vaulted just means the
+    toml copy is the only source - `read_app_secret` will fall through to it,
+    so `False` (not raising) is correct here (issue #368 review)."""
+    cfg = _load(tmp_path, monkeypatch, provider="microsoft")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    data = auth_setup.MicrosoftSetupInput(
+        account_type="organizational",
+        client_id="12345678-1234-1234-1234-123456789012",
+        tenant_id="contoso.onmicrosoft.com",
+    )
+    assert auth_setup.apply_microsoft_setup(cfg, data) is False
+    assert load_config().client_id == "12345678-1234-1234-1234-123456789012"
+
+
+def test_apply_microsoft_setup_raises_when_a_different_vaulted_id_would_shadow_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write failure that leaves an *older, different* vaulted client_id in
+    place must not be swallowed - `auth._resolved_client_id` prefers the
+    vaulted value over config.toml, so silently returning `False` here would
+    let `auth login` keep using the stale id after the operator explicitly
+    supplied a new one (issue #368 review)."""
+    cfg = _load(tmp_path, monkeypatch, provider="microsoft")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    old_data = auth_setup.MicrosoftSetupInput(
+        account_type="organizational",
+        client_id="11111111-1111-1111-1111-111111111111",
+        tenant_id="contoso.onmicrosoft.com",
+    )
+    auth_setup.apply_microsoft_setup(cfg, old_data)
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise secret_store.SecretWriteError("simulated keychain failure")
+
+    monkeypatch.setattr(auth_setup, "write_app_secret", _boom)
+    new_data = auth_setup.MicrosoftSetupInput(
+        account_type="organizational",
+        client_id="22222222-2222-2222-2222-222222222222",
+        tenant_id="contoso.onmicrosoft.com",
+    )
+    with pytest.raises(secret_store.SecretWriteError):
+        auth_setup.apply_microsoft_setup(load_config(), new_data)
+    # config.toml still gets the new id (written before the vault attempt);
+    # it is the stale keychain value shadowing it that must be surfaced.
+    assert load_config().client_id == "22222222-2222-2222-2222-222222222222"
+    assert read_app_secret(load_config(), "ms_client_id") == "11111111-1111-1111-1111-111111111111"
+
+
 def test_validate_microsoft_setup_rejects_non_guid_client_id() -> None:
     data = auth_setup.MicrosoftSetupInput(
         account_type="organizational", client_id="not-a-guid", tenant_id="contoso.onmicrosoft.com"
@@ -149,6 +201,20 @@ def test_validate_microsoft_setup_accepts_personal_with_consumers() -> None:
         account_type="personal",
         client_id="12345678-1234-1234-1234-123456789012",
         tenant_id="consumers",
+    )
+    auth_setup.validate_microsoft_setup(data)  # does not raise
+
+
+def test_validate_microsoft_setup_accepts_personal_with_common() -> None:
+    """`common` is the other half of the personal-account acceptance set
+    (auth_setup.py's `lowered not in {"common", "consumers"}` guard) - it is
+    also the interactive default `_collect_microsoft_setup` keeps for a
+    personal profile that already has `tenant_id = "common"` (issue #368
+    review)."""
+    data = auth_setup.MicrosoftSetupInput(
+        account_type="personal",
+        client_id="12345678-1234-1234-1234-123456789012",
+        tenant_id="common",
     )
     auth_setup.validate_microsoft_setup(data)  # does not raise
 
