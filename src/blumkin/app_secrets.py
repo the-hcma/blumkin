@@ -164,3 +164,36 @@ def _account(cfg: BlumkinConfig, kind: AppSecretKind) -> str:
     """
     resolved_config_dir = str(cfg.config_dir.resolve())
     return json.dumps([resolved_config_dir, cfg.profile, kind], separators=(",", ":"))
+
+
+def _read_app_secret_or_raise(cfg: BlumkinConfig, kind: AppSecretKind) -> str | None:
+    """Like ``read_app_secret``, but a backend failure propagates instead of
+    reading as "nothing vaulted".
+
+    ``read_app_secret``'s forgiving contract (any exception -> ``None``) is
+    right for its normal callers (``auth._resolved_client_id`` and friends,
+    which must never hard-fail just because the keychain is briefly
+    unreadable), but it is wrong for one narrow internal use:
+    ``apply_microsoft_setup``'s post-write-failure "is an older, different
+    value already vaulted?" probe. If *that* probe's own read also fails, a
+    stale vaulted value is indistinguishable from nothing being vaulted at
+    all, and swallowing the read failure the same way would let the caller
+    report success while an older ``ms_client_id`` still shadows the new one
+    once the backend becomes readable again (issue #384).
+
+    Still returns ``None`` for the two states that genuinely mean "nothing
+    vaulted" rather than "backend errored" - ``token_storage = "file"`` and no
+    keyring backend at all - only the ``get_password`` call itself is left
+    unswallowed.
+    """
+    if cfg.token_storage == "file":
+        return None
+    keyring_module = secret_store._keyring_module()
+    if keyring_module is None:
+        return None
+    account = _account(cfg, kind)
+    _await_pending_mutation(account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
+    raw = secret_store._call_keyring_with_timeout(
+        keyring_module.get_password, _KEYRING_SERVICE, account
+    )
+    return raw or None
