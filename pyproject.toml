@@ -46,8 +46,11 @@ dependencies = [
     # satisfies (it moved to request.extensions instead). That silently
     # breaks every `.me`-based Graph call (404 on the literal placeholder
     # path). Pin below the break until msgraph-core catches up; see issue
-    # #354 and upstream microsoftgraph/msgraph-sdk-python-core#1128.
-    "microsoft-kiota-http>=1.12.3",
+    # #354 and upstream microsoftgraph/msgraph-sdk-python-core#1128. This
+    # upper bound was previously dropped by an automated floor bump (#367,
+    # issue #387); [tool.uv].constraint-dependencies below is a second,
+    # dep-updater-proof enforcement of the same cap.
+    "microsoft-kiota-http>=1.12.3,<1.13.0",
     "msgraph-sdk>=1.62.0",
     "python-docx>=1.2.0",
     "tomlkit>=0.15.1",
@@ -119,6 +122,15 @@ select = ["E", "F", "I", "UP"]
 
 [tool.uv]
 package = true
+# Backstop for the microsoft-kiota-http cap in [project.dependencies] (see the
+# comment there). dep-updater's floor-bump logic explicitly skips
+# constraint-dependencies lines (it only rewrites [project]/[project.*]/
+# [dependency-groups] floors), so this constraint can't be silently dropped
+# the way the direct dependency's own "<1.13.0" upper bound was in #367 — a
+# floor-only rewrite there would make `uv lock` fail instead of landing a
+# broken version. Remove once msgraph-core adopts the fixed kiota-http
+# contract (issue #387, upstream microsoftgraph/msgraph-sdk-python-core#1128).
+constraint-dependencies = ["microsoft-kiota-http<1.13.0"]
 
 [dependency-groups]
 dev = [
