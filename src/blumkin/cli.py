@@ -1342,15 +1342,19 @@ def auth_setup(
                 tenant_id=tenant_id,
                 account_type=account_type,
                 interactive=interactive,
+                as_json=as_json,
             )
             apply_microsoft_setup(cfg, ms_data)
-    except (ProviderConfigError, SecretWriteError) as exc:
+    except SecretWriteError as exc:
         _emit_error(
-            error="usage_error",
+            error="secret_write_failed",
             message=str(exc),
             as_json=as_json,
-            hint=_APP_SECRET_WRITE_HINT if isinstance(exc, SecretWriteError) else None,
+            hint=_APP_SECRET_WRITE_HINT,
         )
+        raise SystemExit(EXIT_OTHER) from exc
+    except ProviderConfigError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     if as_json:
         emit_json({"ok": True, "provider": provider, "profile": cfg.profile})
@@ -1380,6 +1384,7 @@ def _collect_google_setup(
             "Path to the downloaded Desktop client JSON (blank to enter values manually)",
             default="",
             show_default=False,
+            err=as_json,
         ).strip()
         if raw_path:
             from_file = Path(raw_path).expanduser()
@@ -1395,7 +1400,7 @@ def _collect_google_setup(
     if not client_id:
         if not interactive:
             raise ProviderConfigError("--client-id is required (or use --from-file) with --yes.")
-        client_id = click.prompt("Google OAuth client id").strip()
+        client_id = click.prompt("Google OAuth client id", err=as_json).strip()
     secret = _read_app_secret_value("google_client_secret", None, from_stdin, as_json=as_json)
     return GoogleSetupInput(
         client_id=client_id,
@@ -1413,18 +1418,20 @@ def _collect_microsoft_setup(
     tenant_id: str | None,
     account_type: str | None,
     interactive: bool,
+    as_json: bool,
 ) -> MicrosoftSetupInput:
     """Resolve a ``MicrosoftSetupInput`` from flags or prompts."""
     if not client_id:
         if not interactive:
             raise ProviderConfigError("--client-id is required with --yes.")
-        client_id = click.prompt("Application (client) ID").strip()
+        client_id = click.prompt("Application (client) ID", err=as_json).strip()
     if not tenant_id:
         if not interactive:
             raise ProviderConfigError("--tenant-id is required with --yes.")
         tenant_id = click.prompt(
             "Directory (tenant) ID (or 'consumers' for a personal Microsoft account)",
             default=cfg.tenant_id or None,
+            err=as_json,
         ).strip()
     if not account_type:
         if not interactive:
@@ -1433,6 +1440,7 @@ def _collect_microsoft_setup(
             "Account type",
             type=click.Choice(sorted(ACCOUNT_TYPES)),
             default=cfg.account_type,
+            err=as_json,
         )
     return MicrosoftSetupInput(account_type=account_type, client_id=client_id, tenant_id=tenant_id)
 

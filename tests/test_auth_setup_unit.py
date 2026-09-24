@@ -66,6 +66,32 @@ def test_apply_google_setup_rejects_bad_client_id_before_writing_anything(
     assert read_app_secret(cfg, "google_client_secret") is None
 
 
+def test_apply_google_setup_does_not_vault_secret_when_toml_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `set_profile_fields` failure must leave the keychain untouched.
+
+    Regression test for a partial-apply bug: the secret used to be vaulted
+    *before* config.toml was written, so a toml failure left a keychain
+    secret with no matching config.toml `client_id` (issue #368 review).
+    """
+    cfg = _load(tmp_path, monkeypatch, provider="google")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise ProviderConfigError("simulated toml write failure")
+
+    monkeypatch.setattr(auth_setup, "set_profile_fields", _boom)
+    data = auth_setup.GoogleSetupInput(
+        client_id="abc.apps.googleusercontent.com", client_secret="GOCSPX-test-secret"
+    )
+    with pytest.raises(ProviderConfigError, match="simulated toml write failure"):
+        auth_setup.apply_google_setup(cfg, data)
+    assert read_app_secret(cfg, "google_client_secret") is None
+    assert fake.store == {}
+
+
 def test_apply_microsoft_setup_vaults_client_id_and_writes_toml_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -117,6 +143,26 @@ def test_validate_microsoft_setup_accepts_personal_with_consumers() -> None:
         account_type="personal",
         client_id="12345678-1234-1234-1234-123456789012",
         tenant_id="consumers",
+    )
+    auth_setup.validate_microsoft_setup(data)  # does not raise
+
+
+def test_validate_microsoft_setup_rejects_personal_with_organizations_tenant() -> None:
+    """'organizations' only admits work/school accounts - never valid for personal."""
+    data = auth_setup.MicrosoftSetupInput(
+        account_type="personal",
+        client_id="12345678-1234-1234-1234-123456789012",
+        tenant_id="organizations",
+    )
+    with pytest.raises(ProviderConfigError, match="needs tenant_id = 'consumers'"):
+        auth_setup.validate_microsoft_setup(data)
+
+
+def test_validate_microsoft_setup_accepts_organizational_with_organizations_tenant() -> None:
+    data = auth_setup.MicrosoftSetupInput(
+        account_type="organizational",
+        client_id="12345678-1234-1234-1234-123456789012",
+        tenant_id="organizations",
     )
     auth_setup.validate_microsoft_setup(data)  # does not raise
 

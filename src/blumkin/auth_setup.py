@@ -78,10 +78,15 @@ class MicrosoftSetupInput:
 
 
 def apply_google_setup(cfg: BlumkinConfig, data: GoogleSetupInput) -> None:
-    """Validate, then vault `client_secret` and write the rest to config.toml."""
+    """Validate, write config.toml, then vault `client_secret`.
+
+    config.toml is written first: if that raises (missing/unwritable file,
+    concurrently-removed profile table, ...), nothing new lands in the
+    keychain - the operator sees one clear error instead of a keychain
+    secret whose config.toml side never landed.
+    """
     validate_google_setup(data)
-    write_app_secret(cfg, "google_client_secret", data.client_secret)
-    fields: dict[str, str | list[str]] = {"client_id": data.client_id}
+    fields: dict[str, str | list[str]] = {"client_id": data.client_id.strip()}
     if data.auth_uri:
         fields["google_auth_uri"] = data.auth_uri
     if data.token_uri:
@@ -89,17 +94,24 @@ def apply_google_setup(cfg: BlumkinConfig, data: GoogleSetupInput) -> None:
     if data.redirect_uris:
         fields["google_redirect_uris"] = list(data.redirect_uris)
     set_profile_fields(cfg.config_path, profile=cfg.profile, fields=fields)
+    write_app_secret(cfg, "google_client_secret", data.client_secret)
 
 
 def apply_microsoft_setup(cfg: BlumkinConfig, data: MicrosoftSetupInput) -> None:
-    """Validate, then vault `client_id` and write the rest to config.toml."""
+    """Validate, write config.toml, then vault `client_id`.
+
+    config.toml is written first - see `apply_google_setup` for why.
+    """
     validate_microsoft_setup(data)
-    write_app_secret(cfg, "ms_client_id", data.client_id)
     set_profile_fields(
         cfg.config_path,
         profile=cfg.profile,
-        fields={"account_type": data.account_type, "tenant_id": data.tenant_id},
+        fields={
+            "account_type": data.account_type,
+            "tenant_id": data.tenant_id.strip(),
+        },
     )
+    write_app_secret(cfg, "ms_client_id", data.client_id.strip())
 
 
 def console_steps(provider: str) -> tuple[str, ...]:
@@ -181,17 +193,18 @@ def validate_microsoft_setup(data: MicrosoftSetupInput) -> None:
     tenant_id = data.tenant_id.strip()
     if not tenant_id:
         raise ProviderConfigError("tenant_id is required.")
-    reserved = tenant_id.lower() in {"common", "consumers", "organizations"}
-    if data.account_type == "personal" and not reserved:
+    lowered = tenant_id.lower()
+    if data.account_type == "personal" and lowered not in {"common", "consumers"}:
         raise ProviderConfigError(
             f"account_type = 'personal' needs tenant_id = 'consumers' (or 'common'), "
             f"got {tenant_id!r} - a personal Microsoft account is never a directory GUID."
         )
-    if data.account_type == "organizational" and reserved:
+    if data.account_type == "organizational" and lowered == "consumers":
         raise ProviderConfigError(
             f"account_type = 'organizational' but tenant_id = {tenant_id!r} is a "
-            "personal-account reserved value - use your Entra tenant's GUID or "
-            "verified domain, or set account_type = 'personal' instead."
+            "personal-account reserved value - use your Entra tenant's GUID, "
+            "verified domain, 'organizations', or 'common', or set account_type = "
+            "'personal' instead."
         )
 
 

@@ -432,7 +432,7 @@ def set_profile_fields(
     if not config_path.is_file():
         raise ProviderConfigError(f"{config_path} does not exist - create the profile first.")
     try:
-        doc = tomlkit.parse(config_path.read_text())
+        doc = tomlkit.parse(config_path.read_text(encoding="utf-8"))
     except (OSError, tomlkit.exceptions.TOMLKitError) as exc:
         raise ProviderConfigError(f"could not parse {config_path}: {exc}") from exc
     profiles = doc.get("profiles")
@@ -444,7 +444,7 @@ def set_profile_fields(
     for key, value in fields.items():
         table[key] = value
     try:
-        config_path.write_text(tomlkit.dumps(doc))
+        config_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
     except OSError as exc:
         raise ProviderConfigError(f"could not write {config_path}: {exc}") from exc
 
