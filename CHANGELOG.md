@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.8.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.7.0...blumkin-v1.8.0) (2026-09-24)
+
+
+### Features
+
+* **config:** centralize Google OAuth non-secret client fields in config.toml ([#378](https://github.com/the-hcma/blumkin/issues/378)) ([b8ae9b0](https://github.com/the-hcma/blumkin/commit/b8ae9b0018daa9c16cf699a42789fe4d08256506))
+* enforce a confirm cooldown before mail.send-draft ([#365](https://github.com/the-hcma/blumkin/issues/365)) ([#366](https://github.com/the-hcma/blumkin/issues/366)) ([c63ad9f](https://github.com/the-hcma/blumkin/commit/c63ad9fd56724f9d3bfe7f7334bc49240799544e))
+* gate calendar RSVP/cancel on a fresh calendar.get (issue [#365](https://github.com/the-hcma/blumkin/issues/365)) ([#372](https://github.com/the-hcma/blumkin/issues/372)) ([ebc6f79](https://github.com/the-hcma/blumkin/commit/ebc6f798ffe3a47e439f046b45dd5a7502269988))
+* guided OAuth app-registration setup ([#368](https://github.com/the-hcma/blumkin/issues/368)) ([#383](https://github.com/the-hcma/blumkin/issues/383)) ([f84033e](https://github.com/the-hcma/blumkin/commit/f84033e9e759dd7221a815e48648a35c8c971f09))
+* **mail:** defer send-draft delivery and add mail.cancel-send ([#365](https://github.com/the-hcma/blumkin/issues/365)) ([#373](https://github.com/the-hcma/blumkin/issues/373)) ([2e2b12f](https://github.com/the-hcma/blumkin/commit/2e2b12f1ba5e6ac707f99c596b35d04d40a2f4c1))
+* split chat send/edit into compose/emit skills (issue [#365](https://github.com/the-hcma/blumkin/issues/365)) ([#370](https://github.com/the-hcma/blumkin/issues/370)) ([f302af9](https://github.com/the-hcma/blumkin/commit/f302af9a04c9100d26d3c8aeac3d44e278bf5aa1))
+* vault Google client_secret and MS client_id in the OS keychain ([#368](https://github.com/the-hcma/blumkin/issues/368)) ([#379](https://github.com/the-hcma/blumkin/issues/379)) ([eae80d7](https://github.com/the-hcma/blumkin/commit/eae80d72db624a015243c72e642e3ca3bc969a75))
+
+
+### Bug Fixes
+
+* clean up vaulted app secrets on blumkin uninstall ([#380](https://github.com/the-hcma/blumkin/issues/380)) ([c3a3c2e](https://github.com/the-hcma/blumkin/commit/c3a3c2e289d4a4652d7d3e29e8c1afeb90297107))
+* surface a double-failure (write + read) that shadows a stale ms_client_id ([#384](https://github.com/the-hcma/blumkin/issues/384)) ([#385](https://github.com/the-hcma/blumkin/issues/385)) ([1111b63](https://github.com/the-hcma/blumkin/commit/1111b630f558c521c99f76ba9e608826c8237bcb))
+* use vaulted ms_client_id when reading granted scopes ([#368](https://github.com/the-hcma/blumkin/issues/368)) ([#381](https://github.com/the-hcma/blumkin/issues/381)) ([e348ecb](https://github.com/the-hcma/blumkin/commit/e348ecb13cd8886ab58617593852f392d9aff708))
+
+
+### Documentation
+
+* add personal Microsoft account (MSA) setup guide ([#369](https://github.com/the-hcma/blumkin/issues/369)) ([#374](https://github.com/the-hcma/blumkin/issues/374)) ([bcba786](https://github.com/the-hcma/blumkin/commit/bcba7867d736d736fd05d299aaa26b7304769dbd))
+* **agents:** fix github-content-formatting rule scope and rh init ([#376](https://github.com/the-hcma/blumkin/issues/376)) ([8a5d96f](https://github.com/the-hcma/blumkin/commit/8a5d96f68f47519ddec405239b9df6a7525e3b5a))
+* **agents:** sync github-content-formatting rule from repository-helpers ([#375](https://github.com/the-hcma/blumkin/issues/375)) ([8992cf3](https://github.com/the-hcma/blumkin/commit/8992cf39ce015f57e8b026b2f7d2c822bc3202a2))
+* **agents:** sync pr-ship-and-review rule from repository-helpers ([#377](https://github.com/the-hcma/blumkin/issues/377)) ([97c963c](https://github.com/the-hcma/blumkin/commit/97c963cbb8f8b721917eca247ee1214f06ff08c5))
+
 ## [1.7.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.6.0...blumkin-v1.7.0) (2026-09-21)
 
 
