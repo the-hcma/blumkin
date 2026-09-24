@@ -24,6 +24,15 @@ from blumkin.app_secrets import (
     write_app_secret,
 )
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
+from blumkin.auth_setup import (
+    ACCOUNT_TYPES,
+    GoogleSetupInput,
+    MicrosoftSetupInput,
+    apply_google_setup,
+    apply_microsoft_setup,
+    console_steps,
+    google_setup_from_client_json,
+)
 from blumkin.capabilities import capability_summary
 from blumkin.config import (
     BlumkinConfig,
@@ -1230,6 +1239,202 @@ def _read_app_secret_value(
     if not value.strip():
         raise ProviderConfigError("A non-empty value is required.")
     return value.strip()
+
+
+@auth.command("setup", epilog=help_text.AUTH_SETUP_EPILOG)
+@click.option(
+    "--from-file",
+    "from_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Google: the downloaded Desktop client JSON (client_id, client_secret, "
+    "and endpoints are all extracted from it).",
+)
+@click.option(
+    "--stdin",
+    "from_stdin",
+    is_flag=True,
+    help="Google only, without --from-file: read client_secret from stdin.",
+)
+@click.option("--client-id", "client_id", default=None, help="Google or Microsoft client id.")
+@click.option("--tenant-id", "tenant_id", default=None, help="Microsoft only.")
+@click.option(
+    "--account-type",
+    "account_type",
+    type=click.Choice(sorted(ACCOUNT_TYPES)),
+    default=None,
+    help="Microsoft only.",
+)
+@click.option(
+    "--auth-uri", "auth_uri", default="", help="Google only: override authorization endpoint."
+)
+@click.option("--token-uri", "token_uri", default="", help="Google only: override token endpoint.")
+@click.option(
+    "--redirect-uri",
+    "redirect_uris",
+    multiple=True,
+    help="Google only: override redirect URI(s) (repeatable).",
+)
+@click.option(
+    "--yes",
+    "yes",
+    is_flag=True,
+    help="Skip the interactive walkthrough (needs every value via flags).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def auth_setup(
+    ctx: click.Context,
+    from_file: Path | None,
+    from_stdin: bool,
+    client_id: str | None,
+    tenant_id: str | None,
+    account_type: str | None,
+    auth_uri: str,
+    token_uri: str,
+    redirect_uris: tuple[str, ...],
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Guided OAuth app-registration setup for the active profile (issue #368).
+
+    Prints the console steps for the active profile's `provider` (Google
+    Cloud Console or Microsoft Entra), then collects and validates the
+    resulting client id / secret / tenant before splitting them: secrets to
+    the OS keychain (same as `auth set-app-secret`), non-secret fields to
+    config.toml. The `[profiles.<name>]` table must already exist.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    cfg = _load_config()
+    tty = _stdio_is_tty()
+    interactive = tty and not yes
+    if not tty and not yes:
+        _emit_error(
+            error="usage_error",
+            message="`auth setup` needs a TTY for the interactive walkthrough; pass --yes "
+            "plus every required value's flag for a non-interactive run.",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    provider = cfg.provider.value
+    steps = console_steps(provider)
+    if not as_json:
+        emit_lines(
+            [f"Console steps for {provider} (do these first, then come back here):"]
+            + [f"  {i}. {step}" for i, step in enumerate(steps, start=1)]
+        )
+    try:
+        if provider == "google":
+            data = _collect_google_setup(
+                from_file=from_file,
+                from_stdin=from_stdin,
+                client_id=client_id,
+                auth_uri=auth_uri,
+                token_uri=token_uri,
+                redirect_uris=redirect_uris,
+                interactive=interactive,
+                as_json=as_json,
+            )
+            apply_google_setup(cfg, data)
+        else:
+            ms_data = _collect_microsoft_setup(
+                cfg,
+                client_id=client_id,
+                tenant_id=tenant_id,
+                account_type=account_type,
+                interactive=interactive,
+            )
+            apply_microsoft_setup(cfg, ms_data)
+    except (ProviderConfigError, SecretWriteError) as exc:
+        _emit_error(
+            error="usage_error",
+            message=str(exc),
+            as_json=as_json,
+            hint=_APP_SECRET_WRITE_HINT if isinstance(exc, SecretWriteError) else None,
+        )
+        raise SystemExit(EXIT_USAGE) from exc
+    if as_json:
+        emit_json({"ok": True, "provider": provider, "profile": cfg.profile})
+    else:
+        emit_lines(
+            [
+                f"{provider} OAuth client configured for profile {cfg.profile!r}.",
+                f"Next: blumkin --profile {cfg.profile} auth login",
+            ]
+        )
+
+
+def _collect_google_setup(
+    *,
+    from_file: Path | None,
+    from_stdin: bool,
+    client_id: str | None,
+    auth_uri: str,
+    token_uri: str,
+    redirect_uris: tuple[str, ...],
+    interactive: bool,
+    as_json: bool,
+) -> GoogleSetupInput:
+    """Resolve a ``GoogleSetupInput`` from flags, an ingested JSON, or prompts."""
+    if from_file is None and interactive and not (client_id or from_stdin):
+        raw_path = click.prompt(
+            "Path to the downloaded Desktop client JSON (blank to enter values manually)",
+            default="",
+            show_default=False,
+        ).strip()
+        if raw_path:
+            from_file = Path(raw_path).expanduser()
+    if from_file is not None:
+        data = google_setup_from_client_json(from_file)
+        return GoogleSetupInput(
+            client_id=client_id.strip() if client_id else data.client_id,
+            client_secret=data.client_secret,
+            auth_uri=auth_uri or data.auth_uri,
+            redirect_uris=redirect_uris or data.redirect_uris,
+            token_uri=token_uri or data.token_uri,
+        )
+    if not client_id:
+        if not interactive:
+            raise ProviderConfigError("--client-id is required (or use --from-file) with --yes.")
+        client_id = click.prompt("Google OAuth client id").strip()
+    secret = _read_app_secret_value("google_client_secret", None, from_stdin, as_json=as_json)
+    return GoogleSetupInput(
+        client_id=client_id,
+        client_secret=secret,
+        auth_uri=auth_uri,
+        redirect_uris=redirect_uris,
+        token_uri=token_uri,
+    )
+
+
+def _collect_microsoft_setup(
+    cfg: BlumkinConfig,
+    *,
+    client_id: str | None,
+    tenant_id: str | None,
+    account_type: str | None,
+    interactive: bool,
+) -> MicrosoftSetupInput:
+    """Resolve a ``MicrosoftSetupInput`` from flags or prompts."""
+    if not client_id:
+        if not interactive:
+            raise ProviderConfigError("--client-id is required with --yes.")
+        client_id = click.prompt("Application (client) ID").strip()
+    if not tenant_id:
+        if not interactive:
+            raise ProviderConfigError("--tenant-id is required with --yes.")
+        tenant_id = click.prompt(
+            "Directory (tenant) ID (or 'consumers' for a personal Microsoft account)",
+            default=cfg.tenant_id or None,
+        ).strip()
+    if not account_type:
+        if not interactive:
+            raise ProviderConfigError("--account-type is required with --yes.")
+        account_type = click.prompt(
+            "Account type",
+            type=click.Choice(sorted(ACCOUNT_TYPES)),
+            default=cfg.account_type,
+        )
+    return MicrosoftSetupInput(account_type=account_type, client_id=client_id, tenant_id=tenant_id)
 
 
 @main.group(epilog=help_text.AGENT_EPILOG)

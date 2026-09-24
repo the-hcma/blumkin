@@ -12,10 +12,10 @@ permissions, no multi-tenant anything.
 
 | Data | Location | In git? |
 |------|----------|---------|
-| OAuth client id (public client) | `~/.config/blumkin/config.toml` (mode `0600`) - or vault it in the OS keychain instead (`blumkin auth set-app-secret --kind ms_client_id`, issue #368), which then takes precedence | never |
+| OAuth client id (public client) | `~/.config/blumkin/config.toml` (mode `0600`) - or vault it in the OS keychain instead (`blumkin auth setup` or `blumkin auth set-app-secret --kind ms_client_id`, issue #368), which then takes precedence | never |
 | Token cache + auth record / Google token | `~/.config/blumkin/profiles/<name>/` (file backend), or the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) when `token_storage` selects it - see below | never |
 | Optional in-memory re-verify cache | macOS `blumkin-agent` process only, for up to `token_reverify_after` per profile (default `24h`); an expired entry is lazily wiped on the next access, not on an active timer | never |
-| Google desktop-client JSON (holds `client_secret`) | operator-chosen path, mode `0600` - or vault `client_secret` in the OS keychain instead (`blumkin auth set-app-secret --kind google_client_secret`, issue #368), which then takes precedence and makes the file optional | never |
+| Google desktop-client JSON (holds `client_secret`) | operator-chosen path, mode `0600` - or vault `client_secret` in the OS keychain instead (`blumkin auth setup` or `blumkin auth set-app-secret --kind google_client_secret`, issue #368), which then takes precedence and makes the file optional | never |
 | The user's mail / calendar / chat content | fetched on demand, printed to stdout, not persisted | n/a |
 
 [`.gitignore`](../.gitignore), GitHub **secret-scanning push protection** (blocks

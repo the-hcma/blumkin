@@ -407,6 +407,48 @@ def set_profile_email(
     return True
 
 
+def set_profile_fields(
+    config_path: Path,
+    *,
+    profile: str,
+    fields: dict[str, str | list[str]],
+) -> None:
+    """Write non-secret ``fields`` into one profile table (issue #368 guided setup).
+
+    A style-preserving edit via ``tomlkit`` - see ``set_profile_email`` for why.
+    Unlike ``set_profile_email``, this always overwrites: it backs `blumkin auth
+    setup`, where replacing a stale/incorrect value with the one the operator
+    just supplied and validated is the explicit ask, not an automatic
+    fill-in-a-blank path. Never write a secret through this function - it has
+    no notion of "this key is sensitive" and would happily round-trip one into
+    plaintext toml.
+
+    Raises ``ProviderConfigError`` (never a silent no-op) when the profile
+    table is missing or the file cannot be parsed/written: unlike the
+    automatic ``set_profile_email`` fill-in, this only ever runs from an
+    explicit operator action, so silently discarding the write would leave
+    `auth setup` claiming success while nothing was actually persisted.
+    """
+    if not config_path.is_file():
+        raise ProviderConfigError(f"{config_path} does not exist - create the profile first.")
+    try:
+        doc = tomlkit.parse(config_path.read_text())
+    except (OSError, tomlkit.exceptions.TOMLKitError) as exc:
+        raise ProviderConfigError(f"could not parse {config_path}: {exc}") from exc
+    profiles = doc.get("profiles")
+    if not isinstance(profiles, dict) or profile not in profiles:
+        raise ProviderConfigError(f"profile {profile!r} not found in {config_path}")
+    table = profiles[profile]
+    if not isinstance(table, dict):
+        raise ProviderConfigError(f"[profiles.{profile}] is not a table in {config_path}")
+    for key, value in fields.items():
+        table[key] = value
+    try:
+        config_path.write_text(tomlkit.dumps(doc))
+    except OSError as exc:
+        raise ProviderConfigError(f"could not write {config_path}: {exc}") from exc
+
+
 def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]) -> BlumkinConfig:
     """Build a minimal ``BlumkinConfig`` sufficient to check ``auth_present``, nothing else.
 

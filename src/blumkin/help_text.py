@@ -124,6 +124,35 @@ completed a login). `capabilities` (JSON) / `available:` (text) is the same
 per-family usability summary as `blumkin doctor` and `blumkin capabilities`.
 """
 
+AUTH_SETUP_EPILOG = """
+Examples:
+
+\b
+  blumkin --profile personal auth setup
+\b
+  # Non-interactive (agent-safe), ingesting a downloaded Desktop client JSON
+  blumkin --profile personal auth setup --yes \\
+    --from-file ~/path/to/google-oauth-desktop-client.json
+\b
+  # Non-interactive Microsoft setup
+  blumkin --profile work auth setup --yes \\
+    --client-id 11111111-2222-3333-4444-555555555555 \\
+    --tenant-id contoso.onmicrosoft.com --account-type organizational
+
+Walks through registering blumkin's OAuth app in the Google Cloud Console or
+Microsoft Entra (whichever `provider` the active profile uses), then
+validates and splits the values you provide: secrets go to the OS keychain
+(same as `auth set-app-secret`), non-secret fields (`client_id`, endpoint
+overrides, `tenant_id`, `account_type`) go to config.toml. The profile itself
+(`[profiles.<name>]` with at least `provider` set) must already exist in
+config.toml - this only fills in its OAuth client, it does not create a new
+profile section.
+
+Requires a TTY for the interactive walkthrough; pass `--yes` plus every
+value's flag for a non-interactive/agent-driven run. Never accepts a secret
+value as a command-line argument for the same reason as `auth set-app-secret`.
+"""
+
 AUTH_SET_APP_SECRET_EPILOG = """
 Examples:
 
