@@ -121,6 +121,48 @@ def test_read_app_secret_returns_none_on_backend_failure(
     assert app_secrets.app_secret_backend(cfg, "google_client_secret") == "none"
 
 
+def test_read_app_secret_or_raise_propagates_backend_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unlike `read_app_secret`, the internal `_read_app_secret_or_raise` probe
+    (issue #384, used by `auth_setup.apply_microsoft_setup`'s post-write-failure
+    stale-value check) must not swallow a backend failure into `None` - a
+    caller distinguishing "nothing vaulted" from "could not tell" needs the
+    exception to propagate."""
+    cfg = _load(tmp_path, monkeypatch)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _BrokenKeyring())
+    with pytest.raises(RuntimeError, match="keychain access denied"):
+        app_secrets._read_app_secret_or_raise(cfg, "ms_client_id")
+
+
+def test_read_app_secret_or_raise_round_trips_a_vaulted_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _load(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    app_secrets.write_app_secret(cfg, "ms_client_id", "11111111-1111-1111-1111-111111111111")
+    assert (
+        app_secrets._read_app_secret_or_raise(cfg, "ms_client_id")
+        == "11111111-1111-1111-1111-111111111111"
+    )
+
+
+def test_read_app_secret_or_raise_still_returns_none_for_the_no_fallback_states(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`token_storage = "file"` and no keyring backend at all are genuinely
+    "nothing vaulted" states, not failures - `_read_app_secret_or_raise` must
+    keep reading those as `None` rather than raising."""
+    file_cfg = _load(tmp_path / "file", monkeypatch, token_storage="file")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+    assert app_secrets._read_app_secret_or_raise(file_cfg, "ms_client_id") is None
+
+    no_backend_cfg = _load(tmp_path / "no-backend", monkeypatch)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    assert app_secrets._read_app_secret_or_raise(no_backend_cfg, "ms_client_id") is None
+
+
 def test_app_secret_backend_is_none_for_a_usable_but_empty_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

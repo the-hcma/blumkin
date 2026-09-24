@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from blumkin.app_secrets import read_app_secret, write_app_secret
+from blumkin.app_secrets import _read_app_secret_or_raise, write_app_secret
 from blumkin.config import BlumkinConfig, google_oauth_installed_client, set_profile_fields
 from blumkin.providers.kind import ProviderConfigError
 from blumkin.secret_store import SecretWriteError
@@ -131,13 +131,23 @@ def apply_microsoft_setup(cfg: BlumkinConfig, data: MicrosoftSetupInput) -> bool
     )
     try:
         write_app_secret(cfg, "ms_client_id", data.client_id.strip())
-    except SecretWriteError:
+    except SecretWriteError as write_exc:
         # A readable vaulted value that differs from what config.toml now
         # says would shadow it (auth._resolved_client_id prefers the
         # keychain) - only the best-effort "vaulting failed, config.toml is
         # authoritative" story holds when there is nothing stale to shadow it
         # (issue #368 review).
-        stale = read_app_secret(cfg, "ms_client_id")
+        try:
+            stale = _read_app_secret_or_raise(cfg, "ms_client_id")
+        except Exception as read_exc:
+            # The follow-up read failed too, so a stale vaulted value is
+            # indistinguishable from nothing being vaulted - surface it
+            # rather than report success (issue #384).
+            raise SecretWriteError(
+                f"could not vault ms_client_id ({write_exc}), and confirming "
+                f"whether an older value is already vaulted also failed - "
+                f"cannot rule out it shadowing the new client_id: {read_exc}"
+            ) from write_exc
         if stale and stale != data.client_id.strip():
             raise
         return False

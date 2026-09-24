@@ -168,6 +168,48 @@ def test_apply_microsoft_setup_raises_when_a_different_vaulted_id_would_shadow_i
     assert read_app_secret(load_config(), "ms_client_id") == "11111111-1111-1111-1111-111111111111"
 
 
+def test_apply_microsoft_setup_raises_when_the_stale_value_probe_read_also_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #384: when the write *and* the follow-up "is anything stale
+    vaulted?" read both fail, the stale vaulted client_id is indistinguishable
+    from "nothing vaulted" - swallowing the read failure the same way
+    `read_app_secret` does elsewhere would report success (`False`, not
+    raising) while an older `ms_client_id` still shadows the new one once the
+    backend becomes readable again."""
+    cfg = _load(tmp_path, monkeypatch, provider="microsoft")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    old_data = auth_setup.MicrosoftSetupInput(
+        account_type="organizational",
+        client_id="11111111-1111-1111-1111-111111111111",
+        tenant_id="contoso.onmicrosoft.com",
+    )
+    auth_setup.apply_microsoft_setup(cfg, old_data)
+
+    def _write_boom(*_args: object, **_kwargs: object) -> None:
+        raise secret_store.SecretWriteError("simulated keychain write failure")
+
+    def _read_boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated keychain read failure")
+
+    monkeypatch.setattr(auth_setup, "write_app_secret", _write_boom)
+    monkeypatch.setattr(auth_setup, "_read_app_secret_or_raise", _read_boom)
+    new_data = auth_setup.MicrosoftSetupInput(
+        account_type="organizational",
+        client_id="22222222-2222-2222-2222-222222222222",
+        tenant_id="contoso.onmicrosoft.com",
+    )
+    with pytest.raises(
+        secret_store.SecretWriteError,
+        match="simulated keychain write failure.*simulated keychain read failure",
+    ):
+        auth_setup.apply_microsoft_setup(load_config(), new_data)
+    # config.toml still gets the new id (written before the vault attempt);
+    # it is the unconfirmable stale-shadow risk that must be surfaced.
+    assert load_config().client_id == "22222222-2222-2222-2222-222222222222"
+
+
 def test_validate_microsoft_setup_rejects_non_guid_client_id() -> None:
     data = auth_setup.MicrosoftSetupInput(
         account_type="organizational", client_id="not-a-guid", tenant_id="contoso.onmicrosoft.com"
