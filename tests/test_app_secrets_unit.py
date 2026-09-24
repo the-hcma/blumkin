@@ -135,6 +135,19 @@ def test_read_app_secret_or_raise_propagates_backend_failure(
         app_secrets._read_app_secret_or_raise(cfg, "ms_client_id")
 
 
+def test_read_app_secret_or_raise_round_trips_a_vaulted_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _load(tmp_path, monkeypatch)
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    app_secrets.write_app_secret(cfg, "ms_client_id", "11111111-1111-1111-1111-111111111111")
+    assert (
+        app_secrets._read_app_secret_or_raise(cfg, "ms_client_id")
+        == "11111111-1111-1111-1111-111111111111"
+    )
+
+
 def test_read_app_secret_or_raise_still_returns_none_for_the_no_fallback_states(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -148,19 +161,6 @@ def test_read_app_secret_or_raise_still_returns_none_for_the_no_fallback_states(
     no_backend_cfg = _load(tmp_path / "no-backend", monkeypatch)
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
     assert app_secrets._read_app_secret_or_raise(no_backend_cfg, "ms_client_id") is None
-
-
-def test_read_app_secret_or_raise_round_trips_a_vaulted_value(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cfg = _load(tmp_path, monkeypatch)
-    fake = _FakeKeyring()
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
-    app_secrets.write_app_secret(cfg, "ms_client_id", "11111111-1111-1111-1111-111111111111")
-    assert (
-        app_secrets._read_app_secret_or_raise(cfg, "ms_client_id")
-        == "11111111-1111-1111-1111-111111111111"
-    )
 
 
 def test_app_secret_backend_is_none_for_a_usable_but_empty_backend(

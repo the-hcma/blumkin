@@ -200,7 +200,10 @@ def test_apply_microsoft_setup_raises_when_the_stale_value_probe_read_also_fails
         client_id="22222222-2222-2222-2222-222222222222",
         tenant_id="contoso.onmicrosoft.com",
     )
-    with pytest.raises(secret_store.SecretWriteError):
+    with pytest.raises(
+        secret_store.SecretWriteError,
+        match="simulated keychain write failure.*simulated keychain read failure",
+    ):
         auth_setup.apply_microsoft_setup(load_config(), new_data)
     # config.toml still gets the new id (written before the vault attempt);
     # it is the unconfirmable stale-shadow risk that must be surfaced.
