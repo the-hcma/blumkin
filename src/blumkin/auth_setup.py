@@ -25,6 +25,7 @@ from pathlib import Path
 from blumkin.app_secrets import write_app_secret
 from blumkin.config import BlumkinConfig, google_oauth_installed_client, set_profile_fields
 from blumkin.providers.kind import ProviderConfigError
+from blumkin.secret_store import SecretWriteError
 
 ACCOUNT_TYPES: frozenset[str] = frozenset({"organizational", "personal"})
 
@@ -97,8 +98,8 @@ def apply_google_setup(cfg: BlumkinConfig, data: GoogleSetupInput) -> None:
     write_app_secret(cfg, "google_client_secret", data.client_secret)
 
 
-def apply_microsoft_setup(cfg: BlumkinConfig, data: MicrosoftSetupInput) -> None:
-    """Validate, write config.toml, then vault `client_id`.
+def apply_microsoft_setup(cfg: BlumkinConfig, data: MicrosoftSetupInput) -> bool:
+    """Validate, write config.toml, then best-effort vault `client_id`.
 
     `client_id` is written to config.toml *and* vaulted: the vaulted copy
     wins when readable (`auth._resolved_client_id`), but the toml copy is
@@ -108,6 +109,15 @@ def apply_microsoft_setup(cfg: BlumkinConfig, data: MicrosoftSetupInput) -> None
     client_id instead of toml" note, which only ever makes the toml copy
     optional to *keep*, not something `auth setup` may skip writing.
     config.toml is written first - see `apply_google_setup` for why.
+
+    Unlike Google's `client_secret` - which lives *only* in the keychain
+    once vaulted, so a write failure there must fail the whole command -
+    config.toml alone is already enough for Microsoft's profile to log in
+    (`auth._resolved_client_id` falls back to `cfg.client_id`). So a
+    `SecretWriteError` here (no usable keychain backend) is swallowed:
+    returns ``False`` instead of raising, letting the caller report a
+    non-fatal warning while still exiting 0 - the config.toml write above
+    already made the profile fully functional (issue #368 review).
     """
     validate_microsoft_setup(data)
     set_profile_fields(
@@ -119,7 +129,11 @@ def apply_microsoft_setup(cfg: BlumkinConfig, data: MicrosoftSetupInput) -> None
             "tenant_id": data.tenant_id.strip(),
         },
     )
-    write_app_secret(cfg, "ms_client_id", data.client_id.strip())
+    try:
+        write_app_secret(cfg, "ms_client_id", data.client_id.strip())
+    except SecretWriteError:
+        return False
+    return True
 
 
 def console_steps(provider: str) -> tuple[str, ...]:

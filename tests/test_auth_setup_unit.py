@@ -52,6 +52,8 @@ def test_apply_google_setup_vaults_secret_and_writes_toml_fields(
     assert written.google_auth_uri == "https://accounts.google.com/o/oauth2/auth"
     assert written.google_token_uri == "https://oauth2.googleapis.com/token"
     assert written.google_redirect_uris == ("http://localhost",)
+    # The secret must never land in plaintext config.toml - only the keychain.
+    assert "GOCSPX-test-secret" not in (tmp_path / "config.toml").read_text()
 
 
 def test_apply_google_setup_rejects_bad_client_id_before_writing_anything(
@@ -64,6 +66,9 @@ def test_apply_google_setup_rejects_bad_client_id_before_writing_anything(
     with pytest.raises(ProviderConfigError, match="does not look like a Google OAuth client id"):
         auth_setup.apply_google_setup(cfg, data)
     assert read_app_secret(cfg, "google_client_secret") is None
+    text = (tmp_path / "config.toml").read_text()
+    assert "not-a-google-client-id" not in text
+    assert "s3cr3t!!" not in text
 
 
 def test_apply_google_setup_does_not_vault_secret_when_toml_write_fails(

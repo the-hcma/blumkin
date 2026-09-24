@@ -53,6 +53,7 @@ def test_auth_setup_google_from_file_non_interactive(tmp_path: Path, monkeypatch
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert read_app_secret(load_config(), "google_client_secret") == "GOCSPX-test-secret"
     assert load_config().client_id == "abc.apps.googleusercontent.com"
+    assert "GOCSPX-test-secret" not in (tmp_path / "config.toml").read_text()
     assert json.loads(result.output)["ok"] is True
 
 
@@ -80,6 +81,39 @@ def test_auth_setup_microsoft_non_interactive(tmp_path: Path, monkeypatch) -> No
     assert written.tenant_id == "contoso.onmicrosoft.com"
     assert written.account_type == "organizational"
     assert written.client_id == "12345678-1234-1234-1234-123456789012"
+
+
+def test_auth_setup_microsoft_succeeds_when_keychain_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Unlike Google's client_secret, Microsoft's client_id is also written to
+    config.toml, so an unusable keychain must not fail the whole command -
+    the profile is already fully functional via the toml copy alone
+    (issue #368 review)."""
+    _configure(tmp_path, monkeypatch, provider="microsoft")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    result = CliRunner().invoke(
+        main,
+        [
+            "auth",
+            "setup",
+            "--yes",
+            "--client-id",
+            "12345678-1234-1234-1234-123456789012",
+            "--tenant-id",
+            "contoso.onmicrosoft.com",
+            "--account-type",
+            "organizational",
+            "--json",
+        ],
+    )
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["vaulted"] is False
+    written = load_config()
+    assert written.client_id == "12345678-1234-1234-1234-123456789012"
+    assert read_app_secret(written, "ms_client_id") is None
 
 
 def test_auth_setup_microsoft_rejects_bad_client_id_without_writing(

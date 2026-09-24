@@ -1335,6 +1335,7 @@ def auth_setup(
                 as_json=as_json,
             )
             apply_google_setup(cfg, data)
+            vaulted: bool | None = None
         else:
             ms_data = _collect_microsoft_setup(
                 cfg,
@@ -1344,7 +1345,7 @@ def auth_setup(
                 interactive=interactive,
                 as_json=as_json,
             )
-            apply_microsoft_setup(cfg, ms_data)
+            vaulted = apply_microsoft_setup(cfg, ms_data)
     except SecretWriteError as exc:
         _emit_error(
             error="secret_write_failed",
@@ -1357,14 +1358,21 @@ def auth_setup(
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     if as_json:
-        emit_json({"ok": True, "provider": provider, "profile": cfg.profile})
+        payload: dict[str, object] = {"ok": True, "provider": provider, "profile": cfg.profile}
+        if vaulted is False:
+            payload["vaulted"] = False
+        emit_json(payload)
     else:
-        emit_lines(
-            [
-                f"{provider} OAuth client configured for profile {cfg.profile!r}.",
-                f"Next: blumkin --profile {cfg.profile} auth login",
-            ]
-        )
+        lines = [f"{provider} OAuth client configured for profile {cfg.profile!r}."]
+        if vaulted is False:
+            lines.append(
+                "Note: client_id was not vaulted in the OS keychain (no usable backend) - "
+                "it is saved in config.toml, so `auth login` still works; re-run "
+                "`blumkin auth set-app-secret --kind ms_client_id` once a keychain is "
+                "available to vault it too."
+            )
+        lines.append(f"Next: blumkin --profile {cfg.profile} auth login")
+        emit_lines(lines)
 
 
 def _collect_google_setup(
