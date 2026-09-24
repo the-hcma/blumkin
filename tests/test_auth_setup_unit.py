@@ -232,3 +232,65 @@ def test_google_setup_from_client_json_rejects_missing_secret(tmp_path: Path) ->
     path.write_text(json.dumps({"installed": {"client_id": "abc.apps.googleusercontent.com"}}))
     with pytest.raises(ProviderConfigError, match="no usable client_secret"):
         auth_setup.google_setup_from_client_json(path)
+
+
+def test_google_setup_from_client_json_rejects_missing_client_id(tmp_path: Path) -> None:
+    path = tmp_path / "desktop-client.json"
+    path.write_text(json.dumps({"installed": {"client_secret": "GOCSPX-file-secret"}}))
+    with pytest.raises(ProviderConfigError, match="no usable client_id"):
+        auth_setup.google_setup_from_client_json(path)
+
+
+def test_validate_google_setup_rejects_empty_client_id() -> None:
+    data = auth_setup.GoogleSetupInput(client_id="", client_secret="s3cr3t!!!")
+    with pytest.raises(ProviderConfigError, match="client_id is required"):
+        auth_setup.validate_google_setup(data)
+
+
+def test_validate_google_setup_rejects_short_client_secret() -> None:
+    data = auth_setup.GoogleSetupInput(
+        client_id="abc.apps.googleusercontent.com", client_secret="short"
+    )
+    with pytest.raises(ProviderConfigError, match="implausibly short"):
+        auth_setup.validate_google_setup(data)
+
+
+def test_validate_google_setup_rejects_non_https_auth_uri() -> None:
+    data = auth_setup.GoogleSetupInput(
+        client_id="abc.apps.googleusercontent.com",
+        client_secret="GOCSPX-test-secret",
+        auth_uri="http://accounts.google.com/o/oauth2/auth",
+    )
+    with pytest.raises(ProviderConfigError, match="auth_uri .* must start with https://"):
+        auth_setup.validate_google_setup(data)
+
+
+def test_validate_google_setup_rejects_non_https_token_uri() -> None:
+    data = auth_setup.GoogleSetupInput(
+        client_id="abc.apps.googleusercontent.com",
+        client_secret="GOCSPX-test-secret",
+        token_uri="http://oauth2.googleapis.com/token",
+    )
+    with pytest.raises(ProviderConfigError, match="token_uri .* must start with https://"):
+        auth_setup.validate_google_setup(data)
+
+
+def test_validate_google_setup_rejects_empty_redirect_uri() -> None:
+    data = auth_setup.GoogleSetupInput(
+        client_id="abc.apps.googleusercontent.com",
+        client_secret="GOCSPX-test-secret",
+        redirect_uris=("  ",),
+    )
+    with pytest.raises(ProviderConfigError, match="redirect_uris must not contain an empty value"):
+        auth_setup.validate_google_setup(data)
+
+
+def test_validate_google_setup_accepts_a_well_formed_input() -> None:
+    data = auth_setup.GoogleSetupInput(
+        client_id="abc.apps.googleusercontent.com",
+        client_secret="GOCSPX-test-secret",
+        auth_uri="https://accounts.google.com/o/oauth2/auth",
+        token_uri="https://oauth2.googleapis.com/token",
+        redirect_uris=("http://localhost",),
+    )
+    auth_setup.validate_google_setup(data)  # does not raise

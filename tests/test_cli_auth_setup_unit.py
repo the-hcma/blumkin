@@ -57,6 +57,42 @@ def test_auth_setup_google_from_file_non_interactive(tmp_path: Path, monkeypatch
     assert json.loads(result.output)["ok"] is True
 
 
+def test_auth_setup_google_from_file_rejects_mismatched_client_id_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`--client-id` disagreeing with the file's id must not silently pair a
+    different app's id with this file's client_secret (issue #368 review)."""
+    _configure(tmp_path, monkeypatch, provider="google")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    oauth_file = tmp_path / "desktop-client.json"
+    oauth_file.write_text(
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "abc.apps.googleusercontent.com",
+                    "client_secret": "GOCSPX-test-secret",
+                }
+            }
+        )
+    )
+    result = CliRunner().invoke(
+        main,
+        [
+            "auth",
+            "setup",
+            "--yes",
+            "--from-file",
+            str(oauth_file),
+            "--client-id",
+            "other.apps.googleusercontent.com",
+        ],
+    )
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert "does not match the client_id" in result.output
+    assert read_app_secret(load_config(), "google_client_secret") is None
+
+
 def test_auth_setup_microsoft_non_interactive(tmp_path: Path, monkeypatch) -> None:
     _configure(tmp_path, monkeypatch, provider="microsoft")
     fake = _FakeKeyring()

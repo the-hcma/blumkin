@@ -1398,8 +1398,15 @@ def _collect_google_setup(
             from_file = Path(raw_path).expanduser()
     if from_file is not None:
         data = google_setup_from_client_json(from_file)
+        if client_id and client_id.strip() != data.client_id:
+            raise ProviderConfigError(
+                f"--client-id {client_id.strip()!r} does not match the client_id in "
+                f"{from_file} ({data.client_id!r}) - that file's client_secret belongs "
+                "to a different OAuth client. Omit --client-id to use the file's "
+                "value, or re-download the file for the client_id you passed."
+            )
         return GoogleSetupInput(
-            client_id=client_id.strip() if client_id else data.client_id,
+            client_id=data.client_id,
             client_secret=data.client_secret,
             auth_uri=auth_uri or data.auth_uri,
             redirect_uris=redirect_uris or data.redirect_uris,
