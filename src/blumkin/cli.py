@@ -1440,14 +1440,6 @@ def _collect_microsoft_setup(
         if not interactive:
             raise ProviderConfigError("--client-id is required with --yes.")
         client_id = click.prompt("Application (client) ID", err=as_json).strip()
-    if not tenant_id:
-        if not interactive:
-            raise ProviderConfigError("--tenant-id is required with --yes.")
-        tenant_id = click.prompt(
-            "Directory (tenant) ID (or 'consumers' for a personal Microsoft account)",
-            default=cfg.tenant_id or None,
-            err=as_json,
-        ).strip()
     if not account_type:
         if not interactive:
             raise ProviderConfigError("--account-type is required with --yes.")
@@ -1457,6 +1449,24 @@ def _collect_microsoft_setup(
             default=cfg.account_type,
             err=as_json,
         )
+    if not tenant_id:
+        if not interactive:
+            raise ProviderConfigError("--tenant-id is required with --yes.")
+        # Asked after account_type (not before) so the default reflects that
+        # choice: a personal account's only sane default is "consumers", not
+        # whatever GUID happened to already be in config.toml (which could be
+        # a leftover from a previous organizational setup and would fail
+        # validate_microsoft_setup below if the operator just hits Enter).
+        default_tenant = cfg.tenant_id or None
+        if account_type == "personal" and (
+            default_tenant is None or default_tenant.strip().lower() not in {"common", "consumers"}
+        ):
+            default_tenant = "consumers"
+        tenant_id = click.prompt(
+            "Directory (tenant) ID (or 'consumers' for a personal Microsoft account)",
+            default=default_tenant,
+            err=as_json,
+        ).strip()
     return MicrosoftSetupInput(account_type=account_type, client_id=client_id, tenant_id=tenant_id)
 
 

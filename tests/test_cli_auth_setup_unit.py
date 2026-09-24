@@ -7,6 +7,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from blumkin import cli as cli_module
 from blumkin import secret_store
 from blumkin.app_secrets import read_app_secret
 from blumkin.cli import main
@@ -248,3 +249,82 @@ def test_auth_setup_non_interactive_requires_client_id_or_from_file(
     result = CliRunner().invoke(main, ["auth", "setup", "--yes"])
     assert result.exit_code == EXIT_USAGE, result.output
     assert "--client-id is required" in result.output
+
+
+def test_auth_setup_microsoft_interactive_walkthrough(tmp_path: Path, monkeypatch) -> None:
+    """Exercise the prompt path (no ``--yes``), which every other CLI test in
+    this file skips - covers the ``interactive = tty and not yes`` branch and
+    every ``click.prompt`` call in ``_collect_microsoft_setup`` (issue #368
+    review finding)."""
+    _configure(tmp_path, monkeypatch, provider="microsoft")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    monkeypatch.setattr(cli_module, "_stdio_is_tty", lambda: True)
+    result = CliRunner().invoke(
+        main,
+        ["auth", "setup"],
+        input="12345678-1234-1234-1234-123456789012\norganizational\ncontoso.onmicrosoft.com\n",
+    )
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    written = load_config()
+    assert written.tenant_id == "contoso.onmicrosoft.com"
+    assert written.account_type == "organizational"
+    assert read_app_secret(written, "ms_client_id") == "12345678-1234-1234-1234-123456789012"
+
+
+def test_auth_setup_google_from_file_flags_override_endpoints(tmp_path: Path, monkeypatch) -> None:
+    """``--auth-uri``/``--token-uri``/``--redirect-uri`` must win over the
+    Desktop client JSON's own values when both are given, and the file's
+    values must still be used when the flags are absent (issue #368 review
+    finding: neither precedence direction had a test)."""
+    _configure(tmp_path, monkeypatch, provider="google")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    oauth_file = tmp_path / "desktop-client.json"
+    oauth_file.write_text(
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "abc.apps.googleusercontent.com",
+                    "client_secret": "GOCSPX-test-secret",
+                    "auth_uri": "https://file.example/auth",
+                    "token_uri": "https://file.example/token",
+                    "redirect_uris": ["http://localhost"],
+                }
+            }
+        )
+    )
+    result = CliRunner().invoke(
+        main,
+        [
+            "auth",
+            "setup",
+            "--yes",
+            "--from-file",
+            str(oauth_file),
+            "--auth-uri",
+            "https://flag.example/auth",
+            "--token-uri",
+            "https://flag.example/token",
+            "--redirect-uri",
+            "http://localhost:8080",
+        ],
+    )
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    written = load_config()
+    assert written.google_auth_uri == "https://flag.example/auth"
+    assert written.google_token_uri == "https://flag.example/token"
+    assert written.google_redirect_uris == ("http://localhost:8080",)
+
+    # Re-run with a fresh profile and no override flags: the file's own
+    # values must be used instead of being dropped.
+    (tmp_path / "config.toml").write_text('[profiles.default]\nprovider = "google"\n')
+    result = CliRunner().invoke(
+        main,
+        ["auth", "setup", "--yes", "--from-file", str(oauth_file)],
+    )
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    written = load_config()
+    assert written.google_auth_uri == "https://file.example/auth"
+    assert written.google_token_uri == "https://file.example/token"
+    assert written.google_redirect_uris == ("http://localhost",)

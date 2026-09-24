@@ -221,11 +221,17 @@ def validate_microsoft_setup(data: MicrosoftSetupInput) -> None:
             f"account_type = 'personal' needs tenant_id = 'consumers' (or 'common'), "
             f"got {tenant_id!r} - a personal Microsoft account is never a directory GUID."
         )
-    if data.account_type == "organizational" and lowered == "consumers":
+    if data.account_type == "organizational" and lowered in {
+        "consumers",
+        "common",
+        "organizations",
+    }:
         raise ProviderConfigError(
             f"account_type = 'organizational' but tenant_id = {tenant_id!r} is a "
-            "personal-account reserved value - use your Entra tenant's GUID, "
-            "verified domain, 'organizations', or 'common', or set account_type = "
+            "personal-account or multi-tenant reserved value - use your Entra "
+            "tenant's specific GUID or verified domain instead (never 'common' / "
+            "'organizations' / 'consumers'), so sign-in stays bounded to your own "
+            "tenant per docs/SECURITY-AT-A-GLANCE.md, or set account_type = "
             "'personal' instead."
         )
 

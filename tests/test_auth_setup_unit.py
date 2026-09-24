@@ -140,7 +140,7 @@ def test_validate_microsoft_setup_rejects_org_account_with_reserved_tenant() -> 
         client_id="12345678-1234-1234-1234-123456789012",
         tenant_id="consumers",
     )
-    with pytest.raises(ProviderConfigError, match="personal-account reserved value"):
+    with pytest.raises(ProviderConfigError, match="personal-account or multi-tenant"):
         auth_setup.validate_microsoft_setup(data)
 
 
@@ -164,11 +164,28 @@ def test_validate_microsoft_setup_rejects_personal_with_organizations_tenant() -
         auth_setup.validate_microsoft_setup(data)
 
 
-def test_validate_microsoft_setup_accepts_organizational_with_organizations_tenant() -> None:
+@pytest.mark.parametrize("tenant_id", ["organizations", "common", "consumers"])
+def test_validate_microsoft_setup_rejects_organizational_with_multi_tenant_value(
+    tenant_id: str,
+) -> None:
+    """docs/SECURITY-AT-A-GLANCE.md's single-tenant hardening rule says an
+    organizational profile must never use `common` / `organizations` /
+    `consumers` - only the tenant's own GUID or verified domain bounds
+    sign-in to that tenant."""
     data = auth_setup.MicrosoftSetupInput(
         account_type="organizational",
         client_id="12345678-1234-1234-1234-123456789012",
-        tenant_id="organizations",
+        tenant_id=tenant_id,
+    )
+    with pytest.raises(ProviderConfigError, match="personal-account or multi-tenant"):
+        auth_setup.validate_microsoft_setup(data)
+
+
+def test_validate_microsoft_setup_accepts_organizational_with_verified_domain() -> None:
+    data = auth_setup.MicrosoftSetupInput(
+        account_type="organizational",
+        client_id="12345678-1234-1234-1234-123456789012",
+        tenant_id="contoso.onmicrosoft.com",
     )
     auth_setup.validate_microsoft_setup(data)  # does not raise
 
