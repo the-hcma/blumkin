@@ -297,7 +297,15 @@ need these — they exist for non-standard endpoints/redirects.
 
 **Optional: vault `client_secret` in the OS keychain instead of a file (issue
 #368).** `client_secret` is never accepted in toml, but it no longer has to
-live in the Desktop client JSON either — vault it with:
+live in the Desktop client JSON either. The guided path does both the
+ingest-and-split in one step:
+
+```bash
+blumkin --profile personal auth setup --yes \
+  --from-file /path/to/google-oauth-desktop-client.json
+```
+
+Or vault it directly with:
 
 ```bash
 blumkin auth set-app-secret --kind google_client_secret --from-file /path/to/google-oauth-desktop-client.json

@@ -148,6 +148,18 @@ tags = ["@msa", "microsoft-personal", "live", "msa", "outlook"]
   - see [`docs/google-setup.md`](./google-setup.md)). With more than one
   profile configured, pass `--profile <name-or-tag>` explicitly on every
   command rather than relying on `default_profile`.
+- **Optional: vault `client_id` in the OS keychain instead of toml** (issue
+  #368) - `client_id` then becomes optional in `config.toml`:
+
+  ```bash
+  blumkin --profile microsoft-personal auth setup --yes \
+    --client-id "<application-client-id-from-B.5>" \
+    --tenant-id consumers --account-type personal
+  ```
+
+  Or vault just the id by hand: `blumkin auth set-app-secret --kind
+  ms_client_id --stdin`. `account_type` and `tenant_id` still live in toml
+  either way (see §C above).
 - No client secret anywhere - this is a public client (auth code + PKCE),
   same as every other blumkin Microsoft profile.
 
@@ -241,8 +253,8 @@ why - this is by design, not a bug to work around.
   [#362](https://github.com/the-hcma/blumkin/issues/362))
 - This guide: [#369](https://github.com/the-hcma/blumkin/issues/369)
 - App-credential keychain / toml centralization
-  ([#368](https://github.com/the-hcma/blumkin/issues/368)) may later change
-  where `client_id` lives - update §C when that lands.
+  ([#368](https://github.com/the-hcma/blumkin/issues/368)): `client_id` can now
+  be vaulted in the OS keychain instead of toml - see the optional step in §C.
 - [`README.md`](../README.md) - the general Microsoft/Google config reference
 - [`docs/SECURITY-AT-A-GLANCE.md`](./SECURITY-AT-A-GLANCE.md#microsoft-app-registration-hardening) -
   app-registration hardening checklist

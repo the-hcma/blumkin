@@ -194,7 +194,16 @@ tags = ["@personal", "personal", "google", "gmail"]
   (the `auth_uri` / `token_uri` / `redirect_uris` shown in §A.4). Most setups
   never need these.
 - **Optional: vault `client_secret` in the OS keychain instead of the file**
-  (issue #368):
+  (issue #368). `blumkin auth setup` does the ingest-and-vault in one guided
+  step (also fills `client_id` and the endpoint overrides above into
+  `config.toml`):
+
+  ```bash
+  blumkin --profile personal auth setup --yes \
+    --from-file /absolute/or/~/path/to/google-oauth-desktop-client.json
+  ```
+
+  Or vault just the secret by hand:
 
   ```bash
   blumkin auth set-app-secret --kind google_client_secret \
