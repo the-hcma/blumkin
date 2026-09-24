@@ -123,6 +123,40 @@ def _resolved_client_id(cfg: BlumkinConfig) -> str:
     return read_app_secret(cfg, "ms_client_id") or cfg.client_id
 
 
+def _active_client_id_for_entries(cfg: BlumkinConfig, entry_client_ids: set[Any]) -> str:
+    """The client_id whose cache entries ``_granted_scopes_from_cache`` should
+    count, matching whichever id ``_resolved_client_id`` actually used to log in
+    - without an extra keychain touch unless the free (toml) candidate provably
+    cannot be right.
+
+    ``config.toml``'s ``client_id`` is tried first (free - already loaded). If
+    the cache is empty, or already has an entry for that id, it is used as-is:
+    this covers both the common case (``client_id`` in toml, matching entries)
+    and a fresh, never-logged-in profile, with zero extra keychain reads -
+    see ``test_status_dict_touches_one_keychain_item_for_both_bundled_kinds``.
+
+    Only when the cache is non-empty *and* none of its entries match the toml
+    id do we consider the id might have moved: an ``auth set-app-secret``
+    vault leaves the old ``config.toml`` value in place by default (see the
+    ``app_secrets`` module docstring), so a profile can have a stale toml
+    ``client_id`` and a different, vaulted ``ms_client_id`` that logins
+    actually use. Only then is the keychain probed, and only used if the
+    vaulted id actually appears among the cache's entries - otherwise the toml
+    id is kept, so an unrelated stale entry (a previously configured
+    ``client_id``, issue #133 review) cannot itself trigger a keychain read
+    (issue #368 review, round 4/5).
+    """
+    toml_client_id = cfg.client_id
+    if not toml_client_id:
+        return read_app_secret(cfg, "ms_client_id") or ""
+    if not entry_client_ids or toml_client_id in entry_client_ids:
+        return toml_client_id
+    vaulted_client_id = read_app_secret(cfg, "ms_client_id") or ""
+    if vaulted_client_id in entry_client_ids:
+        return vaulted_client_id
+    return toml_client_id
+
+
 def create_credential(
     config: BlumkinConfig | None = None,
     *,
@@ -423,13 +457,19 @@ def _granted_scopes_from_cache(
 
     Takes the already-read cache text (``raw``) rather than reading it itself,
     so ``status_dict`` does not pay for a second keyring round trip on top of
-    its own read of the same secret. Filters on ``cfg.client_id`` (the
-    ``config.toml`` value), not ``_resolved_client_id`` (issue #368's
-    keychain-first resolution) - for the same reason: ``status_dict`` must
-    stay a single keychain touch (the bundled auth_record/token_cache read),
-    so an ``ms_client_id`` vaulted-only-in-keychain profile keeps this diff
-    scoped to whatever ``config.toml`` says (doctor/status keychain-aware
-    reporting is a tracked follow-up, not this slice).
+    its own read of the same secret. The *active* client_id for this filter is
+    ``_active_client_id_for_entries`` rather than always ``cfg.client_id``
+    directly - an ``ms_client_id`` vaulted-only-in-keychain profile (empty
+    toml ``client_id``) or one that vaulted a *replacement* id while leaving
+    the old value in ``config.toml`` (``app_secrets``'s documented
+    leave-in-place default) both log in with the vaulted id, so filtering on
+    the toml value alone could silently exclude every real cache entry,
+    reporting zero granted scopes / capabilities for an otherwise fully
+    working profile (issue #368 review, rounds 4-5). The extra keychain read
+    only happens when the toml id does not already explain the cache's
+    entries - a toml-configured profile whose entries match it (the common
+    case) still costs ``status_dict`` exactly one keychain touch, per
+    ``test_status_dict_touches_one_keychain_item_for_both_bundled_kinds``.
     """
     if raw is None:
         return frozenset()
@@ -437,12 +477,15 @@ def _granted_scopes_from_cache(
         data = json.loads(raw)
     except json.JSONDecodeError, OSError:
         return frozenset()
+    entries = [
+        entry for entry in (data.get("AccessToken") or {}).values() if isinstance(entry, dict)
+    ]
+    entry_client_ids = {entry.get("client_id") for entry in entries}
+    active_client_id = _active_client_id_for_entries(cfg, entry_client_ids)
     requested_casefold = {s.casefold() for s in requested}
     scopes: set[str] = set()
-    for entry in (data.get("AccessToken") or {}).values():
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("client_id") != cfg.client_id:
+    for entry in entries:
+        if entry.get("client_id") != active_client_id:
             continue
         target = entry.get("target")
         if not isinstance(target, str):
