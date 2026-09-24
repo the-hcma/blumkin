@@ -11,7 +11,7 @@ from blumkin import secret_store
 from blumkin.app_secrets import read_app_secret
 from blumkin.cli import main
 from blumkin.config import load_config
-from blumkin.exit_codes import EXIT_SUCCESS, EXIT_USAGE
+from blumkin.exit_codes import EXIT_OTHER, EXIT_SUCCESS, EXIT_USAGE
 
 
 class _FakeKeyring:
@@ -79,6 +79,7 @@ def test_auth_setup_microsoft_non_interactive(tmp_path: Path, monkeypatch) -> No
     written = load_config()
     assert written.tenant_id == "contoso.onmicrosoft.com"
     assert written.account_type == "organizational"
+    assert written.client_id == "12345678-1234-1234-1234-123456789012"
 
 
 def test_auth_setup_microsoft_rejects_bad_client_id_without_writing(
@@ -125,6 +126,26 @@ def test_auth_setup_google_from_stdin_non_interactive(tmp_path: Path, monkeypatc
     )
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert read_app_secret(load_config(), "google_client_secret") == "GOCSPX-stdin-secret"
+
+
+def test_auth_setup_reports_secret_write_failed_when_backend_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """config.toml is written first (issue #368 review), so a keychain
+    write failure must still surface as `secret_write_failed`/`EXIT_OTHER`
+    (matching `auth set-app-secret`) with `client_id` already persisted and
+    no secret vaulted - not folded into the generic `usage_error` path."""
+    _configure(tmp_path, monkeypatch, provider="google")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    result = CliRunner().invoke(
+        main,
+        ["auth", "setup", "--yes", "--client-id", "abc.apps.googleusercontent.com", "--stdin"],
+        input="GOCSPX-stdin-secret\n",
+    )
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert "secret_write_failed" in result.output or "no usable OS keychain" in result.output
+    assert load_config().client_id == "abc.apps.googleusercontent.com"
+    assert read_app_secret(load_config(), "google_client_secret") is None
 
 
 def test_auth_setup_google_non_interactive_refuses_inherited_pipe(

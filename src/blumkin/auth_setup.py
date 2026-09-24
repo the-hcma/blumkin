@@ -100,6 +100,13 @@ def apply_google_setup(cfg: BlumkinConfig, data: GoogleSetupInput) -> None:
 def apply_microsoft_setup(cfg: BlumkinConfig, data: MicrosoftSetupInput) -> None:
     """Validate, write config.toml, then vault `client_id`.
 
+    `client_id` is written to config.toml *and* vaulted: the vaulted copy
+    wins when readable (`auth._resolved_client_id`), but the toml copy is
+    the durable fallback on a machine/session where the keychain is not
+    readable (`token_storage = "file"`, no keyring backend, a locked
+    keychain, ...) - see docs/microsoft-personal-setup.md's "vault
+    client_id instead of toml" note, which only ever makes the toml copy
+    optional to *keep*, not something `auth setup` may skip writing.
     config.toml is written first - see `apply_google_setup` for why.
     """
     validate_microsoft_setup(data)
@@ -107,6 +114,7 @@ def apply_microsoft_setup(cfg: BlumkinConfig, data: MicrosoftSetupInput) -> None
         cfg.config_path,
         profile=cfg.profile,
         fields={
+            "client_id": data.client_id.strip(),
             "account_type": data.account_type,
             "tenant_id": data.tenant_id.strip(),
         },

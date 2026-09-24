@@ -9,7 +9,7 @@ import pytest
 
 from blumkin import auth_setup, secret_store
 from blumkin.app_secrets import read_app_secret
-from blumkin.config import load_config
+from blumkin.config import load_config, set_profile_fields
 from blumkin.providers.kind import ProviderConfigError
 
 
@@ -108,6 +108,7 @@ def test_apply_microsoft_setup_vaults_client_id_and_writes_toml_fields(
     written = load_config()
     assert written.tenant_id == "contoso.onmicrosoft.com"
     assert written.account_type == "organizational"
+    assert written.client_id == "12345678-1234-1234-1234-123456789012"
 
 
 def test_validate_microsoft_setup_rejects_non_guid_client_id() -> None:
@@ -172,6 +173,30 @@ def test_console_steps_covers_both_providers() -> None:
     assert auth_setup.console_steps("microsoft") == auth_setup.MICROSOFT_CONSOLE_STEPS
     with pytest.raises(ProviderConfigError):
         auth_setup.console_steps("bogus")
+
+
+def test_set_profile_fields_raises_on_missing_profile(tmp_path: Path) -> None:
+    """Unlike ``set_profile_email``'s best-effort ``False``, a missing profile
+    must raise - a silent no-op here would let `auth setup` claim success
+    while nothing was actually persisted (issue #368 review)."""
+    path = tmp_path / "config.toml"
+    path.write_text('[profiles.other]\nprovider = "google"\n')
+    with pytest.raises(ProviderConfigError, match="not found"):
+        set_profile_fields(path, profile="default", fields={"client_id": "abc"})
+
+
+def test_set_profile_fields_raises_on_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(ProviderConfigError, match="does not exist"):
+        set_profile_fields(tmp_path / "absent.toml", profile="default", fields={"client_id": "x"})
+
+
+def test_set_profile_fields_raises_on_unparseable_toml(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    original = "[profiles.default\nclient_id = abc\n"
+    path.write_text(original)
+    with pytest.raises(ProviderConfigError, match="could not parse"):
+        set_profile_fields(path, profile="default", fields={"client_id": "abc"})
+    assert path.read_text() == original
 
 
 def test_google_setup_from_client_json_extracts_every_field(tmp_path: Path) -> None:
