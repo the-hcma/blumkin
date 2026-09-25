@@ -2783,9 +2783,16 @@ async def _upload_attachments(
                         if fetched is not None and _attachment_is_skipped(fetched):
                             content_cache[candidate_id] = None
                         else:
-                            content_cache[candidate_id] = await _fetch_attachment_bytes(
-                                client, message_id, candidate_id, fetched
-                            )
+                            try:
+                                content_cache[candidate_id] = await _fetch_attachment_bytes(
+                                    client, message_id, candidate_id, fetched
+                                )
+                            except RuntimeError, ValueError:
+                                # An existing attachment whose content Graph won't
+                                # serve (e.g. no contentBytes and an empty $value)
+                                # can't be compared - treat it as a non-match rather
+                                # than aborting the whole upload batch over it.
+                                content_cache[candidate_id] = None
                         candidate["size"] = getattr(fetched, "size", None) if fetched else None
                     content = content_cache[candidate_id]
                     if content is not None and content == raw:

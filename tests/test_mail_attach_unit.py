@@ -274,6 +274,39 @@ def test_upload_attachments_rollback_never_deletes_a_reused_attachment(monkeypat
     builders["att-existing"].delete.assert_not_awaited()
 
 
+def test_upload_attachments_treats_an_unreadable_candidate_as_a_non_match(monkeypatch) -> None:
+    """A same-named candidate whose content Graph won't serve must not abort the batch.
+
+    `_fetch_attachment_bytes` raises rather than returning a sentinel when a
+    fileAttachment has no usable content (e.g. bad `contentBytes` encoding, or an
+    empty `$value` body). That must not bubble up through `_upload_attachments` and
+    delete everything already uploaded this call - the unreadable candidate should
+    simply be treated as a non-match so the pending file still uploads.
+    """
+    client = MagicMock()
+    attachments = client.me.messages.by_message_id.return_value.attachments
+    attachments.get = AsyncMock(
+        return_value=SimpleNamespace(
+            value=[SimpleNamespace(id="att-existing", name="report.pdf", size=3)]
+        )
+    )
+    attachments.post = AsyncMock(
+        return_value=SimpleNamespace(id="att-new", name="report.pdf", size=3)
+    )
+    builder = attachments.by_attachment_id.return_value
+    builder.get = AsyncMock(
+        return_value=SimpleNamespace(
+            id="att-existing", name="report.pdf", content_bytes="not-valid-base64!!"
+        )
+    )
+
+    resolved, created = asyncio.run(_upload_attachments(client, "msg-1", [("report.pdf", b"one")]))
+
+    assert [item["name"] for item in resolved] == ["report.pdf"]
+    assert [item["id"] for item in created] == ["att-new"]
+    attachments.post.assert_awaited_once()
+
+
 def test_mail_update_draft_accepts_attach_alone(tmp_path, monkeypatch) -> None:
     source = tmp_path / "note.txt"
     source.write_bytes(b"hi")
