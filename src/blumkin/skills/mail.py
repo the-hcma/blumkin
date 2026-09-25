@@ -2721,42 +2721,90 @@ async def _upload_attachments(
     ``resolved``, to :func:`_delete_uploaded_attachments`, or a retry/failure would
     delete attachments that pre-existed the call.
 
-    A pending file whose name and byte size already match an attachment already on
+    A pending file whose name and *content* already match an attachment already on
     the message (from an earlier ``--attach`` call, or a repeat within the same
     ``pending``) is reused instead of re-uploaded, so re-attaching the same file
     (e.g. after editing a draft's body) does not leave duplicate copies - see #392.
-    On any other failure, attachments uploaded during this call are deleted so a
-    retry does not silently duplicate them. Callers that created the draft for this
-    upload should still delete the draft itself.
+    Matching is done by name then actual byte content, not Graph's ``size``
+    property - that value reflects MIME-encoding overhead (base64 plus headers,
+    scaling with the filename's length) rather than the decoded file's byte count,
+    so it never equals a local file's ``len(raw)`` and can't be used as a dedup key
+    (confirmed against a live mailbox: a 68-byte file was reported as size 220).
+    A same-named candidate that isn't a file attachment (e.g. an item or reference
+    attachment) has no comparable content and is treated as a non-match rather than
+    fetched, since Graph rejects a ``$value`` read for those types. Each candidate's
+    content is fetched at most once per call, even if multiple pending files share
+    its name. On any other failure, attachments uploaded during this call are
+    deleted so a retry does not silently duplicate them. Callers that created the
+    draft for this upload should still delete the draft itself.
     """
     if not pending:
         return [], []
     builder = client.me.messages.by_message_id(message_id).attachments
     query = AttachmentsRequestBuilder.AttachmentsRequestBuilderGetQueryParameters(
-        select=["id", "name", "size"],
+        select=["id", "name"],
     )
     page = await builder.get(request_config(query))
-    seen: dict[tuple[str, int], dict[str, Any]] = {}
+    # Candidates grouped by name only - content is fetched (and compared) lazily
+    # below, only for pending files whose name has at least one same-named
+    # candidate, to avoid downloading every existing attachment's bytes up front.
+    by_name: dict[str, list[dict[str, Any]]] = {}
     while page is not None:
         for att in getattr(page, "value", None) or []:
             att_name = getattr(att, "name", None)
-            att_size = getattr(att, "size", None)
-            if att_name is not None and att_size is not None:
-                seen.setdefault(
-                    (att_name, att_size),
-                    {"id": getattr(att, "id", None), "name": att_name, "size": att_size},
-                )
+            att_id = getattr(att, "id", None)
+            if att_name is not None and att_id is not None:
+                by_name.setdefault(att_name, []).append({"id": att_id, "name": att_name})
         link = getattr(page, "odata_next_link", None)
         if not link:
             break
         page = await builder.with_url(link).get()
     resolved: list[dict[str, Any]] = []
     created_this_call: list[dict[str, Any]] = []
+    # Attachments created earlier in this same call, keyed by (name, content) so a
+    # repeated --attach of the same file within one command reuses the first
+    # upload instead of re-fetching it from Graph.
+    seen_this_call: dict[tuple[str, bytes], dict[str, Any]] = {}
+    # Candidate content fetched during this call, keyed by attachment id, so two
+    # pending files with the same name but different content don't re-fetch the
+    # same candidate's bytes from Graph.
+    content_cache: dict[str, bytes | None] = {}
     try:
         for name, raw in pending:
-            match = seen.get((name, len(raw)))
+            match = seen_this_call.get((name, raw))
+            if match is None:
+                for candidate in by_name.get(name, []):
+                    candidate_id = candidate["id"]
+                    if candidate_id not in content_cache:
+                        fetched = await builder.by_attachment_id(candidate_id).get()
+                        # A same-named item/reference attachment has no file content
+                        # to compare - Graph's $value endpoint 405s on it, so treat
+                        # it as a non-match instead of fetching its "content".
+                        if fetched is not None and _attachment_is_skipped(fetched):
+                            content_cache[candidate_id] = None
+                        else:
+                            try:
+                                content_cache[candidate_id] = await _fetch_attachment_bytes(
+                                    client, message_id, candidate_id, fetched
+                                )
+                            except RuntimeError, ValueError:
+                                # An existing attachment whose content Graph won't
+                                # serve (e.g. no contentBytes and an empty $value)
+                                # can't be compared - treat it as a non-match rather
+                                # than aborting the whole upload batch over it.
+                                content_cache[candidate_id] = None
+                        candidate["size"] = getattr(fetched, "size", None) if fetched else None
+                    content = content_cache[candidate_id]
+                    if content is not None and content == raw:
+                        match = {
+                            "id": candidate_id,
+                            "name": candidate["name"],
+                            "size": candidate["size"],
+                        }
+                        break
             if match is not None:
                 resolved.append(match)
+                seen_this_call.setdefault((name, raw), match)
                 continue
             created = await builder.post(
                 FileAttachment(
@@ -2772,7 +2820,7 @@ async def _upload_attachments(
             }
             resolved.append(item)
             created_this_call.append(item)
-            seen[(name, len(raw))] = item
+            seen_this_call[(name, raw)] = item
     except Exception:
         await _delete_uploaded_attachments(client, message_id, created_this_call)
         raise
