@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.8.0...blumkin-v1.8.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* restore microsoft-kiota-http upper bound (&lt;1.13.0) ([#388](https://github.com/the-hcma/blumkin/issues/388)) ([1da85ae](https://github.com/the-hcma/blumkin/commit/1da85aeca46ef36593ff2f652c4ba9ed341eb891))
+
 ## [1.8.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.7.0...blumkin-v1.8.0) (2026-09-24)
 
 
