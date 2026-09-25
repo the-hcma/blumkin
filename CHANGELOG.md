@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.2](https://github.com/the-hcma/blumkin/compare/blumkin-v1.9.1...blumkin-v1.9.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* dedup attachments by content, not Graph's unreliable size metadata ([#392](https://github.com/the-hcma/blumkin/issues/392)) ([#396](https://github.com/the-hcma/blumkin/issues/396)) ([dd3ca3e](https://github.com/the-hcma/blumkin/commit/dd3ca3efe025459f9a1a05bf5dde676e8b84eae5))
+
 ## [1.9.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.9.0...blumkin-v1.9.1) (2026-09-25)
 
 
