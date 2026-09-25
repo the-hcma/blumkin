@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.8.1...blumkin-v1.9.0) (2026-09-25)
+
+
+### Features
+
+* prescriptive next-step guidance in doctor and auth status ([#368](https://github.com/the-hcma/blumkin/issues/368)) ([#391](https://github.com/the-hcma/blumkin/issues/391)) ([84e280f](https://github.com/the-hcma/blumkin/commit/84e280f6145470c92308381c544eb2144f10dfa1))
+
 ## [1.8.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.8.0...blumkin-v1.8.1) (2026-09-25)
 
 
