@@ -485,6 +485,26 @@ def test_mail_update_draft_appends_attachment_to_existing(tmp_path: Path) -> Non
     assert names == ["first.txt", "second.txt"]
 
 
+def test_mail_update_draft_skips_reattaching_an_identical_file(tmp_path: Path) -> None:
+    """Re-attaching the same file (same name + size) must reuse it, not duplicate it (#392)."""
+    existing = _raw_draft(
+        subject="Doc", to="a@example.com", body="hi", attachments=[("report.pdf", b"pdf-bytes")]
+    )
+    same_file = tmp_path / "report.pdf"
+    same_file.write_bytes(b"pdf-bytes")
+    service = _service(get_result=existing, update_result={"id": "d-3"})
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-3", body="edited", attach=[str(same_file)]
+            )
+        )
+    assert [a["name"] for a in payload["draft"]["attachments"]] == ["report.pdf"]
+    sent = _sent_message(service, "update")
+    names = [p.get_filename() for p in sent.iter_attachments()]
+    assert names == ["report.pdf"]
+
+
 def test_mail_update_draft_replaces_to_and_body(tmp_path: Path) -> None:
     service = _service(
         get_result=_raw_draft(subject="S", to="old@example.com", body="old body"),

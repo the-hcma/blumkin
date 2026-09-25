@@ -12,6 +12,7 @@ from msgraph.generated.models.body_type import BodyType
 from blumkin.skills.mail import (
     _MAX_ATTACHMENT_BYTES,
     MailAttachError,
+    _upload_attachments,
     format_draft_human,
     mail_draft,
     mail_update_draft,
@@ -214,6 +215,43 @@ def test_mail_update_draft_patch_failure_does_not_delete_a_reused_attachment(
     # Nothing was created this call (the file was reused), so nothing should be deleted.
     delete.assert_not_awaited()
     client.me.messages.by_message_id.return_value.attachments.post.assert_not_awaited()
+
+
+def test_upload_attachments_rollback_never_deletes_a_reused_attachment(monkeypatch) -> None:
+    """Helper-level check: a later upload failing must only roll back what this call created."""
+    client = MagicMock()
+    attachments = client.me.messages.by_message_id.return_value.attachments
+    attachments.get = AsyncMock(
+        return_value=SimpleNamespace(
+            value=[SimpleNamespace(id="att-existing", name="report.pdf", size=3)]
+        )
+    )
+    attachments.post = AsyncMock(
+        side_effect=[
+            SimpleNamespace(id="att-second.txt", name="second.txt", size=3),
+            RuntimeError("Graph said no"),
+        ],
+    )
+    delete = AsyncMock(return_value=None)
+    attachments.by_attachment_id.return_value.delete = delete
+
+    with pytest.raises(RuntimeError, match="Graph said no"):
+        asyncio.run(
+            _upload_attachments(
+                client,
+                "msg-1",
+                [("report.pdf", b"one"), ("second.txt", b"two"), ("third.txt", b"three")],
+            )
+        )
+
+    # report.pdf matched the existing attachment and was reused, never re-uploaded;
+    # second.txt was newly created and rolled back; third.txt is the one that failed.
+    assert [call.args[0].name for call in attachments.post.await_args_list] == [
+        "second.txt",
+        "third.txt",
+    ]
+    delete.assert_awaited_once()
+    attachments.by_attachment_id.assert_called_once_with("att-second.txt")
 
 
 def test_mail_update_draft_accepts_attach_alone(tmp_path, monkeypatch) -> None:
