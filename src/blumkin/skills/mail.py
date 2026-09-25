@@ -2730,9 +2730,13 @@ async def _upload_attachments(
     scaling with the filename's length) rather than the decoded file's byte count,
     so it never equals a local file's ``len(raw)`` and can't be used as a dedup key
     (confirmed against a live mailbox: a 68-byte file was reported as size 220).
-    On any other failure, attachments uploaded during this call are deleted so a
-    retry does not silently duplicate them. Callers that created the draft for this
-    upload should still delete the draft itself.
+    A same-named candidate that isn't a file attachment (e.g. an item or reference
+    attachment) has no comparable content and is treated as a non-match rather than
+    fetched, since Graph rejects a ``$value`` read for those types. Each candidate's
+    content is fetched at most once per call, even if multiple pending files share
+    its name. On any other failure, attachments uploaded during this call are
+    deleted so a retry does not silently duplicate them. Callers that created the
+    draft for this upload should still delete the draft itself.
     """
     if not pending:
         return [], []
@@ -2761,20 +2765,34 @@ async def _upload_attachments(
     # repeated --attach of the same file within one command reuses the first
     # upload instead of re-fetching it from Graph.
     seen_this_call: dict[tuple[str, bytes], dict[str, Any]] = {}
+    # Candidate content fetched during this call, keyed by attachment id, so two
+    # pending files with the same name but different content don't re-fetch the
+    # same candidate's bytes from Graph.
+    content_cache: dict[str, bytes | None] = {}
     try:
         for name, raw in pending:
             match = seen_this_call.get((name, raw))
             if match is None:
                 for candidate in by_name.get(name, []):
-                    fetched = await builder.by_attachment_id(candidate["id"]).get()
-                    content = await _fetch_attachment_bytes(
-                        client, message_id, candidate["id"], fetched
-                    )
-                    if content == raw:
+                    candidate_id = candidate["id"]
+                    if candidate_id not in content_cache:
+                        fetched = await builder.by_attachment_id(candidate_id).get()
+                        # A same-named item/reference attachment has no file content
+                        # to compare - Graph's $value endpoint 405s on it, so treat
+                        # it as a non-match instead of fetching its "content".
+                        if fetched is not None and _attachment_is_skipped(fetched):
+                            content_cache[candidate_id] = None
+                        else:
+                            content_cache[candidate_id] = await _fetch_attachment_bytes(
+                                client, message_id, candidate_id, fetched
+                            )
+                        candidate["size"] = getattr(fetched, "size", None) if fetched else None
+                    content = content_cache[candidate_id]
+                    if content is not None and content == raw:
                         match = {
-                            "id": candidate["id"],
+                            "id": candidate_id,
                             "name": candidate["name"],
-                            "size": getattr(fetched, "size", None) if fetched else len(raw),
+                            "size": candidate["size"],
                         }
                         break
             if match is not None:

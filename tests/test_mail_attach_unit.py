@@ -237,16 +237,20 @@ def test_upload_attachments_rollback_never_deletes_a_reused_attachment(monkeypat
             RuntimeError("Graph said no"),
         ],
     )
-    delete = AsyncMock(return_value=None)
-    shared_builder = attachments.by_attachment_id.return_value
-    shared_builder.delete = delete
+    # ID-specific builder doubles (rather than one shared/mutated double) so the
+    # rollback assertion below can tell *which* attachment's delete was awaited.
+    builders: dict[str, MagicMock] = {}
     by_id = {
         "att-existing": SimpleNamespace(id="att-existing", name="report.pdf", content_bytes=b"one"),
     }
 
     def _select_builder(aid):
-        shared_builder.get = AsyncMock(return_value=by_id.get(aid))
-        return shared_builder
+        if aid not in builders:
+            builder = MagicMock()
+            builder.get = AsyncMock(return_value=by_id.get(aid))
+            builder.delete = AsyncMock(return_value=None)
+            builders[aid] = builder
+        return builders[aid]
 
     attachments.by_attachment_id.side_effect = _select_builder
 
@@ -266,11 +270,8 @@ def test_upload_attachments_rollback_never_deletes_a_reused_attachment(monkeypat
         "second.txt",
         "third.txt",
     ]
-    delete.assert_awaited_once()
-    # "att-existing" is fetched once to compare its content; "att-second.txt" is
-    # the one actually rolled back.
-    attachments.by_attachment_id.assert_any_call("att-existing")
-    attachments.by_attachment_id.assert_any_call("att-second.txt")
+    builders["att-second.txt"].delete.assert_awaited_once()
+    builders["att-existing"].delete.assert_not_awaited()
 
 
 def test_mail_update_draft_accepts_attach_alone(tmp_path, monkeypatch) -> None:
@@ -311,6 +312,30 @@ def test_mail_update_draft_skips_reattaching_an_identical_file(tmp_path, monkeyp
     ]
     # The existing attachment was reused - no new upload happened.
     client.me.messages.by_message_id.return_value.attachments.post.assert_not_awaited()
+
+
+def test_mail_update_draft_uploads_past_a_same_named_non_file_attachment(
+    tmp_path, monkeypatch
+) -> None:
+    """A same-named item/reference attachment has no content to compare - and Graph
+    rejects a `$value` read for it - so it must be treated as a non-match, not
+    crash the upload.
+    """
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"pdf-bytes")
+    client = _draft_client(
+        monkeypatch,
+        existing_attachments=[
+            SimpleNamespace(
+                id="att-item",
+                name="report.pdf",
+                odata_type="#microsoft.graph.itemAttachment",
+            ),
+        ],
+    )
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
+    assert [item["name"] for item in payload["draft"]["attachments"]] == ["report.pdf"]
+    client.me.messages.by_message_id.return_value.attachments.post.assert_awaited_once()
 
 
 def test_mail_update_draft_reuploads_when_content_differs(tmp_path, monkeypatch) -> None:
@@ -370,7 +395,10 @@ def test_mail_update_draft_dedups_against_a_later_page_of_existing_attachments(
         "att-existing": SimpleNamespace(
             id="att-existing",
             name="report.pdf",
-            size=len(b"pdf-bytes"),
+            # Deliberately different from len(b"pdf-bytes") - Graph's reported
+            # size never equals the raw byte count (#392/#394), so a reuse
+            # match must not depend on them happening to be equal.
+            size=3,
             content_bytes=b"pdf-bytes",
         ),
     }
@@ -382,7 +410,7 @@ def test_mail_update_draft_dedups_against_a_later_page_of_existing_attachments(
     item.attachments.by_attachment_id.side_effect = _select_builder
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
     assert payload["draft"]["attachments"] == [
-        {"id": "att-existing", "name": "report.pdf", "size": len(b"pdf-bytes")}
+        {"id": "att-existing", "name": "report.pdf", "size": 3}
     ]
     item.attachments.with_url.assert_called_once_with("https://graph.microsoft.com/v1.0/next")
     item.attachments.post.assert_not_awaited()
