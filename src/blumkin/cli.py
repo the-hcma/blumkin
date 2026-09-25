@@ -332,6 +332,35 @@ def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
     return value
 
 
+def _auth_status_next_steps(status: dict[str, Any]) -> list[str]:
+    """Prescriptive fixes for an unhealthy `auth status`, cached-data only.
+
+    Mirrors `doctor`'s problem list so the two commands never disagree on the
+    remediation for the same underlying fact, but only reads fields
+    `status_dict()` already returned - no extra keyring round trip (the
+    vaulted-client-id check `doctor` affords itself) and no live email probe,
+    matching this command's "cached data only" contract (issue #368 review:
+    a diagnosis without a next step just makes the operator go read the
+    source).
+    """
+    steps: list[str] = []
+    if not status.get("client_id_configured"):
+        steps.append(
+            "client_id missing in config.toml — run: blumkin auth setup (or "
+            "blumkin doctor, which also checks the OS keychain for a vaulted client_id)"
+        )
+    if not status.get("token_cache") or not status.get("auth_record"):
+        steps.append("no token cache / auth record yet — run: blumkin auth login")
+    missing_scopes = status.get("missing_scopes") or []
+    if missing_scopes:
+        steps.append("missing scopes: " + ", ".join(missing_scopes) + " — run: blumkin auth login")
+    if status.get("access_token_expired") and not status.get("refresh_token_present"):
+        steps.append(
+            "access token expired and no refresh token is cached — run: blumkin auth login"
+        )
+    return steps
+
+
 def _auth_status_payload(config: BlumkinConfig | None = None) -> dict[str, Any]:
     """Auth-status fields plus the resolved build, account, and capabilities.
 
@@ -349,6 +378,7 @@ def _auth_status_payload(config: BlumkinConfig | None = None) -> dict[str, Any]:
     payload["capabilities"] = capability_summary(
         provider=cfg.provider, granted_scopes=payload.get("granted_scopes") or []
     )
+    payload["next_steps"] = _auth_status_next_steps(payload)
     return payload
 
 
@@ -1078,6 +1108,8 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
         )
     available = [family for family, ok in payload["capabilities"].items() if ok]
     lines.append(f"available: {', '.join(available) or 'none'}")
+    for step in payload.get("next_steps") or []:
+        lines.append(f"next_step: {step}")
     emit_lines(lines)
 
 
@@ -1877,7 +1909,10 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
     status = _workspace(cfg).auth_status()
     problems: list[str] = []
     if not status["client_id_configured"] and not _vaulted_client_id_or_secret_present(cfg):
-        problems.append("client_id missing in config.toml")
+        problems.append(
+            "client_id missing in config.toml — run: blumkin auth setup (walks through "
+            "registering the OAuth app and vaulting/storing the client_id for you)"
+        )
     if not status["token_cache"] or not status["auth_record"]:
         problems.append("auth cache incomplete — run: blumkin auth login")
     missing_scopes = status.get("missing_scopes") or []

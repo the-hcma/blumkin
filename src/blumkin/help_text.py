@@ -122,6 +122,13 @@ assuming a hang is a login problem. `--json` also carries `granted_scopes` and
 label written once at onboarding (`null` on a profile that has never
 completed a login). `capabilities` (JSON) / `available:` (text) is the same
 per-family usability summary as `blumkin doctor` and `blumkin capabilities`.
+
+`next_steps` (JSON) / `next_step:` lines (text) name the exact command to run
+for anything unhealthy - a missing client id, an incomplete token cache, a
+scope gap, or an expired access token with no refresh token cached. Empty
+when everything checked here is fine (still worth a `blumkin doctor` for the
+checks this cache-only command intentionally skips, like a live email-drift
+check or the OS keychain).
 """
 
 AUTH_SETUP_EPILOG = """
