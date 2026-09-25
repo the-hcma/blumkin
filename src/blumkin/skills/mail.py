@@ -2715,16 +2715,38 @@ async def _upload_attachments(
 ) -> list[dict[str, Any]]:
     """Attach already-read files to a draft, one Graph call each, in the order given.
 
-    On any failure, already-uploaded attachments from this call are deleted so a retry
-    does not silently duplicate them. Callers that created the draft for this upload
-    should still delete the draft itself.
+    A pending file whose name and byte size already match an attachment already on
+    the message (from an earlier ``--attach`` call, or a repeat within the same
+    ``pending``) is reused instead of re-uploaded, so re-attaching the same file
+    (e.g. after editing a draft's body) does not leave duplicate copies - see #392.
+    On any other failure, attachments uploaded during this call are deleted so a
+    retry does not silently duplicate them. Callers that created the draft for this
+    upload should still delete the draft itself.
     """
     if not pending:
         return []
     builder = client.me.messages.by_message_id(message_id).attachments
-    uploaded: list[dict[str, Any]] = []
+    query = AttachmentsRequestBuilder.AttachmentsRequestBuilderGetQueryParameters(
+        select=["id", "name", "size"],
+    )
+    existing_page = await builder.get(request_config(query))
+    seen: dict[tuple[str, int], dict[str, Any]] = {}
+    for att in getattr(existing_page, "value", None) or []:
+        att_name = getattr(att, "name", None)
+        att_size = getattr(att, "size", None)
+        if att_name is not None and att_size is not None:
+            seen.setdefault(
+                (att_name, att_size),
+                {"id": getattr(att, "id", None), "name": att_name, "size": att_size},
+            )
+    resolved: list[dict[str, Any]] = []
+    created_this_call: list[dict[str, Any]] = []
     try:
         for name, raw in pending:
+            match = seen.get((name, len(raw)))
+            if match is not None:
+                resolved.append(match)
+                continue
             created = await builder.post(
                 FileAttachment(
                     odata_type="#microsoft.graph.fileAttachment",
@@ -2732,17 +2754,18 @@ async def _upload_attachments(
                     name=name,
                 )
             )
-            uploaded.append(
-                {
-                    "id": getattr(created, "id", None),
-                    "name": getattr(created, "name", None) or name,
-                    "size": getattr(created, "size", None) if created is not None else None,
-                }
-            )
+            item = {
+                "id": getattr(created, "id", None),
+                "name": getattr(created, "name", None) or name,
+                "size": getattr(created, "size", None) if created is not None else None,
+            }
+            resolved.append(item)
+            created_this_call.append(item)
+            seen[(name, len(raw))] = item
     except Exception:
-        await _delete_uploaded_attachments(client, message_id, uploaded)
+        await _delete_uploaded_attachments(client, message_id, created_this_call)
         raise
-    return uploaded
+    return resolved
 
 
 def _validate_importance(raw: str) -> str:

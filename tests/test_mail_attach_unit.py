@@ -204,6 +204,53 @@ def test_mail_update_draft_accepts_attach_alone(tmp_path, monkeypatch) -> None:
     client.me.messages.by_message_id.return_value.patch.assert_not_awaited()
 
 
+def test_mail_update_draft_skips_reattaching_an_identical_file(tmp_path, monkeypatch) -> None:
+    """Re-attaching the same file (same name + size) must reuse it, not duplicate it (#392)."""
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"pdf-bytes")
+    client = _draft_client(
+        monkeypatch,
+        existing_attachments=[
+            SimpleNamespace(id="att-existing", name="report.pdf", size=len(b"pdf-bytes")),
+        ],
+    )
+    payload = asyncio.run(
+        mail_update_draft(draft_id="draft-1", body="edited body", attach=[str(source)])
+    )
+    assert payload["draft"]["attachments"] == [
+        {"id": "att-existing", "name": "report.pdf", "size": len(b"pdf-bytes")}
+    ]
+    # The existing attachment was reused - no new upload happened.
+    client.me.messages.by_message_id.return_value.attachments.post.assert_not_awaited()
+
+
+def test_mail_update_draft_reuploads_when_size_differs(tmp_path, monkeypatch) -> None:
+    """Same name but different content (size) is not a duplicate - it must still upload."""
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"new-pdf-bytes-longer")
+    client = _draft_client(
+        monkeypatch,
+        existing_attachments=[
+            SimpleNamespace(id="att-existing", name="report.pdf", size=3),
+        ],
+    )
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
+    assert [item["name"] for item in payload["draft"]["attachments"]] == ["report.pdf"]
+    client.me.messages.by_message_id.return_value.attachments.post.assert_awaited_once()
+
+
+def test_mail_update_draft_dedups_repeated_attach_within_the_same_call(
+    tmp_path, monkeypatch
+) -> None:
+    """Passing the same new file twice in one ``--attach`` list uploads it only once."""
+    source = tmp_path / "note.txt"
+    source.write_bytes(b"hi")
+    client = _draft_client(monkeypatch)
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source), str(source)]))
+    assert [item["name"] for item in payload["draft"]["attachments"]] == ["note.txt", "note.txt"]
+    client.me.messages.by_message_id.return_value.attachments.post.assert_awaited_once()
+
+
 def test_mail_update_draft_attaches_alongside_a_patch(tmp_path, monkeypatch) -> None:
     source = tmp_path / "note.txt"
     source.write_bytes(b"hi")
@@ -299,7 +346,9 @@ def _attachments_posted(client: MagicMock) -> list:
 def _client(monkeypatch) -> MagicMock:
     client = MagicMock()
     client.me.messages.post = AsyncMock(return_value=SimpleNamespace(id="draft-1", subject="Hi"))
-    client.me.messages.by_message_id.return_value.attachments.post = AsyncMock(
+    attachments = client.me.messages.by_message_id.return_value.attachments
+    attachments.get = AsyncMock(return_value=SimpleNamespace(value=[]))
+    attachments.post = AsyncMock(
         side_effect=lambda att: SimpleNamespace(
             id=f"att-{att.name}", name=att.name, size=len(att.content_bytes)
         )
@@ -308,7 +357,7 @@ def _client(monkeypatch) -> MagicMock:
     return client
 
 
-def _draft_client(monkeypatch) -> MagicMock:
+def _draft_client(monkeypatch, *, existing_attachments: list | None = None) -> MagicMock:
     existing = SimpleNamespace(
         id="draft-1",
         is_draft=True,
@@ -338,6 +387,9 @@ def _draft_client(monkeypatch) -> MagicMock:
             cc_recipients=existing.cc_recipients,
             to_recipients=existing.to_recipients,
         )
+    )
+    item.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=list(existing_attachments or []))
     )
     item.attachments.post = AsyncMock(
         side_effect=lambda att: SimpleNamespace(
