@@ -710,13 +710,31 @@ async def mail_update_draft(
                     new_html_alternative = None
                 new_content = f"{head}{quoted}"
         _replace_body(message, new_content, new_body_type or "text", new_html_alternative)
+    seen: set[tuple[str, int]] = set()
+    for part in message.iter_attachments():
+        payload = part.get_payload(decode=True)
+        if not isinstance(payload, bytes | bytearray):
+            continue
+        filename = part.get_filename()
+        if filename is not None:
+            seen.add((filename, len(payload)))
+    reported_attachments: list[tuple[str, bytes]] = []
+    reported_seen: set[tuple[str, int]] = set()
     for name, data in pending:
+        key = (name, len(data))
+        if key not in reported_seen:
+            reported_seen.add(key)
+            reported_attachments.append((name, data))
+        if key in seen:
+            # Already attached (same name and size) - reuse it instead of duplicating (#392).
+            continue
         maintype, _, subtype = (
             mimetypes.guess_type(name)[0] or "application/octet-stream"
         ).partition("/")
         message.add_attachment(
             data, maintype=maintype, subtype=subtype or "octet-stream", filename=name
         )
+        seen.add(key)
 
     update_message: dict[str, Any] = {"raw": _raw(message)}
     if isinstance(thread_id, str) and thread_id:
@@ -738,7 +756,7 @@ async def mail_update_draft(
     return {
         "draft": {
             "attachments": [
-                {"id": None, "name": name, "size": len(data)} for name, data in pending
+                {"id": None, "name": name, "size": len(data)} for name, data in reported_attachments
             ],
             "bcc": ", ".join(_addresses_from(message, "Bcc")) or None,
             "body_type": body_type_out,

@@ -485,6 +485,71 @@ def test_mail_update_draft_appends_attachment_to_existing(tmp_path: Path) -> Non
     assert names == ["first.txt", "second.txt"]
 
 
+def test_mail_update_draft_skips_reattaching_an_identical_file(tmp_path: Path) -> None:
+    """Re-attaching the same file (same name + size) must reuse it, not duplicate it (#392)."""
+    existing = _raw_draft(
+        subject="Doc", to="a@example.com", body="hi", attachments=[("report.pdf", b"pdf-bytes")]
+    )
+    same_file = tmp_path / "report.pdf"
+    same_file.write_bytes(b"pdf-bytes")
+    service = _service(get_result=existing, update_result={"id": "d-3"})
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-3", body="edited", attach=[str(same_file)]
+            )
+        )
+    assert [a["name"] for a in payload["draft"]["attachments"]] == ["report.pdf"]
+    sent = _sent_message(service, "update")
+    names = [p.get_filename() for p in sent.iter_attachments()]
+    assert names == ["report.pdf"]
+
+
+def test_mail_update_draft_dedups_repeated_attach_within_the_same_call(tmp_path: Path) -> None:
+    """Passing the same file twice in one --attach call must attach it once (#392)."""
+    existing = _raw_draft(subject="Doc", to="a@example.com", body="hi")
+    dupe_file = tmp_path / "note.txt"
+    dupe_file.write_text("same contents")
+    service = _service(get_result=existing, update_result={"id": "d-4"})
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-4", attach=[str(dupe_file), str(dupe_file)]
+            )
+        )
+    assert [a["name"] for a in payload["draft"]["attachments"]] == ["note.txt"]
+    names = [p.get_filename() for p in _sent_message(service, "update").iter_attachments()]
+    assert names == ["note.txt"]
+
+
+def test_mail_update_draft_reattaches_when_same_name_but_different_size(
+    tmp_path: Path,
+) -> None:
+    """A same-named file with different content must not be treated as a duplicate (#392)."""
+    existing = _raw_draft(
+        subject="Doc", to="a@example.com", body="hi", attachments=[("report.pdf", b"old")]
+    )
+    changed_file = tmp_path / "report.pdf"
+    changed_file.write_bytes(b"new-and-longer-content")
+    service = _service(get_result=existing, update_result={"id": "d-5"})
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="d-5", attach=[str(changed_file)]
+            )
+        )
+    assert [a["name"] for a in payload["draft"]["attachments"]] == ["report.pdf"]
+    sent = _sent_message(service, "update")
+    parts = [
+        (p.get_filename(), p.get_payload(decode=True))
+        for p in sent.iter_attachments()
+        if p.get_filename() == "report.pdf"
+    ]
+    # Both the stale "old" bytes and the new content are attached under the same
+    # name, proving the size mismatch prevented over-deduping.
+    assert {payload_bytes for _, payload_bytes in parts} == {b"old", b"new-and-longer-content"}
+
+
 def test_mail_update_draft_replaces_to_and_body(tmp_path: Path) -> None:
     service = _service(
         get_result=_raw_draft(subject="S", to="old@example.com", body="old body"),

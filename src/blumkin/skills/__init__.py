@@ -1716,7 +1716,10 @@ SKILLS: list[SkillSpec] = [
                 "required": False,
                 "type": "path",
                 "multiple": True,
-                "note": "repeatable; adds to the draft's existing attachments",
+                "note": (
+                    "repeatable; adds to the draft's existing attachments, reusing"
+                    " (not duplicating) a file whose name and size already match one"
+                ),
             },
             {
                 "name": "--keep-quoted",
