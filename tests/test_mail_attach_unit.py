@@ -199,7 +199,12 @@ def test_mail_update_draft_patch_failure_does_not_delete_a_reused_attachment(
     client = _draft_client(
         monkeypatch,
         existing_attachments=[
-            SimpleNamespace(id="att-existing", name="report.pdf", size=len(b"pdf-bytes")),
+            SimpleNamespace(
+                id="att-existing",
+                name="report.pdf",
+                size=len(b"pdf-bytes"),
+                content_bytes=b"pdf-bytes",
+            ),
         ],
     )
     client.me.messages.by_message_id.return_value.patch = AsyncMock(
@@ -233,7 +238,17 @@ def test_upload_attachments_rollback_never_deletes_a_reused_attachment(monkeypat
         ],
     )
     delete = AsyncMock(return_value=None)
-    attachments.by_attachment_id.return_value.delete = delete
+    shared_builder = attachments.by_attachment_id.return_value
+    shared_builder.delete = delete
+    by_id = {
+        "att-existing": SimpleNamespace(id="att-existing", name="report.pdf", content_bytes=b"one"),
+    }
+
+    def _select_builder(aid):
+        shared_builder.get = AsyncMock(return_value=by_id.get(aid))
+        return shared_builder
+
+    attachments.by_attachment_id.side_effect = _select_builder
 
     with pytest.raises(RuntimeError, match="Graph said no"):
         asyncio.run(
@@ -244,14 +259,18 @@ def test_upload_attachments_rollback_never_deletes_a_reused_attachment(monkeypat
             )
         )
 
-    # report.pdf matched the existing attachment and was reused, never re-uploaded;
-    # second.txt was newly created and rolled back; third.txt is the one that failed.
+    # report.pdf matched the existing attachment's content and was reused, never
+    # re-uploaded; second.txt was newly created and rolled back; third.txt is the
+    # one that failed to upload.
     assert [call.args[0].name for call in attachments.post.await_args_list] == [
         "second.txt",
         "third.txt",
     ]
     delete.assert_awaited_once()
-    attachments.by_attachment_id.assert_called_once_with("att-second.txt")
+    # "att-existing" is fetched once to compare its content; "att-second.txt" is
+    # the one actually rolled back.
+    attachments.by_attachment_id.assert_any_call("att-existing")
+    attachments.by_attachment_id.assert_any_call("att-second.txt")
 
 
 def test_mail_update_draft_accepts_attach_alone(tmp_path, monkeypatch) -> None:
@@ -270,13 +289,18 @@ def test_mail_update_draft_accepts_attach_alone(tmp_path, monkeypatch) -> None:
 
 
 def test_mail_update_draft_skips_reattaching_an_identical_file(tmp_path, monkeypatch) -> None:
-    """Re-attaching the same file (same name + size) must reuse it, not duplicate it (#392)."""
+    """Re-attaching the same file (same content) must reuse it, not duplicate it (#392/#394)."""
     source = tmp_path / "report.pdf"
     source.write_bytes(b"pdf-bytes")
     client = _draft_client(
         monkeypatch,
         existing_attachments=[
-            SimpleNamespace(id="att-existing", name="report.pdf", size=len(b"pdf-bytes")),
+            SimpleNamespace(
+                id="att-existing",
+                name="report.pdf",
+                size=len(b"pdf-bytes"),
+                content_bytes=b"pdf-bytes",
+            ),
         ],
     )
     payload = asyncio.run(
@@ -289,14 +313,21 @@ def test_mail_update_draft_skips_reattaching_an_identical_file(tmp_path, monkeyp
     client.me.messages.by_message_id.return_value.attachments.post.assert_not_awaited()
 
 
-def test_mail_update_draft_reuploads_when_size_differs(tmp_path, monkeypatch) -> None:
-    """Same name but different content (size) is not a duplicate - it must still upload."""
+def test_mail_update_draft_reuploads_when_content_differs(tmp_path, monkeypatch) -> None:
+    """Same name but different content is not a duplicate - it must still upload.
+
+    Graph's reported `size` for a fileAttachment does not equal the raw byte
+    count (#392/#394), so the fixture's `size` here is deliberately irrelevant -
+    only `content_bytes` drives the match.
+    """
     source = tmp_path / "report.pdf"
     source.write_bytes(b"new-pdf-bytes-longer")
     client = _draft_client(
         monkeypatch,
         existing_attachments=[
-            SimpleNamespace(id="att-existing", name="report.pdf", size=3),
+            SimpleNamespace(
+                id="att-existing", name="report.pdf", size=3, content_bytes=b"old-content"
+            ),
         ],
     )
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
@@ -334,6 +365,21 @@ def test_mail_update_draft_dedups_against_a_later_page_of_existing_attachments(
     )
     item.attachments.get = AsyncMock(return_value=first_page)
     item.attachments.with_url.return_value.get = AsyncMock(return_value=second_page)
+    shared_builder = item.attachments.by_attachment_id.return_value
+    by_id = {
+        "att-existing": SimpleNamespace(
+            id="att-existing",
+            name="report.pdf",
+            size=len(b"pdf-bytes"),
+            content_bytes=b"pdf-bytes",
+        ),
+    }
+
+    def _select_builder(aid):
+        shared_builder.get = AsyncMock(return_value=by_id.get(aid))
+        return shared_builder
+
+    item.attachments.by_attachment_id.side_effect = _select_builder
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
     assert payload["draft"]["attachments"] == [
         {"id": "att-existing", "name": "report.pdf", "size": len(b"pdf-bytes")}
@@ -479,9 +525,21 @@ def _draft_client(monkeypatch, *, existing_attachments: list | None = None) -> M
             to_recipients=existing.to_recipients,
         )
     )
-    item.attachments.get = AsyncMock(
-        return_value=SimpleNamespace(value=list(existing_attachments or []))
-    )
+    entries = list(existing_attachments or [])
+    by_id = {getattr(entry, "id", None): entry for entry in entries}
+    item.attachments.get = AsyncMock(return_value=SimpleNamespace(value=entries))
+    # `by_attachment_id(id)` always returns the same request-builder double (so
+    # `attachments.by_attachment_id.return_value.delete` keeps working for rollback
+    # assertions), but its `.get()` is reconfigured per call to return the entry for
+    # whichever id was requested - that entry's `content_bytes` is what the dedup
+    # logic actually compares against (#392/#394: Graph's `size` can't be trusted).
+    shared_builder = item.attachments.by_attachment_id.return_value
+
+    def _select_builder(aid):
+        shared_builder.get = AsyncMock(return_value=by_id.get(aid))
+        return shared_builder
+
+    item.attachments.by_attachment_id.side_effect = _select_builder
     item.attachments.post = AsyncMock(
         side_effect=lambda att: SimpleNamespace(
             id=f"att-{att.name}", name=att.name, size=len(att.content_bytes)
