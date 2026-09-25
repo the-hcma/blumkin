@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.9.0...blumkin-v1.9.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* skip re-uploading attachments already on a draft ([#392](https://github.com/the-hcma/blumkin/issues/392)) ([#394](https://github.com/the-hcma/blumkin/issues/394)) ([d6abc20](https://github.com/the-hcma/blumkin/commit/d6abc2073f37f526798915628d2f2dcd526bc7ac))
+
 ## [1.9.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.8.1...blumkin-v1.9.0) (2026-09-25)
 
 
