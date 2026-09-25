@@ -92,3 +92,63 @@ def test_auth_login_json_reports_account_from_the_login_just_recorded(
     payload = json.loads(result.stdout)
     assert payload["email_written"] == "rivera@example.com"
     assert payload["status"]["account"] == "rivera@example.com"
+
+
+def test_auth_status_next_steps_empty_when_healthy(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    provider = _provider(granted_scopes=["Mail.Send"])
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "status", "--json"])
+        payload = json.loads(result.stdout)
+        assert payload["next_steps"] == []
+        result = CliRunner().invoke(main, ["auth", "status"])
+    assert "next_step:" not in result.stdout
+
+
+def test_auth_status_next_steps_names_the_fix_for_a_missing_client_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    provider = _provider()
+    provider.auth_status.return_value["client_id_configured"] = False
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "status", "--json"])
+    payload = json.loads(result.stdout)
+    assert any(step.startswith("client_id missing") for step in payload["next_steps"])
+    assert "blumkin auth setup" in payload["next_steps"][0]
+
+
+def test_auth_status_next_steps_names_the_fix_for_missing_scopes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    provider = _provider()
+    provider.auth_status.return_value["missing_scopes"] = ["Mail.Send"]
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "status", "--json"])
+        payload = json.loads(result.stdout)
+        assert any(
+            step == "missing scopes: Mail.Send — run: blumkin auth login"
+            for step in payload["next_steps"]
+        )
+        result = CliRunner().invoke(main, ["auth", "status"])
+    assert "next_step: missing scopes: Mail.Send — run: blumkin auth login" in result.stdout
+
+
+def test_auth_status_next_steps_flags_an_expired_token_with_no_refresh_token(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    provider = _provider()
+    provider.auth_status.return_value["access_token_expired"] = True
+    provider.auth_status.return_value["refresh_token_present"] = False
+    with patch("blumkin.cli._workspace", return_value=provider):
+        result = CliRunner().invoke(main, ["auth", "status", "--json"])
+    payload = json.loads(result.stdout)
+    assert any(
+        "access token expired and no refresh token" in step for step in payload["next_steps"]
+    )

@@ -95,7 +95,9 @@ def test_doctor_flags_missing_ms_client_id_with_a_usable_but_empty_keychain(
     with patch("blumkin.cli._workspace", return_value=provider):
         result = CliRunner().invoke(main, ["doctor", "--json"])
     payload = json.loads(result.output)
-    assert "client_id missing in config.toml" in payload.get("problems", [])
+    assert any(
+        p.startswith("client_id missing in config.toml") for p in payload.get("problems", [])
+    )
 
 
 def test_doctor_still_flags_a_genuinely_missing_ms_client_id(tmp_path: Path, monkeypatch) -> None:
@@ -121,7 +123,9 @@ def test_doctor_still_flags_a_genuinely_missing_ms_client_id(tmp_path: Path, mon
     with patch("blumkin.cli._workspace", return_value=provider):
         result = CliRunner().invoke(main, ["doctor", "--json"])
     payload = json.loads(result.output)
-    assert "client_id missing in config.toml" in payload.get("problems", [])
+    assert any(
+        p.startswith("client_id missing in config.toml") for p in payload.get("problems", [])
+    )
 
 
 def test_doctor_treats_a_vaulted_ms_client_id_as_configured(tmp_path: Path, monkeypatch) -> None:
@@ -170,7 +174,9 @@ def test_doctor_treats_a_vaulted_ms_client_id_as_configured(tmp_path: Path, monk
     with patch("blumkin.cli._workspace", return_value=provider):
         result = CliRunner().invoke(main, ["doctor", "--json"])
     payload = json.loads(result.output)
-    assert "client_id missing in config.toml" not in payload.get("problems", [])
+    assert not any(
+        p.startswith("client_id missing in config.toml") for p in payload.get("problems", [])
+    )
 
 
 def test_doctor_warns_when_macos_keychain_is_missing(tmp_path: Path, monkeypatch) -> None:
