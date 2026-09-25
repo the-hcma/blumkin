@@ -938,7 +938,7 @@ async def mail_draft(
     if created is None or not created.id:
         raise RuntimeError("Graph returned no draft message")
     try:
-        attachments = await _upload_attachments(client, created.id, pending)
+        attachments, _created = await _upload_attachments(client, created.id, pending)
     except Exception:
         # A half-attached draft is worse than no draft: delete it so a retry is a no-op.
         try:
@@ -1579,7 +1579,7 @@ async def mail_update_draft(
         patch.bcc_recipients = _recipient_models(bcc_addrs)
     # Upload before PATCH so a failed --attach batch cannot leave subject/body/to changed
     # while the CLI exits with an error (mail draft deletes the whole draft instead).
-    uploaded = await _upload_attachments(client, mid, pending)
+    uploaded, created_this_call = await _upload_attachments(client, mid, pending)
     recipients_patched = to_addrs is not None or cc_addrs is not None or bcc_addrs is not None
     if subject is None and content is None and not recipients_patched:
         # --attach on its own: an empty PATCH would be a pointless round trip.
@@ -1591,10 +1591,10 @@ async def mail_update_draft(
                 # Empty 2xx body — re-fetch so JSON/human output reflects post-PATCH state.
                 updated = await client.me.messages.by_message_id(mid).get()
         except Exception:
-            await _delete_uploaded_attachments(client, mid, uploaded)
+            await _delete_uploaded_attachments(client, mid, created_this_call)
             raise
     if updated is None:
-        await _delete_uploaded_attachments(client, mid, uploaded)
+        await _delete_uploaded_attachments(client, mid, created_this_call)
         raise RuntimeError(f"Graph returned no message after update-draft: {mid}")
     body_out = body_type_label
     if body_out is None and updated.body and updated.body.content_type is not None:
@@ -2712,8 +2712,14 @@ async def _delete_uploaded_attachments(
 
 async def _upload_attachments(
     client: Any, message_id: str, pending: Sequence[tuple[str, bytes]]
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Attach already-read files to a draft, one Graph call each, in the order given.
+
+    Returns ``(resolved, created)``: ``resolved`` is every pending file's attachment
+    info, in order, for the caller's response; ``created`` is the subset actually
+    uploaded in this call, for rollback - callers must pass ``created``, not
+    ``resolved``, to :func:`_delete_uploaded_attachments`, or a retry/failure would
+    delete attachments that pre-existed the call.
 
     A pending file whose name and byte size already match an attachment already on
     the message (from an earlier ``--attach`` call, or a repeat within the same
@@ -2724,21 +2730,26 @@ async def _upload_attachments(
     upload should still delete the draft itself.
     """
     if not pending:
-        return []
+        return [], []
     builder = client.me.messages.by_message_id(message_id).attachments
     query = AttachmentsRequestBuilder.AttachmentsRequestBuilderGetQueryParameters(
         select=["id", "name", "size"],
     )
-    existing_page = await builder.get(request_config(query))
+    page = await builder.get(request_config(query))
     seen: dict[tuple[str, int], dict[str, Any]] = {}
-    for att in getattr(existing_page, "value", None) or []:
-        att_name = getattr(att, "name", None)
-        att_size = getattr(att, "size", None)
-        if att_name is not None and att_size is not None:
-            seen.setdefault(
-                (att_name, att_size),
-                {"id": getattr(att, "id", None), "name": att_name, "size": att_size},
-            )
+    while page is not None:
+        for att in getattr(page, "value", None) or []:
+            att_name = getattr(att, "name", None)
+            att_size = getattr(att, "size", None)
+            if att_name is not None and att_size is not None:
+                seen.setdefault(
+                    (att_name, att_size),
+                    {"id": getattr(att, "id", None), "name": att_name, "size": att_size},
+                )
+        link = getattr(page, "odata_next_link", None)
+        if not link:
+            break
+        page = await builder.with_url(link).get()
     resolved: list[dict[str, Any]] = []
     created_this_call: list[dict[str, Any]] = []
     try:
@@ -2765,7 +2776,7 @@ async def _upload_attachments(
     except Exception:
         await _delete_uploaded_attachments(client, message_id, created_this_call)
         raise
-    return resolved
+    return resolved, created_this_call
 
 
 def _validate_importance(raw: str) -> str:

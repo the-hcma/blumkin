@@ -114,7 +114,7 @@ def _update_draft_via_cli(tmp_path: Path, monkeypatch, args: list[str]) -> Magic
         client.me.messages.by_message_id.return_value.patch = _patch
         with (
             patch("blumkin.skills.mail.create_graph_client", return_value=client),
-            patch("blumkin.skills.mail._upload_attachments", return_value=[]),
+            patch("blumkin.skills.mail._upload_attachments", return_value=([], [])),
         ):
             await mail_update_draft(config=load_config(), **kwargs)
         provider.sent_body = _patch.seen.body

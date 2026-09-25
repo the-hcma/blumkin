@@ -189,6 +189,33 @@ def test_mail_update_draft_rolls_back_attachments_when_a_later_upload_fails(
     client.me.messages.by_message_id.return_value.delete.assert_not_called()
 
 
+def test_mail_update_draft_patch_failure_does_not_delete_a_reused_attachment(
+    tmp_path, monkeypatch
+) -> None:
+    """A reused (pre-existing) attachment must survive rollback, not just a new one (#392/#394)."""
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"pdf-bytes")
+    client = _draft_client(
+        monkeypatch,
+        existing_attachments=[
+            SimpleNamespace(id="att-existing", name="report.pdf", size=len(b"pdf-bytes")),
+        ],
+    )
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(
+        side_effect=RuntimeError("patch failed")
+    )
+    delete = AsyncMock(return_value=None)
+    item = client.me.messages.by_message_id.return_value
+    item.attachments.by_attachment_id.return_value.delete = delete
+
+    with pytest.raises(RuntimeError, match="patch failed"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", body="edited body", attach=[str(source)]))
+
+    # Nothing was created this call (the file was reused), so nothing should be deleted.
+    delete.assert_not_awaited()
+    client.me.messages.by_message_id.return_value.attachments.post.assert_not_awaited()
+
+
 def test_mail_update_draft_accepts_attach_alone(tmp_path, monkeypatch) -> None:
     source = tmp_path / "note.txt"
     source.write_bytes(b"hi")
@@ -249,6 +276,32 @@ def test_mail_update_draft_dedups_repeated_attach_within_the_same_call(
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source), str(source)]))
     assert [item["name"] for item in payload["draft"]["attachments"]] == ["note.txt", "note.txt"]
     client.me.messages.by_message_id.return_value.attachments.post.assert_awaited_once()
+
+
+def test_mail_update_draft_dedups_against_a_later_page_of_existing_attachments(
+    tmp_path, monkeypatch
+) -> None:
+    """A match on a second page must still be found - existing attachments are paginated."""
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"pdf-bytes")
+    client = _draft_client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    first_page = SimpleNamespace(
+        value=[SimpleNamespace(id="att-other", name="other.txt", size=1)],
+        odata_next_link="https://graph.microsoft.com/v1.0/next",
+    )
+    second_page = SimpleNamespace(
+        value=[SimpleNamespace(id="att-existing", name="report.pdf", size=len(b"pdf-bytes"))],
+        odata_next_link=None,
+    )
+    item.attachments.get = AsyncMock(return_value=first_page)
+    item.attachments.with_url.return_value.get = AsyncMock(return_value=second_page)
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
+    assert payload["draft"]["attachments"] == [
+        {"id": "att-existing", "name": "report.pdf", "size": len(b"pdf-bytes")}
+    ]
+    item.attachments.with_url.assert_called_once_with("https://graph.microsoft.com/v1.0/next")
+    item.attachments.post.assert_not_awaited()
 
 
 def test_mail_update_draft_attaches_alongside_a_patch(tmp_path, monkeypatch) -> None:
