@@ -42,15 +42,46 @@ pub fn socket_path() -> PathBuf {
 
 /// Base directory temporary files live under.
 ///
-/// Mirrors Python's `tempfile.gettempdir()` candidate order - `TMPDIR`,
-/// `TEMP`, `TMP` (in that order), then `/tmp`, `/var/tmp`, `/usr/tmp`, then
-/// the current directory - each checked for existence, rather than
-/// `env::temp_dir()`'s narrower `$TMPDIR`-else-`/tmp`. Both implementations
-/// must agree on this, or they can resolve different socket paths on a
-/// host where `TEMP`/`TMP` is set but `TMPDIR` is not (see PR #329 review).
+/// Mirrors Python's `runtime_base_dir()` exactly (issue #402): on macOS,
+/// `os.confstr(CS_DARWIN_USER_TEMP_DIR)` / `darwin_user_temp_dir()` below
+/// read the same per-user, per-boot directory straight from the OS,
+/// bypassing `$TMPDIR` entirely - a GUI-launched `blumkin mcp serve` with no
+/// `TMPDIR` in its environment previously spawned this daemon into `/tmp`
+/// while the Python client resolved `/var/folders/.../T/`, leaving the
+/// client unable to ever reach the daemon it just started. Only when that
+/// lookup is unavailable (including on macOS, if `confstr(3)` itself
+/// fails) does this fall through to `$XDG_RUNTIME_DIR`, then the old
+/// `TMPDIR`/`TEMP`/`TMP` order (mirroring Python's `tempfile.gettempdir()`),
+/// then `/tmp`, `/var/tmp`, `/usr/tmp`, then the current directory. Both
+/// implementations must keep agreeing at every step here, or they can
+/// resolve different socket paths (see PR #329/#403 review).
 fn base_dir() -> PathBuf {
-    if let Some(dir) = env::var_os("BLUMKIN_AGENT_RUNTIME_DIR") {
-        return PathBuf::from(dir);
+    base_dir_after(darwin_user_temp_dir_if_macos)
+}
+
+/// `base_dir`'s body, parameterized on the Darwin `confstr` lookup.
+///
+/// `rust-static` (`.github/workflows/ci.yml`) only ever runs `cargo test` on
+/// `runs-on: macos-latest`, where the real `darwin_user_temp_dir_if_macos`
+/// always succeeds - so the `TMPDIR`/`TEMP`/`TMP` -> `/tmp`/`/var/tmp`/
+/// `/usr/tmp` fallback chain below would otherwise never execute on any CI
+/// platform. Tests inject `|| None` here to exercise that chain on macOS
+/// too, independent of whether `confstr(3)` happens to succeed on the
+/// runner (see PR #403 review).
+fn base_dir_after(darwin_lookup: impl Fn() -> Option<PathBuf>) -> PathBuf {
+    if let Some(dir) = non_empty_env_var("BLUMKIN_AGENT_RUNTIME_DIR") {
+        return dir;
+    }
+    if let Some(dir) = darwin_lookup() {
+        return dir;
+    }
+    // Matches Python's `runtime_base_dir()` order exactly: this check is
+    // *not* gated to non-macOS - it also applies when `darwin_lookup`
+    // returns `None` on macOS (a failed `confstr(3)` call), so both sides
+    // keep agreeing even off the Darwin-lookup happy path (see PR #403
+    // review).
+    if let Some(dir) = non_empty_env_var("XDG_RUNTIME_DIR") {
+        return dir;
     }
     for envname in ["TMPDIR", "TEMP", "TMP"] {
         if let Some(dir) = env::var_os(envname) {
@@ -67,6 +98,68 @@ fn base_dir() -> PathBuf {
         }
     }
     env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"))
+}
+
+/// `env::var_os(name)`, but treating a present-and-empty value the same as
+/// unset. Matches Python's `if os.environ.get(name):` truthiness check
+/// (`os.environ.get` never distinguishes "unset" from "" the way `var_os`
+/// does) - without this, `XDG_RUNTIME_DIR=`/`BLUMKIN_AGENT_RUNTIME_DIR=`
+/// would make Rust return an empty, effectively-relative base dir while
+/// Python fell through to the next candidate, splitting the two
+/// implementations apart exactly as issue #402 describes (see PR #403
+/// review).
+fn non_empty_env_var(name: &str) -> Option<PathBuf> {
+    let value = env::var_os(name)?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(value))
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_user_temp_dir_if_macos() -> Option<PathBuf> {
+    darwin_user_temp_dir()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn darwin_user_temp_dir_if_macos() -> Option<PathBuf> {
+    None
+}
+
+/// The per-user, per-boot temp directory macOS hands out via `confstr(3)`
+/// (the same one `TMPDIR` normally points a login shell at) - mirrors
+/// Python's `agent.paths.runtime_base_dir` exactly. `CS_DARWIN_USER_TEMP_DIR`
+/// is not exposed by the `libc` crate's constant tables (Darwin-specific,
+/// outside POSIX's `_CS_*` set), so it is passed as the raw value from
+/// macOS's `<unistd.h>`. Returns `None` on any failure (unrecognized
+/// `confstr` name, non-UTF-8 result) so `base_dir` can fall through to the
+/// environment-dependent candidates below.
+#[cfg(target_os = "macos")]
+fn darwin_user_temp_dir() -> Option<PathBuf> {
+    const CS_DARWIN_USER_TEMP_DIR: libc::c_int = 65537;
+    // SAFETY: `confstr` with a null buffer and `len` 0 only queries the
+    // required buffer size and never writes through the pointer.
+    let needed = unsafe { libc::confstr(CS_DARWIN_USER_TEMP_DIR, std::ptr::null_mut(), 0) };
+    if needed == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; needed];
+    // SAFETY: `buf` is `needed` bytes long, matching the `len` argument, so
+    // `confstr` cannot write past the end of the allocation.
+    let written = unsafe {
+        libc::confstr(
+            CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            needed,
+        )
+    };
+    if written == 0 || written > needed {
+        return None;
+    }
+    // `written` includes the trailing NUL confstr(3) always writes.
+    std::str::from_utf8(&buf[..written - 1])
+        .ok()
+        .map(PathBuf::from)
 }
 
 fn current_uid() -> u32 {
@@ -172,16 +265,104 @@ pub(crate) mod tests {
         dir
     }
 
+    // On macOS, `darwin_user_temp_dir()` always succeeds (it is the OS's own
+    // per-user temp dir, not something a test can make disappear), so it
+    // wins over every `TMPDIR`/`TEMP`/`TMP` candidate below - the fallback
+    // order those two tests exercise only ever applies on a non-Darwin
+    // Unix, or if `confstr(3)` itself somehow failed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn base_dir_ignores_tmpdir_on_macos_matching_the_python_client() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
+        let unset_tmpdir_result = base_dir();
+
+        // Issue #402's exact regression: a GUI/MCP-launched process with no
+        // `TMPDIR` in its environment must resolve the *same* base dir as
+        // one that does have `TMPDIR` set to something else - otherwise the
+        // Python client and this spawned daemon disagree on the socket path.
+        let decoy = scratch_dir("decoy-tmpdir");
+        env::set_var("TMPDIR", &decoy);
+
+        assert_eq!(base_dir(), unset_tmpdir_result);
+        assert_ne!(base_dir(), decoy);
+
+        fs::remove_dir_all(&decoy).ok();
+    }
+
+    #[test]
+    fn base_dir_override_wins_over_darwin_confstr() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
+        let overridden = scratch_dir("override");
+        env::set_var("BLUMKIN_AGENT_RUNTIME_DIR", &overridden);
+
+        assert_eq!(base_dir(), overridden);
+
+        fs::remove_dir_all(&overridden).ok();
+    }
+
+    // These two exercise the `TMPDIR`/`TEMP`/`TMP` fallback chain via
+    // `base_dir_after(|| None)` rather than `base_dir()` directly: the
+    // real Darwin lookup always succeeds on the `macos-latest` runner
+    // `rust-static` (`.github/workflows/ci.yml`) actually runs `cargo test`
+    // on, so calling `base_dir()` here would never reach this chain on any
+    // CI platform and the ordering below could silently regress (see
+    // PR #403 review).
     #[test]
     fn base_dir_prefers_tmpdir_over_temp_and_tmp() {
         let _lock = ENV_LOCK.lock().unwrap();
-        let _guard = EnvGuard::capture(&["BLUMKIN_AGENT_RUNTIME_DIR", "TMPDIR", "TEMP", "TMP"]);
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
         let preferred = scratch_dir("preferred");
         let other = scratch_dir("other");
         env::set_var("TMPDIR", &preferred);
         env::set_var("TEMP", &other);
 
-        assert_eq!(base_dir(), preferred);
+        assert_eq!(base_dir_after(|| None), preferred);
+
+        fs::remove_dir_all(&preferred).ok();
+        fs::remove_dir_all(&other).ok();
+    }
+
+    // Regression test for PR #403 review: Python's `runtime_base_dir()`
+    // checks `XDG_RUNTIME_DIR` *before* `TMPDIR`/`TEMP`/`TMP`, unconditionally
+    // (not gated to non-macOS) - this must match, or a daemon spawned with
+    // `XDG_RUNTIME_DIR` set but `confstr(3)` failing would disagree with the
+    // client's own resolution.
+    #[test]
+    fn base_dir_prefers_xdg_runtime_dir_over_tmpdir_when_the_darwin_lookup_is_unavailable() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
+        let preferred = scratch_dir("xdg-preferred");
+        let other = scratch_dir("xdg-other");
+        env::set_var("XDG_RUNTIME_DIR", &preferred);
+        env::set_var("TMPDIR", &other);
+
+        assert_eq!(base_dir_after(|| None), preferred);
 
         fs::remove_dir_all(&preferred).ok();
         fs::remove_dir_all(&other).ok();
@@ -190,7 +371,13 @@ pub(crate) mod tests {
     #[test]
     fn base_dir_skips_a_nonexistent_tmpdir_and_falls_through_to_temp() {
         let _lock = ENV_LOCK.lock().unwrap();
-        let _guard = EnvGuard::capture(&["BLUMKIN_AGENT_RUNTIME_DIR", "TMPDIR", "TEMP", "TMP"]);
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
         let fallback = scratch_dir("fallback");
         // A nonexistent leaf under the real system temp dir, not an
         // unwritable absolute path: `server.rs`'s tests run concurrently in
@@ -204,7 +391,53 @@ pub(crate) mod tests {
         env::set_var("TMPDIR", &missing);
         env::set_var("TEMP", &fallback);
 
-        assert_eq!(base_dir(), fallback);
+        assert_eq!(base_dir_after(|| None), fallback);
+
+        fs::remove_dir_all(&fallback).ok();
+    }
+
+    // Regression test for PR #403 review: `env::var_os` treats a
+    // present-and-empty value as `Some("")`, unlike Python's
+    // `os.environ.get(name)` truthiness check - without `non_empty_env_var`,
+    // `BLUMKIN_AGENT_RUNTIME_DIR=` would make Rust return an empty,
+    // effectively-relative base dir while Python fell through to the next
+    // candidate.
+    #[test]
+    fn base_dir_treats_an_empty_override_as_unset() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
+        let fallback = scratch_dir("empty-override-fallback");
+        env::set_var("BLUMKIN_AGENT_RUNTIME_DIR", "");
+        env::set_var("TMPDIR", &fallback);
+
+        assert_eq!(base_dir_after(|| None), fallback);
+
+        fs::remove_dir_all(&fallback).ok();
+    }
+
+    // Same asymmetry as `base_dir_treats_an_empty_override_as_unset`, for
+    // `XDG_RUNTIME_DIR` (see PR #403 review).
+    #[test]
+    fn base_dir_treats_an_empty_xdg_runtime_dir_as_unset() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
+        let fallback = scratch_dir("empty-xdg-fallback");
+        env::set_var("XDG_RUNTIME_DIR", "");
+        env::set_var("TMPDIR", &fallback);
+
+        assert_eq!(base_dir_after(|| None), fallback);
 
         fs::remove_dir_all(&fallback).ok();
     }

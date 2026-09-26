@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import socket
 import tempfile
@@ -204,6 +205,84 @@ def test_call_without_spawn_raises_when_no_agent_is_running(
     monkeypatch.setattr(agent_client, "is_supported_platform", lambda: True)
     with pytest.raises(agent_client.AgentUnavailableError, match="no agent listening"):
         agent_client.call("ping", spawn=False)
+
+
+@pytest.mark.skipif(not _real_agent_binary_available(), reason=_REAL_AGENT_UNAVAILABLE_REASON)
+def test_client_and_real_agent_binary_agree_on_the_runtime_dir_without_an_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Issue #402 regression: the client and the real daemon it spawns must
+    resolve the *same* runtime dir with no `BLUMKIN_AGENT_RUNTIME_DIR`
+    override (the fixture above sets one for every other test in this file,
+    so this is the one test that deliberately clears it).
+
+    `client._spawn()` launches the compiled `blumkin-agent` binary with no
+    `env=` override, so it inherits this process's real environment and
+    resolves its own runtime dir independently (`rust-agent/src/paths.rs::
+    base_dir`) rather than being told where to bind - if that resolution
+    ever drifted from the Python side's `agent_paths.runtime_base_dir()`,
+    the spawned daemon would bind somewhere the client can never reach, and
+    `_wait_for_socket_ready` would time out waiting on the wrong path.
+
+    Things this test must guard against (see PR #403 review):
+    - on a normal macOS box `$TMPDIR` already equals
+      `os.confstr(CS_DARWIN_USER_TEMP_DIR)`, so a Rust `base_dir()` that
+      quietly regressed back to `TMPDIR`-first would still agree with the
+      client by coincidence - `TMPDIR`/`TEMP`/`TMP` are pointed at a decoy
+      directory so a daemon that still preferred them would bind somewhere
+      the client (which stays on the `confstr` path) can never reach,
+      making `call("ping", spawn=False)` fail exactly as intended.
+    - `ensure_agent_running()` is a no-op `ping` when *anything* is already
+      listening at the unoverridden socket, so if a real agent happens to
+      be up already, this test would never exercise `_spawn()` at all and
+      would pass even if the two sides had drifted - it monkeypatches
+      `_spawn` to record whether it actually ran, and skips instead of
+      silently no-op-passing when an agent is already there.
+    - it must never `shutdown`/delete a real, pre-existing agent's runtime
+      dir it did not itself create - the skip above (rather than "clean up
+      only what changed") keeps this test from ever touching a directory
+      or process it didn't spawn.
+    """
+    decoy_tmpdir = tmp_path / "decoy-tmpdir"
+    decoy_tmpdir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(decoy_tmpdir))
+    monkeypatch.setenv("TEMP", str(decoy_tmpdir))
+    monkeypatch.setenv("TMP", str(decoy_tmpdir))
+    monkeypatch.delenv("BLUMKIN_AGENT_RUNTIME_DIR", raising=False)
+    real_socket = agent_paths.socket_path()
+    if real_socket.exists():
+        pytest.skip(
+            "a real agent is already listening at the unoverridden runtime "
+            "dir - spawning here would either silently reuse it (masking "
+            "the exact base_dir divergence this test guards against) or "
+            "race a live process; rerun after `blumkin agent stop`"
+        )
+
+    spawn_called = False
+    real_spawn = agent_client._spawn
+
+    def _spawn_and_record() -> None:
+        nonlocal spawn_called
+        spawn_called = True
+        real_spawn()
+
+    monkeypatch.setattr(agent_client, "_spawn", _spawn_and_record)
+    try:
+        agent_client.ensure_agent_running()
+        assert spawn_called, "test never exercised _spawn() - it would pass even if unrelated"
+        response = agent_client.call("ping", spawn=False)
+        assert response["ok"] is True
+    finally:
+        if spawn_called:
+            # Best-effort: if the daemon this test spawned resolved a
+            # *different* base dir than the client (the exact divergence
+            # this test guards against), the client cannot reach it to ask
+            # it to shut down either - reap what we can, and let the
+            # assertion above stay the actual failure signal rather than
+            # this cleanup's own AgentUnavailableError.
+            with contextlib.suppress(agent_client.AgentUnavailableError):
+                agent_client.call("shutdown")
+        shutil.rmtree(real_socket.parent, ignore_errors=True)
 
 
 @pytest.mark.skipif(not _real_agent_binary_available(), reason=_REAL_AGENT_UNAVAILABLE_REASON)
