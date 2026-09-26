@@ -55,3 +55,60 @@ def test_runtime_dir_refuses_a_planted_symlink(_base_dir: Path) -> None:
 
     with pytest.raises(RuntimeError, match="symlink"):
         agent_paths._ensure_private_owned_dir(planted)
+
+
+class TestRuntimeBaseDir:
+    """Issue #402: the base dir must not depend on `$TMPDIR` on macOS.
+
+    A login-shell CLI invocation and a GUI-launched process (e.g. `blumkin
+    mcp serve` spawned by an MCP client with no `TMPDIR` set) previously
+    resolved to two different directories and therefore two different
+    agents; `runtime_base_dir` must give both the same answer regardless of
+    what (if anything) `$TMPDIR` is set to.
+    """
+
+    def test_env_override_wins_over_everything(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BLUMKIN_AGENT_RUNTIME_DIR", "/explicit/override")
+        monkeypatch.setenv("TMPDIR", "/should/be/ignored")
+
+        assert agent_paths.runtime_base_dir() == Path("/explicit/override")
+
+    def test_darwin_ignores_tmpdir_and_uses_confstr(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BLUMKIN_AGENT_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr(agent_paths.sys, "platform", "darwin")
+        monkeypatch.setattr(agent_paths.os, "confstr", lambda _key: "/var/folders/xx/T/")
+        monkeypatch.setenv("TMPDIR", "/tmp")
+
+        assert agent_paths.runtime_base_dir() == Path("/var/folders/xx/T/")
+
+    def test_darwin_falls_back_when_confstr_is_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("BLUMKIN_AGENT_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr(agent_paths.sys, "platform", "darwin")
+
+        def _raise(_key: int) -> str:
+            raise ValueError("unrecognized configuration name")
+
+        monkeypatch.setattr(agent_paths.os, "confstr", _raise)
+        monkeypatch.setattr(agent_paths.tempfile, "gettempdir", lambda: "/tmp")
+
+        assert agent_paths.runtime_base_dir() == Path("/tmp")
+
+    def test_non_darwin_prefers_xdg_runtime_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BLUMKIN_AGENT_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr(agent_paths.sys, "platform", "linux")
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+        assert agent_paths.runtime_base_dir() == Path("/run/user/1000")
+
+    def test_non_darwin_without_xdg_falls_back_to_gettempdir(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("BLUMKIN_AGENT_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr(agent_paths.sys, "platform", "linux")
+        monkeypatch.setattr(agent_paths.tempfile, "gettempdir", lambda: "/tmp")
+
+        assert agent_paths.runtime_base_dir() == Path("/tmp")

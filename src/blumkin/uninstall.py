@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +21,7 @@ from typing import Any, Literal
 from blumkin import app_secrets as app_secrets_mod
 from blumkin import secret_store as secret_store_mod
 from blumkin.agent import client as agent_client
-from blumkin.agent.paths import is_supported_platform, runtime_dir
+from blumkin.agent.paths import is_supported_platform, runtime_base_dir, runtime_dir
 from blumkin.app_secrets import AppSecretKind
 from blumkin.config import BlumkinConfig, config_dir, list_profiles, profile_probe_config
 from blumkin.install_method import Install, detect_install, uninstall_steps
@@ -540,8 +539,12 @@ def _profile_keyring_state(cfg: BlumkinConfig) -> _KeyringState:
 
 
 def _runtime_dir_path() -> Path:
-    base = Path(os.environ.get("BLUMKIN_AGENT_RUNTIME_DIR", tempfile.gettempdir()))
-    return base / f"blumkin-agent-{os.getuid()}"
+    """Same location `runtime_dir()` resolves to, without its mkdir/chmod
+    side effects - this is only used for a read-only presence check
+    (`_build_agent_target`), and issue #402's fix lives in
+    `runtime_base_dir()` so both call sites stay in lockstep.
+    """
+    return runtime_base_dir() / f"blumkin-agent-{os.getuid()}"
 
 
 def _subprocess_detail(completed: subprocess.CompletedProcess[str]) -> str:

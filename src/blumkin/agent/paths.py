@@ -14,6 +14,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+#: `_CS_DARWIN_USER_TEMP_DIR` from macOS's `<unistd.h>` - the per-user,
+#: per-boot temp directory the OS itself hands out (the same one `TMPDIR`
+#: normally points a login shell at). Not in Python's `os.confstr_names`
+#: (that dict only lists the POSIX-standard keys), so it is passed to
+#: `os.confstr` as the raw integer `confstr(3)` accepts directly.
+_CS_DARWIN_USER_TEMP_DIR = 65537
+
 
 def binary_path() -> Path:
     """Path to the compiled `blumkin-agent` binary bundled with this package.
@@ -42,13 +49,50 @@ def is_supported_platform() -> bool:
     return sys.platform == "darwin"
 
 
+def runtime_base_dir() -> Path:
+    """Base directory `runtime_dir` nests its per-uid directory under.
+
+    Deliberately *not* `tempfile.gettempdir()` on macOS: that falls back to
+    `$TMPDIR`, which a login-shell CLI invocation and a GUI-launched process
+    (e.g. `blumkin mcp serve` spawned by an MCP client with no `TMPDIR` in
+    its environment) resolve differently - `/var/folders/.../T/` versus
+    `/tmp` - so the two ended up talking to two different agents with two
+    different cached-credential lifetimes (issue #402). `os.confstr` reads
+    the same per-user, per-boot directory straight from the OS instead of
+    trusting whatever environment this particular process happened to
+    inherit, so every blumkin process on the same account agrees on one
+    location regardless of how it was launched.
+
+    Shared by `uninstall._runtime_dir_path` so the two never drift back out
+    of sync (see PR #329/#402 review). `BLUMKIN_AGENT_RUNTIME_DIR` is an
+    override for tests, not something an operator needs to set.
+    """
+    override = os.environ.get("BLUMKIN_AGENT_RUNTIME_DIR")
+    if override:
+        return Path(override)
+    if sys.platform == "darwin":
+        try:
+            darwin_temp_dir = os.confstr(_CS_DARWIN_USER_TEMP_DIR)
+        except OSError, ValueError:
+            # Missing on non-Darwin Unix confstr tables, or a `confstr(3)`
+            # call that fails on this particular system - either way, fall
+            # through to the environment-dependent paths below rather than
+            # raising out of every agent call.
+            darwin_temp_dir = None
+        if darwin_temp_dir:
+            return Path(darwin_temp_dir)
+    xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg_runtime_dir:
+        return Path(xdg_runtime_dir)
+    return Path(tempfile.gettempdir())
+
+
 def runtime_dir() -> Path:
     """Private, per-user directory the agent's socket lives under.
 
     Scoped by the real uid (not just `$USER`, which a same-named account on
     a different uid could spoof) so two accounts that happen to share
-    `$TMPDIR` can never collide on the same socket path. `BLUMKIN_AGENT_RUNTIME_DIR`
-    is an override for tests, not something an operator needs to set.
+    `runtime_base_dir()` can never collide on the same socket path.
 
     The directory name is predictable under a base that is often
     world-writable (`/tmp`), so a same-privilege local attacker could
@@ -57,8 +101,7 @@ def runtime_dir() -> Path:
     into a directory this process does not own (mirrors
     `secret_store._refuse_symlinked_path_components`; see PR #329 review).
     """
-    base = Path(os.environ.get("BLUMKIN_AGENT_RUNTIME_DIR", tempfile.gettempdir()))
-    directory = base / f"blumkin-agent-{os.getuid()}"
+    directory = runtime_base_dir() / f"blumkin-agent-{os.getuid()}"
     _ensure_private_owned_dir(directory)
     return directory
 
