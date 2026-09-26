@@ -208,7 +208,7 @@ def test_call_without_spawn_raises_when_no_agent_is_running(
 
 @pytest.mark.skipif(not _real_agent_binary_available(), reason=_REAL_AGENT_UNAVAILABLE_REASON)
 def test_client_and_real_agent_binary_agree_on_the_runtime_dir_without_an_override(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Issue #402 regression: the client and the real daemon it spawns must
     resolve the *same* runtime dir with no `BLUMKIN_AGENT_RUNTIME_DIR`
@@ -223,7 +223,14 @@ def test_client_and_real_agent_binary_agree_on_the_runtime_dir_without_an_overri
     the spawned daemon would bind somewhere the client can never reach, and
     `_wait_for_socket_ready` would time out waiting on the wrong path.
 
-    Two things this test must guard against (see PR #403 review):
+    Things this test must guard against (see PR #403 review):
+    - on a normal macOS box `$TMPDIR` already equals
+      `os.confstr(CS_DARWIN_USER_TEMP_DIR)`, so a Rust `base_dir()` that
+      quietly regressed back to `TMPDIR`-first would still agree with the
+      client by coincidence - `TMPDIR`/`TEMP`/`TMP` are pointed at a decoy
+      directory so a daemon that still preferred them would bind somewhere
+      the client (which stays on the `confstr` path) can never reach,
+      making `call("ping", spawn=False)` fail exactly as intended.
     - `ensure_agent_running()` is a no-op `ping` when *anything* is already
       listening at the unoverridden socket, so if a real agent happens to
       be up already, this test would never exercise `_spawn()` at all and
@@ -235,6 +242,11 @@ def test_client_and_real_agent_binary_agree_on_the_runtime_dir_without_an_overri
       only what changed") keeps this test from ever touching a directory
       or process it didn't spawn.
     """
+    decoy_tmpdir = tmp_path / "decoy-tmpdir"
+    decoy_tmpdir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(decoy_tmpdir))
+    monkeypatch.setenv("TEMP", str(decoy_tmpdir))
+    monkeypatch.setenv("TMP", str(decoy_tmpdir))
     monkeypatch.delenv("BLUMKIN_AGENT_RUNTIME_DIR", raising=False)
     real_socket = agent_paths.socket_path()
     if real_socket.exists():

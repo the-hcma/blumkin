@@ -49,11 +49,12 @@ pub fn socket_path() -> PathBuf {
 /// `TMPDIR` in its environment previously spawned this daemon into `/tmp`
 /// while the Python client resolved `/var/folders/.../T/`, leaving the
 /// client unable to ever reach the daemon it just started. Only when that
-/// lookup is unavailable does this fall back to the old `TMPDIR`/`TEMP`/
-/// `TMP` order (mirroring Python's `tempfile.gettempdir()`), then `/tmp`,
-/// `/var/tmp`, `/usr/tmp`, then the current directory. Both implementations
-/// must keep agreeing here, or they can resolve different socket paths
-/// (see PR #329 review).
+/// lookup is unavailable (including on macOS, if `confstr(3)` itself
+/// fails) does this fall through to `$XDG_RUNTIME_DIR`, then the old
+/// `TMPDIR`/`TEMP`/`TMP` order (mirroring Python's `tempfile.gettempdir()`),
+/// then `/tmp`, `/var/tmp`, `/usr/tmp`, then the current directory. Both
+/// implementations must keep agreeing at every step here, or they can
+/// resolve different socket paths (see PR #329/#403 review).
 fn base_dir() -> PathBuf {
     base_dir_after(darwin_user_temp_dir_if_macos)
 }
@@ -73,6 +74,14 @@ fn base_dir_after(darwin_lookup: impl Fn() -> Option<PathBuf>) -> PathBuf {
     }
     if let Some(dir) = darwin_lookup() {
         return dir;
+    }
+    // Matches Python's `runtime_base_dir()` order exactly: this check is
+    // *not* gated to non-macOS - it also applies when `darwin_lookup`
+    // returns `None` on macOS (a failed `confstr(3)` call), so both sides
+    // keep agreeing even off the Darwin-lookup happy path (see PR #403
+    // review).
+    if let Some(dir) = env::var_os("XDG_RUNTIME_DIR") {
+        return PathBuf::from(dir);
     }
     for envname in ["TMPDIR", "TEMP", "TMP"] {
         if let Some(dir) = env::var_os(envname) {
@@ -249,7 +258,13 @@ pub(crate) mod tests {
     #[test]
     fn base_dir_ignores_tmpdir_on_macos_matching_the_python_client() {
         let _lock = ENV_LOCK.lock().unwrap();
-        let _guard = EnvGuard::capture(&["BLUMKIN_AGENT_RUNTIME_DIR", "TMPDIR", "TEMP", "TMP"]);
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
         let unset_tmpdir_result = base_dir();
 
         // Issue #402's exact regression: a GUI/MCP-launched process with no
@@ -268,13 +283,45 @@ pub(crate) mod tests {
     #[test]
     fn base_dir_override_wins_over_darwin_confstr() {
         let _lock = ENV_LOCK.lock().unwrap();
-        let _guard = EnvGuard::capture(&["BLUMKIN_AGENT_RUNTIME_DIR", "TMPDIR", "TEMP", "TMP"]);
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
         let overridden = scratch_dir("override");
         env::set_var("BLUMKIN_AGENT_RUNTIME_DIR", &overridden);
 
         assert_eq!(base_dir(), overridden);
 
         fs::remove_dir_all(&overridden).ok();
+    }
+
+    // Regression test for PR #403 review: Python's `runtime_base_dir()`
+    // checks `XDG_RUNTIME_DIR` *before* `TMPDIR`/`TEMP`/`TMP`, unconditionally
+    // (not gated to non-macOS) - this must match, or a daemon spawned with
+    // `XDG_RUNTIME_DIR` set but `confstr(3)` failing would disagree with the
+    // client's own resolution.
+    #[test]
+    fn base_dir_prefers_xdg_runtime_dir_over_tmpdir_when_the_darwin_lookup_is_unavailable() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
+        let preferred = scratch_dir("xdg-preferred");
+        let other = scratch_dir("xdg-other");
+        env::set_var("XDG_RUNTIME_DIR", &preferred);
+        env::set_var("TMPDIR", &other);
+
+        assert_eq!(base_dir_after(|| None), preferred);
+
+        fs::remove_dir_all(&preferred).ok();
+        fs::remove_dir_all(&other).ok();
     }
 
     // These two exercise the `TMPDIR`/`TEMP`/`TMP` fallback chain via
@@ -287,7 +334,13 @@ pub(crate) mod tests {
     #[test]
     fn base_dir_prefers_tmpdir_over_temp_and_tmp() {
         let _lock = ENV_LOCK.lock().unwrap();
-        let _guard = EnvGuard::capture(&["BLUMKIN_AGENT_RUNTIME_DIR", "TMPDIR", "TEMP", "TMP"]);
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
         let preferred = scratch_dir("preferred");
         let other = scratch_dir("other");
         env::set_var("TMPDIR", &preferred);
@@ -302,7 +355,13 @@ pub(crate) mod tests {
     #[test]
     fn base_dir_skips_a_nonexistent_tmpdir_and_falls_through_to_temp() {
         let _lock = ENV_LOCK.lock().unwrap();
-        let _guard = EnvGuard::capture(&["BLUMKIN_AGENT_RUNTIME_DIR", "TMPDIR", "TEMP", "TMP"]);
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
         let fallback = scratch_dir("fallback");
         // A nonexistent leaf under the real system temp dir, not an
         // unwritable absolute path: `server.rs`'s tests run concurrently in
