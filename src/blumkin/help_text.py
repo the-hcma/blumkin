@@ -17,13 +17,16 @@ Examples:
 \b
   blumkin agent status
   blumkin agent lock
+  blumkin agent stop
 
 The agent (issue #328/#339) is a background process that holds time-boxed,
 decrypted credentials so blumkin only needs local presence re-verification
 (Touch ID / device password) roughly once per TTL, instead of on every
-command. `status` reports which profiles are currently cached; `lock`
-wipes cached secrets (one profile, or all of them) without shutting the
-agent down.
+command. `status` reports which profiles are currently cached (and flags
+version skew after a `blumkin upgrade` - see issue #401); `lock` wipes
+cached secrets (one profile, or all of them) without shutting the agent
+down; `stop` shuts the agent process down entirely - it respawns on the
+next command that needs it.
 """
 
 AGENT_LOCK_EPILOG = """
@@ -47,6 +50,23 @@ Examples:
 
 Shows whether the agent is currently running, and if so its pid, version,
 and which profiles have cached state - without starting one just to check.
+Warns when `agent_version` is older than this CLI's own build (issue #401)
+- a `blumkin upgrade` swaps the package on disk but does not touch an
+already-running agent, so run `blumkin agent stop` to retire it.
+"""
+
+AGENT_STOP_EPILOG = """
+Examples:
+
+\b
+  blumkin agent stop
+  blumkin agent stop --json
+
+Shuts the agent process down entirely (unlike `lock`, which only wipes its
+cached secrets and leaves it running). Useful after `blumkin upgrade` to
+retire an agent still running the previous build's code (issue #401) - the
+next command needing the agent spawns a fresh one from the just-upgraded
+package. A no-op if no agent is running.
 """
 
 AUTH_EPILOG = """
