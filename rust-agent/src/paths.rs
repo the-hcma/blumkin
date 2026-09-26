@@ -69,8 +69,8 @@ fn base_dir() -> PathBuf {
 /// too, independent of whether `confstr(3)` happens to succeed on the
 /// runner (see PR #403 review).
 fn base_dir_after(darwin_lookup: impl Fn() -> Option<PathBuf>) -> PathBuf {
-    if let Some(dir) = env::var_os("BLUMKIN_AGENT_RUNTIME_DIR") {
-        return PathBuf::from(dir);
+    if let Some(dir) = non_empty_env_var("BLUMKIN_AGENT_RUNTIME_DIR") {
+        return dir;
     }
     if let Some(dir) = darwin_lookup() {
         return dir;
@@ -80,8 +80,8 @@ fn base_dir_after(darwin_lookup: impl Fn() -> Option<PathBuf>) -> PathBuf {
     // returns `None` on macOS (a failed `confstr(3)` call), so both sides
     // keep agreeing even off the Darwin-lookup happy path (see PR #403
     // review).
-    if let Some(dir) = env::var_os("XDG_RUNTIME_DIR") {
-        return PathBuf::from(dir);
+    if let Some(dir) = non_empty_env_var("XDG_RUNTIME_DIR") {
+        return dir;
     }
     for envname in ["TMPDIR", "TEMP", "TMP"] {
         if let Some(dir) = env::var_os(envname) {
@@ -98,6 +98,22 @@ fn base_dir_after(darwin_lookup: impl Fn() -> Option<PathBuf>) -> PathBuf {
         }
     }
     env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"))
+}
+
+/// `env::var_os(name)`, but treating a present-and-empty value the same as
+/// unset. Matches Python's `if os.environ.get(name):` truthiness check
+/// (`os.environ.get` never distinguishes "unset" from "" the way `var_os`
+/// does) - without this, `XDG_RUNTIME_DIR=`/`BLUMKIN_AGENT_RUNTIME_DIR=`
+/// would make Rust return an empty, effectively-relative base dir while
+/// Python fell through to the next candidate, splitting the two
+/// implementations apart exactly as issue #402 describes (see PR #403
+/// review).
+fn non_empty_env_var(name: &str) -> Option<PathBuf> {
+    let value = env::var_os(name)?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(value))
 }
 
 #[cfg(target_os = "macos")]
@@ -298,32 +314,6 @@ pub(crate) mod tests {
         fs::remove_dir_all(&overridden).ok();
     }
 
-    // Regression test for PR #403 review: Python's `runtime_base_dir()`
-    // checks `XDG_RUNTIME_DIR` *before* `TMPDIR`/`TEMP`/`TMP`, unconditionally
-    // (not gated to non-macOS) - this must match, or a daemon spawned with
-    // `XDG_RUNTIME_DIR` set but `confstr(3)` failing would disagree with the
-    // client's own resolution.
-    #[test]
-    fn base_dir_prefers_xdg_runtime_dir_over_tmpdir_when_the_darwin_lookup_is_unavailable() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let _guard = EnvGuard::capture(&[
-            "BLUMKIN_AGENT_RUNTIME_DIR",
-            "XDG_RUNTIME_DIR",
-            "TMPDIR",
-            "TEMP",
-            "TMP",
-        ]);
-        let preferred = scratch_dir("xdg-preferred");
-        let other = scratch_dir("xdg-other");
-        env::set_var("XDG_RUNTIME_DIR", &preferred);
-        env::set_var("TMPDIR", &other);
-
-        assert_eq!(base_dir_after(|| None), preferred);
-
-        fs::remove_dir_all(&preferred).ok();
-        fs::remove_dir_all(&other).ok();
-    }
-
     // These two exercise the `TMPDIR`/`TEMP`/`TMP` fallback chain via
     // `base_dir_after(|| None)` rather than `base_dir()` directly: the
     // real Darwin lookup always succeeds on the `macos-latest` runner
@@ -345,6 +335,32 @@ pub(crate) mod tests {
         let other = scratch_dir("other");
         env::set_var("TMPDIR", &preferred);
         env::set_var("TEMP", &other);
+
+        assert_eq!(base_dir_after(|| None), preferred);
+
+        fs::remove_dir_all(&preferred).ok();
+        fs::remove_dir_all(&other).ok();
+    }
+
+    // Regression test for PR #403 review: Python's `runtime_base_dir()`
+    // checks `XDG_RUNTIME_DIR` *before* `TMPDIR`/`TEMP`/`TMP`, unconditionally
+    // (not gated to non-macOS) - this must match, or a daemon spawned with
+    // `XDG_RUNTIME_DIR` set but `confstr(3)` failing would disagree with the
+    // client's own resolution.
+    #[test]
+    fn base_dir_prefers_xdg_runtime_dir_over_tmpdir_when_the_darwin_lookup_is_unavailable() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
+        let preferred = scratch_dir("xdg-preferred");
+        let other = scratch_dir("xdg-other");
+        env::set_var("XDG_RUNTIME_DIR", &preferred);
+        env::set_var("TMPDIR", &other);
 
         assert_eq!(base_dir_after(|| None), preferred);
 
@@ -374,6 +390,52 @@ pub(crate) mod tests {
         let missing = env::temp_dir().join("blumkin-agent-basedir-test-missing-leaf");
         env::set_var("TMPDIR", &missing);
         env::set_var("TEMP", &fallback);
+
+        assert_eq!(base_dir_after(|| None), fallback);
+
+        fs::remove_dir_all(&fallback).ok();
+    }
+
+    // Regression test for PR #403 review: `env::var_os` treats a
+    // present-and-empty value as `Some("")`, unlike Python's
+    // `os.environ.get(name)` truthiness check - without `non_empty_env_var`,
+    // `BLUMKIN_AGENT_RUNTIME_DIR=` would make Rust return an empty,
+    // effectively-relative base dir while Python fell through to the next
+    // candidate.
+    #[test]
+    fn base_dir_treats_an_empty_override_as_unset() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
+        let fallback = scratch_dir("empty-override-fallback");
+        env::set_var("BLUMKIN_AGENT_RUNTIME_DIR", "");
+        env::set_var("TMPDIR", &fallback);
+
+        assert_eq!(base_dir_after(|| None), fallback);
+
+        fs::remove_dir_all(&fallback).ok();
+    }
+
+    // Same asymmetry as `base_dir_treats_an_empty_override_as_unset`, for
+    // `XDG_RUNTIME_DIR` (see PR #403 review).
+    #[test]
+    fn base_dir_treats_an_empty_xdg_runtime_dir_as_unset() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvGuard::capture(&[
+            "BLUMKIN_AGENT_RUNTIME_DIR",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ]);
+        let fallback = scratch_dir("empty-xdg-fallback");
+        env::set_var("XDG_RUNTIME_DIR", "");
+        env::set_var("TMPDIR", &fallback);
 
         assert_eq!(base_dir_after(|| None), fallback);
 

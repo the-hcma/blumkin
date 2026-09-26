@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import socket
 import tempfile
@@ -271,8 +272,16 @@ def test_client_and_real_agent_binary_agree_on_the_runtime_dir_without_an_overri
         assert spawn_called, "test never exercised _spawn() - it would pass even if unrelated"
         response = agent_client.call("ping", spawn=False)
         assert response["ok"] is True
-        agent_client.call("shutdown")
     finally:
+        if spawn_called:
+            # Best-effort: if the daemon this test spawned resolved a
+            # *different* base dir than the client (the exact divergence
+            # this test guards against), the client cannot reach it to ask
+            # it to shut down either - reap what we can, and let the
+            # assertion above stay the actual failure signal rather than
+            # this cleanup's own AgentUnavailableError.
+            with contextlib.suppress(agent_client.AgentUnavailableError):
+                agent_client.call("shutdown")
         shutil.rmtree(real_socket.parent, ignore_errors=True)
 
 
