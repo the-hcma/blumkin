@@ -165,6 +165,21 @@ def test_agent_stop_json_when_not_running_is_a_no_op() -> None:
     assert '"stopped": true' in result.output
 
 
+def test_agent_stop_json_when_protocol_mismatch_still_counts_as_stopped() -> None:
+    """A stale agent replies `ok: false` but has already committed to
+    shutting itself down (see `dispatch` in `rust-agent/src/server.rs`) -
+    that is the success case `version_skew_hint` asks the operator to
+    trigger, not a failure (see PR #404 review)."""
+    fake_response = {"ok": False, "error": "protocol_mismatch"}
+    with patch("blumkin.cli.agent_client.call", return_value=fake_response):
+        result = CliRunner().invoke(main, ["agent", "stop", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert '"agent_running": true' in result.output
+    assert '"stopped": true' in result.output
+    assert '"ok": true' in result.output
+    assert '"error"' not in result.output
+
+
 def test_agent_stop_json_when_running() -> None:
     with patch("blumkin.cli.agent_client.call", return_value={"ok": True}):
         result = CliRunner().invoke(main, ["agent", "stop", "--json"])

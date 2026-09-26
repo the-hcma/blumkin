@@ -361,7 +361,18 @@ def _agent_stop_payload() -> dict[str, Any]:
             "ok": False,
         }
     stopped = bool(response.get("ok"))
-    return {"agent_running": True, "stopped": stopped, "ok": stopped}
+    error = response.get("error")
+    if not stopped and error == "protocol_mismatch":
+        # The probed agent is the *stale* one (see `dispatch` in
+        # `rust-agent/src/server.rs`): it already committed to shutting
+        # itself down before replying `ok: false`, so this is the success
+        # case `version_skew_hint` asks the operator to trigger, not a
+        # failure (see PR #404 review).
+        stopped = True
+    payload: dict[str, Any] = {"agent_running": True, "stopped": stopped, "ok": stopped}
+    if not stopped and error:
+        payload["error"] = error
+    return payload
 
 
 def _agent_version_skew(agent_version: object) -> dict[str, Any]:
