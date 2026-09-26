@@ -222,16 +222,46 @@ def test_client_and_real_agent_binary_agree_on_the_runtime_dir_without_an_overri
     ever drifted from the Python side's `agent_paths.runtime_base_dir()`,
     the spawned daemon would bind somewhere the client can never reach, and
     `_wait_for_socket_ready` would time out waiting on the wrong path.
+
+    Two things this test must guard against (see PR #403 review):
+    - `ensure_agent_running()` is a no-op `ping` when *anything* is already
+      listening at the unoverridden socket, so if a real agent happens to
+      be up already, this test would never exercise `_spawn()` at all and
+      would pass even if the two sides had drifted - it monkeypatches
+      `_spawn` to record whether it actually ran, and skips instead of
+      silently no-op-passing when an agent is already there.
+    - it must never `shutdown`/delete a real, pre-existing agent's runtime
+      dir it did not itself create - the skip above (rather than "clean up
+      only what changed") keeps this test from ever touching a directory
+      or process it didn't spawn.
     """
     monkeypatch.delenv("BLUMKIN_AGENT_RUNTIME_DIR", raising=False)
-    real_runtime_dir = agent_paths.runtime_dir()
+    real_socket = agent_paths.socket_path()
+    if real_socket.exists():
+        pytest.skip(
+            "a real agent is already listening at the unoverridden runtime "
+            "dir - spawning here would either silently reuse it (masking "
+            "the exact base_dir divergence this test guards against) or "
+            "race a live process; rerun after `blumkin agent stop`"
+        )
+
+    spawn_called = False
+    real_spawn = agent_client._spawn
+
+    def _spawn_and_record() -> None:
+        nonlocal spawn_called
+        spawn_called = True
+        real_spawn()
+
+    monkeypatch.setattr(agent_client, "_spawn", _spawn_and_record)
     try:
         agent_client.ensure_agent_running()
+        assert spawn_called, "test never exercised _spawn() - it would pass even if unrelated"
         response = agent_client.call("ping", spawn=False)
         assert response["ok"] is True
         agent_client.call("shutdown")
     finally:
-        shutil.rmtree(real_runtime_dir, ignore_errors=True)
+        shutil.rmtree(real_socket.parent, ignore_errors=True)
 
 
 @pytest.mark.skipif(not _real_agent_binary_available(), reason=_REAL_AGENT_UNAVAILABLE_REASON)

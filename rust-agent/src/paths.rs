@@ -55,11 +55,23 @@ pub fn socket_path() -> PathBuf {
 /// must keep agreeing here, or they can resolve different socket paths
 /// (see PR #329 review).
 fn base_dir() -> PathBuf {
+    base_dir_after(darwin_user_temp_dir_if_macos)
+}
+
+/// `base_dir`'s body, parameterized on the Darwin `confstr` lookup.
+///
+/// `rust-static` (`.github/workflows/ci.yml`) only ever runs `cargo test` on
+/// `runs-on: macos-latest`, where the real `darwin_user_temp_dir_if_macos`
+/// always succeeds - so the `TMPDIR`/`TEMP`/`TMP` -> `/tmp`/`/var/tmp`/
+/// `/usr/tmp` fallback chain below would otherwise never execute on any CI
+/// platform. Tests inject `|| None` here to exercise that chain on macOS
+/// too, independent of whether `confstr(3)` happens to succeed on the
+/// runner (see PR #403 review).
+fn base_dir_after(darwin_lookup: impl Fn() -> Option<PathBuf>) -> PathBuf {
     if let Some(dir) = env::var_os("BLUMKIN_AGENT_RUNTIME_DIR") {
         return PathBuf::from(dir);
     }
-    #[cfg(target_os = "macos")]
-    if let Some(dir) = darwin_user_temp_dir() {
+    if let Some(dir) = darwin_lookup() {
         return dir;
     }
     for envname in ["TMPDIR", "TEMP", "TMP"] {
@@ -77,6 +89,16 @@ fn base_dir() -> PathBuf {
         }
     }
     env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"))
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_user_temp_dir_if_macos() -> Option<PathBuf> {
+    darwin_user_temp_dir()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn darwin_user_temp_dir_if_macos() -> Option<PathBuf> {
+    None
 }
 
 /// The per-user, per-boot temp directory macOS hands out via `confstr(3)`
@@ -255,7 +277,13 @@ pub(crate) mod tests {
         fs::remove_dir_all(&overridden).ok();
     }
 
-    #[cfg(not(target_os = "macos"))]
+    // These two exercise the `TMPDIR`/`TEMP`/`TMP` fallback chain via
+    // `base_dir_after(|| None)` rather than `base_dir()` directly: the
+    // real Darwin lookup always succeeds on the `macos-latest` runner
+    // `rust-static` (`.github/workflows/ci.yml`) actually runs `cargo test`
+    // on, so calling `base_dir()` here would never reach this chain on any
+    // CI platform and the ordering below could silently regress (see
+    // PR #403 review).
     #[test]
     fn base_dir_prefers_tmpdir_over_temp_and_tmp() {
         let _lock = ENV_LOCK.lock().unwrap();
@@ -265,13 +293,12 @@ pub(crate) mod tests {
         env::set_var("TMPDIR", &preferred);
         env::set_var("TEMP", &other);
 
-        assert_eq!(base_dir(), preferred);
+        assert_eq!(base_dir_after(|| None), preferred);
 
         fs::remove_dir_all(&preferred).ok();
         fs::remove_dir_all(&other).ok();
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn base_dir_skips_a_nonexistent_tmpdir_and_falls_through_to_temp() {
         let _lock = ENV_LOCK.lock().unwrap();
@@ -289,7 +316,7 @@ pub(crate) mod tests {
         env::set_var("TMPDIR", &missing);
         env::set_var("TEMP", &fallback);
 
-        assert_eq!(base_dir(), fallback);
+        assert_eq!(base_dir_after(|| None), fallback);
 
         fs::remove_dir_all(&fallback).ok();
     }
