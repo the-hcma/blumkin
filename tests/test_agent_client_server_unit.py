@@ -207,6 +207,34 @@ def test_call_without_spawn_raises_when_no_agent_is_running(
 
 
 @pytest.mark.skipif(not _real_agent_binary_available(), reason=_REAL_AGENT_UNAVAILABLE_REASON)
+def test_client_and_real_agent_binary_agree_on_the_runtime_dir_without_an_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #402 regression: the client and the real daemon it spawns must
+    resolve the *same* runtime dir with no `BLUMKIN_AGENT_RUNTIME_DIR`
+    override (the fixture above sets one for every other test in this file,
+    so this is the one test that deliberately clears it).
+
+    `client._spawn()` launches the compiled `blumkin-agent` binary with no
+    `env=` override, so it inherits this process's real environment and
+    resolves its own runtime dir independently (`rust-agent/src/paths.rs::
+    base_dir`) rather than being told where to bind - if that resolution
+    ever drifted from the Python side's `agent_paths.runtime_base_dir()`,
+    the spawned daemon would bind somewhere the client can never reach, and
+    `_wait_for_socket_ready` would time out waiting on the wrong path.
+    """
+    monkeypatch.delenv("BLUMKIN_AGENT_RUNTIME_DIR", raising=False)
+    real_runtime_dir = agent_paths.runtime_dir()
+    try:
+        agent_client.ensure_agent_running()
+        response = agent_client.call("ping", spawn=False)
+        assert response["ok"] is True
+        agent_client.call("shutdown")
+    finally:
+        shutil.rmtree(real_runtime_dir, ignore_errors=True)
+
+
+@pytest.mark.skipif(not _real_agent_binary_available(), reason=_REAL_AGENT_UNAVAILABLE_REASON)
 def test_ensure_agent_running_spawns_a_real_agent_process() -> None:
     agent_client.ensure_agent_running()
     response = agent_client.call("ping", spawn=False)
