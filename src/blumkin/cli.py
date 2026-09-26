@@ -163,6 +163,7 @@ from blumkin.version import (
     build_info,
     build_status_fields,
     build_version,
+    package_version,
     running_command_path,
 )
 
@@ -318,11 +319,85 @@ def _agent_status_payload() -> dict[str, Any]:
         # See the matching handler in `_agent_lock_payload` - a hostile
         # runtime dir must not surface as an unhandled traceback here either.
         return {"agent_running": False, "reachable": False, "error": str(exc)}
-    return {
+    agent_version = response.get("agent_version")
+    payload: dict[str, Any] = {
         "agent_running": True,
-        "agent_version": response.get("agent_version"),
+        "agent_version": agent_version,
         "agent_pid": response.get("agent_pid"),
         "cached_profiles": response.get("cached_profiles", []),
+    }
+    payload.update(_agent_version_skew(agent_version))
+    return payload
+
+
+def _agent_stop_payload() -> dict[str, Any]:
+    """Shut the agent process down entirely (unlike `lock`, which keeps it running).
+
+    Issue #401: `blumkin upgrade` only swaps the package on disk, so an
+    already-running agent keeps serving the *previous* build (and its
+    cached credentials) until something retires it - this is that
+    something. `spawn=False` mirrors `_agent_lock_payload`: shutting down
+    must never itself spawn a fresh agent just to shut it down again.
+    """
+    try:
+        response = agent_client.call("shutdown", spawn=False)
+    except agent_client.AgentUnreachableError as exc:
+        return {
+            "agent_running": True,
+            "reachable": False,
+            "stopped": False,
+            "error": str(exc),
+            "ok": False,
+        }
+    except agent_client.AgentUnavailableError:
+        return {"agent_running": False, "stopped": True}
+    except RuntimeError as exc:
+        # See the matching handler in `_agent_lock_payload`.
+        return {
+            "agent_running": False,
+            "reachable": False,
+            "stopped": False,
+            "error": str(exc),
+            "ok": False,
+        }
+    stopped = bool(response.get("ok"))
+    error = response.get("error")
+    if not stopped and error == "protocol_mismatch":
+        # The probed agent is the *stale* one (see `dispatch` in
+        # `rust-agent/src/server.rs`): it already committed to shutting
+        # itself down before replying `ok: false`, so this is the success
+        # case `version_skew_hint` asks the operator to trigger, not a
+        # failure (see PR #404 review).
+        stopped = True
+    payload: dict[str, Any] = {"agent_running": True, "stopped": stopped, "ok": stopped}
+    if not stopped and error:
+        payload["error"] = error
+    return payload
+
+
+def _agent_version_skew(agent_version: object) -> dict[str, Any]:
+    """Flag a running agent that is older than this CLI's own build.
+
+    Issue #401: `blumkin upgrade` swaps the package on disk, but a
+    long-lived agent process keeps running the code (and holding the
+    cached credentials) it was originally spawned with, and nothing
+    previously surfaced that drift to the operator. Only a plain string
+    mismatch - not a semver comparison - since an older agent could in
+    principle report a *newer* version too (e.g. a downgrade), and either
+    direction is equally worth flagging as "not what this CLI build is".
+    """
+    if not isinstance(agent_version, str) or not agent_version:
+        return {}
+    cli_version = package_version()
+    if agent_version == cli_version:
+        return {"version_skew": False}
+    return {
+        "version_skew": True,
+        "cli_version": cli_version,
+        "version_skew_hint": (
+            f"agent is running {agent_version}, this CLI is {cli_version} - "
+            "run `blumkin agent stop` to retire the old agent"
+        ),
     }
 
 
@@ -1504,14 +1579,15 @@ def _collect_microsoft_setup(
 
 @main.group(epilog=help_text.AGENT_EPILOG)
 def agent() -> None:
-    """Check on / lock the blumkin-agent background process.
+    """Check on / lock / stop the blumkin-agent background process.
 
     The agent (issue #328/#339) is the background process that holds
     time-boxed, decrypted credentials so blumkin only needs to re-verify
     local presence (Touch ID / device password) roughly once per TTL
     rather than on every command. `status` reports which profiles are
-    currently cached; `lock` wipes cached secrets (one profile, or all of
-    them) without shutting the agent down.
+    currently cached (and flags version skew after an upgrade - issue
+    #401); `lock` wipes cached secrets (one profile, or all of them)
+    without shutting the agent down; `stop` shuts it down entirely.
     """
 
 
@@ -1566,14 +1642,45 @@ def agent_status(ctx: click.Context, as_json_flag: bool) -> None:
     if not payload["agent_running"]:
         emit_lines(["agent_running: false"])
         return
-    emit_lines(
-        [
-            "agent_running: true",
-            f"agent_version: {payload.get('agent_version')}",
-            f"agent_pid: {payload.get('agent_pid')}",
-            f"cached_profiles: {', '.join(payload.get('cached_profiles') or []) or '(none)'}",
-        ]
-    )
+    lines = [
+        "agent_running: true",
+        f"agent_version: {payload.get('agent_version')}",
+        f"agent_pid: {payload.get('agent_pid')}",
+        f"cached_profiles: {', '.join(payload.get('cached_profiles') or []) or '(none)'}",
+    ]
+    if payload.get("version_skew"):
+        lines.append(f"warning: {payload.get('version_skew_hint')}")
+    emit_lines(lines)
+
+
+@agent.command("stop", epilog=help_text.AGENT_STOP_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def agent_stop(ctx: click.Context, as_json_flag: bool) -> None:
+    """Shut the agent process down entirely - it respawns on next use.
+
+    Unlike `lock`, this actually exits the agent process, retiring one
+    still running a previous build after `blumkin upgrade` (issue #401). A
+    no-op (not an error) if no agent is currently running.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    payload = _agent_stop_payload()
+    if as_json:
+        emit_json(payload)
+        if payload.get("reachable") is False or not payload.get("stopped", True):
+            raise SystemExit(EXIT_OTHER)
+        return
+    if payload.get("reachable") is False:
+        emit_lines([f"stop failed: could not reach the agent - {payload.get('error')}"])
+        raise SystemExit(EXIT_OTHER)
+    if payload["agent_running"] and not payload["stopped"]:
+        detail = f" - {payload['error']}" if payload.get("error") else ""
+        emit_lines([f"stop failed: agent did not confirm shutdown{detail}"])
+        raise SystemExit(EXIT_OTHER)
+    elif payload["agent_running"]:
+        emit_lines(["stopped: the agent process is shutting down"])
+    else:
+        emit_lines(["stopped: no agent was running"])
 
 
 @main.group(epilog=help_text.PROFILES_EPILOG)
