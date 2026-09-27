@@ -114,6 +114,38 @@ def package_version(*, pyproject_path: Path | None = None) -> str:
         return _pyproject_version(path)
 
 
+def read_installed_version(executable: Path) -> str | None:
+    """Run ``<executable> --version`` and return ``<version> (<commit>)``, or None.
+
+    A fresh subprocess reads whatever is on disk *right now*, unlike
+    `get_build_info` (cached once per process): `blumkin upgrade` uses this to
+    compare before/after, and `blumkin mcp serve` (issue #408) uses the exact
+    same trick to notice a long-running server has fallen behind an upgrade
+    that happened after it started - its own `build_version()` is frozen at
+    import time, so only an out-of-process re-read like this one can see a
+    swapped-out install. The first line of ``blumkin --version`` is
+    ``blumkin <version> (<commit>)``; the ``blumkin `` prefix is stripped so
+    the value compares directly against :func:`build_version`.
+    """
+    try:
+        completed = subprocess.run(
+            [str(executable), "--version"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+    except OSError, subprocess.SubprocessError:
+        return None
+    if completed.returncode != 0:
+        return None
+    lines = (completed.stdout or "").splitlines()
+    first = lines[0].strip() if lines else ""
+    if not first:
+        return None
+    return first.removeprefix("blumkin ").strip() or first
+
+
 def running_command_path() -> Path:
     """Return the absolute path of the command that started this process.
 

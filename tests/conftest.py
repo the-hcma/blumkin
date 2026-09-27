@@ -103,3 +103,26 @@ def _stub_install_detection(
             method=install_method.METHOD_UNMANAGED,
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def _stub_agent_process_discovery(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep `agent status` / `agent stop` / `upgrade` / `doctor` off the real
+    machine's process list (issue #408).
+
+    `agent_processes.discover_agent_instances` probes several socket paths
+    and `agent_processes.mcp_serve_processes` shells out to `ps` - without
+    this, a hermetic test's result would depend on whatever `blumkin-agent`
+    / `blumkin mcp serve` processes happen to actually be running on the
+    machine executing the suite (e.g. the very MCP server serving this
+    session). Tests that specifically exercise this discovery patch
+    `blumkin.agent.processes` back themselves.
+    """
+    if request.node.get_closest_marker("live") is not None:
+        return
+    from blumkin.agent import processes as agent_processes
+
+    monkeypatch.setattr(agent_processes, "discover_agent_instances", lambda: [])
+    monkeypatch.setattr(agent_processes, "mcp_serve_processes", lambda: [])

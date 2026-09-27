@@ -63,6 +63,9 @@ _CALENDAR_AMBIGUOUS_HINT = (
     "Pass the calendar id (from `blumkin calendar list --json`), not the name."
 )
 _TZ_HINT = "Use an IANA name like America/New_York or UTC (not an abbreviation)."
+_SERVER_OUTDATED_HINT = (
+    "Restart the MCP server (reload / restart your editor or MCP client) to pick up the update."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +142,21 @@ class ScopeAddonDisabledError(ValueError):
         self.hint = hint
 
 
+class ServerOutdatedError(RuntimeError):
+    """A long-running `blumkin mcp serve` process is older than the currently
+    installed build (issue #408) - `agent status`'s version-skew warning, but
+    for the MCP server itself.
+
+    Distinct from ordinary auth failures: before this, a stale server's
+    unreachable-agent symptom (its in-memory `runtime_base_dir` resolution
+    predates a socket-path fix like #403, or it is simply talking to an
+    agent that has since exited) surfaced misleadingly as `auth_required` -
+    an agent stuck calling this server would then chase a bogus
+    auth-fixing path that could never actually work (see the "Observed
+    scenario" in issue #408).
+    """
+
+
 def graph_http_status(exc: BaseException) -> int | None:
     """Best-effort HTTP status from a kiota/msgraph or googleapiclient exception."""
     for attr in ("response_status_code", "status_code"):
@@ -174,6 +192,8 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
         )
     if isinstance(exc, ConsentRequiredError | ScopeAddonDisabledError):
         return ErrorInfo("usage_error", EXIT_USAGE, str(exc), exc.hint)
+    if isinstance(exc, ServerOutdatedError):
+        return ErrorInfo("server_outdated", EXIT_OTHER, str(exc), _SERVER_OUTDATED_HINT)
 
     # Task-template errors carry operator text (`--name`, template names, file
     # paths) - classify by type, before the ValueError message heuristics below

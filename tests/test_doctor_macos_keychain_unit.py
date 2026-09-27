@@ -275,3 +275,43 @@ def test_macos_keychain_missing_true_when_darwin_and_no_backend(monkeypatch) -> 
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
     assert macos_keychain_missing(_cfg()) is True
+
+
+# ------------------------------------------------------------------ stale processes (#408)
+
+
+def test_doctor_warns_about_an_orphaned_agent(tmp_path: Path, monkeypatch) -> None:
+    from blumkin.agent import processes as agent_processes
+
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+    orphan = agent_processes.AgentInstance(
+        socket_path=Path("/tmp/legacy/agent.sock"), pid=1, version="1.9.2", is_primary=False
+    )
+    monkeypatch.setattr(cli.agent_processes, "orphaned_agent_instances", lambda: [orphan])
+    with patch("blumkin.cli._workspace", return_value=_provider()):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    payload = json.loads(result.stdout)
+    assert any("orphaned blumkin-agent" in warning for warning in payload["warnings"])
+    assert payload["stale_processes"]["orphaned_agents"] == [
+        {"socket_path": "/tmp/legacy/agent.sock", "pid": 1, "version": "1.9.2", "is_primary": False}
+    ]
+    assert payload["stale_processes"]["mcp_serve"] == []
+
+
+def test_doctor_warns_about_a_running_mcp_serve_process(tmp_path: Path, monkeypatch) -> None:
+    from blumkin.agent import processes as agent_processes
+
+    (tmp_path / "config.toml").write_text(_CONFIG)
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+    proc = agent_processes.McpServeProcess(pid=5, command="blumkin mcp serve", started_at=None)
+    monkeypatch.setattr(cli.agent_processes, "mcp_serve_processes", lambda: [proc])
+    with patch("blumkin.cli._workspace", return_value=_provider()):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    payload = json.loads(result.stdout)
+    assert any("mcp serve" in warning for warning in payload["warnings"])
+    assert payload["stale_processes"]["mcp_serve"] == [
+        {"pid": 5, "command": "blumkin mcp serve", "started_at": None}
+    ]

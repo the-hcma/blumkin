@@ -594,3 +594,60 @@ def test_config_skill_tasks_are_tools_and_dispatch_locally(tmp_path) -> None:
             )
     assert [t["name"] for t in listed.structured_content["tasks"]] == ["weekly"]
     assert shown.structured_content["task"]["prompt"] == "do it"
+
+
+# ------------------------------------------------------------------ stale server (#408)
+
+
+def test_stale_error_short_circuits_every_tool_call_before_dispatch() -> None:
+    from blumkin.skills.errors import ServerOutdatedError
+
+    stale = ServerOutdatedError("this MCP server is running blumkin 1.0.0, but 1.1.0 is installed")
+    server = build_server(stale_error=stale)
+    prov = SimpleNamespace(calendar_today=AsyncMock(return_value={"events": []}))
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=_CFG),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        result = _drive_server(server, lambda c: c.call_tool("calendar.today", {}))
+    assert result.is_error is True
+    assert result.structured_content["error"] == "server_outdated"
+    assert "1.1.0" in result.structured_content["message"]
+    assert prov.calendar_today.await_count == 0
+
+
+def test_no_stale_error_by_default_dispatches_normally() -> None:
+    prov = SimpleNamespace(calendar_today=AsyncMock(return_value={"events": []}))
+    server = build_server()
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=_CFG),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        result = _drive_server(server, lambda c: c.call_tool("calendar.today", {}))
+    assert result.is_error is False
+    assert prov.calendar_today.await_count == 1
+
+
+def test_stale_server_check_returns_none_when_versions_match() -> None:
+    from blumkin.mcp_server import _stale_server_check
+
+    with patch("blumkin.mcp_server.read_installed_version", return_value="1.0.0"):
+        assert _stale_server_check("1.0.0") is None
+
+
+def test_stale_server_check_returns_none_when_installed_version_is_unknown() -> None:
+    from blumkin.mcp_server import _stale_server_check
+
+    with patch("blumkin.mcp_server.read_installed_version", return_value=None):
+        assert _stale_server_check("1.0.0") is None
+
+
+def test_stale_server_check_flags_a_version_mismatch() -> None:
+    from blumkin.mcp_server import _stale_server_check
+    from blumkin.skills.errors import ServerOutdatedError
+
+    with patch("blumkin.mcp_server.read_installed_version", return_value="1.1.0"):
+        error = _stale_server_check("1.0.0")
+    assert isinstance(error, ServerOutdatedError)
+    assert "1.0.0" in str(error)
+    assert "1.1.0" in str(error)

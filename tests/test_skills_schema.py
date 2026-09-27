@@ -466,6 +466,7 @@ _ERROR_VALUES = {
     "missing_scope",
     "not_found",
     "secret_write_failed",
+    "server_outdated",
     "stale_or_unread",
     "timeout",
     "too_soon",
