@@ -599,11 +599,11 @@ def test_config_skill_tasks_are_tools_and_dispatch_locally(tmp_path) -> None:
 # ------------------------------------------------------------------ stale server (#408)
 
 
-def test_stale_error_short_circuits_every_tool_call_before_dispatch() -> None:
+def test_stale_check_short_circuits_every_tool_call_before_dispatch() -> None:
     from blumkin.skills.errors import ServerOutdatedError
 
     stale = ServerOutdatedError("this MCP server is running blumkin 1.0.0, but 1.1.0 is installed")
-    server = build_server(stale_error=stale)
+    server = build_server(stale_check=lambda: stale)
     prov = SimpleNamespace(calendar_today=AsyncMock(return_value={"events": []}))
     with (
         patch("blumkin.mcp_server.load_config", return_value=_CFG),
@@ -616,7 +616,27 @@ def test_stale_error_short_circuits_every_tool_call_before_dispatch() -> None:
     assert prov.calendar_today.await_count == 0
 
 
-def test_no_stale_error_by_default_dispatches_normally() -> None:
+def test_stale_check_is_re_evaluated_on_every_tool_call() -> None:
+    """A server that started fresh but goes stale mid-session (an upgrade
+    landed while it kept serving) must notice on a later call, not just at
+    construction time (PR #409 review)."""
+    from blumkin.skills.errors import ServerOutdatedError
+
+    verdicts = iter([None, ServerOutdatedError("now stale")])
+    server = build_server(stale_check=lambda: next(verdicts))
+    prov = SimpleNamespace(calendar_today=AsyncMock(return_value={"events": []}))
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=_CFG),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        first = _drive_server(server, lambda c: c.call_tool("calendar.today", {}))
+        second = _drive_server(server, lambda c: c.call_tool("calendar.today", {}))
+    assert first.is_error is False
+    assert second.is_error is True
+    assert second.structured_content["error"] == "server_outdated"
+
+
+def test_no_stale_check_by_default_dispatches_normally() -> None:
     prov = SimpleNamespace(calendar_today=AsyncMock(return_value={"events": []}))
     server = build_server()
     with (
@@ -651,3 +671,39 @@ def test_stale_server_check_flags_a_version_mismatch() -> None:
     assert isinstance(error, ServerOutdatedError)
     assert "1.0.0" in str(error)
     assert "1.1.0" in str(error)
+
+
+def test_stale_server_check_passes_running_command_not_just_the_path() -> None:
+    """`read_installed_version` must be probed with `running_command()`'s full
+    argv (needed for a `python -m blumkin` launch), not the bare
+    `running_command_path()` (PR #409 review)."""
+    from blumkin.mcp_server import _stale_server_check
+
+    with patch("blumkin.mcp_server.read_installed_version", return_value="1.0.0") as read_installed:
+        _stale_server_check("1.0.0")
+    read_installed.assert_called_once()
+    (probed_command,) = read_installed.call_args.args
+    assert isinstance(probed_command, tuple)
+
+
+def test_stale_server_checker_caches_within_the_interval() -> None:
+    from blumkin.mcp_server import _stale_server_checker
+
+    with patch("blumkin.mcp_server.read_installed_version", return_value="1.0.0") as read_installed:
+        checker = _stale_server_checker("1.0.0", min_interval_s=60.0)
+        assert checker() is None
+        assert checker() is None
+    assert read_installed.call_count == 1
+
+
+def test_stale_server_checker_re_probes_after_the_interval(monkeypatch) -> None:
+    from blumkin import mcp_server
+    from blumkin.mcp_server import _stale_server_checker
+
+    clock = iter([100.0, 200.0])
+    monkeypatch.setattr(mcp_server.time, "monotonic", lambda: next(clock))
+    with patch("blumkin.mcp_server.read_installed_version", return_value="1.0.0") as read_installed:
+        checker = _stale_server_checker("1.0.0", min_interval_s=30.0)
+        checker()
+        checker()
+    assert read_installed.call_count == 2

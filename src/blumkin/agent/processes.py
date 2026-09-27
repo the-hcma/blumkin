@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -30,13 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.agent import client as agent_client
-from blumkin.agent.paths import is_supported_platform, runtime_base_dir, socket_path
-
-#: `ps -o lstart=`'s fixed `ctime`-style format: "Www Mmm dd hh:mm:ss yyyy" -
-#: exactly 5 whitespace-separated tokens, however much padding `ps` adds
-#: around the field itself before the command column starts.
-_LSTART_PATTERN = re.compile(r"^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.*)$")
-_LSTART_FORMAT = "%a %b %d %H:%M:%S %Y"
+from blumkin.agent.paths import is_supported_platform, runtime_base_dir
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,12 +79,21 @@ def discover_agent_instances() -> list[AgentInstance]:
     `$TMPDIR`/`/tmp` instead of the Darwin `confstr` directory) is still
     found, even though `blumkin agent status` no longer resolves to it on
     its own.
+
+    The primary path is computed the same way `_candidate_sockets` builds
+    every other entry - `runtime_base_dir()` directly, not
+    `agent.paths.socket_path()` - so this function has no mkdir/symlink-
+    refusal side effect of its own and never raises `RuntimeError` (PR #409
+    review: every caller relies on a clean `[]`/`reachable: false`, not an
+    unhandled traceback, for a hostile or foreign-owned runtime dir).
     """
     if not is_supported_platform():
         return []
-    primary = socket_path()
+    primary = runtime_base_dir() / f"blumkin-agent-{os.getuid()}" / "agent.sock"
     instances: list[AgentInstance] = []
     for candidate in _candidate_sockets():
+        if not _is_safe_agent_socket_dir(candidate.parent):
+            continue
         response = agent_client.call_at(candidate, "status")
         if response is None:
             continue
@@ -132,6 +136,13 @@ def orphaned_agent_instances() -> list[AgentInstance]:
     return [instance for instance in discover_agent_instances() if not instance.is_primary]
 
 
+#: `ps -o lstart=`'s fixed `ctime`-style format: "Www Mmm dd hh:mm:ss yyyy" -
+#: exactly 5 whitespace-separated tokens, however much padding `ps` adds
+#: around the field itself before the command column starts.
+_LSTART_FORMAT = "%a %b %d %H:%M:%S %Y"
+_LSTART_PATTERN = re.compile(r"^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.*)$")
+
+
 def _candidate_sockets() -> list[Path]:
     """Every base directory `runtime_base_dir` could plausibly have resolved
     to, on this or an earlier blumkin build - current result first, then
@@ -153,6 +164,33 @@ def _candidate_sockets() -> list[Path]:
         seen.add(key)
         deduped.append(base)
     return [base / f"blumkin-agent-{uid}" / "agent.sock" for base in deduped]
+
+
+def _is_safe_agent_socket_dir(directory: Path) -> bool:
+    """Read-only mirror of `agent.paths._ensure_private_owned_dir`'s checks,
+    for candidate legacy directories this process must only ever read, never
+    create or `chmod` (unlike its own runtime dir).
+
+    Every candidate base (`$TMPDIR`, `/tmp`, `/var/tmp`, `/usr/tmp`, ...) is
+    world-writable, so any local, same-privilege user could otherwise plant
+    `<base>/blumkin-agent-<uid>/agent.sock` ahead of time and have their own
+    process impersonate a stopped agent's `status`/`shutdown` replies (PR
+    #409 review). Refuses a symlink, a non-directory, a directory this
+    process does not own, or one that is group/other readable or
+    writable - the same trust boundary `_ensure_private_owned_dir` enforces
+    for the one directory this process is willing to create itself.
+    """
+    try:
+        info = directory.lstat()
+    except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
+        return False
+    if not stat.S_ISDIR(info.st_mode):
+        return False
+    if info.st_uid != os.getuid():
+        return False
+    return not info.st_mode & (stat.S_IRWXG | stat.S_IRWXO)
 
 
 def _list_processes() -> list[tuple[int, datetime | None, str]]:

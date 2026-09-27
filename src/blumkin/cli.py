@@ -380,15 +380,8 @@ def _agent_stop_payload(*, stop_all: bool = False) -> dict[str, Any]:
             "ok": False,
         }
     else:
-        stopped = bool(response.get("ok"))
+        stopped = _shutdown_confirmed(response)
         error = response.get("error")
-        if not stopped and error == "protocol_mismatch":
-            # The probed agent is the *stale* one (see `dispatch` in
-            # `rust-agent/src/server.rs`): it already committed to shutting
-            # itself down before replying `ok: false`, so this is the success
-            # case `version_skew_hint` asks the operator to trigger, not a
-            # failure (see PR #404 review).
-            stopped = True
         payload = {"agent_running": True, "stopped": stopped, "ok": stopped}
         if not stopped and error:
             payload["error"] = error
@@ -396,44 +389,10 @@ def _agent_stop_payload(*, stop_all: bool = False) -> dict[str, Any]:
         stopped_orphans = []
         for instance in agent_processes.orphaned_agent_instances():
             response = agent_client.call_at(instance.socket_path, "shutdown")
-            stopped_orphans.append(
-                {**instance.as_dict(), "stopped": bool(response and response.get("ok"))}
-            )
+            stopped_orphans.append({**instance.as_dict(), "stopped": _shutdown_confirmed(response)})
         if stopped_orphans:
             payload["orphaned_agents"] = stopped_orphans
     return payload
-
-
-def _orphaned_agent_lines(payload: dict[str, Any]) -> list[str]:
-    """Human-readable lines for `payload["orphaned_agents"]`, or `[]`."""
-    orphaned = payload.get("orphaned_agents") or []
-    if not orphaned:
-        return []
-    lines = [
-        f"warning: {len(orphaned)} orphaned agent(s) running on other socket paths - "
-        "run `blumkin agent stop --all` to retire them"
-    ]
-    lines.extend(
-        f"  orphaned: pid={item.get('pid')} version={item.get('version')} "
-        f"socket={item.get('socket_path')}"
-        for item in orphaned
-    )
-    return lines
-
-
-def _stopped_orphan_lines(payload: dict[str, Any]) -> list[str]:
-    """Human-readable lines for `payload["orphaned_agents"]` after `--all`, or `[]`."""
-    orphaned = payload.get("orphaned_agents") or []
-    if not orphaned:
-        return []
-    stopped_count = sum(1 for item in orphaned if item.get("stopped"))
-    lines = [f"also stopped {stopped_count} orphaned agent(s):"]
-    lines.extend(
-        f"  {'stopped' if item.get('stopped') else 'stop failed'}: pid={item.get('pid')} "
-        f"version={item.get('version')} socket={item.get('socket_path')}"
-        for item in orphaned
-    )
-    return lines
 
 
 def _agent_version_skew(agent_version: object) -> dict[str, Any]:
@@ -460,6 +419,54 @@ def _agent_version_skew(agent_version: object) -> dict[str, Any]:
             "run `blumkin agent stop` to retire the old agent"
         ),
     }
+
+
+def _orphaned_agent_lines(payload: dict[str, Any]) -> list[str]:
+    """Human-readable lines for `payload["orphaned_agents"]`, or `[]`."""
+    orphaned = payload.get("orphaned_agents") or []
+    if not orphaned:
+        return []
+    lines = [
+        f"warning: {len(orphaned)} orphaned agent(s) running on other socket paths - "
+        "run `blumkin agent stop --all` to retire them"
+    ]
+    lines.extend(
+        f"  orphaned: pid={item.get('pid')} version={item.get('version')} "
+        f"socket={item.get('socket_path')}"
+        for item in orphaned
+    )
+    return lines
+
+
+def _shutdown_confirmed(response: dict[str, Any] | None) -> bool:
+    """Whether a `shutdown` reply means the probed process actually is (or is
+    about to be) gone.
+
+    A legacy/stale agent answers `shutdown` with `{"ok": false, "error":
+    "protocol_mismatch"}` - it already committed to shutting itself down
+    before replying at all (see `dispatch` in `rust-agent/src/server.rs`),
+    so this is the success case `version_skew_hint` asks the operator to
+    trigger, not a failure (PR #404 review). Shared by `_agent_stop_payload`
+    (both its primary and `--all` orphan branches) and
+    `_find_stale_processes`, so all three read this reply identically
+    (PR #409 review: two of the three previously read it as a failure).
+    """
+    return bool(response and (response.get("ok") or response.get("error") == "protocol_mismatch"))
+
+
+def _stopped_orphan_lines(payload: dict[str, Any]) -> list[str]:
+    """Human-readable lines for `payload["orphaned_agents"]` after `--all`, or `[]`."""
+    orphaned = payload.get("orphaned_agents") or []
+    if not orphaned:
+        return []
+    stopped_count = sum(1 for item in orphaned if item.get("stopped"))
+    lines = [f"also stopped {stopped_count} orphaned agent(s):"]
+    lines.extend(
+        f"  {'stopped' if item.get('stopped') else 'stop failed'}: pid={item.get('pid')} "
+        f"version={item.get('version')} socket={item.get('socket_path')}"
+        for item in orphaned
+    )
+    return lines
 
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
@@ -649,6 +656,17 @@ def _checkout_lines(checkout: Any) -> list[str]:
     ]
 
 
+def _editable_upgrade_steps(install: Install, *, as_json: bool) -> list[list[str]]:
+    """`upgrade_steps` with each leading command resolved to an absolute path.
+
+    Same source list as `suggested_commands` (both from `upgrade_steps`), so the
+    printed / `action_taken` text and the argv actually run cannot diverge.
+    """
+    return [
+        [_require_manager(step[0], as_json=as_json), *step[1:]] for step in upgrade_steps(install)
+    ]
+
+
 def _find_stale_processes(*, before: str | None) -> list[dict[str, Any]]:
     """After a real `blumkin upgrade` action, find and retire processes still
     running the previous (`before`) build (issue #408).
@@ -667,7 +685,7 @@ def _find_stale_processes(*, before: str | None) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     for instance in agent_processes.discover_agent_instances():
         response = agent_client.call_at(instance.socket_path, "shutdown")
-        stopped = bool(response and response.get("ok"))
+        stopped = _shutdown_confirmed(response)
         found.append(
             {
                 "pid": instance.pid,
@@ -688,17 +706,6 @@ def _find_stale_processes(*, before: str | None) -> list[dict[str, Any]]:
             }
         )
     return found
-
-
-def _editable_upgrade_steps(install: Install, *, as_json: bool) -> list[list[str]]:
-    """`upgrade_steps` with each leading command resolved to an absolute path.
-
-    Same source list as `suggested_commands` (both from `upgrade_steps`), so the
-    printed / `action_taken` text and the argv actually run cannot diverge.
-    """
-    return [
-        [_require_manager(step[0], as_json=as_json), *step[1:]] for step in upgrade_steps(install)
-    ]
 
 
 def _emit_upgrade_result(
@@ -804,6 +811,24 @@ def _run_upgrade_command(cmd: list[str], *, as_json: bool, timeout: int) -> None
         raise SystemExit(EXIT_OTHER)
 
 
+def _stale_process_lines(stale_processes: list[dict[str, Any]] | None) -> list[str]:
+    """Human-readable lines for `upgrade`'s `stale_processes` (issue #408)."""
+    if not stale_processes:
+        return []
+    lines = [f"stale processes found ({len(stale_processes)}):"]
+    for item in stale_processes:
+        detail = f"pid={item['pid']} build={item.get('build') or '(unknown)'}"
+        if item["kind"] == "agent":
+            action = "retired" if item["action"] == "stopped" else "could not retire"
+            lines.append(f"  agent {detail}: {action}")
+        else:
+            lines.append(
+                f"  mcp serve {detail}: still running the previous build - restart your "
+                "MCP client to pick up the upgrade"
+            )
+    return lines
+
+
 def _upgrade_human_lines(
     install: Install,
     *,
@@ -845,24 +870,6 @@ def _upgrade_human_lines(
     lines.append(f"from: {before or '(unknown)'}")
     lines.append(f"to:   {after or '(run `blumkin --version` to confirm)'}")
     lines.extend(_stale_process_lines(stale_processes))
-    return lines
-
-
-def _stale_process_lines(stale_processes: list[dict[str, Any]] | None) -> list[str]:
-    """Human-readable lines for `upgrade`'s `stale_processes` (issue #408)."""
-    if not stale_processes:
-        return []
-    lines = [f"stale processes found ({len(stale_processes)}):"]
-    for item in stale_processes:
-        detail = f"pid={item['pid']} build={item.get('build') or '(unknown)'}"
-        if item["kind"] == "agent":
-            action = "retired" if item["action"] == "stopped" else "could not retire"
-            lines.append(f"  agent {detail}: {action}")
-        else:
-            lines.append(
-                f"  mcp serve {detail}: still running the previous build - restart your "
-                "MCP client to pick up the upgrade"
-            )
     return lines
 
 

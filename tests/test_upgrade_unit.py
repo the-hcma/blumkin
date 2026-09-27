@@ -388,6 +388,41 @@ def test_upgrade_stops_a_still_running_agent_after_a_real_upgrade(install, monke
     ]
 
 
+def test_upgrade_counts_a_protocol_mismatch_agent_as_stopped(install, monkeypatch) -> None:
+    """A legacy agent may reply `protocol_mismatch` to `shutdown` - it already
+    committed to shutting itself down before replying (PR #404), so this is
+    the success case, not a failure (PR #409 review)."""
+    install["value"] = Install(
+        checkout=None, managed_path=Path("/home/u/.local/bin/blumkin"), method=METHOD_PIPX
+    )
+    _run_records(monkeypatch)
+    monkeypatch.setattr(
+        cli.agent_processes, "discover_agent_instances", lambda: [_agent_instance()]
+    )
+    monkeypatch.setattr(
+        cli.agent_client,
+        "call_at",
+        lambda _path, _cmd: {"ok": False, "error": "protocol_mismatch"},
+    )
+
+    payload = json.loads(CliRunner().invoke(main, ["upgrade", "--json"]).output)
+    assert payload["stale_processes"][0]["action"] == "stopped"
+
+
+def test_upgrade_reports_an_agent_it_could_not_stop(install, monkeypatch) -> None:
+    install["value"] = Install(
+        checkout=None, managed_path=Path("/home/u/.local/bin/blumkin"), method=METHOD_PIPX
+    )
+    _run_records(monkeypatch)
+    monkeypatch.setattr(
+        cli.agent_processes, "discover_agent_instances", lambda: [_agent_instance()]
+    )
+    monkeypatch.setattr(cli.agent_client, "call_at", lambda _path, _cmd: None)
+
+    payload = json.loads(CliRunner().invoke(main, ["upgrade", "--json"]).output)
+    assert payload["stale_processes"][0]["action"] == "stop_failed"
+
+
 def test_upgrade_reports_but_does_not_kill_a_still_running_mcp_serve(install, monkeypatch) -> None:
     install["value"] = Install(
         checkout=None, managed_path=Path("/home/u/.local/bin/blumkin"), method=METHOD_PIPX

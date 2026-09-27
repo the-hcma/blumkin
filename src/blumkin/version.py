@@ -114,7 +114,7 @@ def package_version(*, pyproject_path: Path | None = None) -> str:
         return _pyproject_version(path)
 
 
-def read_installed_version(executable: Path) -> str | None:
+def read_installed_version(executable: Path | tuple[str, ...]) -> str | None:
     """Run ``<executable> --version`` and return ``<version> (<commit>)``, or None.
 
     A fresh subprocess reads whatever is on disk *right now*, unlike
@@ -126,10 +126,15 @@ def read_installed_version(executable: Path) -> str | None:
     swapped-out install. The first line of ``blumkin --version`` is
     ``blumkin <version> (<commit>)``; the ``blumkin `` prefix is stripped so
     the value compares directly against :func:`build_version`.
+
+    Accepts either a single console-script path or a full argv prefix (e.g.
+    ``running_command()``'s ``(sys.executable, "-m", "blumkin")`` for a
+    module launch, which has no standalone executable to invoke directly).
     """
+    command = [str(executable)] if isinstance(executable, Path) else list(executable)
     try:
         completed = subprocess.run(
-            [str(executable), "--version"],
+            [*command, "--version"],
             capture_output=True,
             check=False,
             text=True,
@@ -144,6 +149,21 @@ def read_installed_version(executable: Path) -> str | None:
     if not first:
         return None
     return first.removeprefix("blumkin ").strip() or first
+
+
+def running_command() -> tuple[str, ...]:
+    """Return the argv prefix that would re-invoke this exact running process.
+
+    `running_command_path()` alone is not enough for `read_installed_version`
+    (issue #408 review): a `python -m blumkin mcp serve` launch resolves
+    `sys.argv[0]` to the non-executable `__main__.py` module file, which
+    cannot be run directly - a module launch has to be re-invoked as
+    `<python> -m blumkin` instead, so the resulting version-probe is not
+    silently `None` (looking like "up to date") for every module launch.
+    """
+    if Path(sys.argv[0]).name == "__main__.py":
+        return (sys.executable, "-m", PACKAGE_NAME)
+    return (str(running_command_path()),)
 
 
 def running_command_path() -> Path:

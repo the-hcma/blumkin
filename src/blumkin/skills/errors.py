@@ -62,10 +62,10 @@ _MISSING_SCOPE_HINT = (
 _CALENDAR_AMBIGUOUS_HINT = (
     "Pass the calendar id (from `blumkin calendar list --json`), not the name."
 )
-_TZ_HINT = "Use an IANA name like America/New_York or UTC (not an abbreviation)."
 _SERVER_OUTDATED_HINT = (
     "Restart the MCP server (reload / restart your editor or MCP client) to pick up the update."
 )
+_TZ_HINT = "Use an IANA name like America/New_York or UTC (not an abbreviation)."
 
 
 @dataclass(frozen=True, slots=True)

@@ -46,6 +46,17 @@ def _sandboxed_runtime_dir(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 def _serve_once(sock_path: Path, handle: Callable[[socket.socket], None]) -> threading.Thread:
+    """Spawn a background thread that accepts exactly one connection.
+
+    `daemon=True` and a `listener` reference on the returned thread: a test
+    that deliberately never connects (proving a candidate gets skipped, say)
+    would otherwise leave `listener.accept()` blocked forever - close
+    `thread.listener` in that test's teardown to unblock it, and mark the
+    thread daemon regardless so a still-blocked accept can never hang the
+    whole interpreter at shutdown (PR #409 review: this exact leak stalled
+    unrelated tests later in the same session, and CI's own hermetic pytest
+    job, once diagnosed).
+    """
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(str(sock_path))
     listener.listen(1)
@@ -61,7 +72,8 @@ def _serve_once(sock_path: Path, handle: Callable[[socket.socket], None]) -> thr
             conn.close()
             listener.close()
 
-    thread = threading.Thread(target=_serve)
+    thread = threading.Thread(target=_serve, daemon=True)
+    thread.listener = listener  # type: ignore[attr-defined]
     thread.start()
     return thread
 
@@ -77,7 +89,10 @@ def _reply_once(response: dict) -> Callable[[socket.socket], None]:
 # ------------------------------------------------------------------ agent_client.call_at
 
 
-def test_call_at_returns_the_response_from_an_explicit_socket() -> None:
+def test_call_at_returns_the_response_from_an_explicit_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_client, "is_supported_platform", lambda: True)
     with tempfile.TemporaryDirectory(dir="/tmp") as tmp_dir:
         sock_path = Path(tmp_dir) / "legacy.sock"
         thread = _serve_once(sock_path, _reply_once({"ok": True, "agent_pid": 4242}))
@@ -88,13 +103,19 @@ def test_call_at_returns_the_response_from_an_explicit_socket() -> None:
     assert response == {"ok": True, "agent_pid": 4242}
 
 
-def test_call_at_returns_none_when_nothing_is_listening(tmp_path: Path) -> None:
+def test_call_at_returns_none_when_nothing_is_listening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent_client, "is_supported_platform", lambda: True)
     assert agent_client.call_at(tmp_path / "nothing-here.sock", "status") is None
 
 
-def test_call_at_never_spawns_and_never_retries_a_protocol_mismatch() -> None:
+def test_call_at_never_spawns_and_never_retries_a_protocol_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Unlike `call`, `call_at` must not spawn a fresh agent nor retry - it
     is only ever used to probe/stop sockets this build does not own."""
+    monkeypatch.setattr(agent_client, "is_supported_platform", lambda: True)
     with tempfile.TemporaryDirectory(dir="/tmp") as tmp_dir:
         sock_path = Path(tmp_dir) / "legacy.sock"
         thread = _serve_once(sock_path, _reply_once({"ok": False, "error": "protocol_mismatch"}))
@@ -118,9 +139,16 @@ def test_call_at_returns_none_when_unsupported_platform(
 
 
 def test_discover_agent_instances_finds_the_primary_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_candidate_sockets` is pinned to exactly one entry so the assertions
+    below depend only on what this test wires up, not on whatever fallback
+    sockets (a real, live `blumkin-agent` on this dev machine's own
+    `$TMPDIR`, say) happen to also be reachable (PR #409 review)."""
     from blumkin.agent.paths import socket_path
 
+    monkeypatch.setattr(agent_client, "is_supported_platform", lambda: True)
+    monkeypatch.setattr(agent_processes, "is_supported_platform", lambda: True)
     sock_path = socket_path()
+    monkeypatch.setattr(agent_processes, "_candidate_sockets", lambda: [sock_path])
     thread = _serve_once(
         sock_path, _reply_once({"ok": True, "agent_pid": 111, "agent_version": "1.10.0"})
     )
@@ -138,11 +166,20 @@ def test_discover_agent_instances_finds_a_legacy_socket_too(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The exact split from issue #408's "Observed scenario": a legacy agent
-    on `$TMPDIR` is reachable, but not at this build's primary socket."""
+    on a fallback base is reachable, but not at this build's primary socket.
+    `_candidate_sockets` is pinned to exactly the primary (not listening)
+    plus this one legacy path, so the result depends only on what this test
+    wires up (PR #409 review)."""
+    from blumkin.agent.paths import socket_path
+
+    monkeypatch.setattr(agent_client, "is_supported_platform", lambda: True)
+    monkeypatch.setattr(agent_processes, "is_supported_platform", lambda: True)
+    primary_sock = socket_path()  # deliberately never bound - nothing listens here
     legacy_base = tempfile.mkdtemp(dir="/tmp")
-    monkeypatch.setenv("TMPDIR", legacy_base)
     legacy_sock = Path(legacy_base) / f"blumkin-agent-{os.getuid()}" / "agent.sock"
     legacy_sock.parent.mkdir(parents=True)
+    os.chmod(legacy_sock.parent, 0o700)
+    monkeypatch.setattr(agent_processes, "_candidate_sockets", lambda: [primary_sock, legacy_sock])
     thread = _serve_once(
         legacy_sock, _reply_once({"ok": True, "agent_pid": 222, "agent_version": "1.9.2"})
     )
@@ -155,6 +192,38 @@ def test_discover_agent_instances_finds_a_legacy_socket_too(
     assert instances[0].is_primary is False
     assert instances[0].pid == 222
     assert instances[0].version == "1.9.2"
+
+
+def test_discover_agent_instances_skips_a_candidate_dir_it_does_not_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A world/group-writable `blumkin-agent-<uid>` directory (a same-uid
+    check alone is not enough - it must also refuse loose permissions, since
+    a planted directory could still match this uid) must never be connected
+    to, even if something is listening on it and would happily answer
+    `status` (PR #409 review: this is the trust boundary
+    `agent.paths._ensure_private_owned_dir` enforces for the primary
+    directory - candidates must not bypass it)."""
+    monkeypatch.setattr(agent_client, "is_supported_platform", lambda: True)
+    monkeypatch.setattr(agent_processes, "is_supported_platform", lambda: True)
+    planted_base = tempfile.mkdtemp(dir="/tmp")
+    planted_sock = Path(planted_base) / f"blumkin-agent-{os.getuid()}" / "agent.sock"
+    planted_sock.parent.mkdir(parents=True)
+    os.chmod(planted_sock.parent, 0o777)  # world-writable: refuse this, even same-uid
+    monkeypatch.setattr(agent_processes, "_candidate_sockets", lambda: [planted_sock])
+    thread = _serve_once(
+        planted_sock, _reply_once({"ok": True, "agent_pid": 666, "agent_version": "9.9.9"})
+    )
+    try:
+        instances = agent_processes.discover_agent_instances()
+    finally:
+        # This test's whole point is that nothing ever connects, so
+        # `listener.accept()` would otherwise block forever - close it to
+        # unblock the thread before joining (PR #409 review follow-up).
+        thread.listener.close()  # type: ignore[attr-defined]
+        thread.join(timeout=5)
+        shutil.rmtree(planted_base, ignore_errors=True)
+    assert instances == []
 
 
 def test_discover_agent_instances_is_empty_on_unsupported_platform(
