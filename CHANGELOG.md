@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.10.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.9.2...blumkin-v1.10.0) (2026-09-27)
+
+
+### Features
+
+* **agent:** flag version skew in status, add agent stop ([#404](https://github.com/the-hcma/blumkin/issues/404)) ([1712877](https://github.com/the-hcma/blumkin/commit/1712877a09d365cb83dcc073637e8cd8bf20e79c))
+
+
+### Bug Fixes
+
+* **agent:** resolve runtime dir independent of $TMPDIR ([#403](https://github.com/the-hcma/blumkin/issues/403)) ([c9338f0](https://github.com/the-hcma/blumkin/commit/c9338f077a195dcee8781a86d4353568cf6f9db5))
+
+
+### Documentation
+
+* refresh local github-api-throttle summary to match canonical ([#399](https://github.com/the-hcma/blumkin/issues/399)) ([5b81615](https://github.com/the-hcma/blumkin/commit/5b8161514b96ecb4e418bb113a4bcbfd8daea9c8))
+
 ## [1.9.2](https://github.com/the-hcma/blumkin/compare/blumkin-v1.9.1...blumkin-v1.9.2) (2026-09-25)
 
 
