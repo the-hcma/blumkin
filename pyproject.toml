@@ -38,7 +38,7 @@ dependencies = [
     "httplib2>=0.32.0",
     "icalendar>=7.3.0",
     "mcp>=2.2.0",
-    "msal>=1.38.0",
+    "msal>=1.39.0",
     # msgraph-core 1.5.1 (the current release) declares compatibility with
     # microsoft-kiota-http<2.0.0, but its AsyncGraphTransport gates the whole
     # middleware pipeline (including the .me URL-rewrite handler) on a
@@ -141,5 +141,5 @@ dev = [
     "ruff>=0.16.8",
     "mcp>=2.2.0",
     "keyring>=25.7.0",
-    "hatchling>=1.32.0",
+    "hatchling>=1.32.3",
 ]
