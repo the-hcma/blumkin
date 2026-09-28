@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import socket
+import subprocess
 import tempfile
 import threading
 from collections.abc import Callable, Iterator
@@ -545,6 +546,46 @@ def test_mcp_serve_processes_is_empty_when_ps_fails(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(agent_processes.sys, "platform", "darwin")
     monkeypatch.setattr(agent_processes.subprocess, "run", _fake_run)
     assert agent_processes.mcp_serve_processes() == []
+
+
+def test_mcp_serve_processes_is_empty_when_ps_output_is_not_utf8(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`subprocess.run(..., text=True)` decodes `ps`'s stdout strictly, and a
+    process whose argv holds a non-UTF-8 byte (legal on macOS/APFS) raises
+    `UnicodeDecodeError`, a `ValueError` - not an `OSError`/
+    `SubprocessError` - so it must be caught too, or `_list_processes()`
+    breaks its own "best-effort, empty on any failure" contract and
+    `doctor`/`upgrade` see an unhandled traceback instead of a clean report
+    (PR #409 review, tenth pass)."""
+
+    def _fake_run(*_args, **_kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(agent_processes.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_processes.subprocess, "run", _fake_run)
+    assert agent_processes.mcp_serve_processes() == []
+
+
+def test_mcp_serve_processes_asks_ps_for_the_full_command_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS `ps` caps the command column at ~80 columns unless `-w` is
+    repeated (`-ww`/`-wwa...`) - without it, a long console-script shebang
+    launch is silently truncated mid-token, breaking the argv matching this
+    module relies on (PR #409 review, tenth pass)."""
+    captured_args: list[list[str]] = []
+
+    def _fake_run(*args, **_kwargs):
+        if args:
+            captured_args.append(list(args[0]))
+        return subprocess.CompletedProcess(args=["ps"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent_processes.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_processes.subprocess, "run", _fake_run)
+    agent_processes.mcp_serve_processes()
+    assert captured_args and captured_args[0][0] == "ps"
+    assert captured_args[0][1].count("w") >= 2
 
 
 def test_as_dict_shapes_for_json_output() -> None:

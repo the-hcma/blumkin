@@ -321,13 +321,13 @@ def _list_processes() -> list[tuple[int, datetime | None, str]]:
     best-effort, empty on any failure rather than raising."""
     try:
         completed = subprocess.run(
-            ["ps", "-axo", "pid=,lstart=,command="],
+            ["ps", "-wwaxo", "pid=,lstart=,command="],
             capture_output=True,
             check=False,
             text=True,
             timeout=5,
         )
-    except OSError, subprocess.SubprocessError:
+    except OSError, subprocess.SubprocessError, ValueError:
         return []
     if completed.returncode != 0:
         return []
