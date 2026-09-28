@@ -162,6 +162,38 @@ def test_discover_agent_instances_finds_the_primary_socket(monkeypatch: pytest.M
     assert instances[0].version == "1.10.0"
 
 
+def test_discover_agent_instances_combines_version_and_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`AgentInstance.version` must match `<version> (<commit>)`, the same
+    shape `blumkin upgrade`'s `before`/`after` reads use - a bare package
+    version never compares equal to that, which made an already-current,
+    just-respawned agent indistinguishable from a stale one (PR #409
+    review)."""
+    from blumkin.agent.paths import socket_path
+
+    monkeypatch.setattr(agent_client, "is_supported_platform", lambda: True)
+    monkeypatch.setattr(agent_processes, "is_supported_platform", lambda: True)
+    sock_path = socket_path()
+    monkeypatch.setattr(agent_processes, "_candidate_sockets", lambda: [sock_path])
+    thread = _serve_once(
+        sock_path,
+        _reply_once(
+            {
+                "ok": True,
+                "agent_pid": 111,
+                "agent_version": "1.10.0",
+                "agent_commit": "abc123456789",
+            }
+        ),
+    )
+    try:
+        instances = agent_processes.discover_agent_instances()
+    finally:
+        thread.join(timeout=5)
+    assert instances[0].version == "1.10.0 (abc123456789)"
+
+
 def test_discover_agent_instances_finds_a_legacy_socket_too(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -322,6 +354,25 @@ def test_mcp_serve_processes_rejects_a_substring_only_match(
     monkeypatch.setattr(agent_processes.os, "getpid", lambda: 999)
     monkeypatch.setattr(agent_processes.subprocess, "run", _fake_run)
     assert agent_processes.mcp_serve_processes() == []
+
+
+def test_mcp_serve_processes_accepts_interpreter_options_before_dash_m(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python permits interpreter options (e.g. `-u`) before `-m`, so
+    `python3 -u -m blumkin mcp serve` is still a real serve process, not a
+    rejected false match (PR #409 review)."""
+    ps_output = "  321 Wed Oct 25 12:34:56 2024     /usr/bin/python3 -u -m blumkin mcp serve\n"
+
+    def _fake_run(*_args, **_kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(args=["ps"], returncode=0, stdout=ps_output, stderr="")
+
+    monkeypatch.setattr(agent_processes.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_processes.os, "getpid", lambda: 999)
+    monkeypatch.setattr(agent_processes.subprocess, "run", _fake_run)
+    assert {proc.pid for proc in agent_processes.mcp_serve_processes()} == {321}
 
 
 def test_mcp_serve_processes_excludes_this_process(monkeypatch: pytest.MonkeyPatch) -> None:

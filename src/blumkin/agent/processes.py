@@ -102,7 +102,7 @@ def discover_agent_instances() -> list[AgentInstance]:
             AgentInstance(
                 socket_path=candidate,
                 pid=response.get("agent_pid"),
-                version=response.get("agent_version"),
+                version=_agent_instance_version(response),
                 is_primary=(candidate == primary),
             )
         )
@@ -144,6 +144,21 @@ _LSTART_FORMAT = "%a %b %d %H:%M:%S %Y"
 _LSTART_PATTERN = re.compile(r"^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.*)$")
 
 
+def _agent_instance_version(response: dict[str, Any]) -> str | None:
+    """Combine a `status` reply's `agent_version`/`agent_commit` into the
+    same `<version> (<commit>)` shape `version.build_version`/
+    `read_installed_version` use, so `AgentInstance.version` is directly
+    comparable against `blumkin upgrade`'s `before`/`after` reads - a bare
+    package version (e.g. `0.5.0`) never equals that format, which made a
+    just-respawned, already-current agent look indistinguishable from a
+    stale one (PR #409 review)."""
+    version = response.get("agent_version")
+    commit = response.get("agent_commit")
+    if isinstance(version, str) and isinstance(commit, str):
+        return f"{version} ({commit})"
+    return version if isinstance(version, str) else None
+
+
 def _candidate_sockets() -> list[Path]:
     """Every base directory `runtime_base_dir` could plausibly have resolved
     to, on this or an earlier blumkin build - current result first, then
@@ -182,10 +197,16 @@ def _is_mcp_serve_command(command: str) -> bool:
     argv0 = Path(tokens[0]).name
     if argv0 == "blumkin":
         rest = tokens[1:]
-    elif argv0.startswith("python") and len(tokens) >= 3 and tokens[1] == "-m":
-        if tokens[2] != "blumkin":
+    elif argv0.startswith("python"):
+        # Python permits interpreter options (`-u`, `-O`, ...) before `-m`,
+        # e.g. `python3 -u -m blumkin mcp serve` (PR #409 review) - skip
+        # past any of those rather than requiring `-m` at a fixed index.
+        remaining = tokens[1:]
+        while remaining and remaining[0] != "-m" and remaining[0].startswith("-"):
+            remaining = remaining[1:]
+        if len(remaining) < 2 or remaining[0] != "-m" or remaining[1] != "blumkin":
             return False
-        rest = tokens[3:]
+        rest = remaining[2:]
     else:
         return False
     return "mcp" in rest and "serve" in rest

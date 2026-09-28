@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 import tomllib
 from collections.abc import Callable
@@ -450,21 +451,29 @@ def _stale_server_checker(
     that lands after the server is already serving), but spawning a real
     `--version` subprocess on every single call would be wasteful - this
     bounds that cost to roughly once per interval regardless of call volume.
+
+    Each call now runs off the event-loop thread via `asyncio.to_thread`
+    (PR #409 review), so overlapping calls after the interval expires can
+    race the cache-check/probe/update sequence below from separate OS
+    threads - a lock serializes it, so at most one `--version` subprocess is
+    ever in flight at a time (PR #409 review, second pass).
     """
     state: dict[str, Any] = {"checked_at": None, "error": None}
+    lock = threading.Lock()
 
     def _check() -> ServerOutdatedError | None:
-        now = time.monotonic()
-        checked_at = state["checked_at"]
-        # `checked_at is None` (never probed) always re-checks regardless of
-        # `min_interval_s` - a host whose monotonic clock starts near 0 (low
-        # uptime) would otherwise let `now - 0.0 >= min_interval_s` stay
-        # false forever on the very first call, dispatching a stale
-        # server's first tool call unchecked (PR #409 review).
-        if checked_at is None or now - checked_at >= min_interval_s:
-            state["error"] = _stale_server_check(running_build)
-            state["checked_at"] = now
-        return state["error"]
+        with lock:
+            now = time.monotonic()
+            checked_at = state["checked_at"]
+            # `checked_at is None` (never probed) always re-checks regardless
+            # of `min_interval_s` - a host whose monotonic clock starts near 0
+            # (low uptime) would otherwise let `now - 0.0 >= min_interval_s`
+            # stay false forever on the very first call, dispatching a stale
+            # server's first tool call unchecked (PR #409 review).
+            if checked_at is None or now - checked_at >= min_interval_s:
+                state["error"] = _stale_server_check(running_build)
+                state["checked_at"] = now
+            return state["error"]
 
     return _check
 

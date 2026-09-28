@@ -396,6 +396,29 @@ def test_upgrade_stops_a_still_running_agent_after_a_real_upgrade(install, monke
     ]
 
 
+def test_upgrade_leaves_an_agent_already_on_the_new_build_alone(install, monkeypatch) -> None:
+    """A concurrent operation (e.g. another skill call) can respawn the agent
+    on the new build between the upgrade step finishing and this scan
+    running - such an agent is already current and must not be shut down as
+    if it were stale (PR #409 review)."""
+    install["value"] = Install(
+        checkout=None, managed_path=Path("/home/u/.local/bin/blumkin"), method=METHOD_PIPX
+    )
+    _version_change(monkeypatch)
+    _run_records(monkeypatch)
+    monkeypatch.setattr(
+        cli.agent_processes,
+        "discover_agent_instances",
+        lambda: [_agent_instance(version="0.6.0 (bbbbbbbbbbbb)")],
+    )
+    call_at = []
+    monkeypatch.setattr(cli.agent_client, "call_at", lambda *a: call_at.append(a) or {"ok": True})
+
+    payload = json.loads(CliRunner().invoke(main, ["upgrade", "--json"]).output)
+    assert payload["stale_processes"] == []
+    assert call_at == []  # never even asked to shut down
+
+
 def test_upgrade_counts_a_protocol_mismatch_agent_as_stopped(install, monkeypatch) -> None:
     """A legacy agent may reply `protocol_mismatch` to `shutdown` - it already
     committed to shutting itself down before replying (PR #404), so this is
@@ -509,6 +532,33 @@ def test_upgrade_does_not_scan_for_stale_processes_when_the_version_did_not_chan
     payload = json.loads(CliRunner().invoke(main, ["upgrade", "--json"]).output)
     assert payload["stale_processes"] == []
     assert discover == []
+
+
+def test_upgrade_scans_for_stale_processes_when_the_version_is_unmeasurable(
+    install, monkeypatch
+) -> None:
+    """A bare source checkout (`managed_path=None`) never calls
+    `_read_app_version`, so `before`/`after` are both `None` even after a
+    real `git pull` + `uv sync` upgrade - `None == None` means "unmeasurable",
+    not "unchanged", so the scan must still run rather than being silently
+    skipped like a confirmed no-op (PR #409 review)."""
+    install["value"] = Install(
+        checkout=Checkout(
+            behind_origin=2, branch="main", dirty=False, head="abcabcabcabc", path=Path("/co")
+        ),
+        managed_path=None,
+        method=METHOD_EDITABLE_UV,
+    )
+    _run_records(monkeypatch)
+    discover = []
+    monkeypatch.setattr(
+        cli.agent_processes, "discover_agent_instances", lambda: discover.append(1) or []
+    )
+
+    result = CliRunner().invoke(main, ["upgrade", "--yes", "--json"])
+    payload = json.loads(result.output)
+    assert payload["stale_processes"] == []
+    assert discover == [1]  # the scan ran - it just found nothing reachable
 
 
 def test_upgrade_text_reports_stale_processes(install, monkeypatch) -> None:

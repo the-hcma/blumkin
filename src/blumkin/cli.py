@@ -667,16 +667,21 @@ def _editable_upgrade_steps(install: Install, *, as_json: bool) -> list[list[str
     ]
 
 
-def _find_stale_processes(*, before: str | None) -> list[dict[str, Any]]:
+def _find_stale_processes(*, before: str | None, after: str | None) -> list[dict[str, Any]]:
     """After a real `blumkin upgrade` action, find and retire processes still
     running the previous (`before`) build (issue #408).
 
     Called only once an upgrade step has actually run, so every process this
-    finds necessarily predates it:
+    finds necessarily predates it - except an agent, which can legitimately
+    respawn on the new (`after`) build between the upgrade finishing and this
+    scan running (e.g. a concurrent skill call); such an agent is already
+    current and left alone, not shut down as if it were stale (PR #409
+    review):
 
-    - every reachable `blumkin-agent` (current socket plus any orphaned
-      legacy one) is stopped outright - it respawns on next use, picking up
-      the new build (mirrors `agent stop`, issue #401)
+    - every reachable `blumkin-agent` still on the `before` build (current
+      socket plus any orphaned legacy one) is stopped outright - it
+      respawns on next use, picking up the new build (mirrors `agent stop`,
+      issue #401)
     - every running `blumkin mcp serve` process is only reported (it cannot
       safely be killed out from under its host client) with restart
       guidance and `before` as its known build - it was necessarily
@@ -684,6 +689,8 @@ def _find_stale_processes(*, before: str | None) -> list[dict[str, Any]]:
     """
     found: list[dict[str, Any]] = []
     for instance in agent_processes.discover_agent_instances():
+        if after is not None and instance.version == after:
+            continue
         response = agent_client.call_at(instance.socket_path, "shutdown")
         stopped = _shutdown_confirmed(response)
         found.append(
@@ -2397,12 +2404,18 @@ def upgrade(ctx: click.Context, as_json_flag: bool, yes: bool) -> None:
         running_build=running_build,
         running_path=running_path,
         stale=stale,
-        # An already-current install (`before == after`, e.g. `--yes` on a
-        # build that turned out to have nothing to upgrade) changed
-        # nothing, so scanning would only report a false "restart your MCP
-        # client" / stop every reachable agent for zero actual reason
-        # (PR #409 review).
-        stale_processes=_find_stale_processes(before=before) if before != after else [],
+        # A confirmed no-op (`before == after`, both actually measured, e.g.
+        # `--yes` on a build that turned out to have nothing to upgrade)
+        # changed nothing, so scanning would only report a false "restart
+        # your MCP client" / stop every reachable agent for zero actual
+        # reason (PR #409 review). `None` means "unmeasurable" (e.g. a
+        # source checkout with no `managed_path` to probe), not "unchanged"
+        # - always scan in that case rather than silently skip it.
+        stale_processes=(
+            []
+            if before is not None and after is not None and before == after
+            else _find_stale_processes(before=before, after=after)
+        ),
     )
 
 

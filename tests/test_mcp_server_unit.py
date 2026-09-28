@@ -712,3 +712,38 @@ def test_stale_server_checker_re_probes_after_the_interval(monkeypatch) -> None:
         checker()
         checker()
     assert read_installed.call_count == 2
+
+
+def test_stale_server_checker_serializes_concurrent_probes() -> None:
+    """`on_call_tool` now calls the checker via `asyncio.to_thread`, so two
+    tool calls can race the cache-check/probe/update sequence from separate
+    OS threads once the interval expires - the lock must ensure only one
+    `--version` subprocess is ever in flight (PR #409 review, second
+    pass)."""
+    import threading
+
+    from blumkin.mcp_server import _stale_server_checker
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _blocking_read(_command):
+        entered.set()
+        release.wait(timeout=5)
+        return "1.0.0"
+
+    with patch("blumkin.mcp_server.read_installed_version", side_effect=_blocking_read):
+        checker = _stale_server_checker("1.0.0", min_interval_s=60.0)
+        first = threading.Thread(target=checker)
+        first.start()
+        assert entered.wait(timeout=5)
+        # The first call is blocked inside the probe holding the lock - a
+        # second call must wait for it rather than starting its own probe.
+        second = threading.Thread(target=checker)
+        second.start()
+        second.join(timeout=0.2)
+        assert second.is_alive()  # still blocked waiting on the lock
+        release.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+        assert not second.is_alive()
