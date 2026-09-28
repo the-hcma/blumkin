@@ -15,7 +15,7 @@ When writing mail or Teams chat bodies on the user's behalf (via blumkin skills)
 ## Session startup & cleanup
 
 - At the **start of every agent session**, before acting from assumed conventions, read this `AGENTS.md` in full.
-- Then read every `alwaysApply: true` rule under `.agents/rules/*.md` (plus any whose `globs` match files you will touch). `AGENTS.md` and `.agents/rules/` together are the contract — neither alone is complete. `.cursor/rules/*.mdc` are Cursor injection shims only (frontmatter + pointer). `CLAUDE.md` (a `@AGENTS.md` import) and `.github/copilot-instructions.md` are thin shims so Claude Code and Copilot reach this same guidance.
+- Then read every `alwaysApply: true` rule under `.agents/rules/*.md` (plus any whose `globs` match files you will touch). `AGENTS.md` and `.agents/rules/` together are the contract — neither alone is complete. `.cursor/rules/*.mdc` are Cursor injection shims only (frontmatter + pointer). `CLAUDE.md` (a `@AGENTS.md` import), `.github/copilot-instructions.md` and `.github/instructions/agents-rules.instructions.md` are thin shims so Claude Code and Copilot reach this same guidance (Copilot auto-loads `.github/instructions/` but not `.agents/rules/`).
 - Markdown files you commit, this one included, use one physical line per paragraph, list item and blockquote, with no hard line breaks (see `.agents/rules/github-content-formatting.md`).
 - At the start of every session (before implementation), run `~/work/ai/repository-helpers/scripts/dev/start-development` from [repository-helpers](https://github.com/the-hcma/repository-helpers).
 - Default: prompts for a stack name and creates `.worktrees/<stack-name>-wt`.
