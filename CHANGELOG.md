@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.11.0...blumkin-v1.12.0) (2026-09-28)
+
+
+### Features
+
+* enforce profile-scoped outbound message policy ([#415](https://github.com/the-hcma/blumkin/issues/415)) ([f153f95](https://github.com/the-hcma/blumkin/commit/f153f95a6004c45c6c8d9a6725d46d68692ec19a))
+
 ## [1.11.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.10.0...blumkin-v1.11.0) (2026-09-28)
 
 
