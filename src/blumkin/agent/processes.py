@@ -220,7 +220,13 @@ def _is_mcp_serve_command(command: str) -> bool:
         rest = remaining[2:]
     else:
         return False
-    return "mcp" in rest and "serve" in rest
+    # The real invocation is always `blumkin mcp serve [flags]` (`out = ["mcp",
+    # "serve"]` is the start of `ServeSpec.args()`, never trailing flags) -
+    # matching the first two tokens positionally, not an order-independent
+    # membership check, so e.g. `blumkin mcp install --serve` or
+    # `blumkin skills show mcp serve` never counts (PR #409 review, fourth
+    # pass).
+    return rest[:2] == ["mcp", "serve"]
 
 
 def _is_safe_agent_socket_dir(directory: Path) -> bool:

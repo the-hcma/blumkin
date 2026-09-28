@@ -356,6 +356,26 @@ def test_mcp_serve_processes_rejects_a_substring_only_match(
     assert agent_processes.mcp_serve_processes() == []
 
 
+def test_mcp_serve_processes_rejects_mcp_and_serve_out_of_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`mcp`/`serve` must be the first two tokens after `blumkin` in that
+    exact order - not merely both present anywhere in the remaining argv -
+    so a real but unrelated verb like `blumkin mcp install --serve` is never
+    reported as a running server (PR #409 review, fourth pass)."""
+    ps_output = "  321 Wed Oct 25 12:34:56 2024     /usr/bin/blumkin mcp install --serve\n"
+
+    def _fake_run(*_args, **_kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(args=["ps"], returncode=0, stdout=ps_output, stderr="")
+
+    monkeypatch.setattr(agent_processes.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_processes.os, "getpid", lambda: 999)
+    monkeypatch.setattr(agent_processes.subprocess, "run", _fake_run)
+    assert agent_processes.mcp_serve_processes() == []
+
+
 def test_mcp_serve_processes_accepts_interpreter_options_before_dash_m(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
