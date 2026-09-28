@@ -706,6 +706,13 @@ def _message_policy_config(file_data: dict[str, Any], *, profile: str) -> Messag
             f"profiles.{profile}.message_policy must be a table in config.toml, "
             f"got {type(raw).__name__}"
         )
+    unknown_keys = sorted(
+        set(raw) - {"forbid_unicode_dashes", "honor_client_signature_suppression"}
+    )
+    if unknown_keys:
+        raise ProviderConfigError(
+            f"unknown key(s) in profiles.{profile}.message_policy: {', '.join(unknown_keys)}"
+        )
     forbid = _coerce_bool(raw.get("forbid_unicode_dashes"))
     if "forbid_unicode_dashes" in raw and forbid is None:
         raise ProviderConfigError(

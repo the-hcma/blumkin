@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from msgraph.generated.models.body_type import BodyType
 
+from blumkin.config import MailSignatureConfig, MessagePolicyConfig
 from blumkin.skills.mail import format_draft_human, mail_draft, mail_update_draft
 
 
@@ -200,6 +201,11 @@ def _client(monkeypatch) -> MagicMock:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(client_id="x", default_tz="UTC"),
+        lambda: SimpleNamespace(
+            client_id="x",
+            default_tz="UTC",
+            mail_signature=MailSignatureConfig(),
+            message_policy=MessagePolicyConfig(),
+        ),
     )
     return client

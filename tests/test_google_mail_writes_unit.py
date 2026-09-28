@@ -78,6 +78,19 @@ def test_mail_draft_unescapes_html_entities_in_subject(tmp_path: Path) -> None:
     assert sent["Subject"] == "Q3 & Q4 Plans"
 
 
+def test_mail_draft_rejects_disallowed_subject_before_provider_call(tmp_path: Path) -> None:
+    service = _service()
+    with _patched(service), pytest.raises(ValueError, match="mail subject.*disallowed dash"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_draft(
+                to="a@example.com",
+                subject="Q3 &#8212; Plans",
+                body="hi",
+            )
+        )
+    service.users.return_value.drafts.return_value.create.assert_not_called()
+
+
 def test_mail_draft_html_adds_alternative(tmp_path: Path) -> None:
     service = _service(create_result={"id": "d"})
     with _patched(service):
@@ -245,6 +258,19 @@ def test_mail_update_draft_subject_only_reports_text_after_prior_text_draft(
             GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(draft_id="d-t", subject="S2")
         )
     assert payload["draft"]["body_type"] == "text"
+
+
+def test_mail_update_draft_rejects_disallowed_subject_before_provider_call(
+    tmp_path: Path,
+) -> None:
+    service = _service()
+    with _patched(service), pytest.raises(ValueError, match="mail subject.*disallowed dash"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="draft-1", subject="Q3 &ndash; Plans"
+            )
+        )
+    service.users.return_value.drafts.return_value.get.assert_not_called()
 
 
 def test_mail_update_draft_text_body_replace_adds_html_alternative(tmp_path: Path) -> None:

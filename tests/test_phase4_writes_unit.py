@@ -12,7 +12,7 @@ import pytest
 from msgraph.generated.models.body_type import BodyType
 
 from blumkin.compose_state import record_composed
-from blumkin.config import BlumkinConfig
+from blumkin.config import BlumkinConfig, MessagePolicyConfig
 from blumkin.skills.chat import (
     ChatDraftNotFoundError,
     chat_delete,
@@ -42,6 +42,7 @@ def _cfg(tmp_path: Path) -> BlumkinConfig:
         SimpleNamespace(
             client_id="x",
             compose_state_path=tmp_path / "compose_state.json",
+            message_policy=MessagePolicyConfig(),
             preferences=SimpleNamespace(confirm_cooldown_seconds=20),
         ),
     )
@@ -209,6 +210,25 @@ def test_chat_edit_mocked(monkeypatch, tmp_path) -> None:
     assert payload["message"]["body_text"] == "if x < 5"
     stub.patch.assert_awaited_once()
     assert "updated" in format_edit_human(payload)[0]
+
+
+def test_chat_edit_revalidates_persisted_text_before_graph_call(monkeypatch, tmp_path) -> None:
+    cfg = _cfg(tmp_path)
+    record_composed(
+        cfg,
+        "chat-edit-stale-policy",
+        content={
+            "chat_id": "chat-1",
+            "kind": "edit",
+            "message_id": "message-1",
+            "text": "hello — team",
+        },
+    )
+    client_factory = MagicMock()
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", client_factory)
+    with pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(chat_edit(draft_id="chat-edit-stale-policy", config=cfg))
+    client_factory.assert_not_called()
 
 
 def test_chat_edit_reget_when_patch_empty(monkeypatch, tmp_path) -> None:

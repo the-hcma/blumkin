@@ -215,8 +215,8 @@ def append_mail_signature(
       pipeline touches it.
     """
     validate_outbound_text(content, config=config, field_name="mail body")
-    signature = getattr(config, "mail_signature", None)
-    if no_signature or signature is None or not signature.enabled:
+    signature = config.mail_signature
+    if no_signature or not signature.enabled:
         return content
     if should_suppress_signature(
         config=config,
@@ -226,6 +226,11 @@ def append_mail_signature(
     rendered = render_mail_signature(signature, body_type=body_type)
     if not rendered:
         return content
+    validate_outbound_text(
+        rendered,
+        config=config,
+        field_name="configured mail signature ([mail.signature])",
+    )
     if body_type == "html":
         if not content.strip():
             result = rendered
@@ -235,7 +240,6 @@ def append_mail_signature(
         result = rendered
     else:
         result = f"{content.rstrip()}\n\n{rendered}"
-    validate_outbound_text(result, config=config, field_name="mail body")
     return result
 
 
@@ -648,8 +652,8 @@ async def mail_auto_reply(
     Needs ``MailboxSettings.ReadWrite`` (gated on ``wo1162425_scopes``).
     """
     cfg = config or load_config()
-    client = create_graph_client(cfg)
     if enable is None:
+        client = create_graph_client(cfg)
         settings = await client.me.mailbox_settings.get()
         current = getattr(settings, "automatic_replies_setting", None)
         return {"auto_reply": _auto_reply_to_dict(current)}
@@ -660,6 +664,7 @@ async def mail_auto_reply(
         body_text = _read_body_arg(message, message_file)
         if not body_text or not body_text.strip():
             raise ValueError("turning auto-reply on needs --message or --message-file")
+        validate_outbound_text(body_text, config=cfg, field_name="auto-reply message")
         if external_audience is not None and external_audience not in _OOF_AUDIENCE:
             raise ValueError("--external must be none, contacts, or all")
         scheduled = start is not None or until is not None
@@ -675,6 +680,11 @@ async def mail_auto_reply(
             if external_message and external_message.strip()
             else internal_plain
         )
+        validate_outbound_text(
+            external_plain,
+            config=cfg,
+            field_name="external auto-reply message",
+        )
         authored = (internal_plain, external_plain)
         setting = AutomaticRepliesSetting(
             status=AutomaticRepliesStatus.Scheduled
@@ -686,6 +696,7 @@ async def mail_auto_reply(
             scheduled_start_date_time=_oof_dtz(start, tz_name) if start else None,
             scheduled_end_date_time=_oof_dtz(until, tz_name, end=True) if until else None,
         )
+    client = create_graph_client(cfg)
     updated = await client.me.mailbox_settings.patch(
         MailboxSettings(automatic_replies_setting=setting)
     )
@@ -926,9 +937,10 @@ async def mail_draft(
     subject_clean = _plain_subject(subject)
     if not subject_clean:
         raise ValueError("--subject is required")
+    cfg = config or load_config()
+    validate_outbound_text(subject_clean, config=cfg, field_name="mail subject")
     # Read the files before touching Graph: a bad path should not leave a half-built draft.
     pending = [_read_attachment(path) for path in attach]
-    cfg = config or load_config()
     content, body_type_label, graph_body_type = resolve_mail_body(
         body=body, body_file=body_file, body_type=body_type, config=cfg
     )
@@ -1541,6 +1553,12 @@ async def mail_update_draft(
     body_type_label: MailBodyType | None = None
     graph_body_type: BodyType | None = None
     cfg = config or load_config()
+    subject_clean: str | None = None
+    if subject is not None:
+        subject_clean = _plain_subject(subject)
+        if not subject_clean:
+            raise ValueError("--subject must be non-empty when provided")
+        validate_outbound_text(subject_clean, config=cfg, field_name="mail subject")
     if has_body:
         content, body_type_label, graph_body_type = resolve_mail_body(
             body=body, body_file=body_file, body_type=body_type, config=cfg
@@ -1574,9 +1592,7 @@ async def mail_update_draft(
             content = f"{head}{quoted}"
     patch = Message()
     if subject is not None:
-        subject_clean = _plain_subject(subject)
-        if not subject_clean:
-            raise ValueError("--subject must be non-empty when provided")
+        assert subject_clean is not None
         patch.subject = subject_clean
     if content is not None and graph_body_type is not None:
         patch.body = _compose_item_body(graph_body_type, content)

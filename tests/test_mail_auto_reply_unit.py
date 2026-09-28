@@ -16,7 +16,13 @@ from msgraph.generated.models.external_audience_scope import ExternalAudienceSco
 
 from blumkin.auth import MissingScopeError
 from blumkin.cli import main
-from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig, load_config
+from blumkin.config import (
+    BlumkinConfig,
+    MailSignatureConfig,
+    MessagePolicyConfig,
+    PreferencesConfig,
+    load_config,
+)
 from blumkin.exit_codes import EXIT_MISSING_SCOPE, EXIT_USAGE
 from blumkin.providers.google import mail_writes as google_mail_writes
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
@@ -37,7 +43,11 @@ def _graph(monkeypatch) -> MagicMock:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: SimpleNamespace(
+            default_tz="UTC",
+            client_id="x",
+            message_policy=MessagePolicyConfig(),
+        ),
     )
     return client
 
@@ -107,7 +117,11 @@ def test_graph_scheduled_window_resolves_the_profile_tz(monkeypatch) -> None:
     client = _graph(monkeypatch)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="America/Los_Angeles", client_id="x"),
+        lambda: SimpleNamespace(
+            default_tz="America/Los_Angeles",
+            client_id="x",
+            message_policy=MessagePolicyConfig(),
+        ),
     )
     asyncio.run(
         mail_auto_reply(enable=True, message="x", start=date(2026, 9, 10), until=date(2026, 9, 15))
@@ -130,6 +144,26 @@ def test_graph_turn_on_needs_a_body(monkeypatch) -> None:
     _graph(monkeypatch)
     with pytest.raises(ValueError, match="needs --message"):
         asyncio.run(mail_auto_reply(enable=True))
+
+
+@pytest.mark.parametrize(
+    ("message", "external_message"),
+    [("out — today", None), ("out today", "away – today")],
+)
+def test_graph_rejects_disallowed_dash_in_auto_reply_before_provider_call(
+    monkeypatch, message, external_message
+) -> None:
+    client = _graph(monkeypatch)
+    with pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(
+            mail_auto_reply(
+                enable=True,
+                message=message,
+                external_message=external_message,
+            )
+        )
+    client.me.mailbox_settings.get.assert_not_awaited()
+    client.me.mailbox_settings.patch.assert_not_awaited()
 
 
 def test_graph_message_and_file_are_mutually_exclusive(monkeypatch, tmp_path: Path) -> None:
@@ -436,6 +470,17 @@ def test_google_rejects_external_message(tmp_path: Path) -> None:
                 config=_google_cfg(tmp_path),
             )
         )
+
+
+def test_google_rejects_disallowed_dash_before_provider_call(tmp_path: Path) -> None:
+    service = MagicMock()
+    cfg = _google_cfg(tmp_path)
+    with _google_patched(service), pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(
+            google_mail_writes.mail_auto_reply(enable=True, message="away — today", config=cfg)
+        )
+    _vacation_call(service).getVacation.assert_not_called()
+    _vacation_call(service).updateVacation.assert_not_called()
 
 
 def test_google_missing_scope_fails_closed(tmp_path: Path) -> None:

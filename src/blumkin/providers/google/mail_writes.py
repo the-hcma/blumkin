@@ -33,6 +33,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from googleapiclient.errors import HttpError
 
 from blumkin.config import BlumkinConfig, load_config
+from blumkin.message_policy import validate_outbound_text
 from blumkin.providers.google.mail import (
     _FOLDER_LABELS,
     _header_map,
@@ -91,6 +92,14 @@ async def mail_auto_reply(
     if external_message is not None:
         raise ValueError("--external-message is Microsoft-only (Gmail has one response body)")
     cfg = config or load_config()
+    text: str | None = None
+    if enable is True:
+        text = _read_body_text(message, message_file)
+        if not text:
+            raise ValueError("turning auto-reply on needs --message or --message-file")
+        validate_outbound_text(text, config=cfg, field_name="auto-reply message")
+        if external_audience is not None and external_audience not in {"none", "contacts", "all"}:
+            raise ValueError("--external must be none, contacts, or all")
     service = _gmail_settings_service(cfg)
     current = execute(service.users().settings().getVacation(userId="me"))
     if enable is None:
@@ -100,11 +109,7 @@ async def mail_auto_reply(
         # and restrictions forward - only the enable flag changes.
         body: dict[str, Any] = {**_vacation_keep(current), "enableAutoReply": False}
     else:
-        text = _read_body_text(message, message_file)
-        if not text:
-            raise ValueError("turning auto-reply on needs --message or --message-file")
-        if external_audience is not None and external_audience not in {"none", "contacts", "all"}:
-            raise ValueError("--external must be none, contacts, or all")
+        assert text is not None
         # A full-resource write: startTime/endTime are set only when scheduled, so
         # re-enabling always-on drops any window left over from an earlier schedule.
         body = {
@@ -375,9 +380,10 @@ async def mail_draft(
     subject_clean = _plain_subject(subject)
     if not subject_clean:
         raise ValueError("--subject is required")
+    cfg = config or load_config()
+    validate_outbound_text(subject_clean, config=cfg, field_name="mail subject")
     # Read the files before touching Gmail: a bad path should not leave a draft behind.
     pending = [_read_attachment(path) for path in attach]
-    cfg = config or load_config()
     content, body_type_label, _ = resolve_mail_body(
         body=body, body_file=body_file, body_type=body_type, config=cfg
     )
@@ -651,6 +657,12 @@ async def mail_update_draft(
     new_body_type: str | None = None
     new_html_alternative: str | None = None
     cfg = config or load_config()
+    subject_clean: str | None = None
+    if subject is not None:
+        subject_clean = _plain_subject(subject)
+        if not subject_clean:
+            raise ValueError("--subject must be non-empty when provided")
+        validate_outbound_text(subject_clean, config=cfg, field_name="mail subject")
     if has_body:
         new_content, new_body_type, _ = resolve_mail_body(
             body=body, body_file=body_file, body_type=body_type, config=cfg
@@ -686,9 +698,7 @@ async def mail_update_draft(
             "--body cannot rewrite a draft that has inline images; recreate the draft instead"
         )
     if subject is not None:
-        subject_clean = _plain_subject(subject)
-        if not subject_clean:
-            raise ValueError("--subject must be non-empty when provided")
+        assert subject_clean is not None
         _set_header(message, "Subject", subject_clean)
     if to_addrs is not None:
         _set_header(message, "To", ", ".join(to_addrs))

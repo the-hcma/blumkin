@@ -380,6 +380,7 @@ async def chat_edit(
     cid = str(draft["chat_id"])
     mid = str(draft["message_id"])
     body_text = str(draft["text"])
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     service = _chat_service(cfg)
     _require_message_in_chat(service, cid, mid)
     updated = execute(

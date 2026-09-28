@@ -13,7 +13,12 @@ from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
-from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
+from blumkin.config import (
+    BlumkinConfig,
+    MailSignatureConfig,
+    MessagePolicyConfig,
+    PreferencesConfig,
+)
 from blumkin.providers.kind import ProviderKind
 from blumkin.skills.mail import (
     MailBodyFileError,
@@ -449,7 +454,12 @@ def _client(monkeypatch, *, signature: bool = False) -> MagicMock:
     else:
         monkeypatch.setattr(
             "blumkin.skills.mail.load_config",
-            lambda: SimpleNamespace(client_id="x", default_tz="UTC"),
+            lambda: SimpleNamespace(
+                client_id="x",
+                default_tz="UTC",
+                mail_signature=MailSignatureConfig(),
+                message_policy=MessagePolicyConfig(),
+            ),
         )
     return client
 

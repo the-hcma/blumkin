@@ -12,7 +12,12 @@ import pytest
 from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig, load_config
 from blumkin.mail_signature_state import record_signature_state
 from blumkin.providers.kind import ProviderKind
-from blumkin.skills.mail import append_mail_signature, mail_draft, render_mail_signature
+from blumkin.skills.mail import (
+    append_mail_signature,
+    mail_draft,
+    mail_update_draft,
+    render_mail_signature,
+)
 
 
 def test_mail_signature_defaults_disabled(tmp_path: Path, monkeypatch) -> None:
@@ -276,8 +281,33 @@ def test_append_mail_signature_validates_generated_signature(tmp_path: Path, mon
         '[profiles.default.mail.signature]\nenabled = true\nname = "Ada — Example"\n'
     )
     cfg = load_config()
-    with pytest.raises(ValueError, match="disallowed dash"):
+    with pytest.raises(ValueError, match=r"configured mail signature.*disallowed dash") as exc:
         append_mail_signature("Hello", body_type="text", config=cfg)
+    assert "mail body" not in str(exc.value)
+
+
+def test_mail_draft_rejects_disallowed_subject_before_graph_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    client_factory = MagicMock()
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", client_factory)
+    with pytest.raises(ValueError, match="mail subject.*disallowed dash"):
+        asyncio.run(mail_draft(to="a@example.com", subject="Q3 &mdash; Plans", body="hi"))
+    client_factory.assert_not_called()
+
+
+def test_mail_update_draft_rejects_disallowed_subject_before_graph_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    client_factory = MagicMock()
+    monkeypatch.setattr("blumkin.skills.mail.create_graph_client", client_factory)
+    with pytest.raises(ValueError, match="mail subject.*disallowed dash"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", subject="Q3 &ndash; Plans"))
+    client_factory.assert_not_called()
 
 
 def test_mail_draft_appends_signature_and_respects_opt_out(monkeypatch) -> None:

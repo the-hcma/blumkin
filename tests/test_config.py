@@ -61,6 +61,17 @@ def test_message_policy_overrides_load_from_profile_table(tmp_path: Path, monkey
     assert cfg.message_policy.honor_client_signature_suppression is False
 
 
+def test_message_policy_rejects_unknown_keys(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc-123"\n'
+        "[profiles.default.message_policy]\nforbid_unicode_dashes = false\n"
+        "forbid_unicode_dash = true\n"
+    )
+    with pytest.raises(ProviderConfigError, match="unknown key.*forbid_unicode_dash"):
+        load_config()
+
+
 def test_token_reverify_after_defaults_to_24_hours(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')

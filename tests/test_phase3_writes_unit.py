@@ -16,6 +16,7 @@ from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
 
+from blumkin.config import MailSignatureConfig, MessagePolicyConfig, PreferencesConfig
 from blumkin.skills.calendar import _event_to_dict
 from blumkin.skills.calendar_writes import (
     _needs_accept,
@@ -44,6 +45,16 @@ from blumkin.skills.mail import (
     mail_update_draft,
     resolve_mail_body,
 )
+
+
+def _mail_config(*, confirm_cooldown_seconds: int = 20) -> SimpleNamespace:
+    return SimpleNamespace(
+        client_id="x",
+        default_tz="UTC",
+        mail_signature=MailSignatureConfig(),
+        message_policy=MessagePolicyConfig(),
+        preferences=PreferencesConfig(confirm_cooldown_seconds=confirm_cooldown_seconds),
+    )
 
 
 def test_parse_duration() -> None:
@@ -703,11 +714,7 @@ def test_mail_draft_and_send_mocked(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(
-            default_tz="UTC",
-            client_id="x",
-            preferences=SimpleNamespace(confirm_cooldown_seconds=0),
-        ),
+        lambda: _mail_config(confirm_cooldown_seconds=0),
     )
     saved = asyncio.run(mail_draft(to="a@b.com", subject="Hi", body="Hello", body_type="text"))
     assert saved["draft"]["id"] == "draft-1"
@@ -742,11 +749,7 @@ def test_mail_send_draft_holds_deferred_delivery_when_cooldown_positive(monkeypa
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(
-            default_tz="UTC",
-            client_id="x",
-            preferences=SimpleNamespace(confirm_cooldown_seconds=20),
-        ),
+        lambda: _mail_config(confirm_cooldown_seconds=20),
     )
     sent = asyncio.run(mail_send_draft(draft_id="draft-1"))
     assert sent["sent"] == "draft-1"
@@ -782,11 +785,7 @@ def test_mail_send_draft_sends_anyway_when_deferred_delivery_patch_fails(monkeyp
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(
-            default_tz="UTC",
-            client_id="x",
-            preferences=SimpleNamespace(confirm_cooldown_seconds=20),
-        ),
+        lambda: _mail_config(confirm_cooldown_seconds=20),
     )
     sent = asyncio.run(mail_send_draft(draft_id="draft-1"))
     assert sent == {"sent": "draft-1", "held_until": None}
@@ -803,7 +802,7 @@ def test_mail_draft_unescapes_html_entities_in_subject(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     saved = asyncio.run(
         mail_draft(to="a@b.com", subject="Q3 &amp; Q4 Plans", body="Hello", body_type="text")
@@ -825,7 +824,7 @@ def test_mail_draft_subject_preserves_a_legacy_entity_without_a_semicolon(monkey
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     asyncio.run(
         mail_draft(
@@ -846,7 +845,7 @@ def test_mail_draft_rejects_a_subject_that_is_only_entities(monkeypatch) -> None
     # through and would have posted an empty Subject header.
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     with pytest.raises(ValueError, match="--subject is required"):
         asyncio.run(mail_draft(to="a@b.com", subject="&nbsp;", body="hi", body_type="text"))
@@ -864,7 +863,7 @@ def test_mail_draft_strips_crlf_produced_by_numeric_entities(monkeypatch) -> Non
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     asyncio.run(
         mail_draft(
@@ -888,7 +887,7 @@ def test_mail_draft_html_and_body_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     saved = asyncio.run(
         mail_draft(to="a@b.com", subject="Html", body="<p>Hi</p>", body_type="html")
@@ -940,7 +939,7 @@ def test_mail_cancel_send_mocked(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     payload = asyncio.run(mail_cancel_send(message_id="msg-1"))
     assert payload == {"cancelled": "msg-1"}
@@ -965,7 +964,7 @@ def test_mail_cancel_send_404s_once_already_delivered(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     with pytest.raises(MailMessageNotFoundError, match="not found"):
         asyncio.run(mail_cancel_send(message_id="msg-1"))
@@ -979,7 +978,7 @@ def test_mail_delete_draft_mocked(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     payload = asyncio.run(mail_delete_draft(draft_id="draft-1"))
     assert payload == {"deleted": "draft-1"}
@@ -994,7 +993,7 @@ def test_mail_delete_draft_rejects_non_draft(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     with pytest.raises(MailDraftNotFoundError, match="not a draft"):
         asyncio.run(mail_delete_draft(draft_id="msg-1"))
@@ -1050,7 +1049,7 @@ def test_mail_update_draft_mocked(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     payload = asyncio.run(
         mail_update_draft(
@@ -1096,7 +1095,7 @@ def test_mail_update_draft_rejects_empty_body(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     with pytest.raises(ValueError, match="non-empty"):
         asyncio.run(mail_update_draft(draft_id="draft-1", body=""))
@@ -1125,7 +1124,7 @@ def test_mail_update_draft_subject_only(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", subject="OnlySubject"))
     assert payload["draft"]["to"] == "a@b.com"
@@ -1165,7 +1164,7 @@ def test_mail_update_draft_unescapes_html_entities_in_subject(monkeypatch) -> No
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     asyncio.run(mail_update_draft(draft_id="draft-1", subject="Q3 &amp; Q4 Plans"))
     patch_await = client.me.messages.by_message_id.return_value.patch.await_args
@@ -1186,7 +1185,7 @@ def test_mail_update_draft_rejects_a_subject_that_is_only_entities(monkeypatch) 
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     with pytest.raises(ValueError, match="non-empty"):
         asyncio.run(mail_update_draft(draft_id="draft-1", subject="&nbsp;"))
@@ -1215,7 +1214,7 @@ def test_mail_update_draft_body_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     payload = asyncio.run(
         mail_update_draft(draft_id="draft-1", body_file=str(path), body_type="html")
@@ -1253,7 +1252,7 @@ def test_mail_update_draft_refetches_when_patch_returns_none(monkeypatch) -> Non
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", subject="New"))
     assert payload["draft"]["subject"] == "New"
@@ -1274,7 +1273,7 @@ def test_mail_update_draft_errors_when_patch_and_refetch_empty(monkeypatch) -> N
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     with pytest.raises(RuntimeError, match="no message after update-draft"):
         asyncio.run(mail_update_draft(draft_id="draft-1", subject="New"))
@@ -1301,7 +1300,7 @@ def test_mail_update_draft_to_only(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", to="c@d.com"))
     assert payload["draft"]["to"] == "c@d.com"
@@ -1342,7 +1341,7 @@ def test_mail_update_draft_replaces_to_when_multiple_recipients(monkeypatch) -> 
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", to="e@f.com"))
     assert payload["draft"]["to"] == "e@f.com"
@@ -1366,7 +1365,7 @@ def test_mail_update_draft_rejects_non_draft(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     with pytest.raises(MailDraftNotFoundError, match="not a draft"):
         asyncio.run(mail_update_draft(draft_id="msg-1", subject="Nope"))
@@ -1378,7 +1377,7 @@ def test_mail_update_draft_message_not_found(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: _mail_config(),
     )
     with pytest.raises(MailDraftNotFoundError, match="message not found"):
         asyncio.run(mail_update_draft(draft_id="missing", subject="x"))

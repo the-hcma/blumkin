@@ -643,6 +643,8 @@ Also enforced: a minimum wait since the draft was composed
 (`preferences.confirm_cooldown_seconds`, default 20s) - calling this too soon
 fails with `too_soon` rather than sending, so you have a real chance to review
 the draft first.
+Stored drafts are checked again before send/edit. See
+`docs/outbound-message-policy.md` for profile rules and signature behavior.
 """
 
 COMPLETION_EPILOG = """
@@ -964,7 +966,8 @@ is authored as Markdown by default and rendered to HTML on the wire, so the
 message keeps its structure in Gmail and Outlook; pass `--body-type text` for a
 literal plain-text body. `--to` / `--cc` / `--bcc` repeat or take comma-separated
 lists. Keep attachments under 2 MB each. Use ASCII hyphens in the body, not em
-dashes.
+dashes. See `docs/outbound-message-policy.md` for profile rules and signature
+behavior.
 """
 
 MAIL_EPILOG = """

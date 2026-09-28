@@ -275,6 +275,7 @@ async def chat_edit(
     cid = str(draft["chat_id"])
     mid = str(draft["message_id"])
     body_text = str(draft["text"])
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     client = create_graph_client(cfg)
     patch = ChatMessage(body=ItemBody(content=body_text, content_type=BodyType.Text))
     updated = await client.me.chats.by_chat_id(cid).messages.by_chat_message_id(mid).patch(patch)
