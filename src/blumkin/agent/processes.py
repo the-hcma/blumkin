@@ -228,19 +228,36 @@ def _is_mcp_serve_command(command: str) -> bool:
     argv0 = Path(tokens[0]).name
     if argv0 == "blumkin":
         rest = tokens[1:]
-    elif argv0.startswith("python"):
+    elif argv0.lower().startswith("python"):
         # Python permits interpreter options (`-u`, `-O`, ...) before `-m`,
         # e.g. `python3 -u -m blumkin mcp serve` (PR #409 review) - skip
         # past any of those rather than requiring `-m` at a fixed index.
+        # Lowercased comparison also catches framework builds like
+        # `.../Python.app/Contents/MacOS/Python` (capital `P`) (PR #409
+        # review, sixth pass).
         remaining = tokens[1:]
         while remaining and remaining[0] != "-m" and remaining[0].startswith("-"):
             if remaining[0] in _PY_OPTIONS_WITH_OPERAND:
                 remaining = remaining[2:]
             else:
                 remaining = remaining[1:]
-        if len(remaining) < 2 or remaining[0] != "-m" or remaining[1] != "blumkin":
+        if not remaining:
             return False
-        rest = remaining[2:]
+        if remaining[0] == "-m":
+            # `python -m blumkin mcp serve` - explicit module launch.
+            if len(remaining) < 2 or remaining[1] != "blumkin":
+                return False
+            rest = remaining[2:]
+        elif Path(remaining[0]).name == "blumkin":
+            # A `blumkin` console script is a `#!<python>` file, so the
+            # kernel execs the interpreter with the script path as its
+            # first argument, e.g. `<venv-python> <path>/blumkin mcp
+            # serve` - this is the shape `mcp install`'s registered
+            # `resolve_binary()` entry actually produces, not `-m blumkin`
+            # (PR #409 review, sixth pass).
+            rest = remaining[1:]
+        else:
+            return False
     else:
         return False
     # `mcp serve` always follows `ServeSpec.args()`'s `["mcp", "serve"]` shape

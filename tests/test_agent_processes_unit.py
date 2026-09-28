@@ -435,6 +435,55 @@ def test_mcp_serve_processes_accepts_an_operand_taking_interpreter_option(
     assert {proc.pid for proc in agent_processes.mcp_serve_processes()} == {321}
 
 
+def test_mcp_serve_processes_accepts_a_console_script_shebang_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `blumkin` entry `mcp install` registers is a console script (a
+    `#!<python>` file), so the kernel execs the interpreter with the script
+    path as its own first argument - `ps` reports
+    `<venv-python> <path>/blumkin mcp serve ...`, not `-m blumkin`, and this
+    must still be detected as a real serve process (PR #409 review, sixth
+    pass)."""
+    ps_output = (
+        "  321 Wed Oct 25 12:34:56 2024"
+        "     /Users/x/.venv/bin/python3 /Users/x/.local/bin/blumkin mcp serve\n"
+    )
+
+    def _fake_run(*_args, **_kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(args=["ps"], returncode=0, stdout=ps_output, stderr="")
+
+    monkeypatch.setattr(agent_processes.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_processes.os, "getpid", lambda: 999)
+    monkeypatch.setattr(agent_processes.subprocess, "run", _fake_run)
+    assert {proc.pid for proc in agent_processes.mcp_serve_processes()} == {321}
+
+
+def test_mcp_serve_processes_accepts_a_capitalized_framework_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS framework builds name the interpreter binary `Python` (capital
+    `P`), e.g. `.../Python.app/Contents/MacOS/Python -m blumkin mcp serve` -
+    the interpreter check must be case-insensitive to still match (PR #409
+    review, sixth pass)."""
+    ps_output = (
+        "  321 Wed Oct 25 12:34:56 2024"
+        "     /Library/Frameworks/Python.framework/Versions/3.14/Resources/"
+        "Python.app/Contents/MacOS/Python -m blumkin mcp serve\n"
+    )
+
+    def _fake_run(*_args, **_kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(args=["ps"], returncode=0, stdout=ps_output, stderr="")
+
+    monkeypatch.setattr(agent_processes.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_processes.os, "getpid", lambda: 999)
+    monkeypatch.setattr(agent_processes.subprocess, "run", _fake_run)
+    assert {proc.pid for proc in agent_processes.mcp_serve_processes()} == {321}
+
+
 def test_mcp_serve_processes_excludes_this_process(monkeypatch: pytest.MonkeyPatch) -> None:
     ps_output = "  999 Wed Oct 25 12:34:56 2024     /usr/bin/blumkin mcp serve\n"
 
