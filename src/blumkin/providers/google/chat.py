@@ -29,6 +29,7 @@ from blumkin.attachments import (
 )
 from blumkin.compose_state import record_composed
 from blumkin.config import BlumkinConfig, load_config
+from blumkin.message_policy import validate_outbound_text
 from blumkin.providers.google_auth import CHAT_READ_SCOPES, CHAT_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.chat import (
@@ -352,6 +353,7 @@ async def chat_draft(
     if not body_text:
         raise ValueError("--text must be non-empty")
     cfg = config or load_config()
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     chat, target_id, partial, skipped = await _resolve_chat_target(
         chat_id=chat_id, with_name=with_name, config=cfg
     )
@@ -403,6 +405,7 @@ async def chat_edit_draft(
     if not body_text:
         raise ValueError("--text must be non-empty")
     cfg = config or load_config()
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     draft_id = f"chat-edit-{uuid.uuid4().hex}"
     record_composed(
         cfg,

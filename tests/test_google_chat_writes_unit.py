@@ -77,6 +77,13 @@ def test_chat_send_requires_text_and_exactly_one_target(tmp_path: Path) -> None:
             asyncio.run(provider.chat_draft(text="hi"))
 
 
+def test_chat_send_rejects_em_dash_text(tmp_path: Path) -> None:
+    provider = GoogleWorkspaceProvider(_cfg(tmp_path))
+    with _patched(_service()):
+        with pytest.raises(ValueError, match="disallowed dash"):
+            asyncio.run(provider.chat_draft(text="hello — team", chat_id="spaces/AAA"))
+
+
 def test_chat_edit_patches_only_the_text_field(tmp_path: Path) -> None:
     service = _service(patched=_message("spaces/AAA/messages/9", "corrected"))
     cfg = _cfg(tmp_path)
@@ -91,6 +98,17 @@ def test_chat_edit_patches_only_the_text_field(tmp_path: Path) -> None:
     kwargs = service.spaces.return_value.messages.return_value.patch.call_args.kwargs
     assert kwargs["updateMask"] == "text"
     assert kwargs["body"] == {"text": "corrected"}
+
+
+def test_chat_edit_draft_rejects_em_dash_text(tmp_path: Path) -> None:
+    provider = GoogleWorkspaceProvider(_cfg(tmp_path))
+    with _patched(_service()):
+        with pytest.raises(ValueError, match="disallowed dash"):
+            asyncio.run(
+                provider.chat_edit_draft(
+                    chat_id="spaces/AAA", message_id="spaces/AAA/messages/9", text="fix — this"
+                )
+            )
 
 
 def test_chat_edit_refuses_a_message_from_a_different_chat(tmp_path: Path) -> None:

@@ -165,6 +165,11 @@ def test_chat_send_empty_text_raises(tmp_path) -> None:
         asyncio.run(chat_draft(with_name="daniel", text="   ", config=_cfg(tmp_path)))
 
 
+def test_chat_send_rejects_em_dash_text(tmp_path) -> None:
+    with pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(chat_draft(with_name="daniel", text="hello — team", config=_cfg(tmp_path)))
+
+
 def test_chat_send_unknown_draft_raises(tmp_path) -> None:
     with pytest.raises(ChatDraftNotFoundError):
         asyncio.run(chat_send(draft_id="chat-send-nope", config=_cfg(tmp_path)))
@@ -208,6 +213,18 @@ def test_chat_edit_reget_when_patch_empty(monkeypatch, tmp_path) -> None:
     payload = asyncio.run(chat_edit(draft_id=draft["draft"]["id"], config=cfg))
     assert payload["message"]["id"] == "msg-1"
     stub.get.assert_awaited_once()
+
+
+def test_chat_edit_draft_rejects_em_dash_text(tmp_path) -> None:
+    with pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(
+            chat_edit_draft(
+                chat_id="c",
+                message_id="m",
+                text="fix this — now",
+                config=_cfg(tmp_path),
+            )
+        )
 
 
 def test_chat_delete_mocked(monkeypatch, tmp_path) -> None:

@@ -34,6 +34,7 @@ from blumkin.auth import effective_scopes
 from blumkin.compose_state import composed_content, record_composed
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, request_config
+from blumkin.message_policy import validate_outbound_text
 from blumkin.output import sanitize_terminal
 
 # Teams stores chat files in SharePoint/OneDrive, so bytes come from the shares API
@@ -247,6 +248,7 @@ async def chat_draft(
     if not body_text:
         raise ValueError("--text must be non-empty")
     cfg = config or load_config()
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     chat, target_id, partial, skipped = await _resolve_chat_target(
         chat_id=chat_id, with_name=with_name, config=cfg
     )
@@ -303,6 +305,7 @@ async def chat_edit_draft(
     if not body_text:
         raise ValueError("--text must be non-empty")
     cfg = config or load_config()
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     draft_id = f"chat-edit-{uuid.uuid4().hex}"
     record_composed(
         cfg,

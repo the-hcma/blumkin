@@ -73,6 +73,7 @@ from blumkin.attachments import (
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.mail_signature_state import load_signature_state
+from blumkin.message_policy import should_suppress_signature, validate_outbound_text
 from blumkin.output import sanitize_terminal
 from blumkin.prompt_injection import format_injection_warning_banner, scan_mail_message
 from blumkin.skills.docs import parse_body as _parse_doc_body
@@ -213,21 +214,29 @@ def append_mail_signature(
       blumkin leaves in the mailbox ends up double-signed once Outlook's compose
       pipeline touches it.
     """
+    validate_outbound_text(content, config=config, field_name="mail body")
     signature = getattr(config, "mail_signature", None)
     if no_signature or signature is None or not signature.enabled:
         return content
-    if signature.client_appends_signature or load_signature_state(config).suppresses_signature:
+    if should_suppress_signature(
+        config=config,
+        detected_outlook_signature=load_signature_state(config).suppresses_signature,
+    ):
         return content
     rendered = render_mail_signature(signature, body_type=body_type)
     if not rendered:
         return content
     if body_type == "html":
         if not content.strip():
-            return rendered
-        return f"{content.rstrip()}<br><br>{rendered}"
-    if not content.strip():
-        return rendered
-    return f"{content.rstrip()}\n\n{rendered}"
+            result = rendered
+        else:
+            result = f"{content.rstrip()}<br><br>{rendered}"
+    elif not content.strip():
+        result = rendered
+    else:
+        result = f"{content.rstrip()}\n\n{rendered}"
+    validate_outbound_text(result, config=config, field_name="mail body")
+    return result
 
 
 def format_attachments_download_human(payload: dict[str, Any]) -> list[str]:

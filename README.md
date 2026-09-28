@@ -208,6 +208,16 @@ html_email = true
 font_size = 13  # overrides just this key for this profile
 ```
 
+Outbound drafting lint/policy rules are profile-scoped under `[profiles.<name>.message_policy]`:
+
+```toml
+[profiles.work.message_policy]
+forbid_unicode_dashes = true                  # reject — / – / &mdash; / &ndash;
+honor_client_signature_suppression = true     # do not append [mail.signature] when client auto-signs
+```
+
+Both rules default to `true`.
+
 Set `tenant_id`, `default_tz`, and `provider` in the profile table (there are no
 org-specific code defaults). `provider` defaults to `microsoft` when omitted.
 `token_storage` defaults to `"auto"`. `token_reverify_after` defaults to

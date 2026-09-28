@@ -38,6 +38,27 @@ def test_load_config_from_toml(tmp_path: Path, monkeypatch) -> None:
     assert cfg.token_cache_path == tmp_path / "profiles" / "default" / "msal_token_cache.json"
     assert cfg.wo1162425_scopes is False
     assert cfg.google_oauth_client_file is None
+    assert cfg.message_policy.forbid_unicode_dashes is True
+    assert cfg.message_policy.honor_client_signature_suppression is True
+
+
+def test_message_policy_overrides_load_from_profile_table(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "\n".join(
+            [
+                "[profiles.default]",
+                'client_id = "abc-123"',
+                "[profiles.default.message_policy]",
+                "forbid_unicode_dashes = false",
+                "honor_client_signature_suppression = false",
+                "",
+            ]
+        )
+    )
+    cfg = load_config()
+    assert cfg.message_policy.forbid_unicode_dashes is False
+    assert cfg.message_policy.honor_client_signature_suppression is False
 
 
 def test_token_reverify_after_defaults_to_24_hours(tmp_path: Path, monkeypatch) -> None:
