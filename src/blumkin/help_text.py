@@ -53,6 +53,11 @@ and which profiles have cached state - without starting one just to check.
 Warns when `agent_version` is older than this CLI's own build (issue #401)
 - a `blumkin upgrade` swaps the package on disk but does not touch an
 already-running agent, so run `blumkin agent stop` to retire it.
+
+`orphaned_agents` (JSON) / `warning:` (text) additionally lists any other
+reachable agent on a legacy socket path this build does not resolve to on
+its own - e.g. one left running from before issue #402/#403's socket-path
+fix (issue #408). Retire them with `blumkin agent stop --all`.
 """
 
 AGENT_STOP_EPILOG = """
@@ -60,6 +65,7 @@ Examples:
 
 \b
   blumkin agent stop
+  blumkin agent stop --all
   blumkin agent stop --json
 
 Shuts the agent process down entirely (unlike `lock`, which only wipes its
@@ -67,6 +73,10 @@ cached secrets and leaves it running). Useful after `blumkin upgrade` to
 retire an agent still running the previous build's code (issue #401) - the
 next command needing the agent spawns a fresh one from the just-upgraded
 package. A no-op if no agent is running.
+
+`--all` also stops every orphaned agent on a legacy socket path this build
+does not resolve to on its own (issue #408) - the same ones `agent status`
+surfaces under `orphaned_agents`.
 """
 
 AUTH_EPILOG = """
@@ -781,6 +791,10 @@ is behind the checkout's `pyproject.toml` - a `git pull` without a reinstall;
 granted scopes actually unlock right now - `tasks` is always available (local
 files, no scope); `meeting` is Microsoft-only. Same helper as
 `blumkin capabilities --json`.
+
+`warnings` / `stale_processes` (JSON) flags an orphaned `blumkin-agent` on a
+legacy socket path, or a `blumkin mcp serve` process still running - restart
+guidance for both (issue #408, a #401 follow-up).
 """
 
 DRIVE_EPILOG = """
@@ -1311,6 +1325,11 @@ ambiguous); with one profile it is optional. `--profile NAME` pins the server to
 one account and drops the `profile` argument. `--read-only` / `--only` stay
 server-scoped - for "personal read-only, work read-write" run a second pinned
 `mcp serve --profile personal --read-only` alongside.
+
+If `blumkin` is upgraded while this server is still running (issue #408, a
+#401 follow-up), every tool call fails fast with `server_outdated` instead
+of a misleading `auth_required` - restart the MCP client to spawn a fresh
+server on the new build.
 """
 
 MCP_INSTALL_EPILOG = """
@@ -1521,4 +1540,11 @@ An editable / source install prints those commands; `--yes` runs them. `from:` /
 `install_method`, `managed_path`, `checkout`, `metadata_stale`, `action_taken`,
 and `suggested_commands`. Exit 1 (`upgrade_failed`) means a step exited non-zero
 or a needed tool (pipx / uv / git) is missing.
+
+After a real upgrade, `stale_processes` (JSON) / the `stale processes found`
+section (text) lists any `blumkin-agent` / `blumkin mcp serve` process still
+running the previous build (issue #408, a #401 follow-up): agents are
+stopped outright (they respawn on next use); `mcp serve` processes are only
+reported, since killing one out from under its MCP client is not safe -
+restart your MCP client(s) instead.
 """

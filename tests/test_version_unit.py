@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -72,6 +74,40 @@ def test_package_version_reads_pyproject_when_not_installed(monkeypatch, tmp_pat
     monkeypatch.setattr(version_module, "version", _raise)
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
     assert package_version(pyproject_path=tmp_path / "pyproject.toml") == "1.2.3"
+
+
+def test_running_command_reinvokes_python_dash_m_for_a_module_launch(monkeypatch) -> None:
+    """A `python -m blumkin mcp serve` launch's `sys.argv[0]` resolves to the
+    non-executable `__main__.py` - `running_command()` must re-invoke via
+    `<python> -m blumkin`, not try to run that file directly (issue #408
+    review: the only prior test asserted `isinstance(..., tuple)`, which
+    stays true even for the regression this branch exists to prevent)."""
+    monkeypatch.setattr(sys, "argv", ["/x/blumkin/__main__.py", "mcp", "serve"])
+    assert version_module.running_command() == (sys.executable, "-m", "blumkin")
+
+
+def test_running_command_is_just_the_path_for_a_console_script_launch(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["blumkin", "mcp", "serve"])
+    monkeypatch.setattr(version_module, "running_command_path", lambda: Path("/usr/bin/blumkin"))
+    assert version_module.running_command() == ("/usr/bin/blumkin",)
+
+
+def test_read_installed_version_expands_a_tuple_executable_into_argv(monkeypatch) -> None:
+    """`read_installed_version` is called with `running_command()`'s tuple
+    form (not a bare `Path`) in production - assert the whole tuple is
+    spread into the spawned argv, not just its first element."""
+    captured: dict[str, object] = {}
+
+    def _fake_run(argv, **_kwargs):
+        captured["argv"] = argv
+        return version_module.subprocess.CompletedProcess(
+            argv, 0, stdout="blumkin 1.2.3 (abc123456789)\n", stderr=""
+        )
+
+    monkeypatch.setattr(version_module.subprocess, "run", _fake_run)
+    result = version_module.read_installed_version((sys.executable, "-m", "blumkin"))
+    assert result == "1.2.3 (abc123456789)"
+    assert captured["argv"] == [sys.executable, "-m", "blumkin", "--version"]
 
 
 def test_format_helpers_render_one_line() -> None:

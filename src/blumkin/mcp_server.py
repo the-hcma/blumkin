@@ -14,16 +14,20 @@ skill, plus ``mail delete`` / ``mark`` / ``move`` and the ``mail.auto-reply`` /
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+import time
 import tomllib
+from collections.abc import Callable
 from typing import Any
 
 from blumkin.config import list_profiles, load_config
 from blumkin.providers.kind import ProviderConfigError
 from blumkin.skills import BESPOKE_SKILLS, skills_catalog
 from blumkin.skills.dispatch import run_skill
-from blumkin.skills.errors import classify_exception
-from blumkin.version import build_version
+from blumkin.skills.errors import ServerOutdatedError, classify_exception
+from blumkin.version import build_version, read_installed_version, running_command
 
 try:
     import mcp.types as types
@@ -93,8 +97,26 @@ def build_tools(
 
 
 def build_server(
-    *, profile: str | None = None, read_only: bool = False, only: tuple[str, ...] = ()
+    *,
+    profile: str | None = None,
+    read_only: bool = False,
+    only: tuple[str, ...] = (),
+    stale_check: Callable[[], ServerOutdatedError | None] | None = None,
 ) -> Server:
+    """Build the low-level MCP `Server`.
+
+    `stale_check` is `None` for every direct caller except `_serve_async`
+    (which passes `_stale_server_checker`'s closure - issue #408): kept as an
+    explicit, defaulted parameter rather than computed unconditionally in
+    here so building a server for tests/introspection never spawns the
+    `--version` subprocess that check needs. It is a callable, re-invoked on
+    every tool call (internally rate-limited), rather than a value computed
+    once here - a server that has been running since *before* an upgrade
+    landed must notice the swap while still serving, not only at startup
+    (review finding on PR #409: a value frozen at construction time can
+    never observe a build change that happens after the server is already
+    up).
+    """
     pinned = profile is not None
     profiles = _safe_list_profiles()
     multi = not pinned and len(profiles) >= 2
@@ -114,6 +136,21 @@ def build_server(
         return types.ListToolsResult(tools=tools)
 
     async def on_call_tool(_ctx: Any, params: Any) -> types.CallToolResult:
+        if stale_check is not None:
+            # Off the event-loop thread (`asyncio.to_thread`): `stale_check`
+            # can run a real `--version` subprocess with up to a 30s
+            # timeout, and calling it inline here would block every other
+            # concurrent tool call on this server for that long (PR #409
+            # review).
+            stale_error = await asyncio.to_thread(stale_check)
+            if stale_error is not None:
+                # Issue #408: every tool call on a server whose own build has
+                # fallen behind the currently installed one is short-circuited
+                # here, before any dispatch is attempted - a stale server's
+                # actual failure mode (its in-memory socket/agent state no
+                # longer matches reality) previously surfaced misleadingly as
+                # `auth_required` instead of "restart me".
+                return _error_result(stale_error)
         if params.name == _PROFILES_LIST_TOOL and _PROFILES_LIST_TOOL in names:
             return _profiles_list_result(profiles, pinned_name=profile)
         if params.name not in names:
@@ -350,7 +387,9 @@ def _selected(tool_id: str, only: tuple[str, ...]) -> bool:
 
 
 async def _serve_async(*, profile: str | None, read_only: bool, only: tuple[str, ...]) -> None:
-    server = build_server(profile=profile, read_only=read_only, only=only)
+    running_build = build_version()
+    stale_check = _stale_server_checker(running_build)
+    server = build_server(profile=profile, read_only=read_only, only=only, stale_check=stale_check)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
@@ -378,6 +417,71 @@ def _server_instructions(profiles: list[dict[str, Any]], *, pinned_name: str | N
         'sister" with both a work and a personal profile), ask them which account to use '
         "- do not guess or fall back to the default. Call `profiles.list` to re-read this set."
     )
+
+
+def _stale_server_check(running_build: str) -> ServerOutdatedError | None:
+    """Compare this process's own frozen build against a fresh on-disk read.
+
+    `build_version()` is cached (`@lru_cache`) once per process, so its
+    value here is exactly what this long-running server started with -
+    even if `blumkin upgrade` has since swapped the package out from under
+    it. A fresh subprocess spawn (mirroring `blumkin upgrade`'s own
+    before/after check) is the only way to see what is *actually* installed
+    now (issue #408). Uses `running_command()`, not `running_command_path()`
+    directly, so a `python -m blumkin mcp serve` launch (whose `sys.argv[0]`
+    resolves to the non-executable `__main__.py`) re-invokes itself as
+    `<python> -m blumkin` instead of trying to run that file (PR #409 review).
+    """
+    installed = read_installed_version(running_command())
+    if installed is None or installed == running_build:
+        return None
+    return ServerOutdatedError(
+        f"this MCP server is running blumkin {running_build}, but {installed} is now installed"
+    )
+
+
+def _stale_server_checker(
+    running_build: str, *, min_interval_s: float = 30.0
+) -> Callable[[], ServerOutdatedError | None]:
+    """Return a callable that re-runs `_stale_server_check` at most once per
+    `min_interval_s`, caching the last verdict in between.
+
+    `on_call_tool` calls this on every tool call (issue #408 review: a
+    one-time check computed at server startup can never notice an upgrade
+    that lands after the server is already serving), but spawning a real
+    `--version` subprocess on every single call would be wasteful - this
+    bounds that cost to roughly once per interval regardless of call volume.
+
+    Each call now runs off the event-loop thread via `asyncio.to_thread`
+    (PR #409 review), so overlapping calls after the interval expires can
+    race the cache-check/probe/update sequence below from separate OS
+    threads - a lock serializes it, so at most one `--version` subprocess is
+    ever in flight at a time (PR #409 review, second pass).
+    """
+    state: dict[str, Any] = {"checked_at": None, "error": None}
+    lock = threading.Lock()
+
+    def _check() -> ServerOutdatedError | None:
+        with lock:
+            now = time.monotonic()
+            checked_at = state["checked_at"]
+            # `checked_at is None` (never probed) always re-checks regardless
+            # of `min_interval_s` - a host whose monotonic clock starts near 0
+            # (low uptime) would otherwise let `now - 0.0 >= min_interval_s`
+            # stay false forever on the very first call, dispatching a stale
+            # server's first tool call unchecked (PR #409 review).
+            if checked_at is None or now - checked_at >= min_interval_s:
+                state["error"] = _stale_server_check(running_build)
+                # Stamped *after* the probe returns, not `now` from before it
+                # started - `_stale_server_check` can itself take up to the
+                # subprocess's 30s timeout, and starting the interval early
+                # would let the very next waiting call immediately trigger
+                # another full-length probe instead of actually waiting out
+                # `min_interval_s` (PR #409 review, third pass).
+                state["checked_at"] = time.monotonic()
+            return state["error"]
+
+    return _check
 
 
 def _tool_arg_key(name: str) -> str:

@@ -15,6 +15,7 @@ import os
 import socket
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 from blumkin.agent import protocol
@@ -62,6 +63,31 @@ def call(cmd: str, *, extra: dict[str, Any] | None = None, spawn: bool = True) -
         _wait_for_socket_gone()
         response = _call_once(request, spawn=True)
     return response
+
+
+def call_at(
+    sock_path: Path, cmd: str, *, extra: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """Like `call`, but against an explicit socket path - never spawns, never
+    retries a `protocol_mismatch`.
+
+    Issue #408: `call`/`socket_path()` only ever reach the *one* socket this
+    build resolves to; orphan/legacy-socket discovery needs to probe several
+    other candidate paths a previous build (or a differently-launched
+    process, see issue #402) may have bound instead. Returns `None` for any
+    failure to reach `sock_path` rather than raising, since callers scan
+    several candidates where "nothing there" is the overwhelmingly common,
+    expected outcome - not an error worth surfacing.
+    """
+    if not is_supported_platform():
+        return None
+    request: dict[str, Any] = {"cmd": cmd, "protocol_version": protocol.PROTOCOL_VERSION}
+    if extra:
+        request.update(extra)
+    try:
+        return _send(str(sock_path), request)
+    except OSError, TimeoutError, protocol.ProtocolError:
+        return None
 
 
 def ensure_agent_running() -> None:

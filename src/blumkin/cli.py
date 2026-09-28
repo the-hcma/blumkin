@@ -17,6 +17,7 @@ from click.shell_completion import get_completion_class
 
 from blumkin import help_text
 from blumkin.agent import client as agent_client
+from blumkin.agent import processes as agent_processes
 from blumkin.app_secrets import (
     AppSecretKind,
     app_secret_backend,
@@ -164,6 +165,7 @@ from blumkin.version import (
     build_status_fields,
     build_version,
     package_version,
+    read_installed_version,
     running_command_path,
 )
 
@@ -195,6 +197,11 @@ _DEFAULT_HINTS: dict[str, str] = {
     "secret_write_failed": (
         "The token cache or auth record could not be written. Remove any symlink at "
         "~/.config/blumkin/ (or the cache files), fix the directory permissions, then retry."
+    ),
+    "server_outdated": (
+        "This `blumkin mcp serve` process is older than the currently installed build - "
+        "restart the MCP server (reload / restart your editor or MCP client) to pick up "
+        "the update, then retry."
     ),
     "stale_or_unread": (
         "Call `calendar.get --event-id <id>` (or `calendar get --event-id <id>`) to see the "
@@ -312,25 +319,33 @@ def _agent_status_payload() -> dict[str, Any]:
     try:
         response = agent_client.call("status", spawn=False)
     except agent_client.AgentUnreachableError as exc:
-        return {"agent_running": True, "reachable": False, "error": str(exc)}
+        payload: dict[str, Any] = {"agent_running": True, "reachable": False, "error": str(exc)}
     except agent_client.AgentUnavailableError:
-        return {"agent_running": False}
+        payload = {"agent_running": False}
     except RuntimeError as exc:
         # See the matching handler in `_agent_lock_payload` - a hostile
         # runtime dir must not surface as an unhandled traceback here either.
-        return {"agent_running": False, "reachable": False, "error": str(exc)}
-    agent_version = response.get("agent_version")
-    payload: dict[str, Any] = {
-        "agent_running": True,
-        "agent_version": agent_version,
-        "agent_pid": response.get("agent_pid"),
-        "cached_profiles": response.get("cached_profiles", []),
-    }
-    payload.update(_agent_version_skew(agent_version))
+        payload = {"agent_running": False, "reachable": False, "error": str(exc)}
+    else:
+        agent_version = response.get("agent_version")
+        payload = {
+            "agent_running": True,
+            "agent_version": agent_version,
+            "agent_pid": response.get("agent_pid"),
+            "cached_profiles": response.get("cached_profiles", []),
+        }
+        payload.update(_agent_version_skew(agent_version))
+    # Issue #408: an agent on a legacy/orphaned socket path is invisible to
+    # the check above (it only ever reaches the one socket this build
+    # resolves to) - report it regardless of whether the primary agent
+    # above is running at all.
+    orphaned = [instance.as_dict() for instance in agent_processes.orphaned_agent_instances()]
+    if orphaned:
+        payload["orphaned_agents"] = orphaned
     return payload
 
 
-def _agent_stop_payload() -> dict[str, Any]:
+def _agent_stop_payload(*, stop_all: bool = False) -> dict[str, Any]:
     """Shut the agent process down entirely (unlike `lock`, which keeps it running).
 
     Issue #401: `blumkin upgrade` only swaps the package on disk, so an
@@ -338,11 +353,15 @@ def _agent_stop_payload() -> dict[str, Any]:
     cached credentials) until something retires it - this is that
     something. `spawn=False` mirrors `_agent_lock_payload`: shutting down
     must never itself spawn a fresh agent just to shut it down again.
+
+    `stop_all` (issue #408) additionally stops every orphaned agent found
+    on a legacy socket path - the primary agent's own reachability above
+    is unaffected either way.
     """
     try:
         response = agent_client.call("shutdown", spawn=False)
     except agent_client.AgentUnreachableError as exc:
-        return {
+        payload: dict[str, Any] = {
             "agent_running": True,
             "reachable": False,
             "stopped": False,
@@ -350,28 +369,29 @@ def _agent_stop_payload() -> dict[str, Any]:
             "ok": False,
         }
     except agent_client.AgentUnavailableError:
-        return {"agent_running": False, "stopped": True}
+        payload = {"agent_running": False, "stopped": True}
     except RuntimeError as exc:
         # See the matching handler in `_agent_lock_payload`.
-        return {
+        payload = {
             "agent_running": False,
             "reachable": False,
             "stopped": False,
             "error": str(exc),
             "ok": False,
         }
-    stopped = bool(response.get("ok"))
-    error = response.get("error")
-    if not stopped and error == "protocol_mismatch":
-        # The probed agent is the *stale* one (see `dispatch` in
-        # `rust-agent/src/server.rs`): it already committed to shutting
-        # itself down before replying `ok: false`, so this is the success
-        # case `version_skew_hint` asks the operator to trigger, not a
-        # failure (see PR #404 review).
-        stopped = True
-    payload: dict[str, Any] = {"agent_running": True, "stopped": stopped, "ok": stopped}
-    if not stopped and error:
-        payload["error"] = error
+    else:
+        stopped = _shutdown_confirmed(response)
+        error = response.get("error")
+        payload = {"agent_running": True, "stopped": stopped, "ok": stopped}
+        if not stopped and error:
+            payload["error"] = error
+    if stop_all:
+        stopped_orphans = []
+        for instance in agent_processes.orphaned_agent_instances():
+            response = agent_client.call_at(instance.socket_path, "shutdown")
+            stopped_orphans.append({**instance.as_dict(), "stopped": _shutdown_confirmed(response)})
+        if stopped_orphans:
+            payload["orphaned_agents"] = stopped_orphans
     return payload
 
 
@@ -399,6 +419,54 @@ def _agent_version_skew(agent_version: object) -> dict[str, Any]:
             "run `blumkin agent stop` to retire the old agent"
         ),
     }
+
+
+def _orphaned_agent_lines(payload: dict[str, Any]) -> list[str]:
+    """Human-readable lines for `payload["orphaned_agents"]`, or `[]`."""
+    orphaned = payload.get("orphaned_agents") or []
+    if not orphaned:
+        return []
+    lines = [
+        f"warning: {len(orphaned)} orphaned agent(s) running on other socket paths - "
+        "run `blumkin agent stop --all` to retire them"
+    ]
+    lines.extend(
+        f"  orphaned: pid={item.get('pid')} version={item.get('version')} "
+        f"socket={item.get('socket_path')}"
+        for item in orphaned
+    )
+    return lines
+
+
+def _shutdown_confirmed(response: dict[str, Any] | None) -> bool:
+    """Whether a `shutdown` reply means the probed process actually is (or is
+    about to be) gone.
+
+    A legacy/stale agent answers `shutdown` with `{"ok": false, "error":
+    "protocol_mismatch"}` - it already committed to shutting itself down
+    before replying at all (see `dispatch` in `rust-agent/src/server.rs`),
+    so this is the success case `version_skew_hint` asks the operator to
+    trigger, not a failure (PR #404 review). Shared by `_agent_stop_payload`
+    (both its primary and `--all` orphan branches) and
+    `_find_stale_processes`, so all three read this reply identically
+    (PR #409 review: two of the three previously read it as a failure).
+    """
+    return bool(response and (response.get("ok") or response.get("error") == "protocol_mismatch"))
+
+
+def _stopped_orphan_lines(payload: dict[str, Any]) -> list[str]:
+    """Human-readable lines for `payload["orphaned_agents"]` after `--all`, or `[]`."""
+    orphaned = payload.get("orphaned_agents") or []
+    if not orphaned:
+        return []
+    stopped_count = sum(1 for item in orphaned if item.get("stopped"))
+    lines = [f"also stopped {stopped_count} orphaned agent(s):"]
+    lines.extend(
+        f"  {'stopped' if item.get('stopped') else 'stop failed'}: pid={item.get('pid')} "
+        f"version={item.get('version')} socket={item.get('socket_path')}"
+        for item in orphaned
+    )
+    return lines
 
 
 def _as_json(ctx: click.Context, as_json_flag: bool) -> bool:
@@ -599,6 +667,54 @@ def _editable_upgrade_steps(install: Install, *, as_json: bool) -> list[list[str
     ]
 
 
+def _find_stale_processes(*, before: str | None, after: str | None) -> list[dict[str, Any]]:
+    """After a real `blumkin upgrade` action, find and retire processes still
+    running the previous (`before`) build (issue #408).
+
+    Called only once an upgrade step has actually run, so every process this
+    finds necessarily predates it - except an agent, which can legitimately
+    respawn on the new (`after`) build between the upgrade finishing and this
+    scan running (e.g. a concurrent skill call); such an agent is already
+    current and left alone, not shut down as if it were stale (PR #409
+    review):
+
+    - every reachable `blumkin-agent` still on the `before` build (current
+      socket plus any orphaned legacy one) is stopped outright - it
+      respawns on next use, picking up the new build (mirrors `agent stop`,
+      issue #401)
+    - every running `blumkin mcp serve` process is only reported (it cannot
+      safely be killed out from under its host client) with restart
+      guidance and `before` as its known build - it was necessarily
+      spawned, and has not since restarted, before this upgrade completed
+    """
+    found: list[dict[str, Any]] = []
+    for instance in agent_processes.discover_agent_instances():
+        if after is not None and instance.version == after:
+            continue
+        response = agent_client.call_at(instance.socket_path, "shutdown")
+        stopped = _shutdown_confirmed(response)
+        found.append(
+            {
+                "pid": instance.pid,
+                "kind": "agent",
+                "build": instance.version,
+                "started_at": None,
+                "action": "stopped" if stopped else "stop_failed",
+            }
+        )
+    for proc in agent_processes.mcp_serve_processes():
+        found.append(
+            {
+                "pid": proc.pid,
+                "kind": "mcp_serve",
+                "build": before,
+                "started_at": proc.started_at.isoformat() if proc.started_at else None,
+                "action": "restart_recommended",
+            }
+        )
+    return found
+
+
 def _emit_upgrade_result(
     install: Install,
     *,
@@ -609,6 +725,7 @@ def _emit_upgrade_result(
     running_build: str,
     running_path: Path,
     stale: tuple[str, str] | None,
+    stale_processes: list[dict[str, Any]] | None = None,
 ) -> None:
     if as_json:
         emit_json(
@@ -624,6 +741,7 @@ def _emit_upgrade_result(
                 "manager": install.manager,
                 "metadata_stale": stale is not None,
                 "running_from": {"build": running_build, "path": str(running_path)},
+                "stale_processes": stale_processes or [],
                 "suggested_commands": suggested_commands(install),
                 "to": after,
             }
@@ -631,7 +749,12 @@ def _emit_upgrade_result(
         return
     emit_lines(
         _upgrade_human_lines(
-            install, action_taken=action_taken, after=after, before=before, stale=stale
+            install,
+            action_taken=action_taken,
+            after=after,
+            before=before,
+            stale=stale,
+            stale_processes=stale_processes,
         )
     )
 
@@ -642,31 +765,10 @@ def _raise_chat_attachment_error(exc: BaseException, *, as_json: bool) -> NoRetu
 
 
 def _read_app_version(executable: Path) -> str | None:
-    """Return ``<executable> --version`` as ``<version> (<commit>)``, or None.
-
-    The first line of ``blumkin --version`` is ``blumkin <version> (<commit>)``;
-    the ``blumkin `` prefix is stripped so the value compares directly against
-    :func:`blumkin.version.build_version` (the from/to pair in ``upgrade``). The
-    executable is re-run on disk, so it reflects a just-applied upgrade even
-    though the calling process is still the old build.
-    """
-    try:
-        completed = subprocess.run(
-            [str(executable), "--version"],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=30,
-        )
-    except OSError, subprocess.SubprocessError:
-        return None
-    if completed.returncode != 0:
-        return None
-    lines = (completed.stdout or "").splitlines()
-    first = lines[0].strip() if lines else ""
-    if not first:
-        return None
-    return first.removeprefix("blumkin ").strip() or first
+    """`upgrade`'s before/after check - see `version.read_installed_version`
+    for the shared implementation (also used by `mcp_server`'s own
+    staleness check, issue #408)."""
+    return read_installed_version(executable)
 
 
 def _require_manager(name: str, *, as_json: bool) -> str:
@@ -716,6 +818,24 @@ def _run_upgrade_command(cmd: list[str], *, as_json: bool, timeout: int) -> None
         raise SystemExit(EXIT_OTHER)
 
 
+def _stale_process_lines(stale_processes: list[dict[str, Any]] | None) -> list[str]:
+    """Human-readable lines for `upgrade`'s `stale_processes` (issue #408)."""
+    if not stale_processes:
+        return []
+    lines = [f"stale processes found ({len(stale_processes)}):"]
+    for item in stale_processes:
+        detail = f"pid={item['pid']} build={item.get('build') or '(unknown)'}"
+        if item["kind"] == "agent":
+            action = "retired" if item["action"] == "stopped" else "could not retire"
+            lines.append(f"  agent {detail}: {action}")
+        else:
+            lines.append(
+                f"  mcp serve {detail}: still running the previous build - restart your "
+                "MCP client to pick up the upgrade"
+            )
+    return lines
+
+
 def _upgrade_human_lines(
     install: Install,
     *,
@@ -723,6 +843,7 @@ def _upgrade_human_lines(
     after: str | None,
     before: str | None,
     stale: tuple[str, str] | None,
+    stale_processes: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     lines = [f"install: {_INSTALL_METHOD_LABELS.get(install.method, install.method)}"]
     if install.managed_path is not None:
@@ -755,6 +876,7 @@ def _upgrade_human_lines(
         lines.append(f"ran:  {action_taken}")
     lines.append(f"from: {before or '(unknown)'}")
     lines.append(f"to:   {after or '(run `blumkin --version` to confirm)'}")
+    lines.extend(_stale_process_lines(stale_processes))
     return lines
 
 
@@ -1636,11 +1758,12 @@ def agent_status(ctx: click.Context, as_json_flag: bool) -> None:
             [
                 f"agent_running: {str(payload['agent_running']).lower()}",
                 f"reachable: false ({payload.get('error')})",
+                *_orphaned_agent_lines(payload),
             ]
         )
         return
     if not payload["agent_running"]:
-        emit_lines(["agent_running: false"])
+        emit_lines(["agent_running: false", *_orphaned_agent_lines(payload)])
         return
     lines = [
         "agent_running: true",
@@ -1650,37 +1773,57 @@ def agent_status(ctx: click.Context, as_json_flag: bool) -> None:
     ]
     if payload.get("version_skew"):
         lines.append(f"warning: {payload.get('version_skew_hint')}")
+    lines.extend(_orphaned_agent_lines(payload))
     emit_lines(lines)
 
 
 @agent.command("stop", epilog=help_text.AGENT_STOP_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--all",
+    "stop_all",
+    is_flag=True,
+    help="Also stop every orphaned agent found on a legacy socket path (issue #408).",
+)
 @click.pass_context
-def agent_stop(ctx: click.Context, as_json_flag: bool) -> None:
+def agent_stop(ctx: click.Context, as_json_flag: bool, stop_all: bool) -> None:
     """Shut the agent process down entirely - it respawns on next use.
 
     Unlike `lock`, this actually exits the agent process, retiring one
     still running a previous build after `blumkin upgrade` (issue #401). A
-    no-op (not an error) if no agent is currently running.
+    no-op (not an error) if no agent is currently running. `--all` also
+    stops any orphaned agent this build's socket resolution would not
+    otherwise reach - e.g. one left running on a pre-#403 legacy path
+    (issue #408).
     """
     as_json = _as_json(ctx, as_json_flag)
-    payload = _agent_stop_payload()
+    payload = _agent_stop_payload(stop_all=stop_all)
     if as_json:
         emit_json(payload)
         if payload.get("reachable") is False or not payload.get("stopped", True):
             raise SystemExit(EXIT_OTHER)
         return
     if payload.get("reachable") is False:
-        emit_lines([f"stop failed: could not reach the agent - {payload.get('error')}"])
+        emit_lines(
+            [
+                f"stop failed: could not reach the agent - {payload.get('error')}",
+                *_stopped_orphan_lines(payload),
+            ]
+        )
         raise SystemExit(EXIT_OTHER)
     if payload["agent_running"] and not payload["stopped"]:
         detail = f" - {payload['error']}" if payload.get("error") else ""
-        emit_lines([f"stop failed: agent did not confirm shutdown{detail}"])
+        emit_lines(
+            [
+                f"stop failed: agent did not confirm shutdown{detail}",
+                *_stopped_orphan_lines(payload),
+            ]
+        )
         raise SystemExit(EXIT_OTHER)
     elif payload["agent_running"]:
-        emit_lines(["stopped: the agent process is shutting down"])
+        emit_lines(["stopped: the agent process is shutting down", *_stopped_orphan_lines(payload)])
     else:
-        emit_lines(["stopped: no agent was running"])
+        emit_lines(["stopped: no agent was running", *_stopped_orphan_lines(payload)])
 
 
 @main.group(epilog=help_text.PROFILES_EPILOG)
@@ -2074,6 +2217,20 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
             f"installed metadata ({stale[0]}) is stale vs the checkout ({stale[1]}) - a "
             f"`git pull` did not re-bake it; run: {reinstall}"
         )
+    orphaned_agents = agent_processes.orphaned_agent_instances()
+    if orphaned_agents:
+        warnings.append(
+            f"{len(orphaned_agents)} orphaned blumkin-agent process(es) found on other "
+            "socket paths (likely left over from before an upgrade) - run: "
+            "blumkin agent stop --all"
+        )
+    mcp_serve_processes = agent_processes.mcp_serve_processes()
+    if mcp_serve_processes:
+        warnings.append(
+            f"{len(mcp_serve_processes)} `blumkin mcp serve` process(es) running - "
+            "restart your MCP client(s) if you've upgraded blumkin recently, to make "
+            "sure they picked it up"
+        )
     capabilities = capability_summary(
         provider=cfg.provider, granted_scopes=status.get("granted_scopes") or []
     )
@@ -2100,6 +2257,10 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
                 cfg.mail_signature.client_appends_signature or signature_state.suppresses_signature
             )
             and cfg.mail_signature.enabled,
+        },
+        "stale_processes": {
+            "orphaned_agents": [instance.as_dict() for instance in orphaned_agents],
+            "mcp_serve": [proc.as_dict() for proc in mcp_serve_processes],
         },
         "status": status,
         "skills": [s["id"] for s in skills_catalog()["skills"]],
@@ -2179,7 +2340,11 @@ def upgrade(ctx: click.Context, as_json_flag: bool, yes: bool) -> None:
     run for you with `--yes`. An unmanaged install is reported, not touched.
 
     `--json` carries `install_method`, `managed_path`, `checkout`,
-    `metadata_stale`, `action_taken`, and `suggested_commands`.
+    `metadata_stale`, `action_taken`, `suggested_commands`, and
+    `stale_processes` - any `blumkin-agent` / `blumkin mcp serve` process
+    still running the previous build after a real upgrade (issue #408);
+    agents are stopped outright (they respawn), `mcp serve` processes are
+    only reported, with restart guidance.
     """
     as_json = _as_json(ctx, as_json_flag)
     running_build = build_version()
@@ -2239,6 +2404,18 @@ def upgrade(ctx: click.Context, as_json_flag: bool, yes: bool) -> None:
         running_build=running_build,
         running_path=running_path,
         stale=stale,
+        # A confirmed no-op (`before == after`, both actually measured, e.g.
+        # `--yes` on a build that turned out to have nothing to upgrade)
+        # changed nothing, so scanning would only report a false "restart
+        # your MCP client" / stop every reachable agent for zero actual
+        # reason (PR #409 review). `None` means "unmeasurable" (e.g. a
+        # source checkout with no `managed_path` to probe), not "unchanged"
+        # - always scan in that case rather than silently skip it.
+        stale_processes=(
+            []
+            if before is not None and after is not None and before == after
+            else _find_stale_processes(before=before, after=after)
+        ),
     )
 
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -216,3 +219,134 @@ def test_agent_stop_text_when_unreachable_fails() -> None:
         result = CliRunner().invoke(main, ["agent", "stop"])
     assert result.exit_code == EXIT_OTHER
     assert "stop failed" in result.output
+
+
+# ------------------------------------------------------------------ orphaned agents (#408)
+
+
+def _orphan_instance() -> Any:
+    from blumkin.agent import processes as agent_processes
+
+    return agent_processes.AgentInstance(
+        socket_path=Path("/tmp/legacy/agent.sock"),
+        pid=999,
+        version="1.9.2",
+        is_primary=False,
+    )
+
+
+def test_agent_status_json_reports_an_orphaned_agent() -> None:
+    with (
+        patch("blumkin.cli.agent_client.call", side_effect=AgentUnavailableError("no agent")),
+        patch(
+            "blumkin.cli.agent_processes.orphaned_agent_instances",
+            return_value=[_orphan_instance()],
+        ),
+    ):
+        result = CliRunner().invoke(main, ["agent", "status", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    payload = json.loads(result.output)
+    assert payload["orphaned_agents"] == [
+        {
+            "socket_path": "/tmp/legacy/agent.sock",
+            "pid": 999,
+            "version": "1.9.2",
+            "is_primary": False,
+        }
+    ]
+
+
+def test_agent_status_text_warns_about_an_orphaned_agent() -> None:
+    with (
+        patch("blumkin.cli.agent_client.call", side_effect=AgentUnavailableError("no agent")),
+        patch(
+            "blumkin.cli.agent_processes.orphaned_agent_instances",
+            return_value=[_orphan_instance()],
+        ),
+    ):
+        result = CliRunner().invoke(main, ["agent", "status"])
+    assert "orphaned agent(s)" in result.output
+    assert "pid=999" in result.output
+
+
+def test_agent_status_json_omits_orphaned_agents_key_when_none_found() -> None:
+    with (
+        patch("blumkin.cli.agent_client.call", side_effect=AgentUnavailableError("no agent")),
+        patch("blumkin.cli.agent_processes.orphaned_agent_instances", return_value=[]),
+    ):
+        result = CliRunner().invoke(main, ["agent", "status", "--json"])
+    payload = json.loads(result.output)
+    assert "orphaned_agents" not in payload
+
+
+def test_agent_stop_all_also_stops_orphaned_agents() -> None:
+    with (
+        patch("blumkin.cli.agent_client.call", side_effect=AgentUnavailableError("no agent")),
+        patch(
+            "blumkin.cli.agent_processes.orphaned_agent_instances",
+            return_value=[_orphan_instance()],
+        ),
+        patch("blumkin.cli.agent_client.call_at", return_value={"ok": True}) as call_at,
+    ):
+        result = CliRunner().invoke(main, ["agent", "stop", "--all", "--json"])
+    assert result.exit_code == EXIT_SUCCESS
+    payload = json.loads(result.output)
+    assert payload["orphaned_agents"] == [
+        {
+            "socket_path": "/tmp/legacy/agent.sock",
+            "pid": 999,
+            "version": "1.9.2",
+            "is_primary": False,
+            "stopped": True,
+        }
+    ]
+    call_at.assert_called_once_with(Path("/tmp/legacy/agent.sock"), "shutdown")
+
+
+def test_agent_stop_all_counts_a_protocol_mismatch_orphan_as_stopped() -> None:
+    """A legacy orphan may reply `protocol_mismatch` to `shutdown` - it already
+    committed to shutting itself down before replying (PR #404), so this is
+    the success case, not a failure (PR #409 review)."""
+    with (
+        patch("blumkin.cli.agent_client.call", side_effect=AgentUnavailableError("no agent")),
+        patch(
+            "blumkin.cli.agent_processes.orphaned_agent_instances",
+            return_value=[_orphan_instance()],
+        ),
+        patch(
+            "blumkin.cli.agent_client.call_at",
+            return_value={"ok": False, "error": "protocol_mismatch"},
+        ),
+    ):
+        result = CliRunner().invoke(main, ["agent", "stop", "--all", "--json"])
+    payload = json.loads(result.output)
+    assert payload["orphaned_agents"][0]["stopped"] is True
+
+
+def test_agent_stop_all_reports_an_orphan_it_could_not_stop() -> None:
+    with (
+        patch("blumkin.cli.agent_client.call", side_effect=AgentUnavailableError("no agent")),
+        patch(
+            "blumkin.cli.agent_processes.orphaned_agent_instances",
+            return_value=[_orphan_instance()],
+        ),
+        patch("blumkin.cli.agent_client.call_at", return_value=None),
+    ):
+        result = CliRunner().invoke(main, ["agent", "stop", "--all", "--json"])
+    payload = json.loads(result.output)
+    assert payload["orphaned_agents"][0]["stopped"] is False
+
+
+def test_agent_stop_without_all_never_touches_orphaned_agents() -> None:
+    with (
+        patch("blumkin.cli.agent_client.call", side_effect=AgentUnavailableError("no agent")),
+        patch(
+            "blumkin.cli.agent_processes.orphaned_agent_instances",
+            return_value=[_orphan_instance()],
+        ),
+        patch("blumkin.cli.agent_client.call_at") as call_at,
+    ):
+        result = CliRunner().invoke(main, ["agent", "stop", "--json"])
+    payload = json.loads(result.output)
+    assert "orphaned_agents" not in payload
+    call_at.assert_not_called()
