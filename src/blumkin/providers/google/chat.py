@@ -29,6 +29,7 @@ from blumkin.attachments import (
 )
 from blumkin.compose_state import record_composed
 from blumkin.config import BlumkinConfig, load_config
+from blumkin.message_policy import validate_outbound_text
 from blumkin.providers.google_auth import CHAT_READ_SCOPES, CHAT_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.chat import (
@@ -352,6 +353,7 @@ async def chat_draft(
     if not body_text:
         raise ValueError("--text must be non-empty")
     cfg = config or load_config()
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     chat, target_id, partial, skipped = await _resolve_chat_target(
         chat_id=chat_id, with_name=with_name, config=cfg
     )
@@ -378,6 +380,7 @@ async def chat_edit(
     cid = str(draft["chat_id"])
     mid = str(draft["message_id"])
     body_text = str(draft["text"])
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     service = _chat_service(cfg)
     _require_message_in_chat(service, cid, mid)
     updated = execute(
@@ -403,6 +406,7 @@ async def chat_edit_draft(
     if not body_text:
         raise ValueError("--text must be non-empty")
     cfg = config or load_config()
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     draft_id = f"chat-edit-{uuid.uuid4().hex}"
     record_composed(
         cfg,
@@ -421,6 +425,7 @@ async def chat_send(
     draft = _require_chat_draft(cfg, draft_id, kind="send")
     target_id = str(draft["chat_id"])
     body_text = str(draft["text"])
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     service = _chat_service(cfg)
     created = execute(
         service.spaces().messages().create(parent=target_id, body={"text": body_text}),

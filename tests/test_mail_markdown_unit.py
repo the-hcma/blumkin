@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from msgraph.generated.models.body_type import BodyType
 
-from blumkin.config import PreferencesConfig
+from blumkin.config import MailSignatureConfig, MessagePolicyConfig, PreferencesConfig
 from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
 from blumkin.skills.mail import (
     mail_draft,
@@ -156,7 +156,13 @@ def _client(monkeypatch, *, preferences: PreferencesConfig | None = None) -> Mag
     client = MagicMock()
     client.me.messages.post = AsyncMock(return_value=SimpleNamespace(id="d", subject="S"))
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
-    config = SimpleNamespace(client_id="x", default_tz="UTC", preferences=preferences)
+    config = SimpleNamespace(
+        client_id="x",
+        default_tz="UTC",
+        mail_signature=MailSignatureConfig(),
+        message_policy=MessagePolicyConfig(),
+        preferences=preferences,
+    )
     monkeypatch.setattr("blumkin.skills.mail.load_config", lambda: config)
     return client
 
@@ -189,7 +195,11 @@ def test_provider_wrapper_body_type_none_still_respects_config(monkeypatch) -> N
     way the CLI/MCP path (not the skill function called directly) actually runs."""
     client = _client(monkeypatch, preferences=PreferencesConfig(html_email=False))
     config = SimpleNamespace(
-        client_id="x", default_tz="UTC", preferences=PreferencesConfig(html_email=False)
+        client_id="x",
+        default_tz="UTC",
+        mail_signature=MailSignatureConfig(),
+        message_policy=MessagePolicyConfig(),
+        preferences=PreferencesConfig(html_email=False),
     )
     provider = MicrosoftWorkspaceProvider(config)  # type: ignore[arg-type]
     asyncio.run(provider.mail_draft(to="a@b.com", subject="Asks", body="plain please"))

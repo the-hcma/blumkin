@@ -6,7 +6,7 @@ import json
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -64,6 +64,7 @@ class BlumkinConfig:
     google_auth_uri: str = ""
     google_redirect_uris: tuple[str, ...] = ()
     google_token_uri: str = ""
+    message_policy: MessagePolicyConfig = field(default_factory=lambda: MessagePolicyConfig())
     # OS keychain vs. a plain 0600 file for the token cache / auth record /
     # Google token (issue #287). "auto" prefers the keyring extra when a real
     # backend is usable at runtime, silently falling back to the file
@@ -134,6 +135,14 @@ class MailSignatureConfig:
     name_color: str = "#003366"
     title: str = ""
     title_color: str = "#5B9BD5"
+
+
+@dataclass(frozen=True, slots=True)
+class MessagePolicyConfig:
+    """Config-driven lint rules for outbound drafted text."""
+
+    forbid_unicode_dashes: bool = True
+    honor_client_signature_suppression: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,6 +348,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         google_token_uri=_google_token_uri(table),
         graph_timeout_seconds=_graph_timeout_seconds(table),
         mail_signature=_mail_signature_config(table),
+        message_policy=_message_policy_config(table, profile=selected),
         preferences=_preferences_config(table, _top_level_preferences(file_data), profile=selected),
         profile=selected,
         provider=_provider_kind(table),
@@ -683,6 +693,43 @@ def _mail_signature_config(file_data: dict[str, Any]) -> MailSignatureConfig:
         name_color=str(raw.get("name_color") or "#003366").strip() or "#003366",
         title=str(raw.get("title") or "").strip(),
         title_color=str(raw.get("title_color") or "#5B9BD5").strip() or "#5B9BD5",
+    )
+
+
+def _message_policy_config(file_data: dict[str, Any], *, profile: str) -> MessagePolicyConfig:
+    """Parse optional ``[message_policy]`` rules under ``[profiles.<name>]``."""
+    raw = file_data.get("message_policy")
+    if raw is None:
+        return MessagePolicyConfig()
+    if not isinstance(raw, dict):
+        raise ProviderConfigError(
+            f"profiles.{profile}.message_policy must be a table in config.toml, "
+            f"got {type(raw).__name__}"
+        )
+    unknown_keys = sorted(
+        set(raw) - {"forbid_unicode_dashes", "honor_client_signature_suppression"}
+    )
+    if unknown_keys:
+        raise ProviderConfigError(
+            f"unknown key(s) in profiles.{profile}.message_policy: {', '.join(unknown_keys)}"
+        )
+    forbid = _coerce_bool(raw.get("forbid_unicode_dashes"))
+    if "forbid_unicode_dashes" in raw and forbid is None:
+        raise ProviderConfigError(
+            "profiles."
+            f"{profile}.message_policy.forbid_unicode_dashes must be a boolean in config.toml, "
+            f"got {raw.get('forbid_unicode_dashes')!r}"
+        )
+    suppress = _coerce_bool(raw.get("honor_client_signature_suppression"))
+    if "honor_client_signature_suppression" in raw and suppress is None:
+        raise ProviderConfigError(
+            "profiles."
+            f"{profile}.message_policy.honor_client_signature_suppression must be a boolean "
+            f"in config.toml, got {raw.get('honor_client_signature_suppression')!r}"
+        )
+    return MessagePolicyConfig(
+        forbid_unicode_dashes=True if forbid is None else forbid,
+        honor_client_signature_suppression=True if suppress is None else suppress,
     )
 
 

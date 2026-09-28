@@ -11,7 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from msgraph.generated.models.body_type import BodyType
 
-from blumkin.config import BlumkinConfig
+from blumkin.compose_state import record_composed
+from blumkin.config import BlumkinConfig, MessagePolicyConfig
 from blumkin.skills.chat import (
     ChatDraftNotFoundError,
     chat_delete,
@@ -41,6 +42,7 @@ def _cfg(tmp_path: Path) -> BlumkinConfig:
         SimpleNamespace(
             client_id="x",
             compose_state_path=tmp_path / "compose_state.json",
+            message_policy=MessagePolicyConfig(),
             preferences=SimpleNamespace(confirm_cooldown_seconds=20),
         ),
     )
@@ -165,6 +167,25 @@ def test_chat_send_empty_text_raises(tmp_path) -> None:
         asyncio.run(chat_draft(with_name="daniel", text="   ", config=_cfg(tmp_path)))
 
 
+def test_chat_send_rejects_em_dash_text(tmp_path) -> None:
+    with pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(chat_draft(with_name="daniel", text="hello — team", config=_cfg(tmp_path)))
+
+
+def test_chat_send_revalidates_persisted_text_before_graph_call(monkeypatch, tmp_path) -> None:
+    cfg = _cfg(tmp_path)
+    record_composed(
+        cfg,
+        "chat-send-stale-policy",
+        content={"chat_id": "chat-1", "kind": "send", "text": "hello — team"},
+    )
+    client_factory = MagicMock()
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", client_factory)
+    with pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(chat_send(draft_id="chat-send-stale-policy", config=cfg))
+    client_factory.assert_not_called()
+
+
 def test_chat_send_unknown_draft_raises(tmp_path) -> None:
     with pytest.raises(ChatDraftNotFoundError):
         asyncio.run(chat_send(draft_id="chat-send-nope", config=_cfg(tmp_path)))
@@ -191,6 +212,25 @@ def test_chat_edit_mocked(monkeypatch, tmp_path) -> None:
     assert "updated" in format_edit_human(payload)[0]
 
 
+def test_chat_edit_revalidates_persisted_text_before_graph_call(monkeypatch, tmp_path) -> None:
+    cfg = _cfg(tmp_path)
+    record_composed(
+        cfg,
+        "chat-edit-stale-policy",
+        content={
+            "chat_id": "chat-1",
+            "kind": "edit",
+            "message_id": "message-1",
+            "text": "hello — team",
+        },
+    )
+    client_factory = MagicMock()
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", client_factory)
+    with pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(chat_edit(draft_id="chat-edit-stale-policy", config=cfg))
+    client_factory.assert_not_called()
+
+
 def test_chat_edit_reget_when_patch_empty(monkeypatch, tmp_path) -> None:
     updated = SimpleNamespace(
         id="msg-1",
@@ -208,6 +248,18 @@ def test_chat_edit_reget_when_patch_empty(monkeypatch, tmp_path) -> None:
     payload = asyncio.run(chat_edit(draft_id=draft["draft"]["id"], config=cfg))
     assert payload["message"]["id"] == "msg-1"
     stub.get.assert_awaited_once()
+
+
+def test_chat_edit_draft_rejects_em_dash_text(tmp_path) -> None:
+    with pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(
+            chat_edit_draft(
+                chat_id="c",
+                message_id="m",
+                text="fix this — now",
+                config=_cfg(tmp_path),
+            )
+        )
 
 
 def test_chat_delete_mocked(monkeypatch, tmp_path) -> None:

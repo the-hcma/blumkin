@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from msgraph.generated.models.body_type import BodyType
 
+from blumkin.config import MailSignatureConfig, MessagePolicyConfig
 from blumkin.skills.mail import (
     _MAX_ATTACHMENT_BYTES,
     MailAttachError,
@@ -614,5 +615,10 @@ def _patch_graph(monkeypatch, client: MagicMock) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(default_tz="UTC", client_id="x"),
+        lambda: SimpleNamespace(
+            default_tz="UTC",
+            client_id="x",
+            mail_signature=MailSignatureConfig(),
+            message_policy=MessagePolicyConfig(),
+        ),
     )

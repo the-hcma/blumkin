@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from msgraph.generated.models.body_type import BodyType
 
+from blumkin.config import MailSignatureConfig, MessagePolicyConfig
 from blumkin.skills.mail import _compose_item_body, mail_draft, mail_update_draft
 
 
@@ -33,7 +34,12 @@ def _client(monkeypatch) -> MagicMock:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(client_id="x", default_tz="UTC"),
+        lambda: SimpleNamespace(
+            client_id="x",
+            default_tz="UTC",
+            mail_signature=MailSignatureConfig(),
+            message_policy=MessagePolicyConfig(),
+        ),
     )
     return client
 
@@ -79,7 +85,12 @@ def test_mail_update_draft_text_body_patched_with_crlf(monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
-        lambda: SimpleNamespace(client_id="x", default_tz="UTC"),
+        lambda: SimpleNamespace(
+            client_id="x",
+            default_tz="UTC",
+            mail_signature=MailSignatureConfig(),
+            message_policy=MessagePolicyConfig(),
+        ),
     )
 
     asyncio.run(
