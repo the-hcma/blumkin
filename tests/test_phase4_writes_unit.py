@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from msgraph.generated.models.body_type import BodyType
 
+from blumkin.compose_state import record_composed
 from blumkin.config import BlumkinConfig
 from blumkin.skills.chat import (
     ChatDraftNotFoundError,
@@ -168,6 +169,20 @@ def test_chat_send_empty_text_raises(tmp_path) -> None:
 def test_chat_send_rejects_em_dash_text(tmp_path) -> None:
     with pytest.raises(ValueError, match="disallowed dash"):
         asyncio.run(chat_draft(with_name="daniel", text="hello — team", config=_cfg(tmp_path)))
+
+
+def test_chat_send_revalidates_persisted_text_before_graph_call(monkeypatch, tmp_path) -> None:
+    cfg = _cfg(tmp_path)
+    record_composed(
+        cfg,
+        "chat-send-stale-policy",
+        content={"chat_id": "chat-1", "kind": "send", "text": "hello — team"},
+    )
+    client_factory = MagicMock()
+    monkeypatch.setattr("blumkin.skills.chat.create_graph_client", client_factory)
+    with pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(chat_send(draft_id="chat-send-stale-policy", config=cfg))
+    client_factory.assert_not_called()
 
 
 def test_chat_send_unknown_draft_raises(tmp_path) -> None:

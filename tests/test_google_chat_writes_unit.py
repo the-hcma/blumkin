@@ -10,6 +10,7 @@ import httplib2
 import pytest
 from googleapiclient.errors import HttpError
 
+from blumkin.compose_state import record_composed
 from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.providers.google_auth import GOOGLE_SCOPES
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
@@ -82,6 +83,23 @@ def test_chat_send_rejects_em_dash_text(tmp_path: Path) -> None:
     with _patched(_service()):
         with pytest.raises(ValueError, match="disallowed dash"):
             asyncio.run(provider.chat_draft(text="hello — team", chat_id="spaces/AAA"))
+
+
+def test_chat_send_revalidates_persisted_text_before_google_call(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    record_composed(
+        cfg,
+        "chat-send-stale-policy",
+        content={
+            "chat_id": "spaces/AAA",
+            "kind": "send",
+            "text": "hello — team",
+        },
+    )
+    service = _service()
+    with _patched(service), pytest.raises(ValueError, match="disallowed dash"):
+        asyncio.run(GoogleWorkspaceProvider(cfg).chat_send(draft_id="chat-send-stale-policy"))
+    service.spaces.return_value.messages.return_value.create.assert_not_called()
 
 
 def test_chat_edit_patches_only_the_text_field(tmp_path: Path) -> None:

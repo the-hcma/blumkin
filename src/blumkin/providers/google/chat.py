@@ -424,6 +424,7 @@ async def chat_send(
     draft = _require_chat_draft(cfg, draft_id, kind="send")
     target_id = str(draft["chat_id"])
     body_text = str(draft["text"])
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     service = _chat_service(cfg)
     created = execute(
         service.spaces().messages().create(parent=target_id, body={"text": body_text}),

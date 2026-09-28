@@ -503,6 +503,7 @@ async def chat_send(
     draft = _require_chat_draft(cfg, draft_id, kind="send")
     target_id = str(draft["chat_id"])
     body_text = str(draft["text"])
+    validate_outbound_text(body_text, config=cfg, field_name="chat text")
     client = create_graph_client(cfg)
     message = ChatMessage(body=ItemBody(content=body_text, content_type=BodyType.Text))
     created = await client.me.chats.by_chat_id(target_id).messages.post(message)

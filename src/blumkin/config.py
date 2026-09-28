@@ -41,7 +41,6 @@ class BlumkinConfig:
     tags: tuple[str, ...]
     tenant_id: str
     wo1162425_scopes: bool
-    message_policy: MessagePolicyConfig = field(default_factory=lambda: MessagePolicyConfig())
     # Microsoft only (issue #297). Explicit per-profile opt-in - never inferred
     # from `tenant_id`'s value - for whether this profile's Entra app
     # registration is a work/school org tenant or a personal Microsoft Account
@@ -65,6 +64,7 @@ class BlumkinConfig:
     google_auth_uri: str = ""
     google_redirect_uris: tuple[str, ...] = ()
     google_token_uri: str = ""
+    message_policy: MessagePolicyConfig = field(default_factory=lambda: MessagePolicyConfig())
     # OS keychain vs. a plain 0600 file for the token cache / auth record /
     # Google token (issue #287). "auto" prefers the keyring extra when a real
     # backend is usable at runtime, silently falling back to the file

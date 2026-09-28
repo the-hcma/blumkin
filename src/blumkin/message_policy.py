@@ -8,17 +8,6 @@ from typing import Any
 
 from blumkin.config import BlumkinConfig
 
-_DISALLOWED_DASH_RE = re.compile(r"[—–]")
-
-
-def _policy(config: BlumkinConfig) -> Any:
-    return getattr(config, "message_policy", None)
-
-
-def _forbid_unicode_dashes(config: BlumkinConfig) -> bool:
-    policy = _policy(config)
-    return True if policy is None else bool(getattr(policy, "forbid_unicode_dashes", True))
-
 
 def should_suppress_signature(*, config: BlumkinConfig, detected_outlook_signature: bool) -> bool:
     policy = _policy(config)
@@ -36,3 +25,15 @@ def validate_outbound_text(content: str, *, config: BlumkinConfig, field_name: s
             f"{field_name} contains a disallowed dash (— / – / &mdash; / &ndash;); "
             "use ASCII hyphen '-' instead"
         )
+
+
+_DISALLOWED_DASH_RE = re.compile(r"[—–]")
+
+
+def _forbid_unicode_dashes(config: BlumkinConfig) -> bool:
+    policy = _policy(config)
+    return True if policy is None else bool(getattr(policy, "forbid_unicode_dashes", True))
+
+
+def _policy(config: BlumkinConfig) -> Any:
+    return getattr(config, "message_policy", None)
