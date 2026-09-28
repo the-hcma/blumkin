@@ -233,6 +233,28 @@ def test_discover_agent_instances_is_empty_on_unsupported_platform(
     assert agent_processes.discover_agent_instances() == []
 
 
+# ------------------------------------------------------------------ _candidate_sockets
+
+
+def test_candidate_sockets_includes_the_tmpdir_fallback_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of issue #408 - finding a pre-#403, `$TMPDIR`-based
+    legacy agent this build's own `runtime_base_dir()` no longer resolves
+    to - depends on this exact ladder; a prior test only ever patched
+    `_candidate_sockets` out, so a regression here (e.g. dropping `TMPDIR`)
+    could not have failed it (PR #409 review)."""
+    monkeypatch.setattr(agent_processes, "runtime_base_dir", lambda: Path("/sandboxed-base"))
+    monkeypatch.setenv("TMPDIR", "/tmpdir-base")
+    monkeypatch.delenv("TEMP", raising=False)
+    monkeypatch.delenv("TMP", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    candidates = agent_processes._candidate_sockets()
+    uid = os.getuid()
+    assert candidates[0] == Path("/sandboxed-base") / f"blumkin-agent-{uid}" / "agent.sock"
+    assert Path("/tmpdir-base") / f"blumkin-agent-{uid}" / "agent.sock" in candidates
+
+
 def test_orphaned_agent_instances_excludes_the_primary(monkeypatch: pytest.MonkeyPatch) -> None:
     from blumkin.agent.paths import socket_path
 
@@ -280,6 +302,26 @@ def test_mcp_serve_processes_parses_ps_output(monkeypatch: pytest.MonkeyPatch) -
     assert pids == {123, 789}
     match = next(proc for proc in processes if proc.pid == 123)
     assert match.started_at == datetime(2024, 10, 25, 12, 34, 56)
+
+
+def test_mcp_serve_processes_rejects_a_substring_only_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A command line that merely *contains* the words "blumkin", "mcp", and
+    "serve" - without actually being a `blumkin ... mcp serve` invocation -
+    must never be reported (PR #409 review: a prior substring-only check
+    would have matched this)."""
+    ps_output = "  321 Wed Oct 25 12:34:56 2024     /bin/zsh -c grep blumkin mcp serve\n"
+
+    def _fake_run(*_args, **_kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(args=["ps"], returncode=0, stdout=ps_output, stderr="")
+
+    monkeypatch.setattr(agent_processes.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_processes.os, "getpid", lambda: 999)
+    monkeypatch.setattr(agent_processes.subprocess, "run", _fake_run)
+    assert agent_processes.mcp_serve_processes() == []
 
 
 def test_mcp_serve_processes_excludes_this_process(monkeypatch: pytest.MonkeyPatch) -> None:

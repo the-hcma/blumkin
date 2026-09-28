@@ -2397,7 +2397,12 @@ def upgrade(ctx: click.Context, as_json_flag: bool, yes: bool) -> None:
         running_build=running_build,
         running_path=running_path,
         stale=stale,
-        stale_processes=_find_stale_processes(before=before),
+        # An already-current install (`before == after`, e.g. `--yes` on a
+        # build that turned out to have nothing to upgrade) changed
+        # nothing, so scanning would only report a false "restart your MCP
+        # client" / stop every reachable agent for zero actual reason
+        # (PR #409 review).
+        stale_processes=_find_stale_processes(before=before) if before != after else [],
     )
 
 

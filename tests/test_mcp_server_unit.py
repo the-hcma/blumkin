@@ -676,14 +676,19 @@ def test_stale_server_check_flags_a_version_mismatch() -> None:
 def test_stale_server_check_passes_running_command_not_just_the_path() -> None:
     """`read_installed_version` must be probed with `running_command()`'s full
     argv (needed for a `python -m blumkin` launch), not the bare
-    `running_command_path()` (PR #409 review)."""
+    `running_command_path()` (PR #409 review). Asserts the exact value
+    `running_command()` returns is what gets passed through - not merely
+    `isinstance(..., tuple)`, which would still hold for a regression back
+    to `(str(running_command_path()),)` (PR #409 review follow-up)."""
     from blumkin.mcp_server import _stale_server_check
 
-    with patch("blumkin.mcp_server.read_installed_version", return_value="1.0.0") as read_installed:
+    sentinel = ("sentinel-python", "-m", "blumkin")
+    with (
+        patch("blumkin.mcp_server.running_command", return_value=sentinel),
+        patch("blumkin.mcp_server.read_installed_version", return_value="1.0.0") as read_installed,
+    ):
         _stale_server_check("1.0.0")
-    read_installed.assert_called_once()
-    (probed_command,) = read_installed.call_args.args
-    assert isinstance(probed_command, tuple)
+    read_installed.assert_called_once_with(sentinel)
 
 
 def test_stale_server_checker_caches_within_the_interval() -> None:

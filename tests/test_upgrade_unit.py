@@ -366,10 +366,18 @@ def _mcp_serve_proc(*, pid: int = 222):
     return agent_processes.McpServeProcess(pid=pid, command="blumkin mcp serve", started_at=None)
 
 
+def _version_change(monkeypatch) -> None:
+    """Make `before`/`after` app-version reads differ, so the stale-process
+    scan (gated on an actual version change - PR #409 review) still runs."""
+    versions = iter(["0.5.0 (aaaaaaaaaaaa)", "0.6.0 (bbbbbbbbbbbb)"])
+    monkeypatch.setattr(cli, "_read_app_version", lambda _p: next(versions))
+
+
 def test_upgrade_stops_a_still_running_agent_after_a_real_upgrade(install, monkeypatch) -> None:
     install["value"] = Install(
         checkout=None, managed_path=Path("/home/u/.local/bin/blumkin"), method=METHOD_PIPX
     )
+    _version_change(monkeypatch)
     _run_records(monkeypatch)
     monkeypatch.setattr(
         cli.agent_processes, "discover_agent_instances", lambda: [_agent_instance()]
@@ -395,6 +403,7 @@ def test_upgrade_counts_a_protocol_mismatch_agent_as_stopped(install, monkeypatc
     install["value"] = Install(
         checkout=None, managed_path=Path("/home/u/.local/bin/blumkin"), method=METHOD_PIPX
     )
+    _version_change(monkeypatch)
     _run_records(monkeypatch)
     monkeypatch.setattr(
         cli.agent_processes, "discover_agent_instances", lambda: [_agent_instance()]
@@ -413,6 +422,7 @@ def test_upgrade_reports_an_agent_it_could_not_stop(install, monkeypatch) -> Non
     install["value"] = Install(
         checkout=None, managed_path=Path("/home/u/.local/bin/blumkin"), method=METHOD_PIPX
     )
+    _version_change(monkeypatch)
     _run_records(monkeypatch)
     monkeypatch.setattr(
         cli.agent_processes, "discover_agent_instances", lambda: [_agent_instance()]
@@ -427,8 +437,7 @@ def test_upgrade_reports_but_does_not_kill_a_still_running_mcp_serve(install, mo
     install["value"] = Install(
         checkout=None, managed_path=Path("/home/u/.local/bin/blumkin"), method=METHOD_PIPX
     )
-    versions = iter(["0.5.0 (aaaaaaaaaaaa)", "0.6.0 (bbbbbbbbbbbb)"])
-    monkeypatch.setattr(cli, "_read_app_version", lambda _p: next(versions))
+    _version_change(monkeypatch)
     _run_records(monkeypatch)
     monkeypatch.setattr(cli.agent_processes, "mcp_serve_processes", lambda: [_mcp_serve_proc()])
     call_at = []
@@ -478,10 +487,35 @@ def test_upgrade_does_not_scan_for_stale_processes_when_no_action_was_taken(
     assert discover == []
 
 
+def test_upgrade_does_not_scan_for_stale_processes_when_the_version_did_not_change(
+    install, monkeypatch
+) -> None:
+    """A pipx/uv reinstall that lands on the same version (e.g. `--force`
+    reinstalling an unchanged release) is a no-op - stopping every reachable
+    agent and telling the user to restart their MCP client would be a false
+    positive, so the scan is skipped entirely (PR #409 review)."""
+    install["value"] = Install(
+        checkout=None, managed_path=Path("/home/u/.local/bin/blumkin"), method=METHOD_PIPX
+    )
+    monkeypatch.setattr(cli, "_read_app_version", lambda _p: "0.5.0 (aaaaaaaaaaaa)")
+    _run_records(monkeypatch)
+    discover = []
+    monkeypatch.setattr(
+        cli.agent_processes,
+        "discover_agent_instances",
+        lambda: discover.append(1) or [_agent_instance()],
+    )
+
+    payload = json.loads(CliRunner().invoke(main, ["upgrade", "--json"]).output)
+    assert payload["stale_processes"] == []
+    assert discover == []
+
+
 def test_upgrade_text_reports_stale_processes(install, monkeypatch) -> None:
     install["value"] = Install(
         checkout=None, managed_path=Path("/home/u/.local/bin/blumkin"), method=METHOD_PIPX
     )
+    _version_change(monkeypatch)
     _run_records(monkeypatch)
     monkeypatch.setattr(
         cli.agent_processes, "discover_agent_instances", lambda: [_agent_instance()]

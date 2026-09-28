@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -125,7 +126,7 @@ def mcp_serve_processes() -> list[McpServeProcess]:
     for pid, started_at, command in _list_processes():
         if pid == self_pid:
             continue
-        if "blumkin" not in command or "mcp" not in command or "serve" not in command:
+        if not _is_mcp_serve_command(command):
             continue
         processes.append(McpServeProcess(pid=pid, command=command, started_at=started_at))
     return processes
@@ -164,6 +165,30 @@ def _candidate_sockets() -> list[Path]:
         seen.add(key)
         deduped.append(base)
     return [base / f"blumkin-agent-{uid}" / "agent.sock" for base in deduped]
+
+
+def _is_mcp_serve_command(command: str) -> bool:
+    """Whether `command` (a `ps -o command=` value) is a real
+    `blumkin ... mcp serve` invocation - argv-token matching, not a raw
+    substring check, so e.g. `grep blumkin mcp serve` or an editor tab
+    titled `.../reserve.py` naming all three words never counts (PR #409
+    review)."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    argv0 = Path(tokens[0]).name
+    if argv0 == "blumkin":
+        rest = tokens[1:]
+    elif argv0.startswith("python") and len(tokens) >= 3 and tokens[1] == "-m":
+        if tokens[2] != "blumkin":
+            return False
+        rest = tokens[3:]
+    else:
+        return False
+    return "mcp" in rest and "serve" in rest
 
 
 def _is_safe_agent_socket_dir(directory: Path) -> bool:

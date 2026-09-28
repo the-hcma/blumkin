@@ -14,6 +14,7 @@ skill, plus ``mail delete`` / ``mark`` / ``move`` and the ``mail.auto-reply`` /
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import tomllib
@@ -135,7 +136,12 @@ def build_server(
 
     async def on_call_tool(_ctx: Any, params: Any) -> types.CallToolResult:
         if stale_check is not None:
-            stale_error = stale_check()
+            # Off the event-loop thread (`asyncio.to_thread`): `stale_check`
+            # can run a real `--version` subprocess with up to a 30s
+            # timeout, and calling it inline here would block every other
+            # concurrent tool call on this server for that long (PR #409
+            # review).
+            stale_error = await asyncio.to_thread(stale_check)
             if stale_error is not None:
                 # Issue #408: every tool call on a server whose own build has
                 # fallen behind the currently installed one is short-circuited
@@ -445,11 +451,17 @@ def _stale_server_checker(
     `--version` subprocess on every single call would be wasteful - this
     bounds that cost to roughly once per interval regardless of call volume.
     """
-    state: dict[str, Any] = {"checked_at": 0.0, "error": None}
+    state: dict[str, Any] = {"checked_at": None, "error": None}
 
     def _check() -> ServerOutdatedError | None:
         now = time.monotonic()
-        if now - state["checked_at"] >= min_interval_s:
+        checked_at = state["checked_at"]
+        # `checked_at is None` (never probed) always re-checks regardless of
+        # `min_interval_s` - a host whose monotonic clock starts near 0 (low
+        # uptime) would otherwise let `now - 0.0 >= min_interval_s` stay
+        # false forever on the very first call, dispatching a stale
+        # server's first tool call unchecked (PR #409 review).
+        if checked_at is None or now - checked_at >= min_interval_s:
             state["error"] = _stale_server_check(running_build)
             state["checked_at"] = now
         return state["error"]
