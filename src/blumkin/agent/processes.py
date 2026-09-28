@@ -189,6 +189,29 @@ def _candidate_sockets() -> list[Path]:
 #: (PR #409 review).
 _PY_OPTIONS_WITH_OPERAND = frozenset({"-W", "-X"})
 
+#: `blumkin`'s root click group options that may precede any subcommand,
+#: e.g. `blumkin --profile work mcp serve` - `--profile`/`--tz` take a
+#: *separate* following token, while `--json`/`--version` are flags (PR #409
+#: review, fifth pass).
+_GLOBAL_OPTIONS_WITH_OPERAND = frozenset({"--profile", "--tz"})
+_GLOBAL_FLAGS = frozenset({"--json", "--version"})
+
+
+def _skip_global_options(tokens: list[str]) -> list[str]:
+    """Skip any leading root-group options (`--profile work`, `--json`, ...)
+    so the `mcp serve` positional check isn't fooled into returning False
+    just because a global option came first (PR #409 review, fifth pass)."""
+    index = 0
+    while index < len(tokens) and tokens[index].startswith("-"):
+        token = tokens[index]
+        if token in _GLOBAL_OPTIONS_WITH_OPERAND:
+            index += 2
+        elif token in _GLOBAL_FLAGS or "=" in token:
+            index += 1
+        else:
+            break
+    return tokens[index:]
+
 
 def _is_mcp_serve_command(command: str) -> bool:
     """Whether `command` (a `ps -o command=` value) is a real
@@ -220,13 +243,14 @@ def _is_mcp_serve_command(command: str) -> bool:
         rest = remaining[2:]
     else:
         return False
-    # The real invocation is always `blumkin mcp serve [flags]` (`out = ["mcp",
-    # "serve"]` is the start of `ServeSpec.args()`, never trailing flags) -
-    # matching the first two tokens positionally, not an order-independent
+    # `mcp serve` always follows `ServeSpec.args()`'s `["mcp", "serve"]` shape
+    # (never trailing flags) but may be preceded by root-group options like
+    # `--profile work` (PR #409 review, fifth pass) - skip those, then match
+    # the first two remaining tokens positionally, not an order-independent
     # membership check, so e.g. `blumkin mcp install --serve` or
     # `blumkin skills show mcp serve` never counts (PR #409 review, fourth
     # pass).
-    return rest[:2] == ["mcp", "serve"]
+    return _skip_global_options(rest)[:2] == ["mcp", "serve"]
 
 
 def _is_safe_agent_socket_dir(directory: Path) -> bool:
