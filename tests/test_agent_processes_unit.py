@@ -194,6 +194,41 @@ def test_discover_agent_instances_combines_version_and_commit(
     assert instances[0].version == "1.10.0 (abc123456789)"
 
 
+def test_discover_agent_instances_truncates_a_full_length_commit_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A released Rust agent reports `agent_commit` verbatim (a full 40-char
+    SHA from `BLUMKIN_EMBED_COMMIT=${GITHUB_SHA}`), while
+    `version.git_commit`/`build_version` always truncate to 12 chars via
+    `_normalize_commit` - without matching that truncation, the two sides
+    could never compare equal in `cli.py`'s already-current-agent guard, so
+    a just-respawned agent would still be wrongly shut down (PR #409
+    review, seventh pass)."""
+    from blumkin.agent.paths import socket_path
+
+    monkeypatch.setattr(agent_client, "is_supported_platform", lambda: True)
+    monkeypatch.setattr(agent_processes, "is_supported_platform", lambda: True)
+    sock_path = socket_path()
+    monkeypatch.setattr(agent_processes, "_candidate_sockets", lambda: [sock_path])
+    full_sha = "abc123456789def0123456789abcdef012345678"
+    thread = _serve_once(
+        sock_path,
+        _reply_once(
+            {
+                "ok": True,
+                "agent_pid": 111,
+                "agent_version": "1.10.0",
+                "agent_commit": full_sha,
+            }
+        ),
+    )
+    try:
+        instances = agent_processes.discover_agent_instances()
+    finally:
+        thread.join(timeout=5)
+    assert instances[0].version == "1.10.0 (abc123456789)"
+
+
 def test_discover_agent_instances_finds_a_legacy_socket_too(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -33,6 +33,7 @@ from typing import Any
 
 from blumkin.agent import client as agent_client
 from blumkin.agent.paths import is_supported_platform, runtime_base_dir
+from blumkin.version import _normalize_commit
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,11 +152,17 @@ def _agent_instance_version(response: dict[str, Any]) -> str | None:
     comparable against `blumkin upgrade`'s `before`/`after` reads - a bare
     package version (e.g. `0.5.0`) never equals that format, which made a
     just-respawned, already-current agent look indistinguishable from a
-    stale one (PR #409 review)."""
+    stale one (PR #409 review). The Rust agent reports `agent_commit`
+    verbatim (a full 40-char SHA in a released build), while
+    `version.git_commit`/`build_version` always truncate to 12 chars via
+    `_normalize_commit` - without matching that truncation here, the two
+    sides could never compare equal in production, so the just-respawned
+    agent would still be wrongly shut down (PR #409 review, seventh
+    pass)."""
     version = response.get("agent_version")
     commit = response.get("agent_commit")
     if isinstance(version, str) and isinstance(commit, str):
-        return f"{version} ({commit})"
+        return f"{version} ({_normalize_commit(commit)})"
     return version if isinstance(version, str) else None
 
 
@@ -218,7 +225,19 @@ def _is_mcp_serve_command(command: str) -> bool:
     `blumkin ... mcp serve` invocation - argv-token matching, not a raw
     substring check, so e.g. `grep blumkin mcp serve` or an editor tab
     titled `.../reserve.py` naming all three words never counts (PR #409
-    review)."""
+    review).
+
+    Best-effort, not exhaustive: it covers the `blumkin mcp serve` console
+    script, `mcp install`'s registered console-script shebang launch, and a
+    `python[3] [-m] blumkin mcp serve` module launch, each with leading
+    interpreter/root-group options skipped. Deliberately frozen at this
+    shape (PR #409 review, Governance) rather than chasing further argv
+    shapes (`uv run blumkin mcp serve`, `env FOO=1 blumkin mcp serve`,
+    `sh -c` wrappers, ...) one at a time - a miss here only under-reports a
+    stale `mcp serve` process; `agent stop --all`/`doctor` still surface
+    the socket-based agents via a different, exact mechanism. Any further
+    argv-shape coverage belongs in a follow-up PR, not more edge cases
+    here."""
     try:
         tokens = shlex.split(command)
     except ValueError:
