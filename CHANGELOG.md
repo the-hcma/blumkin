@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.11.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.10.0...blumkin-v1.11.0) (2026-09-28)
+
+
+### Features
+
+* detect orphaned agents and stale mcp serve processes ([#408](https://github.com/the-hcma/blumkin/issues/408)) ([#409](https://github.com/the-hcma/blumkin/issues/409)) ([0609cb6](https://github.com/the-hcma/blumkin/commit/0609cb6bf0ae07cff3b079f6fa75f0ed0adc1e88))
+
+
+### Documentation
+
+* sync unwrapped agent rule templates from repository-helpers ([#410](https://github.com/the-hcma/blumkin/issues/410)) ([405f738](https://github.com/the-hcma/blumkin/commit/405f7385773090c65ed260a447ef76d8a6ceef3c))
+
 ## [1.10.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.9.2...blumkin-v1.10.0) (2026-09-27)
 
 
