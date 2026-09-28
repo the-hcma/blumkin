@@ -6,42 +6,30 @@ Non-negotiable standards for humans and AI working in this repo.
 
 ## What this repo is
 
-**blumkin** is a personal Microsoft 365 / Graph **skills CLI** (delegated “as me”).
-See `README.md` and `PLAN.md`.
+**blumkin** is a personal Microsoft 365 / Graph **skills CLI** (delegated “as me”). See `README.md` and `PLAN.md`.
 
-When writing mail or Teams chat bodies on the user's behalf (via blumkin skills),
-follow `.agents/skills/blumkin/SKILL.md` authoring style: hyphens, not em/en dashes.
+When writing mail or Teams chat bodies on the user's behalf (via blumkin skills), follow `.agents/skills/blumkin/SKILL.md` authoring style: hyphens, not em/en dashes.
 
 ---
 
 ## Session startup & cleanup
 
-- At the **start of every agent session**, before acting from assumed
-  conventions, read this `AGENTS.md` in full.
-- Then read every `alwaysApply: true` rule under `.agents/rules/*.md` (plus any
-  whose `globs` match files you will touch). `AGENTS.md` and `.agents/rules/`
-  together are the contract — neither alone is complete. `.cursor/rules/*.mdc`
-  are Cursor injection shims only (frontmatter + pointer). `CLAUDE.md` (a
-  `@AGENTS.md` import) and `.github/copilot-instructions.md` are thin shims so
-  Claude Code and Copilot reach this same guidance.
-- At the start of every session (before implementation), run
-  `~/work/ai/repository-helpers/scripts/dev/start-development` from
-  [repository-helpers](https://github.com/the-hcma/repository-helpers).
+- At the **start of every agent session**, before acting from assumed conventions, read this `AGENTS.md` in full.
+- Then read every `alwaysApply: true` rule under `.agents/rules/*.md` (plus any whose `globs` match files you will touch). `AGENTS.md` and `.agents/rules/` together are the contract — neither alone is complete. `.cursor/rules/*.mdc` are Cursor injection shims only (frontmatter + pointer). `CLAUDE.md` (a `@AGENTS.md` import) and `.github/copilot-instructions.md` are thin shims so Claude Code and Copilot reach this same guidance.
+- Markdown files you commit, this one included, use one physical line per paragraph, list item and blockquote, with no hard line breaks (see `.agents/rules/github-content-formatting.md`).
+- At the start of every session (before implementation), run `~/work/ai/repository-helpers/scripts/dev/start-development` from [repository-helpers](https://github.com/the-hcma/repository-helpers).
 - Default: prompts for a stack name and creates `.worktrees/<stack-name>-wt`.
 - Non-interactive:
   ```bash
   ~/work/ai/repository-helpers/scripts/dev/start-development --worktree <stack-name> --no-interactive
   ```
-- After it finishes, **`cd` into the stack worktree** before any other work.
-  Do not stay on the primary clone.
+- After it finishes, **`cd` into the stack worktree** before any other work. Do not stay on the primary clone.
 
 ### Main worktree is off-limits (agents)
 
-The **primary clone** (first entry in `git worktree list`, usually `main`) is
-**read-only** unless the user explicitly authorizes writes in this conversation.
+The **primary clone** (first entry in `git worktree list`, usually `main`) is **read-only** unless the user explicitly authorizes writes in this conversation.
 
-Never on the main worktree without that authorization: edit sources, run
-formatters/tests that mutate the tree, commits, checkouts, or `gh stack` writes.
+Never on the main worktree without that authorization: edit sources, run formatters/tests that mutate the tree, commits, checkouts, or `gh stack` writes.
 
 Always implement in `.worktrees/<stack-name>-wt`.
 
@@ -50,24 +38,11 @@ Always implement in `.worktrees/<stack-name>-wt`.
 ## Language & runtime
 
 - Target **Python 3.14+**.
-- Use **`uv`** for packaging and local gates (`uv sync`, `uv run ruff` /
-  `pytest` / `pyright`).
-- Product CLI is **`blumkin` on `PATH`** — install with `uv tool install -e .`
-  from a clone (see `README.md`). Agents and humans invoke `blumkin …`, not
-  `uv run blumkin`.
+- Use **`uv`** for packaging and local gates (`uv sync`, `uv run ruff` / `pytest` / `pyright`).
+- Product CLI is **`blumkin` on `PATH`** — install with `uv tool install -e .` from a clone (see `README.md`). Agents and humans invoke `blumkin …`, not `uv run blumkin`.
 - Runtime config + token cache: **`~/.config/blumkin/`** (never commit).
-- **Ruff `target-version = "py314"`:** bare `except A, B:` is valid on 3.14 and
-  `ruff format` may strip parentheses from `except (A, B):`. Do not “fix” that
-  style for older Python — this repo requires 3.14+.
-- **Exception — `rust-agent/`:** the `blumkin-agent` daemon (issue #328) is
-  Rust, not Python, because it is designed to be the sole holder of
-  decrypted, time-boxed secrets once later layers land, needing real
-  `mlock`/zeroing guarantees Python's string/GC model can't provide. It's a
-  private implementation detail (`publish = false`, never a standalone crate
-  release) built by a `hatchling` build hook (`hatch_build.py`) and bundled
-  into the macOS wheel; see
-  `rust-agent/README.md`. `cargo fmt` / `cargo clippy -- -D warnings` /
-  `cargo test` (via `.github/ci/rust-static`) gate it instead of Ruff/Pyright.
+- **Ruff `target-version = "py314"`:** bare `except A, B:` is valid on 3.14 and `ruff format` may strip parentheses from `except (A, B):`. Do not “fix” that style for older Python — this repo requires 3.14+.
+- **Exception — `rust-agent/`:** the `blumkin-agent` daemon (issue #328) is Rust, not Python, because it is designed to be the sole holder of decrypted, time-boxed secrets once later layers land, needing real `mlock`/zeroing guarantees Python's string/GC model can't provide. It's a private implementation detail (`publish = false`, never a standalone crate release) built by a `hatchling` build hook (`hatch_build.py`) and bundled into the macOS wheel; see `rust-agent/README.md`. `cargo fmt` / `cargo clippy -- -D warnings` / `cargo test` (via `.github/ci/rust-static`) gate it instead of Ruff/Pyright.
 
 ---
 
@@ -77,11 +52,8 @@ Always implement in `.worktrees/<stack-name>-wt`.
   - `uv run ruff check .`
   - `uv run ruff format .` (CI: `--check`)
 - **Pyright** (basic) for types: `uv run pyright`
-- CI must use the combined **Python lint & format checks** job via
-  `.github/ci/python-static` (repository-helpers convention) — no split
-  Ruff/Pyright workflow job names.
-- Shell scripts (if any): **no `.sh` extension**; **shellcheck** required;
-  lowercase locals; prefer long flags; timeouts on network commands.
+- CI must use the combined **Python lint & format checks** job via `.github/ci/python-static` (repository-helpers convention) — no split Ruff/Pyright workflow job names.
+- Shell scripts (if any): **no `.sh` extension**; **shellcheck** required; lowercase locals; prefer long flags; timeouts on network commands.
 
 ---
 
@@ -91,83 +63,55 @@ Always implement in `.worktrees/<stack-name>-wt`.
 - Prefer `uv run pytest` (or a small `./test` wrapper once added).
 - New behavior needs tests. Do not merge if the suite fails.
 - **CI:** mocked / offline only — `uv run pytest -m 'not live'`.
-- **Local (required for auth / Graph / live tests):** with
-  `~/.config/blumkin/` configured, also run
-  `BLUMKIN_LIVE=1 uv run pytest -m live` (includes silent refresh after
-  forced access-token expiry). See `.agents/rules/local-live-graph-tests.md`.
-- **Never verify with a skill that notifies others** — no invites, sends, or
-  chats to test something. Verify with reads, or with a draft you delete. See
-  `.agents/rules/no-third-party-side-effects.md`.
+- **Local (required for auth / Graph / live tests):** with `~/.config/blumkin/` configured, also run `BLUMKIN_LIVE=1 uv run pytest -m live` (includes silent refresh after forced access-token expiry). See `.agents/rules/local-live-graph-tests.md`.
+- **Never verify with a skill that notifies others** — no invites, sends, or chats to test something. Verify with reads, or with a draft you delete. See `.agents/rules/no-third-party-side-effects.md`.
 
 ---
 
 ## Secrets & Graph auth
 
-- Never commit secrets, client secrets, tokens, or `.msal_token_cache.json` /
-  `.auth_record.json` / `.env`.
-- Never dump those into agent logs, PR text, or review replies — see
-  `.agents/rules/no-secret-exposure.md` (org template: repository-helpers#566).
-- Blumkin uses **delegated** Graph auth only (public client + interactive
-  browser). No app-only mail/calendar permissions in this product.
+- Never commit secrets, client secrets, tokens, or `.msal_token_cache.json` / `.auth_record.json` / `.env`.
+- Never dump those into agent logs, PR text, or review replies — see `.agents/rules/no-secret-exposure.md` (org template: repository-helpers#566).
+- Blumkin uses **delegated** Graph auth only (public client + interactive browser). No app-only mail/calendar permissions in this product.
 
 ---
 
 ## Agent review (this repo)
 
-- Default quota chain matches repository-helpers:
-  `coderabbit,copilot,bugbot`.
-- **Bugbot:** keep in the chain; assume it will be (re)enabled for
-  `the-hcma/blumkin`. Until enabled, operators may use
-  `AGENT_REVIEW_QUOTA_FALLBACK_CHAIN=coderabbit,copilot` to skip disabled-stub
-  churn. **TODO (validate):** confirm a real Bugbot review on a PR head after
-  enablement — see `RETROSPECTIVE-M1.md`.
-- Reply-before-resolve and `wait-for-agent-review` remain mandatory
-  (`.agents/rules/pr-ship-and-review.md`).
+- Default quota chain matches repository-helpers: `coderabbit,copilot,bugbot`.
+- **Bugbot:** keep in the chain; assume it will be (re)enabled for `the-hcma/blumkin`. Until enabled, operators may use `AGENT_REVIEW_QUOTA_FALLBACK_CHAIN=coderabbit,copilot` to skip disabled-stub churn. **TODO (validate):** confirm a real Bugbot review on a PR head after enablement — see `RETROSPECTIVE-M1.md`.
+- Reply-before-resolve and `wait-for-agent-review` remain mandatory (`.agents/rules/pr-ship-and-review.md`).
 
 ---
 
 ## Commits, stacking & PRs
 
-- Stacking backend is **`gh-stack`** (`.github/stacking-tool`). Do **not** use
-  Graphite (`gt`) on this repo.
-- Skill reference:
-  [gh-stack](https://github.com/the-hcma/repository-helpers/blob/main/.agents/skills/gh-stack/SKILL.md)
+- Stacking backend is **`gh-stack`** (`.github/stacking-tool`). Do **not** use Graphite (`gt`) on this repo.
+- Skill reference: [gh-stack](https://github.com/the-hcma/repository-helpers/blob/main/.agents/skills/gh-stack/SKILL.md)
 - Worktree-per-stack via `start-development` (above).
-- Prefer bare `gh stack submit --auto --open` after
-  `"${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}/scripts/dev/pre-pr-checks"`.
-  Never interactive `gh stack submit` / `gh stack view` without `--json`.
-  Do **not** run helpers `scripts/dev/submit-stack` from this consumer (it
-  targets the helpers clone).
-- Merge path: GitHub merge queue — `gh pr merge --auto --squash` only when the
-  operator asks. **Always ask before enabling auto-merge.**
+- Prefer bare `gh stack submit --auto --open` after `"${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}/scripts/dev/pre-pr-checks"`. Never interactive `gh stack submit` / `gh stack view` without `--json`. Do **not** run helpers `scripts/dev/submit-stack` from this consumer (it targets the helpers clone).
+- Merge path: GitHub merge queue — `gh pr merge --auto --squash` only when the operator asks. **Always ask before enabling auto-merge.**
 - Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:`.
-- Commit identity: follow `.agents/rules/git-commit-identity.md` (no
-  Co-authored-by trailers unless the user asks).
+- Commit identity: follow `.agents/rules/git-commit-identity.md` (no Co-authored-by trailers unless the user asks).
 
 ---
 
 ## Repository practices / lint
 
-- Org compliance is enforced by
-  `~/work/ai/repository-helpers/scripts/github-repo-lint`.
-- After changing `.github/workflows/**`, Dependabot, stacking marker, or related
-  config, re-run:
+- Org compliance is enforced by `~/work/ai/repository-helpers/scripts/github-repo-lint`.
+- After changing `.github/workflows/**`, Dependabot, stacking marker, or related config, re-run:
   ```bash
   ~/work/ai/repository-helpers/scripts/github-repo-lint --suggest
   ```
   (or `--repo OWNER/NAME --suggest` once a GitHub remote exists).
-- Onboard / fix with `--new-repo` / `--apply-fix` as documented in
-  repository-helpers.
-- Keep agent rules in sync with
-  `repository-helpers/scripts/lib/repo-practices-agents/` templates when those
-  templates change (Cursor `.cursor/rules/*.mdc` shims stay thin pointers).
+- Onboard / fix with `--new-repo` / `--apply-fix` as documented in repository-helpers.
+- Keep agent rules in sync with `repository-helpers/scripts/lib/repo-practices-agents/` templates when those templates change (Cursor `.cursor/rules/*.mdc` shims stay thin pointers).
 
 ---
 
 ## Lexicographic code organization
 
-Follow `.agents/rules/lexicographic-code-organization.md` for module/file
-layout (imports, symbols, sections ordered for skimmability).
+Follow `.agents/rules/lexicographic-code-organization.md` for module/file layout (imports, symbols, sections ordered for skimmability).
 
 ---
 
