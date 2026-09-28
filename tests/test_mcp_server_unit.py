@@ -705,13 +705,35 @@ def test_stale_server_checker_re_probes_after_the_interval(monkeypatch) -> None:
     from blumkin import mcp_server
     from blumkin.mcp_server import _stale_server_checker
 
-    clock = iter([100.0, 200.0])
+    clock = iter([100.0, 100.0, 200.0, 200.0])
     monkeypatch.setattr(mcp_server.time, "monotonic", lambda: next(clock))
     with patch("blumkin.mcp_server.read_installed_version", return_value="1.0.0") as read_installed:
         checker = _stale_server_checker("1.0.0", min_interval_s=30.0)
         checker()
         checker()
     assert read_installed.call_count == 2
+
+
+def test_stale_server_checker_starts_the_interval_after_the_probe_returns(monkeypatch) -> None:
+    """`checked_at` must be stamped *after* `_stale_server_check` returns, not
+    from before it started - otherwise a probe that itself takes close to
+    `min_interval_s` (the subprocess's own timeout) would let the very next
+    waiting call immediately re-probe instead of actually waiting out the
+    interval (PR #409 review, third pass)."""
+    from blumkin import mcp_server
+    from blumkin.mcp_server import _stale_server_checker
+
+    # Probe starts at t=100, but by the time it returns the clock reads
+    # t=125 - simulating a slow `--version` subprocess.
+    clock = iter([100.0, 125.0, 130.0])
+    monkeypatch.setattr(mcp_server.time, "monotonic", lambda: next(clock))
+    with patch("blumkin.mcp_server.read_installed_version", return_value="1.0.0") as read_installed:
+        checker = _stale_server_checker("1.0.0", min_interval_s=30.0)
+        checker()
+        # t=130 is only 5s after the probe *returned* (t=125), well inside
+        # min_interval_s=30 - must not re-probe.
+        checker()
+    assert read_installed.call_count == 1
 
 
 def test_stale_server_checker_serializes_concurrent_probes() -> None:

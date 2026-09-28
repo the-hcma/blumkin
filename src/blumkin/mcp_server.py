@@ -472,7 +472,13 @@ def _stale_server_checker(
             # server's first tool call unchecked (PR #409 review).
             if checked_at is None or now - checked_at >= min_interval_s:
                 state["error"] = _stale_server_check(running_build)
-                state["checked_at"] = now
+                # Stamped *after* the probe returns, not `now` from before it
+                # started - `_stale_server_check` can itself take up to the
+                # subprocess's 30s timeout, and starting the interval early
+                # would let the very next waiting call immediately trigger
+                # another full-length probe instead of actually waiting out
+                # `min_interval_s` (PR #409 review, third pass).
+                state["checked_at"] = time.monotonic()
             return state["error"]
 
     return _check

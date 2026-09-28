@@ -375,6 +375,26 @@ def test_mcp_serve_processes_accepts_interpreter_options_before_dash_m(
     assert {proc.pid for proc in agent_processes.mcp_serve_processes()} == {321}
 
 
+def test_mcp_serve_processes_accepts_an_operand_taking_interpreter_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`-X`/`-W` take their value as a *separate* following token (`-X dev`),
+    unlike `-u` - the operand itself doesn't start with `-`, so it must be
+    skipped as a pair or it is mistaken for the end of the options run
+    (PR #409 review)."""
+    ps_output = "  321 Wed Oct 25 12:34:56 2024     /usr/bin/python3 -X dev -m blumkin mcp serve\n"
+
+    def _fake_run(*_args, **_kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(args=["ps"], returncode=0, stdout=ps_output, stderr="")
+
+    monkeypatch.setattr(agent_processes.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_processes.os, "getpid", lambda: 999)
+    monkeypatch.setattr(agent_processes.subprocess, "run", _fake_run)
+    assert {proc.pid for proc in agent_processes.mcp_serve_processes()} == {321}
+
+
 def test_mcp_serve_processes_excludes_this_process(monkeypatch: pytest.MonkeyPatch) -> None:
     ps_output = "  999 Wed Oct 25 12:34:56 2024     /usr/bin/blumkin mcp serve\n"
 

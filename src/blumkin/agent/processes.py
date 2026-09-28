@@ -182,6 +182,14 @@ def _candidate_sockets() -> list[Path]:
     return [base / f"blumkin-agent-{uid}" / "agent.sock" for base in deduped]
 
 
+#: Interpreter options `python` accepts before `-m` that take their value as a
+#: *separate* following token (`-X dev`, `-W ignore`), rather than folded into
+#: the option itself - both must be skipped as a pair, or the operand (which
+#: doesn't start with `-`) is mistaken for the end of the options run
+#: (PR #409 review).
+_PY_OPTIONS_WITH_OPERAND = frozenset({"-W", "-X"})
+
+
 def _is_mcp_serve_command(command: str) -> bool:
     """Whether `command` (a `ps -o command=` value) is a real
     `blumkin ... mcp serve` invocation - argv-token matching, not a raw
@@ -203,7 +211,10 @@ def _is_mcp_serve_command(command: str) -> bool:
         # past any of those rather than requiring `-m` at a fixed index.
         remaining = tokens[1:]
         while remaining and remaining[0] != "-m" and remaining[0].startswith("-"):
-            remaining = remaining[1:]
+            if remaining[0] in _PY_OPTIONS_WITH_OPERAND:
+                remaining = remaining[2:]
+            else:
+                remaining = remaining[1:]
         if len(remaining) < 2 or remaining[0] != "-m" or remaining[1] != "blumkin":
             return False
         rest = remaining[2:]
