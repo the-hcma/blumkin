@@ -89,7 +89,7 @@ Always implement in `.worktrees/<stack-name>-wt`.
 - Stacking backend is **`gh-stack`** (`.github/stacking-tool`). Do **not** use Graphite (`gt`) on this repo.
 - Skill reference: [gh-stack](https://github.com/the-hcma/repository-helpers/blob/main/.agents/skills/gh-stack/SKILL.md)
 - Worktree-per-stack via `start-development` (above).
-- Prefer bare `gh stack submit --auto --open` after `"${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}/scripts/dev/pre-pr-checks"`. Never interactive `gh stack submit` / `gh stack view` without `--json`. Do **not** run helpers `scripts/dev/submit-stack` from this consumer (it targets the helpers clone).
+- Prefer `"${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}/scripts/dev/submit-stack"` from this repo's feature worktree: it runs pre-pr-checks, submits the repository of the current directory with `gh stack submit --auto --open`, and waits for PR CI. A bare `gh stack submit --auto --open` after `"${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}/scripts/dev/pre-pr-checks"` also works. Never interactive `gh stack submit` / `gh stack view` without `--json`.
 - Merge path: GitHub merge queue — `gh pr merge --auto --squash` only when the operator asks. **Always ask before enabling auto-merge.**
 - Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:`.
 - Commit identity: follow `.agents/rules/git-commit-identity.md` (no Co-authored-by trailers unless the user asks).
@@ -121,8 +121,9 @@ From the stack worktree:
 
 ```bash
 rh="${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}"
+"${rh}/scripts/dev/submit-stack"   # runs pre-pr-checks, submits this repo, waits for CI
+# or, bare:
 "${rh}/scripts/dev/pre-pr-checks"
-# then submit from this worktree (not helpers submit-stack):
 gh stack submit --auto --open
 ```
 
