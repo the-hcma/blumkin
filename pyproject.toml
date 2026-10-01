@@ -62,6 +62,7 @@ dependencies = [
     # keep it as the `keychain` extra below (see secret_store.py, issue #308).
     "keyring>=25.7.0; sys_platform == 'darwin'",
     "oauthlib==4.0.0",
+    "pyjwt==2.15.0",
 ]
 
 [project.optional-dependencies]
