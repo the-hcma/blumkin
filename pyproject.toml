@@ -143,5 +143,5 @@ dev = [
     "ruff>=0.16.8",
     "mcp>=2.2.0",
     "keyring>=25.7.0",
-    "hatchling>=1.32.3",
+    "hatchling>=1.32.4",
 ]
