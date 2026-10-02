@@ -1,0 +1,4 @@
+# Dependency caps reviewed on purpose; dep-updater logs INFO instead of failing for these (repository-helpers#685).
+# Add "review-by YYYY-MM-DD": once that date passes, dep-updater fails on the cap again so it gets re-checked.
+# microsoft-kiota-http >=1.13.0 breaks msgraph-core's AsyncGraphTransport; see pyproject.toml and blumkin#354/#387.
+microsoft-kiota-http<1.13.0  # review-by 2026-11-27 blumkin#387
