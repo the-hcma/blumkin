@@ -64,14 +64,20 @@ jobs:
           fi
 
           body_file="$(mktemp)"
-          {
-            printf '## Summary\n\n'
-            printf 'Upstream appears to have moved, so the temporary microsoft-kiota-http cap may no longer be needed.\n\n'
-            printf '%s\n' "${reasons[@]/#/- }"
-            printf '\n## Next steps\n\n'
-            printf '1. Verify against a real install: `msgraph-core` latest plus `microsoft-kiota-http` latest, then a `.me` call such as `blumkin mail inbox`.\n'
-            printf '2. If it works, lift the cap in one PR. Remove the pyproject.toml cap, the `[tool.uv]` constraint-dependencies backstop, the `.dep-updater-acked-caps` entry, the Dependabot `ignore` entry, and `.github/workflows/kiota-http-cap-watch.yml`.\n'
-            printf '3. If it still breaks, leave the cap and update the comments in those places.\n\n'
-            printf 'Background: blumkin#354, blumkin#387, the-hcma/repository-helpers#699.\n'
-          } >"$body_file"
+          reason_lines="$(printf -- '- %s\n' "${reasons[@]}")"
+          cat >"$body_file" <<BODY
+          ## Summary
+
+          Upstream appears to have moved, so the temporary microsoft-kiota-http cap may no longer be needed.
+
+          ${reason_lines}
+
+          ## Next steps
+
+          1. Verify against a real install: msgraph-core latest plus microsoft-kiota-http latest, then a \`.me\` call such as \`blumkin mail inbox\`.
+          2. If it works, lift the cap in one PR. Remove the pyproject.toml cap, the \`[tool.uv]\` constraint-dependencies backstop, the \`.dep-updater-acked-caps\` entry, the Dependabot \`ignore\` entry, and \`.github/workflows/kiota-http-cap-watch.yml\`.
+          3. If it still breaks, leave the cap and update the comments in those places.
+
+          Background: blumkin#354, blumkin#387, the-hcma/repository-helpers#699.
+          BODY
           gh issue create --repo "$REPOSITORY" --title "$issue_title" --body-file "$body_file"
