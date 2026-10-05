@@ -22,3 +22,9 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
+    ignore:
+      # kiota-http >=1.13.0 breaks msgraph-core's AsyncGraphTransport (.me calls 404);
+      # mirrors the cap in pyproject.toml and .dep-updater-acked-caps. Remove all three
+      # together once msgraph-core ships the fix (blumkin#387, msgraph-sdk-python-core#1128).
+      - dependency-name: "microsoft-kiota-http"
+        versions: [">=1.13.0"]
