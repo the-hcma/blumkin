@@ -34,9 +34,23 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Re-arm after a false alarm by bumping these two (see step 3 of the issue body).
           baseline='1.5.1' # msgraph-core release that still has the broken request.options gate
+          upstream_issue='1128' # msgraph-sdk-python-core issue tracking the fix
           issue_title='Lift the microsoft-kiota-http cap (upstream fix available)'
           reasons=()
+
+          # Bounded retry for idempotent reads only; every remote call has an explicit timeout.
+          retry_read() {
+            local attempt
+            for attempt in 1 2 3; do
+              if timeout --kill-after=5 60 "$@"; then
+                return 0
+              fi
+              sleep $((attempt * 5))
+            done
+            return 1
+          }
 
           latest="$(curl --silent --show-error --fail --max-time 30 --retry 3 \
             https://pypi.org/pypi/msgraph-core/json | jq --raw-output '.info.version')"
@@ -45,18 +59,21 @@ jobs:
             reasons+=("msgraph-core ${latest} is newer than ${baseline}")
           fi
 
-          upstream_state="$(gh api --method GET \
-            repos/microsoftgraph/msgraph-sdk-python-core/issues/1128 --jq '.state')"
+          upstream_info="$(retry_read gh api --method GET \
+            "repos/microsoftgraph/msgraph-sdk-python-core/issues/${upstream_issue}" \
+            --jq '[.state, (.state_reason // "none")] | join(" ")')"
+          upstream_state="${upstream_info%% *}"
+          upstream_reason="${upstream_info#* }"
           if [[ "$upstream_state" == "closed" ]]; then
-            reasons+=("upstream issue msgraph-sdk-python-core#1128 is closed")
+            reasons+=("upstream issue msgraph-sdk-python-core#${upstream_issue} is closed (reason: ${upstream_reason}; not_planned or duplicate does not mean a fix shipped)")
           fi
 
           if (( ${#reasons[@]} == 0 )); then
-            echo "No upstream fix yet (msgraph-core ${latest}, #1128 ${upstream_state})."
+            echo "No upstream fix yet (msgraph-core ${latest}, #${upstream_issue} ${upstream_state})."
             exit 0
           fi
 
-          existing="$(gh issue list --repo "$REPOSITORY" --state open \
+          existing="$(retry_read gh issue list --repo "$REPOSITORY" --state open \
             --search "\"${issue_title}\" in:title" --json number --jq '.[0].number // empty')"
           if [[ -n "$existing" ]]; then
             echo "Issue #${existing} already open; nothing to do."
@@ -76,8 +93,8 @@ jobs:
 
           1. Verify against a real install: msgraph-core latest plus microsoft-kiota-http latest, then a \`.me\` call such as \`blumkin mail inbox\`.
           2. If it works, lift the cap in one PR. Remove the pyproject.toml cap, the \`[tool.uv]\` constraint-dependencies backstop, the \`.dep-updater-acked-caps\` entry, the Dependabot \`ignore\` entry, and \`.github/workflows/kiota-http-cap-watch.yml\`.
-          3. If it still breaks, leave the cap and update the comments in those places.
+          3. If it still breaks, leave the cap, update the comments in those places, and in .github/workflows/kiota-http-cap-watch.yml bump \`baseline\` to the msgraph-core version you checked (and \`upstream_issue\` if upstream moved to a new issue), so the watch re-arms instead of re-filing weekly.
 
           Background: blumkin#354, blumkin#387, the-hcma/repository-helpers#699.
           BODY
-          gh issue create --repo "$REPOSITORY" --title "$issue_title" --body-file "$body_file"
+          timeout --kill-after=5 60 gh issue create --repo "$REPOSITORY" --title "$issue_title" --body-file "$body_file"
