@@ -50,7 +50,7 @@ dependencies = [
     # upper bound was previously dropped by an automated floor bump (#367,
     # issue #387); [tool.uv].constraint-dependencies below is a second,
     # dep-updater-proof enforcement of the same cap.
-    "microsoft-kiota-http>=1.12.3,<1.13.0",
+    "microsoft-kiota-http>=1.12.3,<1.15.0",
     "msgraph-sdk>=1.63.0",
     "python-docx>=1.2.0",
     "tomlkit>=0.15.1",
