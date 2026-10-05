@@ -1,0 +1,100 @@
+name: kiota-http cap watch
+
+# TEMPORARY. Delete this whole workflow when the microsoft-kiota-http cap is lifted.
+#
+# Remove together, in one PR, once msgraph-core adopts the kiota-http request.extensions
+# contract (blumkin#387, upstream microsoftgraph/msgraph-sdk-python-core#1128):
+#   1. "microsoft-kiota-http>=1.12.3,<1.13.0" cap in [project.dependencies] (pyproject.toml)
+#   2. [tool.uv] constraint-dependencies backstop (pyproject.toml)
+#   3. the microsoft-kiota-http line in .dep-updater-acked-caps
+#   4. the microsoft-kiota-http `ignore` entry in .github/dependabot.yml
+#   5. this workflow
+# This workflow exists only because the Dependabot ignore silences the one signal that would
+# otherwise tell us a newer kiota-http is safe. It opens an issue when upstream moves.
+
+on:
+  schedule:
+    - cron: '0 9 * * 1' # weekly, Monday 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    name: Check upstream for the kiota-http fix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Look for an upstream fix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Re-arm after a false alarm by bumping these two (see step 3 of the issue body).
+          baseline='1.5.1' # msgraph-core release that still has the broken request.options gate
+          upstream_issue='1128' # msgraph-sdk-python-core issue tracking the fix
+          issue_title='Lift the microsoft-kiota-http cap (upstream fix available)'
+          reasons=()
+
+          # Bounded retry for idempotent reads only; every remote call has an explicit timeout.
+          retry_read() {
+            local attempt
+            for attempt in 1 2 3; do
+              if timeout --kill-after=5 60 "$@"; then
+                return 0
+              fi
+              sleep $((attempt * 5))
+            done
+            return 1
+          }
+
+          latest="$(curl --silent --show-error --fail --max-time 30 --retry 3 \
+            https://pypi.org/pypi/msgraph-core/json | jq --raw-output '.info.version')"
+          newest="$(printf '%s\n%s\n' "$baseline" "$latest" | sort --version-sort | tail --lines=1)"
+          if [[ "$latest" != "$baseline" && "$newest" == "$latest" ]]; then
+            reasons+=("msgraph-core ${latest} is newer than ${baseline}")
+          fi
+
+          upstream_info="$(retry_read gh api --method GET \
+            "repos/microsoftgraph/msgraph-sdk-python-core/issues/${upstream_issue}" \
+            --jq '[.state, (.state_reason // "none")] | join(" ")')"
+          upstream_state="${upstream_info%% *}"
+          upstream_reason="${upstream_info#* }"
+          if [[ "$upstream_state" == "closed" ]]; then
+            reasons+=("upstream issue msgraph-sdk-python-core#${upstream_issue} is closed (reason: ${upstream_reason}; not_planned or duplicate does not mean a fix shipped)")
+          fi
+
+          if (( ${#reasons[@]} == 0 )); then
+            echo "No upstream fix yet (msgraph-core ${latest}, #${upstream_issue} ${upstream_state})."
+            exit 0
+          fi
+
+          existing="$(retry_read gh issue list --repo "$REPOSITORY" --state open \
+            --search "\"${issue_title}\" in:title" --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            echo "Issue #${existing} already open; nothing to do."
+            exit 0
+          fi
+
+          body_file="$(mktemp)"
+          reason_lines="$(printf -- '- %s\n' "${reasons[@]}")"
+          cat >"$body_file" <<BODY
+          ## Summary
+
+          Upstream appears to have moved, so the temporary microsoft-kiota-http cap may no longer be needed.
+
+          ${reason_lines}
+
+          ## Next steps
+
+          1. Verify against a real install: msgraph-core latest plus microsoft-kiota-http latest, then a \`.me\` call such as \`blumkin mail inbox\`.
+          2. If it works, lift the cap in one PR. Remove the pyproject.toml cap, the \`[tool.uv]\` constraint-dependencies backstop, the \`.dep-updater-acked-caps\` entry, the Dependabot \`ignore\` entry, and \`.github/workflows/kiota-http-cap-watch.yml\`.
+          3. If it still breaks, leave the cap, update the comments in those places, and in .github/workflows/kiota-http-cap-watch.yml bump \`baseline\` to the msgraph-core version you checked (and \`upstream_issue\` if upstream moved to a new issue), so the watch re-arms instead of re-filing weekly.
+
+          Background: blumkin#354, blumkin#387, the-hcma/repository-helpers#699.
+          BODY
+          timeout --kill-after=5 60 gh issue create --repo "$REPOSITORY" --title "$issue_title" --body-file "$body_file"
