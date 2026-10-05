@@ -24,7 +24,9 @@ updates:
       - "dependencies"
     ignore:
       # kiota-http >=1.13.0 breaks msgraph-core's AsyncGraphTransport (.me calls 404);
-      # mirrors the cap in pyproject.toml and .dep-updater-acked-caps. Remove all three
-      # together once msgraph-core ships the fix (blumkin#387, msgraph-sdk-python-core#1128).
+      # mirrors the cap in pyproject.toml and .dep-updater-acked-caps. TEMPORARY: remove
+      # this, the cap, the uv constraint, the ack entry and
+      # .github/workflows/kiota-http-cap-watch.yml together once msgraph-core ships the fix
+      # (blumkin#387, msgraph-sdk-python-core#1128); that workflow opens an issue when it does.
       - dependency-name: "microsoft-kiota-http"
         versions: [">=1.13.0"]
