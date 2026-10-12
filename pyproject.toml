@@ -37,7 +37,7 @@ dependencies = [
     "google-auth-oauthlib>=1.5.0",
     "httplib2>=0.32.0",
     "icalendar>=7.3.0",
-    "mcp>=2.2.0",
+    "mcp>=2.3.0",
     "msal>=1.39.0",
     # msgraph-core 1.5.1 (the current release) declares compatibility with
     # microsoft-kiota-http<2.0.0, but its AsyncGraphTransport gates the whole
@@ -79,7 +79,7 @@ dev = [
 # `mcp` is now always a core dependency, and `keyring` is a core dependency on
 # macOS (see `dependencies` above) and remains opt-in elsewhere.
 keychain = ["keyring>=25.7.0"]
-mcp = ["mcp>=2.2.0"]
+mcp = ["mcp>=2.3.0"]
 ocr = ["pytesseract>=0.3", "pdf2image>=1.17", "pillow>=12.3.0"]
 pdf = ["pdfplumber>=0.11.10"]
 xlsx = ["openpyxl>=3.1.5"]
@@ -141,7 +141,7 @@ dev = [
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "ruff>=0.16.10",
-    "mcp>=2.2.0",
+    "mcp>=2.3.0",
     "keyring>=25.7.0",
     "hatchling>=1.32.4",
 ]
