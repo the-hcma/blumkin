@@ -43,7 +43,9 @@ dependencies = [
     # request.extensions["kiota_request_options"], which microsoft-kiota-http
     # >=1.13.0 uses; older msgraph-core silently breaks every `.me` call (404 on
     # the literal placeholder path, issues #354 and #387, upstream
-    # microsoftgraph/msgraph-sdk-python-core#1128). Keep both floors together.
+    # microsoftgraph/msgraph-sdk-python-core#1128). The msgraph-core floor is
+    # the load-bearing one (1.5.2 itself requires kiota-http>=1.13.0); the
+    # kiota-http floor just states that requirement explicitly.
     "microsoft-kiota-http>=1.13.0",
     "msgraph-core>=1.5.2",
     "msgraph-sdk>=1.64.0",
