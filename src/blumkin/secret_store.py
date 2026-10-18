@@ -233,6 +233,16 @@ def _delete_keyring_entry(cfg: BlumkinConfig, kind: SecretKind) -> None:
     if keyring is None:
         return
     account = _keyring_account(cfg, kind)
+    try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
+    except keychain_unlock.KeychainLockedError as exc:
+        # Reaching the keychain would hang on the macOS prompt, then time out. Same split
+        # as an unprovable delete failure below: "auto" already removed the file and
+        # promises a logout never fails for want of a reachable keychain; a pinned
+        # "keyring" must not report success while an entry may remain.
+        if cfg.token_storage == "auto":
+            return
+        raise SecretWriteError(f"cannot delete {kind} from the OS keychain: {exc}") from exc
     # A prior operation for this same account (typically read_text()'s
     # legacy-file migration write) may have timed out and left its call
     # abandoned rather than cancelled, still running on a daemon thread.

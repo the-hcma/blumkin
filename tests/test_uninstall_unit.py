@@ -527,3 +527,28 @@ def test_remove_keyring_reports_not_present_and_failures(
     outcome = uninstall.remove_keyring(((cfg.profile, cfg),))
 
     assert outcome.outcome == "failed"
+
+
+def test_locked_keychain_makes_the_uninstall_probes_report_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A locked keychain must read as "unknown", without ever reaching the keyring."""
+    from types import SimpleNamespace
+
+    from blumkin import keychain_unlock
+
+    def locked(_mode: str) -> None:
+        raise keychain_unlock.KeychainLockedError("keychain locked")
+
+    monkeypatch.setattr(keychain_unlock, "ensure_unlocked", locked)
+    monkeypatch.setattr(uninstall.secret_store_mod, "_keyring_account", lambda *_a: "acct")
+    monkeypatch.setattr(uninstall.app_secrets_mod, "_account", lambda *_a: "acct")
+    monkeypatch.setattr(
+        uninstall.secret_store_mod,
+        "_call_keyring_with_timeout",
+        lambda *_a, **_k: pytest.fail("touched keyring"),
+    )
+    cfg = SimpleNamespace(keychain_unlock="cli")
+    keyring_module = SimpleNamespace(get_password=lambda *_a: pytest.fail("touched keyring"))
+    assert uninstall._keyring_kind_present(cfg, keyring_module, "token_cache") == (False, True)  # type: ignore[arg-type]
+    assert uninstall._app_secret_kind_present(cfg, keyring_module, "ms_client_id") == (False, True)  # type: ignore[arg-type]

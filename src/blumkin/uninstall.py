@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from blumkin import app_secrets as app_secrets_mod
+from blumkin import keychain_unlock
 from blumkin import secret_store as secret_store_mod
 from blumkin.agent import client as agent_client
 from blumkin.agent.paths import is_supported_platform, runtime_base_dir, runtime_dir
@@ -481,6 +482,7 @@ def _app_secret_kind_present(
 ) -> tuple[bool, bool]:
     account = app_secrets_mod._account(cfg, kind)
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         return (
             secret_store_mod._call_keyring_with_timeout(
                 keyring_module.get_password, secret_store_mod._KEYRING_SERVICE, account
@@ -497,6 +499,7 @@ def _keyring_kind_present(
 ) -> tuple[bool, bool]:
     account = secret_store_mod._keyring_account(cfg, kind)
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         if kind in secret_store_mod._BUNDLED_KINDS:
             if secret_store_mod._bundled_item_present_for_delete(keyring_module, account, kind):
                 return (True, False)

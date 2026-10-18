@@ -191,7 +191,8 @@ def _is_macos() -> bool:
 
 def _locked_message() -> str:
     return (
-        "the macOS login keychain is locked and there is no GUI or terminal to unlock it on; "
+        "the macOS login keychain is locked and this session cannot unlock it "
+        "(no terminal to prompt on); "
         f"run `blumkin auth unlock` (or `! {UNLOCK_COMMAND}`) in your own terminal, "
         "then retry"
     )

@@ -114,14 +114,17 @@ def _stub_keychain_lock_state(
     ``keychain_unlock.keychain_lock_state`` asks Security.framework first, so
     without this a hermetic ``doctor`` test on a Mac would report whatever state the
     developer's login keychain happens to be in when the suite runs. Pinned to
-    "unlocked"; ``tests/test_keychain_unlock_unit.py`` overrides it with its own stubs
-    and captures the real function at import for the tests of the probe itself.
+    "unlocked" with a reachable GUI, and the module's process-wide caches reset;
+    ``tests/test_keychain_unlock_unit.py`` overrides it with its own stubs and
+    captures the real function at import for the tests of the probe itself.
     """
     if request.node.get_closest_marker("live") is not None:
         return
     from blumkin import keychain_unlock
 
+    keychain_unlock._reset_for_tests()
     monkeypatch.setattr(keychain_unlock, "_native_lock_state", lambda: False)
+    monkeypatch.setattr(keychain_unlock, "gui_available", lambda: True)
 
 
 @pytest.fixture(autouse=True)

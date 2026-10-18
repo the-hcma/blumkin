@@ -27,8 +27,9 @@ API - it is deliberately **opt-in and keychain-only**:
   request would be a worse surprise than a clear error.
 
 Every keyring call here is preceded by ``keychain_unlock.ensure_unlocked`` (issue
-#444), like ``secret_store``'s, so a locked keychain fails fast (or is unlocked on a TTY)
-instead of raising the macOS dialog and timing out.
+#444), like ``secret_store``'s (grant delete and uninstall's probes included), so a
+locked keychain fails fast (or is unlocked on a TTY) instead of raising the macOS
+dialog and timing out.
 
 Reuses ``secret_store``'s low-level keyring primitives (backend lookup,
 bounded-timeout calls, the not-found probe, the abandoned-mutation registry)

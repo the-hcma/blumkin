@@ -1400,3 +1400,34 @@ def test_locked_keychain_presence_probes_use_the_file_without_touching_keyring(
     assert secret_store.exists(cfg, "token_cache") is True
     assert secret_store.active_backend(cfg, "token_cache") == "file"
     assert secret_store.ms_bundle_exists(cfg)["token_cache"] is True
+
+
+def test_locked_keychain_auto_delete_removes_the_file_and_skips_the_keyring(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Logout must not hang on the macOS prompt; "auto" never fails for want of a keychain."""
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+    cfg.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.token_cache_path.write_text("file-copy")
+    _lock_keychain(monkeypatch)
+    monkeypatch.setattr(
+        secret_store, "_call_keyring_with_timeout", lambda *a, **k: pytest.fail("touched keyring")
+    )
+    secret_store.delete(cfg, "token_cache")
+    assert not cfg.token_cache_path.exists()
+
+
+def test_locked_keychain_pinned_keyring_delete_raises_instead_of_reporting_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+    _lock_keychain(monkeypatch)
+    monkeypatch.setattr(
+        secret_store, "_call_keyring_with_timeout", lambda *a, **k: pytest.fail("touched keyring")
+    )
+    with pytest.raises(SecretWriteError, match="keychain locked"):
+        secret_store.delete(cfg, "token_cache")
+    with pytest.raises(SecretWriteError, match="keychain locked"):
+        secret_store.delete_keyring_entry(cfg, "token_cache")

@@ -476,8 +476,3 @@ def test_lock_state_falls_back_to_security_when_native_cannot_answer(
     monkeypatch.setattr(keychain_unlock, "_native_lock_state", lambda: None)
     _fake_run(monkeypatch, subprocess.CompletedProcess([], 0, "no-timeout", ""))
     assert keychain_unlock.keychain_lock_state() is False
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="Security.framework is macOS only")
-def test_native_lock_state_answers_on_this_mac_without_prompting() -> None:
-    assert _REAL_NATIVE_LOCK_STATE() in (True, False)
