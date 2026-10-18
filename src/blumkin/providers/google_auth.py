@@ -11,7 +11,7 @@ from google.auth.exceptions import RefreshError, TransportError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-from blumkin import secret_store
+from blumkin import keychain_unlock, secret_store
 from blumkin.app_secrets import read_app_secret
 from blumkin.auth import (
     AuthRequiredError,
@@ -217,15 +217,15 @@ def get_credentials(
             if not interactive:
                 raise _missing_scope_error(cfg, required=required)
         elif not interactive:
-            raise AuthRequiredError(
-                "Silent token refresh failed. Run `blumkin auth login` on a TTY "
-                "(or unset BLUMKIN_NONINTERACTIVE), then retry."
-            )
+            raise AuthRequiredError(_silent_refresh_failed_message())
 
     if not interactive:
         raise AuthRequiredError(
-            "Authentication required. Run `blumkin auth login` on a TTY "
-            "(agent shells should set BLUMKIN_NONINTERACTIVE=1 and never open a browser)."
+            keychain_unlock.explain_if_locked(
+                "Authentication required",
+                "Authentication required. Run `blumkin auth login` on a TTY "
+                "(agent shells should set BLUMKIN_NONINTERACTIVE=1 and never open a browser).",
+            )
         )
 
     creds = _run_interactive_consent(cfg)
@@ -355,10 +355,7 @@ def _classify_refresh_error(exc: BaseException) -> AuthRequiredError | AuthTrans
                 "Google refresh token was revoked or expired (invalid_grant). Run "
                 "`blumkin auth login` on a TTY, then retry."
             )
-    return AuthRequiredError(
-        "Silent token refresh failed. Run `blumkin auth login` on a TTY "
-        "(or unset BLUMKIN_NONINTERACTIVE), then retry."
-    )
+    return AuthRequiredError(_silent_refresh_failed_message())
 
 
 def _authorization_prompt_message() -> str:
@@ -615,6 +612,14 @@ def _scopes_from_raw(raw: str | None) -> list[str] | None:
         return None
     scopes = [scope for scope in raw_scopes if isinstance(scope, str) and scope]
     return scopes if scopes else None
+
+
+def _silent_refresh_failed_message() -> str:
+    return keychain_unlock.explain_if_locked(
+        "Silent token refresh failed",
+        "Silent token refresh failed. Run `blumkin auth login` on a TTY "
+        "(or unset BLUMKIN_NONINTERACTIVE), then retry.",
+    )
 
 
 def _run_interactive_consent(cfg: BlumkinConfig) -> Credentials:

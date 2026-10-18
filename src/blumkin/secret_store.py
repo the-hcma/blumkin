@@ -82,6 +82,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
+from blumkin import keychain_unlock
 from blumkin.agent import client as agent_client
 from blumkin.config import BlumkinConfig
 from blumkin.output import emit_warning
@@ -133,6 +134,7 @@ def active_backend(cfg: BlumkinConfig, kind: SecretKind) -> str:
         return "file"
     account = _keyring_account(cfg, kind)
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         if kind in _BUNDLED_KINDS:
             if _bundle_has_kind(keyring, account, kind):
                 return "keyring"
@@ -231,6 +233,16 @@ def _delete_keyring_entry(cfg: BlumkinConfig, kind: SecretKind) -> None:
     if keyring is None:
         return
     account = _keyring_account(cfg, kind)
+    try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
+    except keychain_unlock.KeychainLockedError as exc:
+        # Reaching the keychain would hang on the macOS prompt, then time out. Same split
+        # as an unprovable delete failure below: "auto" already removed the file and
+        # promises a logout never fails for want of a reachable keychain; a pinned
+        # "keyring" must not report success while an entry may remain.
+        if cfg.token_storage == "auto":
+            return
+        raise SecretWriteError(f"cannot delete {kind} from the OS keychain: {exc}") from exc
     # A prior operation for this same account (typically read_text()'s
     # legacy-file migration write) may have timed out and left its call
     # abandoned rather than cancelled, still running on a daemon thread.
@@ -322,6 +334,7 @@ def exists(cfg: BlumkinConfig, kind: SecretKind) -> bool:
         return False
     account = _keyring_account(cfg, kind)
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         if kind in _BUNDLED_KINDS:
             if _bundle_has_kind(keyring, account, kind):
                 return True
@@ -374,6 +387,7 @@ def ms_bundle_exists(cfg: BlumkinConfig) -> dict[str, bool]:
         return out
     account = _keyring_account(cfg, "auth_record")
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
         bundle = _bundle_dict_from_raw(raw)
     except Exception:
@@ -759,7 +773,7 @@ def _read_ms_bundle_and_backend_direct(cfg: BlumkinConfig) -> tuple[dict[str, st
                 pass
     if _backend_for(cfg) != "file":
         keyring = _keyring_module()
-        if keyring is not None:
+        if keyring is not None and _keychain_ready(cfg):
             account = _keyring_account(cfg, "auth_record")  # same account as token_cache
             try:
                 raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
@@ -789,6 +803,13 @@ def _read_text_and_backend_direct(cfg: BlumkinConfig, kind: SecretKind) -> tuple
     if keyring is None:
         # _backend_for only returns "keyring" when a real backend is usable.
         return None, "file"
+    if not _keychain_ready(cfg):
+        # Locked keychain with no way to unlock it here: serve the file copy
+        # (if any) rather than touching - and hanging on - the keychain.
+        try:
+            return (path.read_text(), "file") if path.is_file() else (None, "file")
+        except OSError:
+            return None, "file"
     account = _keyring_account(cfg, kind)
     try:
         raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
@@ -815,10 +836,22 @@ def _write_text_direct(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
             raise SecretWriteError(f"cannot write {kind}: no usable keyring backend")
         account = _keyring_account(cfg, kind)
         try:
+            # Inside the try so a KeychainLockedError is caught by the
+            # dedicated handler below, which raises SecretWriteError for both
+            # "auto" and "keyring" (no file fallback).
+            keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
             if kind in _BUNDLED_KINDS:
                 _bundle_write_kind(keyring, account, kind, text)
             else:
                 _call_keyring_with_timeout(keyring.set_password, _KEYRING_SERVICE, account, text)
+        except keychain_unlock.KeychainLockedError as exc:
+            # Same reasoning as the timeout case below: with the keychain
+            # locked we cannot probe or clean up a possibly-existing keyring
+            # entry, so a file-fallback write could later lose to that stale
+            # entry once the keychain is unlocked (the read path prefers the
+            # keyring value and deletes the newer file copy). Raise instead,
+            # leaving the keyring authoritative and nothing half-written.
+            raise SecretWriteError(f"cannot write {kind}: {exc}") from exc
         except TimeoutError as exc:
             # A hung call is not abandoned when it "times out" - the daemon
             # thread keeps running in the background and can still complete
@@ -975,6 +1008,15 @@ def _file_path(cfg: BlumkinConfig, kind: SecretKind) -> Path:
     if kind == "google_token":
         return cfg.google_token_path
     return cfg.token_cache_path
+
+
+def _keychain_ready(cfg: BlumkinConfig) -> bool:
+    """False when the keychain is locked and cannot be unlocked here (reads use the file)."""
+    try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
+    except keychain_unlock.KeychainLockedError:
+        return False
+    return True
 
 
 def _keyring_account(cfg: BlumkinConfig, kind: SecretKind) -> str:

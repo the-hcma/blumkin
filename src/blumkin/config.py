@@ -64,6 +64,10 @@ class BlumkinConfig:
     google_auth_uri: str = ""
     google_redirect_uris: tuple[str, ...] = ()
     google_token_uri: str = ""
+    # How to get past a locked macOS login keychain (issue #444): "gui" leaves
+    # it to macOS, "cli" runs `security unlock-keychain` on a TTY (fail fast
+    # without one), "off" never tries. See blumkin.keychain_unlock.
+    keychain_unlock: str = "gui"
     message_policy: MessagePolicyConfig = field(default_factory=lambda: MessagePolicyConfig())
     # OS keychain vs. a plain 0600 file for the token cache / auth record /
     # Google token (issue #287). "auto" prefers the keyring extra when a real
@@ -346,6 +350,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         google_oauth_client_file=google_oauth_client_file,
         google_redirect_uris=_google_redirect_uris(table),
         google_token_uri=_google_token_uri(table),
+        keychain_unlock=_keychain_unlock_preference(table),
         graph_timeout_seconds=_graph_timeout_seconds(table),
         mail_signature=_mail_signature_config(table),
         message_policy=_message_policy_config(table, profile=selected),
@@ -670,6 +675,14 @@ def _graph_timeout_seconds(file_data: dict[str, Any]) -> float:
         if value > 0:
             return value
     return DEFAULT_GRAPH_TIMEOUT_SECONDS
+
+
+def _keychain_unlock_preference(file_data: dict[str, Any]) -> str:
+    """Parse ``keychain_unlock`` (issue #444); any unrecognized value is "gui"."""
+    raw = file_data.get("keychain_unlock")
+    if isinstance(raw, str) and raw.strip().lower() in {"cli", "gui", "off"}:
+        return raw.strip().lower()
+    return "gui"
 
 
 def _mail_signature_config(file_data: dict[str, Any]) -> MailSignatureConfig:

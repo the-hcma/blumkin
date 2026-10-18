@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from blumkin import app_secrets, secret_store
+from blumkin import app_secrets, keychain_unlock, secret_store
 from blumkin.config import load_config
 from blumkin.secret_store import SecretWriteError
 
@@ -317,3 +317,53 @@ def test_account_namespace_is_distinct_per_config_dir(
 
     app_secrets.delete_app_secret(alternate, "google_client_secret")
     assert app_secrets.read_app_secret(primary, "google_client_secret") == "primary-secret"
+
+
+class _MustNotBeTouched(_FakeKeyring):
+    """Fails the test if the keyring is reached - a locked keychain must stop short of it."""
+
+    def get_password(self, service: str, username: str) -> str | None:
+        raise AssertionError("keyring read while the keychain is locked")
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        raise AssertionError("keyring write while the keychain is locked")
+
+    def delete_password(self, service: str, username: str) -> None:
+        raise AssertionError("keyring delete while the keychain is locked")
+
+
+def _locked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    cfg = _load(tmp_path, monkeypatch)
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _MustNotBeTouched())
+
+    def locked(_mode: str) -> None:
+        raise keychain_unlock.KeychainLockedError("the macOS login keychain is locked")
+
+    monkeypatch.setattr(keychain_unlock, "ensure_unlocked", locked)
+    return cfg
+
+
+def test_a_locked_keychain_stops_app_secret_reads_before_the_keyring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _locked(tmp_path, monkeypatch)
+    assert app_secrets.read_app_secret(cfg, "google_client_secret") is None
+    assert app_secrets.app_secret_backend(cfg, "google_client_secret") == "none"
+
+
+def test_a_locked_keychain_propagates_from_the_strict_app_secret_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _locked(tmp_path, monkeypatch)
+    with pytest.raises(keychain_unlock.KeychainLockedError):
+        app_secrets._read_app_secret_or_raise(cfg, "ms_client_id")
+
+
+def test_a_locked_keychain_stops_app_secret_writes_and_deletes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _locked(tmp_path, monkeypatch)
+    with pytest.raises(SecretWriteError, match="keychain is locked"):
+        app_secrets.write_app_secret(cfg, "google_client_secret", "s3cr3t")
+    with pytest.raises(SecretWriteError, match="keychain is locked"):
+        app_secrets.delete_app_secret(cfg, "google_client_secret")

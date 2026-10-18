@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from blumkin import auth
+from blumkin import auth, keychain_unlock
 from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.providers.kind import ProviderKind
 
@@ -64,6 +64,16 @@ def test_create_credential_raises_when_neither_toml_nor_vault_has_a_client_id(
     cfg = _cfg(client_id="")
     monkeypatch.setattr(auth, "read_app_secret", lambda cfg, kind: None)  # noqa: ARG005
     with pytest.raises(auth.ProviderConfigError, match="Missing client_id"):
+        auth.create_credential(cfg)
+
+
+def test_a_missing_client_id_names_a_locked_keychain_when_it_just_was(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(client_id="")
+    monkeypatch.setattr(auth, "read_app_secret", lambda cfg, kind: None)  # noqa: ARG005
+    monkeypatch.setattr(keychain_unlock, "_locked_at", keychain_unlock.time.monotonic())
+    with pytest.raises(auth.ProviderConfigError, match=r"^Missing client_id: .*auth unlock"):
         auth.create_credential(cfg)
 
 

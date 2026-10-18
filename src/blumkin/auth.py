@@ -13,7 +13,7 @@ from typing import Any
 from azure.identity import AuthenticationRecord, InteractiveBrowserCredential
 from msal import SerializableTokenCache
 
-from blumkin import secret_store
+from blumkin import keychain_unlock, secret_store
 from blumkin.app_secrets import read_app_secret
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.kind import ProviderConfigError
@@ -173,8 +173,11 @@ def create_credential(
     client_id = _resolved_client_id(cfg)
     if not client_id:
         raise ProviderConfigError(
-            "Missing client_id — set client_id in ~/.config/blumkin/config.toml, "
-            "or vault it with `blumkin auth set-app-secret --kind ms_client_id`."
+            keychain_unlock.explain_if_locked(
+                "Missing client_id",
+                "Missing client_id — set client_id in ~/.config/blumkin/config.toml, "
+                "or vault it with `blumkin auth set-app-secret --kind ms_client_id`.",
+            )
         )
     interactive = interactive_auth_allowed() if allow_interactive is None else allow_interactive
     _ensure_cache(cfg)
@@ -212,8 +215,11 @@ def create_credential(
 
     if not interactive:
         raise AuthRequiredError(
-            "Authentication required. Run `blumkin auth login` on a TTY "
-            "(agent shells should set BLUMKIN_NONINTERACTIVE=1 and never open a browser)."
+            keychain_unlock.explain_if_locked(
+                "Authentication required",
+                "Authentication required. Run `blumkin auth login` on a TTY "
+                "(agent shells should set BLUMKIN_NONINTERACTIVE=1 and never open a browser).",
+            )
         )
 
     record = credential.authenticate(scopes=scopes)
@@ -413,8 +419,11 @@ def _classify_get_token_error(exc: BaseException) -> AuthError:
             "on a TTY, then retry."
         )
     return AuthRequiredError(
-        "Silent token refresh failed. Run `blumkin auth login` on a TTY "
-        "(or unset BLUMKIN_NONINTERACTIVE), then retry."
+        keychain_unlock.explain_if_locked(
+            "Silent token refresh failed",
+            "Silent token refresh failed. Run `blumkin auth login` on a TTY "
+            "(or unset BLUMKIN_NONINTERACTIVE), then retry.",
+        )
     )
 
 

@@ -315,3 +315,31 @@ def test_doctor_warns_about_a_running_mcp_serve_process(tmp_path: Path, monkeypa
     assert payload["stale_processes"]["mcp_serve"] == [
         {"pid": 5, "command": "blumkin mcp serve", "started_at": None}
     ]
+
+
+def _doctor_json(tmp_path: Path, monkeypatch, *, locked) -> dict:
+    (tmp_path / "config.toml").write_text(_CONFIG + 'keychain_unlock = "cli"\n')
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "macos_keychain_missing", lambda cfg: False)
+    monkeypatch.setattr(cli.keychain_unlock, "keychain_lock_state", lambda: locked)
+    with patch("blumkin.cli._workspace", return_value=_provider()):
+        result = CliRunner().invoke(main, ["doctor", "--json"])
+    return json.loads(result.stdout)
+
+
+def test_doctor_reports_keychain_mode_and_lock_state(tmp_path: Path, monkeypatch) -> None:
+    payload = _doctor_json(tmp_path, monkeypatch, locked=False)
+    assert payload["keychain"] == {"locked": False, "unlock_mode": "cli"}
+    assert payload["warnings"] == []
+
+
+def test_doctor_warns_when_the_keychain_is_locked(tmp_path: Path, monkeypatch) -> None:
+    payload = _doctor_json(tmp_path, monkeypatch, locked=True)
+    assert payload["keychain"]["locked"] is True
+    assert any("blumkin auth unlock" in w for w in payload["warnings"])
+
+
+def test_doctor_reports_unknown_not_unlocked_when_unprobeable(tmp_path: Path, monkeypatch) -> None:
+    payload = _doctor_json(tmp_path, monkeypatch, locked=None)
+    assert payload["keychain"]["locked"] is None
+    assert payload["warnings"] == []
