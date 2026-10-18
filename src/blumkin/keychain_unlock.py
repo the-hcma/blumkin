@@ -28,7 +28,6 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 
 KEYCHAIN_UNLOCK_MODES = ("cli", "gui", "off")
 UNLOCK_COMMAND = "security unlock-keychain"
@@ -126,7 +125,7 @@ def keychain_lock_state() -> bool | None:
         return None
     try:
         proc = subprocess.run(
-            ["security", "show-keychain-info", *_login_keychain_args()],
+            ["security", "show-keychain-info"],
             capture_output=True,
             check=False,
             text=True,
@@ -144,7 +143,7 @@ def unlock() -> bool:
     """Run ``security unlock-keychain`` attached to the terminal; True on success."""
     try:
         proc = subprocess.run(
-            ["security", "unlock-keychain", *_login_keychain_args()],
+            ["security", "unlock-keychain"],
             check=False,
             timeout=_UNLOCK_TIMEOUT_SECONDS,
         )
@@ -163,18 +162,6 @@ def _locked_message() -> str:
         f"run `blumkin auth unlock` (or `! {UNLOCK_COMMAND}`) in your own terminal, "
         "then retry"
     )
-
-
-def _login_keychain_args() -> list[str]:
-    """The login keychain path as an explicit argument, so the probe and the unlock
-    always target the same keychain; empty (``security`` uses the default keychain)
-    when no login keychain file is found."""
-    keychains = Path.home() / "Library" / "Keychains"
-    for name in ("login.keychain-db", "login.keychain"):
-        candidate = keychains / name
-        if candidate.exists():
-            return [str(candidate)]
-    return []
 
 
 def _probe_gui_available() -> bool:

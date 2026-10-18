@@ -14,14 +14,12 @@ from blumkin.config import _keychain_unlock_preference
 
 # Captured before the autouse fixture patches `gui_available` for every test.
 _REAL_GUI_AVAILABLE = keychain_unlock.gui_available
-_REAL_LOGIN_KEYCHAIN_ARGS = keychain_unlock._login_keychain_args
 
 
 @pytest.fixture(autouse=True)
 def _fresh_state(monkeypatch: pytest.MonkeyPatch) -> None:
     keychain_unlock._reset_for_tests()
     monkeypatch.setattr(keychain_unlock, "_is_macos", lambda: True)
-    monkeypatch.setattr(keychain_unlock, "_login_keychain_args", list)
     monkeypatch.setattr(keychain_unlock, "_supported", lambda: True)
     monkeypatch.setattr(keychain_unlock, "gui_available", lambda: True)
     monkeypatch.delenv("SSH_CONNECTION", raising=False)
@@ -242,11 +240,11 @@ def test_probe_any_nonzero_exit_is_treated_as_locked(monkeypatch: pytest.MonkeyP
     assert keychain_unlock.keychain_is_locked() is True
 
 
-def test_probe_and_unlock_target_the_same_explicit_keychain(
+def test_probe_and_unlock_both_target_the_default_keychain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = "/Users/x/Library/Keychains/login.keychain-db"
-    monkeypatch.setattr(keychain_unlock, "_login_keychain_args", lambda: [path])
+    # keyring's SecItemAdd / SecItemCopyMatching take no keychain selector, so they use
+    # the default keychain; naming no path makes `security` resolve that same keychain.
     seen: list[list[str]] = []
 
     def run(argv: list[str], **_kwargs: Any) -> Any:
@@ -256,24 +254,7 @@ def test_probe_and_unlock_target_the_same_explicit_keychain(
     monkeypatch.setattr(keychain_unlock.subprocess, "run", run)
     keychain_unlock.keychain_lock_state()
     keychain_unlock.unlock()
-    assert seen == [
-        ["security", "show-keychain-info", path],
-        ["security", "unlock-keychain", path],
-    ]
-
-
-def test_login_keychain_args_prefers_the_db_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-) -> None:
-    monkeypatch.setattr(keychain_unlock.Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(keychain_unlock, "_login_keychain_args", _REAL_LOGIN_KEYCHAIN_ARGS)
-    assert keychain_unlock._login_keychain_args() == []
-    keychains = tmp_path / "Library" / "Keychains"
-    keychains.mkdir(parents=True)
-    (keychains / "login.keychain").touch()
-    assert keychain_unlock._login_keychain_args() == [str(keychains / "login.keychain")]
-    (keychains / "login.keychain-db").touch()
-    assert keychain_unlock._login_keychain_args() == [str(keychains / "login.keychain-db")]
+    assert seen == [["security", "show-keychain-info"], ["security", "unlock-keychain"]]
 
 
 def test_unlock_timeout_counts_as_failure(monkeypatch: pytest.MonkeyPatch) -> None:
