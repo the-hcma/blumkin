@@ -10,11 +10,17 @@ import pytest
 from blumkin import keychain_unlock
 from blumkin.config import _keychain_unlock_preference
 
+# Captured before the autouse fixture patches `gui_available` for every test.
+_REAL_GUI_AVAILABLE = keychain_unlock.gui_available
+
 
 @pytest.fixture(autouse=True)
 def _fresh_state(monkeypatch: pytest.MonkeyPatch) -> None:
     keychain_unlock._reset_for_tests()
     monkeypatch.setattr(keychain_unlock, "_supported", lambda: True)
+    monkeypatch.setattr(keychain_unlock, "gui_available", lambda: True)
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_TTY", raising=False)
 
 
 def _set_tty(monkeypatch: pytest.MonkeyPatch, *, tty: bool) -> None:
@@ -126,3 +132,35 @@ def test_unlock_never_passes_a_password(monkeypatch: pytest.MonkeyPatch) -> None
 def test_config_preference_parsing(raw: Any, expected: str) -> None:
     assert _keychain_unlock_preference({"keychain_unlock": raw}) == expected
     assert _keychain_unlock_preference({}) == "gui"
+
+
+def test_gui_mode_without_a_display_behaves_like_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(keychain_unlock, "gui_available", lambda: False)
+    monkeypatch.setattr(keychain_unlock, "keychain_is_locked", lambda: True)
+    _set_tty(monkeypatch, tty=False)
+    with pytest.raises(keychain_unlock.KeychainLockedError, match="blumkin auth unlock"):
+        keychain_unlock.ensure_unlocked("gui")
+
+
+def test_off_mode_without_a_display_still_never_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(keychain_unlock, "gui_available", lambda: False)
+    monkeypatch.setattr(
+        keychain_unlock, "keychain_is_locked", lambda: pytest.fail("probed in off mode")
+    )
+    keychain_unlock.ensure_unlocked("off")
+
+
+def test_gui_unavailable_over_ssh(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 1 5.6.7.8 22")
+    assert _REAL_GUI_AVAILABLE() is False
+
+
+@pytest.mark.parametrize(
+    ("manager", "expected"),
+    [("Aqua\n", True), ("Background\n", False), ("System\n", False), ("", True)],
+)
+def test_gui_available_follows_launchctl_session(
+    monkeypatch: pytest.MonkeyPatch, manager: str, expected: bool
+) -> None:
+    _fake_run(monkeypatch, subprocess.CompletedProcess([], 0, manager, ""))
+    assert _REAL_GUI_AVAILABLE() is expected

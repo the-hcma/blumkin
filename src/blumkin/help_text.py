@@ -146,7 +146,8 @@ Unlocks the macOS login keychain by running `security unlock-keychain`, which
 prompts for the password itself (blumkin never sees or stores it). Needs a TTY;
 from an agent session run it with `! blumkin auth unlock`. Pair it with
 `keychain_unlock = "cli"` in config.toml to fail fast, instead of hanging on the
-GUI prompt, when the keychain is locked and there is no terminal. An "Always
+GUI prompt, when the keychain is locked and there is no terminal (the default
+"gui" does the same automatically over SSH / outside a GUI login session). An "Always
 Allow" dialog for a new binary is a separate access-list prompt that unlocking
 does not clear.
 """
