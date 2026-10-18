@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 KEYCHAIN_UNLOCK_MODES = ("cli", "gui", "off")
 UNLOCK_COMMAND = "security unlock-keychain"
@@ -58,15 +59,23 @@ def ensure_unlocked(mode: str) -> None:
     """Make sure the login keychain is usable before keychain I/O, per ``mode``.
 
     No-op unless the effective mode is ``"cli"`` (``mode == "cli"``, or
-    ``"gui"`` with no GUI available) on macOS with ``security`` available, and
-    re-checked at most once a minute. Raises ``KeychainLockedError`` when the
-    keychain is locked and there is no TTY to prompt on (or the unlock fails).
+    ``"gui"`` with no GUI available) on macOS, and re-checked at most once a
+    minute. Raises ``KeychainLockedError`` when the keychain is locked and there
+    is no TTY to prompt on (or the unlock fails), and when ``security`` is
+    missing on macOS (fail closed: the keyring backend would still reach the
+    keychain through the native API, so the lock state cannot be assumed fine).
     """
     global _checked_at
-    if not _supported() or _recently_checked():
+    if not _is_macos() or _recently_checked():
         return
     if not (mode == "cli" or (mode == "gui" and not gui_available())):
         return
+    if not _supported():
+        raise KeychainLockedError(
+            "the macOS `security` tool was not found on PATH, so the keychain lock state "
+            "cannot be checked; restore it (it ships in /usr/bin) or set "
+            'keychain_unlock = "off"'
+        )
     with _checked_lock:
         if _recently_checked():
             return
@@ -102,7 +111,7 @@ def keychain_is_locked() -> bool:
     A probe that cannot run counts as locked, like any other unsuccessful probe;
     only a clean exit means unlocked. False off macOS (nothing to unlock).
     """
-    if not _supported():
+    if not _is_macos():
         return False
     return keychain_lock_state() is not False
 
@@ -117,7 +126,7 @@ def keychain_lock_state() -> bool | None:
         return None
     try:
         proc = subprocess.run(
-            ["security", "show-keychain-info"],
+            ["security", "show-keychain-info", *_login_keychain_args()],
             capture_output=True,
             check=False,
             text=True,
@@ -135,11 +144,17 @@ def unlock() -> bool:
     """Run ``security unlock-keychain`` attached to the terminal; True on success."""
     try:
         proc = subprocess.run(
-            ["security", "unlock-keychain"], check=False, timeout=_UNLOCK_TIMEOUT_SECONDS
+            ["security", "unlock-keychain", *_login_keychain_args()],
+            check=False,
+            timeout=_UNLOCK_TIMEOUT_SECONDS,
         )
     except OSError, subprocess.TimeoutExpired:
         return False
     return proc.returncode == 0
+
+
+def _is_macos() -> bool:
+    return sys.platform == "darwin"
 
 
 def _locked_message() -> str:
@@ -148,6 +163,18 @@ def _locked_message() -> str:
         f"run `blumkin auth unlock` (or `! {UNLOCK_COMMAND}`) in your own terminal, "
         "then retry"
     )
+
+
+def _login_keychain_args() -> list[str]:
+    """The login keychain path as an explicit argument, so the probe and the unlock
+    always target the same keychain; empty (``security`` uses the default keychain)
+    when no login keychain file is found."""
+    keychains = Path.home() / "Library" / "Keychains"
+    for name in ("login.keychain-db", "login.keychain"):
+        candidate = keychains / name
+        if candidate.exists():
+            return [str(candidate)]
+    return []
 
 
 def _probe_gui_available() -> bool:

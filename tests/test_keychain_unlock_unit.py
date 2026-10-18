@@ -14,11 +14,14 @@ from blumkin.config import _keychain_unlock_preference
 
 # Captured before the autouse fixture patches `gui_available` for every test.
 _REAL_GUI_AVAILABLE = keychain_unlock.gui_available
+_REAL_LOGIN_KEYCHAIN_ARGS = keychain_unlock._login_keychain_args
 
 
 @pytest.fixture(autouse=True)
 def _fresh_state(monkeypatch: pytest.MonkeyPatch) -> None:
     keychain_unlock._reset_for_tests()
+    monkeypatch.setattr(keychain_unlock, "_is_macos", lambda: True)
+    monkeypatch.setattr(keychain_unlock, "_login_keychain_args", list)
     monkeypatch.setattr(keychain_unlock, "_supported", lambda: True)
     monkeypatch.setattr(keychain_unlock, "gui_available", lambda: True)
     monkeypatch.delenv("SSH_CONNECTION", raising=False)
@@ -70,12 +73,37 @@ def test_cli_mode_failed_unlock_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_unsupported_platform_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     real_probe = keychain_unlock.keychain_is_locked
+    monkeypatch.setattr(keychain_unlock, "_is_macos", lambda: False)
     monkeypatch.setattr(keychain_unlock, "_supported", lambda: False)
     monkeypatch.setattr(
         keychain_unlock, "keychain_is_locked", lambda: pytest.fail("probed off macOS")
     )
     keychain_unlock.ensure_unlocked("cli")
     assert real_probe() is False
+
+
+@pytest.mark.parametrize(("mode", "gui"), [("cli", True), ("gui", False)])
+def test_macos_without_security_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, mode: str, gui: bool
+) -> None:
+    monkeypatch.setattr(keychain_unlock, "_supported", lambda: False)
+    monkeypatch.setattr(keychain_unlock, "gui_available", lambda: gui)
+    with pytest.raises(keychain_unlock.KeychainLockedError, match="`security` tool was not found"):
+        keychain_unlock.ensure_unlocked(mode)
+
+
+@pytest.mark.parametrize(("mode", "gui"), [("off", False), ("gui", True)])
+def test_macos_without_security_is_noop_when_unlock_is_not_in_play(
+    monkeypatch: pytest.MonkeyPatch, mode: str, gui: bool
+) -> None:
+    monkeypatch.setattr(keychain_unlock, "_supported", lambda: False)
+    monkeypatch.setattr(keychain_unlock, "gui_available", lambda: gui)
+    keychain_unlock.ensure_unlocked(mode)
+
+
+def test_macos_without_security_counts_as_locked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(keychain_unlock, "_supported", lambda: False)
+    assert keychain_unlock.keychain_is_locked() is True
 
 
 def _fake_run(monkeypatch: pytest.MonkeyPatch, result: Any) -> None:
@@ -212,6 +240,40 @@ def test_a_successful_check_expires_so_a_relock_is_noticed(
 def test_probe_any_nonzero_exit_is_treated_as_locked(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_run(monkeypatch, subprocess.CompletedProcess([], 51, "", "authentication failed"))
     assert keychain_unlock.keychain_is_locked() is True
+
+
+def test_probe_and_unlock_target_the_same_explicit_keychain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = "/Users/x/Library/Keychains/login.keychain-db"
+    monkeypatch.setattr(keychain_unlock, "_login_keychain_args", lambda: [path])
+    seen: list[list[str]] = []
+
+    def run(argv: list[str], **_kwargs: Any) -> Any:
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(keychain_unlock.subprocess, "run", run)
+    keychain_unlock.keychain_lock_state()
+    keychain_unlock.unlock()
+    assert seen == [
+        ["security", "show-keychain-info", path],
+        ["security", "unlock-keychain", path],
+    ]
+
+
+def test_login_keychain_args_prefers_the_db_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.setattr(keychain_unlock.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(keychain_unlock, "_login_keychain_args", _REAL_LOGIN_KEYCHAIN_ARGS)
+    assert keychain_unlock._login_keychain_args() == []
+    keychains = tmp_path / "Library" / "Keychains"
+    keychains.mkdir(parents=True)
+    (keychains / "login.keychain").touch()
+    assert keychain_unlock._login_keychain_args() == [str(keychains / "login.keychain")]
+    (keychains / "login.keychain-db").touch()
+    assert keychain_unlock._login_keychain_args() == [str(keychains / "login.keychain-db")]
 
 
 def test_unlock_timeout_counts_as_failure(monkeypatch: pytest.MonkeyPatch) -> None:
