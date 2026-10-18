@@ -1345,3 +1345,45 @@ def test_delete_keyring_entry_leaves_plaintext_file_untouched(tmp_path: Path, mo
     assert cfg.google_token_path.read_text() == "file-value"
     assert key not in fake.store
     assert secret_store.read_text(cfg, "google_token") == "file-value"
+
+
+def _lock_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every ensure_unlocked call fail as if locked with no GUI/TTY (issue #444)."""
+
+    def locked(_mode: str) -> None:
+        raise secret_store.keychain_unlock.KeychainLockedError("keychain locked")
+
+    monkeypatch.setattr(secret_store.keychain_unlock, "ensure_unlocked", locked)
+
+
+def test_locked_keychain_read_falls_back_to_file_without_touching_keyring(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    cfg.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.token_cache_path.write_text("file-copy")
+    _lock_keychain(monkeypatch)
+    monkeypatch.setattr(
+        secret_store, "_call_keyring_with_timeout", lambda *a, **k: pytest.fail("touched keyring")
+    )
+    assert secret_store.read_text(cfg, "token_cache") == "file-copy"
+
+
+def test_locked_keychain_write_falls_back_to_file_under_auto(tmp_path: Path, monkeypatch) -> None:
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    fake = _FakeKeyring()
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
+    _lock_keychain(monkeypatch)
+    secret_store.write_text(cfg, "token_cache", "payload")
+    assert cfg.token_cache_path.read_text() == "payload"
+    assert _bundle_value(fake, cfg, "token_cache") is None
+
+
+def test_locked_keychain_write_raises_when_keyring_is_pinned(tmp_path: Path, monkeypatch) -> None:
+    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+    _lock_keychain(monkeypatch)
+    with pytest.raises(SecretWriteError, match="keychain locked"):
+        secret_store.write_text(cfg, "token_cache", "payload")

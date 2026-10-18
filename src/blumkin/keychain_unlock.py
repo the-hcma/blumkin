@@ -37,6 +37,9 @@ _LOCK_PROBE_TIMEOUT_SECONDS = 2.0
 
 _checked_lock = threading.Lock()
 _checked = False
+# Per-process cache: the session type does not change mid-run, and the default
+# "gui" mode would otherwise fork `launchctl` on every keychain read.
+_gui_available: bool | None = None
 
 
 class KeychainLockedError(OSError):
@@ -52,7 +55,9 @@ def ensure_unlocked(mode: str) -> None:
     keychain is locked and there is no TTY to prompt on (or the unlock fails).
     """
     global _checked
-    if not _supported() or not (mode == "cli" or (mode == "gui" and not gui_available())):
+    if _checked or not _supported():
+        return
+    if not (mode == "cli" or (mode == "gui" and not gui_available())):
         return
     with _checked_lock:
         if _checked:
@@ -72,6 +77,13 @@ def gui_available() -> bool:
     is ``Background``/``System`` there); True when it cannot be determined, so
     the default behaviour stays today's.
     """
+    global _gui_available
+    if _gui_available is None:
+        _gui_available = _probe_gui_available()
+    return _gui_available
+
+
+def _probe_gui_available() -> bool:
     if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
         return False
     try:
@@ -97,6 +109,7 @@ def keychain_is_locked() -> bool:
             ["security", "show-keychain-info"],
             capture_output=True,
             check=False,
+            env={**os.environ, "LC_ALL": "C"},
             text=True,
             timeout=_LOCK_PROBE_TIMEOUT_SECONDS,
         )
@@ -124,9 +137,10 @@ def _locked_message() -> str:
 
 
 def _reset_for_tests() -> None:
-    global _checked
+    global _checked, _gui_available
     with _checked_lock:
         _checked = False
+    _gui_available = None
 
 
 def _supported() -> bool:

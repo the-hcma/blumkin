@@ -164,3 +164,16 @@ def test_gui_available_follows_launchctl_session(
 ) -> None:
     _fake_run(monkeypatch, subprocess.CompletedProcess([], 0, manager, ""))
     assert _REAL_GUI_AVAILABLE() is expected
+
+
+def test_gui_availability_is_probed_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    def run(*_a: Any, **_k: Any) -> Any:
+        calls.append(1)
+        return subprocess.CompletedProcess([], 0, "Aqua\n", "")
+
+    monkeypatch.setattr(keychain_unlock.subprocess, "run", run)
+    assert _REAL_GUI_AVAILABLE() is True
+    assert _REAL_GUI_AVAILABLE() is True
+    assert calls == [1]

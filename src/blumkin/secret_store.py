@@ -760,8 +760,7 @@ def _read_ms_bundle_and_backend_direct(cfg: BlumkinConfig) -> tuple[dict[str, st
                 pass
     if _backend_for(cfg) != "file":
         keyring = _keyring_module()
-        if keyring is not None:
-            keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
+        if keyring is not None and _keychain_ready(cfg):
             account = _keyring_account(cfg, "auth_record")  # same account as token_cache
             try:
                 raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
@@ -791,7 +790,13 @@ def _read_text_and_backend_direct(cfg: BlumkinConfig, kind: SecretKind) -> tuple
     if keyring is None:
         # _backend_for only returns "keyring" when a real backend is usable.
         return None, "file"
-    keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
+    if not _keychain_ready(cfg):
+        # Locked keychain with no way to unlock it here: serve the file copy
+        # (if any) rather than touching - and hanging on - the keychain.
+        try:
+            return (path.read_text(), "file") if path.is_file() else (None, "file")
+        except OSError:
+            return None, "file"
     account = _keyring_account(cfg, kind)
     try:
         raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
@@ -816,9 +821,12 @@ def _write_text_direct(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
         keyring = _keyring_module()
         if keyring is None:
             raise SecretWriteError(f"cannot write {kind}: no usable keyring backend")
-        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         account = _keyring_account(cfg, kind)
         try:
+            # Inside the try: a KeychainLockedError is then handled like any
+            # other keyring failure ("auto" falls back to the file, a pinned
+            # "keyring" raises SecretWriteError).
+            keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
             if kind in _BUNDLED_KINDS:
                 _bundle_write_kind(keyring, account, kind, text)
             else:
@@ -979,6 +987,15 @@ def _file_path(cfg: BlumkinConfig, kind: SecretKind) -> Path:
     if kind == "google_token":
         return cfg.google_token_path
     return cfg.token_cache_path
+
+
+def _keychain_ready(cfg: BlumkinConfig) -> bool:
+    """False when the keychain is locked and cannot be unlocked here (reads use the file)."""
+    try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
+    except keychain_unlock.KeychainLockedError:
+        return False
+    return True
 
 
 def _keyring_account(cfg: BlumkinConfig, kind: SecretKind) -> str:
