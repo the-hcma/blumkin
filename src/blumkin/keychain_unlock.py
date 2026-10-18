@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 KEYCHAIN_UNLOCK_MODES = ("cli", "gui", "off")
 UNLOCK_COMMAND = "security unlock-keychain"
@@ -35,8 +36,13 @@ UNLOCK_COMMAND = "security unlock-keychain"
 # keychain is locked, so a short timeout is the lock signal itself.
 _LOCK_PROBE_TIMEOUT_SECONDS = 2.0
 
+# A successful check is trusted for this long, so a long-lived process (an MCP
+# server) notices when the keychain re-locks (sleep, idle timeout) instead of
+# reverting to the old hang, without probing on every keychain call.
+_RECHECK_AFTER_SECONDS = 60.0
+
+_checked_at: float | None = None
 _checked_lock = threading.Lock()
-_checked = False
 # Per-process cache: the session type does not change mid-run, and the default
 # "gui" mode would otherwise fork `launchctl` on every keychain read.
 _gui_available: bool | None = None
@@ -51,23 +57,23 @@ def ensure_unlocked(mode: str) -> None:
 
     No-op unless the effective mode is ``"cli"`` (``mode == "cli"``, or
     ``"gui"`` with no GUI available) on macOS with ``security`` available, and
-    checked at most once per process. Raises ``KeychainLockedError`` when the
+    re-checked at most once a minute. Raises ``KeychainLockedError`` when the
     keychain is locked and there is no TTY to prompt on (or the unlock fails).
     """
-    global _checked
-    if _checked or not _supported():
+    global _checked_at
+    if not _supported() or _recently_checked():
         return
     if not (mode == "cli" or (mode == "gui" and not gui_available())):
         return
     with _checked_lock:
-        if _checked:
+        if _recently_checked():
             return
         if keychain_is_locked():
             if not sys.stdin.isatty():
                 raise KeychainLockedError(_locked_message())
             if not unlock():
                 raise KeychainLockedError("the keychain unlock failed; " + _locked_message())
-        _checked = True
+        _checked_at = time.monotonic()
 
 
 def gui_available() -> bool:
@@ -81,23 +87,6 @@ def gui_available() -> bool:
     if _gui_available is None:
         _gui_available = _probe_gui_available()
     return _gui_available
-
-
-def _probe_gui_available() -> bool:
-    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
-        return False
-    try:
-        proc = subprocess.run(
-            ["launchctl", "managername"],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=_LOCK_PROBE_TIMEOUT_SECONDS,
-        )
-    except OSError, subprocess.TimeoutExpired:
-        return True
-    name = proc.stdout.strip()
-    return proc.returncode != 0 or not name or name == "Aqua"
 
 
 def keychain_is_locked() -> bool:
@@ -136,11 +125,42 @@ def _locked_message() -> str:
     )
 
 
+def _probe_gui_available() -> bool:
+    """``launchctl managername`` is authoritative; SSH env is only the fallback.
+
+    Trusting ``SSH_CONNECTION`` first would misclassify a local GUI session
+    that merely inherited it (e.g. a tmux server started over SSH).
+    """
+    try:
+        proc = subprocess.run(
+            ["launchctl", "managername"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=_LOCK_PROBE_TIMEOUT_SECONDS,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return not _ssh_env()
+    name = proc.stdout.strip()
+    if proc.returncode != 0 or not name:
+        return not _ssh_env()
+    return name == "Aqua"
+
+
+def _recently_checked() -> bool:
+    checked_at = _checked_at
+    return checked_at is not None and time.monotonic() - checked_at < _RECHECK_AFTER_SECONDS
+
+
 def _reset_for_tests() -> None:
-    global _checked, _gui_available
+    global _checked_at, _gui_available
     with _checked_lock:
-        _checked = False
+        _checked_at = None
     _gui_available = None
+
+
+def _ssh_env() -> bool:
+    return bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
 
 
 def _supported() -> bool:

@@ -131,7 +131,7 @@ default_tz = "<IANA timezone, e.g. America/New_York>"
 provider = "microsoft"
 tags = ["@work", "work", "microsoft", "m365"]
 token_storage = "auto"         # auto | keyring | file
-keychain_unlock = "gui"        # gui | cli | off - macOS locked-keychain handling
+keychain_unlock = "gui"        # gui | cli | off - macOS locked keychain (default "gui")
 token_reverify_after = "24h"   # 30m, 24h, 7d, 1w; 0 / "never" disables agent-mode
 
 [profiles.personal]
@@ -155,7 +155,7 @@ html_email = true
 font_size = 13  # overrides just this key for this profile
 ```
 
-Set `tenant_id`, `default_tz`, and `provider` in the profile table (there are no org-specific code defaults). `provider` defaults to `microsoft` when omitted. `token_storage` defaults to `"auto"`. `keychain_unlock` defaults to `"gui"` when the key is absent (an unrecognized value also means `"gui"`) (leave a locked macOS login keychain to the OS prompt, except over SSH or outside a GUI login session where nobody could answer it, which behaves like `"cli"`); `"cli"` runs `security unlock-keychain` on a TTY and fails fast without one, pointing at `blumkin auth unlock`; `"off"` never tries (issue #444). `token_reverify_after` defaults to `"24h"` and accepts the same compact duration forms blumkin already uses elsewhere (`30m`, `24h`, `7d`, `1w`); `0` or `"never"` disables agent-mode for that profile entirely.
+Set `tenant_id`, `default_tz`, and `provider` in the profile table (there are no org-specific code defaults). `provider` defaults to `microsoft` when omitted. `token_storage` defaults to `"auto"`. `keychain_unlock` defaults to `"gui"` ([Keychain unlock](#keychain-unlock-macos)). `token_reverify_after` defaults to `"24h"` and accepts the same compact duration forms blumkin already uses elsewhere (`30m`, `24h`, `7d`, `1w`); `0` or `"never"` disables agent-mode for that profile entirely.
 
 Interactive browser auth is public-client only (`client_id`; plus `tenant_id` for Microsoft). Do not set a client secret for these flows. Set `tenant_id` to your tenant's specific GUID or verified domain, never `common` / `organizations` / `consumers` - see the app-registration hardening checklist in [`docs/SECURITY-AT-A-GLANCE.md`](./docs/SECURITY-AT-A-GLANCE.md#microsoft-app-registration-hardening) before your first login.
 
@@ -167,6 +167,28 @@ Microsoft token cache files (under `profiles/<name>/`):
 - `auth_record.json`
 
 `BLUMKIN_CONFIG_DIR` overrides the config **directory** (not a profile) — useful for an isolated setup or tests. Never commit anything under the config dir.
+
+### Keychain unlock (macOS)
+
+`keychain_unlock` is an optional key in a `[profiles.<name>]` table (next to `token_storage`) that controls how blumkin gets past a **locked** macOS login keychain. It only matters when the profile stores tokens in the keychain (`token_storage` is `"auto"` or `"keyring"`) and has no effect off macOS.
+
+```toml
+[profiles.work]
+token_storage = "auto"
+keychain_unlock = "cli"   # gui | cli | off
+```
+
+| Value | Behaviour |
+| --- | --- |
+| `"gui"` (default) | Leave a locked keychain to the macOS prompt. If no GUI is reachable (an SSH session, or no Aqua login session per `launchctl managername`), nobody could answer that prompt, so it behaves like `"cli"`. |
+| `"cli"` | When the keychain is locked and stdin is a TTY, run `security unlock-keychain`, which prompts for the password itself. With no TTY, fail fast instead of hanging. |
+| `"off"` | Never attempt an unlock, even without a display. |
+
+**Default.** When the key is absent, or holds an unrecognized value, it is `"gui"`: existing configs behave exactly as before.
+
+**Fail-fast behaviour.** When the keychain is locked and cannot be unlocked from the session (no TTY), reads use the file copy of the token if there is one, and writes follow `token_storage`: `"auto"` falls back to the file, `"keyring"` raises with the command to run. Run `blumkin auth unlock` (or `! blumkin auth unlock` from an agent session) in your own terminal, then retry.
+
+**Password handling.** blumkin never receives, passes on a command line, logs or stores the keychain password; `security` prompts for it on the terminal directly. An "Always Allow" dialog for a binary that has never touched the item is a separate access-list prompt, and unlocking does not clear it.
 
 ### Google Workspace (`provider = "google"`)
 

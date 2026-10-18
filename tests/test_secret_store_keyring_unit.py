@@ -1387,3 +1387,19 @@ def test_locked_keychain_write_raises_when_keyring_is_pinned(tmp_path: Path, mon
     _lock_keychain(monkeypatch)
     with pytest.raises(SecretWriteError, match="keychain locked"):
         secret_store.write_text(cfg, "token_cache", "payload")
+
+
+def test_locked_keychain_presence_probes_use_the_file_without_touching_keyring(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
+    cfg.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.token_cache_path.write_text("file-copy")
+    _lock_keychain(monkeypatch)
+    monkeypatch.setattr(
+        secret_store, "_call_keyring_with_timeout", lambda *a, **k: pytest.fail("touched keyring")
+    )
+    assert secret_store.exists(cfg, "token_cache") is True
+    assert secret_store.active_backend(cfg, "token_cache") == "file"
+    assert secret_store.ms_bundle_exists(cfg)["token_cache"] is True

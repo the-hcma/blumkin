@@ -150,9 +150,18 @@ def test_off_mode_without_a_display_still_never_probes(monkeypatch: pytest.Monke
     keychain_unlock.ensure_unlocked("off")
 
 
-def test_gui_unavailable_over_ssh(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ssh_env_is_only_a_fallback_when_launchctl_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 1 5.6.7.8 22")
+    _fake_run(monkeypatch, FileNotFoundError("launchctl"))
     assert _REAL_GUI_AVAILABLE() is False
+
+
+def test_inherited_ssh_env_does_not_hide_an_aqua_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 1 5.6.7.8 22")
+    _fake_run(monkeypatch, subprocess.CompletedProcess([], 0, "Aqua\n", ""))
+    assert _REAL_GUI_AVAILABLE() is True
 
 
 @pytest.mark.parametrize(
@@ -177,3 +186,19 @@ def test_gui_availability_is_probed_once_per_process(monkeypatch: pytest.MonkeyP
     assert _REAL_GUI_AVAILABLE() is True
     assert _REAL_GUI_AVAILABLE() is True
     assert calls == [1]
+
+
+def test_a_successful_check_expires_so_a_relock_is_noticed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(keychain_unlock.time, "monotonic", lambda: clock[0])
+    probes: list[int] = []
+    monkeypatch.setattr(keychain_unlock, "keychain_is_locked", lambda: probes.append(1) or False)
+    keychain_unlock.ensure_unlocked("cli")
+    clock[0] += keychain_unlock._RECHECK_AFTER_SECONDS - 1
+    keychain_unlock.ensure_unlocked("cli")
+    assert probes == [1]
+    clock[0] += 2
+    keychain_unlock.ensure_unlocked("cli")
+    assert probes == [1, 1]

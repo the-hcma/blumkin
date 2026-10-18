@@ -134,6 +134,7 @@ def active_backend(cfg: BlumkinConfig, kind: SecretKind) -> str:
         return "file"
     account = _keyring_account(cfg, kind)
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         if kind in _BUNDLED_KINDS:
             if _bundle_has_kind(keyring, account, kind):
                 return "keyring"
@@ -323,6 +324,7 @@ def exists(cfg: BlumkinConfig, kind: SecretKind) -> bool:
         return False
     account = _keyring_account(cfg, kind)
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         if kind in _BUNDLED_KINDS:
             if _bundle_has_kind(keyring, account, kind):
                 return True
@@ -375,6 +377,7 @@ def ms_bundle_exists(cfg: BlumkinConfig) -> dict[str, bool]:
         return out
     account = _keyring_account(cfg, "auth_record")
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
         bundle = _bundle_dict_from_raw(raw)
     except Exception:
