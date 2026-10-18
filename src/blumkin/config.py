@@ -64,6 +64,10 @@ class BlumkinConfig:
     google_auth_uri: str = ""
     google_redirect_uris: tuple[str, ...] = ()
     google_token_uri: str = ""
+    # How to get past a locked macOS login keychain (issue #444): "gui" leaves
+    # it to macOS, "cli" runs `security unlock-keychain` on a TTY (fail fast
+    # without one), "off" never tries. See blumkin.keychain_unlock.
+    keychain_unlock: str = "gui"
     message_policy: MessagePolicyConfig = field(default_factory=lambda: MessagePolicyConfig())
     # OS keychain vs. a plain 0600 file for the token cache / auth record /
     # Google token (issue #287). "auto" prefers the keyring extra when a real
@@ -72,10 +76,6 @@ class BlumkinConfig:
     # "file" force one and warn once if "keyring" is unusable. See
     # blumkin.secret_store.
     token_storage: str = "auto"
-    # How to get past a locked macOS login keychain (issue #444): "gui" leaves
-    # it to macOS, "cli" runs `security unlock-keychain` on a TTY (fail fast
-    # without one), "off" never tries. See blumkin.keychain_unlock.
-    keychain_unlock: str = "gui"
     # How long a profile's agent-cached secret may be reused before the
     # next read must re-verify local presence again. `None` disables the
     # agent cache entirely for this profile (`token_reverify_after = 0` /
@@ -677,6 +677,14 @@ def _graph_timeout_seconds(file_data: dict[str, Any]) -> float:
     return DEFAULT_GRAPH_TIMEOUT_SECONDS
 
 
+def _keychain_unlock_preference(file_data: dict[str, Any]) -> str:
+    """Parse ``keychain_unlock`` (issue #444); any unrecognized value is "gui"."""
+    raw = file_data.get("keychain_unlock")
+    if isinstance(raw, str) and raw.strip().lower() in {"cli", "gui", "off"}:
+        return raw.strip().lower()
+    return "gui"
+
+
 def _mail_signature_config(file_data: dict[str, Any]) -> MailSignatureConfig:
     """Parse optional ``[mail.signature]`` (nested table under ``mail``)."""
     mail = file_data.get("mail")
@@ -1115,14 +1123,6 @@ def _token_reverify_after(file_data: dict[str, Any]) -> timedelta | None:
             "(the agent's idle-exit window only covers up to that long)"
         )
     return value
-
-
-def _keychain_unlock_preference(file_data: dict[str, Any]) -> str:
-    """Parse ``keychain_unlock`` (issue #444); any unrecognized value is "gui"."""
-    raw = file_data.get("keychain_unlock")
-    if isinstance(raw, str) and raw.strip().lower() in {"cli", "gui", "off"}:
-        return raw.strip().lower()
-    return "gui"
 
 
 def _token_storage_preference(file_data: dict[str, Any]) -> str:
