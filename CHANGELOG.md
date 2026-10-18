@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.12.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.12.0...blumkin-v1.12.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **deps:** batch updates including CVE fixes ([#418](https://github.com/the-hcma/blumkin/issues/418)) ([a5081c5](https://github.com/the-hcma/blumkin/commit/a5081c5601a83ed5e156d8994c6ce9f81ab02be8))
+* **deps:** batch updates including CVE fixes ([#419](https://github.com/the-hcma/blumkin/issues/419)) ([cce90f8](https://github.com/the-hcma/blumkin/commit/cce90f80daac0d7af856e92ba5ea0b2234b5a5ba))
+* **workflows:** look up PRs by head ref in cleanup-merged-branches ([#433](https://github.com/the-hcma/blumkin/issues/433)) ([ede6e90](https://github.com/the-hcma/blumkin/commit/ede6e907af516905c51562fbae2f99998a0cab4c))
+
+
+### Documentation
+
+* sync agent rule template fixes from repository-helpers ([#417](https://github.com/the-hcma/blumkin/issues/417)) ([f762514](https://github.com/the-hcma/blumkin/commit/f762514e93a45731b0f74b460f624e8cf8d89242))
+
 ## [1.12.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.11.0...blumkin-v1.12.0) (2026-09-28)
 
 
