@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -101,9 +103,12 @@ def test_probe_success_means_unlocked(monkeypatch: pytest.MonkeyPatch) -> None:
     assert keychain_unlock.keychain_is_locked() is False
 
 
-def test_probe_missing_binary_means_unlocked(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_probe_unrunnable_security_is_not_reported_unlocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _fake_run(monkeypatch, FileNotFoundError("security"))
-    assert keychain_unlock.keychain_is_locked() is False
+    assert keychain_unlock.keychain_lock_state() is None
+    assert keychain_unlock.keychain_is_locked() is True
 
 
 def test_unlock_never_passes_a_password(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -257,3 +262,30 @@ def test_auth_unlock_json_reports_status(monkeypatch: pytest.MonkeyPatch) -> Non
     result = CliRunner().invoke(main, ["auth", "unlock", "--json"])
     assert result.exit_code == 0
     assert json.loads(result.stdout) == {"ok": True, "status": "already_unlocked"}
+
+
+def test_auth_unlock_json_errors_are_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from blumkin.cli import main
+
+    monkeypatch.setattr(keychain_unlock.sys, "platform", "darwin")
+    monkeypatch.setattr(keychain_unlock, "keychain_is_locked", lambda: True)
+    result = CliRunner().invoke(main, ["auth", "unlock", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.stderr)
+    assert payload["ok"] is False and payload["error"] == "keychain_locked"
+
+    class TtyRunner(CliRunner):
+        @contextlib.contextmanager
+        def isolation(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            with super().isolation(*args, **kwargs) as streams:
+                monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+                yield streams
+
+    monkeypatch.setattr(keychain_unlock, "unlock", lambda: False)
+    result = TtyRunner().invoke(main, ["auth", "unlock", "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.stderr)["error"] == "keychain_unlock_failed"

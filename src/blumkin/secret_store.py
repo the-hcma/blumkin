@@ -826,9 +826,9 @@ def _write_text_direct(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
             raise SecretWriteError(f"cannot write {kind}: no usable keyring backend")
         account = _keyring_account(cfg, kind)
         try:
-            # Inside the try: a KeychainLockedError is then handled like any
-            # other keyring failure ("auto" falls back to the file, a pinned
-            # "keyring" raises SecretWriteError).
+            # Inside the try so a KeychainLockedError is caught by the
+            # dedicated handler below, which raises SecretWriteError for both
+            # "auto" and "keyring" (no file fallback).
             keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
             if kind in _BUNDLED_KINDS:
                 _bundle_write_kind(keyring, account, kind, text)

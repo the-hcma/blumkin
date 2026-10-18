@@ -1329,19 +1329,26 @@ def auth_unlock(ctx: click.Context, as_json_flag: bool) -> None:
     if sys.platform != "darwin":
         done("not_macos", "not macOS: no login keychain to unlock")
         return
+
+    def fail(slug: str, message: str) -> NoReturn:
+        _emit_error(error=slug, message=message, as_json=as_json)
+        raise SystemExit(1)
+
     if not keychain_unlock.available():
-        raise click.ClickException(
-            "the `security` executable was not found; cannot check or unlock"
+        fail(
+            "keychain_unavailable",
+            "the `security` executable was not found; cannot check or unlock",
         )
     if not keychain_unlock.keychain_is_locked():
         done("already_unlocked", "keychain already unlocked")
         return
     if not sys.stdin.isatty():
-        raise click.ClickException(
-            f"no terminal to prompt on; run `! {keychain_unlock.UNLOCK_COMMAND}` in your own shell"
+        fail(
+            "keychain_locked",
+            f"no terminal to prompt on; run `! {keychain_unlock.UNLOCK_COMMAND}` in your own shell",
         )
     if not keychain_unlock.unlock():
-        raise click.ClickException("keychain unlock failed")
+        fail("keychain_unlock_failed", "keychain unlock failed")
     done("unlocked", "keychain unlocked")
 
 

@@ -97,8 +97,14 @@ def gui_available() -> bool:
 
 
 def keychain_is_locked() -> bool:
-    """True when the default (login) keychain is locked. False off macOS or when unprobeable."""
-    return keychain_lock_state() is True
+    """True unless a probe establishes the default (login) keychain is unlocked.
+
+    A probe that cannot run counts as locked, like any other unsuccessful probe;
+    only a clean exit means unlocked. False off macOS (nothing to unlock).
+    """
+    if not _supported():
+        return False
+    return keychain_lock_state() is not False
 
 
 def keychain_lock_state() -> bool | None:
