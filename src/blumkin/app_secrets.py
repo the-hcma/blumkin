@@ -26,6 +26,10 @@ API - it is deliberately **opt-in and keychain-only**:
   this module owns, and silently discarding an explicit "vault this secret"
   request would be a worse surprise than a clear error.
 
+Every keyring call here is preceded by ``keychain_unlock.ensure_unlocked`` (issue
+#444), like ``secret_store``'s, so a locked keychain fails fast (or is unlocked on a TTY)
+instead of raising the macOS dialog and timing out.
+
 Reuses ``secret_store``'s low-level keyring primitives (backend lookup,
 bounded-timeout calls, the not-found probe, the abandoned-mutation registry)
 so both modules share one exact notion of "keyring is usable right now" and
@@ -45,7 +49,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from blumkin import secret_store
+from blumkin import keychain_unlock, secret_store
 from blumkin.config import BlumkinConfig
 from blumkin.secret_store import (
     _KEYRING_IO_TIMEOUT_SECONDS,
@@ -73,6 +77,7 @@ def app_secret_backend(cfg: BlumkinConfig, kind: AppSecretKind) -> Literal["keyr
         return "none"
     account = _account(cfg, kind)
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         _await_pending_mutation(account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
         raw = secret_store._call_keyring_with_timeout(
             keyring_module.get_password, _KEYRING_SERVICE, account
@@ -91,6 +96,7 @@ def read_app_secret(cfg: BlumkinConfig, kind: AppSecretKind) -> str | None:
         return None
     account = _account(cfg, kind)
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         _await_pending_mutation(account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
         raw = secret_store._call_keyring_with_timeout(
             keyring_module.get_password, _KEYRING_SERVICE, account
@@ -119,6 +125,7 @@ def write_app_secret(cfg: BlumkinConfig, kind: AppSecretKind, value: str) -> Non
         )
     account = _account(cfg, kind)
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         _await_pending_mutation(account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
         secret_store._call_keyring_with_timeout(
             keyring_module.set_password, _KEYRING_SERVICE, account, value
@@ -145,6 +152,7 @@ def delete_app_secret(cfg: BlumkinConfig, kind: AppSecretKind) -> None:
         )
     account = _account(cfg, kind)
     try:
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         _await_pending_mutation(account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
         secret_store._call_keyring_with_timeout(
             keyring_module.delete_password, _KEYRING_SERVICE, account
@@ -192,6 +200,7 @@ def _read_app_secret_or_raise(cfg: BlumkinConfig, kind: AppSecretKind) -> str | 
     if keyring_module is None:
         return None
     account = _account(cfg, kind)
+    keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
     _await_pending_mutation(account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
     raw = secret_store._call_keyring_with_timeout(
         keyring_module.get_password, _KEYRING_SERVICE, account

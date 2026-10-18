@@ -106,6 +106,25 @@ def _stub_install_detection(
 
 
 @pytest.fixture(autouse=True)
+def _stub_keychain_lock_state(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep the suite off the machine's real keychain lock state (issue #444).
+
+    ``keychain_unlock.keychain_lock_state`` asks Security.framework first, so
+    without this a hermetic ``doctor`` test on a Mac would report whatever state the
+    developer's login keychain happens to be in when the suite runs. Pinned to
+    "unlocked"; ``tests/test_keychain_unlock_unit.py`` overrides it with its own stubs
+    and captures the real function at import for the tests of the probe itself.
+    """
+    if request.node.get_closest_marker("live") is not None:
+        return
+    from blumkin import keychain_unlock
+
+    monkeypatch.setattr(keychain_unlock, "_native_lock_state", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _stub_agent_process_discovery(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
