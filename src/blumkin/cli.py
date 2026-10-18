@@ -15,7 +15,7 @@ from typing import Any, NoReturn
 import click
 from click.shell_completion import get_completion_class
 
-from blumkin import help_text
+from blumkin import help_text, keychain_unlock
 from blumkin.agent import client as agent_client
 from blumkin.agent import processes as agent_processes
 from blumkin.app_secrets import (
@@ -1308,6 +1308,27 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
     for step in payload.get("next_steps") or []:
         lines.append(f"next_step: {step}")
     emit_lines(lines)
+
+
+@auth.command("unlock", epilog=help_text.AUTH_UNLOCK_EPILOG)
+def auth_unlock() -> None:
+    """Unlock the macOS login keychain with `security unlock-keychain` (issue #444).
+
+    Prompts for the password on the terminal; blumkin never sees it.
+    """
+    if sys.platform != "darwin":
+        emit_lines(["not macOS: no login keychain to unlock"])
+        return
+    if not keychain_unlock.keychain_is_locked():
+        emit_lines(["keychain already unlocked"])
+        return
+    if not sys.stdin.isatty():
+        raise click.ClickException(
+            f"no terminal to prompt on; run `! {keychain_unlock.UNLOCK_COMMAND}` in your own shell"
+        )
+    if not keychain_unlock.unlock():
+        raise click.ClickException("keychain unlock failed")
+    emit_lines(["keychain unlocked"])
 
 
 @auth.command("set-app-secret", epilog=help_text.AUTH_SET_APP_SECRET_EPILOG)

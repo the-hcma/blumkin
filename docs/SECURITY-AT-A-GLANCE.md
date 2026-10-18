@@ -67,6 +67,7 @@ data anywhere.
   machine, will refresh on another host with the client id / tenant. Protect
   the directory (and, for the keychain path, the OS account); revoke
   tenant-side (or remove the app grant) if it leaks. See issue #287.
+- `keychain_unlock` (macOS, issue #444) picks how a locked login keychain is handled: `"gui"` (default) leaves it to the OS prompt, `"cli"` runs `security unlock-keychain` on a TTY (also `blumkin auth unlock`) and fails fast without one, `"off"` never tries. The password is entered into `security` directly - blumkin never receives, passes on a command line, logs or stores it. A new binary's "Always Allow" dialog is a separate access-list prompt that unlocking does not clear.
 - Silent refresh renews access tokens without a browser; deleting the cache
   (`blumkin auth logout`) forces a fresh sign-in.
 - On macOS, a profile whose `token_reverify_after` is not `0`/`"never"`

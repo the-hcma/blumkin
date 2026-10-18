@@ -72,6 +72,10 @@ class BlumkinConfig:
     # "file" force one and warn once if "keyring" is unusable. See
     # blumkin.secret_store.
     token_storage: str = "auto"
+    # How to get past a locked macOS login keychain (issue #444): "gui" leaves
+    # it to macOS, "cli" runs `security unlock-keychain` on a TTY (fail fast
+    # without one), "off" never tries. See blumkin.keychain_unlock.
+    keychain_unlock: str = "gui"
     # How long a profile's agent-cached secret may be reused before the
     # next read must re-verify local presence again. `None` disables the
     # agent cache entirely for this profile (`token_reverify_after = 0` /
@@ -346,6 +350,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         google_oauth_client_file=google_oauth_client_file,
         google_redirect_uris=_google_redirect_uris(table),
         google_token_uri=_google_token_uri(table),
+        keychain_unlock=_keychain_unlock_preference(table),
         graph_timeout_seconds=_graph_timeout_seconds(table),
         mail_signature=_mail_signature_config(table),
         message_policy=_message_policy_config(table, profile=selected),
@@ -1110,6 +1115,14 @@ def _token_reverify_after(file_data: dict[str, Any]) -> timedelta | None:
             "(the agent's idle-exit window only covers up to that long)"
         )
     return value
+
+
+def _keychain_unlock_preference(file_data: dict[str, Any]) -> str:
+    """Parse ``keychain_unlock`` (issue #444); any unrecognized value is "gui"."""
+    raw = file_data.get("keychain_unlock")
+    if isinstance(raw, str) and raw.strip().lower() in {"cli", "gui", "off"}:
+        return raw.strip().lower()
+    return "gui"
 
 
 def _token_storage_preference(file_data: dict[str, Any]) -> str:

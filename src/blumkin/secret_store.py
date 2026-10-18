@@ -82,6 +82,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
+from blumkin import keychain_unlock
 from blumkin.agent import client as agent_client
 from blumkin.config import BlumkinConfig
 from blumkin.output import emit_warning
@@ -760,6 +761,7 @@ def _read_ms_bundle_and_backend_direct(cfg: BlumkinConfig) -> tuple[dict[str, st
     if _backend_for(cfg) != "file":
         keyring = _keyring_module()
         if keyring is not None:
+            keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
             account = _keyring_account(cfg, "auth_record")  # same account as token_cache
             try:
                 raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
@@ -789,6 +791,7 @@ def _read_text_and_backend_direct(cfg: BlumkinConfig, kind: SecretKind) -> tuple
     if keyring is None:
         # _backend_for only returns "keyring" when a real backend is usable.
         return None, "file"
+    keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
     account = _keyring_account(cfg, kind)
     try:
         raw = _call_keyring_with_timeout(keyring.get_password, _KEYRING_SERVICE, account)
@@ -813,6 +816,7 @@ def _write_text_direct(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
         keyring = _keyring_module()
         if keyring is None:
             raise SecretWriteError(f"cannot write {kind}: no usable keyring backend")
+        keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         account = _keyring_account(cfg, kind)
         try:
             if kind in _BUNDLED_KINDS:

@@ -180,6 +180,7 @@ default_tz = "<IANA timezone, e.g. America/New_York>"
 provider = "microsoft"
 tags = ["@work", "work", "microsoft", "m365"]
 token_storage = "auto"         # auto | keyring | file
+keychain_unlock = "gui"        # gui | cli | off - macOS locked-keychain handling
 token_reverify_after = "24h"   # 30m, 24h, 7d, 1w; 0 / "never" disables agent-mode
 
 [profiles.personal]
@@ -210,7 +211,7 @@ font_size = 13  # overrides just this key for this profile
 
 Set `tenant_id`, `default_tz`, and `provider` in the profile table (there are no
 org-specific code defaults). `provider` defaults to `microsoft` when omitted.
-`token_storage` defaults to `"auto"`. `token_reverify_after` defaults to
+`token_storage` defaults to `"auto"`. `keychain_unlock` defaults to `"gui"` (leave a locked macOS login keychain to the OS prompt); `"cli"` runs `security unlock-keychain` on a TTY and fails fast without one, pointing at `blumkin auth unlock`; `"off"` never tries (issue #444). `token_reverify_after` defaults to
 `"24h"` and accepts the same compact duration forms blumkin already uses
 elsewhere (`30m`, `24h`, `7d`, `1w`); `0` or `"never"` disables agent-mode for
 that profile entirely.
