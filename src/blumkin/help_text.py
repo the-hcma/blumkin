@@ -136,6 +136,21 @@ so it is the safe choice inside agent sessions. Exit 3 (auth_required) means the
 refresh token is gone or revoked - run `auth login` on a TTY.
 """
 
+AUTH_UNLOCK_EPILOG = """
+Example:
+
+\b
+  blumkin auth unlock
+
+Unlocks the macOS login keychain by running `security unlock-keychain`, which
+prompts for the password itself (blumkin never sees or stores it). Needs a TTY;
+from an agent session run it with `! blumkin auth unlock`. Pair it with
+`keychain_unlock = "cli"` in config.toml to fail fast, instead of hanging on the
+GUI prompt, when the keychain is locked and there is no terminal. An "Always
+Allow" dialog for a new binary is a separate access-list prompt that unlocking
+does not clear.
+"""
+
 AUTH_STATUS_EPILOG = """
 Examples:
 
