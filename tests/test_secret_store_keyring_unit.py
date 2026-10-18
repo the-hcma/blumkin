@@ -1371,22 +1371,19 @@ def test_locked_keychain_read_falls_back_to_file_without_touching_keyring(
     assert secret_store.read_text(cfg, "token_cache") == "file-copy"
 
 
-def test_locked_keychain_write_falls_back_to_file_under_auto(tmp_path: Path, monkeypatch) -> None:
-    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
+@pytest.mark.parametrize("token_storage", ["auto", "keyring"])
+def test_locked_keychain_write_raises_and_writes_nothing(
+    tmp_path: Path, monkeypatch, token_storage: str
+) -> None:
+    """A file fallback could lose to a stale keyring entry after unlock, so raise instead."""
+    cfg = _load(tmp_path, monkeypatch, token_storage=token_storage)
     fake = _FakeKeyring()
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
     _lock_keychain(monkeypatch)
-    secret_store.write_text(cfg, "token_cache", "payload")
-    assert cfg.token_cache_path.read_text() == "payload"
-    assert _bundle_value(fake, cfg, "token_cache") is None
-
-
-def test_locked_keychain_write_raises_when_keyring_is_pinned(tmp_path: Path, monkeypatch) -> None:
-    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: _FakeKeyring())
-    _lock_keychain(monkeypatch)
     with pytest.raises(SecretWriteError, match="keychain locked"):
         secret_store.write_text(cfg, "token_cache", "payload")
+    assert not cfg.token_cache_path.exists()
+    assert _bundle_value(fake, cfg, "token_cache") is None
 
 
 def test_locked_keychain_presence_probes_use_the_file_without_touching_keyring(

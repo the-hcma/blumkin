@@ -1319,6 +1319,10 @@ def auth_unlock() -> None:
     if sys.platform != "darwin":
         emit_lines(["not macOS: no login keychain to unlock"])
         return
+    if not keychain_unlock.available():
+        raise click.ClickException(
+            "the `security` executable was not found; cannot check or unlock"
+        )
     if not keychain_unlock.keychain_is_locked():
         emit_lines(["keychain already unlocked"])
         return

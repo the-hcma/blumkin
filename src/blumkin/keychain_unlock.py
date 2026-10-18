@@ -35,6 +35,8 @@ UNLOCK_COMMAND = "security unlock-keychain"
 # `security show-keychain-info` blocks on the GUI unlock prompt when the
 # keychain is locked, so a short timeout is the lock signal itself.
 _LOCK_PROBE_TIMEOUT_SECONDS = 2.0
+# Generous: the user is typing a password. Bounds a `security` that never exits.
+_UNLOCK_TIMEOUT_SECONDS = 120.0
 
 # A successful check is trusted for this long, so a long-lived process (an MCP
 # server) notices when the keychain re-locks (sleep, idle timeout) instead of
@@ -76,6 +78,11 @@ def ensure_unlocked(mode: str) -> None:
         _checked_at = time.monotonic()
 
 
+def available() -> bool:
+    """True on macOS when the ``security`` executable can be found."""
+    return _supported()
+
+
 def gui_available() -> bool:
     """True when a macOS GUI prompt could be answered from this session.
 
@@ -113,9 +120,12 @@ def keychain_is_locked() -> bool:
 def unlock() -> bool:
     """Run ``security unlock-keychain`` attached to the terminal; True on success."""
     try:
-        return subprocess.run(["security", "unlock-keychain"], check=False).returncode == 0
-    except OSError:
+        proc = subprocess.run(
+            ["security", "unlock-keychain"], check=False, timeout=_UNLOCK_TIMEOUT_SECONDS
+        )
+    except OSError, subprocess.TimeoutExpired:
         return False
+    return proc.returncode == 0
 
 
 def _locked_message() -> str:

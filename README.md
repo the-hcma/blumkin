@@ -184,9 +184,9 @@ keychain_unlock = "cli"   # gui | cli | off
 | `"cli"` | When the keychain is locked and stdin is a TTY, run `security unlock-keychain`, which prompts for the password itself. With no TTY, fail fast instead of hanging. |
 | `"off"` | Never attempt an unlock, even without a display. |
 
-**Default.** When the key is absent, or holds an unrecognized value, it is `"gui"`: existing configs behave exactly as before.
+**Default.** When the key is absent, or holds an unrecognized value, it is `"gui"`. On a normal desktop session that is exactly the previous behaviour; in a session with no reachable GUI (SSH, no Aqua login session) `"gui"` now behaves like `"cli"`, so a locked keychain fails fast instead of hanging. Set `"off"` to keep the old behaviour there too.
 
-**Fail-fast behaviour.** When the keychain is locked and cannot be unlocked from the session (no TTY), reads use the file copy of the token if there is one, and writes follow `token_storage`: `"auto"` falls back to the file, `"keyring"` raises with the command to run. Run `blumkin auth unlock` (or `! blumkin auth unlock` from an agent session) in your own terminal, then retry.
+**Fail-fast behaviour.** When the keychain is locked and cannot be unlocked from the session (no TTY), reads use the file copy of the token if there is one, and a write raises with the command to run (a file fallback could later lose to a stale keychain entry once unlocked). Run `blumkin auth unlock` (or `! blumkin auth unlock` from an agent session) in your own terminal, then retry.
 
 **Password handling.** blumkin never receives, passes on a command line, logs or stores the keychain password; `security` prompts for it on the terminal directly. An "Always Allow" dialog for a binary that has never touched the item is a separate access-list prompt, and unlocking does not clear it.
 

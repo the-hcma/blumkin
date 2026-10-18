@@ -207,3 +207,28 @@ def test_a_successful_check_expires_so_a_relock_is_noticed(
 def test_probe_any_nonzero_exit_is_treated_as_locked(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_run(monkeypatch, subprocess.CompletedProcess([], 51, "", "authentication failed"))
     assert keychain_unlock.keychain_is_locked() is True
+
+
+def test_unlock_timeout_counts_as_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_run(monkeypatch, subprocess.TimeoutExpired(cmd="security", timeout=120.0))
+    assert keychain_unlock.unlock() is False
+
+
+def test_available_reflects_supported(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert keychain_unlock.available() is True
+    monkeypatch.setattr(keychain_unlock, "_supported", lambda: False)
+    assert keychain_unlock.available() is False
+
+
+def test_auth_unlock_reports_missing_security_instead_of_unlocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from click.testing import CliRunner
+
+    from blumkin.cli import main
+
+    monkeypatch.setattr(keychain_unlock.sys, "platform", "darwin")
+    monkeypatch.setattr(keychain_unlock, "_supported", lambda: False)
+    result = CliRunner().invoke(main, ["auth", "unlock"])
+    assert result.exit_code != 0
+    assert "security" in result.output and "already unlocked" not in result.output

@@ -834,6 +834,14 @@ def _write_text_direct(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
                 _bundle_write_kind(keyring, account, kind, text)
             else:
                 _call_keyring_with_timeout(keyring.set_password, _KEYRING_SERVICE, account, text)
+        except keychain_unlock.KeychainLockedError as exc:
+            # Same reasoning as the timeout case below: with the keychain
+            # locked we cannot probe or clean up a possibly-existing keyring
+            # entry, so a file-fallback write could later lose to that stale
+            # entry once the keychain is unlocked (the read path prefers the
+            # keyring value and deletes the newer file copy). Raise instead,
+            # leaving the keyring authoritative and nothing half-written.
+            raise SecretWriteError(f"cannot write {kind}: {exc}") from exc
         except TimeoutError as exc:
             # A hung call is not abandoned when it "times out" - the daemon
             # thread keeps running in the background and can still complete
