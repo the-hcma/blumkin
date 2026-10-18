@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from google.auth.exceptions import RefreshError, TransportError
 
+from blumkin import keychain_unlock
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError
 from blumkin.config import BlumkinConfig, MailSignatureConfig, PreferencesConfig
 from blumkin.providers import google_auth
@@ -572,3 +573,28 @@ def _write_valid_token(cfg: BlumkinConfig, *, scopes: list[str]) -> None:
             }
         )
     )
+
+
+def test_missing_credentials_say_the_keychain_is_locked_when_it_just_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(keychain_unlock, "_locked_at", keychain_unlock.time.monotonic())
+    with pytest.raises(AuthRequiredError, match=r"^Authentication required: .*blumkin auth unlock"):
+        google_auth.get_credentials(_cfg(tmp_path), allow_interactive=False)
+
+
+def test_missing_credentials_still_say_log_in_when_the_keychain_was_not_locked(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(AuthRequiredError, match="Run `blumkin auth login`"):
+        google_auth.get_credentials(_cfg(tmp_path), allow_interactive=False)
+
+
+def test_silent_refresh_failure_says_the_keychain_is_locked_when_it_just_was(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(keychain_unlock, "_locked_at", keychain_unlock.time.monotonic())
+    err = google_auth._classify_refresh_error(RefreshError("client_secret is missing"))
+    assert isinstance(err, AuthRequiredError)
+    assert str(err).startswith("Silent token refresh failed: ")
+    assert "blumkin auth unlock" in str(err)

@@ -14,12 +14,14 @@ from blumkin.config import _keychain_unlock_preference
 
 # Captured before the autouse fixture patches `gui_available` for every test.
 _REAL_GUI_AVAILABLE = keychain_unlock.gui_available
+_REAL_NATIVE_LOCK_STATE = keychain_unlock._native_lock_state
 
 
 @pytest.fixture(autouse=True)
 def _fresh_state(monkeypatch: pytest.MonkeyPatch) -> None:
     keychain_unlock._reset_for_tests()
     monkeypatch.setattr(keychain_unlock, "_is_macos", lambda: True)
+    monkeypatch.setattr(keychain_unlock, "_native_lock_state", lambda: None)
     monkeypatch.setattr(keychain_unlock, "_supported", lambda: True)
     monkeypatch.setattr(keychain_unlock, "gui_available", lambda: True)
     monkeypatch.delenv("SSH_CONNECTION", raising=False)
@@ -332,3 +334,150 @@ def test_auth_unlock_json_errors_are_json(monkeypatch: pytest.MonkeyPatch) -> No
     result = TtyRunner().invoke(main, ["auth", "unlock", "--json"])
     assert result.exit_code == 1
     assert json.loads(result.stderr)["error"] == "keychain_unlock_failed"
+
+
+def test_a_locked_finding_is_remembered_so_one_command_probes_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(keychain_unlock.time, "monotonic", lambda: clock[0])
+    probes: list[int] = []
+    monkeypatch.setattr(keychain_unlock, "keychain_is_locked", lambda: probes.append(1) or True)
+    _set_tty(monkeypatch, tty=False)
+    for _ in range(3):
+        with pytest.raises(keychain_unlock.KeychainLockedError, match="blumkin auth unlock"):
+            keychain_unlock.ensure_unlocked("cli")
+    assert probes == [1]
+    clock[0] += keychain_unlock._LOCKED_CACHE_SECONDS + 1
+    with pytest.raises(keychain_unlock.KeychainLockedError):
+        keychain_unlock.ensure_unlocked("cli")
+    assert probes == [1, 1]
+
+
+def test_a_failed_unlock_is_remembered_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(keychain_unlock, "keychain_is_locked", lambda: True)
+    _set_tty(monkeypatch, tty=True)
+    monkeypatch.setattr(keychain_unlock, "unlock", lambda: calls.append(1) or False)
+    for _ in range(2):
+        with pytest.raises(keychain_unlock.KeychainLockedError):
+            keychain_unlock.ensure_unlocked("cli")
+    assert calls == [1]
+
+
+def test_an_unlock_clears_the_locked_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(keychain_unlock.time, "monotonic", lambda: clock[0])
+    locked = [True]
+    monkeypatch.setattr(keychain_unlock, "keychain_is_locked", lambda: locked[0])
+    _set_tty(monkeypatch, tty=False)
+    with pytest.raises(keychain_unlock.KeychainLockedError):
+        keychain_unlock.ensure_unlocked("cli")
+    clock[0] += keychain_unlock._LOCKED_CACHE_SECONDS + 1
+    locked[0] = False
+    keychain_unlock.ensure_unlocked("cli")
+    assert keychain_unlock.explain_if_locked("Prefix", "default") == "default"
+
+
+def test_explain_if_locked_only_reflects_a_recent_locked_finding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        keychain_unlock, "keychain_is_locked", lambda: pytest.fail("explain must not probe")
+    )
+    assert keychain_unlock.explain_if_locked("Prefix", "default") == "default"
+    monkeypatch.setattr(keychain_unlock, "_locked_at", keychain_unlock.time.monotonic())
+    text = keychain_unlock.explain_if_locked("Prefix", "default")
+    assert text.startswith("Prefix: ") and "blumkin auth unlock" in text
+
+
+class _FakeFramework:
+    """Stands in for a ``ctypes.CDLL``: functions write through ``byref`` like the C API.
+
+    Plain closures (not bound methods) so ``argtypes`` can be assigned, as on real ctypes
+    function pointers.
+    """
+
+    def __init__(self, *, copy_rc: int = 0, status_rc: int = 0, status: int = 0) -> None:
+        self.released: list[Any] = []
+
+        def copy_default(ref: Any) -> int:
+            ref._obj.value = 4242
+            return copy_rc
+
+        def get_status(_keychain: Any, ref: Any) -> int:
+            ref._obj.value = status
+            return status_rc
+
+        def release(keychain: Any) -> None:
+            self.released.append(keychain.value)
+
+        self.SecKeychainCopyDefault = copy_default
+        self.SecKeychainGetStatus = get_status
+        self.CFRelease = release
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [(0b001, False), (0b111, False), (0b110, True), (0, True)],
+)
+def test_native_lock_state_reads_the_unlock_bit(
+    monkeypatch: pytest.MonkeyPatch, status: int, expected: bool
+) -> None:
+    fake = _FakeFramework(status=status)
+    monkeypatch.setattr(keychain_unlock.ctypes, "CDLL", lambda _path: fake)
+    assert _REAL_NATIVE_LOCK_STATE() is expected
+    assert fake.released == [4242]
+
+
+@pytest.mark.parametrize(
+    "fake", [_FakeFramework(copy_rc=-1), _FakeFramework(status_rc=-25295)], ids=["copy", "status"]
+)
+def test_native_lock_state_is_unknown_when_the_api_fails(
+    monkeypatch: pytest.MonkeyPatch, fake: _FakeFramework
+) -> None:
+    monkeypatch.setattr(keychain_unlock.ctypes, "CDLL", lambda _path: fake)
+    assert _REAL_NATIVE_LOCK_STATE() is None
+
+
+def test_native_lock_state_is_unknown_when_the_framework_will_not_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(_path: str) -> Any:
+        raise OSError("no framework")
+
+    monkeypatch.setattr(keychain_unlock.ctypes, "CDLL", fail)
+    assert _REAL_NATIVE_LOCK_STATE() is None
+
+
+def test_native_lock_state_is_unknown_off_macos(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(keychain_unlock, "_is_macos", lambda: False)
+    monkeypatch.setattr(
+        keychain_unlock.ctypes, "CDLL", lambda _path: pytest.fail("loaded off macOS")
+    )
+    assert _REAL_NATIVE_LOCK_STATE() is None
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_lock_state_prefers_the_native_answer_and_never_runs_security(
+    monkeypatch: pytest.MonkeyPatch, native: bool
+) -> None:
+    monkeypatch.setattr(keychain_unlock, "_native_lock_state", lambda: native)
+    monkeypatch.setattr(
+        keychain_unlock.subprocess, "run", lambda *_a, **_k: pytest.fail("ran security")
+    )
+    assert keychain_unlock.keychain_lock_state() is native
+    assert keychain_unlock.keychain_is_locked() is native
+
+
+def test_lock_state_falls_back_to_security_when_native_cannot_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(keychain_unlock, "_native_lock_state", lambda: None)
+    _fake_run(monkeypatch, subprocess.CompletedProcess([], 0, "no-timeout", ""))
+    assert keychain_unlock.keychain_lock_state() is False
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Security.framework is macOS only")
+def test_native_lock_state_answers_on_this_mac_without_prompting() -> None:
+    assert _REAL_NATIVE_LOCK_STATE() in (True, False)

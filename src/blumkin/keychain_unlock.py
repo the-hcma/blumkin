@@ -22,6 +22,7 @@ a locked keychain, and unlocking does not clear it.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import shutil
 import subprocess
@@ -43,8 +44,19 @@ _UNLOCK_TIMEOUT_SECONDS = 120.0
 # reverting to the old hang, without probing on every keychain call.
 _RECHECK_AFTER_SECONDS = 60.0
 
+# A locked result is remembered just long enough that one command's several keychain
+# reads probe (and fail) once instead of once per read.
+_LOCKED_CACHE_SECONDS = 5.0
+
+# Security.framework's lock-state query: unlike `security show-keychain-info` it never
+# raises the GUI unlock dialog on a locked keychain (SecKeychain.h, kSecUnlockStateStatus).
+_CORE_FOUNDATION = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+_SEC_UNLOCK_STATE_STATUS = 1
+_SECURITY_FRAMEWORK = "/System/Library/Frameworks/Security.framework/Security"
+
 _checked_at: float | None = None
 _checked_lock = threading.Lock()
+_locked_at: float | None = None
 # Per-process cache: the session type does not change mid-run, and the default
 # "gui" mode would otherwise fork `launchctl` on every keychain read.
 _gui_available: bool | None = None
@@ -64,7 +76,7 @@ def ensure_unlocked(mode: str) -> None:
     missing on macOS (fail closed: the keyring backend would still reach the
     keychain through the native API, so the lock state cannot be assumed fine).
     """
-    global _checked_at
+    global _checked_at, _locked_at
     if not _is_macos() or _recently_checked():
         return
     if not (mode == "cli" or (mode == "gui" and not gui_available())):
@@ -78,12 +90,26 @@ def ensure_unlocked(mode: str) -> None:
     with _checked_lock:
         if _recently_checked():
             return
+        if _recently_locked():
+            raise KeychainLockedError(_locked_message())
         if keychain_is_locked():
             if not sys.stdin.isatty():
+                _locked_at = time.monotonic()
                 raise KeychainLockedError(_locked_message())
             if not unlock():
+                _locked_at = time.monotonic()
                 raise KeychainLockedError("the keychain unlock failed; " + _locked_message())
+        _locked_at = None
         _checked_at = time.monotonic()
+
+
+def explain_if_locked(prefix: str, default: str) -> str:
+    """``default``, or ``"<prefix>: <locked-keychain message>"`` right after a locked finding.
+
+    Never probes: it only reflects what this process just found, so an auth error caused
+    by a locked keychain says so instead of telling the user to log in again.
+    """
+    return f"{prefix}: {_locked_message()}" if _recently_locked() else default
 
 
 def available() -> bool:
@@ -118,9 +144,16 @@ def keychain_is_locked() -> bool:
 def keychain_lock_state() -> bool | None:
     """Tri-state lock probe: True locked, False unlocked, None when it cannot be determined.
 
-    ``None`` covers a non-macOS host and a missing/unrunnable ``security``;
+    Asks Security.framework first (no GUI dialog on a locked keychain); only when that
+    cannot answer does it run ``security show-keychain-info``, whose timeout is the lock
+    signal. ``None`` covers a non-macOS host and a missing/unrunnable ``security``;
     diagnostics (``doctor``) report it as "unknown" instead of "unlocked".
     """
+    if not _is_macos():
+        return None
+    native = _native_lock_state()
+    if native is not None:
+        return native
     if not _supported():
         return None
     try:
@@ -164,6 +197,38 @@ def _locked_message() -> str:
     )
 
 
+def _native_lock_state() -> bool | None:
+    """True locked / False unlocked / None unknown, from ``SecKeychainGetStatus``.
+
+    Reads the default keychain's state without prompting. Deprecated but present on every
+    supported macOS; any failure to load or call it returns ``None`` so the caller falls
+    back to the ``security`` probe.
+    """
+    if not _is_macos():
+        return None
+    try:
+        security = ctypes.CDLL(_SECURITY_FRAMEWORK)
+        core_foundation = ctypes.CDLL(_CORE_FOUNDATION)
+        copy_default = security.SecKeychainCopyDefault
+        copy_default.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        get_status = security.SecKeychainGetStatus
+        get_status.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        release = core_foundation.CFRelease
+        release.argtypes = [ctypes.c_void_p]
+        keychain = ctypes.c_void_p()
+        status = ctypes.c_uint32()
+        if copy_default(ctypes.byref(keychain)) != 0 or not keychain.value:
+            return None
+        try:
+            if get_status(keychain, ctypes.byref(status)) != 0:
+                return None
+        finally:
+            release(keychain)
+    except AttributeError, OSError:
+        return None
+    return not status.value & _SEC_UNLOCK_STATE_STATUS
+
+
 def _probe_gui_available() -> bool:
     """``launchctl managername`` is authoritative; SSH env is only the fallback.
 
@@ -191,10 +256,16 @@ def _recently_checked() -> bool:
     return checked_at is not None and time.monotonic() - checked_at < _RECHECK_AFTER_SECONDS
 
 
+def _recently_locked() -> bool:
+    locked_at = _locked_at
+    return locked_at is not None and time.monotonic() - locked_at < _LOCKED_CACHE_SECONDS
+
+
 def _reset_for_tests() -> None:
-    global _checked_at, _gui_available
+    global _checked_at, _gui_available, _locked_at
     with _checked_lock:
         _checked_at = None
+        _locked_at = None
     _gui_available = None
 
 
