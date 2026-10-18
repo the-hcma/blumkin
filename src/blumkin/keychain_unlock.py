@@ -98,7 +98,6 @@ def keychain_is_locked() -> bool:
             ["security", "show-keychain-info"],
             capture_output=True,
             check=False,
-            env={**os.environ, "LC_ALL": "C"},
             text=True,
             timeout=_LOCK_PROBE_TIMEOUT_SECONDS,
         )
@@ -106,7 +105,9 @@ def keychain_is_locked() -> bool:
         return True
     except OSError:
         return False
-    return proc.returncode != 0 and "interaction is not allowed" in proc.stderr.lower()
+    # Only a clean exit establishes "unlocked": any other failure (including a
+    # message other than "interaction is not allowed") is treated as locked.
+    return proc.returncode != 0
 
 
 def unlock() -> bool:

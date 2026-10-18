@@ -202,3 +202,8 @@ def test_a_successful_check_expires_so_a_relock_is_noticed(
     clock[0] += 2
     keychain_unlock.ensure_unlocked("cli")
     assert probes == [1, 1]
+
+
+def test_probe_any_nonzero_exit_is_treated_as_locked(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_run(monkeypatch, subprocess.CompletedProcess([], 51, "", "authentication failed"))
+    assert keychain_unlock.keychain_is_locked() is True
