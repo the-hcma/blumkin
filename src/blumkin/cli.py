@@ -1311,20 +1311,30 @@ def auth_status(ctx: click.Context, as_json_flag: bool) -> None:
 
 
 @auth.command("unlock", epilog=help_text.AUTH_UNLOCK_EPILOG)
-def auth_unlock() -> None:
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def auth_unlock(ctx: click.Context, as_json_flag: bool) -> None:
     """Unlock the macOS login keychain with `security unlock-keychain` (issue #444).
 
     Prompts for the password on the terminal; blumkin never sees it.
     """
+    as_json = _as_json(ctx, as_json_flag)
+
+    def done(status: str, message: str) -> None:
+        if as_json:
+            emit_json({"ok": True, "status": status})
+        else:
+            emit_lines([message])
+
     if sys.platform != "darwin":
-        emit_lines(["not macOS: no login keychain to unlock"])
+        done("not_macos", "not macOS: no login keychain to unlock")
         return
     if not keychain_unlock.available():
         raise click.ClickException(
             "the `security` executable was not found; cannot check or unlock"
         )
     if not keychain_unlock.keychain_is_locked():
-        emit_lines(["keychain already unlocked"])
+        done("already_unlocked", "keychain already unlocked")
         return
     if not sys.stdin.isatty():
         raise click.ClickException(
@@ -1332,7 +1342,7 @@ def auth_unlock() -> None:
         )
     if not keychain_unlock.unlock():
         raise click.ClickException("keychain unlock failed")
-    emit_lines(["keychain unlocked"])
+    done("unlocked", "keychain unlocked")
 
 
 @auth.command("set-app-secret", epilog=help_text.AUTH_SET_APP_SECRET_EPILOG)
@@ -2259,8 +2269,17 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
     capabilities = capability_summary(
         provider=cfg.provider, granted_scopes=status.get("granted_scopes") or []
     )
+    # Tri-state (issue #444): None = unknown (not macOS, no `security`, or a profile
+    # pinned to the file backend that never touches the keychain).
+    keychain_locked = keychain_unlock.keychain_lock_state() if cfg.token_storage != "file" else None
+    if keychain_locked:
+        warnings.append(
+            "the macOS login keychain is locked - run: blumkin auth unlock "
+            f"(keychain_unlock = {cfg.keychain_unlock!r})"
+        )
     payload = {
         "ok": not problems,
+        "keychain": {"locked": keychain_locked, "unlock_mode": cfg.keychain_unlock},
         "build": build,
         "capabilities": capabilities,
         "account_type": cfg.account_type,
@@ -2301,6 +2320,8 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
         emit_lines([f"token_storage_backend: {status.get('token_storage_backend', 'file')}"])
+        locked_text = "unknown" if keychain_locked is None else ("yes" if keychain_locked else "no")
+        emit_lines([f"keychain_unlock: {cfg.keychain_unlock}", f"keychain_locked: {locked_text}"])
         available = [family for family, ok in capabilities.items() if ok]
         emit_lines([f"available: {', '.join(available) or 'none'}"])
         for problem in problems:

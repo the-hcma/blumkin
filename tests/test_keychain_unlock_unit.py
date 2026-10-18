@@ -232,3 +232,28 @@ def test_auth_unlock_reports_missing_security_instead_of_unlocked(
     result = CliRunner().invoke(main, ["auth", "unlock"])
     assert result.exit_code != 0
     assert "security" in result.output and "already unlocked" not in result.output
+
+
+def test_lock_state_is_tri_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_run(monkeypatch, subprocess.CompletedProcess([], 0, "no-timeout", ""))
+    assert keychain_unlock.keychain_lock_state() is False
+    _fake_run(monkeypatch, subprocess.CompletedProcess([], 36, "", "locked"))
+    assert keychain_unlock.keychain_lock_state() is True
+    _fake_run(monkeypatch, FileNotFoundError("security"))
+    assert keychain_unlock.keychain_lock_state() is None
+    monkeypatch.setattr(keychain_unlock, "_supported", lambda: False)
+    assert keychain_unlock.keychain_lock_state() is None
+
+
+def test_auth_unlock_json_reports_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from blumkin.cli import main
+
+    monkeypatch.setattr(keychain_unlock.sys, "platform", "darwin")
+    monkeypatch.setattr(keychain_unlock, "keychain_is_locked", lambda: False)
+    result = CliRunner().invoke(main, ["auth", "unlock", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"ok": True, "status": "already_unlocked"}

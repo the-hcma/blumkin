@@ -97,9 +97,18 @@ def gui_available() -> bool:
 
 
 def keychain_is_locked() -> bool:
-    """True when the default (login) keychain is locked. False off macOS."""
+    """True when the default (login) keychain is locked. False off macOS or when unprobeable."""
+    return keychain_lock_state() is True
+
+
+def keychain_lock_state() -> bool | None:
+    """Tri-state lock probe: True locked, False unlocked, None when it cannot be determined.
+
+    ``None`` covers a non-macOS host and a missing/unrunnable ``security``;
+    diagnostics (``doctor``) report it as "unknown" instead of "unlocked".
+    """
     if not _supported():
-        return False
+        return None
     try:
         proc = subprocess.run(
             ["security", "show-keychain-info"],
@@ -111,9 +120,8 @@ def keychain_is_locked() -> bool:
     except subprocess.TimeoutExpired:
         return True
     except OSError:
-        return False
-    # Only a clean exit establishes "unlocked": any other failure (including a
-    # message other than "interaction is not allowed") is treated as locked.
+        return None
+    # Only a clean exit establishes "unlocked": any other failure is treated as locked.
     return proc.returncode != 0
 
 

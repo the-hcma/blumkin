@@ -188,6 +188,8 @@ keychain_unlock = "cli"   # gui | cli | off
 
 **Fail-fast behaviour.** When the keychain is locked and cannot be unlocked from the session (no TTY), reads use the file copy of the token if there is one, and a write raises with the command to run (a file fallback could later lose to a stale keychain entry once unlocked). Run `blumkin auth unlock` (or `! blumkin auth unlock` from an agent session) in your own terminal, then retry.
 
+**Diagnostics.** `blumkin doctor` reports `keychain_unlock` (the configured mode) and `keychain_locked` (`yes`, `no`, or `unknown` when this is not macOS, `security` is unavailable, or the profile uses `token_storage = "file"`), and warns when the keychain is locked; `--json` carries them under `keychain`. `blumkin auth unlock --json` returns `{"ok": true, "status": "unlocked" | "already_unlocked" | "not_macos"}`.
+
 **Password handling.** blumkin never receives, passes on a command line, logs or stores the keychain password; `security` prompts for it on the terminal directly. An "Always Allow" dialog for a binary that has never touched the item is a separate access-list prompt, and unlocking does not clear it.
 
 ### Google Workspace (`provider = "google"`)
