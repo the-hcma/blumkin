@@ -69,7 +69,7 @@ dev = [
     "pdfplumber>=0.11.10",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
-    "ruff>=0.16.10",
+    "ruff>=0.17.0",
 ]
 # `keychain` and `mcp` are kept as no-op aliases for anyone still typing
 # `pipx install 'blumkin[keychain]'` / `'blumkin[mcp]'` from older docs/scripts:
@@ -128,7 +128,7 @@ dev = [
     "pdfplumber>=0.11.10",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
-    "ruff>=0.16.10",
+    "ruff>=0.17.0",
     "mcp>=2.3.0",
     "keyring>=25.7.0",
     "hatchling>=1.32.4",
