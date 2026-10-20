@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.13.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.12.1...blumkin-v1.13.0) (2026-10-20)
+
+
+### Features
+
+* **auth:** configurable keychain unlock via security unlock-keychain… ([#445](https://github.com/the-hcma/blumkin/issues/445)) ([b872627](https://github.com/the-hcma/blumkin/commit/b87262740a6ff4c710c1532ab1671f2d1df515f0))
+
+
+### Documentation
+
+* merge path is gh pr merge --auto; the queue sets the strategy ([#447](https://github.com/the-hcma/blumkin/issues/447)) ([263b3dd](https://github.com/the-hcma/blumkin/commit/263b3dd981faa06f0a4d468dd67eb1bbc4b8f134))
+
 ## [1.12.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.12.0...blumkin-v1.12.1) (2026-10-18)
 
 
