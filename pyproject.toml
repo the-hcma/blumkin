@@ -46,7 +46,7 @@ dependencies = [
     # microsoftgraph/msgraph-sdk-python-core#1128). The msgraph-core floor is
     # the load-bearing one (1.5.2 itself requires kiota-http>=1.13.0); the
     # kiota-http floor just states that requirement explicitly.
-    "microsoft-kiota-http>=1.14.2",
+    "microsoft-kiota-http>=1.14.3",
     "msgraph-core>=1.5.2",
     "msgraph-sdk>=1.64.0",
     "python-docx>=1.2.0",
