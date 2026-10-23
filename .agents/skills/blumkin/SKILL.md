@@ -68,7 +68,7 @@ With `provider = "google"` in config, supported verbs are calendar (`today` / `v
 
 ## Authoring style (mail + chat bodies)
 
-When composing text for `mail draft`, `mail update-draft`, `mail reply`, `mail forward`, or `chat send`:
+When composing text for `mail draft`, `mail update-draft`, `mail reply`, `mail forward`, `chat draft`, `chat edit-draft`, or `chat send`:
 
 - Use ASCII hyphens (`-`), not em dashes (`—`) or en dashes (`–`). Prefer two short sentences over a dash at all.
 - Same rule for `--body-type html`: do not emit `&mdash;` / `&ndash;` (or the literal Unicode dashes) in markup you write on the user's behalf.
