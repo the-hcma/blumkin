@@ -85,6 +85,14 @@ original's attachments.
      `--with` when they must be free too. Clip with `--window` / organizer `--tz`;
      do **not** rewrite times into an attendee's zone. Do **not** use freebusy as a
      people directory (guessing SMTP addresses via `--with`). Resolve names first.
+     **Finding a slot with one or more other people means inviting them.** Once the
+     user picks a slot, create the event and then add every other person with
+     `calendar update --with` (see the compose/emit split below); `create` alone
+     makes a solo hold. Do not stop at "here is a free time" and do not report the
+     invite as sent until `calendar get` shows each attendee. Cross-check the
+     suggested slot against the organizer's own `calendar today|view` too: confirm
+     `--with` included the organizer and treat any slot that touches an existing
+     meeting as a conflict, not a free slot.
    - People (names -> address): blumkin never turns a name into an address for
      you; `--to` / `--cc` / `--with` are email-only.
      1. `blumkin people context --json` — the operator's `email-context.md`
@@ -231,7 +239,10 @@ original's attachments.
      event's own create time - review the event (subject, time, agenda) before
      running it, and re-run `calendar get` to double-check first if any doubt
      remains. Editing a pre-existing event you did not just create in this
-     session is never gated.
+     session is never gated. On the MCP server, `calendar-create` has no
+     `attendees` or `end` argument (use `duration`); always follow it with
+     `calendar-update` `with=[...]` and `confirm=true`, then verify with
+     `calendar-get` that the attendees and end time are as intended.
    - `blumkin calendar update --event-id '<id>' [--subject …] [--start …]
      [--duration …|--end …] [--location …] [--body …] [--with … (replaces the
      attendee list)] [--teams|--no-teams (attach/remove online meeting)]
