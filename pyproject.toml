@@ -62,6 +62,7 @@ dependencies = [
     "pyjwt>=2.15.1",
     "certifi==2026.10.19",
     "pillow==13.0.0",
+    "opentelemetry-api==1.45.1",
 ]
 
 [project.optional-dependencies]
