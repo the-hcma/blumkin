@@ -53,10 +53,7 @@ With `provider = "google"` in config, supported verbs are calendar (`today` / `v
   - `blumkin mail update-draft --id '<draft-id>' --body …` (no `--yes`; `--to` / `--cc` / `--bcc` each replace that whole list when provided; `--body` replaces the whole body) `--attach <path>` works here too and *adds* to whatever the draft already carries — it never replaces. It is also valid on its own, without any other field.
   - `blumkin mail delete-draft --id '<draft-id>'` (no `--yes`)
   - `blumkin mail send-draft --id '<draft-id>' --yes` - on Microsoft (work/school) accounts, this holds the message in Outbox until at least `preferences.confirm_cooldown_seconds` from now (deferred delivery) instead of delivering it immediately; the response's `held_until` field carries that time. `blumkin mail cancel-send --id '<same-id>'` (no `--yes` - it stops a send, the opposite of a notification) is a real undo before then, unlike Outlook's own message recall, which silently fails once the recipient has opened the message. After `held_until` passes it fails `not_found` (exit 5)
-    - there is no reliable way to un-deliver a message once Exchange has sent
-    it. Gmail has no such hold at all (`held_until` is always `null`); calling
-    `mail cancel-send` there always fails `usage_error` (exit 2), not
-    `not_found` - the confirm cooldown before this call is its whole safety net.
+    - there is no reliable way to un-deliver a message once Exchange has sent it. Gmail has no such hold at all (`held_until` is always `null`); calling `mail cancel-send` there always fails `usage_error` (exit 2), not `not_found` - the confirm cooldown before this call is its whole safety net.
   - `blumkin chat draft --with "Name" --text "…"` (or `--chat-id` if ambiguous) - composes only, resolving the target now; no one is notified. `blumkin chat send --draft-id '<draft-id>' --yes` sends it. Like `mail send-draft`, `chat send` enforces the `confirm_cooldown_seconds` wall-clock gap since the draft was composed.
   - `blumkin chat edit-draft --chat-id … --message-id … --text "…"` (composes a replacement body only) then `blumkin chat edit --draft-id '<draft-id>' --yes` (same cooldown as `chat send`)
   - `blumkin chat delete --chat-id … --message-id … --expected-text "…" --yes` - `--expected-text` must match the message's *current* body exactly (a fresh `chat last` read, not a guess) or the call is refused; there is no compose step to delete since nothing is being sent
@@ -67,13 +64,7 @@ With `provider = "google"` in config, supported verbs are calendar (`today` / `v
 7. On auth failure (exit `3` / `auth_required`): tell the user to run `blumkin auth login` on this machine, then retry. Do **not** treat every non-zero auth-adjacent exit as login: exit `1` / `secret_write_failed` means the token cache or auth record could not be written (often a symlink at `~/.config/blumkin/` or those files) — fix the path, do not re-login in a loop. Exit `1` / `timeout` means Graph or token HTTP exceeded `graph_timeout_seconds` in `config.toml` (default 60). Exit `1` / `transient_error` means a network/server hiccup talking to the auth provider, not a bad grant — safe to retry the same command once. Agent shells should set `BLUMKIN_NONINTERACTIVE=1` so Blumkin never opens a browser. If a command hangs: `pkill -f blumkin`, check `blumkin auth status --json` for `access_token_expired`, then `blumkin auth refresh` (or `auth login` on a TTY) before retrying mail/calendar.
 8. Writes that email or invite others require `--yes`.
 9. Chat write + meeting transcription need `Chat.ReadWrite` / `OnlineMeetings.ReadWrite` consented (re-login after Identity grant).
-10. Teams chat files live in SharePoint/OneDrive, so
-   `blumkin chat attachments download` needs a delegated `Files.Read` scope,
-   gated behind `files_scopes` (off by default). Without it, listing still works
-   and download exits `4` / `missing_scope` with the share URL — hand that URL to
-   the user to open in Teams/browser (or save into a local drop folder) instead of
-   retrying. Do **not** spin up a second Graph client in the agent session to paper
-   over that. Listing must not `$expand=attachments` (Graph 400).
+10. Teams chat files live in SharePoint/OneDrive, so `blumkin chat attachments download` needs a delegated `Files.Read` scope, gated behind `files_scopes` (off by default). Without it, listing still works and download exits `4` / `missing_scope` with the share URL — hand that URL to the user to open in Teams/browser (or save into a local drop folder) instead of retrying. Do **not** spin up a second Graph client in the agent session to paper over that. Listing must not `$expand=attachments` (Graph 400).
 
 ## Authoring style (mail + chat bodies)
 
