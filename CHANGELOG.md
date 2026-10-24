@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.14.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.13.0...blumkin-v1.14.0) (2026-10-24)
+
+
+### Features
+
+* **browser:** CDP attach layer on Playwright with loopback-only, bounded retries and detach-only close ([#475](https://github.com/the-hcma/blumkin/issues/475)) ([0aa5ab9](https://github.com/the-hcma/blumkin/commit/0aa5ab9c732911fc2595f89dcb3b410b64c12ad8))
+* **browser:** per-task profiles, browser discovery and launch on loopback DevTools ([#473](https://github.com/the-hcma/blumkin/issues/473)) ([26b6177](https://github.com/the-hcma/blumkin/commit/26b61772785cb2ce3fe970e7f712f2acdbc0a084))
+
+
+### Bug Fixes
+
+* **deps:** batch updates including CVE fixes ([#451](https://github.com/the-hcma/blumkin/issues/451)) ([03557ea](https://github.com/the-hcma/blumkin/commit/03557ea76d8d88934ac52f57e2d056bb87b6e2ec))
+* **deps:** batch updates including CVE fixes ([#455](https://github.com/the-hcma/blumkin/issues/455)) ([0f4e6ca](https://github.com/the-hcma/blumkin/commit/0f4e6ca052c4ca263bcf8167be8df02b79c2d2ed))
+
+
+### Documentation
+
+* **mail:** name the folders Google accepts in help, skill summary an… ([#463](https://github.com/the-hcma/blumkin/issues/463)) ([7bd3896](https://github.com/the-hcma/blumkin/commit/7bd3896f02ed23599495032d35f8e281006316e9))
+* **skill:** fix Google mail folder names ([#459](https://github.com/the-hcma/blumkin/issues/459)) ([e55d61c](https://github.com/the-hcma/blumkin/commit/e55d61cf7beef7be1f7637cf1e159f6a99acff9c))
+* **skill:** invite attendees after finding a mutual slot ([#457](https://github.com/the-hcma/blumkin/issues/457)) ([e81a520](https://github.com/the-hcma/blumkin/commit/e81a520e33fd2aadc99933442969fae730e3a307))
+
 ## [1.13.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.12.1...blumkin-v1.13.0) (2026-10-20)
 
 
