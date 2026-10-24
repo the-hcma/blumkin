@@ -233,6 +233,94 @@ history and `ps`. Use `--from-file`, `--stdin`, or the interactive hidden
 prompt (no flag, on a TTY).
 """
 
+BROWSER_EPILOG = """
+Examples:
+
+\b
+  blumkin browser profile create expense-report
+  blumkin browser launch expense-report
+  blumkin browser status
+
+Browser-assisted tasks (issue #462) drive a browser you sign in to yourself. Each
+task has its own browser profile (`profile create`), launched on demand
+(`launch`) with DevTools bound to loopback only; you sign in by hand, SSO and MFA
+included, and blumkin never sees or stores your credentials. A task fills in the
+form and stops: it never submits, and ends by telling you what to click.
+
+The browser comes from `[browser] default = "chrome" | "edge" | "chromium"` in
+config.toml and falls back to Chrome when unset or not installed.
+"""
+
+BROWSER_LAUNCH_EPILOG = """
+Examples:
+
+\b
+  blumkin browser launch expense-report
+  blumkin browser launch expense-report --json
+
+Starts the task's browser on its own profile (create it first with `blumkin
+browser profile create TASK`) and prints the loopback DevTools endpoint. Sign in
+by hand in the window that opens; blumkin never sees your credentials. Running
+it again while the browser is open reports `already_running` and changes nothing.
+Uses `[browser] default` from config.toml, falling back to Chrome.
+"""
+
+BROWSER_PROFILE_CREATE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser profile create expense-report
+  blumkin browser profile create time-sheet --json
+
+Creates the task's private browser profile directory (mode 0700) under
+the config directory. A task name is 1-64 lowercase letters, digits, `-` or `_`.
+Running it again for an existing profile is a no-op (`created: false`).
+"""
+
+BROWSER_PROFILE_DELETE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser profile delete expense-report --yes
+
+Deletes the task's browser profile, including its saved sign-in and cookies, so you
+will sign in again next time. Requires `--yes`. Refuses while that task's browser is
+still running; close it first. Only profiles blumkin created can be deleted.
+"""
+
+BROWSER_PROFILE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser profile create expense-report
+  blumkin browser profile list --json
+  blumkin browser profile delete expense-report --yes
+
+One private browser profile per task keeps its sign-in separate from your everyday
+browsing. Only profiles created here are listed, attached to or deleted.
+"""
+
+BROWSER_PROFILE_LIST_EPILOG = """
+Examples:
+
+\b
+  blumkin browser profile list
+  blumkin browser profile list --json
+
+Lists the task profiles blumkin created and whether each one's browser is running.
+"""
+
+BROWSER_STATUS_EPILOG = """
+Examples:
+
+\b
+  blumkin browser status
+  blumkin browser status expense-report --json
+
+Shows each task profile, whether its browser is running, and the loopback DevTools
+endpoint when it is. Give a task name to look at just that one.
+"""
+
 CAPABILITIES_EPILOG = """
 Examples:
 

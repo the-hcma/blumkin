@@ -34,11 +34,24 @@ from blumkin.auth_setup import (
     console_steps,
     google_setup_from_client_json,
 )
+from blumkin.browser.commands import (
+    TaskNotFoundError,
+    create_task_profile,
+    delete_task_profile,
+    launch_task_browser,
+    list_task_profiles,
+    task_status,
+)
+from blumkin.browser.discovery import BrowserConfigError, BrowserNotFoundError
+from blumkin.browser.launcher import BrowserLaunchError
+from blumkin.browser.profiles import BrowserProfileError, ProfileBusyError, ProfileInUseError
 from blumkin.capabilities import capability_summary
 from blumkin.config import (
     BlumkinConfig,
+    config_dir,
     google_oauth_installed_client,
     list_profiles,
+    load_browser_setup,
     load_config,
     set_profile_email,
 )
@@ -419,6 +432,39 @@ def _agent_version_skew(agent_version: object) -> dict[str, Any]:
             "run `blumkin agent stop` to retire the old agent"
         ),
     }
+
+
+def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
+    """Map a browser-command failure onto the standard error envelope and exit code."""
+    hint: str | None = None
+    if isinstance(exc, TaskNotFoundError):
+        slug, code = "not_found", EXIT_NOT_FOUND
+        hint = f"Create it first: `blumkin browser profile create {task or 'TASK'}`."
+    elif isinstance(exc, BrowserNotFoundError):
+        slug, code = "browser_not_found", EXIT_NOT_FOUND
+    elif isinstance(exc, BrowserLaunchError):
+        slug, code = "browser_launch_failed", EXIT_OTHER
+    elif isinstance(exc, (ProfileBusyError, ProfileInUseError)):
+        slug, code = "profile_in_use", EXIT_OTHER
+    elif isinstance(exc, ProviderConfigError):
+        slug, code = "usage_error", EXIT_USAGE
+    elif isinstance(exc, (BrowserConfigError, BrowserProfileError)):
+        slug, code = "usage_error", EXIT_USAGE
+    else:
+        _fail(exc, as_json=as_json)
+    _emit_error(error=slug, message=str(exc), as_json=as_json, hint=hint)
+    raise SystemExit(code) from exc
+
+
+def _browser_profile_lines(payload: dict[str, Any]) -> list[str]:
+    profiles = payload["profiles"]
+    if not profiles:
+        return ["no browser profiles (create one with `blumkin browser profile create TASK`)"]
+    lines: list[str] = []
+    for entry in profiles:
+        state = f"running ({entry['endpoint']})" if entry["running"] else "not running"
+        lines.append(f"{entry['task']}: {state}")
+    return lines
 
 
 def _orphaned_agent_lines(payload: dict[str, Any]) -> list[str]:
@@ -1866,6 +1912,126 @@ def agent_stop(ctx: click.Context, as_json_flag: bool, stop_all: bool) -> None:
         emit_lines(["stopped: the agent process is shutting down", *_stopped_orphan_lines(payload)])
     else:
         emit_lines(["stopped: no agent was running", *_stopped_orphan_lines(payload)])
+
+
+@main.group(epilog=help_text.BROWSER_EPILOG)
+def browser() -> None:
+    """Browser-assisted tasks: per-task profiles you sign in to yourself.
+
+    A task such as an expense report or a time sheet runs in a dedicated browser
+    profile that blumkin launches and you sign in to by hand (issue #462). The task
+    fills in the form and never submits; it ends by telling you what to click.
+    """
+
+
+@browser.command("launch", epilog=help_text.BROWSER_LAUNCH_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_launch(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Launch the task's browser on its profile so you can sign in by hand."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = launch_task_browser(load_browser_setup(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    lines = [
+        f"{task}: browser {'already running' if payload['already_running'] else 'launched'} "
+        f"({payload['browser']}, {payload['endpoint']})"
+    ]
+    if payload["fallback_from"]:
+        lines.append(
+            f"note: {payload['fallback_from']} is not installed; using {payload['browser']}"
+        )
+    lines.append(payload["sign_in"])
+    emit_lines(lines)
+
+
+@browser.group("profile", epilog=help_text.BROWSER_PROFILE_EPILOG)
+def browser_profile() -> None:
+    """Create, list and delete the per-task browser profiles."""
+
+
+@browser_profile.command("create", epilog=help_text.BROWSER_PROFILE_CREATE_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_profile_create(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Create the private browser profile for TASK (a no-op if it exists)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = create_task_profile(config_dir(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    verb = "created" if payload["created"] else "already exists"
+    emit_lines([f"{task}: profile {verb} at {payload['path']}"])
+
+
+@browser_profile.command("delete", epilog=help_text.BROWSER_PROFILE_DELETE_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--yes", is_flag=True, help="Confirm deleting the profile and its saved sign-in.")
+@click.pass_context
+def browser_profile_delete(ctx: click.Context, task: str, as_json_flag: bool, yes: bool) -> None:
+    """Delete TASK's browser profile, including its saved sign-in and cookies."""
+    as_json = _as_json(ctx, as_json_flag)
+    if not yes:
+        _emit_error(
+            error="usage_error",
+            message=(
+                f"Expected --yes to delete the browser profile for task {task!r} (it removes "
+                "the saved sign-in and cookies for that task), got none"
+            ),
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    try:
+        payload = delete_task_profile(config_dir(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([f"{task}: profile deleted"])
+
+
+@browser_profile.command("list", epilog=help_text.BROWSER_PROFILE_LIST_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_profile_list(ctx: click.Context, as_json_flag: bool) -> None:
+    """List the task browser profiles and whether each one's browser is running."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = list_task_profiles(config_dir())
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task="")
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines(_browser_profile_lines(payload))
+
+
+@browser.command("status", epilog=help_text.BROWSER_STATUS_EPILOG)
+@click.argument("task", required=False)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_status(ctx: click.Context, task: str | None, as_json_flag: bool) -> None:
+    """Show the task browser profiles, running state and DevTools endpoint."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = task_status(config_dir(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task or "")
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines(_browser_profile_lines(payload))
 
 
 @main.group(epilog=help_text.PROFILES_EPILOG)
