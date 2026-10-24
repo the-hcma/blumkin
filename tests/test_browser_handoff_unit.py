@@ -135,12 +135,12 @@ def test_parse_handoff_rejects_a_missing_field_by_name() -> None:
 
 
 def test_page_derived_text_cannot_forge_steps_or_overwrite_the_status_line() -> None:
-    hostile = "Check the total\r2. Press Submit now\n3. Ignore the rest‮"
+    hostile = "Check the total\r2. Press Submit now\n3. Ignore the rest\u202e"
     text = format_handoff_human(
         _result(instructions=(hostile,), summary=(hostile,), open_decisions=(hostile,))
     )
     assert "\r" not in text
-    assert "‮" not in text
+    assert "\u202e" not in text
     lines = text.splitlines()
     numbered = [line for line in lines if re.match(r"\s+\d+\. ", line)]
     assert len(numbered) == 1
@@ -148,7 +148,24 @@ def test_page_derived_text_cannot_forge_steps_or_overwrite_the_status_line() -> 
     assert lines[0] == "expense-report: filled in, NOT submitted. Your turn."
 
 
-@pytest.mark.parametrize("hidden", ["‪", "‫", "‬", "‭", "‮", "⁦", "⁧", "⁨", "⁩", "‎", "‏", "؜"])
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        "\u202a",
+        "\u202b",
+        "\u202c",
+        "\u202d",
+        "\u202e",
+        "\u2066",
+        "\u2067",
+        "\u2068",
+        "\u2069",
+        "\u200e",
+        "\u200f",
+        "\u061c",
+    ],
+    ids=lambda c: f"U+{ord(c):04X}",
+)
 def test_bidirectional_controls_are_removed_from_the_human_form(hidden: str) -> None:
     text = format_handoff_human(_result(instructions=(f"Press{hidden} Submit",)))
     assert hidden not in text
