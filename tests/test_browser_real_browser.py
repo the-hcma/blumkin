@@ -11,13 +11,15 @@ import http.server
 import os
 import signal
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
 from blumkin.browser.cdp import attach
 from blumkin.browser.discovery import BrowserNotFoundError, resolve_browser
+from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError
 from blumkin.browser.launcher import launch
 from blumkin.browser.profiles import create_profile, read_session
 
@@ -28,13 +30,44 @@ _FORM = b"""<!doctype html><title>Expenses</title>
 <label for="receipt">Receipt</label><input id="receipt" type="file">
 <p>Total due 12.50</p>"""
 
+_SUBMIT_FORM = b"""<!doctype html><title>Report</title>
+<form action="/submit" method="post">
+<label for="amount">Amount</label><input id="amount" name="amount">
+<button type="button">Add line</button>
+<button type="submit">Send report</button>
+<input type="submit" value="Go">
+</form>"""
+
+
+_BYPASS_FORM = b"""<!doctype html><title>Bypass</title>
+<form action="/submit" method="post">
+<label for="amount">Amount</label><input id="amount" name="amount">
+<button type="bogus">Next</button>
+<button type="button" formaction="/other">Alt</button>
+<button type="button" id="tidy">Tidy</button>
+<input id="go" type="submit" value="Go now" aria-label="Go now">
+<button type="button">Plain</button>
+</form>
+<a href="javascript:document.forms[0].submit()">Continue</a>
+<script>
+document.getElementById('tidy').addEventListener('click', () => document.forms[0].submit());
+</script>"""
+
 
 class _Handler(http.server.BaseHTTPRequestHandler):
+    posts: list[str] = []
+
     def do_GET(self) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
-        self.wfile.write(_FORM)
+        pages = {"/bypass": _BYPASS_FORM, "/report": _SUBMIT_FORM}
+        self.wfile.write(pages.get(self.path, _FORM))
+
+    def do_POST(self) -> None:
+        type(self).posts.append(self.path)
+        self.send_response(200)
+        self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -42,6 +75,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture
 def form_url() -> Iterator[str]:
+    _Handler.posts = []
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -85,3 +119,95 @@ def test_launch_attach_fill_upload_read_and_detach_leaves_the_browser_running(
         again.close()
     finally:
         os.kill(result.session.pid, signal.SIGTERM)
+
+
+def test_the_guard_stops_every_way_of_submitting_a_real_form(tmp_path: Path, form_url: str) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    try:
+        browser = resolve_browser(None)
+    except BrowserNotFoundError:
+        pytest.skip("no Chrome, Edge or Chromium installed")
+    profile = create_profile(tmp_path, "expense-report")
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    try:
+        driver = GuardedDriver(
+            attach(profile),
+            GuardPolicy(allowed_controls=frozenset({"Add line", "Send report", "Go"})),
+        )
+        driver.goto(form_url + "report")
+        driver.fill("Amount", "12.50")
+        driver.click("Add line")
+        with pytest.raises(SubmitBlockedError):
+            driver.click("Send report")
+        with pytest.raises(SubmitBlockedError):
+            driver.click("Go")
+        with pytest.raises(SubmitBlockedError):
+            driver.press("Amount", "Enter")
+        driver.close()
+        assert _Handler.posts == []
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+def test_the_guard_stops_the_known_bypasses_and_the_net_is_gone_after_detaching(
+    tmp_path: Path, form_url: str
+) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    try:
+        browser = resolve_browser(None)
+    except BrowserNotFoundError:
+        pytest.skip("no Chrome, Edge or Chromium installed")
+    profile = create_profile(tmp_path, "expense-report")
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    allowed = frozenset({"Next", "Alt", "Tidy", "Continue", "Plain", "Go now"})
+    try:
+        driver = GuardedDriver(attach(profile), GuardPolicy(allowed_controls=allowed))
+        driver.goto(form_url + "bypass")
+        driver.fill("Amount", "12.50")
+        driver.click("Plain")
+        # A button whose invalid type the browser treats as submit, a formaction override,
+        # a script link and a submit input reached by its aria-label.
+        for name, role in (
+            ("Next", "button"),
+            ("Alt", "button"),
+            ("Continue", "link"),
+            ("Go now", "button"),
+        ):
+            with pytest.raises(SubmitBlockedError):
+                driver.click(name, role)
+        # Keys that activate a submit control or submit from a field.
+        for key in ("Enter", "\n", "\r", " ", "Space", "Control+Enter"):
+            with pytest.raises(SubmitBlockedError):
+                driver.press("Amount", key)
+        with pytest.raises(SubmitBlockedError):
+            driver.press("Go now", "a")
+        driver.press("Amount", "Tab")
+        # No static check sees this one (a plain button whose listener submits the form):
+        # the guard lets the click through and the safety net swallows the POST.
+        driver.click("Tidy")
+        driver.read_text()
+        assert _Handler.posts == []
+        driver.close()
+
+        # Detached, the swallowed submit left the user's page in place and nothing blocks
+        # the user's own final click.
+        raw = attach(profile)
+        assert raw.title() == "Bypass"
+        assert raw.url == form_url + "bypass"
+        raw.checked_click("Go now", "button", lambda info: None)
+        raw.close()
+        assert _wait_for(lambda: _Handler.posts == ["/submit"])
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+def _wait_for(condition: Callable[[], bool], *, timeout_s: float = 10.0) -> bool:
+    """Poll a condition against a deadline (the real browser's request is asynchronous)."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.05)
+    return condition()

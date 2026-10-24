@@ -47,13 +47,17 @@ class BrowserAttachError(RuntimeError):
 
 
 class BrowserDriver(Protocol):
-    """What a browser task may do. Nothing here finalizes a form."""
+    """What a browser task may do: the guarded surface, with no way to finalize a form."""
+
+    def click(self, name: str, role: str = "button") -> None: ...
 
     def close(self) -> None: ...
 
     def fill(self, label: str, value: str) -> None: ...
 
     def goto(self, url: str) -> None: ...
+
+    def press(self, label: str, key: str) -> None: ...
 
     def read_text(self) -> PageText: ...
 
@@ -63,6 +67,25 @@ class BrowserDriver(Protocol):
 
     @property
     def url(self) -> str: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ControlInfo:
+    """What the page says an element is, read from the element itself before it is used.
+
+    `input_type` is the browser's canonical `type` property (a `<button>` with no type, or
+    an invalid one, is `submit`), never the raw attribute.
+    """
+
+    tag: str
+    input_type: str
+    in_form: bool
+    #: The element carries a `formaction` or `formmethod` override.
+    has_formaction: bool = False
+    #: The `href` attribute, for links.
+    href: str = ""
+    #: The inline `onclick` attribute text.
+    inline_handler: str = ""
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
@@ -78,11 +101,17 @@ class PageText:
 
 
 class PlaywrightDriver:
-    """`BrowserDriver` over a Playwright page attached through CDP."""
+    """The raw Playwright page attached through CDP.
+
+    Tasks must never hold this directly: `blumkin.browser.guard.GuardedDriver` wraps it
+    and is the only object that implements `BrowserDriver`.
+    """
 
     def __init__(self, *, browser: Any, page: Any, playwright: Any, timeout_s: float) -> None:
         self._browser = browser
         self._closed = False
+        self._context = page.context
+        self._net_installed = False
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -94,11 +123,64 @@ class PlaywrightDriver:
             return
         self._closed = True
         try:
+            if self._net_installed:
+                with contextlib.suppress(PlaywrightError):
+                    self._context.unroute("**/*", _abort_non_get_navigation)
             with contextlib.suppress(PlaywrightError):
                 self._browser.close()
         finally:
             with contextlib.suppress(PlaywrightError):
                 self._playwright.stop()
+
+    def block_form_submission(self) -> None:
+        """Swallow every non-GET navigation while attached (a form POST), whatever triggers it.
+
+        This is the backstop behind the guard's checks: a form can also be submitted by a
+        script, an inherited handler or a field that submits on change, none of which a
+        static look at one control can rule out. The route lives only on this connection, so
+        it is gone once the driver detaches and never gets in the way of the user's own
+        final click.
+        """
+        self._require_open()
+        if self._net_installed:
+            return
+        try:
+            self._context.route("**/*", _abort_non_get_navigation)
+        except PlaywrightError as exc:
+            raise self._action_error("install the form-submission safety net", exc) from exc
+        self._net_installed = True
+
+    def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None:
+        """Resolve one element, let `vet` inspect that very element, then click it.
+
+        Inspecting and clicking the same element handle leaves no window in which the page
+        could swap in a different element between the check and the click.
+        """
+        self._require_open()
+        try:
+            handle = self._page.get_by_role(role, name=name, exact=True).element_handle(
+                timeout=self._timeout_ms
+            )
+        except PlaywrightError as exc:
+            raise self._action_error(f"find the {role} named {name!r}", exc) from exc
+        try:
+            vet(self._describe(handle))
+            # A swallowed submit never commits a navigation, so do not wait for one.
+            handle.click(timeout=self._timeout_ms, no_wait_after=True)
+        except PlaywrightError as exc:
+            raise self._action_error(f"click the {role} named {name!r}", exc) from exc
+
+    def describe_field(self, label: str) -> ControlInfo:
+        """Describe the element a label resolves to (for example to see it is a button)."""
+        self._require_open()
+        try:
+            handle = self._page.get_by_label(label).element_handle(timeout=self._timeout_ms)
+        except PlaywrightError as exc:
+            raise self._action_error(f"find the field labelled {label!r}", exc) from exc
+        try:
+            return self._describe(handle)
+        except PlaywrightError as exc:
+            raise self._action_error(f"inspect the field labelled {label!r}", exc) from exc
 
     def fill(self, label: str, value: str) -> None:
         self._require_open()
@@ -116,6 +198,13 @@ class PlaywrightDriver:
             self._page.goto(url, timeout=self._timeout_ms)
         except PlaywrightError as exc:
             raise self._action_error(f"open {url!r}", exc) from exc
+
+    def raw_press(self, label: str, key: str) -> None:
+        self._require_open()
+        try:
+            self._page.get_by_label(label).press(key, timeout=self._timeout_ms)
+        except PlaywrightError as exc:
+            raise self._action_error(f"press {key!r} in the field labelled {label!r}", exc) from exc
 
     def read_text(self) -> PageText:
         self._require_open()
@@ -149,6 +238,17 @@ class PlaywrightDriver:
     def url(self) -> str:
         return str(self._page.url)
 
+    def _describe(self, handle: Any) -> ControlInfo:
+        raw = handle.evaluate(_DESCRIBE_CONTROL_JS)
+        return ControlInfo(
+            tag=str(raw["tag"]),
+            input_type=str(raw["type"]),
+            in_form=bool(raw["form"]),
+            has_formaction=bool(raw["formaction"]),
+            href=str(raw["href"]),
+            inline_handler=str(raw["onclick"]),
+        )
+
     def _action_error(self, what: str, exc: Exception) -> BrowserActionError:
         return BrowserActionError(
             f"Expected to {what} (timeout {self._timeout_s} seconds), got: "
@@ -160,6 +260,33 @@ class PlaywrightDriver:
             raise BrowserActionError("Expected an attached browser, got a closed driver")
 
 
+class RawBrowserDriver(Protocol):
+    """The unguarded surface `GuardedDriver` wraps (`PlaywrightDriver` implements it)."""
+
+    def block_form_submission(self) -> None: ...
+
+    def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None: ...
+
+    def close(self) -> None: ...
+
+    def describe_field(self, label: str) -> ControlInfo: ...
+
+    def fill(self, label: str, value: str) -> None: ...
+
+    def goto(self, url: str) -> None: ...
+
+    def raw_press(self, label: str, key: str) -> None: ...
+
+    def read_text(self) -> PageText: ...
+
+    def title(self) -> str: ...
+
+    def upload(self, label: str, path: Path) -> None: ...
+
+    @property
+    def url(self) -> str: ...
+
+
 def attach(
     profile: BrowserProfile,
     *,
@@ -169,7 +296,7 @@ def attach(
     pid_alive: Callable[[int], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     timeout_s: float = DEFAULT_ACTION_TIMEOUT_S,
-) -> BrowserDriver:
+) -> PlaywrightDriver:
     """Attach to the browser launched for `profile`, refusing profiles blumkin did not make."""
     require_blumkin_profile(profile.path)
     session = read_session(profile.path, pid_alive=pid_alive)
@@ -196,7 +323,7 @@ def open_driver(
     fetch_version: Callable[[str, float], dict[str, Any]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     timeout_s: float = DEFAULT_ACTION_TIMEOUT_S,
-) -> BrowserDriver:
+) -> PlaywrightDriver:
     """Connect to a loopback DevTools `endpoint`; retries transient failures, bounded.
 
     Before connecting, `/json/version` is read (no redirects) and the WebSocket URL it
@@ -237,6 +364,16 @@ def open_driver(
         raise
 
 
+_DESCRIBE_CONTROL_JS = (
+    "(e) => ({tag: e.tagName.toLowerCase(), "
+    "type: String(e.type || '').toLowerCase(), "
+    "form: !!e.form, "
+    "formaction: e.hasAttribute('formaction') || e.hasAttribute('formmethod'), "
+    "href: String(e.getAttribute('href') || ''), "
+    "onclick: String(e.getAttribute('onclick') || '')})"
+)
+
+
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
     """Refuse every redirect: `/json/version` must answer from the endpoint itself."""
 
@@ -244,6 +381,20 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
         self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
     ) -> None:
         return None
+
+
+def _abort_non_get_navigation(route: Any) -> None:
+    """Swallow a page navigation that is not a GET (a form POST); let everything else through.
+
+    The request is answered with an empty `204 No Content`, which tells the browser to stay
+    on the current page. Aborting it instead would replace the page with an error page and
+    lose whatever the user had filled in.
+    """
+    request = route.request
+    if request.is_navigation_request() and request.method not in ("GET", "HEAD"):
+        route.fulfill(status=204)
+    else:
+        route.continue_()
 
 
 def _driver_for(
