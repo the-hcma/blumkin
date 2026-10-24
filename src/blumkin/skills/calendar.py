@@ -56,6 +56,10 @@ class CalendarNotFoundError(Exception):
     """No calendar matched the given name or id."""
 
 
+# Graph rejects getSchedule requests with more than 20 schedules.
+_GET_SCHEDULE_MAX_ADDRESSES = 20
+
+
 async def calendar_freebusy(
     *,
     with_emails: list[str],
@@ -69,15 +73,17 @@ async def calendar_freebusy(
         raise ValueError("--end must be after --start")
     cfg = config or load_config()
     tz_name = start.tzinfo.key if isinstance(start.tzinfo, ZoneInfo) else str(start.tzinfo)
-    body = GetSchedulePostRequestBody(
-        schedules=list(with_emails),
-        start_time=_to_graph_dtz(start),
-        end_time=_to_graph_dtz(end),
-        availability_view_interval=30,
-    )
     client = create_graph_client(cfg)
-    response = await client.me.calendar.get_schedule.post(body)
-    schedules = [] if response is None else (response.value or [])
+    schedules: list[Any] = []
+    for offset in range(0, len(with_emails), _GET_SCHEDULE_MAX_ADDRESSES):
+        body = GetSchedulePostRequestBody(
+            schedules=list(with_emails[offset : offset + _GET_SCHEDULE_MAX_ADDRESSES]),
+            start_time=_to_graph_dtz(start),
+            end_time=_to_graph_dtz(end),
+            availability_view_interval=30,
+        )
+        response = await client.me.calendar.get_schedule.post(body)
+        schedules.extend([] if response is None else (response.value or []))
     items = [
         _schedule_to_dict(entry, ZoneInfo(tz_name) if tz_name else ZoneInfo("UTC"))
         for entry in schedules

@@ -12,6 +12,7 @@ import pytest
 
 from blumkin.auth import AuthRequiredError
 from blumkin.skills.calendar import (
+    calendar_freebusy,
     calendar_suggest,
     find_mutual_free_slots,
     format_suggest_human,
@@ -516,3 +517,31 @@ def test_calendar_suggest_without_organizer_address_requires_auth(monkeypatch) -
     info = classify_exception(excinfo.value)
     assert info.slug == "auth_required"
     assert info.exit_code == 3
+
+
+def test_calendar_freebusy_batches_over_twenty_schedules(monkeypatch) -> None:
+    emails = [f"u{i}@example.com" for i in range(21)]
+    client = MagicMock()
+    client.me.calendar.get_schedule.post = AsyncMock(
+        side_effect=lambda body: SimpleNamespace(
+            value=[
+                _schedule(addr, "2026-08-28T10:00:00", "2026-08-28T11:00:00")
+                for addr in body.schedules
+            ]
+        )
+    )
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(client_id="x", default_tz="America/New_York"),
+    )
+    payload = asyncio.run(
+        calendar_freebusy(
+            with_emails=emails,
+            start=datetime(2026, 8, 28, 9, 0, tzinfo=_TZ),
+            end=datetime(2026, 8, 28, 17, 0, tzinfo=_TZ),
+        )
+    )
+    calls = client.me.calendar.get_schedule.post.await_args_list
+    assert [len(c.args[0].schedules) for c in calls] == [20, 1]
+    assert [item["schedule"] for item in payload["items"]] == emails
