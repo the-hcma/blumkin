@@ -208,3 +208,76 @@ def test_a_real_process_started_with_the_profile_path_is_recognised(tmp_path: Pa
     finally:
         child.kill()
         child.wait(timeout=10)
+
+
+def test_a_profile_whose_path_is_a_prefix_of_another_is_not_matched(tmp_path: Path) -> None:
+    profile = tmp_path / "a"
+    other = f"{tmp_path}/ab"
+    ps = _Ps(stdout=f"/opt/chrome --user-data-dir={other} --remote-debugging-port=0\n")
+    assert process_is_browser_for(os.getpid(), profile, run=ps) is False
+
+
+def test_the_profile_path_must_be_the_user_data_dir_argument_not_just_mentioned(
+    tmp_path: Path,
+) -> None:
+    ps = _Ps(stdout=f"tail -f {tmp_path}/Default/log\n")
+    assert process_is_browser_for(os.getpid(), tmp_path, run=ps) is False
+
+
+def test_a_profile_path_with_spaces_matches_up_to_the_next_flag(tmp_path: Path) -> None:
+    spaced = tmp_path / "with space"
+    ps = _Ps(stdout=f"/opt/chrome --user-data-dir={spaced} --remote-debugging-port=0\n")
+    assert process_is_browser_for(os.getpid(), spaced, run=ps) is True
+    ps_end = _Ps(stdout=f"/opt/chrome --user-data-dir={spaced}\n")
+    assert process_is_browser_for(os.getpid(), spaced, run=ps_end) is True
+
+
+@pytest.mark.parametrize(
+    ("pid", "port"), [(0, 40123), (1, 40123), (-5, 40123), (4242, 0), (4242, 70000)]
+)
+def test_read_session_ignores_a_session_with_an_impossible_pid_or_port(
+    tmp_path: Path, pid: int, port: int
+) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    write_session(
+        profile.path, BrowserSession(browser="chrome", pid=pid, port=port, started_at="x")
+    )
+    assert read_session(profile.path, pid_alive=lambda p: True) is None
+
+
+def test_a_symlinked_marker_does_not_make_a_directory_a_blumkin_profile(tmp_path: Path) -> None:
+    real = tmp_path / "real-marker.json"
+    real.write_text("{}", encoding="utf-8")
+    fake = tmp_path / "browser-profiles" / "expense-report"
+    fake.mkdir(parents=True, mode=0o700)
+    (fake / ".blumkin-profile.json").symlink_to(real)
+    with pytest.raises(NotBlumkinProfileError):
+        require_blumkin_profile(fake)
+    assert load_profile(tmp_path, "expense-report") is None
+    assert list_profiles(tmp_path) == []
+
+
+def test_create_profile_leaves_no_staging_directory_behind(tmp_path: Path) -> None:
+    create_profile(tmp_path, "expense-report")
+    names = sorted(p.name for p in (tmp_path / "browser-profiles").iterdir())
+    assert names == ["expense-report"]
+
+
+def test_a_leftover_staging_directory_is_never_listed_as_a_profile(tmp_path: Path) -> None:
+    create_profile(tmp_path, "time-sheet")
+    stale = tmp_path / "browser-profiles" / ".expense-report.creating-abc"
+    stale.mkdir(mode=0o700)
+    (stale / ".blumkin-profile.json").write_text("{}", encoding="utf-8")
+    assert [p.task for p in list_profiles(tmp_path)] == ["time-sheet"]
+
+
+def test_write_session_does_not_follow_or_reuse_a_stale_temp_file(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me", encoding="utf-8")
+    (profile.path / ".blumkin-session.json.tmp").symlink_to(victim)
+    session = BrowserSession(browser="chrome", pid=4242, port=40123, started_at="x")
+    write_session(profile.path, session)
+    assert victim.read_text(encoding="utf-8") == "keep me"
+    assert read_session(profile.path, pid_alive=lambda p: True) == session
+    assert _mode(profile.path / ".blumkin-session.json") == 0o600

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,26 @@ _BROWSER = ResolvedBrowser(
 )
 
 
+class _Killpg:
+    """Records process-group signals; the fake processes use pytest's own pid."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int]] = []
+
+    def __call__(self, pgid: int, sig: int) -> None:
+        self.calls.append((pgid, sig))
+
+
+@pytest.fixture(autouse=True)
+def _never_signal_a_real_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fake processes carry pytest's pid, so an un-injected killpg would hit pytest."""
+
+    def refuse(pgid: int, sig: int) -> None:
+        raise AssertionError(f"os.killpg({pgid}, {sig}) must be injected in tests")
+
+    monkeypatch.setattr("blumkin.browser.launcher.os.killpg", refuse)
+
+
 class _Clock:
     """A fake monotonic clock whose `sleep` advances it (no real waiting)."""
 
@@ -49,6 +71,11 @@ class _Proc:
         self.pid = pid
         self._exit_code = exit_code
         self.terminated = False
+        self.waited = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.waited = True
+        return 0
 
     def poll(self) -> int | None:
         return self._exit_code
@@ -152,11 +179,13 @@ def test_launch_times_out_and_stops_the_browser_it_started(tmp_path: Path) -> No
     profile = create_profile(tmp_path, "expense-report")
     popen = _Popen(port_text=None)
     clock = _Clock()
+    killpg = _Killpg()
 
     with pytest.raises(BrowserLaunchError) as excinfo:
         launch(
             profile,
             _BROWSER,
+            kill_group=killpg,
             popen=popen,
             now=clock.monotonic,
             sleep=clock.sleep,
@@ -165,6 +194,8 @@ def test_launch_times_out_and_stops_the_browser_it_started(tmp_path: Path) -> No
 
     assert "2.0" in str(excinfo.value)
     assert popen.proc.terminated is True
+    assert popen.proc.waited is True
+    assert killpg.calls == [(popen.proc.pid, signal.SIGTERM)]
     assert read_session(profile.path) is None
 
 
@@ -185,11 +216,13 @@ def test_launch_rejects_a_malformed_port_file(tmp_path: Path, port_text: str) ->
     profile = create_profile(tmp_path, "expense-report")
     popen = _Popen(port_text=port_text)
     clock = _Clock()
+    killpg = _Killpg()
 
     with pytest.raises(BrowserLaunchError):
         launch(
             profile,
             _BROWSER,
+            kill_group=killpg,
             popen=popen,
             now=clock.monotonic,
             sleep=clock.sleep,
@@ -197,6 +230,7 @@ def test_launch_rejects_a_malformed_port_file(tmp_path: Path, port_text: str) ->
         )
 
     assert popen.proc.terminated is True
+    assert killpg.calls == [(popen.proc.pid, signal.SIGTERM)]
     assert read_session(profile.path, pid_alive=lambda pid: True) is None
 
 
@@ -209,3 +243,30 @@ def test_launch_refuses_a_profile_blumkin_did_not_create(tmp_path: Path) -> None
         launch(BrowserProfile(task="foreign", path=foreign), _BROWSER, popen=popen)
 
     assert popen.calls == []
+
+
+def test_a_second_launch_for_the_same_task_fails_fast_instead_of_racing(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    popen = _Popen()
+    fd = os.open(profile.path / ".blumkin-launch.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with pytest.raises(BrowserLaunchError) as excinfo:
+            launch(profile, _BROWSER, popen=popen)
+    finally:
+        os.close(fd)
+    assert "another launch" in str(excinfo.value)
+    assert "expense-report" in str(excinfo.value)
+    assert popen.calls == []
+    assert not (profile.path / "DevToolsActivePort").exists()
+
+
+def test_the_launch_lock_is_released_after_a_launch(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    clock = _Clock()
+    launch(profile, _BROWSER, popen=_Popen(), now=clock.monotonic, sleep=clock.sleep)
+    fd = os.open(profile.path / ".blumkin-launch.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(fd)

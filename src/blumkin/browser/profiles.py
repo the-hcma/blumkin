@@ -15,6 +15,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -64,7 +65,11 @@ SESSION_FILENAME = ".blumkin-session.json"
 
 
 def create_profile(config_dir: Path, task: str) -> BrowserProfile:
-    """Create the profile for `task`, or return the existing one blumkin made."""
+    """Create the profile for `task`, or return the existing one blumkin made.
+
+    The directory is built under a staging name (marker included) and renamed into
+    place, so a crash or a concurrent create never leaves an unmarked profile behind.
+    """
     _validate_task_name(task)
     root = _ensure_private_dir(config_dir / PROFILES_DIRNAME)
     path = root / task
@@ -72,10 +77,17 @@ def create_profile(config_dir: Path, task: str) -> BrowserProfile:
         raise BrowserProfileError(f"Expected a real directory at {path}, got a symlink")
     if path.exists():
         return require_blumkin_profile(path)
-    path.mkdir(mode=0o700)
-    path.chmod(0o700)
-    marker = {"created_at": _utc_now(), "task": task}
-    _write_private(path / MARKER_FILENAME, json.dumps(marker, sort_keys=True))
+    staging = Path(tempfile.mkdtemp(prefix=f".{task}.creating-", dir=root))
+    try:
+        staging.chmod(0o700)
+        marker = {"created_at": _utc_now(), "task": task}
+        _write_private(staging / MARKER_FILENAME, json.dumps(marker, sort_keys=True))
+        os.rename(staging, path)
+    except OSError:
+        shutil.rmtree(staging, ignore_errors=True)
+        if path.exists():
+            return require_blumkin_profile(path)
+        raise
     return BrowserProfile(task=task, path=path)
 
 
@@ -107,7 +119,9 @@ def list_profiles(config_dir: Path) -> list[BrowserProfile]:
         return []
     found: list[BrowserProfile] = []
     for child in sorted(root.iterdir()):
-        if child.is_dir() and not child.is_symlink() and (child / MARKER_FILENAME).is_file():
+        if child.name.startswith("."):
+            continue
+        if child.is_dir() and not child.is_symlink() and _has_marker(child):
             found.append(BrowserProfile(task=child.name, path=child))
     return found
 
@@ -119,7 +133,7 @@ def load_profile(config_dir: Path, task: str) -> BrowserProfile | None:
     except BrowserProfileError:
         return None
     path = config_dir / PROFILES_DIRNAME / task
-    if path.is_dir() and not path.is_symlink() and (path / MARKER_FILENAME).is_file():
+    if path.is_dir() and not path.is_symlink() and _has_marker(path):
         return BrowserProfile(task=task, path=path)
     return None
 
@@ -152,7 +166,7 @@ def process_is_browser_for(
     command = completed.stdout.strip()
     if completed.returncode != 0 or not command:
         return False
-    return str(profile_dir) in command
+    return re.search(_user_data_dir_pattern(profile_dir), command) is not None
 
 
 def read_session(
@@ -171,6 +185,8 @@ def read_session(
         )
     except OSError, ValueError, KeyError, TypeError:
         return None
+    if session.pid <= 1 or not 1 <= session.port <= 65535:
+        return None
     alive = pid_alive or (lambda pid: process_is_browser_for(pid, profile_dir))
     return session if alive(session.pid) else None
 
@@ -183,7 +199,7 @@ def remove_session(profile_dir: Path) -> None:
 
 def require_blumkin_profile(path: Path) -> BrowserProfile:
     """Return the profile at `path`, refusing any directory blumkin did not create."""
-    if path.is_symlink() or not (path / MARKER_FILENAME).is_file():
+    if path.is_symlink() or not _has_marker(path):
         raise NotBlumkinProfileError(
             f"Expected a browser profile created by blumkin at {path}, got a directory without "
             "its marker"
@@ -217,6 +233,11 @@ def _ensure_private_dir(path: Path) -> Path:
     return path
 
 
+def _has_marker(path: Path) -> bool:
+    marker = path / MARKER_FILENAME
+    return marker.is_file() and not marker.is_symlink()
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -225,6 +246,12 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _user_data_dir_pattern(profile_dir: Path) -> str:
+    # Followed by the next flag or the end of the command line, so `/x/a` never matches
+    # a browser on `/x/ab`; the path itself may contain spaces.
+    return rf"--user-data-dir={re.escape(str(profile_dir))}(?=\s+--|\s*$)"
 
 
 def _utc_now() -> str:
@@ -241,7 +268,11 @@ def _validate_task_name(task: str) -> None:
 
 def _write_private(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with contextlib.suppress(FileNotFoundError):
+        tmp.unlink()
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(tmp, path)
