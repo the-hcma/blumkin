@@ -64,5 +64,5 @@ def test_text_lists_exactly_the_folders_google_accepts(where: str) -> None:
 
 @pytest.mark.parametrize("where", sorted(_TEXTS))
 def test_text_says_archive_and_outbox_are_microsoft_only(where: str) -> None:
-    flat = " ".join(_TEXTS[where]().split())
+    flat = " ".join(_TEXTS[where]().replace("`", "").split())
     assert re.search(r"archive, outbox[^.;]*Microsoft only", flat), flat[:300]
