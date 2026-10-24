@@ -18,6 +18,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from blumkin.browser.cdp import (
     BrowserActionError,
     BrowserAttachError,
+    ControlInfo,
     attach,
     open_driver,
 )
@@ -30,10 +31,33 @@ from blumkin.browser.profiles import (
 )
 
 
+class _Handle:
+    """An element handle: evaluates the describe script to a configured dict and clicks."""
+
+    def __init__(self, page: _Page, info: dict[str, Any]) -> None:
+        self._page = page
+        self._info = info
+
+    def click(self, *, timeout: float, no_wait_after: bool = False) -> None:
+        self._page.calls.append(("handle-click", timeout, no_wait_after))
+
+    def evaluate(self, script: str) -> dict[str, Any]:
+        self._page.calls.append(("handle-evaluate",))
+        return self._info
+
+
 class _Locator:
     def __init__(self, page: _Page, label: str) -> None:
         self._page = page
         self._label = label
+
+    def element_handle(self, *, timeout: float) -> _Handle:
+        if self._label in self._page.missing:
+            raise PlaywrightTimeout("no such element")
+        return _Handle(self._page, self._page.element_info.get(self._label, _PLAIN_ELEMENT))
+
+    def press(self, key: str, *, timeout: float) -> None:
+        self._page.calls.append(("press", self._label, key, timeout))
 
     def fill(self, value: str, *, timeout: float) -> None:
         if self._label in self._page.missing:
@@ -44,8 +68,20 @@ class _Locator:
         self._page.calls.append(("upload", self._label, path, timeout))
 
 
+_PLAIN_ELEMENT = {
+    "tag": "button",
+    "type": "button",
+    "form": False,
+    "formaction": False,
+    "href": "",
+    "onclick": "",
+}
+
+
 class _Page:
     def __init__(self, body: str = "hello", title: str = "A page") -> None:
+        self.element_info: dict[str, dict[str, Any]] = {}
+        self.context: _Context | None = None
         self.body = body
         self._title = title
         self.url = "about:blank"
@@ -55,6 +91,10 @@ class _Page:
 
     def get_by_label(self, label: str) -> _Locator:
         return _Locator(self, label)
+
+    def get_by_role(self, role: str, *, name: str, exact: bool) -> _Locator:
+        self.calls.append(("get_by_role", role, name, exact))
+        return _Locator(self, name)
 
     def goto(self, url: str, *, timeout: float) -> None:
         self.calls.append(("goto", url, timeout))
@@ -74,6 +114,15 @@ class _Page:
 class _Context:
     def __init__(self, page: _Page) -> None:
         self.pages = [page]
+        self.routes: list[Any] = []
+        self.unrouted: list[Any] = []
+        page.context = self
+
+    def route(self, pattern: str, handler: Any) -> None:
+        self.routes.append((pattern, handler))
+
+    def unroute(self, pattern: str, handler: Any) -> None:
+        self.unrouted.append((pattern, handler))
 
 
 class _Browser:
@@ -517,3 +566,127 @@ def test_the_default_fetch_ignores_proxy_settings_from_the_environment(
     driver = open_driver(f"http://127.0.0.1:{port}", factory=lambda: pw)
     assert pw.connects == [(f"ws://127.0.0.1:{port}/devtools/browser/a", 30000.0)]
     driver.close()
+
+
+class _Request:
+    def __init__(self, method: str, *, navigation: bool) -> None:
+        self.method = method
+        self._navigation = navigation
+
+    def is_navigation_request(self) -> bool:
+        return self._navigation
+
+
+class _Route:
+    def __init__(self, request: _Request) -> None:
+        self.request = request
+        self.outcome: tuple[str, ...] = ()
+
+    def fulfill(self, *, status: int) -> None:
+        self.outcome = ("fulfill", str(status))
+
+    def continue_(self) -> None:
+        self.outcome = ("continue",)
+
+
+def _route_outcome(method: str, *, navigation: bool) -> tuple[str, ...]:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    handler = pw.browser.contexts[0].routes[0][1]
+    route = _Route(_Request(method, navigation=navigation))
+    handler(route)
+    return route.outcome
+
+
+def test_the_safety_net_swallows_a_form_post_navigation_with_no_content() -> None:
+    assert _route_outcome("POST", navigation=True) == ("fulfill", "204")
+
+
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE"])
+def test_the_safety_net_swallows_any_non_get_navigation(method: str) -> None:
+    assert _route_outcome(method, navigation=True) == ("fulfill", "204")
+
+
+@pytest.mark.parametrize(("method", "navigation"), [("GET", True), ("HEAD", True)])
+def test_the_safety_net_lets_ordinary_navigation_through(method: str, navigation: bool) -> None:
+    assert _route_outcome(method, navigation=navigation) == ("continue",)
+
+
+def test_the_safety_net_does_not_touch_background_requests() -> None:
+    assert _route_outcome("POST", navigation=False) == ("continue",)
+
+
+def test_the_safety_net_is_installed_once_and_released_on_detach() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    assert len(context.routes) == 1
+    assert context.routes[0][0] == "**/*"
+    driver.close()
+    assert context.unrouted == [context.routes[0]]
+
+
+def test_a_driver_that_never_installed_the_net_does_not_unroute_on_close() -> None:
+    pw, driver = _driver()
+    driver.close()
+    assert pw.browser.contexts[0].unrouted == []
+
+
+def test_checked_click_vets_the_element_it_then_clicks() -> None:
+    pw, driver = _driver()
+    pw.page.element_info["Go"] = {
+        "tag": "input",
+        "type": "submit",
+        "form": True,
+        "formaction": True,
+        "href": "/x",
+        "onclick": "go()",
+    }
+    seen: list[ControlInfo] = []
+    driver.checked_click("Go", "button", seen.append)
+    assert seen == [
+        ControlInfo(
+            tag="input",
+            input_type="submit",
+            in_form=True,
+            has_formaction=True,
+            href="/x",
+            inline_handler="go()",
+        )
+    ]
+    assert ("get_by_role", "button", "Go", True) in pw.page.calls
+    assert ("handle-click", 30000.0, True) in pw.page.calls
+
+
+def test_checked_click_does_not_click_when_the_vet_refuses() -> None:
+    pw, driver = _driver()
+
+    def refuse(info: ControlInfo) -> None:
+        raise BrowserActionError("Expected a safe control, got a refusal")
+
+    with pytest.raises(BrowserActionError):
+        driver.checked_click("Go", "button", refuse)
+    assert not any(call[0] == "handle-click" for call in pw.page.calls)
+
+
+def test_checked_click_reports_a_missing_element() -> None:
+    pw, driver = _driver()
+    pw.page.missing.add("Go")
+    with pytest.raises(BrowserActionError) as excinfo:
+        driver.checked_click("Go", "button", lambda info: None)
+    assert "'Go'" in str(excinfo.value)
+
+
+def test_describe_field_reads_the_element_a_label_resolves_to() -> None:
+    pw, driver = _driver()
+    pw.page.element_info["Amount"] = {**_PLAIN_ELEMENT, "tag": "input", "type": "text"}
+    assert driver.describe_field("Amount") == ControlInfo(
+        tag="input", input_type="text", in_form=False
+    )
+
+
+def test_raw_press_sends_the_key_to_the_field_with_the_action_timeout() -> None:
+    pw, driver = _driver()
+    driver.raw_press("Amount", "Tab")
+    assert ("press", "Amount", "Tab", 30000.0) in pw.page.calls
