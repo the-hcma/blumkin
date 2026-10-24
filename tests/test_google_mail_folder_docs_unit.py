@@ -56,7 +56,7 @@ def test_google_folder_set_is_what_the_provider_maps_to_labels() -> None:
 @pytest.mark.parametrize("where", sorted(_TEXTS))
 def test_text_lists_exactly_the_folders_google_accepts(where: str) -> None:
     sentence = _google_sentence(_TEXTS[where]())
-    named = set(re.findall(r"[a-z]+", sentence)) & set(_FOLDER_LABELS)
+    named = set(re.findall(r"[a-z]+", sentence)) - {"and"}
     assert named == set(_GOOGLE_FOLDERS)
     for name in _MICROSOFT_ONLY:
         assert name not in named
