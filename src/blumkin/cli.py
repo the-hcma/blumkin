@@ -508,7 +508,7 @@ def _receipt_field_line(name: str, field: dict[str, Any]) -> str:
 
 
 def _receipt_file_line(entry: dict[str, Any]) -> str:
-    return f"{sanitize_terminal(entry['name'])} ({entry['size']} bytes, {entry['modified']})"
+    return f"{_clean_line(entry['name'])} ({entry['size']} bytes, {entry['modified']})"
 
 
 def _shutdown_confirmed(response: dict[str, Any] | None) -> bool:

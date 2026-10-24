@@ -119,26 +119,16 @@ def find_local_receipts(
     if not folder.is_dir():
         raise ReceiptsDirError(f"Expected an existing directory, got {str(directory)!r}")
     found: list[ReceiptFile] = []
-    with os.scandir(folder) as entries:
-        for entry in entries:
-            if entry.name.startswith(".") or entry.is_symlink() or not entry.is_file():
-                continue
-            if Path(entry.name).suffix.lower() not in RECEIPT_EXTENSIONS:
-                continue
-            try:
-                info = entry.stat()
-            except OSError:
-                continue  # removed or unreadable while scanning
-            if since_epoch is not None and info.st_mtime < since_epoch:
-                continue
-            found.append(
-                ReceiptFile(
-                    modified_epoch=info.st_mtime,
-                    name=entry.name,
-                    path=Path(entry.path),
-                    size=info.st_size,
-                )
-            )
+    try:
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                receipt = _receipt_file(entry, since_epoch)
+                if receipt is not None:
+                    found.append(receipt)
+    except OSError as exc:
+        raise ReceiptsDirError(
+            f"Expected a readable directory, got {type(exc).__name__} for {str(directory)!r}"
+        ) from exc
     found.sort(key=lambda item: (-item.modified_epoch, item.name))
     return found[:limit]
 
@@ -171,9 +161,15 @@ async def read_receipt(
     try:
         payload = await reader(config=config, path=str(path), ocr=False)
         text = _joined_text(payload)
-        if suffix == ".pdf" and not text.strip():
-            payload = await reader(config=config, path=str(path), ocr=True)
-            text = _joined_text(payload)
+        blank_pages = _blank_pages(payload)
+        if suffix == ".pdf" and blank_pages:
+            try:
+                payload = await reader(config=config, path=str(path), ocr=True)
+                text = _joined_text(payload)
+                blank_pages = _blank_pages(payload)
+            except DocsReadOcrUnavailableError, DocsReadExtraMissingError:
+                if not text.strip():
+                    raise
     except (DocsReadExtraMissingError, DocsReadOcrUnavailableError) as exc:
         return _manual(
             path,
@@ -201,10 +197,19 @@ async def read_receipt(
             ReceiptStatus.NEEDS_MANUAL,
             "No text could be read from this receipt; tell me the vendor, date and total.",
         )
+    fields = parse_receipt_text(text)
+    message = ""
+    if blank_pages:
+        total_pages = len(payload.get("pages") or [])
+        message = (
+            f"{len(blank_pages)} of {total_pages} pages had no text and could not be read, so "
+            "fields may be missing; check every amount against the receipt."
+        )
+        fields = _distrust(fields, message)
     return ReceiptReading(
-        fields=parse_receipt_text(text),
+        fields=fields,
         injection_warning=payload.get("injection_warning"),
-        message="",
+        message=message,
         ocr_used=bool(payload.get("ocr_used")),
         path=str(path),
         status=ReceiptStatus.OK,
@@ -619,3 +624,45 @@ def _total_on_line(raw: str, after_keyword: str) -> _Amount | None:
             doubtful=True,
         )
     return chosen
+
+
+def _blank_pages(payload: dict[str, Any]) -> list[int]:
+    """Indexes of the pages that came back without any text."""
+    return [
+        position
+        for position, page in enumerate(payload.get("pages") or [])
+        if not str(page.get("text") or "").strip()
+    ]
+
+
+def _distrust(fields: ReceiptFields, note: str) -> ReceiptFields:
+    """Nothing read from a receipt with unreadable pages is better than `low` confidence."""
+
+    def lower(field: ReceiptField) -> ReceiptField:
+        if field.confidence is not Confidence.HIGH:
+            return field
+        return ReceiptField(confidence=Confidence.LOW, value=field.value, note=note)
+
+    return ReceiptFields(
+        currency=lower(fields.currency),
+        date=lower(fields.date),
+        total=lower(fields.total),
+        vendor=fields.vendor,
+    )
+
+
+def _receipt_file(entry: os.DirEntry[str], since_epoch: float | None) -> ReceiptFile | None:
+    """One directory entry as a receipt file, or None when it is not one (or cannot be read)."""
+    try:
+        if entry.name.startswith(".") or entry.is_symlink() or not entry.is_file():
+            return None
+        if Path(entry.name).suffix.lower() not in RECEIPT_EXTENSIONS:
+            return None
+        info = entry.stat()
+    except OSError:
+        return None  # removed or unreadable while scanning
+    if since_epoch is not None and info.st_mtime < since_epoch:
+        return None
+    return ReceiptFile(
+        modified_epoch=info.st_mtime, name=entry.name, path=Path(entry.path), size=info.st_size
+    )

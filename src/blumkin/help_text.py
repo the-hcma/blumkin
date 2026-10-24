@@ -1596,9 +1596,12 @@ Examples:
 
 Lists the image and PDF files directly inside `--dir` (no subfolders, no symlinks,
 no hidden files), newest first. `--since YYYY-MM-DD` keeps files modified on or
-after that local date. For receipts attached to mail, list the message's
-attachments with `blumkin mail attachments --id ... --json` and download the ones
-you want with `blumkin mail attachments download`.
+after that UTC date (the same zone as the printed times). For receipts attached to
+mail, list the message's attachments with
+`blumkin mail attachments --id ... --json` and download the ones you want with:
+
+\b
+  blumkin mail attachments download --message-id ... --attachment-id ... --out ...
 """
 
 RECEIPTS_READ_EPILOG = """

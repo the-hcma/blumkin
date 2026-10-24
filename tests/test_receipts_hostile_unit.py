@@ -21,6 +21,7 @@ from blumkin.receipts import (
     parse_receipt_text,
     read_receipt,
 )
+from blumkin.skills.docs_read import DocsReadOcrUnavailableError
 
 _TODAY = date(2026, 10, 24)
 
@@ -210,3 +211,104 @@ def test_find_since_is_a_utc_date_like_the_modified_times_it_prints(
     )
     assert result.exit_code == 0, result.output
     assert '"name": "late.png"' in result.output
+
+
+def _two_page_reader(*, ocr_available: bool) -> tuple[list[bool], Any]:
+    seen: list[bool] = []
+
+    async def reader(
+        *, config: Any, path: str, pages: Any = None, sheet: Any = None, ocr: bool = False
+    ) -> dict[str, Any]:
+        seen.append(ocr)
+        if ocr and not ocr_available:
+            raise DocsReadOcrUnavailableError("no tesseract")
+        second = "Total 12.50 USD" if ocr else "   "
+        return {
+            "injection_warning": None,
+            "kind": "pdf",
+            "ocr_used": ocr,
+            "ok": True,
+            "pages": [
+                {"index": 1, "tables": [], "text": "ACME COFFEE\nDate: 2026-10-23\nSubtotal 10.00"},
+                {"index": 2, "tables": [], "text": second},
+            ],
+            "path": path,
+        }
+
+    return seen, reader
+
+
+def test_a_pdf_with_one_blank_page_is_retried_with_ocr_for_that_page(tmp_path: Path) -> None:
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"x")
+    seen, reader = _two_page_reader(ocr_available=True)
+    reading = asyncio.run(read_receipt(pdf, config=None, reader=reader))
+    assert seen == [False, True]
+    assert reading.status is ReceiptStatus.OK
+    assert reading.fields.total.value == "12.50"
+
+
+def test_a_pdf_with_a_blank_page_and_no_ocr_keeps_the_text_but_trusts_nothing(
+    tmp_path: Path,
+) -> None:
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"x")
+    seen, reader = _two_page_reader(ocr_available=False)
+    reading = asyncio.run(read_receipt(pdf, config=None, reader=reader))
+    assert seen == [False, True]
+    assert reading.status is ReceiptStatus.OK
+    assert "1 of 2 pages" in reading.message
+    assert reading.fields.date.value == "2026-10-23"
+    for field in (reading.fields.currency, reading.fields.date, reading.fields.total):
+        assert field.confidence is not Confidence.HIGH
+
+
+def test_find_reports_an_unreadable_directory_as_an_error_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def denied(folder: Any) -> Any:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("blumkin.receipts.os.scandir", denied)
+    result = CliRunner().invoke(main, ["--json", "receipts", "find", "--dir", str(tmp_path)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit)
+    assert "error" in result.output
+
+
+class _BrokenEntry:
+    name = "odd.png"
+    path = "/nonexistent/odd.png"
+
+    def is_symlink(self) -> bool:
+        raise PermissionError("denied")
+
+    def is_file(self) -> bool:
+        return True
+
+
+def test_find_skips_an_entry_whose_metadata_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("blumkin.receipts.os.scandir", lambda folder: _Entries([_BrokenEntry()]))
+    assert find_local_receipts(tmp_path) == []
+
+
+def test_a_file_name_with_bidirectional_controls_cannot_spoof_the_human_listing(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "invoice‮gnp.exe.png").write_bytes(b"x")
+    result = CliRunner().invoke(main, ["receipts", "find", "--dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "‮" not in result.output
+    assert "invoicegnp.exe.png" in result.output
+
+
+def test_find_help_says_since_is_utc_and_shows_the_full_download_command() -> None:
+    result = CliRunner().invoke(main, ["receipts", "find", "--help"])
+    flat = " ".join(result.output.split())
+    assert "UTC date" in flat
+    assert "local date" not in flat
+    assert "--message-id" in flat
+    assert "--attachment-id" in flat
+    assert "--out" in flat
