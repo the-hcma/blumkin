@@ -1167,3 +1167,36 @@ def _cfg(config_dir: Path, *, oauth_file: Path | None = None) -> BlumkinConfig:
     )
     cfg.profile_dir.mkdir(parents=True, exist_ok=True)
     return cfg
+
+
+def test_calendar_suggest_includes_primary_calendar(tmp_path: Path) -> None:
+    service = MagicMock()
+    query = service.freebusy.return_value.query
+    query.return_value.execute.return_value = {
+        "calendars": {
+            "ada@example.com": {"busy": []},
+            "primary": {"busy": [{"start": "2026-08-30T13:00:00Z", "end": "2026-08-30T14:00:00Z"}]},
+        }
+    }
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = datetime(2026, 8, 30, 15, 0, tzinfo=UTC)
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        provider = GoogleWorkspaceProvider(_cfg(tmp_path))
+        suggest = asyncio.run(
+            provider.calendar_suggest(
+                with_emails=["ada@example.com", "primary"],
+                start=start,
+                end=end,
+                duration=timedelta(minutes=30),
+                step=timedelta(minutes=30),
+                limit=10,
+            )
+        )
+    ids = [item["id"] for item in query.call_args.kwargs["body"]["items"]]
+    assert ids == ["ada@example.com", "primary"]
+    assert suggest["slots"][0]["start"] == start.replace(hour=14).isoformat()
+    assert suggest["includes_organizer"] is True
+    assert suggest["with"] == ["ada@example.com", "primary"]

@@ -156,12 +156,19 @@ async def calendar_suggest(
     treat_tentative: str = "busy",
     step: timedelta | None = None,
     limit: int = 10,
+    organizer_email: str,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    """Return mutual free starts for ``duration`` over ``[start, end)`` for everyone in ``--with``.
+    """Return mutual free starts for ``duration`` over ``[start, end)``.
 
-    Builds on ``calendar freebusy`` (union of busy). Does not create an event.
+    Covers everyone in ``--with`` plus the organizer (``organizer_email``, the signed-in
+    account), de-duplicated case-insensitively. Builds on ``calendar freebusy`` (union of
+    busy). Does not create an event.
     """
+    if not organizer_email.strip():
+        raise ValueError(
+            "could not determine the signed-in account address; run `blumkin auth login`"
+        )
     if duration <= timedelta(0):
         raise ValueError("--duration must be positive")
     if limit < 1:
@@ -173,8 +180,11 @@ async def calendar_suggest(
     step_delta = step if step is not None else min(timedelta(minutes=15), duration)
     if step_delta <= timedelta(0):
         raise ValueError("--step must be positive")
-    freebusy = await calendar_freebusy(with_emails=with_emails, start=start, end=end, config=config)
-    raise_if_schedule_errors(freebusy["items"], requested=with_emails)
+    queried = list(with_emails)
+    if organizer_email.casefold() not in {email.casefold() for email in queried}:
+        queried.append(organizer_email)
+    freebusy = await calendar_freebusy(with_emails=queried, start=start, end=end, config=config)
+    raise_if_schedule_errors(freebusy["items"], requested=queried)
     busy = collect_busy_intervals(freebusy["items"], treat_tentative_busy=(tentative == "busy"))
     slots = find_mutual_free_slots(
         busy=busy,
@@ -188,6 +198,7 @@ async def calendar_suggest(
     return {
         "duration_minutes": int(duration.total_seconds() // 60),
         "end": end.isoformat(),
+        "includes_organizer": True,
         "limit": limit,
         "slots": slots,
         "start": start.isoformat(),

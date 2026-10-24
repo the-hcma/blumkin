@@ -256,6 +256,7 @@ class MicrosoftWorkspaceProvider:
             treat_tentative=treat_tentative,
             step=step,
             limit=limit,
+            organizer_email=self.account_email(),
             config=self._config,
         )
 

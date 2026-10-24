@@ -2990,6 +2990,7 @@ def calendar_suggest_cmd(
 ) -> None:
     """Rank mutual-free start times from everyone's free/busy.
 
+    Always includes your own calendar in addition to every --with address.
     Suggests starts only - it never creates an event. Feed a chosen start into
     `calendar create`. Clip to a working-day window with `--window HH:MM-HH:MM`.
     """

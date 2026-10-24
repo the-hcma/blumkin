@@ -134,6 +134,7 @@ def test_calendar_suggest_uses_freebusy_and_tentative_flag(monkeypatch) -> None:
             treat_tentative="busy",
             step=timedelta(hours=1),
             limit=20,
+            organizer_email="a@example.com",
         )
     )
     busy_starts = {s["start"] for s in as_busy["slots"]}
@@ -148,6 +149,7 @@ def test_calendar_suggest_uses_freebusy_and_tentative_flag(monkeypatch) -> None:
             treat_tentative="free",
             step=timedelta(hours=1),
             limit=20,
+            organizer_email="a@example.com",
         )
     )
     free_starts = {s["start"] for s in as_free["slots"]}
@@ -165,6 +167,7 @@ def test_calendar_suggest_rejects_bad_window() -> None:
                 end=end,
                 duration=timedelta(minutes=30),
                 window="nope",
+                organizer_email="me@example.com",
             )
         )
 
@@ -299,6 +302,7 @@ def test_calendar_suggest_unions_busy_across_multiple_with(monkeypatch) -> None:
             duration=timedelta(hours=1),
             step=timedelta(hours=1),
             limit=20,
+            organizer_email="A@Example.com",
         )
     )
     body_args = client.me.calendar.get_schedule.post.await_args
@@ -335,6 +339,7 @@ def test_calendar_suggest_fails_closed_on_schedule_error(monkeypatch) -> None:
                 start=start,
                 end=end,
                 duration=timedelta(minutes=30),
+                organizer_email="typo@example.com",
             )
         )
 
@@ -375,6 +380,7 @@ def test_calendar_suggest_treats_unknown_as_busy(monkeypatch) -> None:
             duration=timedelta(hours=1),
             step=timedelta(hours=1),
             limit=20,
+            organizer_email="a@example.com",
         )
     )
     starts = {s["start"] for s in payload["slots"]}
@@ -401,3 +407,53 @@ def test_status_is_busy_fail_closed(
     status: object, treat_tentative_busy: bool, expected_busy: bool
 ) -> None:
     assert _status_is_busy(status, treat_tentative_busy=treat_tentative_busy) is expected_busy
+
+
+def _schedule(schedule_id: str, start: str, end: str) -> SimpleNamespace:
+    zone = "America/New_York"
+    return SimpleNamespace(
+        availability_view="000",
+        schedule_id=schedule_id,
+        schedule_items=[
+            SimpleNamespace(
+                start=SimpleNamespace(date_time=start, time_zone=zone),
+                end=SimpleNamespace(date_time=end, time_zone=zone),
+                status="busy",
+            )
+        ],
+        working_hours=None,
+        error=None,
+    )
+
+
+def test_calendar_suggest_includes_organizer_busy(monkeypatch) -> None:
+    other = _schedule("a@example.com", "2026-08-28T14:00:00", "2026-08-28T15:00:00")
+    me = _schedule("me@example.com", "2026-08-28T10:00:00", "2026-08-28T11:00:00")
+    client = MagicMock()
+    client.me.calendar.get_schedule.post = AsyncMock(
+        return_value=SimpleNamespace(value=[other, me])
+    )
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(client_id="x", default_tz="America/New_York"),
+    )
+    payload = asyncio.run(
+        calendar_suggest(
+            with_emails=["a@example.com"],
+            start=datetime(2026, 8, 28, 9, 0, tzinfo=_TZ),
+            end=datetime(2026, 8, 28, 17, 0, tzinfo=_TZ),
+            duration=timedelta(hours=1),
+            step=timedelta(hours=1),
+            limit=20,
+            organizer_email="me@example.com",
+        )
+    )
+    call = client.me.calendar.get_schedule.post.await_args
+    assert call is not None
+    assert list(call.args[0].schedules) == ["a@example.com", "me@example.com"]
+    starts = {s["start"] for s in payload["slots"]}
+    assert datetime(2026, 8, 28, 10, 0, tzinfo=_TZ).isoformat() not in starts
+    assert datetime(2026, 8, 28, 11, 0, tzinfo=_TZ).isoformat() in starts
+    assert payload["with"] == ["a@example.com"]
+    assert payload["includes_organizer"] is True

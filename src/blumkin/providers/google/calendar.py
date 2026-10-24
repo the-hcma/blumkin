@@ -422,8 +422,12 @@ async def calendar_suggest(
     step_delta = step if step is not None else min(timedelta(minutes=15), duration)
     if step_delta <= timedelta(0):
         raise ValueError("--step must be positive")
-    freebusy = await calendar_freebusy(with_emails=with_emails, start=start, end=end, config=config)
-    raise_if_schedule_errors(freebusy["items"], requested=with_emails)
+    # "primary" is the signed-in account's own calendar, so no address lookup is needed.
+    queried = list(with_emails)
+    if "primary" not in {email.casefold() for email in queried}:
+        queried.append("primary")
+    freebusy = await calendar_freebusy(with_emails=queried, start=start, end=end, config=config)
+    raise_if_schedule_errors(freebusy["items"], requested=queried)
     busy = collect_busy_intervals(freebusy["items"], treat_tentative_busy=True)
     slots = find_mutual_free_slots(
         busy=busy,
@@ -437,6 +441,7 @@ async def calendar_suggest(
     return {
         "duration_minutes": int(duration.total_seconds() // 60),
         "end": end.isoformat(),
+        "includes_organizer": True,
         "limit": limit,
         "slots": slots,
         "start": start.isoformat(),
