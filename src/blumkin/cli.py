@@ -3972,7 +3972,9 @@ def mail_thread_cmd(
     default=None,
     help=(
         f"Well-known name ({', '.join(WELL_KNOWN_MAIL_FOLDERS)}), a folder id, "
-        "or a custom folder's display name (default: inbox)."
+        "or a custom folder's display name (default: inbox). "
+        "Google accepts only inbox, sentitems, drafts, deleteditems and junkemail; "
+        "archive, outbox, a folder id and a custom name are Microsoft only."
     ),
 )
 @click.option(
