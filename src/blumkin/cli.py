@@ -2933,7 +2933,7 @@ def calendar_freebusy_cmd(
     "with_emails",
     multiple=True,
     required=True,
-    help="People who must be free; repeat once per person (include yourself if needed).",
+    help="Other people who must be free; repeat once per person (you are always included).",
 )
 @click.option(
     "--start",
