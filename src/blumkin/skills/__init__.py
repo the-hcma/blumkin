@@ -1462,7 +1462,10 @@ SKILLS: list[SkillSpec] = [
         cli=["blumkin", "mail", "list"],
         summary=(
             "List recent messages from a mail folder "
-            "(well-known name such as sentitems/archive, or a folder id); "
+            "(well-known name such as sentitems, or on Microsoft archive or a "
+            "folder id; Google accepts only inbox, sentitems, drafts, deleteditems "
+            "and junkemail; archive, outbox, a folder id and a custom name are "
+            "Microsoft only); "
             "items report is_meeting_message/meeting_message_type (Google accounts "
             "report both as null here — use mail.get for a Google message's meeting "
             "details)"

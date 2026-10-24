@@ -231,7 +231,7 @@ Once vaulted, it takes precedence over any `client_secret` still in the file, an
 
 **Provider differences.**
 
-- `mail folders` lists Gmail labels that act as folders; `mail list --folder` still takes the well-known names.
+- `mail folders` lists Gmail labels that act as folders; `mail list --folder` on Google accepts only `inbox`, `sentitems`, `drafts`, `deleteditems` and `junkemail`; `archive`, `outbox`, a folder id and a custom name are Microsoft only.
 - Mail writes need the `gmail.compose` scope — re-run `blumkin auth login` once after upgrading or those calls exit `4` (`missing_scope`).
 - Chat `attachments` are listed but Drive-backed files are not downloadable.
 - A returned draft `id` is the Gmail draft id; `attachments[].id` is `null` (Gmail carries attachments inside the raw message).

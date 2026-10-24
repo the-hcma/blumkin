@@ -1165,12 +1165,14 @@ Examples:
   # A custom folder by display name, only unread
   blumkin mail list --folder "Receipts" --unread --json
 \b
-  # Archive, high-importance only
+  # Archive, high-importance only (Microsoft; Google has no archive folder to list)
   blumkin mail list --folder archive --importance high --json
 
 `--folder` takes a well-known name (inbox, sentitems, drafts, archive,
 deleteditems, junkemail, outbox), a folder id, or a custom folder's display
-name. Sort defaults by folder (sent for Sent Items, created for Drafts/Outbox,
+name. Google accepts only inbox, sentitems, drafts, deleteditems and junkemail;
+archive, outbox, a folder id and a custom name are Microsoft only and fail on a
+Google profile. Sort defaults by folder (sent for Sent Items, created for Drafts/Outbox,
 received otherwise); override with `--orderby`. `--importance` /
 `--has-attachments` filter server-side; same `--search` exclusivity as
 `mail inbox`.
