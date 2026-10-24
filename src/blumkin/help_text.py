@@ -440,8 +440,8 @@ CALENDAR_SUGGEST_EPILOG = """
 Examples:
 
 \b
-  # Ranked 45-minute slots where everyone (incl. you) is free
-  blumkin calendar suggest --with me@example.com --with sam@example.com \\
+  # Ranked 45-minute slots where everyone is free (your own calendar is always included)
+  blumkin calendar suggest --with sam@example.com --with dana@example.com \\
     --start "2026-09-01T09:00" --end "2026-09-03T18:00" --duration 45m --json
 \b
   # Clip to a working-day window, count tentative blocks as free
@@ -449,7 +449,8 @@ Examples:
     --start "2026-09-01T09:00" --end "2026-09-01T18:00" \\
     --duration 30m --window 09:00-17:00 --treat-tentative free --json
 
-Only suggests starts; it never creates an event. Feed a chosen start straight
+Your own calendar is always checked in addition to every --with address (no need to
+pass yourself). Only suggests starts; it never creates an event. Feed a chosen start straight
 into `calendar create`.
 """
 

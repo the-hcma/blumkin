@@ -19,7 +19,9 @@ from msgraph.generated.users.item.calendar.get_schedule.get_schedule_post_reques
 from msgraph.generated.users.item.events.item.event_item_request_builder import (
     EventItemRequestBuilder,
 )
+from msgraph.generated.users.item.user_item_request_builder import UserItemRequestBuilder
 
+from blumkin.auth import AuthRequiredError
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.output import sanitize_terminal
@@ -54,6 +56,10 @@ class CalendarNotFoundError(Exception):
     """No calendar matched the given name or id."""
 
 
+# Graph rejects getSchedule requests with more than 20 schedules.
+_GET_SCHEDULE_MAX_ADDRESSES = 20
+
+
 async def calendar_freebusy(
     *,
     with_emails: list[str],
@@ -67,15 +73,17 @@ async def calendar_freebusy(
         raise ValueError("--end must be after --start")
     cfg = config or load_config()
     tz_name = start.tzinfo.key if isinstance(start.tzinfo, ZoneInfo) else str(start.tzinfo)
-    body = GetSchedulePostRequestBody(
-        schedules=list(with_emails),
-        start_time=_to_graph_dtz(start),
-        end_time=_to_graph_dtz(end),
-        availability_view_interval=30,
-    )
     client = create_graph_client(cfg)
-    response = await client.me.calendar.get_schedule.post(body)
-    schedules = [] if response is None else (response.value or [])
+    schedules: list[Any] = []
+    for offset in range(0, len(with_emails), _GET_SCHEDULE_MAX_ADDRESSES):
+        body = GetSchedulePostRequestBody(
+            schedules=list(with_emails[offset : offset + _GET_SCHEDULE_MAX_ADDRESSES]),
+            start_time=_to_graph_dtz(start),
+            end_time=_to_graph_dtz(end),
+            availability_view_interval=30,
+        )
+        response = await client.me.calendar.get_schedule.post(body)
+        schedules.extend([] if response is None else (response.value or []))
     items = [
         _schedule_to_dict(entry, ZoneInfo(tz_name) if tz_name else ZoneInfo("UTC"))
         for entry in schedules
@@ -146,6 +154,25 @@ async def calendar_get(
     return {"event": _event_detail_to_dict(event, tz, wanted)}
 
 
+async def _organizer_mailbox(cfg: BlumkinConfig, *, fallback: str) -> str:
+    """Primary SMTP address Graph getSchedule needs; the sign-in UPN can differ from it."""
+    client = create_graph_client(cfg)
+    query = UserItemRequestBuilder.UserItemRequestBuilderGetQueryParameters(
+        select=["mail", "userPrincipalName"]
+    )
+    try:
+        me = await client.me.get(request_config(query))
+    except ODataError:
+        me = None
+    resolved = getattr(me, "mail", None) or getattr(me, "user_principal_name", None) or ""
+    address = resolved.strip() or fallback.strip()
+    if not address:
+        raise AuthRequiredError(
+            "could not determine the signed-in account address; run `blumkin auth login`"
+        )
+    return address
+
+
 async def calendar_suggest(
     *,
     with_emails: list[str],
@@ -156,11 +183,14 @@ async def calendar_suggest(
     treat_tentative: str = "busy",
     step: timedelta | None = None,
     limit: int = 10,
+    organizer_email: str,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    """Return mutual free starts for ``duration`` over ``[start, end)`` for everyone in ``--with``.
+    """Return mutual free starts for ``duration`` over ``[start, end)``.
 
-    Builds on ``calendar freebusy`` (union of busy). Does not create an event.
+    Covers everyone in ``--with`` plus the organizer (``organizer_email``, the signed-in
+    account), de-duplicated case-insensitively. Builds on ``calendar freebusy`` (union of
+    busy). Does not create an event.
     """
     if duration <= timedelta(0):
         raise ValueError("--duration must be positive")
@@ -173,8 +203,13 @@ async def calendar_suggest(
     step_delta = step if step is not None else min(timedelta(minutes=15), duration)
     if step_delta <= timedelta(0):
         raise ValueError("--step must be positive")
-    freebusy = await calendar_freebusy(with_emails=with_emails, start=start, end=end, config=config)
-    raise_if_schedule_errors(freebusy["items"], requested=with_emails)
+    cfg = config or load_config()
+    organizer = await _organizer_mailbox(cfg, fallback=organizer_email)
+    queried = list(with_emails)
+    if organizer.casefold() not in {email.casefold() for email in queried}:
+        queried.append(organizer)
+    freebusy = await calendar_freebusy(with_emails=queried, start=start, end=end, config=cfg)
+    raise_if_schedule_errors(freebusy["items"], requested=queried)
     busy = collect_busy_intervals(freebusy["items"], treat_tentative_busy=(tentative == "busy"))
     slots = find_mutual_free_slots(
         busy=busy,
@@ -188,6 +223,7 @@ async def calendar_suggest(
     return {
         "duration_minutes": int(duration.total_seconds() // 60),
         "end": end.isoformat(),
+        "includes_organizer": True,
         "limit": limit,
         "slots": slots,
         "start": start.isoformat(),
