@@ -66,6 +66,12 @@ With `provider = "google"` in config, supported verbs are calendar (`today` / `v
 9. Chat write + meeting transcription need `Chat.ReadWrite` / `OnlineMeetings.ReadWrite` consented (re-login after Identity grant).
 10. Teams chat files live in SharePoint/OneDrive, so `blumkin chat attachments download` needs a delegated `Files.Read` scope, gated behind `files_scopes` (off by default). Without it, listing still works and download exits `4` / `missing_scope` with the share URL — hand that URL to the user to open in Teams/browser (or save into a local drop folder) instead of retrying. Do **not** spin up a second Graph client in the agent session to paper over that. Listing must not `$expand=attachments` (Graph 400).
 
+## Browser-assisted tasks
+
+For work that has no API, such as filing an expense report or filling in a time sheet, use the skills in `.agents/skills/expense-report` and `.agents/skills/time-sheet`.
+
+They drive a browser the user signs in to themselves with `blumkin browser` (`profile create`, `launch`, `goto`, `read`, `fill`, `upload`, `click`, `press`, `handoff`) and read receipts with `blumkin receipts`; a task fills the form and never submits, and ends by telling the user what to click.
+
 ## Authoring style (mail + chat bodies)
 
 When composing text for `mail draft`, `mail update-draft`, `mail reply`, `mail forward`, `chat draft`, `chat edit-draft`, or `chat send`:

@@ -59,6 +59,32 @@ document.getElementById('tidy').addEventListener('click', () => document.forms[0
 </script>"""
 
 
+_EXPENSE_FORM = b"""<!doctype html><title>Expense report</title>
+<form action="/submit" method="post">
+<label for="amount">Amount</label><input id="amount" name="amount">
+<label for="receipt">Receipt</label><input id="receipt" type="file">
+<button type="button" id="add">Add line</button>
+<p id="lines">0 lines</p><p id="picked">no file</p>
+<button type="submit">Submit report</button>
+</form>
+<script>
+let lines = 0;
+document.getElementById('add').addEventListener('click', () => {
+  lines += 1; document.getElementById('lines').textContent = lines + ' lines';
+});
+document.getElementById('receipt').addEventListener('change', (event) => {
+  document.getElementById('picked').textContent = 'picked ' + event.target.files[0].name;
+});
+</script>"""
+
+_TIMESHEET_FORM = b"""<!doctype html><title>Time sheet</title>
+<form action="/submit" method="post">
+<label for="mon">Monday</label><input id="mon" name="mon">
+<label for="tue">Tuesday</label><input id="tue" name="tue">
+<button type="submit">Submit time sheet</button>
+</form>"""
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     posts: list[str] = []
 
@@ -66,7 +92,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
-        pages = {"/bypass": _BYPASS_FORM, "/report": _SUBMIT_FORM}
+        pages = {
+            "/bypass": _BYPASS_FORM,
+            "/expense": _EXPENSE_FORM,
+            "/report": _SUBMIT_FORM,
+            "/timesheet": _TIMESHEET_FORM,
+        }
         self.wfile.write(pages.get(self.path, _FORM))
 
     def do_POST(self) -> None:
@@ -255,6 +286,100 @@ def test_the_cli_commands_fill_a_real_form_and_never_submit_it(
         pressed = cli("press", "expense-report", "Amount", "Enter")
         assert pressed.exit_code == EXIT_OTHER
         assert json.loads(pressed.output)["error"] == "submit_blocked"
+        assert _Handler.posts == []
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+def _launched_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task: str, policy: str
+) -> tuple[Any, Any, Any]:
+    """A throwaway config with one task policy, its profile and a headless browser on it."""
+    try:
+        browser = resolve_browser(None)
+    except BrowserNotFoundError:
+        pytest.skip("no Chrome, Edge or Chromium installed")
+    config = tmp_path / "config"
+    config.mkdir()
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(config))
+    (config / "config.toml").write_text(f"[browser.tasks.{task}]\n{policy}\n")
+    profile = create_profile(config, task)
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    runner = CliRunner()
+
+    def cli(*args: str) -> Any:
+        return runner.invoke(main, ["--json", "browser", *args])
+
+    return cli, result, config
+
+
+def test_the_expense_report_skill_dry_run_fills_the_form_and_ends_in_the_handoff(
+    tmp_path: Path, form_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    receipt = receipts / "taxi.png"
+    receipt.write_bytes(b"not really a png")
+    policy = (
+        'allowed_controls = ["Add line"]\n'
+        f'upload_dirs = ["{receipts}"]\n'
+        'allowed_hosts = ["127.0.0.1"]\n'
+    )
+    cli, result, _ = _launched_cli(tmp_path, monkeypatch, "expense-report", policy)
+    try:
+        assert cli("goto", "expense-report", form_url + "expense").exit_code == EXIT_SUCCESS
+        assert cli("fill", "expense-report", "Amount", "12.50").exit_code == EXIT_SUCCESS
+        upload = cli("upload", "expense-report", "Receipt", str(receipt))
+        assert upload.exit_code == EXIT_SUCCESS, upload.output
+        assert cli("click", "expense-report", "Add line").exit_code == EXIT_SUCCESS
+        page = json.loads(cli("read", "expense-report").output)
+        assert "1 lines" in page["text"]
+        assert "picked taxi.png" in page["text"]
+        refused = cli("click", "expense-report", "Submit report")
+        assert refused.exit_code == EXIT_OTHER
+        assert json.loads(refused.output)["error"] == "submit_blocked"
+        outside = cli("upload", "expense-report", "Receipt", str(tmp_path / "other.png"))
+        assert outside.exit_code == EXIT_OTHER
+        handoff = cli(
+            "handoff",
+            "expense-report",
+            "--filled",
+            "1 line, 12.50",
+            "--step",
+            "Review the line.",
+            "--step",
+            "Press Submit report.",
+        )
+        payload = json.loads(handoff.output)
+        assert handoff.exit_code == EXIT_SUCCESS
+        assert payload["submitted"] is False
+        assert payload["needs_user_action"] is True
+        assert payload["instructions"] == ["Review the line.", "Press Submit report."]
+        assert _Handler.posts == []
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+def test_the_time_sheet_skill_dry_run_fills_the_hours_and_ends_in_the_handoff(
+    tmp_path: Path, form_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    cli, result, _ = _launched_cli(
+        tmp_path, monkeypatch, "time-sheet", 'allowed_hosts = ["127.0.0.1"]\n'
+    )
+    try:
+        assert cli("goto", "time-sheet", form_url + "timesheet").exit_code == EXIT_SUCCESS
+        assert cli("fill", "time-sheet", "Monday", "8").exit_code == EXIT_SUCCESS
+        assert cli("fill", "time-sheet", "Tuesday", "--", "-1").exit_code == EXIT_SUCCESS
+        refused = cli("click", "time-sheet", "Submit time sheet")
+        assert refused.exit_code == EXIT_OTHER
+        assert json.loads(refused.output)["error"] == "submit_blocked"
+        handoff = cli("handoff", "time-sheet", "--step", "Review the week.")
+        payload = json.loads(handoff.output)
+        assert payload["submitted"] is False
         assert _Handler.posts == []
     finally:
         os.kill(result.session.pid, signal.SIGTERM)
