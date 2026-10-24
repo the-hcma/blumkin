@@ -10,11 +10,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from blumkin.auth import AuthRequiredError
 from blumkin.skills.calendar import (
     calendar_suggest,
     find_mutual_free_slots,
     format_suggest_human,
 )
+from blumkin.skills.errors import classify_exception
 from blumkin.skills.freebusy_suggest import _status_is_busy
 
 _TZ = ZoneInfo("America/New_York")
@@ -116,6 +118,7 @@ def test_calendar_suggest_uses_freebusy_and_tentative_flag(monkeypatch) -> None:
         working_hours=None,
     )
     client = MagicMock()
+    client.me.get = AsyncMock(return_value=None)
     client.me.calendar.get_schedule.post = AsyncMock(return_value=SimpleNamespace(value=[schedule]))
     monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
@@ -286,6 +289,7 @@ def test_calendar_suggest_unions_busy_across_multiple_with(monkeypatch) -> None:
         error=None,
     )
     client = MagicMock()
+    client.me.get = AsyncMock(return_value=None)
     client.me.calendar.get_schedule.post = AsyncMock(return_value=SimpleNamespace(value=[a, b]))
     monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
@@ -324,6 +328,7 @@ def test_calendar_suggest_fails_closed_on_schedule_error(monkeypatch) -> None:
         error=SimpleNamespace(message="Mail tip unavailable"),
     )
     client = MagicMock()
+    client.me.get = AsyncMock(return_value=None)
     client.me.calendar.get_schedule.post = AsyncMock(return_value=SimpleNamespace(value=[bad]))
     monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
@@ -364,6 +369,7 @@ def test_calendar_suggest_treats_unknown_as_busy(monkeypatch) -> None:
         working_hours=None,
     )
     client = MagicMock()
+    client.me.get = AsyncMock(return_value=None)
     client.me.calendar.get_schedule.post = AsyncMock(return_value=SimpleNamespace(value=[schedule]))
     monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
@@ -430,6 +436,7 @@ def test_calendar_suggest_includes_organizer_busy(monkeypatch) -> None:
     other = _schedule("a@example.com", "2026-08-28T14:00:00", "2026-08-28T15:00:00")
     me = _schedule("me@example.com", "2026-08-28T10:00:00", "2026-08-28T11:00:00")
     client = MagicMock()
+    client.me.get = AsyncMock(return_value=None)
     client.me.calendar.get_schedule.post = AsyncMock(
         return_value=SimpleNamespace(value=[other, me])
     )
@@ -457,3 +464,55 @@ def test_calendar_suggest_includes_organizer_busy(monkeypatch) -> None:
     assert datetime(2026, 8, 28, 11, 0, tzinfo=_TZ).isoformat() in starts
     assert payload["with"] == ["a@example.com"]
     assert payload["includes_organizer"] is True
+
+
+def test_calendar_suggest_uses_mail_over_upn(monkeypatch) -> None:
+    other = _schedule("a@example.com", "2026-08-28T14:00:00", "2026-08-28T15:00:00")
+    me = _schedule("primary@example.com", "2026-08-28T10:00:00", "2026-08-28T11:00:00")
+    client = MagicMock()
+    client.me.get = AsyncMock(
+        return_value=SimpleNamespace(mail="Primary@example.com", user_principal_name="upn@corp.com")
+    )
+    client.me.calendar.get_schedule.post = AsyncMock(
+        return_value=SimpleNamespace(value=[other, me])
+    )
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(client_id="x", default_tz="America/New_York"),
+    )
+    asyncio.run(
+        calendar_suggest(
+            with_emails=["a@example.com", "primary@example.com"],
+            start=datetime(2026, 8, 28, 9, 0, tzinfo=_TZ),
+            end=datetime(2026, 8, 28, 17, 0, tzinfo=_TZ),
+            duration=timedelta(hours=1),
+            organizer_email="upn@corp.com",
+        )
+    )
+    call = client.me.calendar.get_schedule.post.await_args
+    assert call is not None
+    assert list(call.args[0].schedules) == ["a@example.com", "primary@example.com"]
+
+
+def test_calendar_suggest_without_organizer_address_requires_auth(monkeypatch) -> None:
+    client = MagicMock()
+    client.me.get = AsyncMock(return_value=None)
+    monkeypatch.setattr("blumkin.skills.calendar.create_graph_client", lambda _cfg: client)
+    monkeypatch.setattr(
+        "blumkin.skills.calendar.load_config",
+        lambda: SimpleNamespace(client_id="x", default_tz="America/New_York"),
+    )
+    with pytest.raises(AuthRequiredError) as excinfo:
+        asyncio.run(
+            calendar_suggest(
+                with_emails=["a@example.com"],
+                start=datetime(2026, 8, 28, 9, 0, tzinfo=_TZ),
+                end=datetime(2026, 8, 28, 17, 0, tzinfo=_TZ),
+                duration=timedelta(hours=1),
+                organizer_email="",
+            )
+        )
+    info = classify_exception(excinfo.value)
+    assert info.slug == "auth_required"
+    assert info.exit_code == 3

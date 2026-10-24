@@ -366,6 +366,7 @@ async def calendar_freebusy(
     with_emails: list[str],
     start: datetime,
     end: datetime,
+    require_all: bool = False,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     if not with_emails:
@@ -383,6 +384,13 @@ async def calendar_freebusy(
     }
     response = execute(service.freebusy().query(body=body))
     calendars = response.get("calendars") or {}
+    if require_all:
+        missing = [email for email in with_emails if email not in calendars]
+        if missing:
+            raise ValueError(
+                "freebusy lookup failed for: "
+                + "; ".join(f"{email}: no schedule returned" for email in missing)
+            )
     items = [
         _schedule_to_dict(email, calendars.get(email) or {}, display_tz) for email in with_emails
     ]
@@ -426,7 +434,9 @@ async def calendar_suggest(
     queried = list(with_emails)
     if "primary" not in {email.casefold() for email in queried}:
         queried.append("primary")
-    freebusy = await calendar_freebusy(with_emails=queried, start=start, end=end, config=config)
+    freebusy = await calendar_freebusy(
+        with_emails=queried, start=start, end=end, require_all=True, config=config
+    )
     raise_if_schedule_errors(freebusy["items"], requested=queried)
     busy = collect_busy_intervals(freebusy["items"], treat_tentative_busy=True)
     slots = find_mutual_free_slots(

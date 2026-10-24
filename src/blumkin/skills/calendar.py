@@ -19,7 +19,9 @@ from msgraph.generated.users.item.calendar.get_schedule.get_schedule_post_reques
 from msgraph.generated.users.item.events.item.event_item_request_builder import (
     EventItemRequestBuilder,
 )
+from msgraph.generated.users.item.user_item_request_builder import UserItemRequestBuilder
 
+from blumkin.auth import AuthRequiredError
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.output import sanitize_terminal
@@ -146,6 +148,25 @@ async def calendar_get(
     return {"event": _event_detail_to_dict(event, tz, wanted)}
 
 
+async def _organizer_mailbox(cfg: BlumkinConfig, *, fallback: str) -> str:
+    """Primary SMTP address Graph getSchedule needs; the sign-in UPN can differ from it."""
+    client = create_graph_client(cfg)
+    query = UserItemRequestBuilder.UserItemRequestBuilderGetQueryParameters(
+        select=["mail", "userPrincipalName"]
+    )
+    try:
+        me = await client.me.get(request_config(query))
+    except ODataError:
+        me = None
+    resolved = getattr(me, "mail", None) or getattr(me, "user_principal_name", None) or ""
+    address = resolved.strip() or fallback.strip()
+    if not address:
+        raise AuthRequiredError(
+            "could not determine the signed-in account address; run `blumkin auth login`"
+        )
+    return address
+
+
 async def calendar_suggest(
     *,
     with_emails: list[str],
@@ -165,10 +186,6 @@ async def calendar_suggest(
     account), de-duplicated case-insensitively. Builds on ``calendar freebusy`` (union of
     busy). Does not create an event.
     """
-    if not organizer_email.strip():
-        raise ValueError(
-            "could not determine the signed-in account address; run `blumkin auth login`"
-        )
     if duration <= timedelta(0):
         raise ValueError("--duration must be positive")
     if limit < 1:
@@ -180,10 +197,12 @@ async def calendar_suggest(
     step_delta = step if step is not None else min(timedelta(minutes=15), duration)
     if step_delta <= timedelta(0):
         raise ValueError("--step must be positive")
+    cfg = config or load_config()
+    organizer = await _organizer_mailbox(cfg, fallback=organizer_email)
     queried = list(with_emails)
-    if organizer_email.casefold() not in {email.casefold() for email in queried}:
-        queried.append(organizer_email)
-    freebusy = await calendar_freebusy(with_emails=queried, start=start, end=end, config=config)
+    if organizer.casefold() not in {email.casefold() for email in queried}:
+        queried.append(organizer)
+    freebusy = await calendar_freebusy(with_emails=queried, start=start, end=end, config=cfg)
     raise_if_schedule_errors(freebusy["items"], requested=queried)
     busy = collect_busy_intervals(freebusy["items"], treat_tentative_busy=(tentative == "busy"))
     slots = find_mutual_free_slots(
