@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
+import json
 import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -14,14 +17,17 @@ from blumkin.browser.profiles import (
     BrowserProfileError,
     BrowserSession,
     NotBlumkinProfileError,
+    ProfileBusyError,
     ProfileInUseError,
     create_profile,
     delete_profile,
     list_profiles,
     load_profile,
     process_is_browser_for,
+    profile_lock,
     read_session,
     require_blumkin_profile,
+    running_browser_pid,
     write_session,
 )
 
@@ -281,3 +287,114 @@ def test_write_session_does_not_follow_or_reuse_a_stale_temp_file(tmp_path: Path
     assert victim.read_text(encoding="utf-8") == "keep me"
     assert read_session(profile.path, pid_alive=lambda p: True) == session
     assert _mode(profile.path / ".blumkin-session.json") == 0o600
+
+
+@pytest.mark.parametrize("pid", ["1e30", "Infinity", 10**30, 2**40, -1, 0])
+def test_read_session_survives_a_corrupt_or_overflowing_pid(tmp_path: Path, pid: object) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    raw = {"browser": "chrome", "pid": pid, "port": 40123, "started_at": "x"}
+    (profile.path / ".blumkin-session.json").write_text(json.dumps(raw), encoding="utf-8")
+    assert read_session(profile.path, pid_alive=lambda p: True) is None
+    delete_profile(tmp_path, "expense-report", is_browser=lambda p, d: False)
+    assert not profile.path.exists()
+
+
+def test_profile_lock_is_exclusive_and_released(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    with profile_lock(profile):
+        with pytest.raises(ProfileBusyError):
+            with profile_lock(profile):
+                pass
+    with profile_lock(profile):
+        pass
+
+
+def test_delete_profile_refuses_while_a_launch_holds_the_lock(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    fd = os.open(profile.path / ".blumkin-launch.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with pytest.raises(ProfileInUseError) as excinfo:
+            delete_profile(tmp_path, "expense-report")
+    finally:
+        os.close(fd)
+    assert "launch" in str(excinfo.value)
+    assert profile.path.exists()
+
+
+def test_running_browser_pid_reads_the_singleton_lock(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    assert running_browser_pid(profile.path) is None
+    (profile.path / "SingletonLock").symlink_to("some-host-4242")
+    assert running_browser_pid(profile.path, is_browser=lambda pid, d: pid == 4242) == 4242
+    assert running_browser_pid(profile.path, is_browser=lambda pid, d: False) is None
+
+
+@pytest.mark.parametrize("target", ["host-notanumber", "nohyphen", "host-1", "host-0"])
+def test_running_browser_pid_ignores_a_malformed_singleton_lock(
+    tmp_path: Path, target: str
+) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    (profile.path / "SingletonLock").symlink_to(target)
+    assert running_browser_pid(profile.path, is_browser=lambda pid, d: True) is None
+
+
+def test_delete_profile_refuses_while_a_browser_holds_the_profile_without_a_session(
+    tmp_path: Path,
+) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    (profile.path / "SingletonLock").symlink_to("host-4242")
+    with pytest.raises(ProfileInUseError):
+        delete_profile(tmp_path, "expense-report", is_browser=lambda pid, d: True)
+    assert profile.path.exists()
+
+
+def test_create_profile_removes_an_old_staging_directory_but_not_a_recent_one(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "browser-profiles"
+    root.mkdir(mode=0o700)
+    old = root / ".expense-report.creating-old"
+    recent = root / ".expense-report.creating-new"
+    other = root / ".time-sheet.creating-old"
+    for directory in (old, recent, other):
+        directory.mkdir()
+    two_hours_ago = time.time() - 7200
+    os.utime(old, (two_hours_ago, two_hours_ago))
+    os.utime(other, (two_hours_ago, two_hours_ago))
+    create_profile(tmp_path, "expense-report")
+    assert not old.exists()
+    assert recent.exists()
+    assert other.exists()
+
+
+def test_when_ps_cannot_answer_reuse_is_strict_but_deletion_stays_conservative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    session = BrowserSession(browser="chrome", pid=os.getpid(), port=40123, started_at="x")
+    write_session(profile.path, session)
+
+    def no_ps(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError("ps")
+
+    monkeypatch.setattr("blumkin.browser.profiles.subprocess.run", no_ps)
+    assert read_session(profile.path) == session
+    assert read_session(profile.path, strict=True) is None
+    with pytest.raises(ProfileInUseError):
+        delete_profile(tmp_path, "expense-report")
+    assert process_is_browser_for(os.getpid(), profile.path, assume_on_unknown=False) is False
+
+
+def test_strict_running_browser_pid_does_not_trust_an_unverifiable_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    (profile.path / "SingletonLock").symlink_to(f"host-{os.getpid()}")
+
+    def no_ps(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError("ps")
+
+    monkeypatch.setattr("blumkin.browser.profiles.subprocess.run", no_ps)
+    assert running_browser_pid(profile.path) == os.getpid()
+    assert running_browser_pid(profile.path, strict=True) is None

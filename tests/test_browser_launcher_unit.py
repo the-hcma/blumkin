@@ -22,6 +22,7 @@ from blumkin.browser.profiles import (
     BrowserSession,
     NotBlumkinProfileError,
     create_profile,
+    process_is_browser_for,
     read_session,
     write_session,
 )
@@ -67,14 +68,18 @@ class _Clock:
 
 
 class _Proc:
-    def __init__(self, pid: int, exit_code: int | None = None) -> None:
+    def __init__(self, pid: int, exit_code: int | None = None, wait_timeouts: int = 0) -> None:
         self.pid = pid
         self._exit_code = exit_code
+        self._wait_timeouts = wait_timeouts
         self.terminated = False
         self.waited = False
 
     def wait(self, timeout: float | None = None) -> int:
         self.waited = True
+        if self._wait_timeouts:
+            self._wait_timeouts -= 1
+            raise subprocess.TimeoutExpired("browser", timeout or 0.0)
         return 0
 
     def poll(self) -> int | None:
@@ -92,9 +97,10 @@ class _Popen:
         *,
         port_text: str | None = "40123\n/devtools/browser/abc\n",
         exit_code: int | None = None,
+        wait_timeouts: int = 0,
     ) -> None:
         self.calls: list[tuple[list[str], dict[str, Any]]] = []
-        self.proc = _Proc(os.getpid(), exit_code)
+        self.proc = _Proc(os.getpid(), exit_code, wait_timeouts)
         self._port_text = port_text
 
     def __call__(self, args: list[str], **kwargs: Any) -> _Proc:
@@ -270,3 +276,163 @@ def test_the_launch_lock_is_released_after_a_launch(tmp_path: Path) -> None:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     finally:
         os.close(fd)
+
+
+def test_extra_arguments_cannot_override_the_profile_or_the_devtools_switches() -> None:
+    args = build_launch_args(
+        Path("/opt/chrome/chrome"),
+        Path("/data/p"),
+        (
+            "--user-data-dir=/etc",
+            "--remote-debugging-port=9222",
+            "--remote-debugging-address=0.0.0.0",
+            "--headless=new",
+        ),
+    )
+
+    def last(prefix: str) -> str:
+        return [a for a in args if a.startswith(prefix)][-1]
+
+    assert last("--user-data-dir=") == "--user-data-dir=/data/p"
+    assert last("--remote-debugging-port=") == "--remote-debugging-port=0"
+    assert last("--remote-debugging-address=") == "--remote-debugging-address=127.0.0.1"
+    assert "--headless=new" in args
+    assert args[0] == "/opt/chrome/chrome"
+
+
+def test_a_start_url_in_the_extra_arguments_does_not_hide_the_browser_from_the_pid_check() -> None:
+    args = build_launch_args(
+        Path("/opt/chrome/chrome"), Path("/data/p"), ("https://example.com/start",)
+    )
+    ps = subprocess.CompletedProcess([], 0, stdout=" ".join(args) + "\n", stderr="")
+    assert process_is_browser_for(os.getpid(), Path("/data/p"), run=lambda *a, **k: ps)
+
+
+def test_a_running_browser_with_no_session_record_is_not_launched_twice(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    (profile.path / "SingletonLock").symlink_to("host-4242")
+    (profile.path / "DevToolsActivePort").write_text("40123\n/x\n", encoding="utf-8")
+    popen = _Popen()
+    with pytest.raises(BrowserLaunchError) as excinfo:
+        launch(profile, _BROWSER, popen=popen, is_browser=lambda pid, directory: pid == 4242)
+    assert "running browser" in str(excinfo.value)
+    assert popen.calls == []
+    assert (profile.path / "DevToolsActivePort").exists()
+
+
+def test_a_stale_singleton_lock_does_not_block_a_launch(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    (profile.path / "SingletonLock").symlink_to("host-4242")
+    clock = _Clock()
+    result = launch(
+        profile,
+        _BROWSER,
+        is_browser=lambda pid, directory: False,
+        popen=_Popen(),
+        now=clock.monotonic,
+        sleep=clock.sleep,
+    )
+    assert result.already_running is False
+
+
+def test_a_hung_browser_is_killed_after_the_graceful_stop_times_out(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    popen = _Popen(port_text=None, wait_timeouts=1)
+    clock = _Clock()
+    killpg = _Killpg()
+    with pytest.raises(BrowserLaunchError):
+        launch(
+            profile,
+            _BROWSER,
+            kill_group=killpg,
+            popen=popen,
+            now=clock.monotonic,
+            sleep=clock.sleep,
+            timeout_s=1.0,
+        )
+    pid = popen.proc.pid
+    assert killpg.calls == [(pid, signal.SIGTERM), (pid, signal.SIGKILL)]
+
+
+def test_a_browser_that_already_exited_is_not_signalled(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    popen = _Popen(port_text=None, exit_code=3)
+    clock = _Clock()
+    killpg = _Killpg()
+    with pytest.raises(BrowserLaunchError):
+        launch(
+            profile,
+            _BROWSER,
+            kill_group=killpg,
+            popen=popen,
+            now=clock.monotonic,
+            sleep=clock.sleep,
+        )
+    assert killpg.calls == []
+
+
+def test_a_failure_to_record_the_session_stops_the_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    popen = _Popen()
+    clock = _Clock()
+    killpg = _Killpg()
+
+    def broken(profile_dir: Path, session: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("blumkin.browser.launcher.write_session", broken)
+    with pytest.raises(OSError, match="disk full"):
+        launch(
+            profile,
+            _BROWSER,
+            kill_group=killpg,
+            popen=popen,
+            now=clock.monotonic,
+            sleep=clock.sleep,
+        )
+    assert killpg.calls == [(popen.proc.pid, signal.SIGTERM)]
+
+
+def test_an_interrupt_while_waiting_stops_the_browser_and_propagates(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    popen = _Popen(port_text=None)
+    killpg = _Killpg()
+
+    def interrupted(seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        launch(
+            profile,
+            _BROWSER,
+            kill_group=killpg,
+            popen=popen,
+            now=_Clock().monotonic,
+            sleep=interrupted,
+        )
+    assert killpg.calls == [(popen.proc.pid, signal.SIGTERM)]
+
+
+def test_a_port_file_still_being_written_is_read_again_not_fatal(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    popen = _Popen(port_text="40")
+    clock = _Clock()
+    killpg = _Killpg()
+    real_sleep = clock.sleep
+
+    def finish_writing(seconds: float) -> None:
+        (profile.path / "DevToolsActivePort").write_text("40123\n/x\n", encoding="utf-8")
+        real_sleep(seconds)
+
+    result = launch(
+        profile,
+        _BROWSER,
+        kill_group=killpg,
+        popen=popen,
+        now=clock.monotonic,
+        sleep=finish_writing,
+    )
+    assert result.session.port == 40123
+    assert killpg.calls == []
