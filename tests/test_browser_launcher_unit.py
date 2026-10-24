@@ -436,3 +436,32 @@ def test_a_port_file_still_being_written_is_read_again_not_fatal(tmp_path: Path)
     )
     assert result.session.port == 40123
     assert killpg.calls == []
+
+
+@pytest.mark.parametrize(
+    "extra", [("--",), ("--headless=new", "--", "--user-data-dir=/etc"), ("",)]
+)
+def test_a_bare_double_dash_or_blank_extra_argument_is_refused(extra: tuple[str, ...]) -> None:
+    with pytest.raises(ValueError) as excinfo:
+        build_launch_args(Path("/opt/chrome/chrome"), Path("/data/p"), extra)
+    assert "Expected" in str(excinfo.value)
+    assert "--" in str(excinfo.value)
+
+
+def test_launch_refuses_a_bare_double_dash_before_starting_anything(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    popen = _Popen()
+    with pytest.raises(ValueError):
+        launch(profile, _BROWSER, extra_args=("--",), popen=popen)
+    assert popen.calls == []
+    assert not (profile.path / "DevToolsActivePort").exists()
+
+
+def test_ordinary_switches_and_a_start_url_are_still_accepted() -> None:
+    args = build_launch_args(
+        Path("/opt/chrome/chrome"),
+        Path("/data/p"),
+        ("--headless=new", "--no-sandbox", "https://example.com/start"),
+    )
+    assert "--headless=new" in args
+    assert "https://example.com/start" in args

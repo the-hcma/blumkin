@@ -60,7 +60,17 @@ def build_launch_args(
     switches. `--remote-debugging-address` is advisory (headful Chrome ignores it and binds
     loopback by default), so the loopback guarantee is Chrome's default plus the loopback-only
     endpoint check at attach time.
+
+    A bare `--` (or a blank argument) is refused: Chromium treats `--` as the end of the
+    switches, so everything after it, including the fixed switches, would become a plain
+    argument and be ignored.
     """
+    for argument in extra_args:
+        if argument.strip() in ("", "--"):
+            raise ValueError(
+                f"Expected browser switches or a start URL, got {argument!r}; "
+                "a bare '--' would end switch parsing and drop the profile switch"
+            )
     return [
         str(browser),
         *extra_args,
