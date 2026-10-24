@@ -79,7 +79,7 @@ def create_profile(config_dir: Path, task: str) -> BrowserProfile:
     The directory is built under a staging name (marker included) and renamed into
     place, so a crash or a concurrent create never leaves an unmarked profile behind.
     """
-    _validate_task_name(task)
+    validate_task_name(task)
     root = _ensure_private_dir(config_dir / PROFILES_DIRNAME)
     path = root / task
     if path.is_symlink():
@@ -109,7 +109,7 @@ def delete_profile(
     pid_alive: Callable[[int], bool] | None = None,
 ) -> None:
     """Delete the profile for `task` (cookies included); refuse while its browser runs."""
-    _validate_task_name(task)
+    validate_task_name(task)
     profile = load_profile(config_dir, task)
     if profile is None:
         raise BrowserProfileError(
@@ -150,7 +150,7 @@ def list_profiles(config_dir: Path) -> list[BrowserProfile]:
 def load_profile(config_dir: Path, task: str) -> BrowserProfile | None:
     """Return the profile for `task`, or None when there is none."""
     try:
-        _validate_task_name(task)
+        validate_task_name(task)
     except BrowserProfileError:
         return None
     path = config_dir / PROFILES_DIRNAME / task
@@ -281,6 +281,15 @@ def running_browser_pid(
     return pid if pid > 1 and check(pid, profile_dir) else None
 
 
+def validate_task_name(task: str) -> None:
+    """Raise `BrowserProfileError` unless `task` is a valid task name."""
+    if not _TASK_NAME.fullmatch(task):
+        raise BrowserProfileError(
+            "Expected a task name of 1-64 lowercase letters, digits, '-' or '_' starting with a "
+            f"letter or digit, got {task!r}"
+        )
+
+
 def write_session(profile_dir: Path, session: BrowserSession) -> None:
     """Record the running browser for the profile (mode 0600)."""
     payload = {
@@ -345,14 +354,6 @@ def _user_data_dir_pattern(profile_dir: Path) -> str:
 
 def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _validate_task_name(task: str) -> None:
-    if not _TASK_NAME.fullmatch(task):
-        raise BrowserProfileError(
-            "Expected a task name of 1-64 lowercase letters, digits, '-' or '_' starting with a "
-            f"letter or digit, got {task!r}"
-        )
 
 
 def _write_private(path: Path, text: str) -> None:

@@ -15,11 +15,13 @@ from blumkin.browser.discovery import resolve_browser
 from blumkin.browser.launcher import launch
 from blumkin.browser.profiles import (
     BrowserProfile,
+    BrowserSession,
     create_profile,
     delete_profile,
     list_profiles,
     load_profile,
     read_session,
+    validate_task_name,
 )
 from blumkin.config import BrowserSetup
 
@@ -52,34 +54,31 @@ def delete_task_profile(
     pid_alive: Callable[[int], bool] | None = None,
 ) -> dict[str, Any]:
     """Delete the profile for `task`, saved sign-in included; refuses while it runs."""
-    if load_profile(config_dir, task) is None:
-        raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
+    _require_profile(config_dir, task)
     delete_profile(config_dir, task, pid_alive=pid_alive)
     return {"deleted": True, "ok": True, "task": task}
 
 
 def launch_task_browser(config: BrowserSetup, task: str) -> dict[str, Any]:
     """Launch (or find) the task's browser on its profile."""
-    profile = load_profile(config.config_dir, task)
-    if profile is None:
-        raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
+    profile = _require_profile(config.config_dir, task)
+    # A browser that is already running is reported as it is, even when no installed browser
+    # can be found any more: nothing needs launching, so nothing needs resolving.
+    running = read_session(profile.path, strict=True)
+    if running is not None:
+        return _launch_payload(task, running, already_running=True, fallback_from=None)
     browser = resolve_browser(config.browser.default)
     result = launch(profile, browser)
     # Report what is actually running: with a session already open that is the browser it
     # was started with, not necessarily the one the config names today, and a fallback is
     # only news for a browser that was just started.
     started_fallback = None if result.already_running else browser.fallback_from
-    return {
-        "already_running": result.already_running,
-        "browser": result.session.browser,
-        "endpoint": result.session.endpoint,
-        "fallback_from": started_fallback.value if started_fallback else None,
-        "ok": True,
-        "pid": result.session.pid,
-        "port": result.session.port,
-        "sign_in": SIGN_IN_GUIDANCE,
-        "task": task,
-    }
+    return _launch_payload(
+        task,
+        result.session,
+        already_running=result.already_running,
+        fallback_from=started_fallback.value if started_fallback else None,
+    )
 
 
 def list_task_profiles(config_dir: Path) -> dict[str, Any]:
@@ -91,10 +90,23 @@ def task_status(config_dir: Path, task: str | None) -> dict[str, Any]:
     """Status of one task's profile, or of all of them when `task` is None."""
     if task is None:
         return list_task_profiles(config_dir)
-    profile = load_profile(config_dir, task)
-    if profile is None:
-        raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
-    return {"ok": True, "profiles": [_profile_entry(profile)]}
+    return {"ok": True, "profiles": [_profile_entry(_require_profile(config_dir, task))]}
+
+
+def _launch_payload(
+    task: str, session: BrowserSession, *, already_running: bool, fallback_from: str | None
+) -> dict[str, Any]:
+    return {
+        "already_running": already_running,
+        "browser": session.browser,
+        "endpoint": session.endpoint,
+        "fallback_from": fallback_from,
+        "ok": True,
+        "pid": session.pid,
+        "port": session.port,
+        "sign_in": SIGN_IN_GUIDANCE,
+        "task": task,
+    }
 
 
 def _profile_entry(profile: BrowserProfile) -> dict[str, Any]:
@@ -107,3 +119,12 @@ def _profile_entry(profile: BrowserProfile) -> dict[str, Any]:
         "running": session is not None,
         "task": profile.task,
     }
+
+
+def _require_profile(config_dir: Path, task: str) -> BrowserProfile:
+    """The profile for `task`; a malformed name is a usage error, a missing one is not found."""
+    validate_task_name(task)
+    profile = load_profile(config_dir, task)
+    if profile is None:
+        raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
+    return profile

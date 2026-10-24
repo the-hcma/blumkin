@@ -350,3 +350,75 @@ def test_a_broken_config_file_is_a_usage_error_not_a_traceback(
     assert result.exit_code == EXIT_USAGE
     assert _json(result)["error"] == "usage_error"
     assert "config.toml" in _json(result)["message"]
+
+
+def test_launch_reports_a_running_browser_even_when_no_browser_is_installed(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_profile(_config_dir, "expense-report")
+    write_session(_config_dir / "browser-profiles" / "expense-report", _SESSION)
+
+    def missing(preferred: str | None) -> ResolvedBrowser:
+        raise BrowserNotFoundError("Expected Chrome to be installed, found none")
+
+    monkeypatch.setattr("blumkin.browser.commands.resolve_browser", missing)
+    result = _run("browser", "launch", "expense-report")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["already_running"] is True
+    assert payload["endpoint"] == _SESSION.endpoint
+    assert payload["fallback_from"] is None
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("browser", "launch", "Expense_Report"),
+        ("browser", "status", "Expense_Report"),
+        ("browser", "profile", "delete", "--yes", "Expense_Report"),
+        ("browser", "launch", "../escape"),
+    ],
+    ids=["launch", "status", "delete", "launch-traversal"],
+)
+def test_an_invalid_task_name_is_a_usage_error_not_a_missing_profile(args: tuple[str, ...]) -> None:
+    result = _run(*args)
+    assert result.exit_code == EXIT_USAGE, result.output
+    payload = _json(result)
+    assert payload["error"] == "usage_error"
+    assert "Create it first" not in json.dumps(payload)
+
+
+def test_profile_list_with_an_unreadable_directory_reports_an_error_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unreadable(config_dir: Path) -> list[Any]:
+        raise PermissionError(
+            "Expected a readable browser-profiles directory, got permission denied"
+        )
+
+    monkeypatch.setattr("blumkin.browser.commands.list_profiles", unreadable)
+    result = _run("browser", "profile", "list")
+    assert result.exit_code != EXIT_SUCCESS
+    assert isinstance(result.exception, SystemExit)
+    assert "error" in _json(result)
+
+
+def test_profile_list_says_which_task_browser_is_running(_config_dir: Path) -> None:
+    create_profile(_config_dir, "expense-report")
+    create_profile(_config_dir, "time-sheet")
+    write_session(_config_dir / "browser-profiles" / "expense-report", _SESSION)
+    result = CliRunner().invoke(main, ["browser", "profile", "list"])
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert f"expense-report: running ({_SESSION.endpoint})" in result.output
+    assert "time-sheet: not running" in result.output
+
+
+def test_launch_with_an_invalid_browser_default_is_a_usage_error(_config_dir: Path) -> None:
+    create_profile(_config_dir, "expense-report")
+    (_config_dir / "config.toml").write_text(
+        '[browser]\ndefault = "netscape"\n\n[profiles.default]\nclient_id = "abc-123"\n'
+    )
+    result = _run("browser", "launch", "expense-report")
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert _json(result)["error"] == "usage_error"
+    assert "browser.default" in _json(result)["message"]

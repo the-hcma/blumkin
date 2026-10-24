@@ -2007,7 +2007,10 @@ def browser_profile_delete(ctx: click.Context, task: str, as_json_flag: bool, ye
 def browser_profile_list(ctx: click.Context, as_json_flag: bool) -> None:
     """List the task browser profiles and whether each one's browser is running."""
     as_json = _as_json(ctx, as_json_flag)
-    payload = list_task_profiles(config_dir())
+    try:
+        payload = list_task_profiles(config_dir())
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task="")
     if as_json:
         emit_json(payload)
         return
