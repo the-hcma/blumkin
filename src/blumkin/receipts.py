@@ -28,7 +28,6 @@ from typing import Any
 from blumkin.config import BlumkinConfig
 from blumkin.skills.docs_read import (
     DocsReadExtraMissingError,
-    DocsReadFileNotFoundError,
     DocsReadOcrUnavailableError,
     DocsReadOversizeError,
     docs_read,
@@ -126,7 +125,10 @@ def find_local_receipts(
                 continue
             if Path(entry.name).suffix.lower() not in RECEIPT_EXTENSIONS:
                 continue
-            info = entry.stat()
+            try:
+                info = entry.stat()
+            except OSError:
+                continue  # removed or unreadable while scanning
             if since_epoch is not None and info.st_mtime < since_epoch:
                 continue
             found.append(
@@ -186,7 +188,7 @@ async def read_receipt(
             ReceiptStatus.NEEDS_MANUAL,
             f"This receipt is too large to read ({exc}); tell me the vendor, date and total.",
         )
-    except (DocsReadFileNotFoundError, OSError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 - OCR and PDF libraries raise many types; a bad receipt never tracebacks
         return _manual(
             path,
             ReceiptStatus.NEEDS_MANUAL,
@@ -216,14 +218,38 @@ class _Amount:
     #: True when the receipt wrote a decimal part ("12.00"); an integer may have lost its point.
     has_decimals: bool
     note: str = ""
+    #: True when the line itself is doubtful (two amounts, a refund, OCR noise); the note says why.
+    doubtful: bool = False
 
 
 _AMOUNT_RUN = re.compile("[0-9](?:[0-9 .,'\u2019\u00a0\u202f]*[0-9])?")
 _BIDI_AND_ZERO_WIDTH = re.compile("[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]")
-_CURRENCY_CODE = re.compile(
-    r"(?<![A-Za-z])(AUD|BRL|CAD|CHF|CNY|DKK|EUR|GBP|INR|JPY|MXN|NOK|NZD|SEK|USD)(?![A-Za-z])"
+_CODE_WORDS = "AUD|BRL|CAD|CHF|CNY|DKK|EURO|EUR|GBP|INR|JPY|MXN|NOK|NZD|SEK|USD"
+_CODE_ALIASES = {"EURO": "EUR"}
+_CURRENCY_CODE = re.compile(rf"(?<![A-Za-z])({_CODE_WORDS})(?![A-Za-z])")
+_CURRENCY_LABELLED = re.compile(
+    rf"\bcurrency\b[^\n]{{0,12}}?(?<![A-Za-z])({_CODE_WORDS})(?![A-Za-z])", re.IGNORECASE
 )
+_CURRENCY_NEAR_AMOUNT = re.compile(
+    rf"(?<![A-Za-z])({_CODE_WORDS})(?![A-Za-z])\s*[-\u2212]?\s*\d|\d\s*({_CODE_WORDS})(?![A-Za-z])",
+    re.IGNORECASE,
+)
+_CURRENCY_PREFIXED = re.compile(r"(?<![A-Za-z])(US|CA|C|AU|A|NZ|R|MX)\$")
+_CURRENCY_PREFIX_TO_CODE = {
+    "A": "AUD",
+    "AU": "AUD",
+    "C": "CAD",
+    "CA": "CAD",
+    "MX": "MXN",
+    "NZ": "NZD",
+    "R": "BRL",
+    "US": "USD",
+}
 _CURRENCY_SYMBOLS = {"\u00a3": "GBP", "\u20ac": "EUR", "\u20b9": "INR"}
+_DATE_LABEL = re.compile(
+    r"\b(?:due|printed|period|statement|expir\w*|valid\s+(?:until|through|to)|pay\s+by)\b",
+    re.IGNORECASE,
+)
 _DATE_DAY_MONTH = re.compile(
     r"\b(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+(\d{4})\b",
     re.IGNORECASE,
@@ -257,6 +283,12 @@ _MONTH_LABEL = {
     11: "November",
     12: "December",
 }
+_NEGATIVE_AMOUNT = re.compile(
+    r"[-\u2212\u2013\u2014]\s*[^\d\s]{0,3}\s*\d|\(\s*[^\d\s()]{0,3}\s*\d[\d .,]*\)|"
+    r"\d\s*[-\u2212]\s*$|\b(?:cr|credit)\b"
+)
+_NOISE_LETTERS = "OoIlSBZ|"
+_REFUND_WORDS = re.compile(r"\b(?:credit\s+(?:memo|note)|refund(?:ed)?|reversal|void(?:ed)?)\b")
 _INCLUDING = re.compile(r"\b(?:inc|incl|including|inclusive)\b")
 _MAX_AMOUNT_RUN = 30
 _NOT_A_TOTAL = re.compile(
@@ -345,9 +377,26 @@ def _parse_amount(token: str) -> _Amount:
 
 
 def _parse_currency(text: str) -> ReceiptField:
-    found: list[tuple[int, str]] = [(m.start(), m.group(1)) for m in _CURRENCY_CODE.finditer(text)]
+    found: list[tuple[int, str]] = [
+        (m.start(), _CODE_ALIASES.get(m.group(1), m.group(1)))
+        for m in _CURRENCY_CODE.finditer(text)
+    ]
+    near: set[str] = set()
+    for match in _CURRENCY_NEAR_AMOUNT.finditer(text):
+        code = (match.group(1) or match.group(2)).upper()
+        near.add(_CODE_ALIASES.get(code, code))
+    for match in _CURRENCY_LABELLED.finditer(text):
+        code = match.group(1).upper()
+        near.add(_CODE_ALIASES.get(code, code))
+    for match in _CURRENCY_PREFIXED.finditer(text):
+        code = _CURRENCY_PREFIX_TO_CODE[match.group(1)]
+        found.append((match.start(), code))
+        near.add(code)
     for symbol, code in _CURRENCY_SYMBOLS.items():
-        found.extend((m.start(), code) for m in re.finditer(re.escape(symbol), text))
+        for match in re.finditer(re.escape(symbol), text):
+            found.append((match.start(), code))
+            near.add(code)
+    found.extend((0, code) for code in sorted(near) if all(code != seen for _, seen in found))
     codes: list[str] = []
     for _, code in sorted(found):
         if code not in codes:
@@ -359,7 +408,13 @@ def _parse_currency(text: str) -> ReceiptField:
             note=f"several currencies: {', '.join(codes)}",
         )
     if codes:
-        return ReceiptField(confidence=Confidence.HIGH, value=codes[0])
+        if codes[0] in near:
+            return ReceiptField(confidence=Confidence.HIGH, value=codes[0])
+        return ReceiptField(
+            confidence=Confidence.LOW,
+            value=codes[0],
+            note=f"{codes[0]} appears but not next to an amount",
+        )
     if "\u00a5" in text:
         return ReceiptField(
             confidence=Confidence.LOW, value=None, note="\u00a5 could be JPY or CNY"
@@ -371,13 +426,21 @@ def _parse_currency(text: str) -> ReceiptField:
 
 def _parse_date(text: str, today: date) -> ReceiptField:
     valid: list[tuple[int, str, bool]] = []
+    labelled_isos: set[str] = set()
     ambiguous: list[str] = []
 
     def add(position: int, year: int, month: int, day: int, *, two_digit: bool = False) -> None:
         try:
-            valid.append((position, date(year, month, day).isoformat(), two_digit))
+            iso = date(year, month, day).isoformat()
         except ValueError:
             return
+        line_start = text.rfind("\n", 0, position) + 1
+        line_end = text.find("\n", position)
+        line = text[line_start : line_end if line_end >= 0 else len(text)]
+        if _DATE_LABEL.search(line):
+            labelled_isos.add(iso)
+            return
+        valid.append((position, iso, two_digit))
 
     for match in _DATE_ISO.finditer(text):
         add(match.start(), int(match.group(1)), int(match.group(2)), int(match.group(3)))
@@ -404,6 +467,13 @@ def _parse_date(text: str, today: date) -> ReceiptField:
                 f"{match.group(0)} could be {_MONTH_LABEL[first]} {second} "
                 f"or {_MONTH_LABEL[second]} {first}"
             )
+    if not valid and labelled_isos:
+        first_labelled = min(labelled_isos)
+        notes = ["the only date is labelled due, printed or period; check it is the purchase date"]
+        if len(labelled_isos) > 1:
+            notes.append(f"several dates: {', '.join(sorted(labelled_isos))}")
+        notes.extend(ambiguous[:1])
+        return ReceiptField(confidence=Confidence.LOW, value=first_labelled, note="; ".join(notes))
     if not valid:
         if ambiguous:
             return ReceiptField(confidence=Confidence.LOW, value=None, note=ambiguous[0])
@@ -412,6 +482,10 @@ def _parse_date(text: str, today: date) -> ReceiptField:
     _, first_iso, first_two_digit = valid[0]
     distinct = list(dict.fromkeys(iso for _, iso, _ in valid))
     notes: list[str] = []
+    if ambiguous:
+        notes.append(ambiguous[0])
+    if not labelled_isos <= set(distinct):
+        notes.append("a date labelled due, printed or period differs from the purchase date")
     if first_two_digit:
         notes.append("the receipt gives a two-digit year")
     if len(distinct) > 1:
@@ -430,15 +504,24 @@ def _parse_total(text: str) -> ReceiptField:
     keyed: list[_Amount] = []
     for raw in text.splitlines():
         line = raw.casefold()
-        if not _TOTAL_LINE.search(line) or _NOT_A_TOTAL.search(line):
+        keyword = _TOTAL_LINE.search(line)
+        if keyword is None or _NOT_A_TOTAL.search(line):
             continue
         if _TAX_WORDS.search(line) and not _INCLUDING.search(line):
             continue
-        runs = _AMOUNT_RUN.findall(raw)
-        if runs:
-            keyed.append(_parse_amount(runs[-1]))
+        amount = _total_on_line(raw, line[keyword.end() :])
+        if amount is not None:
+            keyed.append(amount)
+    refund = _REFUND_WORDS.search(text.casefold())
     if not keyed:
-        return _guess_total(text)
+        return _refund_check(_guess_total(text), refund is not None)
+    doubtful = [amount for amount in keyed if amount.doubtful]
+    if doubtful:
+        return ReceiptField(
+            confidence=Confidence.LOW,
+            value=None,
+            note="; ".join(dict.fromkeys(amount.note for amount in doubtful)),
+        )
     valid = [amount for amount in keyed if amount.value is not None]
     if not valid:
         ambiguous = next((a for a in keyed if "could be" in a.note), None)
@@ -464,7 +547,9 @@ def _parse_total(text: str) -> ReceiptField:
             value=values[0],
             note="the total has no decimal part; check the decimal point was not lost",
         )
-    return ReceiptField(confidence=Confidence.HIGH, value=values[0])
+    return _refund_check(
+        ReceiptField(confidence=Confidence.HIGH, value=values[0]), refund is not None
+    )
 
 
 def _guess_total(text: str) -> ReceiptField:
@@ -489,3 +574,48 @@ def _parse_vendor(text: str) -> ReceiptField:
             continue
         return ReceiptField(confidence=Confidence.LOW, value=line)
     return ReceiptField(confidence=Confidence.NONE, value=None)
+
+
+def _refund_check(field: ReceiptField, refund: bool) -> ReceiptField:
+    """A receipt that mentions a refund, credit or void is a negative amount until proven not."""
+    if not refund:
+        return field
+    return ReceiptField(
+        confidence=Confidence.LOW,
+        value=None,
+        note="the receipt mentions a refund, credit or void; this may be a negative amount",
+    )
+
+
+def _total_on_line(raw: str, after_keyword: str) -> _Amount | None:
+    """The amount on one total line, or a doubtful marker when the line cannot be trusted."""
+    found = [(match, _parse_amount(match.group())) for match in _AMOUNT_RUN.finditer(raw)]
+    if not found:
+        return None
+    with_decimals = [(match, amount) for match, amount in found if amount.has_decimals]
+    chosen_match, chosen = with_decimals[0] if with_decimals else found[-1]
+    values = {amount.value for _, amount in with_decimals}
+    if len(values) > 1:
+        return _Amount(
+            value=None,
+            has_decimals=True,
+            note="the total line holds several amounts; check which one is the total",
+            doubtful=True,
+        )
+    before = raw[chosen_match.start() - 1] if chosen_match.start() > 0 else ""
+    after = raw[chosen_match.end()] if chosen_match.end() < len(raw) else ""
+    if any(char and char in _NOISE_LETTERS for char in (before, after)):
+        return _Amount(
+            value=None,
+            has_decimals=True,
+            note="a letter touches the total (OCR may have misread a digit); check the amount",
+            doubtful=True,
+        )
+    if _NEGATIVE_AMOUNT.search(after_keyword):
+        return _Amount(
+            value=None,
+            has_decimals=True,
+            note="the total looks negative (a minus sign, brackets or CR); this may be a refund",
+            doubtful=True,
+        )
+    return chosen

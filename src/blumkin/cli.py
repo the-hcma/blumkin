@@ -2080,7 +2080,11 @@ def receipts() -> None:
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--limit", default=DEFAULT_FIND_LIMIT, show_default=True, type=click.IntRange(1, 500))
-@click.option("--since", default=None, help="Only files modified on or after YYYY-MM-DD.")
+@click.option(
+    "--since",
+    default=None,
+    help="Only files modified on or after YYYY-MM-DD (UTC, like the times printed).",
+)
 @click.pass_context
 def receipts_find(
     ctx: click.Context, directory: Path, as_json_flag: bool, limit: int, since: str | None
@@ -2090,7 +2094,7 @@ def receipts_find(
     since_epoch: float | None = None
     if since is not None:
         try:
-            since_epoch = datetime.strptime(since, "%Y-%m-%d").timestamp()
+            since_epoch = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=UTC).timestamp()
         except ValueError:
             _emit_error(
                 error="usage_error",
