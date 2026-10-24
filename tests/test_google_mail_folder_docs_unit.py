@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import click
 import pytest
 
 from blumkin import help_text
@@ -19,7 +20,9 @@ _README = Path(__file__).resolve().parents[1] / "README.md"
 
 def _folder_option_help() -> str:
     list_command = mail_group.commands["list"]
-    option = next(p for p in list_command.params if p.name == "folder")
+    option = next(
+        p for p in list_command.params if isinstance(p, click.Option) and p.name == "folder"
+    )
     return option.help or ""
 
 
