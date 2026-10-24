@@ -8,20 +8,25 @@ from an ephemeral port, and always stops the browser it started.
 from __future__ import annotations
 
 import http.server
+import json
 import os
 import signal
 import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+from click.testing import CliRunner
 
 from blumkin.browser.cdp import attach
 from blumkin.browser.discovery import BrowserNotFoundError, resolve_browser
 from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError
 from blumkin.browser.launcher import launch
 from blumkin.browser.profiles import create_profile, read_session
+from blumkin.cli import main
+from blumkin.exit_codes import EXIT_OTHER, EXIT_SUCCESS
 
 pytestmark = pytest.mark.browser
 
@@ -211,3 +216,45 @@ def _wait_for(condition: Callable[[], bool], *, timeout_s: float = 10.0) -> bool
             return True
         time.sleep(0.05)
     return condition()
+
+
+def test_the_cli_commands_fill_a_real_form_and_never_submit_it(
+    tmp_path: Path, form_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    try:
+        browser = resolve_browser(None)
+    except BrowserNotFoundError:
+        pytest.skip("no Chrome, Edge or Chromium installed")
+    config = tmp_path / "config"
+    config.mkdir()
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(config))
+    (config / "config.toml").write_text(
+        '[browser.tasks.expense-report]\nallowed_controls = ["Add line", "Send report", "Go"]\n\n'
+        '[profiles.default]\nclient_id = "abc-123"\n'
+    )
+    profile = create_profile(config, "expense-report")
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    runner = CliRunner()
+
+    def cli(*args: str) -> Any:
+        return runner.invoke(main, ["--json", "browser", *args])
+
+    try:
+        assert cli("goto", "expense-report", form_url + "report").exit_code == EXIT_SUCCESS
+        assert cli("fill", "expense-report", "Amount", "12.50").exit_code == EXIT_SUCCESS
+        assert cli("click", "expense-report", "Add line").exit_code == EXIT_SUCCESS
+        read = cli("read", "expense-report")
+        assert read.exit_code == EXIT_SUCCESS
+        assert "Add line" in json.loads(read.output)["text"]
+        for name in ("Send report", "Go"):
+            refused = cli("click", "expense-report", name)
+            assert refused.exit_code == EXIT_OTHER
+            assert json.loads(refused.output)["error"] == "submit_blocked"
+        pressed = cli("press", "expense-report", "Amount", "Enter")
+        assert pressed.exit_code == EXIT_OTHER
+        assert json.loads(pressed.output)["error"] == "submit_blocked"
+        assert _Handler.posts == []
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)

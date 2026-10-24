@@ -102,3 +102,142 @@ def test_a_broken_toml_file_is_a_config_error_for_the_browser_setup(
     with pytest.raises(ProviderConfigError) as excinfo:
         load_browser_setup()
     assert "config.toml" in str(excinfo.value)
+
+
+def test_task_policies_are_parsed_from_browser_tasks_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nallowed_controls = ["Add line", "Create report"]\n'
+        'extra_deny_names = ["release"]\n\n',
+    )
+    policy = load_config().browser.tasks["expense-report"]
+    assert policy.allowed_controls == ("Add line", "Create report")
+    assert policy.extra_deny_names == ("release",)
+
+
+def test_a_task_policy_defaults_to_nothing_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(tmp_path, monkeypatch, "[browser.tasks.time-sheet]\n\n")
+    policy = load_config().browser.tasks["time-sheet"]
+    assert policy.allowed_controls == ()
+    assert policy.extra_deny_names == ()
+
+
+def test_no_task_policies_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _config(tmp_path, monkeypatch, '[browser]\ndefault = "edge"\n\n')
+    assert load_config().browser.tasks == {}
+
+
+@pytest.mark.parametrize(
+    ("body", "needle"),
+    [
+        ('[browser.tasks.expense-report]\nallowed_controls = "Add line"\n\n', "allowed_controls"),
+        ("[browser.tasks.expense-report]\nallowed_controls = [1]\n\n", "allowed_controls"),
+        ('[browser.tasks.expense-report]\nextra_deny_names = "x"\n\n', "extra_deny_names"),
+        ('[browser.tasks."Bad Name"]\n\n', "task name"),
+        ('[browser]\ntasks = "x"\n\n', "browser.tasks"),
+        ('[browser.tasks]\nexpense-report = "x"\n\n', "browser.tasks.expense-report"),
+    ],
+)
+def test_malformed_task_policies_are_config_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str, needle: str
+) -> None:
+    _config(tmp_path, monkeypatch, body)
+    with pytest.raises(ProviderConfigError) as excinfo:
+        load_config()
+    assert needle in str(excinfo.value)
+
+
+def test_upload_dirs_are_parsed_and_default_to_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nupload_dirs = ["~/receipts", "/srv/receipts"]\n\n'
+        "[browser.tasks.time-sheet]\n\n",
+    )
+    tasks = load_config().browser.tasks
+    assert tasks["expense-report"].upload_dirs == ("~/receipts", "/srv/receipts")
+    assert tasks["time-sheet"].upload_dirs == ()
+
+
+@pytest.mark.parametrize("entry", ["receipts", "./receipts", "../x", "~other/receipts", "~"])
+def test_an_upload_dir_must_be_absolute_or_start_with_tilde_slash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        f'[browser.tasks.expense-report]\nupload_dirs = ["{entry}"]\n\n',
+    )
+    with pytest.raises(ProviderConfigError) as excinfo:
+        load_config()
+    assert "upload_dirs" in str(excinfo.value)
+
+
+def test_an_unknown_key_in_a_task_table_is_an_error_not_a_silent_empty_allow_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nallowed_control = ["Add line"]\n\n',
+    )
+    with pytest.raises(ProviderConfigError) as excinfo:
+        load_config()
+    message = str(excinfo.value)
+    assert "allowed_control" in message
+    assert "allowed_controls" in message
+
+
+def test_an_unknown_key_under_browser_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(tmp_path, monkeypatch, '[browser]\ndefualt = "edge"\n\n')
+    with pytest.raises(ProviderConfigError) as excinfo:
+        load_config()
+    assert "defualt" in str(excinfo.value)
+
+
+def test_allowed_hosts_are_parsed_lower_cased_and_default_to_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nallowed_hosts = ["ERP.Example.com", "*.corp.example.com"]'
+        "\n\n[browser.tasks.time-sheet]\n\n",
+    )
+    tasks = load_config().browser.tasks
+    assert tasks["expense-report"].allowed_hosts == ("erp.example.com", "*.corp.example.com")
+    assert tasks["time-sheet"].allowed_hosts == ()
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "https://erp.example.com",
+        "erp.example.com/path",
+        "*",
+        "*.",
+        "a b",
+        "erp.example.com:8443",
+        "",
+    ],
+)
+def test_an_allowed_host_must_be_a_bare_host_name_or_a_subdomain_wildcard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        f'[browser.tasks.expense-report]\nallowed_hosts = ["{entry}"]\n\n',
+    )
+    with pytest.raises(ProviderConfigError) as excinfo:
+        load_config()
+    assert "allowed_hosts" in str(excinfo.value)
