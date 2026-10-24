@@ -63,6 +63,7 @@ dependencies = [
     "certifi==2026.10.19",
     "pillow==13.0.0",
     "opentelemetry-api==1.45.1",
+    "playwright>=1.64.1",
 ]
 
 [project.optional-dependencies]
@@ -105,6 +106,7 @@ artifacts = ["src/blumkin/agent/bin/*"]
 
 [tool.pytest.ini_options]
 markers = [
+    "browser: real-browser tests (need an installed Chrome, Edge or Chromium and BLUMKIN_BROWSER_TESTS=1; never run in CI)",
     "live: live Graph read tests (needs ~/.config/blumkin and network)",
     "live_google: live Google API read tests (needs a logged-in Google profile and network); also marked 'live'",
 ]
