@@ -266,3 +266,14 @@ canonical brand asset. Spike results on the candidate spots from #360:
 - **GitHub repo social preview.** No public REST API for this - it is a
   Settings -> General -> Social preview upload, done once by hand from
   `docs/assets/blumkin-icon.png`.
+
+### D14 - browser-assisted tasks: Playwright over CDP, guarded and never submitting ([#462](https://github.com/the-hcma/blumkin/issues/462))
+
+Some chores (an expense report, a time sheet) have no API, so blumkin drives a browser the user signs in to. The decisions:
+
+- **Playwright for Python, attached with `connect_over_cdp`.** It is Microsoft-maintained and current, supports Python 3.10 and later, and gives auto-waiting locators and `set_input_files` without hand-written protocol code. Attaching to the user's own browser means no browser download (`playwright install` is not needed). The other candidates were not chosen: `pydoll-python` (younger, smaller community), `nodriver` (stealth-oriented, 0.x), `cdp-use` (a typed raw client with no locators or waiting) and `pychrome` (unmaintained since 2023). Tasks depend on a small `BrowserDriver` interface, so the library can be swapped.
+- **A dedicated profile per task, signed in by hand.** The user authenticates; blumkin never touches credentials. Chrome 136 and later ignore remote debugging on the default profile, and a separate profile also keeps everyday browsing out of reach.
+- **Chrome, Edge and Chromium.** All three are Chromium-based, so one code path drives them. `[browser] default` picks one; Chrome is the fallback when it is unset or not installed.
+- **Never submit, enforced in code, deny by default.** A different-model review of the first guard found working bypasses against a real browser (a button with an invalid `type`, a newline or Space key, a script link, a handler that submits), so the guard now inspects the element by the browser's canonical properties on the handle it then clicks, allows only an explicit key set, restricts clickable roles, and keeps a backstop: while attached, non-GET navigations are swallowed with a 204 (an abort would replace the page with an error page and lose the user's typing). A task ends with a handoff whose type can only say `submitted: false`. A prompt alone is not a control.
+- **Per-user values live in the user's task definition,** not in blumkin or its global config: the form URL, receipts folder, categories and default hours. What a task may click is declared in `[browser.tasks.<task>]`.
+- **Receipts reuse `docs read`** (images are always OCR'd) and report a confidence per field, so a task asks about anything doubtful.

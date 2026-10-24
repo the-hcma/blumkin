@@ -37,6 +37,20 @@ A public client's `client_id` is not itself a secret - it is routinely visible i
 
 None of this is enforced by blumkin's code - it is Entra-side configuration on the app registration itself, done once at setup.
 
+## Browser-assisted tasks
+
+`blumkin browser` launches a browser on a **dedicated profile** and drives it over the Chrome DevTools Protocol so an agent can fill in a form the user then submits by hand.
+
+- **Credentials.** The user signs in by hand in that browser, SSO and MFA included. blumkin never reads, types, logs or stores a credential; the session cookies live only in the profile directory (mode `0700`) under the config directory.
+- **DevTools stays on loopback.** The browser is started with `--remote-debugging-port=0` and `--remote-debugging-address=127.0.0.1` (the address switch is advisory for a headful Chrome, so the guarantee is Chrome's loopback default plus blumkin's own check), and blumkin attaches only to a loopback `http` endpoint; the endpoint is recorded in a `0600` session file and never exposed through the HTTP server or MCP.
+- **Only blumkin's own profiles.** blumkin attaches to, lists and deletes only profiles it created (a marker file, not a symlink); a session counts as live only while its process is running on that profile directory.
+- **It cannot submit.** The driver a task gets has no submit and no script execution. The guard, in code and not in a prompt, is deny-by-default: only controls the task declared by exact name and a short list of roles can be clicked; the element is inspected on the same handle that is then clicked; submit controls (by the browser's canonical type), `formaction` overrides, script links, handlers that submit and finalizing names are refused; only navigation keys and single printable characters can be pressed, never on a button. A refused action never reaches the page.
+- **A backstop for what a static check cannot see.** While attached, the driver swallows every non-GET navigation (a form POST) with an empty response, so a script that submits a form on its own gets nothing through and the page keeps what the user typed. The net exists only on blumkin's connection and is released when it detaches, so the user's own final click is not blocked. It is not a hard guarantee: a page can schedule a submit to fire after a command has finished, so the declared-controls list stays short and the task ends with a handoff.
+- **Uploads are default-deny.** `blumkin browser upload` takes only a regular file inside a folder the task declared in `upload_dirs`, judged on the fully resolved path and checked before the browser is touched, so injected page text cannot make an agent upload a key or a token.
+- **Other local users.** The DevTools port is on loopback, which keeps other machines out, not other accounts on the same host; use this only on a machine you alone use. Playwright's `connect_over_cdp` needs the port, so a pipe is not an option.
+- **Page text is untrusted.** Text read from a page or a receipt is scanned for prompt-injection patterns and treated as data, never instructions.
+- **Receipts stay local, and go only to declared sites.** Receipt images and amounts are read on this machine and are never logged. An upload needs the task to declare `allowed_hosts` and is refused unless the page is on one of those hosts, so injected text cannot send a receipt to another site; the destination is only as trustworthy as the hosts the user declared, and the page itself can still be wrong about what it does with the file.
+
 ## Blast radius
 
 - A skill only ever affects the operator's own tenant, with their own consent.

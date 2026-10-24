@@ -20,9 +20,11 @@ One config file, one or more **named profiles** (Microsoft, Google, or both), se
 | `calendar` | `today`, `view`, `freebusy`, `suggest`, `create`, `accept`, `cancel`, `update` |
 | `mail` | `inbox`, `list`, `get`, `folders`, `draft`, `update-draft`, `delete-draft`, `send-draft`, `reply`, `forward`, `signature`, `attachments` (+ `download`) |
 | `chat` (Teams / Google Chat) | `find`, `last`, `send`, `edit`, `delete`, `attachments` (+ `download`) |
+| `browser` | `profile` (`create`, `list`, `delete`), `launch`, `status`, `goto`, `read`, `fill`, `upload`, `click`, `press`, `handoff` - browser-assisted tasks that never submit |
 | `docs` | `create` (a Markdown subset → a real Google Doc, or a `.docx` in OneDrive) |
 | `meeting` (Microsoft) | `get`, `transcription` |
 | `people` | `resolve` |
+| `receipts` | `find`, `read` (receipt files, read with OCR and a confidence per field) |
 | `mcp` | `serve`, `install`, `status` |
 
 Plus `blumkin doctor` (setup check), `capabilities` (structured capability/status discovery), `skills` / `profiles` (discovery), `upgrade` (self-update via pipx / uv tool / an editable checkout), and `completion`.
@@ -265,6 +267,16 @@ brew install tesseract poppler
 
 **Prompt-injection flagging.** `docs read` and `mail get` scan extracted text/body content for common prompt-injection patterns (instruction-override phrasing, zero-width/bidi-override characters, link-label/URL mismatches, role-impersonation blocks, base64 blobs next to "decode/execute" triggers). Detection is heuristic and advisory only: it never blocks, redacts, or alters the returned content. A match adds an `injection_warning` field to the JSON payload (`null` when clean) and a `⚠️ POSSIBLE PROMPT INJECTION DETECTED` banner to human-formatted output, so the caller can decide whether to act on the content. See issue #282 for the full design and deferred scope (no LLM-based detection, no hard-block/confirmation wiring in v1).
 
+## Browser-assisted tasks
+
+For chores with no API, such as filing an expense report or filling in a time sheet, blumkin drives a browser **you** sign in to.
+You create a dedicated profile (`blumkin browser profile create expense-report`), launch it (`blumkin browser launch expense-report`) and sign in by hand; blumkin never sees your credentials.
+An agent then fills in the form and uploads your receipts over the Chrome DevTools Protocol (Playwright), and **stops before submitting**: the task ends by telling you what to review and which button to press.
+
+Chrome, Edge and Chromium are supported; set `[browser] default = "edge"` in `config.toml` (Chrome is used when it is unset or not installed), and declare what each task may click under `[browser.tasks.<task>]`.
+The ready-made skills are `expense-report` and `time-sheet`.
+Setup, the command list, the receipt tools and what blumkin refuses are in [`docs/browser-tasks.md`](./docs/browser-tasks.md), and the threat model is in [`docs/SECURITY-AT-A-GLANCE.md`](./docs/SECURITY-AT-A-GLANCE.md).
+
 ## Tests
 
 ```bash
@@ -291,6 +303,7 @@ blumkin acts as **you** over delegated OAuth — no server, no shared secret, no
 - [`AGENTS.md`](./AGENTS.md) — contributor / agent ground rules  
 - [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md) — M1 ship retrospective (#11)  
 - [`docs/agent-integration.md`](./docs/agent-integration.md) — using blumkin from Cursor / Pi / Copilot CLI, and the frozen `skills list --json` contract  
+- [`docs/browser-tasks.md`](./docs/browser-tasks.md) - browser-assisted tasks: setup, commands, receipts, what is refused  
 - [`docs/operator-config.md`](./docs/operator-config.md) — optional `~/.config/blumkin/*.md` operator-context files (`email-context.md`)  
 - [`docs/RELEASING.md`](./docs/RELEASING.md) — release flow, PyPI trusted publishing, rollback  
 - [`docs/google-setup.md`](./docs/google-setup.md) — Google Cloud Desktop OAuth + blumkin Google profile  

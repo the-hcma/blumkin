@@ -6,10 +6,8 @@ import re
 import shlex
 from pathlib import Path
 
-import click
 import pytest
-
-from blumkin.cli import main
+from cli_doc_commands import command_lines, unknown_parts
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SKILLS = ("expense-report", "time-sheet")
@@ -21,31 +19,7 @@ def _skill_text(name: str) -> str:
 
 
 def _command_lines(text: str) -> list[str]:
-    """`blumkin ...` command lines from fenced code blocks and inline code spans."""
-    lines: list[str] = []
-    for block in re.findall(r"```[a-z]*\n(.*?)```", text, re.DOTALL):
-        lines.extend(
-            line.strip() for line in block.splitlines() if line.strip().startswith("blumkin ")
-        )
-    lines.extend(re.findall(r"`(blumkin [^`]+)`", text))
-    return lines
-
-
-def _resolves(line: str) -> bool:
-    """True when the words after `blumkin` walk down real click commands."""
-    command: click.Command = main
-    words = shlex.split(line.replace("\\\n", " "))[1:]
-    seen_any = False
-    for word in words:
-        if word.startswith("-") or word.startswith("<") or word.startswith("$"):
-            break
-        if not isinstance(command, click.Group):
-            break
-        nxt = command.commands.get(word)
-        if nxt is None:
-            return seen_any and not isinstance(command, click.Group)
-        command, seen_any = nxt, True
-    return seen_any
+    return command_lines(text, ("browser", "receipts", "calendar", "mail"))
 
 
 @pytest.mark.parametrize("name", _SKILLS)
@@ -60,8 +34,8 @@ def test_the_skill_has_frontmatter_that_names_itself(name: str) -> None:
 def test_every_blumkin_command_the_skill_names_exists(name: str) -> None:
     lines = _command_lines(_skill_text(name))
     assert lines, "the skill names no commands"
-    missing = [line for line in lines if not _resolves(line)]
-    assert missing == []
+    problems = [problem for line in lines for problem in unknown_parts(line)]
+    assert problems == []
 
 
 @pytest.mark.parametrize("name", _SKILLS)
