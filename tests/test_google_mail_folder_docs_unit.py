@@ -30,7 +30,7 @@ def _skill_summary() -> str:
     return next(s.summary for s in SKILLS if s.id == "mail.list")
 
 
-def _readme_provider_differences() -> str:
+def _readme_text() -> str:
     return _README.read_text(encoding="utf-8")
 
 
@@ -38,7 +38,7 @@ _TEXTS = {
     "cli --folder help": _folder_option_help,
     "help_text MAIL_LIST_EPILOG": lambda: help_text.MAIL_LIST_EPILOG,
     "mail.list skill summary": _skill_summary,
-    "README": _readme_provider_differences,
+    "README": _readme_text,
 }
 
 
@@ -65,4 +65,4 @@ def test_text_lists_exactly_the_folders_google_accepts(where: str) -> None:
 @pytest.mark.parametrize("where", sorted(_TEXTS))
 def test_text_says_archive_and_outbox_are_microsoft_only(where: str) -> None:
     flat = " ".join(_TEXTS[where]().split())
-    assert re.search(r"Microsoft[^.]*archive|archive[^.]*Microsoft", flat), flat[:300]
+    assert re.search(r"archive, outbox[^.;]*Microsoft only", flat), flat[:300]
