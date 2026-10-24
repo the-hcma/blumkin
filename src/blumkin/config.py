@@ -14,6 +14,7 @@ from typing import Any
 import tomlkit
 import tomlkit.exceptions
 
+from blumkin.browser.discovery import BrowserConfigError, parse_browser_kind
 from blumkin.output import emit_warning
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
@@ -49,6 +50,7 @@ class BlumkinConfig:
     # chat/meeting/people-resolve skills closed instead of letting them hit a
     # Graph 400/403 - see docs/SECURITY-AT-A-GLANCE.md.
     account_type: str = "organizational"
+    browser: BrowserConfig = field(default_factory=lambda: BrowserConfig())
     # Opt-in Microsoft add-on: Files.ReadWrite for `docs create` (uploads a .docx
     # to OneDrive). Separate from files_scopes, which only unlocks chat-file
     # *reads* - see docs/DECISIONS.md D10. Defaulted so existing construction
@@ -117,6 +119,26 @@ class BlumkinConfig:
     @property
     def token_cache_path(self) -> Path:
         return self.profile_dir / "msal_token_cache.json"
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserConfig:
+    """`[browser]` in config.toml: which browser browser-assisted tasks launch."""
+
+    #: "chrome", "edge" or "chromium"; None means the Chrome default.
+    default: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserSetup:
+    """What the `blumkin browser` commands need: the config directory and `[browser]`.
+
+    Deliberately independent of the account profiles, so the browser commands work with no
+    profile configured and never ask which account to use.
+    """
+
+    browser: BrowserConfig
+    config_dir: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +362,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         client_id = _client_id_from_google_oauth_file(google_oauth_client_file)
     return BlumkinConfig(
         account_type=_account_type(table),
+        browser=_browser_config(file_data),
         client_id=client_id,
         config_dir=directory,
         default_tz=string_values.get("default_tz", "").strip(),
@@ -363,6 +386,18 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         token_storage=_token_storage_preference(table),
         wo1162425_scopes=_wo1162425_scopes_enabled(table),
     )
+
+
+def load_browser_setup() -> BrowserSetup:
+    """Read only the `[browser]` table from `config.toml` (no account profile involved)."""
+    directory = config_dir()
+    try:
+        file_data = _read_toml(directory / "config.toml")
+    except tomllib.TOMLDecodeError as exc:
+        raise ProviderConfigError(
+            f"Expected a valid config.toml in {directory}, got: {exc}"
+        ) from exc
+    return BrowserSetup(browser=_browser_config(file_data), config_dir=directory)
 
 
 def set_profile_email(
@@ -524,6 +559,24 @@ def _account_type(file_data: dict[str, Any]) -> str:
     raise ProviderConfigError(
         f"account_type must be 'organizational' or 'personal' in config.toml, got {raw!r}"
     )
+
+
+def _browser_config(file_data: dict[str, Any]) -> BrowserConfig:
+    """Parse the optional top-level `[browser]` table (issue #468)."""
+    raw = file_data.get("browser")
+    if raw is None:
+        return BrowserConfig()
+    if not isinstance(raw, dict):
+        raise ProviderConfigError(f"[browser] must be a table in config.toml, got {raw!r}")
+    value = raw.get("default")
+    if value is None:
+        return BrowserConfig()
+    if not isinstance(value, str):
+        raise ProviderConfigError(f"browser.default must be a string in config.toml, got {value!r}")
+    try:
+        return BrowserConfig(default=parse_browser_kind(value).value)
+    except BrowserConfigError as exc:
+        raise ProviderConfigError(f"browser.default in config.toml: {exc}") from exc
 
 
 def _client_id_from_google_oauth_file(path: Path) -> str:
@@ -827,7 +880,9 @@ def _profile_tables(
                 "profiles table is empty; add [profiles.<name>] entries or remove the key"
             )
         stray = sorted(
-            key for key in file_data if key not in {"default_profile", "preferences", "profiles"}
+            key
+            for key in file_data
+            if key not in {"browser", "default_profile", "preferences", "profiles"}
         )
         if stray:
             shown = ", ".join(stray)

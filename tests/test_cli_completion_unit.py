@@ -174,3 +174,28 @@ def test_completion_rejects_unknown_shell() -> None:
 def test_completion_requires_a_shell_argument() -> None:
     result = CliRunner().invoke(main, ["completion"])
     assert result.exit_code == EXIT_USAGE
+
+
+def _complete(words: str) -> list[str]:
+    result = CliRunner().invoke(
+        main,
+        [],
+        env={
+            "_BLUMKIN_COMPLETE": "bash_complete",
+            "COMP_WORDS": words,
+            "COMP_CWORD": str(len(words.split()) - (0 if words.endswith(" ") else 1)),
+        },
+        prog_name="blumkin",
+    )
+    return [line.split(",", 1)[-1] for line in result.output.splitlines() if line]
+
+
+def test_the_browser_group_and_its_commands_complete() -> None:
+    assert "browser" in _complete("blumkin br")
+    commands = _complete("blumkin browser ")
+    for name in ("launch", "profile", "status"):
+        assert name in commands
+
+
+def test_the_browser_profile_subcommands_complete() -> None:
+    assert {"create", "delete", "list"} <= set(_complete("blumkin browser profile "))
