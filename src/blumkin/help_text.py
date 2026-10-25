@@ -276,9 +276,9 @@ Examples:
 
 Explores a site once and records its structure (pages, controls, flows) as a model that
 later runs reuse. The task must declare `allowed_hosts`; exploration never leaves them.
-Links, tabs and menu items are followed without asking. A control that may change state is
-clicked only after you answer yes at your own terminal (the default is no, and an agent
-without a terminal gets no answer). A finalizing control (submit, send, pay, ...) is
+Links and tabs are followed without asking. A control that may change state, including a
+menu item, is clicked only after you answer yes at your own terminal (the default is no,
+and an agent without a terminal gets no answer). A finalizing control (submit, send, pay, ...) is
 recorded and never clicked. The draft is kept until `save --yes` stores it as the next
 version of the task's model, or `discard` drops it. Nothing you type is recorded.
 """
@@ -290,7 +290,7 @@ Examples:
   blumkin browser explore click expense-report Help --role link
   blumkin browser explore click expense-report "Add line" --role button --page expense-list
 
-Follows a link, tab or menu item on an allowed host. For a control that may change state
+Follows a link or tab on an allowed host. For a control that may change state
 (a button, a checkbox) it asks on your terminal first; with no terminal it clicks nothing
 and prints the command for you to run. A finalizing control is never clicked. With `--page`
 a click that happened is recorded as a step of the flow.

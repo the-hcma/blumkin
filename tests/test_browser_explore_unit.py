@@ -965,3 +965,14 @@ def test_a_control_that_cannot_be_found_uniquely_is_a_refusal_not_a_crash() -> N
     assert explorer.last_outcome.startswith("refused: ")
     assert "strict mode" in explorer.last_outcome
     assert confirmer.asked == []
+
+
+def test_a_long_word_in_a_control_name_still_gives_a_storable_draft() -> None:
+    draft = ModelDraft(task="t", hosts=("erp.example.com",))
+    draft.add_page(
+        "p",
+        "https://erp.example.com/p",
+        (ControlObservation("button", "Telecommunications"),),
+    )
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+    assert [c.name for c in model.pages[0].controls] == ["p.telecommunicatio"]

@@ -3,9 +3,9 @@
 An exploration observes pages, drafts a model from what it sees and decides, control by
 control, whether the explorer may click it. The rules are deliberately conservative:
 
-- links, tabs and menu items are read-only navigation and are followed on the task's
+- links and tabs are read-only navigation and are followed on the task's
   `allowed_hosts` only;
-- a control that may change state (a button, a checkbox) is recorded as metadata and is
+- a control that may change state (a button, a checkbox, a menu item) is recorded as metadata and is
   clicked only after the user answers yes at their own terminal, with no as the default; the
   answer is read from the terminal, never from an argument, page text or agent input, so an
   agent cannot approve for itself, and with no terminal nothing is clicked;
@@ -609,7 +609,9 @@ def _control(
     used: set[str],
     extra_deny: Sequence[str],
 ) -> Control:
-    slug = re.sub(r"[^a-z]+", "-", item.name.casefold()).strip("-")[:24].strip("-") or item.role
+    words = re.sub(r"[^a-z]+", "-", item.name.casefold()).strip("-").split("-")
+    # A word over 16 letters would read as a token to the model's name check.
+    slug = "-".join(word[:16] for word in words)[:24].strip("-") or item.role
     name = f"{page_id}.{slug}"
     count = 1
     while name in used:
