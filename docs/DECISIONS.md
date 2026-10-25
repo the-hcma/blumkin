@@ -267,7 +267,7 @@ canonical brand asset. Spike results on the candidate spots from #360:
   Settings -> General -> Social preview upload, done once by hand from
   `docs/assets/blumkin-icon.png`.
 
-### D14 - browser-assisted tasks: Playwright over CDP, guarded and never submitting ([#462](https://github.com/the-hcma/blumkin/issues/462))
+### D14 - browser-assisted tasks: Playwright over CDP, guarded and built to stop before submitting ([#462](https://github.com/the-hcma/blumkin/issues/462))
 
 Some chores (an expense report, a time sheet) have no API, so blumkin drives a browser the user signs in to. The decisions:
 

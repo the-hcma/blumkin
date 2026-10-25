@@ -1,6 +1,6 @@
 # Browser-assisted tasks
 
-Some chores have no API: filing an expense report, filling in a weekly time sheet. blumkin handles them by driving a browser **you** sign in to, filling in the form for you and then stopping. A browser task **never submits**: it ends by telling you exactly what to review and which button to press.
+Some chores have no API: filing an expense report, filling in a weekly time sheet. blumkin handles them by driving a browser **you** sign in to, filling in the form for you and then stopping. blumkin has no submit command, and a browser task ends by telling you exactly what to review and which button to press. The guard blocks the listed submit paths; the Limits section lists the cases it does not block.
 
 ## How it works
 

@@ -9,8 +9,6 @@ import click
 
 from blumkin.cli import main
 
-_GLOBAL_FLAGS_WITH_VALUE = frozenset({"--profile", "--tz"})
-
 
 def command_lines(text: str, groups: tuple[str, ...]) -> list[str]:
     """`blumkin <group> ...` lines from fenced code blocks and inline code spans."""
@@ -25,37 +23,36 @@ def command_lines(text: str, groups: tuple[str, ...]) -> list[str]:
 
 
 def unknown_parts(line: str) -> list[str]:
-    """What in `line` is not a real command, or a flag the resolved command lacks."""
+    """What in `line` is not a real command, or an option the command at that level lacks."""
     try:
         words = shlex.split(line)[1:]
     except ValueError:
         return [f"unparseable: {line}"]
     command: click.Command = main
-    index = 0
-    while index < len(words) and words[index].startswith("--"):
-        index += 2 if words[index] in _GLOBAL_FLAGS_WITH_VALUE else 1
     problems: list[str] = []
-    while index < len(words) and isinstance(command, click.Group):
+    index = 0
+    while index < len(words):
         word = words[index]
-        if word.startswith(("-", "<", "$", "'", '"')):
-            break
-        nxt = command.commands.get(word)
-        if nxt is None:
-            problems.append(f"no command {word!r} in: {line}")
-            return problems
-        command, index = nxt, index + 1
-    if isinstance(command, click.Group):
-        return problems
-    known = {"--help", "--json"}
-    for param in command.params:
-        if isinstance(param, click.Option):
-            known.update(param.opts)
-            known.update(param.secondary_opts)
-    for word in words[index:]:
         if word == "--":
             break  # a bare `--` ends the options: what follows is a value, not a flag
-        if word.startswith("--") and word.split("=", 1)[0] not in known:
-            problems.append(f"unknown flag {word!r} for {command.name!r} in: {line}")
+        if word.startswith("--"):
+            name = word.split("=", 1)[0]
+            if name not in _known_options(command):
+                problems.append(f"unknown option {name!r} for {command.name!r} in: {line}")
+                index += 1
+            else:
+                index += 2 if _takes_value(command, name) and "=" not in word else 1
+            continue
+        if word.startswith(("-", "<", "$", "'", '"')):
+            index += 1
+            continue
+        if isinstance(command, click.Group):
+            nxt = command.commands.get(word)
+            if nxt is None:
+                problems.append(f"no command {word!r} in: {line}")
+                return problems
+            command = nxt
+        index += 1
     return problems
 
 
@@ -65,3 +62,19 @@ def _first_word(line: str) -> str:
         if not part.startswith("--"):
             return part
     return ""
+
+
+def _known_options(command: click.Command) -> set[str]:
+    known = {"--help", "--json"}
+    for param in command.params:
+        if isinstance(param, click.Option):
+            known.update(param.opts)
+            known.update(param.secondary_opts)
+    return known
+
+
+def _takes_value(command: click.Command, name: str) -> bool:
+    return any(
+        isinstance(param, click.Option) and name in param.opts and not param.is_flag
+        for param in command.params
+    )

@@ -12,6 +12,10 @@ from blumkin.cli import main
 
 _ROOT = Path(__file__).resolve().parents[1]
 _GROUPS = ("browser", "receipts")
+_README_GROUPS = frozenset(
+    {"auth", "calendar", "mail", "chat", "browser", "docs", "meeting", "people", "receipts", "mcp"}
+)
+_ALLOWED_EXAMPLE_HOSTS = frozenset({"example.com", "erp.example.com", "playwright.dev"})
 _DOCS = [
     "README.md",
     "docs/agent-integration.md",
@@ -58,11 +62,15 @@ def test_the_readme_table_lists_the_browser_and_receipts_groups() -> None:
 def test_every_group_in_the_readme_table_is_a_real_command() -> None:
     rows = re.findall(r"^\| `([a-z]+)`[^|]*\|", _text("README.md"), re.MULTILINE)
     assert rows
-    assert [row for row in rows if row not in main.commands] == []
+    assert _README_GROUPS <= set(rows)
+    assert set(rows) <= set(main.commands)
 
 
-def test_the_guide_and_security_page_state_the_never_submit_rule() -> None:
-    assert "never submits" in _text("docs/browser-tasks.md")
+def test_the_guide_and_security_page_state_the_no_submit_design_and_point_to_the_limits() -> None:
+    guide = " ".join(_text("docs/browser-tasks.md").split())
+    assert "has no submit command" in guide
+    assert "the Limits section" in guide
+    assert "never submits" not in guide
     security = _text("docs/SECURITY-AT-A-GLANCE.md")
     assert "Browser-assisted tasks" in security
     assert "loopback" in security
@@ -79,7 +87,10 @@ def test_the_guide_error_table_covers_every_error_the_commands_emit() -> None:
 
 def test_no_example_in_the_guide_uses_a_real_site_or_address() -> None:
     guide = _text("docs/browser-tasks.md")
-    assert not re.search(r"https?://(?!example\.com|erp\.example\.com|playwright\.dev)", guide)
+    hosts = {
+        host.split(":")[0].rstrip(".,;)") for host in re.findall(r"https?://([^\s/)`'\"]+)", guide)
+    }
+    assert hosts <= _ALLOWED_EXAMPLE_HOSTS, hosts - _ALLOWED_EXAMPLE_HOSTS
     assert "@" not in guide
 
 
@@ -195,3 +206,64 @@ def test_the_security_page_and_agent_guide_do_not_overclaim() -> None:
     agent = _flat("docs/agent-integration.md")
     assert "nothing is sent; stop and hand over" not in agent
     assert "stop and hand over" in agent
+
+
+def test_the_url_check_would_catch_a_host_that_only_starts_with_an_allowed_one() -> None:
+    sample = "see https://example.com.evil.test/x and https://erp.example.com/ok"
+    hosts = {
+        host.split(":")[0].rstrip(".,;)") for host in re.findall(r"https?://([^\s/)`'\"]+)", sample)
+    }
+    assert hosts - _ALLOWED_EXAMPLE_HOSTS == {"example.com.evil.test"}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "blumkin browser --not-a-flag",
+        "blumkin --bogus browser status",
+        "blumkin browser profile --nope list",
+        "blumkin browser status --nope",
+    ],
+)
+def test_the_command_checker_rejects_an_unknown_option_at_any_level(line: str) -> None:
+    assert unknown_parts(line) != []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "blumkin browser status --json",
+        "blumkin --profile work browser status",
+        "blumkin --json browser profile list",
+        "blumkin browser handoff expense-report --filled 'one line' --step 'review' --step 'press'",
+        "blumkin receipts find --dir ~/receipts --since 2026-10-01 --limit 20 --json",
+    ],
+)
+def test_the_command_checker_accepts_real_options_and_their_values(line: str) -> None:
+    assert unknown_parts(line) == []
+
+
+def test_the_agent_guide_describes_the_interface_instead_of_claiming_impossibility() -> None:
+    agent = " ".join(_text("docs/agent-integration.md").split())
+    assert "A task has no submit command" in agent
+    assert "A task **never submits**" not in agent
+
+
+def test_the_security_page_limits_the_upload_and_receipt_guarantees_to_the_policy() -> None:
+    security = " ".join(_text("docs/SECURITY-AT-A-GLANCE.md").split())
+    assert "cannot make an agent upload a key or a token" not in security
+    assert "outside the declared folders" in security
+    assert "does not inspect file names or contents" in security
+    assert "go only to declared sites" not in security
+    assert "only as far as the upload check" in security
+
+
+def test_the_operator_notes_list_every_browser_policy_key() -> None:
+    notes = " ".join(_text("docs/operator-config.md").split())
+    for key in ("allowed_controls", "allowed_hosts", "extra_deny_names", "upload_dirs"):
+        assert f"`{key}`" in notes, key
+
+
+def test_the_decision_record_does_not_title_the_design_as_a_guarantee() -> None:
+    decisions = _text("docs/DECISIONS.md")
+    assert "guarded and never submitting" not in decisions
