@@ -80,7 +80,7 @@ def create_profile(config_dir: Path, task: str) -> BrowserProfile:
     place, so a crash or a concurrent create never leaves an unmarked profile behind.
     """
     validate_task_name(task)
-    root = _ensure_private_dir(config_dir / PROFILES_DIRNAME)
+    root = ensure_private_dir(config_dir / PROFILES_DIRNAME)
     path = root / task
     if path.is_symlink():
         raise BrowserProfileError(f"Expected a real directory at {path}, got a symlink")
@@ -91,7 +91,7 @@ def create_profile(config_dir: Path, task: str) -> BrowserProfile:
     try:
         staging.chmod(0o700)
         marker = {"created_at": _utc_now(), "task": task}
-        _write_private(staging / MARKER_FILENAME, json.dumps(marker, sort_keys=True))
+        write_private(staging / MARKER_FILENAME, json.dumps(marker, sort_keys=True))
         os.rename(staging, path)
     except OSError:
         shutil.rmtree(staging, ignore_errors=True)
@@ -131,6 +131,15 @@ def delete_profile(
             f"Expected no launch of task {task!r} in progress before deleting its profile, "
             "got one still running"
         ) from exc
+
+
+def ensure_private_dir(path: Path) -> Path:
+    if path.is_symlink():
+        raise BrowserProfileError(f"Expected a real directory at {path}, got a symlink")
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if stat.S_IMODE(path.stat().st_mode) != 0o700:
+        path.chmod(0o700)
+    return path
 
 
 def is_valid_task_name(task: str) -> bool:
@@ -295,6 +304,18 @@ def validate_task_name(task: str) -> None:
         )
 
 
+def write_private(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    with contextlib.suppress(FileNotFoundError):
+        tmp.unlink()
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
 def write_session(profile_dir: Path, session: BrowserSession) -> None:
     """Record the running browser for the profile (mode 0600)."""
     payload = {
@@ -303,7 +324,7 @@ def write_session(profile_dir: Path, session: BrowserSession) -> None:
         "port": session.port,
         "started_at": session.started_at,
     }
-    _write_private(profile_dir / SESSION_FILENAME, json.dumps(payload, sort_keys=True))
+    write_private(profile_dir / SESSION_FILENAME, json.dumps(payload, sort_keys=True))
 
 
 _MAX_PID = 2**22
@@ -316,15 +337,6 @@ _STALE_STAGING_S = 3600.0
 
 
 _TASK_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-
-
-def _ensure_private_dir(path: Path) -> Path:
-    if path.is_symlink():
-        raise BrowserProfileError(f"Expected a real directory at {path}, got a symlink")
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if stat.S_IMODE(path.stat().st_mode) != 0o700:
-        path.chmod(0o700)
-    return path
 
 
 def _has_marker(path: Path) -> bool:
@@ -359,15 +371,3 @@ def _user_data_dir_pattern(profile_dir: Path) -> str:
 
 def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _write_private(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    with contextlib.suppress(FileNotFoundError):
-        tmp.unlink()
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, path)
