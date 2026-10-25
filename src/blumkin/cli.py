@@ -74,6 +74,15 @@ from blumkin.browser.explore_commands import (
 from blumkin.browser.guard import SubmitBlockedError
 from blumkin.browser.handoff import HandoffError, format_handoff_human
 from blumkin.browser.launcher import BrowserLaunchError
+from blumkin.browser.ledger import LedgerError, LedgerJournalError, LedgerNotFoundError
+from blumkin.browser.ledger_commands import (
+    ledger_begin,
+    ledger_discard,
+    ledger_list,
+    ledger_record,
+    ledger_status,
+    ledger_submitted,
+)
 from blumkin.browser.model import SiteModelError
 from blumkin.browser.profiles import BrowserProfileError, ProfileBusyError, ProfileInUseError
 from blumkin.capabilities import capability_summary
@@ -520,6 +529,13 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "explore_refused", EXIT_OTHER
     elif isinstance(exc, (ExploreNeedsConfirmationError, PageIdError)):
         slug, code = "usage_error", EXIT_USAGE
+    elif isinstance(exc, LedgerNotFoundError):
+        slug, code = "not_found", EXIT_NOT_FOUND
+        hint = f"Start it with `blumkin browser ledger begin {task or 'TASK'} INSTANCE`."
+    elif isinstance(exc, LedgerJournalError):
+        slug, code = "ledger_invalid", EXIT_OTHER
+    elif isinstance(exc, LedgerError):
+        slug, code = "usage_error", EXIT_USAGE
     elif isinstance(exc, SiteModelError):
         slug, code = "model_invalid", EXIT_OTHER
     elif isinstance(exc, HandoffError):
@@ -554,6 +570,17 @@ def _browser_profile_lines(payload: dict[str, Any]) -> list[str]:
 def _clean_line(text: str) -> str:
     """One printable line: whitespace collapsed, control and bidirectional characters gone."""
     return " ".join(sanitize_terminal(_strip_bidi(text)).split())
+
+
+def _emit_ledger(payload: dict[str, Any], *, as_json: bool, items: bool = False) -> None:
+    """Print a ledger status payload: JSON, or its summary line (and items when asked)."""
+    if as_json:
+        emit_json(payload)
+        return
+    lines = [f"{payload['task']}/{payload['instance']}: {payload['summary']}"]
+    if items:
+        lines += [f"  {i['kind']} {i['item']}: {i['state']}" for i in payload["items"]]
+    emit_lines(lines)
 
 
 def _loop_fail(exc: BaseException, *, as_json: bool) -> NoReturn:
@@ -2267,6 +2294,150 @@ def browser_handoff(
         emit_json({"ok": True, **result.to_payload()})
         return
     emit_lines(format_handoff_human(result).splitlines())
+
+
+@browser.group("ledger", epilog=help_text.BROWSER_LEDGER_EPILOG)
+def browser_ledger() -> None:
+    """Remember what has been filed for one instance of a task."""
+
+
+@browser_ledger.command("begin", epilog=help_text.BROWSER_LEDGER_BEGIN_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.option(
+    "--expect", "expect", multiple=True, help="Expected items as KIND=COUNT (repeatable)."
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_ledger_begin(
+    ctx: click.Context, task: str, instance: str, expect: tuple[str, ...], as_json_flag: bool
+) -> None:
+    """Start the ledger for one instance of a task."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_begin(load_browser_setup(), task, instance, expect=expect)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json)
+
+
+@browser_ledger.command("discard", epilog=help_text.BROWSER_LEDGER_DISCARD_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--yes", is_flag=True, help="Confirm closing the instance as discarded.")
+@click.pass_context
+def browser_ledger_discard(
+    ctx: click.Context, task: str, instance: str, as_json_flag: bool, yes: bool
+) -> None:
+    """Close the instance as discarded (the journal is kept)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_discard(load_browser_setup(), task, instance, yes=yes)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json)
+
+
+@browser_ledger.command("list", epilog=help_text.BROWSER_LEDGER_LIST_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_ledger_list(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """List the task's instances."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_list(load_browser_setup(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    if not payload["instances"]:
+        begin = f"blumkin browser ledger begin {task} INSTANCE"
+        emit_lines([f"{task}: no instances (start one with `{begin}`)"])
+        return
+    emit_lines([f"{entry['instance']}: {entry['phase']}" for entry in payload["instances"]])
+
+
+@browser_ledger.command("record", epilog=help_text.BROWSER_LEDGER_RECORD_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.argument("kind", type=click.Choice(["day", "receipt"]))
+@click.argument("item")
+@click.argument("state", type=click.Choice(["staged", "filled", "verified", "failed"]))
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--model-version", type=int, default=None, help="Site model version in use.")
+@click.option("--sha256", default=None, help="SHA-256 of a receipt's file (64 hex digits).")
+@click.pass_context
+def browser_ledger_record(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    kind: str,
+    item: str,
+    state: str,
+    as_json_flag: bool,
+    model_version: int | None,
+    sha256: str | None,
+) -> None:
+    """Move one item to a new state."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_record(
+            load_browser_setup(),
+            task,
+            instance,
+            kind,
+            item,
+            state,
+            model_version=model_version,
+            sha256=sha256,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines(
+        [
+            f"{task}/{instance}: {payload['kind']} {payload['item']} {payload['state']}; "
+            f"{payload['summary']}"
+        ]
+    )
+
+
+@browser_ledger.command("status", epilog=help_text.BROWSER_LEDGER_STATUS_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_ledger_status(ctx: click.Context, task: str, instance: str, as_json_flag: bool) -> None:
+    """Show where the instance stands."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_status(load_browser_setup(), task, instance)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json, items=True)
+
+
+@browser_ledger.command("submitted", epilog=help_text.BROWSER_LEDGER_SUBMITTED_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--yes", is_flag=True, help="Confirm that you submitted the real form yourself.")
+@click.pass_context
+def browser_ledger_submitted(
+    ctx: click.Context, task: str, instance: str, as_json_flag: bool, yes: bool
+) -> None:
+    """Record that you submitted the real form."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_submitted(load_browser_setup(), task, instance, yes=yes)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json)
 
 
 @browser.command("press", epilog=help_text.BROWSER_PRESS_EPILOG)
