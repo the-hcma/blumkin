@@ -7,12 +7,16 @@ and ordered locator strategies) and the flows that chain them. It lives in
 `<config dir>/browser-models/<task>/model.json`, with every saved version kept under
 `history/`, in `0700` directories and `0600` files.
 
-A model never holds anything the user typed, a cookie or any other personal data. That is
-enforced by the schema itself: every object has a fixed set of keys, anything else is a
-load error, every string is short and free of control and bidirectional characters, and a
-URL template is limited to path characters, so a query string (where values live) cannot be
-stored. The hosts must be concrete host names and can be checked against the task's
-`allowed_hosts` when a model is saved.
+A model is meant to hold structure only: nothing the user typed, no cookies and no other
+personal data. The schema narrows what can be stored but cannot prove a free-text field is
+innocent, so it combines a strict shape with heuristics: every object has a fixed set of
+keys (anything else is a load error), every string is short, NFC-normalized and free of
+control, separator and bidirectional characters, a URL template is a path of words and
+`{placeholders}` (no query string, where values live, and no literal token or number
+segments), labels and role names carry no `=` or quotes, and no text holds a run of six or
+more digits. Hosts must be public-looking host names, and can be checked against the task's
+`allowed_hosts` when a model is saved or loaded. Whoever records a model remains responsible
+for reviewing it before it is stored.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ import re
 import stat
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -167,33 +171,62 @@ class SiteModelError(ValueError):
 def list_versions(config_dir: Path, task: str) -> list[int]:
     """The saved versions of the task's model, oldest first."""
     validate_task_name(task)
-    history = _task_dir(config_dir, task) / _HISTORY_DIRNAME
-    if not history.is_dir():
-        return []
-    versions = []
-    for entry in history.iterdir():
-        match = _HISTORY_FILE.fullmatch(entry.name)
-        if match:
-            versions.append(int(match.group(1)))
+    with _filesystem("list the saved model versions"):
+        history = _existing_dir(config_dir, task, _HISTORY_DIRNAME)
+        if history is None:
+            return []
+        versions = []
+        for entry in history.iterdir():
+            match = _HISTORY_FILE.fullmatch(entry.name)
+            if match:
+                versions.append(int(match.group(1)))
     return sorted(versions)
 
 
-def load_model(config_dir: Path, task: str) -> SiteModel | None:
+def load_model(
+    config_dir: Path,
+    task: str,
+    *,
+    host_allowed: Callable[[str], bool] | None = None,
+) -> SiteModel | None:
     """The task's current model, or None when none was saved."""
     validate_task_name(task)
-    path = _task_dir(config_dir, task) / _CURRENT_FILENAME
-    if not _exists(path):
-        return None
-    return _read_model(path, task)
+    with _filesystem("read the model"):
+        task_dir = _existing_dir(config_dir, task)
+        if task_dir is None or not _exists(task_dir / _CURRENT_FILENAME):
+            return None
+        model = _read_model(task_dir / _CURRENT_FILENAME, task)
+    newest = list_versions(config_dir, task)
+    if newest and model.version != newest[-1]:
+        raise SiteModelError(
+            f"Expected {_CURRENT_FILENAME} to be version {newest[-1]}, got {model.version} "
+            "(an earlier save was interrupted; save the model again)"
+        )
+    _check_hosts(model, host_allowed)
+    return model
 
 
-def load_version(config_dir: Path, task: str, version: int) -> SiteModel:
+def load_version(
+    config_dir: Path,
+    task: str,
+    version: int,
+    *,
+    host_allowed: Callable[[str], bool] | None = None,
+) -> SiteModel:
     """One saved version of the task's model."""
     validate_task_name(task)
-    path = _task_dir(config_dir, task) / _HISTORY_DIRNAME / _history_name(version)
-    if not _exists(path):
-        raise SiteModelError(f"Expected version {version} of the {task!r} model to exist, got none")
-    return _read_model(path, task)
+    with _filesystem("read the model"):
+        history = _existing_dir(config_dir, task, _HISTORY_DIRNAME)
+        path = None if history is None else history / _history_name(version)
+        if path is None or not _exists(path):
+            raise SiteModelError(
+                f"Expected version {version} of the {task!r} model to exist, got none"
+            )
+        model = _read_model(path, task)
+    if model.version != version:
+        raise SiteModelError(f"Expected version {version} in {path.name}, got {model.version}")
+    _check_hosts(model, host_allowed)
+    return model
 
 
 def save_model(
@@ -204,38 +237,32 @@ def save_model(
 ) -> SiteModel:
     """Validate and store `model` as the task's next version; returns it with that version."""
     validate_task_name(model.task)
-    _parse(model.to_payload(), model.task)
-    if host_allowed is not None:
-        for host in model.hosts:
-            if not host_allowed(host):
-                raise SiteModelError(
-                    f"Expected every host to be allowed for task {model.task!r}, got {host!r}"
-                )
-    root = ensure_private_dir(config_dir / _STORE_DIRNAME)
-    task_dir = ensure_private_dir(root / model.task)
-    history = ensure_private_dir(task_dir / _HISTORY_DIRNAME)
-    with _locked(task_dir):
-        previous = list_versions(config_dir, model.task)
-        version = (previous[-1] if previous else 0) + 1
-        stored = SiteModel(
-            blumkin_version=model.blumkin_version,
-            flows=model.flows,
-            hosts=model.hosts,
-            pages=model.pages,
-            recorded_at=model.recorded_at,
-            task=model.task,
-            version=version,
-        )
-        text = json.dumps(stored.to_payload(), indent=2, sort_keys=True) + "\n"
-        write_private(history / _history_name(version), text)
-        write_private(task_dir / _CURRENT_FILENAME, text)
+    try:
+        payload = model.to_payload()
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SiteModelError(f"Expected a well-formed model, got {type(exc).__name__}") from exc
+    parsed = _parse(payload, model.task)
+    _check_hosts(parsed, host_allowed)
+    with _filesystem("store the model"):
+        root = ensure_private_dir(config_dir / _STORE_DIRNAME)
+        task_dir = ensure_private_dir(root / model.task)
+        history = ensure_private_dir(task_dir / _HISTORY_DIRNAME)
+        with _locked(task_dir):
+            previous = list_versions(config_dir, model.task)
+            version = (previous[-1] if previous else 0) + 1
+            stored = replace(parsed, version=version)
+            text = json.dumps(stored.to_payload(), indent=2, sort_keys=True) + "\n"
+            write_private(history / _history_name(version), text)
+            _fsync_dir(history)
+            write_private(task_dir / _CURRENT_FILENAME, text)
+            _fsync_dir(task_dir)
     return stored
 
 
 _BIDI_AND_ZERO_WIDTH = re.compile("[؜​-‏‪-‮⁠⁦-⁩﻿]")
 _CURRENT_FILENAME = "model.json"
 _HISTORY_DIRNAME = "history"
-_HISTORY_FILE = re.compile(r"model-(\d{4,})\.json")
+_HISTORY_FILE = re.compile(r"model-([0-9]{4,})\.json")
 _HOST = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"
 )
@@ -250,8 +277,12 @@ _MAX_PAGES = 200
 _MAX_STEPS = 200
 _MAX_TEXT = 200
 _STORE_DIRNAME = "browser-models"
-_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
-_URL_TEMPLATE = re.compile(r"/[A-Za-z0-9._~/{}-]*")
+_TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+_DIGIT_RUN = re.compile("[0-9]{6,}")
+_PLAIN_FORBIDDEN = re.compile("[=\"'`]")
+_URL_SEGMENT = re.compile(
+    r"(?=.{1,30}$)[A-Za-z]+[0-9]{0,2}(?:[-_][A-Za-z]+[0-9]{0,2})*|\{[a-z][a-z0-9_]{0,40}\}"
+)
 
 
 def _at_most(items: Sequence[Any], limit: int, where: str) -> None:
@@ -311,10 +342,11 @@ def _history_name(version: int) -> str:
 
 def _host(value: Any, where: str) -> str:
     text = _text(value, where, max_len=253)
-    if not _HOST.fullmatch(text):
+    labels = text.split(".")
+    if not _HOST.fullmatch(text) or len(labels) < 2 or labels[-1].isdigit():
         raise SiteModelError(
-            f"Expected {where} to be a lowercase host name without scheme, port, path or "
-            f"user info, got {_shown(value)}"
+            f"Expected {where} to be a lowercase public-looking host name (at least two labels, "
+            f"no scheme, port, path, user info or IP address), got {_shown(value)}"
         )
     return text
 
@@ -341,9 +373,10 @@ def _list(value: Any, where: str) -> list[Any]:
 
 def _locator(data: Any, where: str) -> Locator:
     data = _keys(data, where, {"strategy", "value"})
+    strategy = _enum(LocatorStrategy, data["strategy"], f"{where}.strategy")
+    selector = strategy in {LocatorStrategy.ATTRIBUTE, LocatorStrategy.CSS}
     return Locator(
-        strategy=_enum(LocatorStrategy, data["strategy"], f"{where}.strategy"),
-        value=_text(data["value"], f"{where}.value"),
+        strategy=strategy, value=_text(data["value"], f"{where}.value", plain=not selector)
     )
 
 
@@ -369,19 +402,16 @@ def _page(data: Any, where: str) -> Page:
     names = [control.name for control in parsed]
     if len(set(names)) != len(names):
         raise SiteModelError(f"Expected unique control names in {where}, got a duplicate")
-    marks = [_text(item, f"{where}.fingerprint[{n}]") for n, item in enumerate(fingerprint)]
+    marks = [
+        _text(item, f"{where}.fingerprint[{n}]", plain=True) for n, item in enumerate(fingerprint)
+    ]
     return Page(
         controls=parsed,
         fingerprint=tuple(sorted(set(marks))),
         page_id=_text(
             data["page_id"], f"{where}.page_id", pattern=_LOGICAL_NAME, what="a logical name"
         ),
-        url_template=_text(
-            data["url_template"],
-            f"{where}.url_template",
-            pattern=_URL_TEMPLATE,
-            what="a path template without query, fragment, user info or escapes",
-        ),
+        url_template=_url_template(data["url_template"], f"{where}.url_template"),
     )
 
 
@@ -400,7 +430,7 @@ def _parse(payload: Any, task: str) -> SiteModel:
             "version",
         },
     )
-    if data["schema_version"] != SCHEMA_VERSION:
+    if type(data["schema_version"]) is not int or data["schema_version"] != SCHEMA_VERSION:
         raise SiteModelError(
             f"Expected schema_version {SCHEMA_VERSION}, got {_shown(data['schema_version'])} "
             "(this model needs a different blumkin version)"
@@ -446,7 +476,7 @@ def _parse(payload: Any, task: str) -> SiteModel:
 
 def _read_model(path: Path, task: str) -> SiteModel:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY)
     except OSError as exc:
         raise SiteModelError(
             f"Expected a regular file at {path}, got {type(exc).__name__} (a symlink is refused)"
@@ -462,16 +492,21 @@ def _read_model(path: Path, task: str) -> SiteModel:
             )
         raw = handle.read()
     try:
-        payload = json.loads(raw)
-    except ValueError as exc:
-        raise SiteModelError(f"Expected valid JSON in {path.name}, got a parse error") from exc
+        payload = json.loads(raw, object_pairs_hook=_no_duplicates, parse_constant=_no_constants)
+    except (ValueError, RecursionError, MemoryError) as exc:
+        raise SiteModelError(
+            f"Expected valid JSON without duplicate keys in {path.name}, got a parse error"
+        ) from exc
     return _parse(payload, task)
 
 
 def _shown(value: Any) -> str:
     """A short, safe rendering of a rejected value for an error message."""
-    text = repr(value)
-    return text if len(text) <= 40 else text[:37] + "..."
+    if value is None or isinstance(value, bool | int | float):
+        return repr(value)[:40]
+    if isinstance(value, str):
+        return repr(value[:37] + ("..." if len(value) > 37 else ""))
+    return f"a {type(value).__name__}"
 
 
 def _step(data: Any, where: str, pages: Mapping[str, Page], controls: set[str]) -> FlowStep:
@@ -490,7 +525,7 @@ def _step(data: Any, where: str, pages: Mapping[str, Page], controls: set[str]) 
             raise SiteModelError(f"Expected a page that exists in {where}, got {_shown(page)}")
     expect = data["expect"]
     if expect is not None:
-        expect = _text(expect, f"{where}.expect")
+        expect = _text(expect, f"{where}.expect", plain=True)
     return FlowStep(
         action=_text(
             data["action"], f"{where}.action", pattern=_LOGICAL_NAME, what="an action name"
@@ -511,6 +546,7 @@ def _text(
     *,
     max_len: int = _MAX_TEXT,
     pattern: re.Pattern[str] | None = None,
+    plain: bool = False,
     what: str = "text",
 ) -> str:
     if not isinstance(value, str) or not value:
@@ -519,12 +555,102 @@ def _text(
         raise SiteModelError(
             f"Expected {where} to be at most {max_len} characters, got {len(value)}"
         )
-    if _BIDI_AND_ZERO_WIDTH.search(value) or any(
-        unicodedata.category(char).startswith("C") for char in value
-    ):
+    if _BIDI_AND_ZERO_WIDTH.search(value) or any(_is_unprintable(char) for char in value):
         raise SiteModelError(
-            f"Expected {where} without control or bidirectional characters, got {_shown(value)}"
+            f"Expected {where} without control, separator or bidirectional characters, "
+            f"got {_shown(value)}"
+        )
+    if unicodedata.normalize("NFC", value) != value:
+        raise SiteModelError(f"Expected {where} in NFC form, got {_shown(value)}")
+    if _DIGIT_RUN.search(value):
+        raise SiteModelError(
+            f"Expected {where} without a run of six or more digits (it may be a typed value), "
+            f"got {_shown(value)}"
+        )
+    if plain and _PLAIN_FORBIDDEN.search(value):
+        raise SiteModelError(
+            f"Expected {where} without '=' or quotes (it may be a typed value), got {_shown(value)}"
         )
     if pattern is not None and not pattern.fullmatch(value):
         raise SiteModelError(f"Expected {where} to be {what}, got {_shown(value)}")
     return value
+
+
+def _check_hosts(model: SiteModel, host_allowed: Callable[[str], bool] | None) -> None:
+    if host_allowed is None:
+        return
+    for host in model.hosts:
+        if not host_allowed(host):
+            raise SiteModelError(
+                f"Expected every host to be allowed for task {model.task!r}, got {host!r}"
+            )
+
+
+def _existing_dir(config_dir: Path, *parts: str) -> Path | None:
+    """The store directory for the task (and `parts`), None if absent; a symlink is an error."""
+    path = config_dir / _STORE_DIRNAME
+    for name in (None, *parts):
+        path = path if name is None else path / name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(info.st_mode):
+            raise SiteModelError(f"Expected {path.name} to be a real directory, got a symlink")
+        if not stat.S_ISDIR(info.st_mode):
+            raise SiteModelError(f"Expected {path.name} to be a directory, got another file type")
+    return path
+
+
+@contextlib.contextmanager
+def _filesystem(action: str) -> Iterator[None]:
+    """Turn a filesystem failure while doing `action` into a `SiteModelError`."""
+    try:
+        yield
+    except OSError as exc:
+        raise SiteModelError(f"Expected to {action}, got {type(exc).__name__}") from exc
+
+
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _is_unprintable(char: str) -> bool:
+    category = unicodedata.category(char)
+    return (
+        category.startswith("C") or category in {"Zl", "Zp"} or (category == "Zs" and char != " ")
+    )
+
+
+def _no_constants(name: str) -> Any:
+    raise ValueError(f"unexpected constant {name}")
+
+
+def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
+
+
+def _url_template(value: Any, where: str) -> str:
+    text = _text(value, where)
+    segments = text.split("/")
+    if (
+        segments[0] != ""
+        or len(segments) < 2
+        or any(not _URL_SEGMENT.fullmatch(seg) for seg in segments[1:-1])
+        or not (_URL_SEGMENT.fullmatch(segments[-1]) or (segments[-1] == "" and len(segments) > 2))
+        and text != "/"
+    ):
+        raise SiteModelError(
+            f"Expected {where} to be a path of words and {{placeholders}} without query, "
+            f"fragment, user info, escapes or empty segments, got {_shown(value)}"
+        )
+    return text

@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import stat
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -373,3 +374,250 @@ def test_the_stored_json_is_deterministic(tmp_path: Path) -> None:
     second = (tmp_path / "browser-models" / "expense-report" / "model.json").read_text()
     assert json.loads(first)["version"] == 1 and json.loads(second)["version"] == 2
     assert first.replace('"version": 1', '"version": 2') == second
+
+
+# --- hardening from the independent review ---------------------------------------------------
+
+
+def _write_current(tmp_path: Path, payload: Any) -> None:
+    path = tmp_path / "browser-models" / "expense-report" / "model.json"
+    path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p["pages"][0]["controls"][0]["locators"][0].update(
+            strategy="label", value="Amount=12.50"
+        ),
+        lambda p: p["pages"][0]["controls"][0]["locators"][0].update(
+            strategy="role_name", value="button:'hunter2'"
+        ),
+        lambda p: p["pages"][0]["fingerprint"].append("textbox:Card 4111111111111111"),
+        lambda p: p["pages"][0]["controls"][0]["locators"][0].update(
+            strategy="css", value="input[value='1234567']"
+        ),
+        lambda p: p["flows"][0]["steps"][0].update(expect="Total 12345678"),
+        lambda p: p["pages"][0].update(url_template="/orders/Zm9vYmFyU0VTU0lPTg/line"),
+        lambda p: p["pages"][0].update(url_template="/orders/2026/line"),
+    ],
+    ids=[
+        "equals-in-label",
+        "quotes-in-role-name",
+        "digit-run-in-fingerprint",
+        "digit-run-in-css",
+        "digit-run-in-expect",
+        "token-path-segment",
+        "numeric-path-segment",
+    ],
+)
+def test_values_that_look_like_typed_data_are_refused_even_inside_allowed_fields(
+    tmp_path: Path, mutate: Any
+) -> None:
+    payload = _payload(tmp_path)
+    mutate(payload)
+    with pytest.raises(SiteModelError, match="Expected"):
+        _load_payload(tmp_path, payload)
+
+
+@pytest.mark.parametrize(
+    "template", ["/a/../x", "/a//x", "/a/{}/x", "/a/{b/x", "/a/b}/x", "/a/./x"]
+)
+def test_malformed_url_templates_are_refused(tmp_path: Path, template: str) -> None:
+    payload = _payload(tmp_path)
+    payload["pages"][0]["url_template"] = template
+    with pytest.raises(SiteModelError, match="Expected"):
+        _load_payload(tmp_path, payload)
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "1", None])
+def test_schema_version_must_be_the_integer_itself(tmp_path: Path, version: Any) -> None:
+    payload = _payload(tmp_path)
+    payload["schema_version"] = version
+    with pytest.raises(SiteModelError, match="schema_version"):
+        _load_payload(tmp_path, payload)
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["localhost", "127.0.0.1", "10.0.0.1", "intranet", "a.1234", "1.1.1.1", "erp.example.com."],
+)
+def test_hosts_that_are_not_public_looking_names_are_refused(tmp_path: Path, host: str) -> None:
+    payload = _payload(tmp_path)
+    payload["hosts"] = [host]
+    with pytest.raises(SiteModelError, match="Expected"):
+        _load_payload(tmp_path, payload)
+
+
+def test_loading_can_check_hosts_against_the_tasks_allowed_hosts_too(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    with pytest.raises(SiteModelError, match="erp.example.com"):
+        load_model(tmp_path, "expense-report", host_allowed=lambda host: False)
+    assert load_model(tmp_path, "expense-report", host_allowed=lambda host: True) is not None
+
+
+def test_deeply_nested_json_is_a_model_error_not_a_crash(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    _write_current(tmp_path, "[" * 100_000 + "]" * 100_000)
+    with pytest.raises(SiteModelError, match="Expected"):
+        load_model(tmp_path, "expense-report")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"task": "expense-report", "task": "time-sheet"}',
+        '{"version": NaN}',
+        '{"version": Infinity}',
+    ],
+    ids=["duplicate-key", "nan", "infinity"],
+)
+def test_duplicate_keys_and_non_finite_numbers_are_refused(tmp_path: Path, text: str) -> None:
+    save_model(tmp_path, _model())
+    _write_current(tmp_path, text)
+    with pytest.raises(SiteModelError, match="Expected"):
+        load_model(tmp_path, "expense-report")
+
+
+def test_a_fifo_in_place_of_the_model_file_does_not_hang_the_loader(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    path = tmp_path / "browser-models" / "expense-report" / "model.json"
+    path.unlink()
+    os.mkfifo(path)
+    outcome: list[BaseException] = []
+
+    def attempt() -> None:
+        try:
+            load_model(tmp_path, "expense-report")
+        except BaseException as exc:  # noqa: BLE001 - the thread reports whatever it got
+            outcome.append(exc)
+
+    worker = threading.Thread(target=attempt, daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the loader blocked on a FIFO"
+    assert isinstance(outcome[0], SiteModelError)
+    assert "regular file" in str(outcome[0])
+
+
+@pytest.mark.parametrize("which", ["root", "task"])
+def test_a_symlinked_store_or_task_directory_is_not_followed_when_loading(
+    tmp_path: Path, which: str
+) -> None:
+    save_model(tmp_path, _model())
+    root = tmp_path / "browser-models"
+    real = tmp_path / "real"
+    if which == "root":
+        root.rename(real)
+        root.symlink_to(real)
+    else:
+        (root / "expense-report").rename(real)
+        (root / "expense-report").symlink_to(real)
+    with pytest.raises(SiteModelError, match="symlink"):
+        load_model(tmp_path, "expense-report")
+    with pytest.raises(SiteModelError, match="symlink"):
+        list_versions(tmp_path, "expense-report")
+
+
+def test_filesystem_errors_while_saving_are_model_errors(tmp_path: Path) -> None:
+    (tmp_path / "browser-models").write_text("a file where the store directory belongs")
+    with pytest.raises(SiteModelError, match="Expected"):
+        save_model(tmp_path, _model())
+
+
+def test_a_temp_path_that_is_a_directory_is_a_model_error_not_a_crash(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    (tmp_path / "browser-models" / "expense-report" / "model.json.tmp").mkdir()
+    with pytest.raises(SiteModelError, match="Expected"):
+        save_model(tmp_path, _model())
+
+
+@pytest.mark.parametrize("bad", ["a b", "a b", "a b", "é"])
+def test_line_separators_nbsp_and_unnormalized_text_are_refused(tmp_path: Path, bad: str) -> None:
+    payload = _payload(tmp_path)
+    payload["pages"][0]["fingerprint"].append(f"button:{bad}")
+    with pytest.raises(SiteModelError, match="Expected"):
+        _load_payload(tmp_path, payload)
+
+
+def test_non_ascii_digits_do_not_count_as_a_version_or_a_timestamp(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    history = tmp_path / "browser-models" / "expense-report" / "history"
+    (history / "model-٠٠٠٥.json").write_text("{}")
+    assert list_versions(tmp_path, "expense-report") == [1]
+    payload = _payload(tmp_path)
+    payload["recorded_at"] = "٢026-10-24T12:00:00Z"
+    with pytest.raises(SiteModelError, match="Expected"):
+        _load_payload(tmp_path, payload)
+
+
+def test_a_history_file_whose_version_disagrees_with_its_name_is_refused(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    save_model(tmp_path, _model())
+    history = tmp_path / "browser-models" / "expense-report" / "history"
+    payload = json.loads((history / "model-0002.json").read_text())
+    payload["version"] = 7
+    (history / "model-0002.json").write_text(json.dumps(payload))
+    with pytest.raises(SiteModelError, match="Expected version 2"):
+        load_version(tmp_path, "expense-report", 2)
+
+
+def test_a_current_file_behind_the_newest_history_is_reported_not_silently_used(
+    tmp_path: Path,
+) -> None:
+    save_model(tmp_path, _model())
+    save_model(tmp_path, _model())
+    task_dir = tmp_path / "browser-models" / "expense-report"
+    (task_dir / "model.json").write_text((task_dir / "history" / "model-0001.json").read_text())
+    with pytest.raises(SiteModelError, match="Expected model.json to be version 2"):
+        load_model(tmp_path, "expense-report")
+
+
+def test_the_returned_model_is_what_a_reload_returns(tmp_path: Path) -> None:
+    messy = _model()
+    page = messy.pages[0]
+    messy = _model(
+        pages=(
+            Page(
+                page_id=page.page_id,
+                url_template=page.url_template,
+                fingerprint=("heading:Expenses", "button:Add line", "button:Add line"),
+                controls=page.controls,
+            ),
+            messy.pages[1],
+        )
+    )
+    saved = save_model(tmp_path, messy)
+    assert saved == load_model(tmp_path, "expense-report")
+    assert saved.pages[0].fingerprint == ("button:Add line", "heading:Expenses")
+
+
+def test_a_malformed_dataclass_is_a_model_error_not_an_attribute_error(tmp_path: Path) -> None:
+    broken = _model(
+        pages=(
+            Page(
+                page_id="list",
+                url_template="/x",
+                fingerprint=("a:b",),
+                controls=(Control(name="c.x", kind="slider", safety="safe", locators=()),),  # type: ignore[arg-type]
+            ),
+        )
+    )
+    with pytest.raises(SiteModelError, match="Expected"):
+        save_model(tmp_path, broken)
+
+
+def test_an_error_about_a_huge_value_does_not_render_the_whole_value(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    payload["task"] = ["x" * 1_000_000]
+    with pytest.raises(SiteModelError) as caught:
+        _load_payload(tmp_path, payload)
+    assert len(str(caught.value)) < 400
+
+
+def test_the_module_docstring_does_not_promise_more_than_the_schema_enforces() -> None:
+    from blumkin.browser import model
+
+    doc = " ".join((model.__doc__ or "").split())
+    assert "never holds" not in doc
+    assert "heuristic" in doc
