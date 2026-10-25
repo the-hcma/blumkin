@@ -312,3 +312,12 @@ def test_find_help_says_since_is_utc_and_shows_the_full_download_command() -> No
     assert "--message-id" in flat
     assert "--attachment-id" in flat
     assert "--out" in flat
+
+
+def test_the_listing_keeps_ordinary_spaces_so_a_copied_name_is_the_real_path(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "lunch  receipt.png").write_bytes(b"x")
+    result = CliRunner().invoke(main, ["receipts", "find", "--dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "lunch  receipt.png" in result.output

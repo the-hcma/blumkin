@@ -478,8 +478,7 @@ def _browser_profile_lines(payload: dict[str, Any]) -> list[str]:
 
 def _clean_line(text: str) -> str:
     """One printable line: whitespace collapsed, control and bidirectional characters gone."""
-    stripped = re.sub("[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", text)
-    return " ".join(sanitize_terminal(stripped).split())
+    return " ".join(sanitize_terminal(_strip_bidi(text)).split())
 
 
 def _orphaned_agent_lines(payload: dict[str, Any]) -> list[str]:
@@ -508,7 +507,9 @@ def _receipt_field_line(name: str, field: dict[str, Any]) -> str:
 
 
 def _receipt_file_line(entry: dict[str, Any]) -> str:
-    return f"{_clean_line(entry['name'])} ({entry['size']} bytes, {entry['modified']})"
+    # Spaces are kept as they are: the printed name is the one a user copies into `receipts read`.
+    name = sanitize_terminal(_strip_bidi(entry["name"]))
+    return f"{name} ({entry['size']} bytes, {entry['modified']})"
 
 
 def _shutdown_confirmed(response: dict[str, Any] | None) -> bool:
@@ -525,6 +526,11 @@ def _shutdown_confirmed(response: dict[str, Any] | None) -> bool:
     (PR #409 review: two of the three previously read it as a failure).
     """
     return bool(response and (response.get("ok") or response.get("error") == "protocol_mismatch"))
+
+
+def _strip_bidi(text: str) -> str:
+    """`text` without the bidirectional controls that can reorder or disguise what is shown."""
+    return re.sub("[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", text)
 
 
 def _stopped_orphan_lines(payload: dict[str, Any]) -> list[str]:
