@@ -1077,6 +1077,7 @@ async def mail_get(
             "from",
             "hasAttachments",
             "id",
+            "internetMessageHeaders",
             "internetMessageId",
             "isDraft",
             "isRead",
@@ -2254,6 +2255,7 @@ def _message_detail(msg: Any, *, wanted: MailBodyType) -> dict[str, Any]:
         "from_name": from_name,
         "has_attachments": bool(msg.has_attachments),
         "id": msg.id,
+        "headers": _internet_message_headers(msg),
         "injection_warning": scan_mail_message(body=body, subject=msg.subject),
         "internet_message_id": getattr(msg, "internet_message_id", None),
         "is_draft": bool(getattr(msg, "is_draft", False)),
@@ -2265,6 +2267,21 @@ def _message_detail(msg: Any, *, wanted: MailBodyType) -> dict[str, Any]:
         "web_link": getattr(msg, "web_link", None),
         **_meeting_fields(msg),
     }
+
+
+def _internet_message_headers(msg: Any) -> list[dict[str, str]]:
+    raw = getattr(msg, "internet_message_headers", None) or []
+    out: list[dict[str, str]] = []
+    for entry in raw:
+        name = getattr(entry, "name", None) or (
+            entry.get("name") if isinstance(entry, dict) else None
+        )
+        value = getattr(entry, "value", None) or (
+            entry.get("value") if isinstance(entry, dict) else None
+        )
+        if isinstance(name, str) and isinstance(value, str):
+            out.append({"name": name, "value": value})
+    return out
 
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:

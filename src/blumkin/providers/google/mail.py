@@ -819,6 +819,7 @@ def _message_detail(
         "from_name": from_name,
         "has_attachments": _payload_has_attachments(payload),
         "id": msg.get("id"),
+        "headers": [{"name": name, "value": value} for name, value in sorted(headers.items())],
         "injection_warning": scan_mail_message(body=body, subject=subject),
         "internet_message_id": headers.get("message-id"),
         "is_draft": "DRAFT" in label_ids,

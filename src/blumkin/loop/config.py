@@ -18,7 +18,17 @@ _NAME = re.compile(r"^[a-z0-9]([a-z0-9_-]{0,62}[a-z0-9])?$")
 _TRIGGER_KEYS_CRON = frozenset(
     {"default_hours", "instance", "schedule", "task", "timezone", "working_days_only"}
 )
-_TRIGGER_KEYS_LOOP = frozenset({"instance", "kind", "task"})
+_TRIGGER_KEYS_LOOP = frozenset(
+    {
+        "allowlist",
+        "attachment_types",
+        "instance",
+        "kind",
+        "profiles",
+        "subject_tag",
+        "task",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,7 +277,49 @@ def _loop_trigger(name: str, table: Any) -> TriggerSpec:
         raise LoopConfigError(
             f"loop.triggers.{name}.kind cannot be 'cron'; put schedules under [cron.{name}]"
         )
-    return TriggerSpec(instance=instance, kind=kind, name=name, task=task)
+    allowlist = _coerce_string_list(table.get("allowlist"), f"loop.triggers.{name}.allowlist")
+    attachment_types = _coerce_string_list(
+        table.get("attachment_types"), f"loop.triggers.{name}.attachment_types"
+    )
+    profiles = _coerce_string_list(table.get("profiles"), f"loop.triggers.{name}.profiles")
+    subject_raw = table.get("subject_tag")
+    subject_tag: str | None = None
+    if subject_raw is not None:
+        subject_tag = _require_string(subject_raw, f"loop.triggers.{name}.subject_tag")
+    if kind is TriggerKind.LOOP and not allowlist:
+        raise LoopConfigError(
+            f"loop.triggers.{name}.allowlist must list at least one sender email when kind is loop"
+        )
+    if kind is not TriggerKind.LOOP and (
+        allowlist or attachment_types or profiles or subject_tag is not None
+    ):
+        raise LoopConfigError(
+            f"loop.triggers.{name} mail fields (allowlist, attachment_types, profiles, "
+            "subject_tag) require kind = 'loop'"
+        )
+    return TriggerSpec(
+        allowlist=tuple(allowlist),
+        attachment_types=tuple(attachment_types),
+        instance=instance,
+        kind=kind,
+        name=name,
+        profiles=tuple(profiles),
+        subject_tag=subject_tag,
+        task=task,
+    )
+
+
+def _coerce_string_list(value: Any, label: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise LoopConfigError(f"{label} must be a list of strings in config.toml, got {value!r}")
+    out: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise LoopConfigError(f"{label} must be a list of non-empty strings in config.toml")
+        out.append(entry.strip())
+    return out
 
 
 def _require_string(value: Any, label: str) -> str:

@@ -57,6 +57,11 @@ class TriggerSpec:
     kind: TriggerKind
     name: str
     task: str
+    # Loop/mail-only: sender allowlist and optional filters (issue #503).
+    allowlist: tuple[str, ...] = ()
+    attachment_types: tuple[str, ...] = ()
+    profiles: tuple[str, ...] = ()
+    subject_tag: str | None = None
     # Cron-only: declared hours for the scheduled time-sheet entry (issue #502).
     default_hours: float | None = None
     schedule: str | None = None
@@ -70,6 +75,11 @@ class TriggerSpec:
             "name": self.name,
             "task": self.task,
         }
+        if self.kind is TriggerKind.LOOP:
+            payload["allowlist"] = list(self.allowlist)
+            payload["attachment_types"] = list(self.attachment_types)
+            payload["profiles"] = list(self.profiles)
+            payload["subject_tag"] = self.subject_tag
         if self.kind is TriggerKind.CRON:
             payload["default_hours"] = self.default_hours
             payload["schedule"] = self.schedule
