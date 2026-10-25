@@ -234,6 +234,7 @@ def test_the_url_check_would_catch_a_host_that_only_starts_with_an_allowed_one()
         "blumkin browser handoff expense-report --filled",
         "blumkin browser status -z",
         "blumkin -z browser status",
+        "blumkin browser fill expense-report Adjustment -5",
     ],
 )
 def test_the_command_checker_rejects_an_unknown_option_at_any_level(line: str) -> None:
@@ -248,7 +249,7 @@ def test_the_command_checker_rejects_an_unknown_option_at_any_level(line: str) -
         "blumkin --json browser profile list",
         "blumkin browser handoff expense-report --filled 'one line' --step 'review' --step 'press'",
         "blumkin receipts find --dir ~/receipts --since 2026-10-01 --limit 20 --json",
-        "blumkin browser fill expense-report Adjustment -5",
+        "blumkin browser fill expense-report Adjustment -- -5",
         "blumkin browser launch <task> --json",
     ],
 )

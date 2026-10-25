@@ -50,9 +50,7 @@ Flat top-level keys (no `[profiles.*]`) are not a valid `config.toml` layout - `
 
 Optional **operator-context files** (`email-context.md`, `tasks/<name>.md`) follow the same per-profile shape: a `<config-dir>` base, merged with the active profile's `profiles/<name>/…`. `people.context` / `tasks list` surface the merged result and flag cross-file conflicts. See [`operator-config.md`](./operator-config.md).
 
-For a recurring job, an agent should: `tasks list --json` → match the request to a template's `trigger` → **confirm the pick with the user** → `tasks show --name
-<it> --json` → run the returned `prompt` (fetching any input via `mail` / `drive`
-itself). blumkin selects nothing and runs no model.
+For a recurring job, an agent should: `tasks list --json` → match the request to a template's `trigger` → **confirm the pick with the user** → `tasks show --name <it> --json` → run the returned `prompt` (fetching any input via `mail` / `drive` itself). blumkin selects nothing and runs no model.
 
 ---
 

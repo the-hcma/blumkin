@@ -9,8 +9,6 @@ import click
 
 from blumkin.cli import main
 
-_NEGATIVE_NUMBER = re.compile(r"-\d+(?:\.\d+)?")
-
 
 def command_lines(text: str, groups: tuple[str, ...]) -> list[str]:
     """`blumkin <group> ...` lines from fenced code blocks and inline code spans."""
@@ -49,7 +47,7 @@ def unknown_parts(line: str) -> list[str]:
             else:
                 index += 1
             continue
-        if word.startswith("-") and not _NEGATIVE_NUMBER.fullmatch(word):
+        if word.startswith("-"):
             if word not in _known_options(command):
                 problems.append(f"unknown option {word!r} for {command.name!r} in: {line}")
             elif _takes_value(command, word):
@@ -58,7 +56,7 @@ def unknown_parts(line: str) -> list[str]:
                 index += 1
             index += 1
             continue
-        if word.startswith(("<", "$", "'", '"')) or _NEGATIVE_NUMBER.fullmatch(word):
+        if word.startswith(("<", "$", "'", '"')):
             index += 1
             continue
         if isinstance(command, click.Group):
