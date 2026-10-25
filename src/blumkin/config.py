@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ import tomlkit
 import tomlkit.exceptions
 
 from blumkin.browser.discovery import BrowserConfigError, parse_browser_kind
+from blumkin.browser.profiles import is_valid_task_name
 from blumkin.output import emit_warning
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
@@ -127,6 +129,25 @@ class BrowserConfig:
 
     #: "chrome", "edge" or "chromium"; None means the Chrome default.
     default: str | None = None
+    #: `[browser.tasks.<task>]`: what each browser task may click (issue #474).
+    tasks: dict[str, BrowserTaskPolicy] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserTaskPolicy:
+    """`[browser.tasks.<task>]`: the controls a task may click and extra names to refuse."""
+
+    #: Exact accessible names of the controls the task may click.
+    allowed_controls: tuple[str, ...] = ()
+    #: Host names the task's pages may be on (`erp.example.com`, or `*.example.com` for any
+    #: subdomain). Required for `upload`, so a receipt only ever goes to a declared site, and
+    #: restricts `goto` once declared.
+    allowed_hosts: tuple[str, ...] = ()
+    #: Added to the built-in finalizing words; the built-in list can never be shortened.
+    extra_deny_names: tuple[str, ...] = ()
+    #: Folders `upload` may read from (absolute, or starting with `~/`). Empty means no
+    #: upload at all: the default is deny.
+    upload_dirs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -499,6 +520,14 @@ def set_profile_fields(
         raise ProviderConfigError(f"could not write {config_path}: {exc}") from exc
 
 
+_HOST_PATTERN = re.compile(
+    r"(?:\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
+)
+_TASK_POLICY_KEYS = frozenset(
+    {"allowed_controls", "allowed_hosts", "extra_deny_names", "upload_dirs"}
+)
+
+
 def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]) -> BlumkinConfig:
     """Build a minimal ``BlumkinConfig`` sufficient to check ``auth_present``, nothing else.
 
@@ -562,21 +591,100 @@ def _account_type(file_data: dict[str, Any]) -> str:
 
 
 def _browser_config(file_data: dict[str, Any]) -> BrowserConfig:
-    """Parse the optional top-level `[browser]` table (issue #468)."""
+    """Parse the optional top-level `[browser]` table (issues #468 and #474)."""
     raw = file_data.get("browser")
     if raw is None:
         return BrowserConfig()
     if not isinstance(raw, dict):
         raise ProviderConfigError(f"[browser] must be a table in config.toml, got {raw!r}")
+    default: str | None = None
+    unknown = sorted(set(raw) - {"default", "tasks"})
+    if unknown:
+        raise ProviderConfigError(
+            f"browser has unknown key(s) {', '.join(unknown)} in config.toml; "
+            "expected default, tasks"
+        )
     value = raw.get("default")
-    if value is None:
-        return BrowserConfig()
-    if not isinstance(value, str):
-        raise ProviderConfigError(f"browser.default must be a string in config.toml, got {value!r}")
-    try:
-        return BrowserConfig(default=parse_browser_kind(value).value)
-    except BrowserConfigError as exc:
-        raise ProviderConfigError(f"browser.default in config.toml: {exc}") from exc
+    if value is not None:
+        if not isinstance(value, str):
+            raise ProviderConfigError(
+                f"browser.default must be a string in config.toml, got {value!r}"
+            )
+        try:
+            default = parse_browser_kind(value).value
+        except BrowserConfigError as exc:
+            raise ProviderConfigError(f"browser.default in config.toml: {exc}") from exc
+    return BrowserConfig(default=default, tasks=_browser_task_policies(raw.get("tasks")))
+
+
+def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ProviderConfigError(f"browser.tasks must be a table in config.toml, got {raw!r}")
+    policies: dict[str, BrowserTaskPolicy] = {}
+    for name, table in raw.items():
+        if not is_valid_task_name(str(name)):
+            raise ProviderConfigError(
+                f"browser.tasks has an invalid task name {name!r}; expected 1-64 lowercase "
+                "letters, digits, '-' or '_'"
+            )
+        if not isinstance(table, dict):
+            raise ProviderConfigError(
+                f"browser.tasks.{name} must be a table in config.toml, got {table!r}"
+            )
+        prefix = f"browser.tasks.{name}"
+        unknown = sorted(set(table) - _TASK_POLICY_KEYS)
+        if unknown:
+            raise ProviderConfigError(
+                f"{prefix} has unknown key(s) {', '.join(unknown)} in config.toml; "
+                f"expected {', '.join(sorted(_TASK_POLICY_KEYS))}"
+            )
+        upload_dirs = _string_list(table.get("upload_dirs"), f"{prefix}.upload_dirs")
+        for entry in upload_dirs:
+            if not (entry.startswith("/") or entry.startswith("~/")):
+                raise ProviderConfigError(
+                    f"{prefix}.upload_dirs must hold absolute folders or folders starting "
+                    f"with ~/ in config.toml, got {entry!r}"
+                )
+            if entry.startswith("~/"):
+                below = posixpath.normpath(entry[2:].lstrip("/"))
+                if below == "." or below == ".." or below.startswith("../"):
+                    raise ProviderConfigError(
+                        f"{prefix}.upload_dirs must stay below the home directory (not the whole "
+                        f"home or outside it) in config.toml, got {entry!r}"
+                    )
+            elif posixpath.normpath(entry) in {"/", "//"}:
+                raise ProviderConfigError(
+                    f"{prefix}.upload_dirs must not be the filesystem root in config.toml, "
+                    f"got {entry!r}"
+                )
+        hosts = tuple(
+            host.strip().lower()
+            for host in _string_list(table.get("allowed_hosts"), f"{prefix}.allowed_hosts")
+        )
+        for host in hosts:
+            if host.startswith("*.") and "." not in host[2:]:
+                raise ProviderConfigError(
+                    f"{prefix}.allowed_hosts wildcard must sit under a registrable domain such "
+                    f"as *.example.com in config.toml, got {host!r}"
+                )
+            if not _HOST_PATTERN.fullmatch(host):
+                raise ProviderConfigError(
+                    f"{prefix}.allowed_hosts must hold bare host names such as erp.example.com "
+                    f"or *.example.com in config.toml, got {host!r}"
+                )
+        policies[str(name)] = BrowserTaskPolicy(
+            allowed_hosts=hosts,
+            allowed_controls=_string_list(
+                table.get("allowed_controls"), f"{prefix}.allowed_controls"
+            ),
+            extra_deny_names=_string_list(
+                table.get("extra_deny_names"), f"{prefix}.extra_deny_names"
+            ),
+            upload_dirs=upload_dirs,
+        )
+    return policies
 
 
 def _client_id_from_google_oauth_file(path: Path) -> str:
@@ -1069,6 +1177,16 @@ def _resolve_profile_name(
         "multiple profiles configured; pass --profile / BLUMKIN_PROFILE, or set "
         f"default_profile; available: {available}"
     )
+
+
+def _string_list(value: Any, key: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ProviderConfigError(
+            f"{key} must be a list of non-empty strings in config.toml, got {value!r}"
+        )
+    return tuple(value)
 
 
 def _string_values(file_data: dict[str, Any]) -> dict[str, str]:

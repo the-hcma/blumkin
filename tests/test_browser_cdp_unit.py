@@ -20,6 +20,7 @@ from blumkin.browser.cdp import (
     BrowserAttachError,
     ControlInfo,
     attach,
+    checked_http_url,
     open_driver,
 )
 from blumkin.browser.profiles import (
@@ -690,3 +691,33 @@ def test_raw_press_sends_the_key_to_the_field_with_the_action_timeout() -> None:
     pw, driver = _driver()
     driver.raw_press("Amount", "Tab")
     assert ("press", "Amount", "Tab", 30000.0) in pw.page.calls
+
+
+def test_upload_refuses_a_path_that_is_not_already_fully_resolved(tmp_path: Path) -> None:
+    real = tmp_path / "real.png"
+    real.write_bytes(b"png")
+    link = tmp_path / "link.png"
+    link.symlink_to(real)
+    pw, driver = _driver()
+    with pytest.raises(BrowserActionError, match="resolved"):
+        driver.upload("Receipt", link)
+    assert pw.page.calls == []
+
+
+def test_goto_refuses_backslashes_user_info_and_control_characters() -> None:
+    pw, driver = _driver()
+    for url in (
+        "https://evil.example.net\\@good.example.com/",
+        "https://user@good.example.com/",
+        "https://good.example.com/\nx",
+        "https://good.example.com/ x",
+    ):
+        with pytest.raises(BrowserActionError, match="Expected"):
+            driver.goto(url)
+    assert pw.page.calls == []
+
+
+@pytest.mark.parametrize("url", ["http://[::1", "https://[", "http://[::1]x"])
+def test_a_malformed_url_is_an_action_error_not_a_value_error(url: str) -> None:
+    with pytest.raises(BrowserActionError, match="Expected"):
+        checked_http_url(url)

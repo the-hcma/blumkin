@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,18 @@ from blumkin.auth_setup import (
     console_steps,
     google_setup_from_client_json,
 )
+from blumkin.browser.actions import (
+    HostBlockedError,
+    UploadBlockedError,
+    click_task,
+    fill_task,
+    goto_task,
+    handoff_task,
+    press_task,
+    read_task,
+    upload_task,
+)
+from blumkin.browser.cdp import BrowserActionError, BrowserAttachError
 from blumkin.browser.commands import (
     TaskNotFoundError,
     create_task_profile,
@@ -45,6 +58,8 @@ from blumkin.browser.commands import (
     task_status,
 )
 from blumkin.browser.discovery import BrowserConfigError, BrowserNotFoundError
+from blumkin.browser.guard import SubmitBlockedError
+from blumkin.browser.handoff import HandoffError, format_handoff_human
 from blumkin.browser.launcher import BrowserLaunchError
 from blumkin.browser.profiles import BrowserProfileError, ProfileBusyError, ProfileInUseError
 from blumkin.capabilities import capability_summary
@@ -443,12 +458,44 @@ def _agent_version_skew(agent_version: object) -> dict[str, Any]:
     }
 
 
+def _browser_action(
+    ctx: click.Context,
+    as_json_flag: bool,
+    task: str,
+    call: Callable[[], dict[str, Any]],
+    done: str,
+) -> None:
+    """Run one guarded browser action and render its result."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = call()
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([f"{task}: {done}"])
+
+
 def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
     """Map a browser-command failure onto the standard error envelope and exit code."""
     hint: str | None = None
     if isinstance(exc, TaskNotFoundError):
         slug, code = "not_found", EXIT_NOT_FOUND
         hint = f"Create it first: `blumkin browser profile create {task or 'TASK'}`."
+    elif isinstance(exc, SubmitBlockedError):
+        slug, code = "submit_blocked", EXIT_OTHER
+    elif isinstance(exc, UploadBlockedError):
+        slug, code = "upload_blocked", EXIT_OTHER
+    elif isinstance(exc, HostBlockedError):
+        slug, code = "host_blocked", EXIT_OTHER
+    elif isinstance(exc, BrowserActionError):
+        slug, code = "browser_action_failed", EXIT_OTHER
+    elif isinstance(exc, BrowserAttachError):
+        slug, code = "browser_not_running", EXIT_OTHER
+        hint = f"Launch it first: `blumkin browser launch {task or 'TASK'}`, then sign in."
+    elif isinstance(exc, HandoffError):
+        slug, code = "usage_error", EXIT_USAGE
     elif isinstance(exc, BrowserNotFoundError):
         slug, code = "browser_not_found", EXIT_NOT_FOUND
     elif isinstance(exc, BrowserLaunchError):
@@ -1981,6 +2028,146 @@ def browser_launch(ctx: click.Context, task: str, as_json_flag: bool) -> None:
         )
     lines.append(payload["sign_in"])
     emit_lines(lines)
+
+
+@browser.command("click", epilog=help_text.BROWSER_CLICK_EPILOG)
+@click.argument("task")
+@click.argument("name")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--role", default="button", show_default=True, help="Accessible role of the control.")
+@click.pass_context
+def browser_click(ctx: click.Context, task: str, name: str, as_json_flag: bool, role: str) -> None:
+    """Click a control the task declared (never a submit or finalizing control)."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: click_task(load_browser_setup(), task, name, role),
+        "clicked",
+    )
+
+
+@browser.command("fill", epilog=help_text.BROWSER_FILL_EPILOG)
+@click.argument("task")
+@click.argument("label")
+@click.argument("value")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_fill(ctx: click.Context, task: str, label: str, value: str, as_json_flag: bool) -> None:
+    """Fill the field with that label (the value is not echoed)."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: fill_task(load_browser_setup(), task, label, value),
+        "filled",
+    )
+
+
+@browser.command("goto", epilog=help_text.BROWSER_GOTO_EPILOG)
+@click.argument("task")
+@click.argument("url")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_goto(ctx: click.Context, task: str, url: str, as_json_flag: bool) -> None:
+    """Open an http or https page in the task's browser."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: goto_task(load_browser_setup(), task, url),
+        "opened",
+    )
+
+
+@browser.command("handoff", epilog=help_text.BROWSER_HANDOFF_EPILOG)
+@click.argument("task")
+@click.option(
+    "--decision", "decisions", multiple=True, help="A decision the user still has to make."
+)
+@click.option("--filled", "filled", multiple=True, help="What the task filled in (repeatable).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--step", "steps", multiple=True, help="A final step for the user, in order.")
+@click.pass_context
+def browser_handoff(
+    ctx: click.Context,
+    task: str,
+    decisions: tuple[str, ...],
+    filled: tuple[str, ...],
+    as_json_flag: bool,
+    steps: tuple[str, ...],
+) -> None:
+    """End a task: filled in, never submitted; here is what you click next."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        result = handoff_task(task, decisions=decisions, filled=filled, steps=steps)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json({"ok": True, **result.to_payload()})
+        return
+    emit_lines(format_handoff_human(result).splitlines())
+
+
+@browser.command("press", epilog=help_text.BROWSER_PRESS_EPILOG)
+@click.argument("task")
+@click.argument("label")
+@click.argument("key")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_press(ctx: click.Context, task: str, label: str, key: str, as_json_flag: bool) -> None:
+    """Press a key in a field (Enter is refused: it submits a form)."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: press_task(load_browser_setup(), task, label, key),
+        "pressed",
+    )
+
+
+@browser.command("read", epilog=help_text.BROWSER_READ_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_read(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Read the page title, URL and visible text (untrusted data)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = read_task(load_browser_setup(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    lines = [f"{sanitize_terminal(payload['title'])} - {sanitize_terminal(payload['url'])}"]
+    lines.extend(format_injection_warning_banner(payload["injection_warning"]))
+    lines.extend(["", payload["untrusted"], ""])
+    lines.extend(sanitize_terminal(payload["text"]).splitlines())
+    if payload["truncated"]:
+        lines.extend(
+            ["", f"[truncated: only the first {len(payload['text'])} characters are shown]"]
+        )
+    emit_lines(lines)
+
+
+@browser.command("upload", epilog=help_text.BROWSER_UPLOAD_EPILOG)
+@click.argument("task")
+@click.argument("label")
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_upload(
+    ctx: click.Context, task: str, label: str, path: Path, as_json_flag: bool
+) -> None:
+    """Attach an existing file to the file field with that label."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: upload_task(load_browser_setup(), task, label, path),
+        "uploaded",
+    )
 
 
 @browser.group("profile", epilog=help_text.BROWSER_PROFILE_EPILOG)

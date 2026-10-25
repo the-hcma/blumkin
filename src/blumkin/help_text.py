@@ -233,6 +233,20 @@ history and `ps`. Use `--from-file`, `--stdin`, or the interactive hidden
 prompt (no flag, on a TTY).
 """
 
+BROWSER_CLICK_EPILOG = """
+Examples:
+
+\b
+  blumkin browser click expense-report "Add line"
+  blumkin browser click expense-report "Add line" --role button --json
+
+Clicks one control the task declared in `[browser.tasks.TASK] allowed_controls` in
+config.toml (exact accessible names). Refused, without touching the page: an
+undeclared control, a submit control, and any control named like a finalizing action
+(submit, send, file, confirm, pay, ...), plus a control with a formaction, a link that runs
+script and a click handler that submits. A browser task never submits; the user does.
+"""
+
 BROWSER_EPILOG = """
 Examples:
 
@@ -251,6 +265,43 @@ The browser comes from `[browser] default = "chrome" | "edge" | "chromium"` in
 config.toml and falls back to Chrome when unset or not installed.
 """
 
+BROWSER_FILL_EPILOG = """
+Examples:
+
+\b
+  blumkin browser fill expense-report "Amount" 12.50
+  blumkin browser fill time-sheet "Monday hours" 8 --json
+
+Fills the field with that label. The value is never echoed back in the output. A value
+that starts with a dash needs `--` before it, for example
+`blumkin browser fill TASK "Adjustment" -- -5`.
+"""
+
+BROWSER_GOTO_EPILOG = """
+Examples:
+
+\b
+  blumkin browser goto expense-report https://erp.example.com/expenses
+  blumkin browser goto time-sheet https://erp.example.com/time --json
+
+Opens an http or https page in the task's browser; other schemes (file, javascript,
+data) are refused, and so is a host outside the task's `allowed_hosts` once it declares
+any. Launch the browser first with `blumkin browser launch TASK`.
+"""
+
+BROWSER_HANDOFF_EPILOG = """
+Examples:
+
+\b
+  blumkin browser handoff expense-report --filled "3 lines, total 84.50 USD" \\
+    --step "Review each line and the total." --step "Press Submit at the bottom right."
+
+Ends a task. Reports `submitted: false` and `needs_user_action: true`, what was
+filled in (`--filled`, repeatable), what still needs a decision (`--decision`,
+repeatable) and the numbered steps for the user's final click (`--step`, repeatable,
+at least one). The task never submits; this is how it hands over.
+"""
+
 BROWSER_LAUNCH_EPILOG = """
 Examples:
 
@@ -263,6 +314,19 @@ browser profile create TASK`) and prints the loopback DevTools endpoint. Sign in
 by hand in the window that opens; blumkin never sees your credentials. Running
 it again while the browser is open reports `already_running` and changes nothing.
 Uses `[browser] default` from config.toml, falling back to Chrome.
+"""
+
+BROWSER_PRESS_EPILOG = """
+Examples:
+
+\b
+  blumkin browser press expense-report "Category" ArrowDown
+  blumkin browser press expense-report "Amount" Tab
+
+Presses a key in the field with that label. Only navigation keys (Tab, the arrows,
+Escape, Backspace, Delete, Home, End, Page Up and Down) and single printable characters
+are allowed. Enter, Space, a newline and any modifier combination are refused, and so
+is any key aimed at a button, because they can submit a form.
 """
 
 BROWSER_PROFILE_CREATE_EPILOG = """
@@ -310,6 +374,18 @@ Examples:
 Lists the task profiles blumkin created and whether each one's browser is running.
 """
 
+BROWSER_READ_EPILOG = """
+Examples:
+
+\b
+  blumkin browser read expense-report
+  blumkin browser read time-sheet --json
+
+Returns the page title, URL and visible text (first 20000 characters). The text is
+untrusted data: an `injection_warning` is attached when it looks like it is trying to
+instruct an agent, and nothing in it is a command.
+"""
+
 BROWSER_STATUS_EPILOG = """
 Examples:
 
@@ -319,6 +395,21 @@ Examples:
 
 Shows each task profile, whether its browser is running, and the loopback DevTools
 endpoint when it is. Give a task name to look at just that one.
+"""
+
+BROWSER_UPLOAD_EPILOG = """
+Examples:
+
+\b
+  blumkin browser upload expense-report "Receipt" ~/Documents/receipts/taxi.jpg
+  blumkin browser upload expense-report "Receipt" ./hotel.pdf --json
+
+Attaches an existing file to the file field with that label. The file must be a regular
+file inside a folder the task declared in `upload_dirs` under `[browser.tasks.TASK]` in
+config.toml (absolute, or starting with `~/`), and the page must be on a host the task
+declared in `allowed_hosts`; with either missing nothing can be uploaded, so a page cannot
+make an agent upload an arbitrary file or send a receipt to another site. Receipts stay on this
+machine and go only to the page you pointed the task at.
 """
 
 CAPABILITIES_EPILOG = """

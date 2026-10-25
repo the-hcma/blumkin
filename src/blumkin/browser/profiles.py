@@ -133,6 +133,11 @@ def delete_profile(
         ) from exc
 
 
+def is_valid_task_name(task: str) -> bool:
+    """True when `task` is a name `create_profile` accepts."""
+    return _TASK_NAME.fullmatch(task) is not None
+
+
 def list_profiles(config_dir: Path) -> list[BrowserProfile]:
     """Return the profiles blumkin created, sorted by task name."""
     root = config_dir / PROFILES_DIRNAME
