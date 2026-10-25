@@ -17,6 +17,7 @@ import tomlkit.exceptions
 
 from blumkin.browser.discovery import BrowserConfigError, parse_browser_kind
 from blumkin.browser.profiles import is_valid_task_name
+from blumkin.loop.config import LoopSetup
 from blumkin.output import emit_warning
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
 
@@ -419,6 +420,23 @@ def load_browser_setup() -> BrowserSetup:
             f"Expected a valid config.toml in {directory}, got: {exc}"
         ) from exc
     return BrowserSetup(browser=_browser_config(file_data), config_dir=directory)
+
+
+def load_loop_setup() -> LoopSetup:
+    """Read `[loop]` / `[cron.*]` from `config.toml` (no account profile involved)."""
+    from blumkin.loop.config import LoopConfigError, parse_loop_setup
+
+    directory = config_dir()
+    try:
+        file_data = _read_toml(directory / "config.toml")
+    except tomllib.TOMLDecodeError as exc:
+        raise ProviderConfigError(
+            f"Expected a valid config.toml in {directory}, got: {exc}"
+        ) from exc
+    try:
+        return parse_loop_setup(directory, file_data)
+    except LoopConfigError as exc:
+        raise ProviderConfigError(str(exc)) from exc
 
 
 def set_profile_email(
@@ -990,7 +1008,7 @@ def _profile_tables(
         stray = sorted(
             key
             for key in file_data
-            if key not in {"browser", "default_profile", "preferences", "profiles"}
+            if key not in {"browser", "cron", "default_profile", "loop", "preferences", "profiles"}
         )
         if stray:
             shown = ", ".join(stray)

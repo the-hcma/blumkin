@@ -1,0 +1,15 @@
+[Unit]
+Description=blumkin loop and cron runner (unattended browser tasks)
+Documentation=https://github.com/the-hcma/blumkin/issues/499
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=blumkin loop run
+Restart=on-failure
+RestartSec=10
+# Unattended: never wait on a TTY prompt.
+Environment=BLUMKIN_NONINTERACTIVE=1
+
+[Install]
+WantedBy=default.target

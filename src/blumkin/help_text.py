@@ -1186,6 +1186,97 @@ Examples:
 Renames in place - id, URL, and sharing are unchanged. Requires `--yes`.
 """
 
+LOOP_EPILOG = """
+Examples:
+
+\b
+  blumkin loop list
+  blumkin loop status
+  blumkin loop run-once probe-trigger
+  blumkin loop run
+
+One runner process owns loop (mail) and cron triggers that name a task and an
+instance (issue #499 / #501). Unattended runs never prompt: anything that would
+ask becomes `needs_user` and stops. A kill switch in config or a `loop/KILL`
+file stops every run. Triggers live in `[loop.triggers.*]` and `[cron.*]` in
+config.toml.
+"""
+
+LOOP_INSTALL_SERVICE_EPILOG = """
+Examples:
+
+\b
+  blumkin loop install-service
+  blumkin loop install-service --blumkin-path /usr/local/bin/blumkin
+
+Writes a systemd user unit (`blumkin-loop.service`) that runs `blumkin loop run`
+in the foreground. Enable with `systemctl --user enable --now blumkin-loop`.
+"""
+
+LOOP_LIST_EPILOG = """
+Examples:
+
+\b
+  blumkin loop list
+  blumkin loop list --json
+
+Lists every configured trigger (`[loop.triggers.*]` and `[cron.*]`) and whether
+it is paused.
+"""
+
+LOOP_PAUSE_EPILOG = """
+Examples:
+
+\b
+  blumkin loop pause eod-timesheet
+  blumkin loop pause eod-timesheet --json
+
+Pauses a trigger. Missed due times are not caught up on resume unless a later
+command asks for catch-up.
+"""
+
+LOOP_RESUME_EPILOG = """
+Examples:
+
+\b
+  blumkin loop resume eod-timesheet
+
+Clears the pause on a trigger. Does not replay missed runs by itself.
+"""
+
+LOOP_RUN_EPILOG = """
+Examples:
+
+\b
+  blumkin loop run
+
+Foreground runner for the systemd user service. Honors the kill switch; cron and
+mail feeders land in later issues. Stops on SIGTERM/SIGINT.
+"""
+
+LOOP_RUN_ONCE_EPILOG = """
+Examples:
+
+\b
+  blumkin loop run-once probe-trigger
+  blumkin loop run-once probe-trigger --json
+
+Runs one trigger now (manual dry run): serializes on the task instance, applies
+the wall-clock budget and retries, and appends one journal row (ids and outcome
+only).
+"""
+
+LOOP_STATUS_EPILOG = """
+Examples:
+
+\b
+  blumkin loop status
+  blumkin loop status --json
+
+Shows the kill switch, paused triggers, the last run per trigger, and recent
+journal rows.
+"""
+
 MAIL_ATTACHMENTS_DOWNLOAD_EPILOG = """
 Examples:
 
