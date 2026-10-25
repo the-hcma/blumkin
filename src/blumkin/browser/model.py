@@ -168,6 +168,15 @@ class SiteModelError(ValueError):
     """A model that cannot be stored or loaded, with the expectation it broke."""
 
 
+def is_storable_label(text: str) -> bool:
+    """Whether `text` may be stored as a label (a name, fingerprint entry or landmark)."""
+    try:
+        _text(text, "label", plain=True)
+    except SiteModelError:
+        return False
+    return True
+
+
 def list_versions(config_dir: Path, task: str) -> list[int]:
     """The saved versions of the task's model, oldest first."""
     validate_task_name(task)

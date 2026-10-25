@@ -76,7 +76,7 @@ def goto_task(config: BrowserSetup, task: str, url: str) -> dict[str, Any]:
     host = checked_http_url(url)
     declared = config.browser.tasks.get(task)
     hosts = declared.allowed_hosts if declared else ()
-    if hosts and not _host_allowed(host, hosts):
+    if hosts and not host_allowed(host, hosts):
         raise HostBlockedError(
             f"Expected a page on an allowed_hosts host of task {task!r}, got {host!r}"
         )
@@ -102,6 +102,20 @@ def handoff_task(
         summary=tuple(filled),
         task=task,
     )
+
+
+def host_allowed(host: str, patterns: Sequence[str]) -> bool:
+    """Exact host match, or `*.example.com` for any subdomain (not the bare domain)."""
+    lowered = host.lower().rstrip(".")
+    if not lowered:
+        return False
+    for pattern in patterns:
+        if pattern.startswith("*."):
+            if lowered.endswith(pattern[1:]) and len(lowered) > len(pattern) - 1:
+                return True
+        elif lowered == pattern:
+            return True
+    return False
 
 
 def press_task(config: BrowserSetup, task: str, label: str, key: str) -> dict[str, Any]:
@@ -175,7 +189,7 @@ def upload_task(config: BrowserSetup, task: str, label: str, path: Path) -> dict
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         page_host = urlsplit(driver.url).hostname or ""
-        if not _host_allowed(page_host, hosts):
+        if not host_allowed(page_host, hosts):
             raise UploadBlockedError(
                 f"Expected the page on an allowed_hosts host of task {task!r} before uploading, "
                 f"got {page_host or 'no host'!r}"
@@ -191,20 +205,6 @@ def _expand_home(text: str) -> Path:
     if text.startswith("~") and not text.startswith("~/"):
         raise UploadBlockedError(f"Expected an absolute path or one starting with ~/, got {text!r}")
     return Path(text).expanduser()
-
-
-def _host_allowed(host: str, patterns: Sequence[str]) -> bool:
-    """Exact host match, or `*.example.com` for any subdomain (not the bare domain)."""
-    lowered = host.lower().rstrip(".")
-    if not lowered:
-        return False
-    for pattern in patterns:
-        if pattern.startswith("*."):
-            if lowered.endswith(pattern[1:]) and len(lowered) > len(pattern) - 1:
-                return True
-        elif lowered == pattern:
-            return True
-    return False
 
 
 def _one_line(text: str) -> str:
@@ -236,7 +236,7 @@ def _require_allowed_page(
         return
     parts = urlsplit(driver.url)
     host = parts.hostname or "" if parts.scheme in ("http", "https") else ""
-    if not _host_allowed(host, hosts):
+    if not host_allowed(host, hosts):
         raise HostBlockedError(
             f"Expected the page to be on an allowed_hosts host of task {task!r} after {when}, "
             f"got {host or 'no host'!r}"

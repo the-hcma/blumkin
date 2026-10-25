@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -198,6 +198,11 @@ _NAVIGATION_KEYS = frozenset(
 )
 _SCRIPT_SCHEMES = ("data:", "javascript:", "vbscript:")
 _ZERO_WIDTH = dict.fromkeys(map(ord, "​‌‍⁠﻿"))
+
+
+def is_finalizing_name(name: str, extra_deny: Sequence[str] = ()) -> bool:
+    """Whether a control name starts a finalizing word (submit, send, pay, ...)."""
+    return _is_denied(name, _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny)))
 
 
 def _deny_stems(words: tuple[str, ...]) -> tuple[str, ...]:
