@@ -254,6 +254,21 @@ class PlaywrightDriver:
             raise self._action_error("restrict navigation to the allowed hosts", exc) from exc
         self._navigation_handler = handler
 
+    def settle(self, previous_url: str, timeout_s: float = 5.0) -> None:
+        """Wait for a navigation the last action started: the URL moving on, then the load.
+
+        A click returns before the page it triggered has committed, so a URL read straight
+        away can still be the old one. This waits up to a second for the URL to differ from
+        `previous_url` (it returns at once if it already does, or when a navigation commits),
+        then up to `timeout_s` for the load. Neither timeout is an error: a click that does
+        not navigate leaves the URL alone, and a swallowed form POST never commits.
+        """
+        self._require_open()
+        with contextlib.suppress(PlaywrightError):
+            self._page.wait_for_url(lambda url: url != previous_url, timeout=1000)
+        with contextlib.suppress(PlaywrightError):
+            self._page.wait_for_load_state("load", timeout=timeout_s * 1000)
+
     def title(self) -> str:
         self._require_open()
         try:

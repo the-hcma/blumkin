@@ -353,6 +353,8 @@ class _Raw:
         self.clicked: list[tuple[str, str]] = []
         self.closed = 0
         self.restricted: Any = None
+        self.settled = 0
+        self.settled_from = ""
 
     def block_form_submission(self) -> None:
         self.net += 1
@@ -362,6 +364,10 @@ class _Raw:
 
     def restrict_navigation(self, is_allowed: Any) -> None:
         self.restricted = is_allowed
+
+    def settle(self, previous_url: str) -> None:
+        self.settled += 1
+        self.settled_from = previous_url
 
     def checked_click(self, name: str, role: str, vet: Any) -> None:
         vet(self.info)

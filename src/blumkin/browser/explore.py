@@ -112,6 +112,8 @@ class ExploreRawDriver(Protocol):
 
     def restrict_navigation(self, is_allowed: Callable[[str], bool]) -> None: ...
 
+    def settle(self, previous_url: str) -> None: ...
+
 
 class ExploreRefusedError(RuntimeError):
     """Exploration refused to do something (an off-host page, a control it will not click)."""
@@ -230,7 +232,9 @@ class ExploringDriver:
                     "that changed since"
                 )
 
+        before = self._raw.url
         self._raw.checked_click(name, role, vet)
+        self._raw.settle(before)
 
     def close(self) -> None:
         self._raw.close()

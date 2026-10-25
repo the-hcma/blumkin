@@ -15,13 +15,14 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from click.testing import CliRunner
 
 from blumkin.browser.cdp import attach
 from blumkin.browser.discovery import BrowserNotFoundError, resolve_browser
+from blumkin.browser.explore import Explorer, ExploreRefusedError, ExploringDriver, Inspection
 from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError
 from blumkin.browser.launcher import launch
 from blumkin.browser.profiles import create_profile, read_session
@@ -85,15 +86,36 @@ _TIMESHEET_FORM = b"""<!doctype html><title>Time sheet</title>
 </form>"""
 
 
+def _explore_page(port: int) -> bytes:
+    return (
+        "<!doctype html><title>Explore</title><h1>Expenses</h1>"
+        '<a href="/help">Help</a>'
+        f'<a href="http://localhost:{port}/elsewhere">Other host</a>'
+        '<a href="/redir">Redirecting</a>'
+        '<form action="/submit" method="post"><label for="a">Amount</label>'
+        '<input id="a" name="a"><button type="button">Add line</button>'
+        '<button type="submit">Submit report</button></form>'
+    ).encode()
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     posts: list[str] = []
+    hosts: list[str] = []
 
     def do_GET(self) -> None:
+        port = cast(tuple[str, int], self.server.server_address)[1]
+        type(self).hosts.append(f"{self.headers.get('Host', '')} {self.path}")
+        if self.path == "/redir":
+            self.send_response(302)
+            self.send_header("Location", f"http://localhost:{port}/landing")
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
         pages = {
             "/bypass": _BYPASS_FORM,
+            "/explore": _explore_page(port),
             "/expense": _EXPENSE_FORM,
             "/report": _SUBMIT_FORM,
             "/timesheet": _TIMESHEET_FORM,
@@ -112,6 +134,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 @pytest.fixture
 def form_url() -> Iterator[str]:
     _Handler.posts = []
+    _Handler.hosts = []
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -381,5 +404,64 @@ def test_the_time_sheet_skill_dry_run_fills_the_hours_and_ends_in_the_handoff(
         payload = json.loads(handoff.output)
         assert payload["submitted"] is False
         assert _Handler.posts == []
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+class _NoQuestions:
+    def confirm(self, prompt: str) -> bool:
+        raise AssertionError(f"nothing here should ask: {prompt}")
+
+
+def test_exploration_reads_a_real_page_inspects_without_clicking_and_stays_on_the_host(
+    tmp_path: Path, form_url: str
+) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    try:
+        browser = resolve_browser(None)
+    except BrowserNotFoundError:
+        pytest.skip("no Chrome, Edge or Chromium installed")
+    profile = create_profile(tmp_path, "expense-report")
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    try:
+        raw = attach(profile)
+        raw.goto(form_url + "explore")
+        driver = ExploringDriver(raw, allowed_hosts=("127.0.0.1",))
+        snapshot = driver.aria_snapshot()
+        assert 'link "Help"' in snapshot
+        assert 'button "Add line"' in snapshot
+        assert 'textbox "Amount"' in snapshot
+
+        assert driver.inspect("link", "Help") == Inspection(refusal=None, href="/help", tag="a")
+        assert driver.inspect("button", "Submit report").refusal == "it is a submit control"
+        assert driver.url == form_url + "explore"
+        assert _Handler.posts == []
+
+        explorer = Explorer(driver, _NoQuestions(), allowed_hosts=("127.0.0.1",))
+        assert explorer.click("link", "Help") is True
+        assert driver.url == form_url + "help"
+        raw.goto(form_url + "explore")
+
+        # A link to another host is refused before it is clicked.
+        assert explorer.click("link", "Other host") is False
+        assert "localhost" in explorer.last_outcome
+
+        # Even clicked directly, the navigation is aborted before the request reaches that host.
+        inspection = driver.inspect("link", "Other host")
+        try:
+            driver.click_vetted("link", "Other host", inspection)
+        except Exception:  # noqa: BLE001 - an aborted navigation may surface as an error
+            pass
+        assert not any(entry.startswith("localhost") for entry in _Handler.hosts), _Handler.hosts
+
+        # A redirect from an allowed host to another one is not intercepted (the browser follows
+        # it inside its network stack), so the other host does see that GET. It is detected as
+        # soon as the click settles, and the command says the click happened.
+        raw.goto(form_url + "explore")
+        with pytest.raises(ExploreRefusedError, match="click happened"):
+            explorer.click("link", "Redirecting")
+        assert _Handler.posts == []
+        driver.close()
     finally:
         os.kill(result.session.pid, signal.SIGTERM)
