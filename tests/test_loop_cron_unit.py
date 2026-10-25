@@ -107,6 +107,56 @@ def test_invalid_cron_rejected_at_parse(tmp_path: Path) -> None:
         )
 
 
+def test_monthly_schedule_catch_up_beyond_eight_days() -> None:
+    spec = TriggerSpec(
+        instance="current",
+        kind=TriggerKind.CRON,
+        name="monthly",
+        schedule="0 18 1 * *",
+        task="time-sheet",
+        timezone="UTC",
+        working_days_only=False,
+    )
+    # Mid-month: latest due is the 1st at 18:00.
+    now = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
+    due = next_due_at_or_before(spec, now, after=None)
+    assert due == datetime(2026, 10, 1, 18, 0, tzinfo=UTC)
+
+
+def test_dom_or_dow_when_both_restricted() -> None:
+    spec = TriggerSpec(
+        instance="current",
+        kind=TriggerKind.CRON,
+        name="either",
+        schedule="0 18 1 * 1",
+        task="time-sheet",
+        timezone="UTC",
+        working_days_only=False,
+    )
+    # Monday 2026-10-19 is not the 1st — still due under OR rule.
+    now = datetime(2026, 10, 19, 19, 0, tzinfo=UTC)
+    due = next_due_at_or_before(spec, now, after=None)
+    assert due == datetime(2026, 10, 19, 18, 0, tzinfo=UTC)
+
+
+def test_default_hours_rejects_nan(tmp_path: Path) -> None:
+    with pytest.raises(LoopConfigError, match="finite"):
+        parse_loop_setup(
+            tmp_path,
+            {
+                "cron": {
+                    "eod": {
+                        "task": "time-sheet",
+                        "instance": "current",
+                        "schedule": "0 18 * * 1-5",
+                        "timezone": "UTC",
+                        "default_hours": float("nan"),
+                    }
+                }
+            },
+        )
+
+
 def test_timezone_shifts_local_wall_clock() -> None:
     spec = TriggerSpec(
         instance="current",

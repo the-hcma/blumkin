@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -149,6 +150,11 @@ def _cron_trigger(name: str, table: Any) -> TriggerSpec:
     default_hours: float | None = None
     if hours_raw is not None:
         default_hours = _coerce_float(hours_raw, f"cron.{name}.default_hours", minimum=0.0)
+        if not math.isfinite(default_hours):
+            raise LoopConfigError(
+                f"cron.{name}.default_hours must be a finite number in config.toml, "
+                f"got {default_hours}"
+            )
         if default_hours > 24:
             raise LoopConfigError(
                 f"cron.{name}.default_hours must be <= 24 in config.toml, got {default_hours}"

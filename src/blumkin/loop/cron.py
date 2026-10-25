@@ -41,6 +41,8 @@ class _Schedule:
     dom: frozenset[int]
     months: frozenset[int]
     dow: frozenset[int]
+    dom_star: bool
+    dow_star: bool
 
 
 def due_fires(
@@ -109,16 +111,21 @@ def next_due_at_or_before(
         raise CronError(
             f"cron.{spec.name}.timezone is not a valid IANA zone: {spec.timezone}"
         ) from exc
-    local_now = now.astimezone(zone)
-    # Walk back at most 8 days of minutes to find the latest matching tick.
-    cursor = local_now.replace(second=0, microsecond=0)
-    earliest = cursor - timedelta(days=8)
     schedule = _parse_schedule(spec.schedule, label=f"cron.{spec.name}.schedule")
+    # Walk real UTC minutes so DST gaps/folds cannot invent local wall times.
+    cursor = now.astimezone(UTC).replace(second=0, microsecond=0)
+    # Cover monthly (and denser) schedules; if last-due is older, walk back to it.
+    lookback_days = 400
+    earliest = cursor - timedelta(days=lookback_days)
+    if after is not None:
+        after_utc = after.astimezone(UTC)
+        if after_utc < earliest:
+            earliest = after_utc
     while cursor >= earliest:
-        if _matches(schedule, cursor) and _working_day_ok(spec, cursor):
-            utc_tick = cursor.astimezone(UTC)
-            if after is None or utc_tick > after.astimezone(UTC):
-                return utc_tick
+        local = cursor.astimezone(zone)
+        if _matches(schedule, local) and _working_day_ok(spec, local):
+            if after is None or cursor > after.astimezone(UTC):
+                return cursor
         cursor -= timedelta(minutes=1)
     return None
 
@@ -141,13 +148,16 @@ def validate_cron_trigger(spec: TriggerSpec) -> None:
 def _matches(schedule: _Schedule, when: datetime) -> bool:
     # cron dow: 0=Sunday … 6=Saturday; datetime.weekday(): Monday=0 … Sunday=6.
     cron_dow = (when.weekday() + 1) % 7
-    return (
-        when.minute in schedule.minutes
-        and when.hour in schedule.hours
-        and when.day in schedule.dom
-        and when.month in schedule.months
-        and cron_dow in schedule.dow
-    )
+    if when.minute not in schedule.minutes or when.hour not in schedule.hours:
+        return False
+    if when.month not in schedule.months:
+        return False
+    dom_ok = when.day in schedule.dom
+    dow_ok = cron_dow in schedule.dow
+    # POSIX: when both day-of-month and day-of-week are restricted, match either.
+    if not schedule.dom_star and not schedule.dow_star:
+        return dom_ok or dow_ok
+    return dom_ok and dow_ok
 
 
 def _parse_field(raw: str, minimum: int, maximum: int, *, label: str) -> frozenset[int]:
@@ -194,6 +204,8 @@ def _parse_schedule(expression: str, *, label: str) -> _Schedule:
         dom=_parse_field(parts[2], 1, 31, label=label),
         months=_parse_field(parts[3], 1, 12, label=label),
         dow=_parse_field(parts[4], 0, 6, label=label),
+        dom_star=parts[2].strip() == "*",
+        dow_star=parts[4].strip() == "*",
     )
 
 
