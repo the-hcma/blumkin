@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from cli_doc_commands import command_lines, unknown_parts
@@ -27,6 +28,14 @@ _DOCS = [
     ".agents/skills/expense-report/SKILL.md",
     ".agents/skills/time-sheet/SKILL.md",
 ]
+
+
+def _url_hosts(text: str) -> set[str]:
+    """The hostname of every http(s) URL in `text`, as a URL parser reads it."""
+    return {
+        urlsplit(url.rstrip(".,;)")).hostname or ""
+        for url in re.findall(r"https?://[^\s`'\"<>]+", text)
+    }
 
 
 def _text(relative: str) -> str:
@@ -87,9 +96,7 @@ def test_the_guide_error_table_covers_every_error_the_commands_emit() -> None:
 
 def test_no_example_in_the_guide_uses_a_real_site_or_address() -> None:
     guide = _text("docs/browser-tasks.md")
-    hosts = {
-        host.split(":")[0].rstrip(".,;)") for host in re.findall(r"https?://([^\s/)`'\"]+)", guide)
-    }
+    hosts = _url_hosts(guide)
     assert hosts <= _ALLOWED_EXAMPLE_HOSTS, hosts - _ALLOWED_EXAMPLE_HOSTS
     assert "@" not in guide
 
@@ -209,11 +216,11 @@ def test_the_security_page_and_agent_guide_do_not_overclaim() -> None:
 
 
 def test_the_url_check_would_catch_a_host_that_only_starts_with_an_allowed_one() -> None:
-    sample = "see https://example.com.evil.test/x and https://erp.example.com/ok"
-    hosts = {
-        host.split(":")[0].rstrip(".,;)") for host in re.findall(r"https?://([^\s/)`'\"]+)", sample)
-    }
-    assert hosts - _ALLOWED_EXAMPLE_HOSTS == {"example.com.evil.test"}
+    sample = (
+        "see https://example.com.evil.test/x, https://example.com:443@evil.test/form "
+        "and https://erp.example.com/ok"
+    )
+    assert _url_hosts(sample) - _ALLOWED_EXAMPLE_HOSTS == {"example.com.evil.test", "evil.test"}
 
 
 @pytest.mark.parametrize(
@@ -223,6 +230,10 @@ def test_the_url_check_would_catch_a_host_that_only_starts_with_an_allowed_one()
         "blumkin --bogus browser status",
         "blumkin browser profile --nope list",
         "blumkin browser status --nope",
+        "blumkin --profile",
+        "blumkin browser handoff expense-report --filled",
+        "blumkin browser status -z",
+        "blumkin -z browser status",
     ],
 )
 def test_the_command_checker_rejects_an_unknown_option_at_any_level(line: str) -> None:
@@ -237,6 +248,8 @@ def test_the_command_checker_rejects_an_unknown_option_at_any_level(line: str) -
         "blumkin --json browser profile list",
         "blumkin browser handoff expense-report --filled 'one line' --step 'review' --step 'press'",
         "blumkin receipts find --dir ~/receipts --since 2026-10-01 --limit 20 --json",
+        "blumkin browser fill expense-report Adjustment -5",
+        "blumkin browser launch <task> --json",
     ],
 )
 def test_the_command_checker_accepts_real_options_and_their_values(line: str) -> None:
