@@ -58,8 +58,14 @@ def _default_unit_dir() -> Path:
 
 
 def _quote_exec(path: str) -> str:
-    """Quote an ExecStart executable so spaces stay one argument."""
-    if any(ch in path for ch in ' \t"\\'):
-        escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+    """Quote an ExecStart executable so spaces stay one argument.
+
+    Rejects control characters that would break the unit file line. Escapes
+    systemd `%` specifiers and `$` env expansion so a literal path survives.
+    """
+    if any(ch in path for ch in "\0\n\r"):
+        raise LoopServiceError("blumkin executable path must not contain NUL, CR, or LF characters")
+    escaped = path.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$")
+    if escaped != path or any(ch in path for ch in ' \t"\\'):
         return f'"{escaped}"'
     return path

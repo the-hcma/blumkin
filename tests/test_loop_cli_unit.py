@@ -133,3 +133,19 @@ def test_unit_text_quotes_paths_with_spaces() -> None:
 
     text = unit_text("/opt/my tools/blumkin")
     assert 'ExecStart="/opt/my tools/blumkin" loop run' in text
+
+
+def test_unit_text_escapes_systemd_specifiers() -> None:
+    from blumkin.loop.service import unit_text
+
+    text = unit_text("/opt/blum%kin/$bin")
+    assert 'ExecStart="/opt/blum%%kin/$$bin" loop run' in text
+
+
+def test_unit_text_rejects_control_characters() -> None:
+    import pytest
+
+    from blumkin.loop.service import LoopServiceError, unit_text
+
+    with pytest.raises(LoopServiceError, match="NUL, CR, or LF"):
+        unit_text("/opt/blumkin\nbin")

@@ -114,6 +114,13 @@ def test_foreground_requeues_tail_when_dispatch_raises(tmp_path: Path) -> None:
     assert peek_queue(tmp_path) == ["b"]
 
 
+def test_list_runs_limit_zero_is_empty(tmp_path: Path) -> None:
+    setup = _setup(tmp_path)
+    run_trigger(setup, "probe-trigger")
+    assert list_runs(tmp_path, limit=0) == []
+    assert len(list_runs(tmp_path, limit=1)) == 1
+
+
 def test_run_once_probe_journals_done(tmp_path: Path) -> None:
     setup = _setup(tmp_path)
     result = run_trigger(setup, "probe-trigger")

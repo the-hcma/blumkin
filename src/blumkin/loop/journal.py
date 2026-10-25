@@ -87,7 +87,7 @@ def list_runs(config_dir: Path, *, limit: int | None = None) -> list[RunRecord]:
             _maybe_compact(path)
         records = _read_records(path, allow_oversize=False)
     if limit is not None and limit >= 0:
-        records = records[-limit:]
+        records = records[-limit:] if limit else []
     return records
 
 
