@@ -113,6 +113,7 @@ class PlaywrightDriver:
         self._closed = False
         self._context = page.context
         self._net_installed = False
+        self._navigation_handler: Any = None
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -124,6 +125,9 @@ class PlaywrightDriver:
             return
         self._closed = True
         try:
+            if self._navigation_handler is not None:
+                with contextlib.suppress(PlaywrightError):
+                    self._context.unroute("**/*", self._navigation_handler)
             if self._net_installed:
                 with contextlib.suppress(PlaywrightError):
                     self._context.unroute("**/*", _abort_non_get_navigation)
@@ -223,6 +227,32 @@ class PlaywrightDriver:
             text=text,
             injection_warning=scan_for_injection(text, location="page.text").to_payload(),
         )
+
+    def restrict_navigation(self, is_allowed: Callable[[str], bool]) -> None:
+        """Abort every main-frame navigation to a host `is_allowed` refuses, before it loads.
+
+        Pages that are not web addresses (`about:blank`, an error page) and requests that are
+        not navigations (scripts, images, background calls) are left alone. Like the
+        form-submission net, the route lives only on this connection.
+        """
+        self._require_open()
+        if self._navigation_handler is not None:
+            return
+
+        def handler(route: Any) -> None:
+            request = route.request
+            if request.is_navigation_request() and request.frame.parent_frame is None:
+                parts = urlsplit(request.url)
+                if parts.scheme in ("http", "https") and not is_allowed(parts.hostname or ""):
+                    route.abort()
+                    return
+            route.fallback()
+
+        try:
+            self._context.route("**/*", handler)
+        except PlaywrightError as exc:
+            raise self._action_error("restrict navigation to the allowed hosts", exc) from exc
+        self._navigation_handler = handler
 
     def title(self) -> str:
         self._require_open()

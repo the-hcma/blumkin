@@ -21,7 +21,6 @@ from blumkin import __version__
 from blumkin.browser.actions import host_allowed
 from blumkin.browser.commands import require_profile
 from blumkin.browser.explore import (
-    ClickDecision,
     DraftNotFoundError,
     ExploreNeedsConfirmationError,
     Explorer,
@@ -35,8 +34,8 @@ from blumkin.browser.model import (
     SiteModel,
     discard_draft,
     load_draft,
-    save_draft,
     save_model,
+    update_draft,
 )
 from blumkin.browser.profiles import validate_task_name
 from blumkin.config import BrowserSetup
@@ -50,17 +49,22 @@ def explore_click(
     profile = require_profile(config.config_dir, task)
     confirmer = TerminalConfirmer()
     decision = decide_click(role, name, extra_deny=extra_deny)
-    with contextlib.closing(attach_exploring(profile)) as driver:
+    with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
         explorer = Explorer(driver, confirmer, allowed_hosts=hosts, extra_deny=extra_deny)
         clicked = explorer.click(role, name)
+    outcome = explorer.last_outcome
     unavailable = bool(getattr(confirmer, "unavailable", False))
+    timed_out = bool(getattr(confirmer, "timed_out", False))
     recorded = clicked and page_id is not None and _record_step(config, task, page_id, role, name)
     return {
         "clicked": clicked,
         "decision": decision.value,
-        "hint": _click_hint(task, name, role, decision, clicked, unavailable),
+        "hint": _click_hint(
+            task, name, role, outcome, unavailable=unavailable, timed_out=timed_out
+        ),
         "name": name,
         "ok": True,
+        "outcome": outcome,
         "recorded_step": recorded,
         "role": role,
         "terminal_unavailable": unavailable,
@@ -73,26 +77,35 @@ def explore_discard(config: BrowserSetup, task: str) -> dict[str, Any]:
 
 
 def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, Any]:
-    """Add the page the task's browser is on to the draft."""
+    """Add the page the task's browser is on to the draft (continuing a stored model)."""
     hosts, extra_deny = _policy(config, task)
     profile = require_profile(config.config_dir, task)
-    with contextlib.closing(attach_exploring(profile)) as driver:
+    with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
         explorer = Explorer(driver, TerminalConfirmer(), allowed_hosts=hosts, extra_deny=extra_deny)
-        controls = explorer.observe()
-        url = driver.url
-    existing = load_draft(config.config_dir, task)
-    draft = ModelDraft.from_model(existing) if existing else ModelDraft(task=task, hosts=())
-    draft.add_host(urlsplit(url).hostname or "")
-    draft.add_page(page_id, url, controls)
-    save_draft(config.config_dir, _to_model(draft))
-    page = next(p for p in _to_model(draft).pages if p.page_id == page_id)
+        url, controls = explorer.observe_with_url()
+    seen: dict[str, Any] = {}
+
+    def change(current: SiteModel | None) -> SiteModel:
+        draft = (
+            ModelDraft.from_model(current, extra_deny)
+            if current is not None
+            else ModelDraft(task=task, hosts=(), extra_deny=extra_deny)
+        )
+        draft.add_host(urlsplit(url).hostname or "")
+        draft.add_page(page_id, url, controls)
+        model = _to_model(draft)
+        page = next(p for p in model.pages if p.page_id == page_id)
+        seen.update(controls=len(page.controls), skipped=draft.skipped, template=page.url_template)
+        return model
+
+    update_draft(config.config_dir, task, change)
     return {
-        "controls": len(page.controls),
+        "controls": seen["controls"],
         "ok": True,
         "page": page_id,
-        "skipped": draft.skipped,
+        "skipped": seen["skipped"],
         "task": task,
-        "url_template": page.url_template,
+        "url_template": seen["template"],
     }
 
 
@@ -134,26 +147,25 @@ def explore_show(config: BrowserSetup, task: str) -> dict[str, Any]:
 
 
 def _click_hint(
-    task: str,
-    name: str,
-    role: str,
-    decision: ClickDecision,
-    clicked: bool,
-    unavailable: bool,
+    task: str, name: str, role: str, outcome: str, *, unavailable: bool, timed_out: bool
 ) -> str | None:
-    if clicked:
+    if outcome == "clicked":
         return None
-    if decision is ClickDecision.RECORD_ONLY:
+    if outcome == "record_only":
         return (
             "Recorded as metadata only: blumkin never clicks a finalizing control or a "
             "control that is not a link, tab, menu item or state-changing control."
         )
+    if outcome.startswith("refused: "):
+        return f"Not clicked: {outcome.removeprefix('refused: ')}."
     if unavailable:
         return (
             "There is no terminal to ask on, so nothing was clicked. To approve this click, "
             f"run `blumkin browser explore click {task} {shlex.quote(name)} --role {role}` "
             "yourself in a terminal."
         )
+    if timed_out:
+        return "Not clicked: no answer came from the terminal in time."
     return "Not clicked: the answer was no."
 
 
@@ -174,16 +186,21 @@ def _policy(config: BrowserSetup, task: str) -> tuple[Sequence[str], Sequence[st
 
 
 def _record_step(config: BrowserSetup, task: str, page_id: str, role: str, name: str) -> bool:
-    existing = load_draft(config.config_dir, task)
-    if existing is None:
-        return False
-    draft = ModelDraft.from_model(existing)
-    control = draft.control_for(page_id, role, name)
-    if control is None:
-        return False
-    draft.add_step("click", page_id=page_id, control=control)
-    save_draft(config.config_dir, _to_model(draft))
-    return True
+    recorded: list[bool] = []
+
+    def change(current: SiteModel | None) -> SiteModel | None:
+        if current is None:
+            return None
+        draft = ModelDraft.from_model(current)
+        control = draft.control_for(page_id, role, name)
+        if control is None:
+            return None
+        draft.add_step("click", page_id=page_id, control=control)
+        recorded.append(True)
+        return _to_model(draft)
+
+    update_draft(config.config_dir, task, change)
+    return bool(recorded)
 
 
 def _require_draft(config: BrowserSetup, task: str) -> SiteModel:

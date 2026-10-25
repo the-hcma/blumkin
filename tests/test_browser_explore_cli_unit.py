@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
+from blumkin.browser.explore import Inspection
 from blumkin.browser.profiles import create_profile
 from blumkin.cli import main
 from blumkin.exit_codes import EXIT_OTHER, EXIT_SUCCESS, EXIT_USAGE
@@ -31,9 +32,14 @@ class _Driver:
         self.clicks: list[tuple[str, str]] = []
         self.closed = 0
         self.lands_on: str | None = None
+        self.refusal: str | None = None
+        self.href = ""
 
     def aria_snapshot(self) -> str:
         return _SNAPSHOT
+
+    def inspect(self, role: str, name: str) -> Inspection:
+        return Inspection(refusal=self.refusal, href=self.href)
 
     def click_vetted(self, role: str, name: str) -> None:
         self.clicks.append((role, name))
@@ -48,6 +54,7 @@ class _Confirmer:
     answers: list[bool] = []
     asked: list[str] = []
     unavailable = False
+    timed_out = False
 
     def confirm(self, prompt: str) -> bool:
         type(self).asked.append(prompt)
@@ -60,10 +67,13 @@ class _Confirmer:
 @pytest.fixture
 def driver(monkeypatch: pytest.MonkeyPatch) -> _Driver:
     fake = _Driver()
-    monkeypatch.setattr("blumkin.browser.explore_commands.attach_exploring", lambda profile: fake)
+    monkeypatch.setattr(
+        "blumkin.browser.explore_commands.attach_exploring", lambda profile, **kwargs: fake
+    )
     _Confirmer.answers = []
     _Confirmer.asked = []
     _Confirmer.unavailable = False
+    _Confirmer.timed_out = False
     monkeypatch.setattr("blumkin.browser.explore_commands.TerminalConfirmer", _Confirmer)
     return fake
 
@@ -269,3 +279,72 @@ def test_the_human_output_names_the_controls_and_never_a_value(driver: _Driver) 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "expense-list" in result.output
     assert os.linesep in result.output
+
+
+def test_a_control_the_page_refuses_is_reported_with_its_reason_not_as_the_users_no(
+    driver: _Driver,
+) -> None:
+    driver.refusal = "it carries a formaction override"
+    _Confirmer.answers = [True]
+    payload = _json(_run("browser", "explore", "click", "expense-report", "Add line"))
+    assert payload["clicked"] is False
+    assert payload["outcome"] == "refused: it carries a formaction override"
+    assert "formaction" in payload["hint"]
+    assert "answer was no" not in payload["hint"]
+    assert _Confirmer.asked == []
+
+
+def test_a_link_to_another_host_is_reported_with_the_host(driver: _Driver) -> None:
+    driver.href = "https://other.example.org/logout"
+    payload = _json(_run("browser", "explore", "click", "expense-report", "Help", "--role", "link"))
+    assert payload["clicked"] is False
+    assert "other.example.org" in payload["hint"]
+
+
+def test_a_timed_out_question_is_reported_as_no_answer(
+    driver: _Driver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TimedOut:
+        timed_out = False
+        unavailable = False
+
+        def confirm(self, prompt: str) -> bool:
+            self.timed_out = True
+            return False
+
+    monkeypatch.setattr("blumkin.browser.explore_commands.TerminalConfirmer", _TimedOut)
+    payload = _json(_run("browser", "explore", "click", "expense-report", "Add line"))
+    assert payload["clicked"] is False
+    assert "no answer" in payload["hint"]
+
+
+def test_observe_continues_the_stored_model_instead_of_dropping_it(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    _run("browser", "explore", "save", "expense-report", "--yes")
+    driver.url = "https://erp.example.com/expenses/42/line"
+    _run("browser", "explore", "observe", "expense-report", "expense-form")
+    shown = _json(_run("browser", "explore", "show", "expense-report"))
+    assert [p["page_id"] for p in shown["pages"]] == ["expense-list", "expense-form"]
+    saved = _json(_run("browser", "explore", "save", "expense-report", "--yes"))
+    assert saved["version"] == 2
+    assert saved["pages"] == 2
+
+
+def test_a_page_that_moves_while_it_is_observed_is_refused_and_leaves_no_draft(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Moving(_Driver):
+        def aria_snapshot(self) -> str:
+            self.url = "https://erp.example.com/elsewhere"
+            return _SNAPSHOT
+
+    moving = _Moving()
+    monkeypatch.setattr(
+        "blumkin.browser.explore_commands.attach_exploring", lambda profile, **kwargs: moving
+    )
+    result = _run("browser", "explore", "observe", "expense-report", "expense-list")
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "explore_refused"
+    assert not _draft_path(_config_dir).exists()

@@ -269,15 +269,7 @@ def load_version(
 
 def save_draft(config_dir: Path, model: SiteModel) -> None:
     """Keep `model` as the task's in-progress draft (checked like a model, never a version)."""
-    if not isinstance(model.task, str):
-        raise SiteModelError(f"Expected the task to be text, got {type(model.task).__name__}")
-    validate_task_name(model.task)
-    try:
-        payload = model.to_payload()
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise SiteModelError(f"Expected a well-formed model, got {type(exc).__name__}") from exc
-    text = _render(_parse(payload, model.task))
-    _check_size(text)
+    text = _draft_text(model)
     with _filesystem("store the draft"):
         root = ensure_private_dir(config_dir / _STORE_DIRNAME)
         task_dir = ensure_private_dir(root / model.task)
@@ -320,6 +312,44 @@ def save_model(
             _fsync_dir(root)
             _fsync_dir(config_dir)
     return stored
+
+
+def update_draft(
+    config_dir: Path,
+    task: str,
+    change: Callable[[SiteModel | None], SiteModel | None],
+) -> SiteModel | None:
+    """Change the task's draft under one lock, so concurrent updates cannot lose each other.
+
+    `change` gets the draft, or the stored model when there is no draft yet, or None when
+    there is neither, and returns the new draft (checked like a model) or None to leave
+    things as they are. If it raises, or its result is not a valid model, the previous draft
+    is untouched.
+    """
+    validate_task_name(task)
+    with _filesystem("update the draft"):
+        root = ensure_private_dir(config_dir / _STORE_DIRNAME)
+        task_dir = ensure_private_dir(root / task)
+        with _locked(task_dir):
+            draft_path = task_dir / _DRAFT_FILENAME
+            model_path = task_dir / _CURRENT_FILENAME
+            if _exists(draft_path):
+                current = _read_model(draft_path, task)
+            elif _exists(model_path):
+                current = _read_model(model_path, task)
+            else:
+                current = None
+            updated = change(current)
+            if updated is None:
+                return None
+            text = _draft_text(updated)
+            if updated.task != task:
+                raise SiteModelError(
+                    f"Expected a draft for task {task!r}, got {_shown(updated.task)}"
+                )
+            write_private(draft_path, text)
+            _fsync_dir(task_dir)
+            return updated
 
 
 _BIDI_AND_ZERO_WIDTH = re.compile("[؜​-‏‪-‮⁠⁦-⁩﻿]")
@@ -385,6 +415,20 @@ def _control(data: Any, where: str) -> Control:
         name=name,
         safety=_enum(ControlSafety, data["safety"], f"{where}.safety"),
     )
+
+
+def _draft_text(model: SiteModel) -> str:
+    """The checked JSON text of a draft."""
+    if not isinstance(model.task, str):
+        raise SiteModelError(f"Expected the task to be text, got {type(model.task).__name__}")
+    validate_task_name(model.task)
+    try:
+        payload = model.to_payload()
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SiteModelError(f"Expected a well-formed model, got {type(exc).__name__}") from exc
+    text = _render(_parse(payload, model.task))
+    _check_size(text)
+    return text
 
 
 def _enum[E: StrEnum](kind: type[E], value: Any, where: str) -> E:

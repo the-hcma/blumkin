@@ -13,6 +13,10 @@ control, whether the explorer may click it. The rules are deliberately conservat
   never clicked, with or without approval;
 - an approval covers that one click and is not kept.
 
+One limit: the answer comes from the controlling terminal, so a process that can create its
+own pseudo-terminal (a pty) could answer for you. Run the clicks that ask for approval from
+your own terminal session, not from one an agent opened.
+
 The page is only ever described by role and accessible name (nothing a user typed is read
 into the draft), and a label that looks like typed data is dropped and counted.
 """
@@ -20,12 +24,14 @@ into the draft), and a label that looks like typed data is dropped and counted.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
+import select
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from blumkin.browser.actions import host_allowed
 from blumkin.browser.cdp import DEFAULT_ACTION_TIMEOUT_S, ControlInfo, attach
@@ -72,7 +78,7 @@ class DraftNotFoundError(LookupError):
 
 
 class ExploreDriver(Protocol):
-    """What exploration needs from a browser: a page description and a vetted click."""
+    """What exploration needs from a browser: a page description, an inspection and a click."""
 
     @property
     def url(self) -> str: ...
@@ -80,6 +86,8 @@ class ExploreDriver(Protocol):
     def aria_snapshot(self) -> str: ...
 
     def click_vetted(self, role: str, name: str) -> None: ...
+
+    def inspect(self, role: str, name: str) -> Inspection: ...
 
 
 class ExploreNeedsConfirmationError(ValueError):
@@ -100,6 +108,8 @@ class ExploreRawDriver(Protocol):
 
     def close(self) -> None: ...
 
+    def restrict_navigation(self, is_allowed: Callable[[str], bool]) -> None: ...
+
 
 class ExploreRefusedError(RuntimeError):
     """Exploration refused to do something (an off-host page, a control it will not click)."""
@@ -116,33 +126,61 @@ class Explorer:
         allowed_hosts: Sequence[str],
         extra_deny: Sequence[str] = (),
     ) -> None:
+        self.last_outcome = ""
         self._allowed_hosts = tuple(allowed_hosts)
         self._confirmer = confirmer
         self._driver = driver
         self._extra_deny = tuple(extra_deny)
 
     def click(self, role: str, name: str) -> bool:
-        """Click the control if the rules allow it; False when it was only recorded."""
+        """Click the control if the rules allow it; False when it was only recorded.
+
+        `last_outcome` says what happened: `clicked`, `record_only`, `declined` (the user
+        said no) or `refused: <why>`. The element is inspected before anyone is asked, and
+        the host is checked again after the answer, because the page may have moved on.
+        """
         self._require_host("before the click")
         decision = decide_click(role, name, extra_deny=self._extra_deny)
         if decision is ClickDecision.RECORD_ONLY:
+            self.last_outcome = "record_only"
+            return False
+        inspection = self._driver.inspect(role, name)
+        if inspection.refusal is not None:
+            self.last_outcome = f"refused: {inspection.refusal}"
+            return False
+        link_host = _link_host(self._driver.url, inspection.href)
+        if link_host is not None and not host_allowed(link_host, self._allowed_hosts):
+            self.last_outcome = f"refused: its link leads to {link_host}"
             return False
         if decision is ClickDecision.ASK:
             host = urlsplit(self._driver.url).hostname or "this page"
-            prompt = f"Click the {role} {name!r} on {host}? It may change state."
-            if not self._confirmer.confirm(prompt):
+            if not self._confirmer.confirm(_prompt(role, name, host, inspection.href)):
+                self.last_outcome = "declined"
                 return False
+            self._require_host("after the answer and before the click")
         try:
             self._driver.click_vetted(role, name)
-        except ExploreRefusedError:
+        except ExploreRefusedError as exc:
+            self.last_outcome = f"refused: {exc}"
             return False
         self._require_host("after the click")
+        self.last_outcome = "clicked"
         return True
 
     def observe(self) -> tuple[ControlObservation, ...]:
         """The named controls on the current page (which must be on an allowed host)."""
+        return self.observe_with_url()[1]
+
+    def observe_with_url(self) -> tuple[str, tuple[ControlObservation, ...]]:
+        """The page's URL and its controls; refused if the page changes while it is read."""
         self._require_host("before observing")
-        return parse_aria_snapshot(self._driver.aria_snapshot())
+        url = self._driver.url
+        controls = parse_aria_snapshot(self._driver.aria_snapshot())
+        if self._driver.url != url:
+            raise ExploreRefusedError(
+                "Expected the page to stay put while it is observed, got a change"
+            )
+        return url, controls
 
     def _require_host(self, when: str) -> None:
         parts = urlsplit(self._driver.url)
@@ -159,11 +197,15 @@ class ExploringDriver:
     A click goes through the same element inspection as a guarded click (a submit control,
     a `formaction`, a script link or a submitting handler is refused), and while attached the
     driver swallows every non-GET navigation, the backstop that stops a submit nobody saw.
+    With `allowed_hosts` it also aborts any main-frame navigation to another host.
     """
 
-    def __init__(self, raw: ExploreRawDriver) -> None:
+    def __init__(self, raw: ExploreRawDriver, allowed_hosts: Sequence[str] = ()) -> None:
         self._raw = raw
         raw.block_form_submission()
+        if allowed_hosts:
+            hosts = tuple(allowed_hosts)
+            raw.restrict_navigation(lambda host: host_allowed(host, hosts))
 
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()
@@ -179,25 +221,46 @@ class ExploringDriver:
     def close(self) -> None:
         self._raw.close()
 
+    def inspect(self, role: str, name: str) -> Inspection:
+        """Why the control cannot be clicked (if so) and where it links, without clicking it."""
+
+        def look(info: ControlInfo) -> None:
+            raise _Inspected(Inspection(refusal=vet_control(info), href=info.href))
+
+        try:
+            self._raw.checked_click(name, role, look)
+        except _Inspected as done:
+            return done.inspection
+        raise ExploreRefusedError(f"Expected to inspect {name!r} without clicking, got a click")
+
     @property
     def url(self) -> str:
         return self._raw.url
 
 
+@dataclass(frozen=True, slots=True)
+class Inspection:
+    """What looking at a control (without clicking it) showed."""
+
+    refusal: str | None
+    href: str
+
+
 class ModelDraft:
     """A site model under construction from observed pages and recorded steps."""
 
-    def __init__(self, task: str, hosts: Sequence[str]) -> None:
+    def __init__(self, task: str, hosts: Sequence[str], extra_deny: Sequence[str] = ()) -> None:
         self.skipped = 0
+        self._extra_deny = tuple(extra_deny)
         self._flow_steps: list[FlowStep] = []
         self._hosts = tuple(hosts)
         self._pages: dict[str, Page] = {}
         self._task = task
 
     @classmethod
-    def from_model(cls, model: SiteModel) -> ModelDraft:
+    def from_model(cls, model: SiteModel, extra_deny: Sequence[str] = ()) -> ModelDraft:
         """A draft that continues a stored or in-progress model."""
-        draft = cls(task=model.task, hosts=model.hosts)
+        draft = cls(task=model.task, hosts=model.hosts, extra_deny=extra_deny)
         draft._pages = {page.page_id: page for page in model.pages}
         draft._flow_steps = [step for flow in model.flows for step in flow.steps]
         return draft
@@ -227,7 +290,7 @@ class ModelDraft:
             kind = _KIND_BY_ROLE.get(item.role)
             if kind is None or len(built) >= _MAX_DRAFT_CONTROLS:
                 continue
-            built.append(_control(page_id, item, kind, used))
+            built.append(_control(page_id, item, kind, used, self._extra_deny))
         self._pages[page_id] = Page(
             controls=tuple(built),
             fingerprint=tuple(sorted(set(marks))),
@@ -280,12 +343,16 @@ class TerminalConfirmer:
     """Asks on the user's controlling terminal; the default answer is no.
 
     The question is written to and read from `/dev/tty`, not standard input, so a command
-    started by an agent without a terminal gets no answer and nothing is approved.
+    started by an agent without a terminal gets no answer and nothing is approved. A terminal
+    that does not answer within `timeout_s` counts as no. A process that owns a pseudo-terminal
+    could answer for the user: approve clicks from your own terminal session.
     """
 
-    def __init__(self, open_tty: Callable[[], Any] | None = None) -> None:
+    def __init__(self, open_tty: Callable[[], Any] | None = None, timeout_s: float = 300.0) -> None:
+        self.timed_out = False
         self.unavailable = False
         self._open_tty = open_tty or _open_dev_tty
+        self._timeout_s = timeout_s
 
     def confirm(self, prompt: str) -> bool:
         try:
@@ -296,6 +363,9 @@ class TerminalConfirmer:
         with contextlib.closing(tty):
             tty.write(f"{prompt} [y/N] ")
             tty.flush()
+            if not _answers_in_time(tty, self._timeout_s):
+                self.timed_out = True
+                return False
             reply = tty.readline()
         return reply.strip().lower() in {"y", "yes"}
 
@@ -303,6 +373,7 @@ class TerminalConfirmer:
 def attach_exploring(
     profile: BrowserProfile,
     *,
+    allowed_hosts: Sequence[str] = (),
     attach_raw: Callable[..., ExploreRawDriver] = attach,
     timeout_s: float = DEFAULT_ACTION_TIMEOUT_S,
     **attach_kwargs: Any,
@@ -310,7 +381,7 @@ def attach_exploring(
     """Attach to the task browser for exploration."""
     raw = attach_raw(profile, timeout_s=timeout_s, **attach_kwargs)
     try:
-        return ExploringDriver(raw)
+        return ExploringDriver(raw, allowed_hosts)
     except BaseException:
         raw.close()
         raise
@@ -318,10 +389,10 @@ def attach_exploring(
 
 def decide_click(role: str, name: str, *, extra_deny: Sequence[str] = ()) -> ClickDecision:
     """What exploration may do with a control of this role and name."""
-    if is_finalizing_name(name, extra_deny):
+    if _is_finalizing(name, extra_deny):
         return ClickDecision.RECORD_ONLY
     if role in _READ_ONLY_ROLES:
-        return ClickDecision.CLICK
+        return ClickDecision.ASK if _needs_a_question(name) else ClickDecision.CLICK
     if role in _STATE_CHANGING_ROLES:
         return ClickDecision.ASK
     return ClickDecision.RECORD_ONLY
@@ -335,7 +406,7 @@ def parse_aria_snapshot(text: str) -> tuple[ControlObservation, ...]:
         match = _SNAPSHOT_LINE.match(line)
         if match is None or match.group("name") is None or match.group("role") == "text":
             continue
-        name = re.sub(r"\\(.)", r"\1", match.group("name"))
+        name = _unescape(match.group("name"))
         key = (match.group("role"), name)
         if key in seen:
             continue
@@ -352,11 +423,35 @@ def url_template(url: str) -> str:
     return "/" + "/".join(out)
 
 
+_DESTRUCTIVE = re.compile(
+    r"\b(?:cancel|clear|close account|deactivate|delete|disable|discard|erase|log\s*out|logout|"
+    r"remove|reset|revoke|sign\s*out|signout|unsubscribe)\b"
+)
 _MAX_DRAFT_CONTROLS = 200
 _MAX_MARKS = 100
 _PAGE_ID = re.compile(r"[a-z]+(?:-[a-z]+){0,5}")
 _READ_ONLY_ROLES = frozenset({"link", "menuitem", "tab"})
-_SKIPPED_FROM_FINGERPRINT = frozenset({"img", "separator"})
+_SKIPPED_FROM_FINGERPRINT = frozenset(
+    {
+        "alert",
+        "article",
+        "cell",
+        "columnheader",
+        "definition",
+        "gridcell",
+        "img",
+        "listitem",
+        "option",
+        "paragraph",
+        "row",
+        "rowheader",
+        "separator",
+        "status",
+        "term",
+        "text",
+        "treeitem",
+    }
+)
 _SNAPSHOT_LINE = re.compile(r'^\s*- (?P<role>[a-z]+)(?: "(?P<name>(?:[^"\\]|\\.)*)")?')
 _STATE_CHANGING_ROLES = frozenset(
     {"button", "checkbox", "menuitemcheckbox", "menuitemradio", "option", "radio", "switch"}
@@ -379,7 +474,13 @@ _KIND_BY_ROLE: dict[str, ControlKind] = {
 _LABELLED_ROLES = frozenset({"combobox", "listbox", "searchbox", "spinbutton", "textbox"})
 
 
-def _control(page_id: str, item: ControlObservation, kind: ControlKind, used: set[str]) -> Control:
+def _control(
+    page_id: str,
+    item: ControlObservation,
+    kind: ControlKind,
+    used: set[str],
+    extra_deny: Sequence[str],
+) -> Control:
     slug = re.sub(r"[^a-z]+", "-", item.name.casefold()).strip("-")[:24].strip("-") or item.role
     name = f"{page_id}.{slug}"
     count = 1
@@ -390,7 +491,8 @@ def _control(page_id: str, item: ControlObservation, kind: ControlKind, used: se
     locators = [Locator(strategy=LocatorStrategy.ROLE_NAME, value=f"{item.role}:{item.name}")]
     if item.role in _LABELLED_ROLES:
         locators.append(Locator(strategy=LocatorStrategy.LABEL, value=item.name))
-    safety = ControlSafety.FINALIZING if is_finalizing_name(item.name) else ControlSafety.SAFE
+    finalizing = _is_finalizing(item.name, extra_deny)
+    safety = ControlSafety.FINALIZING if finalizing else ControlSafety.SAFE
     return Control(kind=kind, locators=tuple(locators), name=name, safety=safety)
 
 
@@ -400,3 +502,55 @@ def _is_word(segment: str) -> bool:
 
 def _open_dev_tty() -> Any:
     return open("/dev/tty", "r+", encoding="utf-8")  # noqa: SIM115 - closed by the caller
+
+
+class _Inspected(Exception):  # noqa: N818 - control flow, not an error
+    """Raised from the inspection callback to stop `checked_click` before it clicks."""
+
+    def __init__(self, inspection: Inspection) -> None:
+        super().__init__("inspected")
+        self.inspection = inspection
+
+
+def _answers_in_time(tty: Any, timeout_s: float) -> bool:
+    try:
+        descriptor = tty.fileno()
+    except AttributeError, OSError, ValueError:
+        return True  # a stream with no descriptor (a test double) is read directly
+    ready, _, _ = select.select([descriptor], [], [], timeout_s)
+    return bool(ready)
+
+
+def _is_finalizing(name: str, extra_deny: Sequence[str]) -> bool:
+    return is_finalizing_name(name, extra_deny) or is_finalizing_name(
+        "".join(name.split()), extra_deny
+    )
+
+
+def _link_host(page_url: str, href: str) -> str | None:
+    """The host a link leads to when it is an absolute web address, else None."""
+    if not href:
+        return None
+    parts = urlsplit(urljoin(page_url, href))
+    return (parts.hostname or "") if parts.scheme in ("http", "https") else None
+
+
+def _needs_a_question(name: str) -> bool:
+    return (
+        bool(_DESTRUCTIVE.search(name.casefold()))
+        or any(ord(char) > 127 for char in name)
+        or sum(char.isalpha() for char in name) < 2
+    )
+
+
+def _prompt(role: str, name: str, host: str, href: str) -> str:
+    shown = name if len(name) <= 80 else name[:80] + "..."
+    target = f" (it links to {href[:120]!r})" if href else ""
+    return f"Click the {role} {shown!r} on {host}{target}? It may change state."
+
+
+def _unescape(quoted: str) -> str:
+    try:
+        return str(json.loads(f'"{quoted}"'))
+    except ValueError:
+        return re.sub(r"\\(.)", r"\1", quoted)

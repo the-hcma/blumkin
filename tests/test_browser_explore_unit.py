@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from blumkin.browser.explore import (
     Explorer,
     ExploreRefusedError,
     ExploringDriver,
+    Inspection,
     ModelDraft,
     TerminalConfirmer,
     attach_exploring,
@@ -167,33 +169,48 @@ def test_extra_deny_names_make_a_control_record_only() -> None:
 
 
 class _Driver:
-    """A stand-in for the raw driver: records what is clicked and what the page looks like."""
+    """A stand-in for the exploring driver: records what is clicked and what the page shows."""
 
     def __init__(self) -> None:
         self.url = "https://erp.example.com/expenses"
         self.snapshot = _SNAPSHOT
         self.clicks: list[tuple[str, str]] = []
         self.lands_on: str | None = None
-        self.submit_control = False
+        self.refusal: str | None = None
+        self.href = ""
+        self.inspected: list[tuple[str, str]] = []
+
+    @property
+    def submit_control(self) -> bool:
+        return self.refusal is not None
+
+    @submit_control.setter
+    def submit_control(self, value: bool) -> None:
+        self.refusal = "it is a submit control" if value else None
 
     def aria_snapshot(self) -> str:
         return self.snapshot
 
     def click_vetted(self, role: str, name: str) -> None:
-        if self.submit_control:
-            raise ExploreRefusedError("it is a submit control")
         self.clicks.append((role, name))
         if self.lands_on is not None:
             self.url = self.lands_on
+
+    def inspect(self, role: str, name: str) -> Inspection:
+        self.inspected.append((role, name))
+        return Inspection(refusal=self.refusal, href=self.href)
 
 
 class _Confirmer:
     def __init__(self, answers: list[bool]) -> None:
         self.answers = answers
         self.asked: list[str] = []
+        self.before_answer: Any = None
 
     def confirm(self, prompt: str) -> bool:
         self.asked.append(prompt)
+        if self.before_answer is not None:
+            self.before_answer()
         return self.answers.pop(0)
 
 
@@ -323,12 +340,16 @@ class _Raw:
         self.net = 0
         self.clicked: list[tuple[str, str]] = []
         self.closed = 0
+        self.restricted: Any = None
 
     def block_form_submission(self) -> None:
         self.net += 1
 
     def aria_snapshot(self) -> str:
         return _SNAPSHOT
+
+    def restrict_navigation(self, is_allowed: Any) -> None:
+        self.restricted = is_allowed
 
     def checked_click(self, name: str, role: str, vet: Any) -> None:
         vet(self.info)
@@ -396,3 +417,204 @@ def test_a_draft_can_be_rebuilt_from_a_stored_model_and_extended(tmp_path: Path)
     assert [p.page_id for p in rebuilt.pages] == ["expense-list", "expense-form"]
     assert rebuilt.flows[0].steps == model.flows[0].steps
     save_model(tmp_path, rebuilt)
+
+
+# --- second review of the exploration core ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Delete",
+        "Remove line",
+        "Cancel",
+        "Log out",
+        "Sign out",
+        "Logout",
+        "Unsubscribe",
+        "Revoke access",
+        "Close account",
+        "Deactivate",
+    ],
+)
+def test_a_read_only_role_with_a_destructive_name_still_asks_first(name: str) -> None:
+    assert decide_click("link", name) is ClickDecision.ASK
+    assert decide_click("menuitem", name) is ClickDecision.ASK
+
+
+@pytest.mark.parametrize("name", ["\u00d7", "S\u0435nd", "\u9001\u4fe1"])
+def test_a_read_only_role_with_an_icon_or_non_ascii_name_asks_first(name: str) -> None:
+    assert decide_click("link", name) is ClickDecision.ASK
+
+
+@pytest.mark.parametrize("name", ["Sub mit", "S u b m i t report", "Pa y now"])
+def test_a_finalizing_name_split_by_spaces_is_still_finalizing(name: str) -> None:
+    assert decide_click("button", name) is ClickDecision.RECORD_ONLY
+
+
+def test_ordinary_navigation_names_are_still_followed_without_asking() -> None:
+    for name in ("Help", "Expenses", "Reports", "Receipts"):
+        assert decide_click("link", name) is ClickDecision.CLICK
+
+
+def test_escaped_names_in_a_snapshot_are_decoded() -> None:
+    text = '- button "Re\\nsend"\n- link "caf\\u00e9"\n- button "Say \\"hi\\""\n'
+    assert [c.name for c in parse_aria_snapshot(text)] == ["Re\nsend", "caf\u00e9", 'Say "hi"']
+
+
+def test_a_name_that_matches_the_tasks_extra_deny_words_is_stored_as_finalizing() -> None:
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",), extra_deny=("release",))
+    draft.add_page(
+        "expense-list",
+        "https://erp.example.com/expenses",
+        (ControlObservation("button", "Release hold"),),
+    )
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+    assert model.pages[0].controls[0].safety is ControlSafety.FINALIZING
+
+
+def test_content_roles_are_not_recorded_as_landmarks() -> None:
+    draft = _draft()
+    controls = (
+        ControlObservation("button", "Add line"),
+        ControlObservation("option", "alice"),
+        ControlObservation("row", "Alice Paid"),
+        ControlObservation("cell", "Alice"),
+        ControlObservation("listitem", "Alice"),
+        ControlObservation("paragraph", "Dear Alice"),
+    )
+    draft.add_page("expense-list", "https://erp.example.com/expenses", controls)
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+    assert model.pages[0].fingerprint == ("button:Add line",)
+
+
+def test_the_page_is_refused_when_it_changes_while_it_is_observed() -> None:
+    class _Moving(_Driver):
+        def aria_snapshot(self) -> str:
+            self.url = "https://erp.example.com/other"
+            return _SNAPSHOT
+
+    explorer, _ = _explorer(_Moving())
+    with pytest.raises(ExploreRefusedError, match="stay put"):
+        explorer.observe_with_url()
+
+
+def test_observe_with_url_returns_the_url_the_snapshot_belongs_to() -> None:
+    explorer, _ = _explorer(_Driver())
+    url, controls = explorer.observe_with_url()
+    assert url == "https://erp.example.com/expenses"
+    assert controls[0].name == "Expenses"
+
+
+def test_the_host_is_checked_again_after_the_answer_and_before_the_click() -> None:
+    driver = _Driver()
+    explorer, confirmer = _explorer(driver, [True])
+
+    def navigate_away() -> None:
+        driver.url = "https://evil.example.net/"
+
+    confirmer.before_answer = navigate_away
+    with pytest.raises(ExploreRefusedError, match="evil.example.net"):
+        explorer.click("button", "Add line")
+    assert driver.clicks == []
+
+
+def test_a_control_the_page_refuses_is_vetted_before_the_user_is_asked() -> None:
+    driver = _Driver()
+    driver.refusal = "it carries a formaction override"
+    explorer, confirmer = _explorer(driver, [True])
+    assert explorer.click("button", "Add line") is False
+    assert confirmer.asked == []
+    assert explorer.last_outcome == "refused: it carries a formaction override"
+
+
+def test_a_link_to_another_host_is_not_followed() -> None:
+    driver = _Driver()
+    driver.href = "https://other.example.org/logout"
+    explorer, _ = _explorer(driver)
+    assert explorer.click("link", "Help") is False
+    assert driver.clicks == []
+    assert "other.example.org" in explorer.last_outcome
+
+
+def test_a_relative_link_and_a_link_to_an_allowed_host_are_followed() -> None:
+    driver = _Driver()
+    explorer, _ = _explorer(driver)
+    for href in ("/help", "help.html", "https://erp.example.com/x", "#top"):
+        driver.href = href
+        assert explorer.click("link", "Help") is True
+
+
+def test_the_prompt_shows_the_link_target_and_a_truncated_name() -> None:
+    driver = _Driver()
+    driver.href = "https://erp.example.com/account/close?confirm=1"
+    explorer, confirmer = _explorer(driver, [False])
+    explorer.click("link", "Close account " + "x" * 200)
+    prompt = confirmer.asked[0]
+    assert "/account/close?confirm=1" in prompt
+    assert len(prompt) < 400
+
+
+def test_the_outcome_says_what_happened() -> None:
+    driver = _Driver()
+    explorer, _ = _explorer(driver, [False])
+    explorer.click("button", "Submit")
+    assert explorer.last_outcome == "record_only"
+    explorer.click("button", "Add line")
+    assert explorer.last_outcome == "declined"
+    explorer.click("link", "Help")
+    assert explorer.last_outcome == "clicked"
+
+
+def test_a_terminal_that_never_answers_times_out_as_no() -> None:
+    read_end, write_end = os.pipe()
+
+    class _Silent:
+        def __init__(self) -> None:
+            self.written = ""
+
+        def fileno(self) -> int:
+            return read_end
+
+        def write(self, text: str) -> int:
+            self.written += text
+            return len(text)
+
+        def flush(self) -> None:
+            return None
+
+        def readline(self) -> str:
+            raise AssertionError("must not block on a silent terminal")
+
+        def close(self) -> None:
+            return None
+
+    try:
+        confirmer = TerminalConfirmer(open_tty=_Silent, timeout_s=0.05)
+        assert confirmer.confirm("Click 'Add line'?") is False
+        assert confirmer.timed_out is True
+    finally:
+        os.close(read_end)
+        os.close(write_end)
+
+
+def test_the_exploring_driver_inspects_without_clicking_and_reports_the_href() -> None:
+    raw = _Raw(ControlInfo(tag="a", input_type="", in_form=False, href="/help"))
+    driver = ExploringDriver(raw)
+    inspection = driver.inspect("link", "Help")
+    assert inspection == Inspection(refusal=None, href="/help")
+    assert raw.clicked == []
+    raw.info = ControlInfo(tag="button", input_type="submit", in_form=True)
+    assert driver.inspect("button", "Add").refusal == "it is a submit control"
+    assert raw.clicked == []
+
+
+def test_the_exploring_driver_restricts_navigation_to_the_allowed_hosts() -> None:
+    raw = _Raw()
+    ExploringDriver(raw, allowed_hosts=("erp.example.com", "*.example.org"))
+    allowed = raw.restricted
+    assert allowed is not None
+    assert allowed("erp.example.com") is True
+    assert allowed("a.example.org") is True
+    assert allowed("evil.example.net") is False
+    assert allowed("") is False
