@@ -7,13 +7,16 @@ from typing import Any
 
 import pytest
 
+from blumkin.browser.cdp import ControlInfo
 from blumkin.browser.explore import (
     ClickDecision,
     ControlObservation,
     Explorer,
     ExploreRefusedError,
+    ExploringDriver,
     ModelDraft,
     TerminalConfirmer,
+    attach_exploring,
     decide_click,
     parse_aria_snapshot,
     url_template,
@@ -306,3 +309,90 @@ def test_without_a_terminal_the_confirmer_says_no_and_reports_it() -> None:
     confirmer = TerminalConfirmer(open_tty=no_tty)
     assert confirmer.confirm("Click 'Add line'?") is False
     assert confirmer.unavailable is True
+
+
+# --- the exploring driver and the guard's shared inspection -----------------------------------
+
+
+class _Raw:
+    """A stand-in for the raw browser driver."""
+
+    def __init__(self, info: Any = None) -> None:
+            self.info = info or ControlInfo(tag="a", input_type="", in_form=False)
+        self.url = "https://erp.example.com/expenses"
+        self.net = 0
+        self.clicked: list[tuple[str, str]] = []
+        self.closed = 0
+
+    def block_form_submission(self) -> None:
+        self.net += 1
+
+    def aria_snapshot(self) -> str:
+        return _SNAPSHOT
+
+    def checked_click(self, name: str, role: str, vet: Any) -> None:
+        vet(self.info)
+        self.clicked.append((role, name))
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_the_exploring_driver_installs_the_safety_net_and_clicks_through_the_inspection() -> None:
+    raw = _Raw()
+    driver = ExploringDriver(raw)
+    assert raw.net == 1
+    assert driver.url == "https://erp.example.com/expenses"
+    assert driver.aria_snapshot() == _SNAPSHOT
+    driver.click_vetted("link", "Help")
+    assert raw.clicked == [("link", "Help")]
+    driver.close()
+    assert raw.closed == 1
+
+
+@pytest.mark.parametrize(
+    "info_kwargs",
+    [
+        {"tag": "button", "input_type": "submit", "in_form": True},
+        {"tag": "button", "input_type": "button", "in_form": True, "has_formaction": True},
+        {"tag": "a", "input_type": "", "in_form": False, "href": "javascript:void(0)"},
+        {"tag": "a", "input_type": "", "in_form": False, "inline_handler": "this.form.submit()"},
+    ],
+)
+def test_the_exploring_driver_refuses_what_the_guard_refuses(info_kwargs: dict[str, Any]) -> None:
+    raw = _Raw(ControlInfo(**info_kwargs))
+    with pytest.raises(ExploreRefusedError):
+        ExploringDriver(raw).click_vetted("link", "Help")
+    assert raw.clicked == []
+
+
+def test_attach_exploring_closes_the_raw_driver_when_wrapping_fails() -> None:
+    class _Broken(_Raw):
+        def block_form_submission(self) -> None:
+            raise RuntimeError("no route")
+
+    raw = _Broken()
+    with pytest.raises(RuntimeError):
+        attach_exploring(object(), attach_raw=lambda profile, **kwargs: raw)  # type: ignore[arg-type]
+    assert raw.closed == 1
+
+
+def test_a_draft_can_be_rebuilt_from_a_stored_model_and_extended(tmp_path: Path) -> None:
+    draft = _draft()
+    draft.add_page(
+        "expense-list",
+        "https://erp.example.com/expenses",
+        (ControlObservation("button", "Add line"),),
+    )
+    draft.add_step("click", page_id="expense-list", control="expense-list.add-line")
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+    again = ModelDraft.from_model(model)
+    again.add_page(
+        "expense-form",
+        "https://erp.example.com/expenses/1/line",
+        (ControlObservation("textbox", "Amount"),),
+    )
+    rebuilt = again.to_model(recorded_at="2026-10-25T12:30:00Z", blumkin_version="1.0.0")
+    assert [p.page_id for p in rebuilt.pages] == ["expense-list", "expense-form"]
+    assert rebuilt.flows[0].steps == model.flows[0].steps
+    save_model(tmp_path, rebuilt)

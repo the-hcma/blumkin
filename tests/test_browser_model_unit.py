@@ -24,9 +24,12 @@ from blumkin.browser.model import (
     Page,
     SiteModel,
     SiteModelError,
+    discard_draft,
     list_versions,
+    load_draft,
     load_model,
     load_version,
+    save_draft,
     save_model,
 )
 from blumkin.browser.profiles import BrowserProfileError
@@ -810,3 +813,45 @@ def test_a_save_syncs_the_directories_it_may_have_created(
     assert {root / "expense-report" / "history", root / "expense-report", root, tmp_path} <= set(
         synced
     )
+
+
+# --- the in-progress draft kept between exploration commands ----------------------------------
+
+
+def test_a_draft_round_trips_and_is_not_a_saved_version(tmp_path: Path) -> None:
+    assert load_draft(tmp_path, "expense-report") is None
+    save_draft(tmp_path, _model())
+    assert load_draft(tmp_path, "expense-report") == _model()
+    assert list_versions(tmp_path, "expense-report") == []
+    assert load_model(tmp_path, "expense-report") is None
+    path = tmp_path / "browser-models" / "expense-report" / "draft.json"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert discard_draft(tmp_path, "expense-report") is True
+    assert discard_draft(tmp_path, "expense-report") is False
+    assert load_draft(tmp_path, "expense-report") is None
+
+
+def test_saving_a_model_leaves_the_draft_alone(tmp_path: Path) -> None:
+    save_draft(tmp_path, _model())
+    save_model(tmp_path, _model())
+    assert load_draft(tmp_path, "expense-report") == _model()
+
+
+def test_a_corrupt_draft_is_a_model_error(tmp_path: Path) -> None:
+    save_draft(tmp_path, _model())
+    (tmp_path / "browser-models" / "expense-report" / "draft.json").write_text("{bad")
+    with pytest.raises(SiteModelError, match="JSON"):
+        load_draft(tmp_path, "expense-report")
+
+
+def test_an_invalid_draft_is_refused_and_a_symlinked_draft_is_not_followed(tmp_path: Path) -> None:
+    with pytest.raises(SiteModelError, match="Expected"):
+        save_draft(tmp_path, _model(hosts=()))
+    save_draft(tmp_path, _model())
+    path = tmp_path / "browser-models" / "expense-report" / "draft.json"
+    other = tmp_path / "other.json"
+    other.write_text(path.read_text())
+    path.unlink()
+    path.symlink_to(other)
+    with pytest.raises(SiteModelError, match="regular file|symlink"):
+        load_draft(tmp_path, "expense-report")

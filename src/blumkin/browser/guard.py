@@ -136,14 +136,9 @@ class GuardedDriver:
 
     def _vet_control(self, action: str, info: ControlInfo) -> None:
         """Raise if the element about to be clicked could finalize a form."""
-        if _is_submit_control(info):
-            raise self._refuse(action, "it is a submit control")
-        if info.has_formaction:
-            raise self._refuse(action, "it carries a formaction override")
-        if _runs_script(info.href):
-            raise self._refuse(action, "it is a link that runs script")
-        if "submit" in info.inline_handler.casefold():
-            raise self._refuse(action, "its click handler submits a form")
+        reason = vet_control(info)
+        if reason is not None:
+            raise self._refuse(action, reason)
 
 
 def attach_guarded(
@@ -203,6 +198,19 @@ _ZERO_WIDTH = dict.fromkeys(map(ord, "​‌‍⁠﻿"))
 def is_finalizing_name(name: str, extra_deny: Sequence[str] = ()) -> bool:
     """Whether a control name starts a finalizing word (submit, send, pay, ...)."""
     return _is_denied(name, _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny)))
+
+
+def vet_control(info: ControlInfo) -> str | None:
+    """Why clicking this element could finalize a form, or None when nothing says it could."""
+    if _is_submit_control(info):
+        return "it is a submit control"
+    if info.has_formaction:
+        return "it carries a formaction override"
+    if _runs_script(info.href):
+        return "it is a link that runs script"
+    if "submit" in info.inline_handler.casefold():
+        return "its click handler submits a form"
+    return None
 
 
 def _deny_stems(words: tuple[str, ...]) -> tuple[str, ...]:

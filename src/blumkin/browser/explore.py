@@ -28,7 +28,8 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from blumkin.browser.actions import host_allowed
-from blumkin.browser.guard import is_finalizing_name
+from blumkin.browser.cdp import DEFAULT_ACTION_TIMEOUT_S, ControlInfo, attach
+from blumkin.browser.guard import is_finalizing_name, vet_control
 from blumkin.browser.model import (
     Control,
     ControlKind,
@@ -41,6 +42,7 @@ from blumkin.browser.model import (
     SiteModel,
     is_storable_label,
 )
+from blumkin.browser.profiles import BrowserProfile
 
 
 class ClickDecision(StrEnum):
@@ -68,6 +70,21 @@ class ExploreDriver(Protocol):
     def aria_snapshot(self) -> str: ...
 
     def click_vetted(self, role: str, name: str) -> None: ...
+
+
+class ExploreRawDriver(Protocol):
+    """The raw browser surface exploration uses (`PlaywrightDriver` implements it)."""
+
+    @property
+    def url(self) -> str: ...
+
+    def aria_snapshot(self) -> str: ...
+
+    def block_form_submission(self) -> None: ...
+
+    def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class ExploreRefusedError(RuntimeError):
@@ -128,6 +145,37 @@ class Explorer:
             )
 
 
+class ExploringDriver:
+    """The `ExploreDriver` over the raw browser driver.
+
+    A click goes through the same element inspection as a guarded click (a submit control,
+    a `formaction`, a script link or a submitting handler is refused), and while attached the
+    driver swallows every non-GET navigation, the backstop that stops a submit nobody saw.
+    """
+
+    def __init__(self, raw: ExploreRawDriver) -> None:
+        self._raw = raw
+        raw.block_form_submission()
+
+    def aria_snapshot(self) -> str:
+        return self._raw.aria_snapshot()
+
+    def click_vetted(self, role: str, name: str) -> None:
+        def vet(info: ControlInfo) -> None:
+            reason = vet_control(info)
+            if reason is not None:
+                raise ExploreRefusedError(f"Expected to click {name!r}, got a refusal: {reason}")
+
+        self._raw.checked_click(name, role, vet)
+
+    def close(self) -> None:
+        self._raw.close()
+
+    @property
+    def url(self) -> str:
+        return self._raw.url
+
+
 class ModelDraft:
     """A site model under construction from observed pages and recorded steps."""
 
@@ -137,6 +185,14 @@ class ModelDraft:
         self._hosts = tuple(hosts)
         self._pages: dict[str, Page] = {}
         self._task = task
+
+    @classmethod
+    def from_model(cls, model: SiteModel) -> ModelDraft:
+        """A draft that continues a stored or in-progress model."""
+        draft = cls(task=model.task, hosts=model.hosts)
+        draft._pages = {page.page_id: page for page in model.pages}
+        draft._flow_steps = [step for flow in model.flows for step in flow.steps]
+        return draft
 
     def add_page(self, page_id: str, url: str, controls: Sequence[ControlObservation]) -> None:
         """Record (or update) a page from what was observed on it."""
@@ -216,6 +272,22 @@ class TerminalConfirmer:
             tty.flush()
             reply = tty.readline()
         return reply.strip().lower() in {"y", "yes"}
+
+
+def attach_exploring(
+    profile: BrowserProfile,
+    *,
+    attach_raw: Callable[..., ExploreRawDriver] = attach,
+    timeout_s: float = DEFAULT_ACTION_TIMEOUT_S,
+    **attach_kwargs: Any,
+) -> ExploringDriver:
+    """Attach to the task browser for exploration."""
+    raw = attach_raw(profile, timeout_s=timeout_s, **attach_kwargs)
+    try:
+        return ExploringDriver(raw)
+    except BaseException:
+        raw.close()
+        raise
 
 
 def decide_click(role: str, name: str, *, extra_deny: Sequence[str] = ()) -> ClickDecision:

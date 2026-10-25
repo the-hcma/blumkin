@@ -133,6 +133,14 @@ class PlaywrightDriver:
             with contextlib.suppress(PlaywrightError):
                 self._playwright.stop()
 
+    def aria_snapshot(self) -> str:
+        """The page as a Playwright ARIA snapshot: roles and accessible names, no field values."""
+        self._require_open()
+        try:
+            return str(self._page.locator("body").aria_snapshot(timeout=self._timeout_ms))
+        except PlaywrightError as exc:
+            raise self._action_error("describe the page", exc) from exc
+
     def block_form_submission(self) -> None:
         """Swallow every non-GET navigation while attached (a form POST), whatever triggers it.
 

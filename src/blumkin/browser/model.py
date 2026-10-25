@@ -168,6 +168,21 @@ class SiteModelError(ValueError):
     """A model that cannot be stored or loaded, with the expectation it broke."""
 
 
+def discard_draft(config_dir: Path, task: str) -> bool:
+    """Delete the task's in-progress draft; False when there was none."""
+    validate_task_name(task)
+    with _filesystem("discard the draft"):
+        task_dir = _existing_dir(config_dir, task)
+        if task_dir is None:
+            return False
+        with _locked(task_dir):
+            try:
+                (task_dir / _DRAFT_FILENAME).unlink()
+            except FileNotFoundError:
+                return False
+    return True
+
+
 def is_storable_label(text: str) -> bool:
     """Whether `text` may be stored as a label (a name, fingerprint entry or landmark)."""
     try:
@@ -182,6 +197,16 @@ def list_versions(config_dir: Path, task: str) -> list[int]:
     validate_task_name(task)
     with _filesystem("list the saved model versions"), _shared_lock(config_dir, task):
         return _versions(config_dir, task)
+
+
+def load_draft(config_dir: Path, task: str) -> SiteModel | None:
+    """The task's in-progress exploration draft, or None when there is none."""
+    validate_task_name(task)
+    with _filesystem("read the draft"), _shared_lock(config_dir, task):
+        task_dir = _existing_dir(config_dir, task)
+        if task_dir is None or not _exists(task_dir / _DRAFT_FILENAME):
+            return None
+        return _read_model(task_dir / _DRAFT_FILENAME, task)
 
 
 def load_model(
@@ -242,6 +267,25 @@ def load_version(
     return model
 
 
+def save_draft(config_dir: Path, model: SiteModel) -> None:
+    """Keep `model` as the task's in-progress draft (checked like a model, never a version)."""
+    if not isinstance(model.task, str):
+        raise SiteModelError(f"Expected the task to be text, got {type(model.task).__name__}")
+    validate_task_name(model.task)
+    try:
+        payload = model.to_payload()
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SiteModelError(f"Expected a well-formed model, got {type(exc).__name__}") from exc
+    text = _render(_parse(payload, model.task))
+    _check_size(text)
+    with _filesystem("store the draft"):
+        root = ensure_private_dir(config_dir / _STORE_DIRNAME)
+        task_dir = ensure_private_dir(root / model.task)
+        with _locked(task_dir):
+            write_private(task_dir / _DRAFT_FILENAME, text)
+            _fsync_dir(task_dir)
+
+
 def save_model(
     config_dir: Path,
     model: SiteModel,
@@ -280,6 +324,7 @@ def save_model(
 
 _BIDI_AND_ZERO_WIDTH = re.compile("[؜​-‏‪-‮⁠⁦-⁩﻿]")
 _CURRENT_FILENAME = "model.json"
+_DRAFT_FILENAME = "draft.json"
 _HISTORY_DIRNAME = "history"
 _HISTORY_FILE = re.compile(r"model-([0-9]{4,})\.json")
 _HOST = re.compile(
