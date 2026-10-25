@@ -58,6 +58,17 @@ def peek_queue(config_dir: Path) -> list[str]:
         return _read_names(path)
 
 
+def requeue_front(config_dir: Path, triggers: list[str]) -> None:
+    """Put undispatched trigger names back at the head of the work queue."""
+    if not triggers:
+        return
+    directory = _ensure(config_dir)
+    with _locked(directory):
+        path = directory / _QUEUE_FILENAME
+        names = _read_names(path) if path.is_file() and not path.is_symlink() else []
+        _rewrite(path, [*triggers, *names])
+
+
 def _ensure(config_dir: Path) -> Path:
     try:
         return ensure_private_dir(config_dir / _STORE_DIRNAME)

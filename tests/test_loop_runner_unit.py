@@ -39,6 +39,81 @@ def test_foreground_drains_queue(tmp_path: Path) -> None:
     assert list_runs(tmp_path)[0].outcome is RunOutcome.DONE
 
 
+def test_foreground_requeues_undispatched_on_kill(tmp_path: Path) -> None:
+    from blumkin.loop.commands import run_foreground
+    from blumkin.loop.queue import enqueue, peek_queue
+
+    setup = parse_loop_setup(
+        tmp_path,
+        {
+            "loop": {
+                "triggers": {
+                    "a": {"task": "probe", "instance": "default", "kind": "manual"},
+                    "b": {"task": "probe", "instance": "default", "kind": "manual"},
+                }
+            }
+        },
+    )
+    enqueue(tmp_path, "a")
+    enqueue(tmp_path, "b")
+    handlers: dict = {}
+    calls = {"n": 0}
+
+    def engage_kill(trigger: TriggerSpec) -> HandlerResult:
+        calls["n"] += 1
+        kill = tmp_path / "loop" / "KILL"
+        kill.parent.mkdir(mode=0o700, exist_ok=True)
+        kill.write_text("stop\n", encoding="utf-8")
+        return HandlerResult(outcome=RunOutcome.DONE)
+
+    register_handler(handlers, "probe", engage_kill)
+    stop_after = {"n": 0}
+
+    def should_stop() -> bool:
+        stop_after["n"] += 1
+        return stop_after["n"] > 1
+
+    payload = run_foreground(
+        setup,
+        handlers=handlers,
+        poll_seconds=0,
+        sleep=lambda _s: None,
+        should_stop=should_stop,
+    )
+    assert payload["runs"] == 1
+    assert calls["n"] == 1
+    assert peek_queue(tmp_path) == ["b"]
+
+
+def test_foreground_requeues_tail_when_dispatch_raises(tmp_path: Path) -> None:
+    from blumkin.loop.commands import run_foreground
+    from blumkin.loop.config import LoopTriggerNotFoundError
+    from blumkin.loop.queue import enqueue, peek_queue
+
+    setup = parse_loop_setup(
+        tmp_path,
+        {
+            "loop": {
+                "triggers": {
+                    "a": {"task": "probe", "instance": "default", "kind": "manual"},
+                    "b": {"task": "probe", "instance": "other", "kind": "manual"},
+                }
+            }
+        },
+    )
+    enqueue(tmp_path, "missing")
+    enqueue(tmp_path, "b")
+    stop_after = {"n": 0}
+
+    def should_stop() -> bool:
+        stop_after["n"] += 1
+        return stop_after["n"] > 1
+
+    with pytest.raises(LoopTriggerNotFoundError):
+        run_foreground(setup, poll_seconds=0, sleep=lambda _s: None, should_stop=should_stop)
+    assert peek_queue(tmp_path) == ["b"]
+
+
 def test_run_once_probe_journals_done(tmp_path: Path) -> None:
     setup = _setup(tmp_path)
     result = run_trigger(setup, "probe-trigger")

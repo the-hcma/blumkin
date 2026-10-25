@@ -11,7 +11,7 @@ from blumkin.loop.config import LoopSetup
 from blumkin.loop.handlers import HandlerMap
 from blumkin.loop.journal import list_runs, recent_by_trigger
 from blumkin.loop.kill_switch import is_engaged, kill_switch_path
-from blumkin.loop.queue import drain_queue
+from blumkin.loop.queue import drain_queue, requeue_front
 from blumkin.loop.runner import RunResult, run_trigger
 from blumkin.loop.state import is_paused, list_paused, pause_trigger, resume_trigger
 from blumkin.loop.types import TriggerSpec
@@ -122,12 +122,19 @@ def run_foreground(
             if is_engaged(setup.config_dir, setup.loop):
                 sleep(poll_seconds)
                 continue
-            for name in drain_queue(setup.config_dir):
-                if stop["flag"] or is_engaged(setup.config_dir, setup.loop):
-                    break
-                result = run_trigger(setup, name, handlers=handlers, honor_pause=True)
-                if not result.skipped:
-                    runs += 1
+            pending = drain_queue(setup.config_dir)
+            consumed = 0
+            try:
+                for name in pending:
+                    if stop["flag"] or is_engaged(setup.config_dir, setup.loop):
+                        break
+                    consumed += 1
+                    result = run_trigger(setup, name, handlers=handlers, honor_pause=True)
+                    if not result.skipped:
+                        runs += 1
+            finally:
+                if consumed < len(pending):
+                    requeue_front(setup.config_dir, pending[consumed:])
             sleep(poll_seconds)
     finally:
         signal.signal(signal.SIGTERM, previous_term)
