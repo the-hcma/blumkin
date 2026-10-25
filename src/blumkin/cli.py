@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -82,10 +84,17 @@ from blumkin.mail_signature_state import (
     load_signature_state,
     record_signature_state,
 )
-from blumkin.output import emit_error, emit_json, emit_lines
+from blumkin.output import emit_error, emit_json, emit_lines, sanitize_terminal
+from blumkin.prompt_injection import format_injection_warning_banner
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
+from blumkin.receipts import (
+    DEFAULT_FIND_LIMIT,
+    ReceiptsDirError,
+    find_local_receipts,
+    read_receipt,
+)
 from blumkin.secret_store import macos_keychain_missing
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
@@ -467,6 +476,11 @@ def _browser_profile_lines(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _clean_line(text: str) -> str:
+    """One printable line: whitespace collapsed, control and bidirectional characters gone."""
+    return " ".join(sanitize_terminal(_strip_bidi(text)).split())
+
+
 def _orphaned_agent_lines(payload: dict[str, Any]) -> list[str]:
     """Human-readable lines for `payload["orphaned_agents"]`, or `[]`."""
     orphaned = payload.get("orphaned_agents") or []
@@ -484,6 +498,20 @@ def _orphaned_agent_lines(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _receipt_field_line(name: str, field: dict[str, Any]) -> str:
+    note = f" - {sanitize_terminal(field['note'])}" if field["note"] else ""
+    if field["value"] is None:
+        return f"  {name}: (unreadable){note}"
+    value = sanitize_terminal(str(field["value"]))
+    return f"  {name}: {value} ({field['confidence']}){note}"
+
+
+def _receipt_file_line(entry: dict[str, Any]) -> str:
+    # Spaces are kept as they are: the printed name is the one a user copies into `receipts read`.
+    name = sanitize_terminal(_strip_bidi(entry["name"]))
+    return f"{name} ({entry['size']} bytes, {entry['modified']})"
+
+
 def _shutdown_confirmed(response: dict[str, Any] | None) -> bool:
     """Whether a `shutdown` reply means the probed process actually is (or is
     about to be) gone.
@@ -498,6 +526,11 @@ def _shutdown_confirmed(response: dict[str, Any] | None) -> bool:
     (PR #409 review: two of the three previously read it as a failure).
     """
     return bool(response and (response.get("ok") or response.get("error") == "protocol_mismatch"))
+
+
+def _strip_bidi(text: str) -> str:
+    """`text` without the bidirectional controls that can reorder or disguise what is shown."""
+    return re.sub("[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", text)
 
 
 def _stopped_orphan_lines(payload: dict[str, Any]) -> list[str]:
@@ -2032,6 +2065,119 @@ def browser_status(ctx: click.Context, task: str | None, as_json_flag: bool) -> 
         emit_json(payload)
         return
     emit_lines(_browser_profile_lines(payload))
+
+
+@main.group(epilog=help_text.RECEIPTS_EPILOG)
+def receipts() -> None:
+    """Find and read receipts for expense tasks (images and PDFs).
+
+    `find` lists receipt files in a directory; `read` OCRs one and reports vendor,
+    date, total and currency with a confidence for each (issue #469).
+    """
+
+
+@receipts.command("find", epilog=help_text.RECEIPTS_FIND_EPILOG)
+@click.option(
+    "--dir",
+    "directory",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Directory holding receipt images and PDFs (not searched recursively).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--limit", default=DEFAULT_FIND_LIMIT, show_default=True, type=click.IntRange(1, 500))
+@click.option(
+    "--since",
+    default=None,
+    help="Only files modified on or after YYYY-MM-DD (UTC, like the times printed).",
+)
+@click.pass_context
+def receipts_find(
+    ctx: click.Context, directory: Path, as_json_flag: bool, limit: int, since: str | None
+) -> None:
+    """List receipt files in a directory, newest first."""
+    as_json = _as_json(ctx, as_json_flag)
+    since_epoch: float | None = None
+    if since is not None:
+        try:
+            since_epoch = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=UTC).timestamp()
+        except ValueError:
+            _emit_error(
+                error="usage_error",
+                message=f"Expected --since as YYYY-MM-DD, got {since!r}",
+                as_json=as_json,
+            )
+            raise SystemExit(EXIT_USAGE) from None
+    try:
+        found = find_local_receipts(directory, limit=limit, since_epoch=since_epoch)
+    except ReceiptsDirError as exc:
+        _emit_error(error="not_found", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_NOT_FOUND) from exc
+    payload = {
+        "directory": str(directory),
+        "ok": True,
+        "receipts": [
+            {
+                "modified": datetime.fromtimestamp(item.modified_epoch, UTC).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+                "name": item.name,
+                "path": str(item.path),
+                "size": item.size,
+            }
+            for item in found
+        ],
+    }
+    if as_json:
+        emit_json(payload)
+        return
+    if not found:
+        emit_lines([f"no receipts found in {directory}"])
+        return
+    emit_lines([_receipt_file_line(entry) for entry in payload["receipts"]])
+
+
+@receipts.command("read", epilog=help_text.RECEIPTS_READ_EPILOG)
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def receipts_read(ctx: click.Context, path: Path, as_json_flag: bool) -> None:
+    """Read one receipt and report vendor, date, total and currency with confidence."""
+    as_json = _as_json(ctx, as_json_flag)
+    file_path = path.expanduser()
+    if not file_path.is_file():
+        _emit_error(
+            error="not_found",
+            message=f"Expected an existing receipt file, got {str(path)!r}",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_NOT_FOUND)
+    if file_path.is_symlink() or file_path.name.startswith("."):
+        _emit_error(
+            error="usage_error",
+            message=(
+                "Expected a regular receipt file (not a symlink or a hidden file), "
+                f"got {str(path)!r}"
+            ),
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    reading = asyncio.run(read_receipt(file_path, config=None))
+    if reading.status == "unsupported":
+        _emit_error(error="usage_error", message=reading.message, as_json=as_json)
+        raise SystemExit(EXIT_USAGE)
+    payload = reading.to_payload()
+    if as_json:
+        emit_json(payload)
+        return
+    ocr = "yes" if reading.ocr_used else "no"
+    lines = [f"Receipt {sanitize_terminal(reading.path)} (OCR used: {ocr})"]
+    for name in ("vendor", "date", "total", "currency"):
+        lines.append(_receipt_field_line(name, payload["fields"][name]))
+    if reading.message:
+        lines.append(_clean_line(reading.message))
+    lines.extend(format_injection_warning_banner(reading.injection_warning))
+    emit_lines(lines)
 
 
 @main.group(epilog=help_text.PROFILES_EPILOG)

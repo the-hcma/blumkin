@@ -1573,6 +1573,54 @@ existing profile, or to resolve the drift `blumkin doctor` reports after a
 profile is re-authenticated as somebody else.
 """
 
+RECEIPTS_EPILOG = """
+Examples:
+
+\b
+  blumkin receipts find --dir ~/Documents/receipts --since 2026-10-01 --json
+  blumkin receipts read ~/Documents/receipts/taxi.jpg --json
+
+Receipt intake for expense tasks (issue #469): `find` lists the image and PDF files
+in a directory, newest first; `read` runs the file through `docs read` (images are
+always OCR'd, PDFs only when they have no text layer) and reports vendor, date,
+total and currency, each with a confidence, so a task asks you about anything
+doubtful instead of guessing. Receipt contents stay on this machine.
+"""
+
+RECEIPTS_FIND_EPILOG = """
+Examples:
+
+\b
+  blumkin receipts find --dir ~/Documents/receipts
+  blumkin receipts find --dir ~/Documents/receipts --since 2026-10-01 --limit 20 --json
+
+Lists the image and PDF files directly inside `--dir` (no subfolders, no symlinks,
+no hidden files), newest first. `--since YYYY-MM-DD` keeps files modified on or
+after that UTC date (the same zone as the printed times). For receipts attached to
+mail, list the message's attachments with
+`blumkin mail attachments --id ... --json` and download the ones you want with:
+
+\b
+  blumkin mail attachments download --message-id ... --attachment-id ... --out ...
+"""
+
+RECEIPTS_READ_EPILOG = """
+Examples:
+
+\b
+  blumkin receipts read ~/Documents/receipts/taxi.jpg
+  blumkin receipts read ~/Documents/receipts/hotel.pdf --json
+
+Prints vendor, date, total and currency with a confidence for each (high, low or
+none). It is conservative on purpose: a field is `high` only when the receipt says it
+unambiguously. Several different total lines, an amount that could be thousands or
+decimals (1.234), an unrecognised grouping, a total with no decimals, a two-digit year,
+several dates or currencies, and a `$` alone all come back `low` or without a value, with
+a note saying why; the vendor is always `low`. Ask the user about anything that is not
+`high`. When OCR is unavailable the result has `status: needs_manual` and says how to
+install the `ocr` extra; ask the user for the amounts.
+"""
+
 SKILLS_DESCRIBE_EPILOG = """
 Example:
 

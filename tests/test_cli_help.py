@@ -39,6 +39,7 @@ GROUP_PATHS = [
     ("meeting",),
     ("people",),
     ("profiles",),
+    ("receipts",),
     ("skills",),
 ]
 
