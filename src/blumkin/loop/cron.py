@@ -108,18 +108,15 @@ def next_due_at_or_before(
     schedule = _parse_schedule(spec.schedule, label=f"cron.{spec.name}.schedule")
     # Walk real UTC minutes so DST gaps/folds cannot invent local wall times.
     cursor = now.astimezone(UTC).replace(second=0, microsecond=0)
-    # Cover monthly (and denser) schedules; if last-due is older, walk back to it.
-    lookback_days = 400
-    earliest = cursor - timedelta(days=lookback_days)
+    # Exclusive lower bound: last consumed tick, or 400 days back for a cold start.
     if after is not None:
-        after_utc = after.astimezone(UTC)
-        if after_utc < earliest:
-            earliest = after_utc
-    while cursor >= earliest:
+        floor = after.astimezone(UTC)
+    else:
+        floor = cursor - timedelta(days=400)
+    while cursor > floor:
         local = cursor.astimezone(zone)
         if _matches(schedule, local) and _working_day_ok(spec, local):
-            if after is None or cursor > after.astimezone(UTC):
-                return cursor
+            return cursor
         cursor -= timedelta(minutes=1)
     return None
 
@@ -231,8 +228,12 @@ def _read_last_due(path: Path) -> dict[str, datetime]:
 
 
 def _reject_impossible_dom(schedule: _Schedule, *, label: str) -> None:
-    """Reject month/day pairs that can never occur (e.g. 31 February)."""
-    if schedule.dom_star:
+    """Reject month/day pairs that can never occur (e.g. 31 February).
+
+    When both DOM and DOW are restricted, POSIX matches either field, so an
+    impossible DOM is still valid (the DOW alternative can fire).
+    """
+    if schedule.dom_star or not schedule.dow_star:
         return
     for month in schedule.months:
         # Leap years exist; February 29 is possible. Use 29 as Feb max.

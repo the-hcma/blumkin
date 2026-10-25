@@ -172,6 +172,24 @@ def test_impossible_dom_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_impossible_dom_allowed_when_dow_also_restricted(tmp_path: Path) -> None:
+    # DOM 31 Feb never occurs, but DOW alternative can still fire (POSIX OR).
+    setup = parse_loop_setup(
+        tmp_path,
+        {
+            "cron": {
+                "either": {
+                    "task": "time-sheet",
+                    "instance": "current",
+                    "schedule": "0 18 31 2 1",
+                    "timezone": "UTC",
+                }
+            }
+        },
+    )
+    assert "either" in setup.triggers
+
+
 def test_mark_due_keeps_later_timestamp(tmp_path: Path) -> None:
     later = datetime(2026, 10, 21, 18, 0, tzinfo=UTC)
     earlier = datetime(2026, 10, 20, 18, 0, tzinfo=UTC)

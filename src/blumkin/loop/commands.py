@@ -54,10 +54,11 @@ def resume(setup: LoopSetup, name: str) -> dict[str, Any]:
     from datetime import UTC, datetime
 
     setup.trigger(name)
-    changed = resume_trigger(setup.config_dir, name)
-    if changed:
-        # Missed dues while paused are not caught up unless a later command asks.
+    # Advance last-due while still paused so a concurrent runner cannot catch up
+    # the missed fires in the gap before the pause file is cleared.
+    if name in list_paused(setup.config_dir):
         mark_due_consumed(setup.config_dir, name, datetime.now(UTC))
+    changed = resume_trigger(setup.config_dir, name)
     return {"name": name, "paused": False, "changed": changed}
 
 
