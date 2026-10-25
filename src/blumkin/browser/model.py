@@ -183,27 +183,29 @@ def load_model(
 ) -> SiteModel | None:
     """The task's current model, or None when none was saved.
 
-    If the newest saved version is ahead of `model.json` (a save was interrupted between its
-    two writes) the newest saved version is returned, and the next save repairs the file.
+    If the newest saved version is ahead of `model.json`, or `model.json` is missing (a save
+    was interrupted between its two writes), the newest saved version is returned, and the
+    next save repairs the file.
     """
     validate_task_name(task)
     with _filesystem("read the model"), _shared_lock(config_dir, task):
         task_dir = _existing_dir(config_dir, task)
-        if task_dir is None or not _exists(task_dir / _CURRENT_FILENAME):
+        if task_dir is None:
             return None
-        model = _read_model(task_dir / _CURRENT_FILENAME, task)
         newest = _versions(config_dir, task)
-        if newest and model.version != newest[-1]:
-            if model.version > newest[-1]:
-                raise SiteModelError(
-                    f"Expected {_CURRENT_FILENAME} to be version {newest[-1]}, got {model.version}"
-                )
-            model = _read_model(task_dir / _HISTORY_DIRNAME / _history_name(newest[-1]), task)
-            if model.version != newest[-1]:
-                raise SiteModelError(
-                    f"Expected version {newest[-1]} in {_history_name(newest[-1])}, "
-                    f"got {model.version}"
-                )
+        if not _exists(task_dir / _CURRENT_FILENAME):
+            if not newest:
+                return None
+            model = _newest_saved(task_dir, task, newest[-1])
+        else:
+            model = _read_model(task_dir / _CURRENT_FILENAME, task)
+            if newest and model.version != newest[-1]:
+                if model.version > newest[-1]:
+                    raise SiteModelError(
+                        f"Expected {_CURRENT_FILENAME} to be version {newest[-1]}, "
+                        f"got {model.version}"
+                    )
+                model = _newest_saved(task_dir, task, newest[-1])
     _check_hosts(model, host_allowed)
     return model
 
@@ -262,6 +264,8 @@ def save_model(
             _fsync_dir(history)
             write_private(task_dir / _CURRENT_FILENAME, text)
             _fsync_dir(task_dir)
+            _fsync_dir(root)
+            _fsync_dir(config_dir)
     return stored
 
 
@@ -461,6 +465,16 @@ def _looks_like_a_token(name: str) -> bool:
     return sum(char.isdigit() for char in name) > 4 or any(
         len(run) > 16 for run in re.findall("[a-z]+", name)
     )
+
+
+def _newest_saved(task_dir: Path, task: str, version: int) -> SiteModel:
+    """The newest history entry, checked against its own name."""
+    model = _read_model(task_dir / _HISTORY_DIRNAME / _history_name(version), task)
+    if model.version != version:
+        raise SiteModelError(
+            f"Expected version {version} in {_history_name(version)}, got {model.version}"
+        )
+    return model
 
 
 def _no_constants(name: str) -> Any:

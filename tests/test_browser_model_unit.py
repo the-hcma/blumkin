@@ -774,3 +774,39 @@ def test_a_byte_order_mark_or_utf16_model_file_is_refused(tmp_path: Path, encodi
 def test_a_non_text_task_in_a_model_is_a_model_error(tmp_path: Path) -> None:
     with pytest.raises(SiteModelError, match="Expected"):
         save_model(tmp_path, _model(task=["a"]))  # type: ignore[arg-type]
+
+
+# --- first review of the store on GitHub ------------------------------------------------------
+
+
+def test_a_missing_current_file_recovers_the_newest_saved_version(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    second = save_model(tmp_path, _model(recorded_at="2026-10-25T12:00:00Z"))
+    (tmp_path / "browser-models" / "expense-report" / "model.json").unlink()
+    assert load_model(tmp_path, "expense-report") == second
+
+
+def test_a_first_save_interrupted_before_model_json_is_recovered(tmp_path: Path) -> None:
+    saved = save_model(tmp_path, _model())
+    (tmp_path / "browser-models" / "expense-report" / "model.json").unlink()
+    assert load_model(tmp_path, "expense-report") == saved
+
+
+def test_no_current_file_and_no_history_is_still_none(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    task_dir = tmp_path / "browser-models" / "expense-report"
+    (task_dir / "model.json").unlink()
+    (task_dir / "history" / "model-0001.json").unlink()
+    assert load_model(tmp_path, "expense-report") is None
+
+
+def test_a_save_syncs_the_directories_it_may_have_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced: list[Path] = []
+    monkeypatch.setattr("blumkin.browser.model._fsync_dir", lambda path: synced.append(path))
+    save_model(tmp_path, _model())
+    root = tmp_path / "browser-models"
+    assert {root / "expense-report" / "history", root / "expense-report", root, tmp_path} <= set(
+        synced
+    )
