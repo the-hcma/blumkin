@@ -68,6 +68,12 @@ class _Locator:
     def set_input_files(self, path: str, *, timeout: float) -> None:
         self._page.calls.append(("upload", self._label, path, timeout))
 
+    def aria_snapshot(self, *, timeout: float) -> str:
+        if self._label in self._page.missing:
+            raise PlaywrightTimeout("page gone")
+        self._page.calls.append(("aria_snapshot", self._label, timeout))
+        return '- button "Add line"\n'
+
 
 _PLAIN_ELEMENT = {
     "tag": "button",
@@ -92,6 +98,10 @@ class _Page:
 
     def get_by_label(self, label: str) -> _Locator:
         return _Locator(self, label)
+
+    def locator(self, selector: str) -> _Locator:
+        self.calls.append(("locator", selector))
+        return _Locator(self, selector)
 
     def get_by_role(self, role: str, *, name: str, exact: bool) -> _Locator:
         self.calls.append(("get_by_role", role, name, exact))
@@ -721,3 +731,16 @@ def test_goto_refuses_backslashes_user_info_and_control_characters() -> None:
 def test_a_malformed_url_is_an_action_error_not_a_value_error(url: str) -> None:
     with pytest.raises(BrowserActionError, match="Expected"):
         checked_http_url(url)
+
+
+def test_aria_snapshot_describes_the_page_body_with_the_action_timeout() -> None:
+    pw, driver = _driver()
+    assert driver.aria_snapshot() == '- button "Add line"\n'
+    assert ("aria_snapshot", "body", 30000.0) in pw.page.calls
+
+
+def test_a_failed_aria_snapshot_is_an_action_error() -> None:
+    pw, driver = _driver()
+    pw.page.missing.add("body")
+    with pytest.raises(BrowserActionError, match="describe the page"):
+        driver.aria_snapshot()

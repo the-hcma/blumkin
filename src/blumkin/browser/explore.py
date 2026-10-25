@@ -53,12 +53,22 @@ class ClickDecision(StrEnum):
     RECORD_ONLY = "record_only"
 
 
+class Confirmer(Protocol):
+    """Asks the user a yes/no question; the answer must not come from the agent."""
+
+    def confirm(self, prompt: str) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ControlObservation:
     """One named control seen on a page: its ARIA role and accessible name."""
 
     role: str
     name: str
+
+
+class DraftNotFoundError(LookupError):
+    """There is no in-progress exploration draft for the task."""
 
 
 class ExploreDriver(Protocol):
@@ -70,6 +80,10 @@ class ExploreDriver(Protocol):
     def aria_snapshot(self) -> str: ...
 
     def click_vetted(self, role: str, name: str) -> None: ...
+
+
+class ExploreNeedsConfirmationError(ValueError):
+    """Saving the draft needs the user's explicit `--yes` after they have seen it."""
 
 
 class ExploreRawDriver(Protocol):
@@ -89,12 +103,6 @@ class ExploreRawDriver(Protocol):
 
 class ExploreRefusedError(RuntimeError):
     """Exploration refused to do something (an off-host page, a control it will not click)."""
-
-
-class Confirmer(Protocol):
-    """Asks the user a yes/no question; the answer must not come from the agent."""
-
-    def confirm(self, prompt: str) -> bool: ...
 
 
 class Explorer:
@@ -194,10 +202,15 @@ class ModelDraft:
         draft._flow_steps = [step for flow in model.flows for step in flow.steps]
         return draft
 
+    def add_host(self, host: str) -> None:
+        """Record a host the site was seen on."""
+        if host not in self._hosts:
+            self._hosts = (*self._hosts, host)
+
     def add_page(self, page_id: str, url: str, controls: Sequence[ControlObservation]) -> None:
         """Record (or update) a page from what was observed on it."""
         if not _PAGE_ID.fullmatch(page_id):
-            raise ExploreRefusedError(
+            raise PageIdError(
                 f"Expected a page id of lowercase words (such as expense-list), got {page_id!r}"
             )
         marks: list[str] = []
@@ -230,6 +243,15 @@ class ModelDraft:
             FlowStep(action=action, control=control, expect=expect, page=page_id)
         )
 
+    def control_for(self, page_id: str, role: str, name: str) -> str | None:
+        """The logical name of the control with this role and name on the page, if recorded."""
+        page = self._pages.get(page_id)
+        wanted = f"{role}:{name}"
+        for control in page.controls if page else ():
+            if any(loc.value == wanted for loc in control.locators):
+                return control.name
+        return None
+
     def to_model(self, *, recorded_at: str, blumkin_version: str) -> SiteModel:
         """The draft as a model (not yet validated or stored: `save_model` does both)."""
         empty = [page_id for page_id, page in self._pages.items() if not page.fingerprint]
@@ -248,6 +270,10 @@ class ModelDraft:
             task=self._task,
             version=0,
         )
+
+
+class PageIdError(ValueError):
+    """A page id that is not lowercase words."""
 
 
 class TerminalConfirmer:

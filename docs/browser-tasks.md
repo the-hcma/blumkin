@@ -49,6 +49,21 @@ blumkin browser handoff expense-report --filled "1 line, 12.50 USD" --step "Revi
 
 Each command attaches to the running browser, does one thing and detaches; the browser stays open with your session. `blumkin browser click` defaults to a button; for a link, tab or menu item pass the role (`--role link`, `tab` or `menuitem`), for example `blumkin browser click expense-report "Help" --role link`. The two ready-made skills are [`expense-report`](../.agents/skills/expense-report/SKILL.md) and [`time-sheet`](../.agents/skills/time-sheet/SKILL.md).
 
+## Explore a site once
+
+A task can record the structure of its website once, so later runs do not have to explore it again. The record is a site model: the pages (a URL template and a fingerprint of their landmark controls), the controls on each page (a logical name, a kind, whether it looks finalizing and ordered ways to find it) and the flows that chain them. It holds structure only: nothing you type, no cookie and no personal data, and a label that looks like typed data is skipped and counted. Exploration needs the task to declare `allowed_hosts` and never leaves them.
+
+```bash
+blumkin browser explore observe expense-report expense-list
+blumkin browser explore click expense-report Help --role link
+blumkin browser explore click expense-report "Add line" --page expense-list
+blumkin browser explore show expense-report
+blumkin browser explore save expense-report --yes
+blumkin browser explore discard expense-report
+```
+
+`observe` records the page the task's browser is on in a draft kept on disk between commands, and `show` summarizes what the draft would save. `click` follows links, tabs and menu items without asking. A control that may change state, such as a button that opens a confirmation dialog, is clicked only after you answer yes at your own terminal; the default is no, the question is read from the terminal and never from an argument or the page, and with no terminal (an agent running in the background) nothing is clicked and the command prints what to run yourself. An approval covers that one click, is not stored and never adds the control to `allowed_controls`. A finalizing control (submit, send, pay and so on) is recorded as such and is never clicked, with or without approval. `save --yes` stores the draft as the next version of the task's model under the config directory (`browser-models/`, private, earlier versions kept) and clears the draft; without `--yes` it shows what it would save and stops.
+
 ## Receipts
 
 `blumkin receipts find --dir ~/Documents/receipts --json` lists the images and PDFs in a folder, newest first. `blumkin receipts read ~/Documents/receipts/taxi.jpg --json` reads one with the existing OCR and reports vendor, date, total and currency, each with a confidence (`high`, `low` or `none`), so the task asks you about anything doubtful instead of guessing. OCR needs the `ocr` extra (`uv tool install -e '.[pdf,ocr]'`) plus `tesseract` and `poppler`; without it the result says `needs_manual` and the task asks you for the amounts. For receipts that arrive by mail, list a message's attachments with `blumkin mail attachments --id <message-id> --json` and save the ones you want with `blumkin mail attachments download`.
@@ -88,4 +103,6 @@ Each command attaches to the running browser, does one thing and detaches; the b
 | `upload_blocked` | 1 | The file is not a regular file with a single link inside one of the task's `upload_dirs` folders, the page is not on one of its `allowed_hosts`, or the task declares neither. |
 | `host_blocked` | 1 | `goto` was asked for a host outside the task's `allowed_hosts`, or a page the task is on or ended up on is outside them. |
 | `profile_in_use` | 1 | Raised when the task's browser is running or a launch for it is in progress; close it or wait, then try again. |
+| `explore_refused` | 1 | Exploration needs `allowed_hosts` for the task, or the page is (or a click led) outside them. |
+| `model_invalid` | 1 | The draft or the stored model was rejected: a field outside the schema, a value that looks like typed data, a symlink or a file that is too large. |
 | `usage_error` | 2 | A bad task name, a missing `--yes`, or a handoff with no `--step`. |
