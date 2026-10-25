@@ -353,6 +353,9 @@ def _new_field_findings(page: Page, observed: Sequence[ControlObservation]) -> l
         return []  # the model was cut off at the cap, so what it lacks is not necessarily new
     known_role_names: set[tuple[str, str]] = set()
     known_labels: set[str] = set()
+    for mark in page.fingerprint:  # fields the model records no control for are still known
+        role, _, name = mark.partition(":")
+        known_role_names.add((role, name))
     for control in page.controls:
         for locator in control.locators:
             if locator.strategy is LocatorStrategy.ROLE_NAME:

@@ -384,3 +384,19 @@ def test_a_thin_page_whose_recorded_landmarks_are_all_gone_is_incompatible() -> 
     check = check_page(page, observed)
     assert check.grade is Grade.INCOMPATIBLE
     assert FindingKind.LOOKS_DIFFERENT in {f.kind for f in check.findings}
+
+
+@pytest.mark.parametrize("role", ["slider", "menuitemcheckbox", "menuitemradio"])
+def test_a_recorded_field_the_model_has_no_control_for_is_not_new(role: str) -> None:
+    observed = (
+        ControlObservation("heading", "Order"),
+        ControlObservation("heading", "Details"),
+        ControlObservation("heading", "Totals"),
+        ControlObservation(role, "Quantity"),
+    )
+    draft = ModelDraft(task="t", hosts=("erp.example.com",))
+    draft.add_page("p", "https://erp.example.com/p", observed)
+    page = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0").pages[0]
+    check = check_page(page, observed)
+    assert check.grade is Grade.COMPATIBLE
+    assert FindingKind.NEW_FIELD not in {f.kind for f in check.findings}
