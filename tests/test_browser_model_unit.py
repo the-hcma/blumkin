@@ -562,14 +562,26 @@ def test_a_history_file_whose_version_disagrees_with_its_name_is_refused(tmp_pat
         load_version(tmp_path, "expense-report", 2)
 
 
-def test_a_current_file_behind_the_newest_history_is_reported_not_silently_used(
+def test_a_current_file_behind_the_newest_history_rolls_forward_to_the_newest_version(
     tmp_path: Path,
 ) -> None:
     save_model(tmp_path, _model())
-    save_model(tmp_path, _model())
+    save_model(tmp_path, _model(recorded_at="2026-10-25T12:00:00Z"))
     task_dir = tmp_path / "browser-models" / "expense-report"
     (task_dir / "model.json").write_text((task_dir / "history" / "model-0001.json").read_text())
-    with pytest.raises(SiteModelError, match="Expected model.json to be version 2"):
+    loaded = load_model(tmp_path, "expense-report")
+    assert loaded is not None
+    assert loaded.version == 2
+    assert loaded.recorded_at == "2026-10-25T12:00:00Z"
+
+
+def test_a_current_file_ahead_of_the_history_is_refused(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    task_dir = tmp_path / "browser-models" / "expense-report"
+    payload = json.loads((task_dir / "model.json").read_text())
+    payload["version"] = 5
+    (task_dir / "model.json").write_text(json.dumps(payload))
+    with pytest.raises(SiteModelError, match="Expected model.json to be version 1"):
         load_model(tmp_path, "expense-report")
 
 
@@ -621,3 +633,144 @@ def test_the_module_docstring_does_not_promise_more_than_the_schema_enforces() -
     doc = " ".join((model.__doc__ or "").split())
     assert "never holds" not in doc
     assert "heuristic" in doc
+
+
+# --- second review of the store --------------------------------------------------------------
+
+
+def test_blumkin_version_must_look_like_a_version(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    payload["blumkin_version"] = "token=abcDEF"
+    with pytest.raises(SiteModelError, match="Expected"):
+        _load_payload(tmp_path, payload)
+    for fine in ("1.2.3", "1.2.3+g1a2b3c", "2.0.0-rc1"):
+        payload["blumkin_version"] = fine
+        assert _load_payload(tmp_path, payload) is not None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Total \u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668",
+        "Card 4111 1111 1111 1111",
+        "SSN 123-45-6789",
+        "Order 2026.10.24.1234",
+        "Contact john@example.org",
+        "Mark\ufe0f",
+    ],
+    ids=["arabic-digits", "spaced-card", "dashed-number", "dotted-number", "email", "variation"],
+)
+def test_more_ways_to_carry_typed_data_are_refused_in_plain_fields(
+    tmp_path: Path, value: str
+) -> None:
+    payload = _payload(tmp_path)
+    payload["pages"][0]["fingerprint"].append(f"button:{value}")
+    with pytest.raises(SiteModelError, match="Expected"):
+        _load_payload(tmp_path, payload)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "xk3j9d8f7s6a5q4w3e2r1t",
+        "abcdefghijklmnopqrstuv",
+        "a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s.t.u.v.w.x.y.z.a.b.c.d.e.f.g.h.i.j.k.l.m.n.o.p.q.r.s",
+    ],
+)
+def test_a_logical_name_that_looks_like_a_token_is_refused(tmp_path: Path, name: str) -> None:
+    payload = _payload(tmp_path)
+    payload["pages"][0]["controls"][0]["name"] = name
+    payload["flows"] = []
+    with pytest.raises(SiteModelError, match="Expected"):
+        _load_payload(tmp_path, payload)
+
+
+def test_ordinary_logical_names_are_still_accepted(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    for name in ("timesheet.hours[day]", "expense.line-item_amount", "dialog.cancel"):
+        payload["pages"][0]["controls"][0]["name"] = name
+        payload["flows"] = []
+        assert _load_payload(tmp_path, payload) is not None
+
+
+def test_a_mixed_case_path_word_that_looks_like_a_token_is_refused(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    payload["pages"][0]["url_template"] = "/aBcDeFgHiJkLm"
+    with pytest.raises(SiteModelError, match="Expected"):
+        _load_payload(tmp_path, payload)
+    payload["pages"][0]["url_template"] = "/expenseReport/{id}"
+    assert _load_payload(tmp_path, payload) is not None
+
+
+def test_a_flow_step_must_name_a_control_that_belongs_to_its_page(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    payload["flows"][0]["steps"][0]["page"] = "form"
+    payload["flows"][0]["steps"][0]["control"] = "expense.add"
+    with pytest.raises(SiteModelError, match="Expected a control that belongs to page"):
+        _load_payload(tmp_path, payload)
+
+
+def test_duplicate_hosts_are_refused(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    payload["hosts"] = ["erp.example.com", "erp.example.com"]
+    with pytest.raises(SiteModelError, match="Expected unique hosts"):
+        _load_payload(tmp_path, payload)
+
+
+def test_a_model_too_large_to_load_is_refused_on_save_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("blumkin.browser.model._MAX_FILE_BYTES", 1000)
+    with pytest.raises(SiteModelError, match="too large"):
+        save_model(tmp_path, _model())
+    history = tmp_path / "browser-models" / "expense-report" / "history"
+    assert not history.exists() or list(history.iterdir()) == []
+
+
+def test_loading_while_another_process_saves_never_reports_an_interrupted_save(
+    tmp_path: Path,
+) -> None:
+    save_model(tmp_path, _model())
+    stop = threading.Event()
+    errors: list[BaseException] = []
+
+    def reader() -> None:
+        while not stop.is_set():
+            try:
+                load_model(tmp_path, "expense-report")
+            except BaseException as exc:  # noqa: BLE001 - the thread reports whatever it got
+                errors.append(exc)
+                return
+
+    worker = threading.Thread(target=reader, daemon=True)
+    worker.start()
+    for _ in range(25):
+        save_model(tmp_path, _model())
+    stop.set()
+    worker.join(30)
+    assert not worker.is_alive()
+    assert errors == []
+
+
+def test_list_versions_ignores_directories_links_and_noncanonical_names(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    history = tmp_path / "browser-models" / "expense-report" / "history"
+    (history / "model-0777.json").mkdir()
+    (history / "model-00001.json").write_text("{}")
+    (history / "model-0009.json").symlink_to(history / "model-0001.json")
+    assert list_versions(tmp_path, "expense-report") == [1]
+    assert save_model(tmp_path, _model()).version == 2
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16"])
+def test_a_byte_order_mark_or_utf16_model_file_is_refused(tmp_path: Path, encoding: str) -> None:
+    payload = _payload(tmp_path)
+    path = tmp_path / "browser-models" / "expense-report" / "model.json"
+    path.write_bytes(json.dumps(payload).encode(encoding))
+    with pytest.raises(SiteModelError, match="Expected"):
+        load_model(tmp_path, "expense-report")
+
+
+def test_a_non_text_task_in_a_model_is_a_model_error(tmp_path: Path) -> None:
+    with pytest.raises(SiteModelError, match="Expected"):
+        save_model(tmp_path, _model(task=["a"]))  # type: ignore[arg-type]
