@@ -494,6 +494,17 @@ def decide_click(role: str, name: str, *, extra_deny: Sequence[str] = ()) -> Cli
     return ClickDecision.RECORD_ONLY
 
 
+def landmark_marks(controls: Sequence[ControlObservation]) -> frozenset[str]:
+    """The `role:name` marks a page is recognized by, as `ModelDraft` records them."""
+    return frozenset(
+        f"{item.role}:{item.name}"
+        for item in controls
+        if item.role not in _SKIPPED_FROM_FINGERPRINT
+        and is_storable_label(item.name)
+        and is_storable_label(f"{item.role}:{item.name}")
+    )
+
+
 def parse_aria_snapshot(text: str) -> tuple[ControlObservation, ...]:
     """The named nodes of a Playwright ARIA snapshot, in order and without repeats."""
     seen: set[tuple[str, str]] = set()

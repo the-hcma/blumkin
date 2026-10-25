@@ -89,6 +89,12 @@ from blumkin.browser.ledger_commands import (
     ledger_verify,
 )
 from blumkin.browser.model import SiteModelError
+from blumkin.browser.model_commands import (
+    ModelNotFoundError,
+    model_check,
+    model_diff,
+    model_versions,
+)
 from blumkin.browser.profiles import BrowserProfileError, ProfileBusyError, ProfileInUseError
 from blumkin.capabilities import capability_summary
 from blumkin.config import (
@@ -541,6 +547,11 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "ledger_invalid", EXIT_OTHER
     elif isinstance(exc, LedgerError):
         slug, code = "usage_error", EXIT_USAGE
+    elif isinstance(exc, ModelNotFoundError):
+        slug, code = "not_found", EXIT_NOT_FOUND
+        hint = (
+            f"Explore and save one first: `blumkin browser explore observe {task or 'TASK'} PAGE`."
+        )
     elif isinstance(exc, SiteModelError):
         slug, code = "model_invalid", EXIT_OTHER
     elif isinstance(exc, HandoffError):
@@ -2673,6 +2684,82 @@ def browser_ledger_verify(
             f"{payload['status']['summary']}"
         ]
     )
+
+
+@browser.group("model", epilog=help_text.BROWSER_MODEL_EPILOG)
+def browser_model() -> None:
+    """Check a recorded site model against the live site, list and compare versions."""
+
+
+@browser_model.command("check", epilog=help_text.BROWSER_MODEL_CHECK_EPILOG)
+@click.argument("task")
+@click.argument("page_id")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--version", "version", type=int, default=None, help="Check this saved version.")
+@click.pass_context
+def browser_model_check(
+    ctx: click.Context, task: str, page_id: str, as_json_flag: bool, version: int | None
+) -> None:
+    """Grade a page of the model against the page the task's browser is on."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = model_check(load_browser_setup(), task, page_id, version=version)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+    else:
+        lines = [f"{task}: {page_id} is {payload['grade']} (model version {payload['version']})"]
+        if not payload["url_matches"]:
+            lines.append(
+                f"  the address looks like {payload['url_template']}, not the recorded page"
+            )
+        lines.extend(f"  {sanitize_terminal(f['note'])}" for f in payload["findings"])
+        emit_lines(lines)
+    if not payload["ok"]:
+        raise SystemExit(EXIT_OTHER)
+
+
+@browser_model.command("diff", epilog=help_text.BROWSER_MODEL_DIFF_EPILOG)
+@click.argument("task")
+@click.argument("old", type=int)
+@click.argument("new", type=int, required=False)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_model_diff(
+    ctx: click.Context, task: str, old: int, new: int | None, as_json_flag: bool
+) -> None:
+    """Show what changed between two saved versions (the second defaults to the current)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = model_diff(load_browser_setup(), task, old, new)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([f"{task}: version {payload['old']} -> {payload['new']}"] + payload["lines"])
+
+
+@browser_model.command("versions", epilog=help_text.BROWSER_MODEL_VERSIONS_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_model_versions(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """List the saved versions of the task's model."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = model_versions(load_browser_setup(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    if not payload["versions"]:
+        emit_lines([f"{task}: no saved model (start with `blumkin browser explore observe`)"])
+        return
+    listed = ", ".join(str(number) for number in payload["versions"])
+    emit_lines([f"{task}: versions {listed} (current {payload['current']})"])
 
 
 @browser.command("press", epilog=help_text.BROWSER_PRESS_EPILOG)

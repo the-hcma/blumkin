@@ -473,6 +473,55 @@ submit command. Needs `--yes`; say yes only if you pressed the button yourself. 
 instance accepts no more items.
 """
 
+BROWSER_MODEL_CHECK_EPILOG = """
+Examples:
+
+\b
+  blumkin browser model check expense-report expense-list
+  blumkin browser model check expense-report expense-list --version 1 --json
+
+Open the page in the task's browser first, then check it against the model's page of that
+name. The grade is `compatible` (it still matches; layout changes are ignored), `degraded`
+(it works but the model should be updated: a control is found only by a fallback locator,
+cannot be verified, or some landmarks changed) or `incompatible` (re-explore the page: a
+control is gone, a new field appeared or the page no longer looks like the recorded one).
+The command exits 1 for `incompatible`. The page must be on the task's `allowed_hosts`.
+"""
+
+BROWSER_MODEL_DIFF_EPILOG = """
+Examples:
+
+\b
+  blumkin browser model diff expense-report 1
+  blumkin browser model diff expense-report 1 3 --json
+
+Compares two saved versions of the task's model (the second defaults to the current one):
+hosts, pages, and the controls added, removed or changed on the pages both have.
+"""
+
+BROWSER_MODEL_EPILOG = """
+Examples:
+
+\b
+  blumkin browser model check expense-report expense-list
+  blumkin browser model versions expense-report
+  blumkin browser model diff expense-report 1
+
+A site model records the structure of a task's website (see `blumkin browser explore`).
+These commands check that it still matches the site and compare saved versions. Nothing
+here clicks or types: `check` only reads the page the task's browser is on.
+"""
+
+BROWSER_MODEL_VERSIONS_EPILOG = """
+Examples:
+
+\b
+  blumkin browser model versions expense-report
+  blumkin browser model versions expense-report --json
+
+Lists the saved versions of the task's model, oldest first, and which one is current.
+"""
+
 BROWSER_PRESS_EPILOG = """
 Examples:
 
