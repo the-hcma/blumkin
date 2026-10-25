@@ -99,5 +99,5 @@ Only profiles blumkin created are listed, attached to or deleted.
 | `not_found` | 5 | No profile exists for the task (create it with `blumkin browser profile create TASK`), or a file or folder the command named is missing. |
 | `upload_blocked` | 1 | The file is not a regular file with a single link inside one of the task's `upload_dirs` folders, the page is not on one of its `allowed_hosts`, or the task declares neither. |
 | `host_blocked` | 1 | `goto` was asked for a host outside the task's `allowed_hosts`, or a page the task is on or ended up on is outside them. |
-| `profile_in_use` | 1 | The task's browser is running or a launch for it is in progress; close it or wait, then try again. |
+| `profile_in_use` | 1 | Raised when the task's browser is running or a launch for it is in progress; close it or wait, then try again. |
 | `usage_error` | 2 | A bad task name, a missing `--yes`, or a handoff with no `--step`. |
