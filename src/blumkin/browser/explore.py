@@ -36,7 +36,7 @@ from typing import Any, Protocol
 from urllib.parse import urljoin, urlsplit
 
 from blumkin.browser.actions import host_allowed
-from blumkin.browser.cdp import DEFAULT_ACTION_TIMEOUT_S, ControlInfo, attach
+from blumkin.browser.cdp import DEFAULT_ACTION_TIMEOUT_S, BrowserActionError, ControlInfo, attach
 from blumkin.browser.guard import is_finalizing_name, vet_control
 from blumkin.browser.model import (
     Control,
@@ -148,7 +148,11 @@ class Explorer:
         if decision is ClickDecision.RECORD_ONLY:
             self.last_outcome = "record_only"
             return False
-        inspection = self._driver.inspect(role, name)
+        try:
+            inspection = self._driver.inspect(role, name)
+        except BrowserActionError as exc:
+            self.last_outcome = f"refused: {_first_line(exc)}"
+            return False
         if inspection.refusal is not None:
             self.last_outcome = f"refused: {inspection.refusal}"
             return False
@@ -166,8 +170,8 @@ class Explorer:
             self._require_host("after the answer and before the click")
         try:
             self._driver.click_vetted(role, name, inspection)
-        except ExploreRefusedError as exc:
-            self.last_outcome = f"refused: {exc}"
+        except (BrowserActionError, ExploreRefusedError) as exc:
+            self.last_outcome = f"refused: {_first_line(exc)}"
             return False
         try:
             self._require_host("after the click")
@@ -223,7 +227,7 @@ class ExploringDriver:
 
     def click_vetted(self, role: str, name: str, expected: Inspection) -> None:
         def vet(info: ControlInfo) -> None:
-            reason = vet_control(info)
+            reason = vet_control(info) or _window_problem(info)
             if reason is not None:
                 raise ExploreRefusedError(f"Expected to click {name!r}, got a refusal: {reason}")
             if info.tag != expected.tag or info.href != expected.href:
@@ -243,7 +247,8 @@ class ExploringDriver:
         """Why the control cannot be clicked (if so) and where it links, without clicking it."""
 
         def look(info: ControlInfo) -> None:
-            raise _Inspected(Inspection(refusal=vet_control(info), href=info.href, tag=info.tag))
+            refusal = vet_control(info) or _window_problem(info)
+            raise _Inspected(Inspection(refusal=refusal, href=info.href, tag=info.tag))
 
         try:
             self._raw.checked_click(name, role, look)
@@ -393,14 +398,21 @@ class Terminal:
         descriptor = os.open(path, os.O_RDWR | os.O_NOCTTY)
         try:
             self._reader = os.fdopen(os.dup(descriptor), "r", encoding="utf-8")
-            self._writer = os.fdopen(descriptor, "w", encoding="utf-8")
         except BaseException:
             os.close(descriptor)
             raise
+        try:
+            self._writer = os.fdopen(descriptor, "w", encoding="utf-8")
+        except BaseException:
+            os.close(descriptor)
+            self._reader.close()
+            raise
 
     def close(self) -> None:
-        self._writer.close()
-        self._reader.close()
+        try:
+            self._writer.close()
+        finally:
+            self._reader.close()
 
     def fileno(self) -> int:
         return self._reader.fileno()
@@ -437,13 +449,20 @@ class TerminalConfirmer:
             self.unavailable = True
             return False
         with contextlib.closing(tty):
-            _discard_pending_input(tty)
-            tty.write(f"{prompt} [y/N] ")
-            tty.flush()
-            if not _answers_in_time(tty, self._timeout_s):
-                self.timed_out = True
+            if not _in_foreground(tty):
+                # A background job that touched the terminal would be stopped by the shell.
+                self.unavailable = True
                 return False
-            reply = tty.readline()
+            _discard_pending_input(tty)
+            try:
+                tty.write(f"{prompt} [y/N] ")
+                tty.flush()
+                if not _answers_in_time(tty, self._timeout_s):
+                    self.timed_out = True
+                    return False
+                reply = tty.readline()
+            except OSError, UnicodeDecodeError:
+                return False
         return reply.strip().lower() in {"y", "yes"}
 
 
@@ -504,6 +523,11 @@ _DESTRUCTIVE = re.compile(
     r"\b(?:archive|cancel|clear|close account|deactivate|delete|disable|discard|empty|erase|"
     r"exit|log\s*off|log\s*out|logout|mark as|move to|remove|reset|revoke|sign\s*off|"
     r"sign\s*out|signout|trash|unsubscribe)\b"
+)
+_DESTRUCTIVE_HREF = re.compile(
+    "archive|cancel|closeaccount|deactivate|delete|destroy|disable|discard|empty|erase|kill|"
+    "logoff|logout|purge|remove|reset|revoke|signoff|signout|terminate|trash|unlink|"
+    "unsubscribe|wipe"
 )
 _MAX_DRAFT_CONTROLS = 200
 _MAX_MARKS = 100
@@ -608,8 +632,21 @@ def _discard_pending_input(tty: Any) -> None:
         return
 
 
+def _first_line(error: BaseException) -> str:
+    return (str(error).splitlines() or [type(error).__name__])[0]
+
+
 def _href_looks_destructive(href: str) -> bool:
-    return bool(_DESTRUCTIVE.search(_spaced(urlsplit(href).path)))
+    """Whether the whole address (path, query and fragment) carries a destructive verb."""
+    return bool(_DESTRUCTIVE_HREF.search(re.sub(r"[\W_]+", "", href.casefold())))
+
+
+def _in_foreground(tty: Any) -> bool:
+    """Whether this process may use the terminal now (a background job would be stopped)."""
+    try:
+        return os.tcgetpgrp(tty.fileno()) == os.getpgrp()
+    except AttributeError, OSError, ValueError:
+        return True  # not a terminal descriptor (a test double): nothing to be stopped by
 
 
 def _is_finalizing(name: str, extra_deny: Sequence[str]) -> bool:
@@ -663,3 +700,10 @@ def _unescape(quoted: str) -> str:
         return str(json.loads(f'"{quoted}"'))
     except ValueError:
         return re.sub(r"\\(.)", r"\1", quoted)
+
+
+def _window_problem(info: ControlInfo) -> str | None:
+    """Why a link cannot be followed in this window: it would open another one."""
+    if info.target not in ("", "_self"):
+        return "it opens a new window"
+    return None

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from blumkin.browser.cdp import ControlInfo
+from blumkin.browser.cdp import BrowserActionError, ControlInfo
 from blumkin.browser.explore import (
     ClickDecision,
     ControlObservation,
@@ -823,3 +823,145 @@ def test_a_missing_terminal_path_is_unavailable_not_a_crash() -> None:
     confirmer = TerminalConfirmer(open_tty=lambda: Terminal("/nonexistent/tty"))
     assert confirmer.confirm("Click?") is False
     assert confirmer.unavailable is True
+
+
+# --- fourth pass: background jobs, query-string verbs, new windows, ambiguity ------------------
+
+
+class _FdTty:
+    """A terminal double with a real descriptor, so process-group checks can be exercised."""
+
+    def __init__(self, descriptor: int, reply: str = "y\n") -> None:
+        self._descriptor = descriptor
+        self.reply = reply
+        self.read = False
+
+    def fileno(self) -> int:
+        return self._descriptor
+
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+    def readline(self) -> str:
+        self.read = True
+        return self.reply
+
+    def close(self) -> None:
+        return None
+
+
+def test_a_background_process_group_gets_no_question_and_is_not_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read_end, write_end = os.pipe()
+    tty = _FdTty(read_end)
+    monkeypatch.setattr("os.tcgetpgrp", lambda fd: os.getpgrp() + 1)
+    try:
+        confirmer = TerminalConfirmer(open_tty=lambda: tty, timeout_s=0.05)
+        assert confirmer.confirm("Click?") is False
+        assert confirmer.unavailable is True
+        assert tty.read is False
+    finally:
+        os.close(read_end)
+        os.close(write_end)
+
+
+@pytest.mark.parametrize(
+    "error", [OSError(5, "I/O error"), UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")]
+)
+def test_a_terminal_that_fails_while_answering_means_no(error: Exception) -> None:
+    class _Failing(_Tty):
+        def readline(self) -> str:
+            raise error
+
+    confirmer = TerminalConfirmer(open_tty=lambda: _Failing(""))
+    assert confirmer.confirm("Click?") is False
+
+
+def test_closing_a_terminal_closes_both_handles_even_when_one_fails() -> None:
+    try:
+        master, slave = os.openpty()
+    except OSError:
+        pytest.skip("no pseudo-terminal in this environment")
+    try:
+        terminal = Terminal(os.ttyname(slave))
+        original = terminal._writer.close
+
+        def failing_close() -> None:
+            original()
+            raise OSError(5, "I/O error")
+
+        terminal._writer.close = failing_close  # type: ignore[method-assign]
+        with pytest.raises(OSError):
+            terminal.close()
+        assert terminal._reader.closed
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "/items/5?action=delete",
+        "/do?op=remove",
+        "/x#delete",
+        "/deleteItem/5",
+        "/removeUser",
+        "/logOut",
+        "/destroy/7",
+        "/purge",
+        "/admin/wipe",
+        "/session/terminate",
+        "/account/close-account",
+    ],
+)
+def test_destructive_words_anywhere_in_a_link_address_ask_first(href: str) -> None:
+    driver = _Driver()
+    driver.href = href
+    explorer, confirmer = _explorer(driver, [False])
+    assert explorer.click("link", "Open") is False
+    assert len(confirmer.asked) == 1
+
+
+@pytest.mark.parametrize(
+    "href", ["/help", "/expenses/42/line", "help.html", "#top", "/reports?page=2"]
+)
+def test_ordinary_link_addresses_do_not_ask(href: str) -> None:
+    driver = _Driver()
+    driver.href = href
+    explorer, confirmer = _explorer(driver)
+    assert explorer.click("link", "Open") is True
+    assert confirmer.asked == []
+
+
+def test_a_link_that_opens_a_new_window_is_not_followed() -> None:
+    raw = _Raw(ControlInfo(tag="a", input_type="", in_form=False, href="/help", target="_blank"))
+    driver = ExploringDriver(raw)
+    inspection = driver.inspect("link", "Help")
+    assert inspection.refusal == "it opens a new window"
+    with pytest.raises(ExploreRefusedError, match="new window"):
+        driver.click_vetted("link", "Help", Inspection(refusal=None, href="/help", tag="a"))
+    assert raw.clicked == []
+
+
+def test_a_link_that_stays_in_the_window_is_followed() -> None:
+    for target in ("", "_self"):
+        raw = _Raw(ControlInfo(tag="a", input_type="", in_form=False, href="/help", target=target))
+        driver = ExploringDriver(raw)
+        assert driver.inspect("link", "Help").refusal is None
+
+
+def test_a_control_that_cannot_be_found_uniquely_is_a_refusal_not_a_crash() -> None:
+    class _Ambiguous(_Driver):
+        def inspect(self, role: str, name: str) -> Inspection:
+            raise BrowserActionError("Expected one match, got 2 (strict mode)")
+
+    explorer, confirmer = _explorer(_Ambiguous(), [True])
+    assert explorer.click("button", "Add line") is False
+    assert explorer.last_outcome.startswith("refused: ")
+    assert "strict mode" in explorer.last_outcome
+    assert confirmer.asked == []

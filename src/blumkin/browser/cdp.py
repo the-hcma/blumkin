@@ -87,6 +87,8 @@ class ControlInfo:
     href: str = ""
     #: The inline `onclick` attribute text.
     inline_handler: str = ""
+    #: Where a link opens: empty or `_self` stays in the window, anything else opens another.
+    target: str = ""
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
@@ -303,6 +305,7 @@ class PlaywrightDriver:
             has_formaction=bool(raw["formaction"]),
             href=str(raw["href"]),
             inline_handler=str(raw["onclick"]),
+            target=str(raw.get("target", "")),
         )
 
     def _action_error(self, what: str, exc: Exception) -> BrowserActionError:
@@ -456,7 +459,8 @@ _DESCRIBE_CONTROL_JS = (
     "form: !!e.form, "
     "formaction: e.hasAttribute('formaction') || e.hasAttribute('formmethod'), "
     "href: String(e.getAttribute('href') || ''), "
-    "onclick: String(e.getAttribute('onclick') || '')})"
+    "onclick: String(e.getAttribute('onclick') || ''), "
+    "target: String(e.getAttribute('target') || '')})"
 )
 
 
