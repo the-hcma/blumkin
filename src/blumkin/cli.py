@@ -84,6 +84,7 @@ from blumkin.config import (
     list_profiles,
     load_browser_setup,
     load_config,
+    load_loop_setup,
     set_profile_email,
 )
 from blumkin.contacts import format_people_context_human
@@ -108,6 +109,9 @@ from blumkin.install_method import (
     suggested_commands,
     upgrade_steps,
 )
+from blumkin.loop import commands as loop_commands
+from blumkin.loop.config import LoopConfigError, LoopTriggerNotFoundError
+from blumkin.loop.service import LoopServiceError, install_user_unit
 from blumkin.mail_signature_state import (
     clear_signature_state,
     load_signature_state,
@@ -549,6 +553,18 @@ def _browser_profile_lines(payload: dict[str, Any]) -> list[str]:
 def _clean_line(text: str) -> str:
     """One printable line: whitespace collapsed, control and bidirectional characters gone."""
     return " ".join(sanitize_terminal(_strip_bidi(text)).split())
+
+
+def _loop_fail(exc: BaseException, *, as_json: bool) -> NoReturn:
+    """Map a loop-command failure onto the standard error envelope and exit code."""
+    if isinstance(exc, LoopTriggerNotFoundError):
+        slug, code = "not_found", EXIT_NOT_FOUND
+    elif isinstance(exc, (LoopConfigError, LoopServiceError, ProviderConfigError)):
+        slug, code = "usage_error", EXIT_USAGE
+    else:
+        _fail(exc, as_json=as_json)
+    _emit_error(error=slug, message=str(exc), as_json=as_json)
+    raise SystemExit(code) from exc
 
 
 def _orphaned_agent_lines(payload: dict[str, Any]) -> list[str]:
@@ -2393,6 +2409,172 @@ def browser_status(ctx: click.Context, task: str | None, as_json_flag: bool) -> 
         emit_json(payload)
         return
     emit_lines(_browser_profile_lines(payload))
+
+
+@main.group(epilog=help_text.LOOP_EPILOG)
+def loop() -> None:
+    """Unattended loop and cron runner: triggers name a task and an instance.
+
+    One process owns the work queue (issue #501). Runs for the same task instance
+    are serialized; a kill switch stops every run. Mail and schedule feeders land
+    in later issues under #499.
+    """
+
+
+@loop.command("install-service", epilog=help_text.LOOP_INSTALL_SERVICE_EPILOG)
+@click.option(
+    "--blumkin-path",
+    default=None,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Absolute path to the blumkin executable (default: from PATH).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def loop_install_service(ctx: click.Context, blumkin_path: Path | None, as_json_flag: bool) -> None:
+    """Install a systemd user unit that runs `blumkin loop run`."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        path = install_user_unit(blumkin_path=str(blumkin_path) if blumkin_path else None)
+    except LoopServiceError as exc:
+        _loop_fail(exc, as_json=as_json)
+    payload = {"ok": True, "unit": str(path), "unit_name": path.name}
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines(
+        [
+            f"wrote {path}",
+            "enable with: systemctl --user daemon-reload && "
+            "systemctl --user enable --now blumkin-loop",
+        ]
+    )
+
+
+@loop.command("list", epilog=help_text.LOOP_LIST_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def loop_list(ctx: click.Context, as_json_flag: bool) -> None:
+    """List configured loop and cron triggers."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        setup = load_loop_setup()
+        rows = loop_commands.list_triggers(setup)
+    except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
+        _loop_fail(exc, as_json=as_json)
+    if as_json:
+        emit_json({"ok": True, "triggers": rows})
+        return
+    if not rows:
+        emit_lines(["no triggers configured under [loop.triggers.*] or [cron.*]"])
+        return
+    lines = []
+    for row in rows:
+        paused = "paused" if row["paused"] else "active"
+        lines.append(f"{row['name']}: {row['kind']} -> {row['task']}/{row['instance']} ({paused})")
+    emit_lines(lines)
+
+
+@loop.command("pause", epilog=help_text.LOOP_PAUSE_EPILOG)
+@click.argument("trigger")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def loop_pause(ctx: click.Context, trigger: str, as_json_flag: bool) -> None:
+    """Pause a trigger so it does not run until resumed."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = loop_commands.pause(load_loop_setup(), trigger)
+    except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
+        _loop_fail(exc, as_json=as_json)
+    if as_json:
+        emit_json({"ok": True, **payload})
+        return
+    emit_lines([f"{trigger}: paused" + ("" if payload["changed"] else " (already)")])
+
+
+@loop.command("resume", epilog=help_text.LOOP_RESUME_EPILOG)
+@click.argument("trigger")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def loop_resume(ctx: click.Context, trigger: str, as_json_flag: bool) -> None:
+    """Resume a paused trigger (does not catch up missed runs by itself)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = loop_commands.resume(load_loop_setup(), trigger)
+    except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
+        _loop_fail(exc, as_json=as_json)
+    if as_json:
+        emit_json({"ok": True, **payload})
+        return
+    emit_lines([f"{trigger}: resumed" + ("" if payload["changed"] else " (already)")])
+
+
+@loop.command("run", epilog=help_text.LOOP_RUN_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def loop_run(ctx: click.Context, as_json_flag: bool) -> None:
+    """Run the foreground loop process (for the systemd user service)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = loop_commands.run_foreground(load_loop_setup())
+    except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
+        _loop_fail(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines(["loop stopped"])
+
+
+@loop.command("run-once", epilog=help_text.LOOP_RUN_ONCE_EPILOG)
+@click.argument("trigger")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def loop_run_once(ctx: click.Context, trigger: str, as_json_flag: bool) -> None:
+    """Run one trigger now and journal the outcome."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = loop_commands.run_once(load_loop_setup(), trigger)
+    except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
+        _loop_fail(exc, as_json=as_json)
+    if as_json:
+        emit_json({"ok": True, **payload})
+        return
+    if payload["skipped"]:
+        emit_lines([f"{trigger}: skipped ({payload['skip_reason']})"])
+        return
+    run = payload["run"]
+    emit_lines([f"{trigger}: {run['outcome']} ({run['reason']})"])
+
+
+@loop.command("status", epilog=help_text.LOOP_STATUS_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def loop_status(ctx: click.Context, as_json_flag: bool) -> None:
+    """Show kill switch, paused triggers and recent runs."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = loop_commands.status(load_loop_setup())
+    except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
+        _loop_fail(exc, as_json=as_json)
+    if as_json:
+        emit_json({"ok": True, **payload})
+        return
+    lines = [
+        f"kill_switch: {'engaged' if payload['kill_switch'] else 'clear'} "
+        f"({payload['kill_switch_path']})",
+    ]
+    if payload["paused"]:
+        lines.append("paused: " + ", ".join(payload["paused"]))
+    else:
+        lines.append("paused: (none)")
+    if not payload["triggers"]:
+        lines.append("triggers: (none)")
+    else:
+        for row in payload["triggers"]:
+            last = row["last_run"]
+            last_text = f"{last['outcome']} at {last['at']}" if last else "never run"
+            state = "paused" if row["paused"] else "active"
+            lines.append(f"{row['name']}: {state}, last={last_text}")
+    emit_lines(lines)
 
 
 @main.group(epilog=help_text.RECEIPTS_EPILOG)
