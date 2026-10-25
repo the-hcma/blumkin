@@ -150,11 +150,16 @@ def upload_task(config: BrowserSetup, task: str, label: str, path: Path) -> dict
         )
     resolved = _expand_home(os.fspath(path)).resolve()
     try:
-        is_regular = stat.S_ISREG(resolved.stat().st_mode)
+        info = resolved.stat()
     except OSError:
-        is_regular = False
-    if not is_regular:
+        info = None
+    if info is None or not stat.S_ISREG(info.st_mode):
         raise UploadBlockedError(f"Expected an existing regular file to upload, got {str(path)!r}")
+    if info.st_nlink > 1:
+        raise UploadBlockedError(
+            f"Expected a file with a single link to upload, got {resolved.name!r} with "
+            f"{info.st_nlink} (a hard link can point at a file outside upload_dirs)"
+        )
     hosts = declared.allowed_hosts if declared else ()
     if not hosts:
         raise UploadBlockedError(
@@ -178,7 +183,7 @@ def upload_task(config: BrowserSetup, task: str, label: str, path: Path) -> dict
         driver.upload(label, resolved)
         return {"action": "upload", "file": resolved.name, "label": label, "ok": True, "task": task}
 
-    return _with_driver(config, task, act, check_before=False)
+    return _with_driver(config, task, act, check_after=True, check_before=False)
 
 
 def _expand_home(text: str) -> Path:
@@ -221,10 +226,16 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
 def _require_allowed_page(
     driver: GuardedDriver, task: str, hosts: Sequence[str], when: str
 ) -> None:
-    """With `allowed_hosts` declared, refuse unless the page is on one of them."""
+    """With `allowed_hosts` declared, refuse unless the page is on one of them over http(s).
+
+    Checked after an action that navigates, this is detective, not preventive: a redirect or
+    link has already loaded the other page (a GET; nothing from it is returned), and the
+    error stops the task before anything is typed into or read from it.
+    """
     if not hosts:
         return
-    host = urlsplit(driver.url).hostname or ""
+    parts = urlsplit(driver.url)
+    host = parts.hostname or "" if parts.scheme in ("http", "https") else ""
     if not _host_allowed(host, hosts):
         raise HostBlockedError(
             f"Expected the page to be on an allowed_hosts host of task {task!r} after {when}, "

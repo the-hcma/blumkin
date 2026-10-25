@@ -66,6 +66,8 @@ class _Raw:
 
     def upload(self, label: str, path: Path) -> None:
         self.calls.append(("upload", label, str(path)))
+        if self.lands_on is not None:
+            self.url = self.lands_on
 
 
 @pytest.fixture
@@ -673,3 +675,50 @@ def test_the_json_title_is_one_short_line_without_control_or_bidirectional_chara
     assert "\x1b" not in payload["title"]
     assert "\n" not in payload["title"]
     assert len(payload["title"]) <= 200
+
+
+@pytest.mark.parametrize(
+    "url", ["ftp://erp.example.com/x", "file://erp.example.com/x", "ws://erp.example.com/"]
+)
+def test_a_page_on_an_allowed_host_name_but_a_non_web_scheme_is_still_refused(
+    raw: _Raw, _config_dir: Path, url: str
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = url
+    result = _run("browser", "read", "expense-report")
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "host_blocked"
+
+
+def test_an_upload_that_leaves_the_allowed_hosts_is_reported_as_blocked(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    folder = tmp_path / "receipts"
+    folder.mkdir()
+    receipt = folder / "r.png"
+    receipt.write_bytes(b"x")
+    _upload_policy(_config_dir, folder, '["erp.example.com"]')
+    raw.lands_on = "https://evil.example.net/after-upload"
+    result = _run("browser", "upload", "expense-report", "Receipt", str(receipt))
+    assert result.exit_code == EXIT_OTHER
+    payload = _json(result)
+    assert payload["error"] == "host_blocked"
+    assert "evil.example.net" in payload["message"]
+
+
+def test_a_hard_link_in_the_upload_folder_to_another_file_is_refused(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    folder = tmp_path / "receipts"
+    folder.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"x")
+    linked = folder / "r.png"
+    os.link(secret, linked)
+    _upload_policy(_config_dir, folder, '["erp.example.com"]')
+    result = _run("browser", "upload", "expense-report", "Receipt", str(linked))
+    assert result.exit_code == EXIT_OTHER
+    payload = _json(result)
+    assert payload["error"] == "upload_blocked"
+    assert "link" in payload["message"]
+    assert raw.calls == []
