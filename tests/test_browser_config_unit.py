@@ -264,3 +264,24 @@ def test_a_wildcard_host_needs_a_registrable_domain_after_the_star(
     with pytest.raises(ProviderConfigError) as excinfo:
         load_config()
     assert "allowed_hosts" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("entry", ["~/", "~/.", "/a/..", "/a/../..", "~/..", "~/x/../.."])
+def test_an_upload_dir_that_resolves_to_the_root_or_the_whole_home_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    _config(tmp_path, monkeypatch, f'[browser.tasks.expense-report]\nupload_dirs = ["{entry}"]\n\n')
+    with pytest.raises(ProviderConfigError) as excinfo:
+        load_config()
+    assert "upload_dirs" in str(excinfo.value)
+
+
+def test_a_folder_below_the_home_directory_is_still_a_valid_upload_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nupload_dirs = ["~/receipts", "/srv/receipts/inbox"]\n\n',
+    )
+    load_config()

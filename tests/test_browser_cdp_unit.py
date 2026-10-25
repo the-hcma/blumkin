@@ -20,6 +20,7 @@ from blumkin.browser.cdp import (
     BrowserAttachError,
     ControlInfo,
     attach,
+    checked_http_url,
     open_driver,
 )
 from blumkin.browser.profiles import (
@@ -714,3 +715,9 @@ def test_goto_refuses_backslashes_user_info_and_control_characters() -> None:
         with pytest.raises(BrowserActionError, match="Expected"):
             driver.goto(url)
     assert pw.page.calls == []
+
+
+@pytest.mark.parametrize("url", ["http://[::1", "https://[", "http://[::1]x"])
+def test_a_malformed_url_is_an_action_error_not_a_value_error(url: str) -> None:
+    with pytest.raises(BrowserActionError, match="Expected"):
+        checked_http_url(url)

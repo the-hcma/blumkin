@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -646,10 +647,16 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                     f"{prefix}.upload_dirs must hold absolute folders or folders starting "
                     f"with ~/ in config.toml, got {entry!r}"
                 )
-            if entry.strip("/.") == "":
+            normalized = posixpath.normpath(entry)
+            if normalized in {"/", "//"} or normalized.removeprefix("~").strip("/") == "":
                 raise ProviderConfigError(
-                    f"{prefix}.upload_dirs must not be the filesystem root in config.toml, "
-                    f"got {entry!r}"
+                    f"{prefix}.upload_dirs must not be the filesystem root or the whole home "
+                    f"directory in config.toml, got {entry!r}"
+                )
+            if normalized == "." or ".." in normalized.split("/"):
+                raise ProviderConfigError(
+                    f"{prefix}.upload_dirs must not climb out of the home directory in "
+                    f"config.toml, got {entry!r}"
                 )
         hosts = tuple(
             host.strip().lower()

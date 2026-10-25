@@ -328,7 +328,12 @@ def checked_http_url(url: str) -> str:
     ambiguous = any(
         char == "\\" or char.isspace() or unicodedata.category(char).startswith("C") for char in url
     )
-    parts = urlsplit(url) if not ambiguous else None
+    parts = None
+    if not ambiguous:
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            parts = None  # for example an unclosed IPv6 bracket
     if (
         parts is None
         or parts.scheme not in ("http", "https")
