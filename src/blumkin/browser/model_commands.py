@@ -18,6 +18,7 @@ from blumkin.browser.drift import (
     ModelDiff,
     check_page,
     diff_models,
+    has_thin_fingerprint,
     worst,
 )
 from blumkin.browser.explore import (
@@ -62,7 +63,7 @@ def model_check(
         findings.append(
             Finding(
                 control=None,
-                grade=Grade.DEGRADED,
+                grade=Grade.INCOMPATIBLE if has_thin_fingerprint(page) else Grade.DEGRADED,
                 kind=FindingKind.LOOKS_DIFFERENT,
                 note=(
                     f"The browser is at a different address shape than the recorded "
@@ -110,12 +111,12 @@ def _diff_payload(task: str, old: int, new: int, diff: ModelDiff) -> dict[str, A
         "controls_changed": {page: list(names) for page, names in diff.controls_changed.items()},
         "controls_removed": {page: list(names) for page, names in diff.controls_removed.items()},
         "empty": diff.empty,
+        "flows_changed": list(diff.flows_changed),
         "hosts_added": list(diff.hosts_added),
         "hosts_removed": list(diff.hosts_removed),
         "lines": diff.lines(),
         "new": new,
         "ok": True,
-        "flows_changed": list(diff.flows_changed),
         "old": old,
         "pages_added": list(diff.pages_added),
         "pages_changed": list(diff.pages_changed),

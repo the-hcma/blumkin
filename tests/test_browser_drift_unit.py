@@ -11,7 +11,12 @@ from blumkin.browser.drift import (
     diff_models,
     worst,
 )
-from blumkin.browser.explore import ControlObservation, ModelDraft, parse_aria_snapshot
+from blumkin.browser.explore import (
+    MAX_DRAFT_CONTROLS,
+    ControlObservation,
+    ModelDraft,
+    parse_aria_snapshot,
+)
 from blumkin.browser.model import Control, Locator, LocatorStrategy, Page
 
 _RECORDED = """\
@@ -273,20 +278,20 @@ def test_a_new_input_of_any_kind_may_be_required(role: str) -> None:
     assert FindingKind.NEW_FIELD in found
 
 
-def test_a_page_with_too_few_landmarks_is_not_judged_by_their_share() -> None:
+def test_a_page_with_too_few_landmarks_is_judged_by_whether_any_is_present() -> None:
     draft = ModelDraft(task="login", hosts=("erp.example.com",))
     draft.add_page(
         "login", "https://erp.example.com/login", (ControlObservation("heading", "Login"),)
     )
     page = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0").pages[0]
+    same = check_page(page, (ControlObservation("heading", "Login"),))
+    assert same.grade is Grade.COMPATIBLE
     renamed = check_page(page, (ControlObservation("heading", "Sign in"),))
-    assert renamed.grade is Grade.COMPATIBLE
+    assert renamed.grade is Grade.INCOMPATIBLE
     assert check_page(page, ()).grade is Grade.INCOMPATIBLE
 
 
 def test_a_page_recorded_with_the_control_cap_does_not_report_every_extra_field() -> None:
-    from blumkin.browser.explore import MAX_DRAFT_CONTROLS
-
     names = [f"Field {chr(97 + n // 26)}{chr(97 + n % 26)}" for n in range(MAX_DRAFT_CONTROLS + 5)]
     observed = tuple(ControlObservation("textbox", name) for name in names)
     draft = ModelDraft(task="big", hosts=("erp.example.com",))
@@ -362,3 +367,20 @@ def test_a_diff_names_a_safety_flip() -> None:
     diff = diff_models(before, after)
     assert diff.safety_changed == {"expense-list": ("expense-list.add-line",)}
     assert "now finalizing" in "\n".join(diff.lines()) or "safety" in "\n".join(diff.lines())
+
+
+def test_a_thin_page_whose_recorded_landmarks_are_all_gone_is_incompatible() -> None:
+    draft = ModelDraft(task="t", hosts=("erp.example.com",))
+    draft.add_page(
+        "p",
+        "https://erp.example.com/p",
+        (ControlObservation("heading", "Expenses"), ControlObservation("link", "Help")),
+    )
+    page = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0").pages[0]
+    observed = (
+        ControlObservation("heading", "Sign in"),
+        ControlObservation("textbox", "Password"),
+    )
+    check = check_page(page, observed)
+    assert check.grade is Grade.INCOMPATIBLE
+    assert FindingKind.LOOKS_DIFFERENT in {f.kind for f in check.findings}

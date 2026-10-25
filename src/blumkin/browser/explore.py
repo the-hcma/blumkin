@@ -52,6 +52,9 @@ from blumkin.browser.model import (
 )
 from blumkin.browser.profiles import BrowserProfile
 
+LABELLED_ROLES = frozenset({"combobox", "listbox", "searchbox", "spinbutton", "textbox"})
+MAX_DRAFT_CONTROLS = 200
+
 
 class ClickDecision(StrEnum):
     """What exploration may do with a control."""
@@ -540,7 +543,6 @@ _DESTRUCTIVE_HREF = re.compile(
     "logoff|logout|purge|remove|reset|revoke|signoff|signout|terminate|trash|unlink|"
     "unsubscribe|wipe"
 )
-MAX_DRAFT_CONTROLS = 200
 _MAX_MARKS = 100
 _PAGE_ID = re.compile(r"[a-z]+(?:-[a-z]+){0,5}")
 _READ_ONLY_ROLES = frozenset({"link", "tab"})
@@ -593,7 +595,6 @@ _KIND_BY_ROLE: dict[str, ControlKind] = {
     "tab": ControlKind.BUTTON,
     "textbox": ControlKind.TEXT,
 }
-LABELLED_ROLES = frozenset({"combobox", "listbox", "searchbox", "spinbutton", "textbox"})
 
 
 class _Inspected(Exception):  # noqa: N818 - control flow, not an error

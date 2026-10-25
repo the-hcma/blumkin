@@ -223,3 +223,20 @@ def test_a_page_at_another_address_is_at_most_degraded_even_when_every_control_i
         f["kind"] == "looks_different" and "address" in f["note"] for f in payload["findings"]
     )
     assert payload["ok"] is True
+
+
+_THIN = """\
+- heading "Expenses" [level=1]
+- link "Help"
+"""
+
+
+def test_a_thin_page_at_another_address_is_incompatible(driver: _Driver, _config_dir: Path) -> None:
+    _store(_config_dir, _THIN)
+    driver.snapshot = _THIN
+    driver.url = "https://erp.example.com/somewhere/else"
+    result = _run("browser", "model", "check", "expense-report", "expense-list")
+    payload = _json(result)
+    assert payload["grade"] == "incompatible"
+    assert payload["ok"] is False
+    assert result.exit_code == EXIT_OTHER

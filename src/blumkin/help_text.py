@@ -496,7 +496,8 @@ Examples:
   blumkin browser model diff expense-report 1 3 --json
 
 Compares two saved versions of the task's model (the second defaults to the current one):
-hosts, pages, and the controls added, removed or changed on the pages both have.
+hosts, pages (added, removed or changed), flows, and the controls added, removed or changed
+on the pages both have, including a control that became finalizing or safe.
 """
 
 BROWSER_MODEL_EPILOG = """

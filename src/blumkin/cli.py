@@ -2738,7 +2738,10 @@ def browser_model_diff(
     if as_json:
         emit_json(payload)
         return
-    emit_lines([f"{task}: version {payload['old']} -> {payload['new']}"] + payload["lines"])
+    emit_lines(
+        [f"{task}: version {payload['old']} -> {payload['new']}"]
+        + [sanitize_terminal(line) for line in payload["lines"]]
+    )
 
 
 @browser_model.command("versions", epilog=help_text.BROWSER_MODEL_VERSIONS_EPILOG)

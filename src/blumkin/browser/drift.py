@@ -36,6 +36,16 @@ from blumkin.browser.model import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class Finding:
+    """One thing the check noticed, with what to do about it."""
+
+    control: str | None
+    grade: Grade
+    kind: FindingKind
+    note: str
+
+
 class FindingKind(StrEnum):
     """What a finding is about."""
 
@@ -52,16 +62,6 @@ class Grade(StrEnum):
     COMPATIBLE = "compatible"
     DEGRADED = "degraded"
     INCOMPATIBLE = "incompatible"
-
-
-@dataclass(frozen=True, slots=True)
-class Finding:
-    """One thing the check noticed, with what to do about it."""
-
-    control: str | None
-    grade: Grade
-    kind: FindingKind
-    note: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +195,11 @@ def diff_models(old: SiteModel, new: SiteModel) -> ModelDiff:
     )
 
 
+def has_thin_fingerprint(page: Page) -> bool:
+    """Whether too few landmarks were recorded to tell the page apart by them."""
+    return sum(not mark.startswith("link:") for mark in page.fingerprint) < _MIN_LANDMARKS
+
+
 def worst(grades: Iterable[Grade]) -> Grade:
     """The worst of `grades` (compatible when there are none)."""
     return max(grades, key=_RANK.__getitem__, default=Grade.COMPATIBLE)
@@ -221,13 +226,13 @@ _FIELD_ROLES = frozenset(
         "textbox",
     }
 )
-#: Navigation-like controls whose names are often data (mail subjects, row links).
-_SOFT_ROLES = frozenset({"link", "menuitem", "tab"})
 #: Fewer recorded landmarks than this say too little to judge a page by their share.
 _MIN_LANDMARKS = 3
 _RANK = {Grade.COMPATIBLE: 0, Grade.DEGRADED: 1, Grade.INCOMPATIBLE: 2}
 #: A page whose recorded landmarks are mostly gone is no longer the recorded page.
 _SAME_PAGE = 0.5
+#: Navigation-like controls whose names are often data (mail subjects, row links).
+_SOFT_ROLES = frozenset({"link", "menuitem", "tab"})
 #: Below this share of the recorded landmarks, the page changed enough to review the model.
 _UNCHANGED = 0.8
 
@@ -235,19 +240,25 @@ _UNCHANGED = 0.8
 def _appearance_findings(page: Page, observed: Sequence[ControlObservation]) -> list[Finding]:
     if not observed:
         return [
-            _looks_different(
-                page, "nothing was found on the page; is it loaded?", Grade.INCOMPATIBLE
-            )
+            _looks_different("nothing was found on the page; is it loaded?", Grade.INCOMPATIBLE)
         ]
     recorded = {_canonical(mark) for mark in page.fingerprint if not mark.startswith("link:")}
     if len(recorded) < _MIN_LANDMARKS:
+        live_marks = {_canonical(mark) for mark in landmark_marks(observed)}
+        if recorded and not recorded & live_marks:
+            return [
+                _looks_different(
+                    f"None of the recorded landmarks of {page.page_id} are on the page; it may "
+                    "be another page or not loaded, so check the address and re-explore it",
+                    Grade.INCOMPATIBLE,
+                )
+            ]
         return []
     live = {_canonical(mark) for mark in landmark_marks(observed) if not mark.startswith("link:")}
     share = len(recorded & live) / len(recorded)
     if share < _SAME_PAGE:
         return [
             _looks_different(
-                page,
                 f"Only {share:.0%} of the recorded landmarks of {page.page_id} are on the "
                 "page; it may be another page or not loaded, so check the address and "
                 "re-explore it",
@@ -257,13 +268,19 @@ def _appearance_findings(page: Page, observed: Sequence[ControlObservation]) -> 
     if share < _UNCHANGED:
         return [
             _looks_different(
-                page,
                 f"{share:.0%} of the recorded landmarks of {page.page_id} are still on the "
                 "page; review the model and re-explore it if it matters",
                 Grade.DEGRADED,
             )
         ]
     return []
+
+
+def _canonical(mark: str) -> str:
+    """A `role:name` mark with alias roles folded together (search box and text box alike)."""
+    role, sep, name = mark.partition(":")
+    folded = {"combobox": "listbox", "searchbox": "textbox"}.get(role, role)
+    return f"{folded}{sep}{name}"
 
 
 def _control_findings(control: Control, live: set[tuple[str, str]]) -> list[Finding]:
@@ -327,7 +344,7 @@ def _locator_verdict(
     return None
 
 
-def _looks_different(page: Page, note: str, grade: Grade) -> Finding:
+def _looks_different(note: str, grade: Grade) -> Finding:
     return Finding(control=None, grade=grade, kind=FindingKind.LOOKS_DIFFERENT, note=note)
 
 
@@ -370,10 +387,3 @@ def _role_of(control: Control) -> str:
         if locator.strategy is LocatorStrategy.ROLE_NAME:
             return locator.value.partition(":")[0]
     return ""
-
-
-def _canonical(mark: str) -> str:
-    """A `role:name` mark with alias roles folded together (search box and text box alike)."""
-    role, sep, name = mark.partition(":")
-    folded = {"combobox": "listbox", "searchbox": "textbox"}.get(role, role)
-    return f"{folded}{sep}{name}"
