@@ -139,6 +139,49 @@ def test_dom_or_dow_when_both_restricted() -> None:
     assert due == datetime(2026, 10, 19, 18, 0, tzinfo=UTC)
 
 
+def test_sunday_seven_accepted() -> None:
+    spec = TriggerSpec(
+        instance="current",
+        kind=TriggerKind.CRON,
+        name="sun",
+        schedule="0 18 * * 7",
+        task="time-sheet",
+        timezone="UTC",
+        working_days_only=False,
+    )
+    # Sunday 2026-10-25 19:00 UTC.
+    now = datetime(2026, 10, 25, 19, 0, tzinfo=UTC)
+    due = next_due_at_or_before(spec, now, after=None)
+    assert due == datetime(2026, 10, 25, 18, 0, tzinfo=UTC)
+
+
+def test_impossible_dom_rejected(tmp_path: Path) -> None:
+    with pytest.raises(LoopConfigError, match="never occurs"):
+        parse_loop_setup(
+            tmp_path,
+            {
+                "cron": {
+                    "bad": {
+                        "task": "time-sheet",
+                        "instance": "current",
+                        "schedule": "0 18 31 2 *",
+                        "timezone": "UTC",
+                    }
+                }
+            },
+        )
+
+
+def test_mark_due_keeps_later_timestamp(tmp_path: Path) -> None:
+    later = datetime(2026, 10, 21, 18, 0, tzinfo=UTC)
+    earlier = datetime(2026, 10, 20, 18, 0, tzinfo=UTC)
+    mark_due_consumed(tmp_path, "eod", later)
+    mark_due_consumed(tmp_path, "eod", earlier)
+    from blumkin.loop.cron import load_last_due
+
+    assert load_last_due(tmp_path)["eod"] == later
+
+
 def test_default_hours_rejects_nan(tmp_path: Path) -> None:
     with pytest.raises(LoopConfigError, match="finite"):
         parse_loop_setup(

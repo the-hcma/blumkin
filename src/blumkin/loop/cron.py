@@ -8,8 +8,12 @@ Paused triggers do not catch up on resume unless asked (resume advances last-due
 
 from __future__ import annotations
 
+import calendar
+import contextlib
+import fcntl
 import json
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,6 +23,7 @@ from blumkin.browser.profiles import BrowserProfileError, ensure_private_dir
 from blumkin.loop.types import TriggerKind, TriggerSpec
 
 _LAST_DUE_FILENAME = "cron-last-due.json"
+_LOCK_FILENAME = "cron-last-due.lock"
 _STORE_DIRNAME = "loop"
 
 
@@ -69,31 +74,20 @@ def due_fires(
 
 
 def load_last_due(config_dir: Path) -> dict[str, datetime]:
-    path = config_dir / _STORE_DIRNAME / _LAST_DUE_FILENAME
-    if not path.is_file() or path.is_symlink():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise CronError(f"Expected readable cron last-due state at {path}, got {exc}") from exc
-    if not isinstance(raw, dict):
-        raise CronError(f"Expected an object in {path}")
-    out: dict[str, datetime] = {}
-    for name, value in raw.items():
-        if not isinstance(name, str) or not isinstance(value, str):
-            raise CronError(f"Expected string trigger→iso pairs in {path}")
-        try:
-            out[name] = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise CronError(f"Expected ISO due times in {path}, got {value!r}") from exc
-    return out
+    with _locked(config_dir) as path:
+        return _read_last_due(path)
 
 
 def mark_due_consumed(config_dir: Path, trigger: str, due_at: datetime) -> None:
     """Record that `due_at` was handled for `trigger` (catch-up will not repeat it)."""
-    current = load_last_due(config_dir)
-    current[trigger] = due_at.astimezone(UTC)
-    _write_last_due(config_dir, current)
+    with _locked(config_dir) as path:
+        current = _read_last_due(path)
+        incoming = due_at.astimezone(UTC)
+        previous = current.get(trigger)
+        if previous is not None and previous.astimezone(UTC) >= incoming:
+            return
+        current[trigger] = incoming
+        _write_last_due(config_dir, current)
 
 
 def next_due_at_or_before(
@@ -136,7 +130,8 @@ def validate_cron_trigger(spec: TriggerSpec) -> None:
         return
     if not spec.schedule or not spec.timezone:
         raise CronError(f"cron.{spec.name} requires schedule and timezone")
-    _parse_schedule(spec.schedule, label=f"cron.{spec.name}.schedule")
+    schedule = _parse_schedule(spec.schedule, label=f"cron.{spec.name}.schedule")
+    _reject_impossible_dom(schedule, label=f"cron.{spec.name}.schedule")
     try:
         ZoneInfo(spec.timezone)
     except ZoneInfoNotFoundError as exc:
@@ -160,8 +155,11 @@ def _matches(schedule: _Schedule, when: datetime) -> bool:
     return dom_ok and dow_ok
 
 
-def _parse_field(raw: str, minimum: int, maximum: int, *, label: str) -> frozenset[int]:
+def _parse_field(
+    raw: str, minimum: int, maximum: int, *, label: str, allow_sunday_seven: bool = False
+) -> frozenset[int]:
     values: set[int] = set()
+    upper = 7 if allow_sunday_seven else maximum
     for part in raw.split(","):
         part = part.strip()
         step = 1
@@ -178,12 +176,12 @@ def _parse_field(raw: str, minimum: int, maximum: int, *, label: str) -> frozens
             if not a_s.isdigit() or not b_s.isdigit():
                 raise CronError(f"{label}: invalid range in {raw!r}")
             a, b = int(a_s), int(b_s)
-            if not minimum <= a <= b <= maximum:
+            if not minimum <= a <= b <= upper:
                 raise CronError(f"{label}: range out of bounds in {raw!r}")
             span = range(a, b + 1)
         elif part.isdigit():
             n = int(part)
-            if not minimum <= n <= maximum:
+            if not minimum <= n <= upper:
                 raise CronError(f"{label}: value out of bounds in {raw!r}")
             span = range(n, n + 1)
         else:
@@ -191,6 +189,9 @@ def _parse_field(raw: str, minimum: int, maximum: int, *, label: str) -> frozens
         values.update(list(span)[::step] if step > 1 else span)
     if not values:
         raise CronError(f"{label}: empty field {raw!r}")
+    if allow_sunday_seven and 7 in values:
+        values.discard(7)
+        values.add(0)
     return frozenset(values)
 
 
@@ -203,10 +204,60 @@ def _parse_schedule(expression: str, *, label: str) -> _Schedule:
         hours=_parse_field(parts[1], 0, 23, label=label),
         dom=_parse_field(parts[2], 1, 31, label=label),
         months=_parse_field(parts[3], 1, 12, label=label),
-        dow=_parse_field(parts[4], 0, 6, label=label),
+        dow=_parse_field(parts[4], 0, 6, label=label, allow_sunday_seven=True),
         dom_star=parts[2].strip() == "*",
         dow_star=parts[4].strip() == "*",
     )
+
+
+def _read_last_due(path: Path) -> dict[str, datetime]:
+    if not path.is_file() or path.is_symlink():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise CronError(f"Expected readable cron last-due state at {path}, got {exc}") from exc
+    if not isinstance(raw, dict):
+        raise CronError(f"Expected an object in {path}")
+    out: dict[str, datetime] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise CronError(f"Expected string trigger→iso pairs in {path}")
+        try:
+            out[name] = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise CronError(f"Expected ISO due times in {path}, got {value!r}") from exc
+    return out
+
+
+def _reject_impossible_dom(schedule: _Schedule, *, label: str) -> None:
+    """Reject month/day pairs that can never occur (e.g. 31 February)."""
+    if schedule.dom_star:
+        return
+    for month in schedule.months:
+        # Leap years exist; February 29 is possible. Use 29 as Feb max.
+        max_day = 29 if month == 2 else calendar.monthrange(2024, month)[1]
+        if any(day <= max_day for day in schedule.dom):
+            return
+    raise CronError(
+        f"{label}: day-of-month {sorted(schedule.dom)} never occurs in "
+        f"month(s) {sorted(schedule.months)}"
+    )
+
+
+@contextlib.contextmanager
+def _locked(config_dir: Path) -> Iterator[Path]:
+    try:
+        directory = ensure_private_dir(config_dir / _STORE_DIRNAME)
+    except BrowserProfileError as exc:
+        raise CronError(str(exc)) from exc
+    fd = os.open(directory / _LOCK_FILENAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield directory / _LAST_DUE_FILENAME
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def _working_day_ok(spec: TriggerSpec, local: datetime) -> bool:
