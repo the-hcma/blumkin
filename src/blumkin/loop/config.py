@@ -14,7 +14,9 @@ DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_BACKOFF_SECONDS = 30.0
 DEFAULT_RUN_BUDGET_SECONDS = 600.0
 _NAME = re.compile(r"^[a-z0-9]([a-z0-9_-]{0,62}[a-z0-9])?$")
-_TRIGGER_KEYS_CRON = frozenset({"instance", "schedule", "task", "timezone", "working_days_only"})
+_TRIGGER_KEYS_CRON = frozenset(
+    {"default_hours", "instance", "schedule", "task", "timezone", "working_days_only"}
+)
 _TRIGGER_KEYS_LOOP = frozenset({"instance", "kind", "task"})
 
 
@@ -143,7 +145,16 @@ def _cron_trigger(name: str, table: Any) -> TriggerSpec:
     schedule = _require_string(table.get("schedule"), f"cron.{name}.schedule")
     timezone = _require_string(table.get("timezone"), f"cron.{name}.timezone")
     working = table.get("working_days_only", False)
-    return TriggerSpec(
+    hours_raw = table.get("default_hours")
+    default_hours: float | None = None
+    if hours_raw is not None:
+        default_hours = _coerce_float(hours_raw, f"cron.{name}.default_hours", minimum=0.0)
+        if default_hours > 24:
+            raise LoopConfigError(
+                f"cron.{name}.default_hours must be <= 24 in config.toml, got {default_hours}"
+            )
+    spec = TriggerSpec(
+        default_hours=default_hours,
         instance=instance,
         kind=TriggerKind.CRON,
         name=name,
@@ -152,6 +163,13 @@ def _cron_trigger(name: str, table: Any) -> TriggerSpec:
         timezone=timezone,
         working_days_only=_coerce_bool(working, f"cron.{name}.working_days_only"),
     )
+    from blumkin.loop.cron import CronError, validate_cron_trigger
+
+    try:
+        validate_cron_trigger(spec)
+    except CronError as exc:
+        raise LoopConfigError(str(exc)) from exc
+    return spec
 
 
 def _loop_config(raw: Any, config_dir: Path) -> LoopConfig:

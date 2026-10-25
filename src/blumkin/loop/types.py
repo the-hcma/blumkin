@@ -57,7 +57,8 @@ class TriggerSpec:
     kind: TriggerKind
     name: str
     task: str
-    # Cron-only fields; unused by the runner core until issue #502.
+    # Cron-only: declared hours for the scheduled time-sheet entry (issue #502).
+    default_hours: float | None = None
     schedule: str | None = None
     timezone: str | None = None
     working_days_only: bool = False
@@ -70,6 +71,7 @@ class TriggerSpec:
             "task": self.task,
         }
         if self.kind is TriggerKind.CRON:
+            payload["default_hours"] = self.default_hours
             payload["schedule"] = self.schedule
             payload["timezone"] = self.timezone
             payload["working_days_only"] = self.working_days_only

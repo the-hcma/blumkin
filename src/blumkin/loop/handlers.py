@@ -1,4 +1,4 @@
-"""Task handlers the runner invokes for a trigger (issue #501).
+"""Task handlers the runner invokes for a trigger (issue #501 / #502).
 
 A trigger names a task; the task body lives here (or in later modules), not on
 the trigger. Unattended runs must never prompt: anything that would ask returns
@@ -32,8 +32,8 @@ HandlerMap = Mapping[str, TaskHandler]
 
 
 def default_handlers() -> dict[str, TaskHandler]:
-    """Built-in handlers. Real browser tasks register in later issues."""
-    return {"probe": _probe}
+    """Built-in handlers. Browser ledger fill for time-sheet lands with #488/#489."""
+    return {"probe": _probe, "time-sheet": _time_sheet}
 
 
 def register_handler(
@@ -56,4 +56,22 @@ def _probe(trigger: TriggerSpec) -> HandlerResult:
     return HandlerResult(
         outcome=RunOutcome.DONE,
         reason=f"probe ok for instance {trigger.instance}",
+    )
+
+
+def _time_sheet(trigger: TriggerSpec) -> HandlerResult:
+    """End-of-day time sheet: hours must be declared; never guess (issue #502).
+
+    Filing into the browser form and ledger idempotence depend on #488/#489; until
+    those land, a declared-hours run records readiness as `done` so the schedule
+    catch-up advances, and a missing hours value becomes `needs_user`.
+    """
+    if trigger.default_hours is None:
+        return HandlerResult(
+            outcome=RunOutcome.NEEDS_USER,
+            reason="no declared hours for the scheduled time-sheet entry",
+        )
+    return HandlerResult(
+        outcome=RunOutcome.DONE,
+        reason="declared hours ready for instance; browser ledger fill awaits #488",
     )

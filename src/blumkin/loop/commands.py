@@ -1,4 +1,4 @@
-"""CLI-facing operations for `blumkin loop` (issue #501)."""
+"""CLI-facing operations for `blumkin loop` (issue #501 / #502)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from blumkin.loop.config import LoopSetup
+from blumkin.loop.cron import due_fires, mark_due_consumed
 from blumkin.loop.handlers import HandlerMap
 from blumkin.loop.journal import list_runs, recent_by_trigger
 from blumkin.loop.kill_switch import is_engaged, kill_switch_path
@@ -50,8 +51,13 @@ def pause(setup: LoopSetup, name: str) -> dict[str, Any]:
 
 
 def resume(setup: LoopSetup, name: str) -> dict[str, Any]:
+    from datetime import UTC, datetime
+
     setup.trigger(name)
     changed = resume_trigger(setup.config_dir, name)
+    if changed:
+        # Missed dues while paused are not caught up unless a later command asks.
+        mark_due_consumed(setup.config_dir, name, datetime.now(UTC))
     return {"name": name, "paused": False, "changed": changed}
 
 
@@ -103,9 +109,10 @@ def run_foreground(
 ) -> dict[str, Any]:
     """Foreground runner process for the systemd user service.
 
-    Drains the work queue and dispatches each trigger through `run_trigger`.
-    Cron (#502) and mail (#503) feeders enqueue work; `run-once` still runs
-    inline for a manual dry run. Exits on SIGTERM/SIGINT or `should_stop`.
+    Drains the work queue and due cron triggers (catch-up at most once per due
+    time), dispatching each through `run_trigger`. Mail feeders land in #503.
+    `run-once` still runs inline for a manual dry run. Exits on SIGTERM/SIGINT
+    or `should_stop`.
     """
     stop = {"flag": False}
 
@@ -135,6 +142,14 @@ def run_foreground(
             finally:
                 if consumed < len(pending):
                     requeue_front(setup.config_dir, pending[consumed:])
+            paused = list_paused(setup.config_dir)
+            for fire in due_fires(setup.triggers, config_dir=setup.config_dir, paused=paused):
+                if stop["flag"] or is_engaged(setup.config_dir, setup.loop):
+                    break
+                result = run_trigger(setup, fire.trigger.name, handlers=handlers, honor_pause=True)
+                if not result.skipped:
+                    mark_due_consumed(setup.config_dir, fire.trigger.name, fire.due_at)
+                    runs += 1
             sleep(poll_seconds)
     finally:
         signal.signal(signal.SIGTERM, previous_term)
@@ -142,8 +157,8 @@ def run_foreground(
     return {"ok": True, "ticks": ticks, "runs": runs, "stopped": True}
 
 
-# Re-export for tests that patch run_trigger through commands.
 __all__ = [
+    "RunResult",
     "TriggerStatus",
     "list_triggers",
     "pause",
@@ -151,5 +166,4 @@ __all__ = [
     "run_foreground",
     "run_once",
     "status",
-    "RunResult",
 ]
