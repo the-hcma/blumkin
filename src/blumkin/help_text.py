@@ -265,6 +265,81 @@ The browser comes from `[browser] default = "chrome" | "edge" | "chromium"` in
 config.toml and falls back to Chrome when unset or not installed.
 """
 
+BROWSER_EXPLORE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser explore observe expense-report expense-list
+  blumkin browser explore click expense-report Help --role link
+  blumkin browser explore show expense-report
+  blumkin browser explore save expense-report --yes
+
+Explores a site once and records its structure (pages, controls, flows) as a model that
+later runs reuse. The task must declare `allowed_hosts`; exploration never leaves them.
+Links and tabs are followed without asking. A control that may change state, including a
+menu item, is clicked only after you answer yes at your own terminal (the default is no,
+and an agent without a terminal gets no answer). A finalizing control (submit, send, pay, ...) is
+recorded and never clicked. The draft is kept until `save --yes` stores it as the next
+version of the task's model, or `discard` drops it. Nothing you type is recorded.
+"""
+
+BROWSER_EXPLORE_CLICK_EPILOG = """
+Examples:
+
+\b
+  blumkin browser explore click expense-report Help --role link
+  blumkin browser explore click expense-report "Add line" --role button --page expense-list
+
+Follows a link or tab on an allowed host. For a control that may change state
+(a button, a checkbox) it asks on your terminal first; with no terminal it clicks nothing
+and prints the command for you to run. A finalizing control is never clicked. With `--page`
+a click that happened is recorded as a step of the flow.
+"""
+
+BROWSER_EXPLORE_DISCARD_EPILOG = """
+Examples:
+
+\b
+  blumkin browser explore discard expense-report
+
+Drops the in-progress exploration draft. A saved model is not touched.
+"""
+
+BROWSER_EXPLORE_OBSERVE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser explore observe expense-report expense-list
+  blumkin browser explore observe expense-report expense-form --json
+
+Records the page the task's browser is on (a page id of lowercase words) in the draft: its
+URL as a path template, a fingerprint of its landmarks and each named control with its kind,
+locators and whether it looks finalizing. Labels that look like typed data are skipped and
+counted. The page must be on one of the task's `allowed_hosts`.
+"""
+
+BROWSER_EXPLORE_SAVE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser explore show expense-report
+  blumkin browser explore save expense-report --yes
+
+Stores the draft as the next version of the task's model (earlier versions are kept) and
+clears the draft. Review it with `show` first; `--yes` confirms you have.
+"""
+
+BROWSER_EXPLORE_SHOW_EPILOG = """
+Examples:
+
+\b
+  blumkin browser explore show expense-report
+  blumkin browser explore show expense-report --json
+
+Summarizes the draft: its pages with their URL templates and control counts, the controls
+that look finalizing, and the number of recorded steps.
+"""
+
 BROWSER_FILL_EPILOG = """
 Examples:
 

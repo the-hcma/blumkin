@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -24,10 +25,14 @@ from blumkin.browser.model import (
     Page,
     SiteModel,
     SiteModelError,
+    discard_draft,
     list_versions,
+    load_draft,
     load_model,
     load_version,
+    save_draft,
     save_model,
+    update_draft,
 )
 from blumkin.browser.profiles import BrowserProfileError
 
@@ -810,3 +815,138 @@ def test_a_save_syncs_the_directories_it_may_have_created(
     assert {root / "expense-report" / "history", root / "expense-report", root, tmp_path} <= set(
         synced
     )
+
+
+# --- the in-progress draft kept between exploration commands ----------------------------------
+
+
+def test_a_draft_round_trips_and_is_not_a_saved_version(tmp_path: Path) -> None:
+    assert load_draft(tmp_path, "expense-report") is None
+    save_draft(tmp_path, _model())
+    assert load_draft(tmp_path, "expense-report") == _model()
+    assert list_versions(tmp_path, "expense-report") == []
+    assert load_model(tmp_path, "expense-report") is None
+    path = tmp_path / "browser-models" / "expense-report" / "draft.json"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert discard_draft(tmp_path, "expense-report") is True
+    assert discard_draft(tmp_path, "expense-report") is False
+    assert load_draft(tmp_path, "expense-report") is None
+
+
+def test_saving_a_model_leaves_the_draft_alone(tmp_path: Path) -> None:
+    save_draft(tmp_path, _model())
+    save_model(tmp_path, _model())
+    assert load_draft(tmp_path, "expense-report") == _model()
+
+
+def test_a_corrupt_draft_is_a_model_error(tmp_path: Path) -> None:
+    save_draft(tmp_path, _model())
+    (tmp_path / "browser-models" / "expense-report" / "draft.json").write_text("{bad")
+    with pytest.raises(SiteModelError, match="JSON"):
+        load_draft(tmp_path, "expense-report")
+
+
+def test_an_invalid_draft_is_refused_and_a_symlinked_draft_is_not_followed(tmp_path: Path) -> None:
+    with pytest.raises(SiteModelError, match="Expected"):
+        save_draft(tmp_path, _model(hosts=()))
+    save_draft(tmp_path, _model())
+    path = tmp_path / "browser-models" / "expense-report" / "draft.json"
+    other = tmp_path / "other.json"
+    other.write_text(path.read_text())
+    path.unlink()
+    path.symlink_to(other)
+    with pytest.raises(SiteModelError, match="regular file|symlink"):
+        load_draft(tmp_path, "expense-report")
+
+
+# --- updating the draft atomically -----------------------------------------------------------
+
+
+def _with_page(page_id: str) -> Any:
+    def change(current: SiteModel | None) -> SiteModel:
+        base = current or _model(pages=(), flows=())
+        extra = Page(
+            page_id=page_id,
+            url_template="/x",
+            fingerprint=("button:Go",),
+            controls=(),
+        )
+        return replace(base, pages=(*base.pages, extra), flows=())
+
+    return change
+
+
+def test_update_draft_gets_nothing_when_no_draft_or_model_exists_and_stores_the_result(
+    tmp_path: Path,
+) -> None:
+    seen: list[SiteModel | None] = []
+
+    def change(current: SiteModel | None) -> SiteModel:
+        seen.append(current)
+        return _model()
+
+    update_draft(tmp_path, "expense-report", change)
+    assert seen == [None]
+    assert load_draft(tmp_path, "expense-report") == _model()
+
+
+def test_update_draft_starts_from_the_stored_model_when_there_is_no_draft(tmp_path: Path) -> None:
+    saved = save_model(tmp_path, _model())
+    seen: list[SiteModel | None] = []
+
+    def change(current: SiteModel | None) -> SiteModel:
+        seen.append(current)
+        return current  # type: ignore[return-value]
+
+    update_draft(tmp_path, "expense-report", change)
+    assert seen == [saved]
+    assert load_draft(tmp_path, "expense-report") is not None
+
+
+def test_update_draft_prefers_the_draft_over_the_stored_model(tmp_path: Path) -> None:
+    save_model(tmp_path, _model())
+    save_draft(tmp_path, _model(recorded_at="2026-10-26T00:00:00Z"))
+    seen: list[SiteModel | None] = []
+
+    def change(current: SiteModel | None) -> SiteModel:
+        seen.append(current)
+        return current  # type: ignore[return-value]
+
+    update_draft(tmp_path, "expense-report", change)
+    assert seen[0] is not None
+    assert seen[0].recorded_at == "2026-10-26T00:00:00Z"
+
+
+def test_concurrent_draft_updates_all_land(tmp_path: Path) -> None:
+    names = [f"page-{word}" for word in ("a", "b", "c", "d", "e", "f", "g", "h")]
+    errors: list[BaseException] = []
+
+    def run(name: str) -> None:
+        try:
+            update_draft(tmp_path, "expense-report", _with_page(name))
+        except BaseException as exc:  # noqa: BLE001 - the thread reports whatever it got
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(name,)) for name in names]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    assert errors == []
+    draft = load_draft(tmp_path, "expense-report")
+    assert draft is not None
+    assert sorted(page.page_id for page in draft.pages) == sorted(names)
+
+
+def test_a_change_that_returns_nothing_writes_nothing(tmp_path: Path) -> None:
+    assert update_draft(tmp_path, "expense-report", lambda current: None) is None
+    assert load_draft(tmp_path, "expense-report") is None
+
+
+def test_a_change_that_makes_an_invalid_draft_keeps_the_previous_one(tmp_path: Path) -> None:
+    save_draft(tmp_path, _model())
+    with pytest.raises(SiteModelError, match="Expected"):
+        update_draft(tmp_path, "expense-report", lambda current: _model(hosts=()))
+    assert load_draft(tmp_path, "expense-report") == _model()
+    leftovers = [p.name for p in (tmp_path / "browser-models" / "expense-report").iterdir()]
+    assert not any(name.endswith(".tmp") for name in leftovers)

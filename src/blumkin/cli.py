@@ -58,9 +58,23 @@ from blumkin.browser.commands import (
     task_status,
 )
 from blumkin.browser.discovery import BrowserConfigError, BrowserNotFoundError
+from blumkin.browser.explore import (
+    DraftNotFoundError,
+    ExploreNeedsConfirmationError,
+    ExploreRefusedError,
+    PageIdError,
+)
+from blumkin.browser.explore_commands import (
+    explore_click,
+    explore_discard,
+    explore_observe,
+    explore_save,
+    explore_show,
+)
 from blumkin.browser.guard import SubmitBlockedError
 from blumkin.browser.handoff import HandoffError, format_handoff_human
 from blumkin.browser.launcher import BrowserLaunchError
+from blumkin.browser.model import SiteModelError
 from blumkin.browser.profiles import BrowserProfileError, ProfileBusyError, ProfileInUseError
 from blumkin.capabilities import capability_summary
 from blumkin.config import (
@@ -494,6 +508,15 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
     elif isinstance(exc, BrowserAttachError):
         slug, code = "browser_not_running", EXIT_OTHER
         hint = f"Launch it first: `blumkin browser launch {task or 'TASK'}`, then sign in."
+    elif isinstance(exc, DraftNotFoundError):
+        slug, code = "not_found", EXIT_NOT_FOUND
+        hint = f"Run `blumkin browser explore observe {task or 'TASK'} PAGE` first."
+    elif isinstance(exc, ExploreRefusedError):
+        slug, code = "explore_refused", EXIT_OTHER
+    elif isinstance(exc, (ExploreNeedsConfirmationError, PageIdError)):
+        slug, code = "usage_error", EXIT_USAGE
+    elif isinstance(exc, SiteModelError):
+        slug, code = "model_invalid", EXIT_OTHER
     elif isinstance(exc, HandoffError):
         slug, code = "usage_error", EXIT_USAGE
     elif isinstance(exc, BrowserNotFoundError):
@@ -2045,6 +2068,124 @@ def browser_click(ctx: click.Context, task: str, name: str, as_json_flag: bool, 
         lambda: click_task(load_browser_setup(), task, name, role),
         "clicked",
     )
+
+
+@browser.group("explore", epilog=help_text.BROWSER_EXPLORE_EPILOG)
+def browser_explore() -> None:
+    """Explore a site once and record its structure as a reusable model."""
+
+
+@browser_explore.command("click", epilog=help_text.BROWSER_EXPLORE_CLICK_EPILOG)
+@click.argument("task")
+@click.argument("name")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--page", "page_id", default=None, help="Record the click as a step on this page.")
+@click.option("--role", default="button", show_default=True, help="Accessible role of the control.")
+@click.pass_context
+def browser_explore_click(
+    ctx: click.Context, task: str, name: str, as_json_flag: bool, page_id: str | None, role: str
+) -> None:
+    """Follow a link, or press a control after you confirm at your terminal."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = explore_click(load_browser_setup(), task, name, page_id=page_id, role=role)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    state = "clicked" if payload["clicked"] else "not clicked"
+    emit_lines([f"{task}: {payload['role']} {sanitize_terminal(name)!r} {state}"])
+    if payload["hint"]:
+        emit_lines([sanitize_terminal(payload["hint"])])
+
+
+@browser_explore.command("discard", epilog=help_text.BROWSER_EXPLORE_DISCARD_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_explore_discard(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Drop the in-progress exploration draft."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = explore_discard(load_browser_setup(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([f"{task}: draft {'discarded' if payload['discarded'] else 'was empty'}"])
+
+
+@browser_explore.command("observe", epilog=help_text.BROWSER_EXPLORE_OBSERVE_EPILOG)
+@click.argument("task")
+@click.argument("page_id")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_explore_observe(
+    ctx: click.Context, task: str, page_id: str, as_json_flag: bool
+) -> None:
+    """Record the page the task's browser is on in the draft."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = explore_observe(load_browser_setup(), task, page_id)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines(
+        [
+            f"{task}: page {payload['page']} ({payload['url_template']}) recorded with "
+            f"{payload['controls']} control(s); {payload['skipped']} label(s) skipped"
+        ]
+    )
+
+
+@browser_explore.command("save", epilog=help_text.BROWSER_EXPLORE_SAVE_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--yes", is_flag=True, help="Confirm saving the draft as the task's next model.")
+@click.pass_context
+def browser_explore_save(ctx: click.Context, task: str, as_json_flag: bool, yes: bool) -> None:
+    """Store the draft as the next version of the task's model."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = explore_save(load_browser_setup(), task, yes=yes)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines(
+        [f"{task}: model saved as version {payload['version']} ({payload['pages']} page(s))"]
+    )
+
+
+@browser_explore.command("show", epilog=help_text.BROWSER_EXPLORE_SHOW_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_explore_show(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Show what the draft would save."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = explore_show(load_browser_setup(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    if not payload["pages"]:
+        emit_lines([f"{task}: no exploration draft (start with `blumkin browser explore observe`)"])
+        return
+    lines = [f"{task}: {len(payload['pages'])} page(s), {payload['steps']} step(s)"]
+    for page in payload["pages"]:
+        marked = f", finalizing: {', '.join(page['finalizing'])}" if page["finalizing"] else ""
+        lines.append(
+            f"  {page['page_id']} {page['url_template']} - {page['controls']} control(s){marked}"
+        )
+    emit_lines(lines)
 
 
 @browser.command("fill", epilog=help_text.BROWSER_FILL_EPILOG)

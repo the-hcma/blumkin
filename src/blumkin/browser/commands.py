@@ -54,14 +54,14 @@ def delete_task_profile(
     pid_alive: Callable[[int], bool] | None = None,
 ) -> dict[str, Any]:
     """Delete the profile for `task`, saved sign-in included; refuses while it runs."""
-    _require_profile(config_dir, task)
+    require_profile(config_dir, task)
     delete_profile(config_dir, task, pid_alive=pid_alive)
     return {"deleted": True, "ok": True, "task": task}
 
 
 def launch_task_browser(config: BrowserSetup, task: str) -> dict[str, Any]:
     """Launch (or find) the task's browser on its profile."""
-    profile = _require_profile(config.config_dir, task)
+    profile = require_profile(config.config_dir, task)
     # A browser that is already running is reported as it is, even when no installed browser
     # can be found any more: nothing needs launching, so nothing needs resolving.
     running = read_session(profile.path, strict=True)
@@ -86,11 +86,20 @@ def list_task_profiles(config_dir: Path) -> dict[str, Any]:
     return {"ok": True, "profiles": [_profile_entry(p) for p in list_profiles(config_dir)]}
 
 
+def require_profile(config_dir: Path, task: str) -> BrowserProfile:
+    """The profile for `task`; a malformed name is a usage error, a missing one is not found."""
+    validate_task_name(task)
+    profile = load_profile(config_dir, task)
+    if profile is None:
+        raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
+    return profile
+
+
 def task_status(config_dir: Path, task: str | None) -> dict[str, Any]:
     """Status of one task's profile, or of all of them when `task` is None."""
     if task is None:
         return list_task_profiles(config_dir)
-    return {"ok": True, "profiles": [_profile_entry(_require_profile(config_dir, task))]}
+    return {"ok": True, "profiles": [_profile_entry(require_profile(config_dir, task))]}
 
 
 def _launch_payload(
@@ -119,12 +128,3 @@ def _profile_entry(profile: BrowserProfile) -> dict[str, Any]:
         "running": session is not None,
         "task": profile.task,
     }
-
-
-def _require_profile(config_dir: Path, task: str) -> BrowserProfile:
-    """The profile for `task`; a malformed name is a usage error, a missing one is not found."""
-    validate_task_name(task)
-    profile = load_profile(config_dir, task)
-    if profile is None:
-        raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
-    return profile

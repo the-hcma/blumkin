@@ -68,6 +68,12 @@ class _Locator:
     def set_input_files(self, path: str, *, timeout: float) -> None:
         self._page.calls.append(("upload", self._label, path, timeout))
 
+    def aria_snapshot(self, *, timeout: float) -> str:
+        if self._label in self._page.missing:
+            raise PlaywrightTimeout("page gone")
+        self._page.calls.append(("aria_snapshot", self._label, timeout))
+        return '- button "Add line"\n'
+
 
 _PLAIN_ELEMENT = {
     "tag": "button",
@@ -92,6 +98,10 @@ class _Page:
 
     def get_by_label(self, label: str) -> _Locator:
         return _Locator(self, label)
+
+    def locator(self, selector: str) -> _Locator:
+        self.calls.append(("locator", selector))
+        return _Locator(self, selector)
 
     def get_by_role(self, role: str, *, name: str, exact: bool) -> _Locator:
         self.calls.append(("get_by_role", role, name, exact))
@@ -569,9 +579,23 @@ def test_the_default_fetch_ignores_proxy_settings_from_the_environment(
     driver.close()
 
 
+class _Frame:
+    def __init__(self, *, main: bool) -> None:
+        self.parent_frame: Any = None if main else object()
+
+
 class _Request:
-    def __init__(self, method: str, *, navigation: bool) -> None:
+    def __init__(
+        self,
+        method: str,
+        *,
+        navigation: bool,
+        url: str = "https://erp.example.com/x",
+        main_frame: bool = True,
+    ) -> None:
         self.method = method
+        self.url = url
+        self.frame = _Frame(main=main_frame)
         self._navigation = navigation
 
     def is_navigation_request(self) -> bool:
@@ -582,6 +606,12 @@ class _Route:
     def __init__(self, request: _Request) -> None:
         self.request = request
         self.outcome: tuple[str, ...] = ()
+
+    def abort(self) -> None:
+        self.outcome = ("abort",)
+
+    def fallback(self) -> None:
+        self.outcome = ("fallback",)
 
     def fulfill(self, *, status: int) -> None:
         self.outcome = ("fulfill", str(status))
@@ -721,3 +751,49 @@ def test_goto_refuses_backslashes_user_info_and_control_characters() -> None:
 def test_a_malformed_url_is_an_action_error_not_a_value_error(url: str) -> None:
     with pytest.raises(BrowserActionError, match="Expected"):
         checked_http_url(url)
+
+
+def test_aria_snapshot_describes_the_page_body_with_the_action_timeout() -> None:
+    pw, driver = _driver()
+    assert driver.aria_snapshot() == '- button "Add line"\n'
+    assert ("aria_snapshot", "body", 30000.0) in pw.page.calls
+
+
+def test_a_failed_aria_snapshot_is_an_action_error() -> None:
+    pw, driver = _driver()
+    pw.page.missing.add("body")
+    with pytest.raises(BrowserActionError, match="describe the page"):
+        driver.aria_snapshot()
+
+
+def _restricted_outcome(
+    url: str, *, navigation: bool = True, main_frame: bool = True
+) -> tuple[str, ...]:
+    pw, driver = _driver()
+    driver.restrict_navigation(lambda host: host == "erp.example.com")
+    handler = pw.browser.contexts[0].routes[-1][1]
+    route = _Route(_Request("GET", navigation=navigation, url=url, main_frame=main_frame))
+    handler(route)
+    return route.outcome
+
+
+def test_navigation_to_another_host_is_aborted_before_it_loads() -> None:
+    assert _restricted_outcome("https://evil.example.net/x") == ("abort",)
+    assert _restricted_outcome("https://erp.example.com.evil.net/x") == ("abort",)
+
+
+def test_navigation_to_an_allowed_host_and_ordinary_requests_pass_through() -> None:
+    assert _restricted_outcome("https://erp.example.com/x") == ("fallback",)
+    assert _restricted_outcome("https://cdn.example.net/x.js", navigation=False) == ("fallback",)
+    assert _restricted_outcome("https://evil.example.net/frame", main_frame=False) == ("fallback",)
+    assert _restricted_outcome("about:blank") == ("fallback",)
+
+
+def test_the_navigation_restriction_is_installed_once_and_released_on_detach() -> None:
+    pw, driver = _driver()
+    driver.restrict_navigation(lambda host: True)
+    driver.restrict_navigation(lambda host: True)
+    context = pw.browser.contexts[0]
+    assert len(context.routes) == 1
+    driver.close()
+    assert context.unrouted == [context.routes[0]]

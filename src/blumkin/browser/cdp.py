@@ -87,6 +87,8 @@ class ControlInfo:
     href: str = ""
     #: The inline `onclick` attribute text.
     inline_handler: str = ""
+    #: Where a link opens: empty or `_self` stays in the window, anything else opens another.
+    target: str = ""
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
@@ -113,6 +115,7 @@ class PlaywrightDriver:
         self._closed = False
         self._context = page.context
         self._net_installed = False
+        self._navigation_handler: Any = None
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -124,6 +127,9 @@ class PlaywrightDriver:
             return
         self._closed = True
         try:
+            if self._navigation_handler is not None:
+                with contextlib.suppress(PlaywrightError):
+                    self._context.unroute("**/*", self._navigation_handler)
             if self._net_installed:
                 with contextlib.suppress(PlaywrightError):
                     self._context.unroute("**/*", _abort_non_get_navigation)
@@ -132,6 +138,14 @@ class PlaywrightDriver:
         finally:
             with contextlib.suppress(PlaywrightError):
                 self._playwright.stop()
+
+    def aria_snapshot(self) -> str:
+        """The page as a Playwright ARIA snapshot: roles and accessible names, no field values."""
+        self._require_open()
+        try:
+            return str(self._page.locator("body").aria_snapshot(timeout=self._timeout_ms))
+        except PlaywrightError as exc:
+            raise self._action_error("describe the page", exc) from exc
 
     def block_form_submission(self) -> None:
         """Swallow every non-GET navigation while attached (a form POST), whatever triggers it.
@@ -216,6 +230,47 @@ class PlaywrightDriver:
             injection_warning=scan_for_injection(text, location="page.text").to_payload(),
         )
 
+    def restrict_navigation(self, is_allowed: Callable[[str], bool]) -> None:
+        """Abort every main-frame navigation to a host `is_allowed` refuses, before it loads.
+
+        Pages that are not web addresses (`about:blank`, an error page) and requests that are
+        not navigations (scripts, images, background calls) are left alone. Like the
+        form-submission net, the route lives only on this connection.
+        """
+        self._require_open()
+        if self._navigation_handler is not None:
+            return
+
+        def handler(route: Any) -> None:
+            request = route.request
+            if request.is_navigation_request() and request.frame.parent_frame is None:
+                parts = urlsplit(request.url)
+                if parts.scheme in ("http", "https") and not is_allowed(parts.hostname or ""):
+                    route.abort()
+                    return
+            route.fallback()
+
+        try:
+            self._context.route("**/*", handler)
+        except PlaywrightError as exc:
+            raise self._action_error("restrict navigation to the allowed hosts", exc) from exc
+        self._navigation_handler = handler
+
+    def settle(self, previous_url: str, timeout_s: float = 5.0) -> None:
+        """Wait for a navigation the last action started: the URL moving on, then the load.
+
+        A click returns before the page it triggered has committed, so a URL read straight
+        away can still be the old one. This waits up to a second for the URL to differ from
+        `previous_url` (it returns at once if it already does, or when a navigation commits),
+        then up to `timeout_s` for the load. Neither timeout is an error: a click that does
+        not navigate leaves the URL alone, and a swallowed form POST never commits.
+        """
+        self._require_open()
+        with contextlib.suppress(PlaywrightError):
+            self._page.wait_for_url(lambda url: url != previous_url, timeout=1000)
+        with contextlib.suppress(PlaywrightError):
+            self._page.wait_for_load_state("load", timeout=timeout_s * 1000)
+
     def title(self) -> str:
         self._require_open()
         try:
@@ -250,6 +305,7 @@ class PlaywrightDriver:
             has_formaction=bool(raw["formaction"]),
             href=str(raw["href"]),
             inline_handler=str(raw["onclick"]),
+            target=str(raw.get("target", "")),
         )
 
     def _action_error(self, what: str, exc: Exception) -> BrowserActionError:
@@ -403,7 +459,8 @@ _DESCRIBE_CONTROL_JS = (
     "form: !!e.form, "
     "formaction: e.hasAttribute('formaction') || e.hasAttribute('formmethod'), "
     "href: String(e.getAttribute('href') || ''), "
-    "onclick: String(e.getAttribute('onclick') || '')})"
+    "onclick: String(e.getAttribute('onclick') || ''), "
+    "target: String(e.getAttribute('target') || '')})"
 )
 
 
