@@ -648,7 +648,7 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                     f"with ~/ in config.toml, got {entry!r}"
                 )
             if entry.startswith("~/"):
-                below = posixpath.normpath(entry[2:])
+                below = posixpath.normpath(entry[2:].lstrip("/"))
                 if below == "." or below == ".." or below.startswith("../"):
                     raise ProviderConfigError(
                         f"{prefix}.upload_dirs must stay below the home directory (not the whole "

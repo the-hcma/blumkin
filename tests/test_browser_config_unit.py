@@ -268,7 +268,19 @@ def test_a_wildcard_host_needs_a_registrable_domain_after_the_star(
 
 @pytest.mark.parametrize(
     "entry",
-    ["~/", "~/.", "/a/..", "/a/../..", "~/..", "~/x/../..", "~/../shared", "~/x/../../y"],
+    [
+        "~/",
+        "~/.",
+        "/a/..",
+        "/a/../..",
+        "~/..",
+        "~/x/../..",
+        "~/../shared",
+        "~/x/../../y",
+        "~//../shared",
+        "~///..",
+        "~//",
+    ],
 )
 def test_an_upload_dir_that_resolves_to_the_root_or_the_whole_home_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
