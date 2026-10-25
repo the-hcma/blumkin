@@ -9,18 +9,20 @@ controls, and nothing here can finalize a form.
 from __future__ import annotations
 
 import os
+import re
 import stat
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from blumkin.browser.cdp import BrowserActionError
+from blumkin.browser.cdp import BrowserActionError, checked_http_url
 from blumkin.browser.commands import TaskNotFoundError
 from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError, attach_guarded
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.profiles import load_profile
 from blumkin.config import BrowserSetup
+from blumkin.output import sanitize_terminal
 
 
 class HostBlockedError(BrowserActionError):
@@ -28,6 +30,9 @@ class HostBlockedError(BrowserActionError):
 
 
 MAX_READ_CHARS = 20_000
+
+
+MAX_TITLE_CHARS = 200
 
 
 UNTRUSTED_NOTE = (
@@ -53,7 +58,7 @@ def click_task(config: BrowserSetup, task: str, name: str, role: str = "button")
         driver.click(name, role)
         return {"action": "click", "name": name, "ok": True, "role": role, "task": task}
 
-    return _with_driver(config, task, act)
+    return _with_driver(config, task, act, check_after=True)
 
 
 def fill_task(config: BrowserSetup, task: str, label: str, value: str) -> dict[str, Any]:
@@ -68,22 +73,19 @@ def fill_task(config: BrowserSetup, task: str, label: str, value: str) -> dict[s
 
 def goto_task(config: BrowserSetup, task: str, url: str) -> dict[str, Any]:
     """Open an http or https page."""
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.netloc:
-        raise BrowserActionError(f"Expected an http or https URL to open, got {url!r}")
+    host = checked_http_url(url)
     declared = config.browser.tasks.get(task)
     hosts = declared.allowed_hosts if declared else ()
-    if hosts and not _host_allowed(parts.hostname or "", hosts):
+    if hosts and not _host_allowed(host, hosts):
         raise HostBlockedError(
-            f"Expected a page on an allowed_hosts host of task {task!r}, "
-            f"got {parts.hostname or url!r}"
+            f"Expected a page on an allowed_hosts host of task {task!r}, got {host!r}"
         )
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         driver.goto(url)
         return {"action": "goto", "ok": True, "task": task, "url": driver.url}
 
-    return _with_driver(config, task, act)
+    return _with_driver(config, task, act, check_before=False, check_after=True)
 
 
 def handoff_task(
@@ -123,7 +125,7 @@ def read_task(config: BrowserSetup, task: str) -> dict[str, Any]:
             "ok": True,
             "task": task,
             "text": page.text[:MAX_READ_CHARS],
-            "title": driver.title(),
+            "title": _one_line(driver.title()),
             "truncated": len(page.text) > MAX_READ_CHARS,
             "untrusted": UNTRUSTED_NOTE,
             "url": driver.url,
@@ -176,7 +178,7 @@ def upload_task(config: BrowserSetup, task: str, label: str, path: Path) -> dict
         driver.upload(label, resolved)
         return {"action": "upload", "file": resolved.name, "label": label, "ok": True, "task": task}
 
-    return _with_driver(config, task, act)
+    return _with_driver(config, task, act, check_before=False)
 
 
 def _expand_home(text: str) -> Path:
@@ -200,6 +202,12 @@ def _host_allowed(host: str, patterns: Sequence[str]) -> bool:
     return False
 
 
+def _one_line(text: str) -> str:
+    """One short printable line: no control or bidirectional characters, whitespace collapsed."""
+    stripped = re.sub("[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]", "", text)
+    return " ".join(sanitize_terminal(stripped).split())[:MAX_TITLE_CHARS]
+
+
 def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
     declared = config.browser.tasks.get(task)
     if declared is None:
@@ -210,14 +218,45 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
     )
 
 
+def _require_allowed_page(
+    driver: GuardedDriver, task: str, hosts: Sequence[str], when: str
+) -> None:
+    """With `allowed_hosts` declared, refuse unless the page is on one of them."""
+    if not hosts:
+        return
+    host = urlsplit(driver.url).hostname or ""
+    if not _host_allowed(host, hosts):
+        raise HostBlockedError(
+            f"Expected the page to be on an allowed_hosts host of task {task!r} after {when}, "
+            f"got {host or 'no host'!r}"
+        )
+
+
 def _with_driver(
-    config: BrowserSetup, task: str, act: Callable[[GuardedDriver], dict[str, Any]]
+    config: BrowserSetup,
+    task: str,
+    act: Callable[[GuardedDriver], dict[str, Any]],
+    *,
+    check_after: bool = False,
+    check_before: bool = True,
 ) -> dict[str, Any]:
+    """Run `act` on the task's guarded browser, keeping the page on the task's allowed hosts.
+
+    With `allowed_hosts` declared, the page must be on one before `act` (so a redirect or
+    link that left them cannot be typed into or read) and, for actions that navigate, after it.
+    """
     profile = load_profile(config.config_dir, task)
     if profile is None:
         raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
+    declared = config.browser.tasks.get(task)
+    hosts = declared.allowed_hosts if declared else ()
     driver = attach_guarded(profile, _policy_for(config, task))
     try:
-        return act(driver)
+        if check_before:
+            _require_allowed_page(driver, task, hosts, "acting")
+        result = act(driver)
+        if check_after:
+            _require_allowed_page(driver, task, hosts, "the action")
+        return result
     finally:
         driver.close()

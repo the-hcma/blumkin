@@ -241,3 +241,26 @@ def test_an_allowed_host_must_be_a_bare_host_name_or_a_subdomain_wildcard(
     with pytest.raises(ProviderConfigError) as excinfo:
         load_config()
     assert "allowed_hosts" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("entry", ["/", "//", "/."])
+def test_an_upload_dir_that_is_the_filesystem_root_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    _config(tmp_path, monkeypatch, f'[browser.tasks.expense-report]\nupload_dirs = ["{entry}"]\n\n')
+    with pytest.raises(ProviderConfigError) as excinfo:
+        load_config()
+    assert "upload_dirs" in str(excinfo.value)
+    assert "root" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("host", ["*.com", "*.co", "*.localhost"])
+def test_a_wildcard_host_needs_a_registrable_domain_after_the_star(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    _config(
+        tmp_path, monkeypatch, f'[browser.tasks.expense-report]\nallowed_hosts = ["{host}"]\n\n'
+    )
+    with pytest.raises(ProviderConfigError) as excinfo:
+        load_config()
+    assert "allowed_hosts" in str(excinfo.value)

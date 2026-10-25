@@ -646,11 +646,21 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                     f"{prefix}.upload_dirs must hold absolute folders or folders starting "
                     f"with ~/ in config.toml, got {entry!r}"
                 )
+            if entry.strip("/.") == "":
+                raise ProviderConfigError(
+                    f"{prefix}.upload_dirs must not be the filesystem root in config.toml, "
+                    f"got {entry!r}"
+                )
         hosts = tuple(
             host.strip().lower()
             for host in _string_list(table.get("allowed_hosts"), f"{prefix}.allowed_hosts")
         )
         for host in hosts:
+            if host.startswith("*.") and "." not in host[2:]:
+                raise ProviderConfigError(
+                    f"{prefix}.allowed_hosts wildcard must sit under a registrable domain such "
+                    f"as *.example.com in config.toml, got {host!r}"
+                )
             if not _HOST_PATTERN.fullmatch(host):
                 raise ProviderConfigError(
                     f"{prefix}.allowed_hosts must hold bare host names such as erp.example.com "

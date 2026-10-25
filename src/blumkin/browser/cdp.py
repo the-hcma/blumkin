@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -191,9 +192,7 @@ class PlaywrightDriver:
 
     def goto(self, url: str) -> None:
         self._require_open()
-        parts = urlsplit(url)
-        if parts.scheme not in ("http", "https") or not parts.netloc:
-            raise BrowserActionError(f"Expected an http or https URL to open, got {url!r}")
+        checked_http_url(url)
         try:
             self._page.goto(url, timeout=self._timeout_ms)
         except PlaywrightError as exc:
@@ -227,6 +226,10 @@ class PlaywrightDriver:
     def upload(self, label: str, path: Path) -> None:
         self._require_open()
         resolved = path.resolve()
+        if resolved != path:
+            raise BrowserActionError(
+                f"Expected a fully resolved path (no symlinks or '..') to upload, got {str(path)!r}"
+            )
         if not resolved.is_file():
             raise BrowserActionError(f"Expected an existing file to upload, got {str(path)!r}")
         try:
@@ -313,6 +316,31 @@ def attach(
         sleep=sleep,
         timeout_s=timeout_s,
     )
+
+
+def checked_http_url(url: str) -> str:
+    """The lowercase host of an http(s) URL that a browser reads the way `urlsplit` does.
+
+    Raises `BrowserActionError` for anything the two could read differently: a backslash
+    (browsers treat it as a slash, so `https://evil.example\\@good.example/` is evil.example),
+    user info, whitespace or control characters, or a missing host or scheme.
+    """
+    ambiguous = any(
+        char == "\\" or char.isspace() or unicodedata.category(char).startswith("C") for char in url
+    )
+    parts = urlsplit(url) if not ambiguous else None
+    if (
+        parts is None
+        or parts.scheme not in ("http", "https")
+        or not parts.netloc
+        or "@" in parts.netloc
+        or not parts.hostname
+    ):
+        raise BrowserActionError(
+            "Expected an http or https URL without backslashes, spaces, control characters or "
+            f"user info, got {url[:100]!r}"
+        )
+    return parts.hostname.lower()
 
 
 def open_driver(

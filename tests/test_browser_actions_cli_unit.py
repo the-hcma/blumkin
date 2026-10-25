@@ -28,6 +28,9 @@ class _Raw:
         self.controls: dict[str, ControlInfo] = {}
         self.page_text = PageText(text="Total due 12.50", injection_warning=None)
         self.url = "https://erp.example.com/expenses"
+        #: Where a goto or a click actually ends up (a redirect or a link), when not the target.
+        self.lands_on: str | None = None
+        self.title_text = "Expenses"
 
     def close(self) -> None:
         self.closed += 1
@@ -39,6 +42,8 @@ class _Raw:
         default = ControlInfo(tag="button", input_type="button", in_form=False)
         vet(self.controls.get(name, default))
         self.calls.append(("click", role, name))
+        if self.lands_on is not None:
+            self.url = self.lands_on
 
     def describe_field(self, label: str) -> ControlInfo:
         return ControlInfo(tag="input", input_type="text", in_form=True)
@@ -48,7 +53,7 @@ class _Raw:
 
     def goto(self, url: str) -> None:
         self.calls.append(("goto", url))
-        self.url = url
+        self.url = self.lands_on or url
 
     def raw_press(self, label: str, key: str) -> None:
         self.calls.append(("press", label, key))
@@ -57,7 +62,7 @@ class _Raw:
         return self.page_text
 
     def title(self) -> str:
-        return "Expenses"
+        return self.title_text
 
     def upload(self, label: str, path: Path) -> None:
         self.calls.append(("upload", label, str(path)))
@@ -549,3 +554,122 @@ def test_goto_is_unrestricted_when_the_task_declares_no_allowed_hosts(
 ) -> None:
     result = _run("browser", "goto", "expense-report", "https://anywhere.example.org/")
     assert result.exit_code == EXIT_SUCCESS, result.output
+
+
+# --- host checks from the independent review of the actions layer --------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.example.net\\@good.example.com/",
+        "https://good.example.com\\.evil.example.net/",
+        "https://user@good.example.com/",
+        "https://user:pw@good.example.com/",
+        "https://good.example.com/ x",
+        "https://good.example.com/\nx",
+        "https://good.example.com/\u202ex",
+        " https://good.example.com/",
+    ],
+    ids=[
+        "backslash-userinfo",
+        "backslash-host",
+        "userinfo",
+        "user-password",
+        "space",
+        "newline",
+        "bidi",
+        "leading-space",
+    ],
+)
+def test_goto_refuses_urls_a_browser_would_read_differently_than_the_allow_list_did(
+    raw: _Raw, _config_dir: Path, url: str
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["good.example.com"]')
+    result = _run("browser", "goto", "expense-report", url)
+    assert result.exit_code != EXIT_SUCCESS, result.output
+    assert raw.calls == []
+    assert raw.net_installed == 0
+
+
+def test_goto_that_lands_on_another_host_after_a_redirect_is_reported_as_blocked(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.lands_on = "https://evil.example.net/landing"
+    result = _run("browser", "goto", "expense-report", "https://erp.example.com/redirect")
+    assert result.exit_code == EXIT_OTHER
+    payload = _json(result)
+    assert payload["error"] == "host_blocked"
+    assert "evil.example.net" in payload["message"]
+
+
+@pytest.mark.parametrize("action", ["fill", "press", "read", "click"])
+@pytest.mark.parametrize(
+    "url", ["https://evil.example.net/x", "about:blank", "chrome-error://chromewebdata/"]
+)
+def test_actions_refuse_to_act_on_a_page_outside_the_allowed_hosts(
+    raw: _Raw, _config_dir: Path, action: str, url: str
+) -> None:
+    (_config_dir / "config.toml").write_text(
+        '[browser.tasks.expense-report]\nallowed_hosts = ["erp.example.com"]\n'
+        'allowed_controls = ["Add line"]\n\n[profiles.default]\nclient_id = "abc-123"\n'
+    )
+    raw.url = url
+    args = {
+        "fill": ("browser", "fill", "expense-report", "Amount", "12.50"),
+        "press": ("browser", "press", "expense-report", "Amount", "Tab"),
+        "read": ("browser", "read", "expense-report"),
+        "click": ("browser", "click", "expense-report", "Add line"),
+    }[action]
+    result = _run(*args)
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "host_blocked"
+    assert raw.calls == []
+    assert raw.closed == 1
+
+
+@pytest.mark.parametrize("action", ["fill", "press", "read", "click"])
+def test_actions_on_an_allowed_page_still_work(raw: _Raw, _config_dir: Path, action: str) -> None:
+    (_config_dir / "config.toml").write_text(
+        '[browser.tasks.expense-report]\nallowed_hosts = ["erp.example.com"]\n'
+        'allowed_controls = ["Add line"]\n\n[profiles.default]\nclient_id = "abc-123"\n'
+    )
+    args = {
+        "fill": ("browser", "fill", "expense-report", "Amount", "12.50"),
+        "press": ("browser", "press", "expense-report", "Amount", "Tab"),
+        "read": ("browser", "read", "expense-report"),
+        "click": ("browser", "click", "expense-report", "Add line"),
+    }[action]
+    assert _run(*args).exit_code == EXIT_SUCCESS
+
+
+def test_a_click_that_leaves_the_allowed_hosts_is_reported_as_blocked(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    (_config_dir / "config.toml").write_text(
+        '[browser.tasks.expense-report]\nallowed_hosts = ["erp.example.com"]\n'
+        'allowed_controls = ["Help"]\n\n[profiles.default]\nclient_id = "abc-123"\n'
+    )
+    raw.lands_on = "https://evil.example.net/phish"
+    result = _run("browser", "click", "expense-report", "Help")
+    assert result.exit_code == EXIT_OTHER
+    payload = _json(result)
+    assert payload["error"] == "host_blocked"
+    assert "evil.example.net" in payload["message"]
+
+
+def test_actions_are_unrestricted_when_no_hosts_are_declared_as_documented(raw: _Raw) -> None:
+    raw.url = "https://anywhere.example.org/"
+    assert _run("browser", "read", "expense-report").exit_code == EXIT_SUCCESS
+
+
+def test_the_json_title_is_one_short_line_without_control_or_bidirectional_characters(
+    raw: _Raw,
+) -> None:
+    raw.title_text = "Exp\u202e\x1b[31menses\n" + "x" * 500
+    payload = _json(_run("browser", "read", "expense-report"))
+    assert "\u202e" not in payload["title"]
+    assert "\x1b" not in payload["title"]
+    assert "\n" not in payload["title"]
+    assert len(payload["title"]) <= 200
