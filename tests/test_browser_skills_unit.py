@@ -164,3 +164,11 @@ def test_the_time_sheet_skill_handles_a_weekly_or_biweekly_period_and_calendar_t
     assert "<saturday>" not in text
     assert "Monday to Friday week" not in text
     assert "calendar titles, locations and descriptions" in text.lower()
+
+
+def test_the_time_sheet_skill_covers_every_day_in_the_users_daily_split() -> None:
+    text = _skill_text("time-sheet")
+    assert "every day in the user's daily split" in text
+    assert "weekends too" in text
+    assert "last weekday" not in text
+    assert "day-after-last-friday" not in text
