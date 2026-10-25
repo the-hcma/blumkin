@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import select
+import termios
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -85,7 +87,7 @@ class ExploreDriver(Protocol):
 
     def aria_snapshot(self) -> str: ...
 
-    def click_vetted(self, role: str, name: str) -> None: ...
+    def click_vetted(self, role: str, name: str, expected: Inspection) -> None: ...
 
     def inspect(self, role: str, name: str) -> Inspection: ...
 
@@ -148,10 +150,12 @@ class Explorer:
         if inspection.refusal is not None:
             self.last_outcome = f"refused: {inspection.refusal}"
             return False
-        link_host = _link_host(self._driver.url, inspection.href)
-        if link_host is not None and not host_allowed(link_host, self._allowed_hosts):
-            self.last_outcome = f"refused: its link leads to {link_host}"
+        problem = _link_problem(self._driver.url, inspection.href, self._allowed_hosts)
+        if problem is not None:
+            self.last_outcome = f"refused: {problem}"
             return False
+        if decision is ClickDecision.CLICK and _href_looks_destructive(inspection.href):
+            decision = ClickDecision.ASK
         if decision is ClickDecision.ASK:
             host = urlsplit(self._driver.url).hostname or "this page"
             if not self._confirmer.confirm(_prompt(role, name, host, inspection.href)):
@@ -159,11 +163,16 @@ class Explorer:
                 return False
             self._require_host("after the answer and before the click")
         try:
-            self._driver.click_vetted(role, name)
+            self._driver.click_vetted(role, name, inspection)
         except ExploreRefusedError as exc:
             self.last_outcome = f"refused: {exc}"
             return False
-        self._require_host("after the click")
+        try:
+            self._require_host("after the click")
+        except ExploreRefusedError as exc:
+            raise ExploreRefusedError(
+                f"The click happened, and the page is now off the allowed hosts: {exc}"
+            ) from exc
         self.last_outcome = "clicked"
         return True
 
@@ -210,11 +219,16 @@ class ExploringDriver:
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()
 
-    def click_vetted(self, role: str, name: str) -> None:
+    def click_vetted(self, role: str, name: str, expected: Inspection) -> None:
         def vet(info: ControlInfo) -> None:
             reason = vet_control(info)
             if reason is not None:
                 raise ExploreRefusedError(f"Expected to click {name!r}, got a refusal: {reason}")
+            if info.tag != expected.tag or info.href != expected.href:
+                raise ExploreRefusedError(
+                    f"Expected to click the {role} {name!r} that was inspected, got an element "
+                    "that changed since"
+                )
 
         self._raw.checked_click(name, role, vet)
 
@@ -225,7 +239,7 @@ class ExploringDriver:
         """Why the control cannot be clicked (if so) and where it links, without clicking it."""
 
         def look(info: ControlInfo) -> None:
-            raise _Inspected(Inspection(refusal=vet_control(info), href=info.href))
+            raise _Inspected(Inspection(refusal=vet_control(info), href=info.href, tag=info.tag))
 
         try:
             self._raw.checked_click(name, role, look)
@@ -244,6 +258,7 @@ class Inspection:
 
     refusal: str | None
     href: str
+    tag: str = ""
 
 
 class ModelDraft:
@@ -252,7 +267,7 @@ class ModelDraft:
     def __init__(self, task: str, hosts: Sequence[str], extra_deny: Sequence[str] = ()) -> None:
         self.skipped = 0
         self._extra_deny = tuple(extra_deny)
-        self._flow_steps: list[FlowStep] = []
+        self._flows: dict[str, list[FlowStep]] = {}
         self._hosts = tuple(hosts)
         self._pages: dict[str, Page] = {}
         self._task = task
@@ -262,7 +277,7 @@ class ModelDraft:
         """A draft that continues a stored or in-progress model."""
         draft = cls(task=model.task, hosts=model.hosts, extra_deny=extra_deny)
         draft._pages = {page.page_id: page for page in model.pages}
-        draft._flow_steps = [step for flow in model.flows for step in flow.steps]
+        draft._flows = {flow.name: list(flow.steps) for flow in model.flows}
         return draft
 
     def add_host(self, host: str) -> None:
@@ -288,7 +303,10 @@ class ModelDraft:
             if item.role not in _SKIPPED_FROM_FINGERPRINT and len(marks) < _MAX_MARKS:
                 marks.append(f"{item.role}:{item.name}")
             kind = _KIND_BY_ROLE.get(item.role)
-            if kind is None or len(built) >= _MAX_DRAFT_CONTROLS:
+            if kind is None:
+                continue
+            if len(built) >= _MAX_DRAFT_CONTROLS:
+                self.skipped += 1
                 continue
             built.append(_control(page_id, item, kind, used, self._extra_deny))
         self._pages[page_id] = Page(
@@ -297,12 +315,13 @@ class ModelDraft:
             page_id=page_id,
             url_template=url_template(url),
         )
+        self._prune_steps()
 
     def add_step(
         self, action: str, *, page_id: str | None, control: str | None, expect: str | None = None
     ) -> None:
         """Record one step of the flow being explored."""
-        self._flow_steps.append(
+        self._flows.setdefault("recorded", []).append(
             FlowStep(action=action, control=control, expect=expect, page=page_id)
         )
 
@@ -315,6 +334,23 @@ class ModelDraft:
                 return control.name
         return None
 
+    def _prune_steps(self) -> None:
+        """Drop recorded steps whose page or control is no longer in the draft."""
+        controls = {pid: {c.name for c in page.controls} for pid, page in self._pages.items()}
+        everywhere = {name for names in controls.values() for name in names}
+
+        def alive(step: FlowStep) -> bool:
+            if step.page is not None and step.page not in self._pages:
+                return False
+            if step.control is None:
+                return True
+            known = controls[step.page] if step.page is not None else everywhere
+            return step.control in known
+
+        self._flows = {
+            name: [step for step in steps if alive(step)] for name, steps in self._flows.items()
+        }
+
     def to_model(self, *, recorded_at: str, blumkin_version: str) -> SiteModel:
         """The draft as a model (not yet validated or stored: `save_model` does both)."""
         empty = [page_id for page_id, page in self._pages.items() if not page.fingerprint]
@@ -323,7 +359,9 @@ class ModelDraft:
                 "Expected every page to have a landmark that can be stored, "
                 f"got none for {empty[0]!r}"
             )
-        flows = (Flow(name="recorded", steps=tuple(self._flow_steps)),) if self._flow_steps else ()
+        flows = tuple(
+            Flow(name=name, steps=tuple(steps)) for name, steps in self._flows.items() if steps
+        )
         return SiteModel(
             blumkin_version=blumkin_version,
             flows=flows,
@@ -337,6 +375,40 @@ class ModelDraft:
 
 class PageIdError(ValueError):
     """A page id that is not lowercase words."""
+
+
+class Terminal:
+    """The user's controlling terminal, opened once for writing the question and reading the answer.
+
+    A terminal is not seekable, so it cannot be opened read-write in text mode: the question
+    and the answer use two handles on the same descriptor. `O_NOCTTY` keeps opening it from
+    making it the controlling terminal of a process that has none.
+    """
+
+    def __init__(self, path: str = "/dev/tty") -> None:
+        descriptor = os.open(path, os.O_RDWR | os.O_NOCTTY)
+        try:
+            self._reader = os.fdopen(os.dup(descriptor), "r", encoding="utf-8")
+            self._writer = os.fdopen(descriptor, "w", encoding="utf-8")
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def close(self) -> None:
+        self._writer.close()
+        self._reader.close()
+
+    def fileno(self) -> int:
+        return self._reader.fileno()
+
+    def flush(self) -> None:
+        self._writer.flush()
+
+    def readline(self) -> str:
+        return self._reader.readline()
+
+    def write(self, text: str) -> int:
+        return self._writer.write(text)
 
 
 class TerminalConfirmer:
@@ -361,6 +433,7 @@ class TerminalConfirmer:
             self.unavailable = True
             return False
         with contextlib.closing(tty):
+            _discard_pending_input(tty)
             tty.write(f"{prompt} [y/N] ")
             tty.flush()
             if not _answers_in_time(tty, self._timeout_s):
@@ -424,13 +497,14 @@ def url_template(url: str) -> str:
 
 
 _DESTRUCTIVE = re.compile(
-    r"\b(?:cancel|clear|close account|deactivate|delete|disable|discard|erase|log\s*out|logout|"
-    r"remove|reset|revoke|sign\s*out|signout|unsubscribe)\b"
+    r"\b(?:archive|cancel|clear|close account|deactivate|delete|disable|discard|empty|erase|"
+    r"exit|log\s*off|log\s*out|logout|mark as|move to|remove|reset|revoke|sign\s*off|"
+    r"sign\s*out|signout|trash|unsubscribe)\b"
 )
 _MAX_DRAFT_CONTROLS = 200
 _MAX_MARKS = 100
 _PAGE_ID = re.compile(r"[a-z]+(?:-[a-z]+){0,5}")
-_READ_ONLY_ROLES = frozenset({"link", "menuitem", "tab"})
+_READ_ONLY_ROLES = frozenset({"link", "tab"})
 _SKIPPED_FROM_FINGERPRINT = frozenset(
     {
         "alert",
@@ -454,7 +528,16 @@ _SKIPPED_FROM_FINGERPRINT = frozenset(
 )
 _SNAPSHOT_LINE = re.compile(r'^\s*- (?P<role>[a-z]+)(?: "(?P<name>(?:[^"\\]|\\.)*)")?')
 _STATE_CHANGING_ROLES = frozenset(
-    {"button", "checkbox", "menuitemcheckbox", "menuitemradio", "option", "radio", "switch"}
+    {
+        "button",
+        "checkbox",
+        "menuitem",
+        "menuitemcheckbox",
+        "menuitemradio",
+        "option",
+        "radio",
+        "switch",
+    }
 )
 _WORD = re.compile(r"[A-Za-z]{1,24}(?:[-_][A-Za-z]{1,24})*")
 _KIND_BY_ROLE: dict[str, ControlKind] = {
@@ -472,6 +555,23 @@ _KIND_BY_ROLE: dict[str, ControlKind] = {
     "textbox": ControlKind.TEXT,
 }
 _LABELLED_ROLES = frozenset({"combobox", "listbox", "searchbox", "spinbutton", "textbox"})
+
+
+class _Inspected(Exception):  # noqa: N818 - control flow, not an error
+    """Raised from the inspection callback to stop `checked_click` before it clicks."""
+
+    def __init__(self, inspection: Inspection) -> None:
+        super().__init__("inspected")
+        self.inspection = inspection
+
+
+def _answers_in_time(tty: Any, timeout_s: float) -> bool:
+    try:
+        descriptor = tty.fileno()
+    except AttributeError, OSError, ValueError:
+        return True  # a stream with no descriptor (a test double) is read directly
+    ready, _, _ = select.select([descriptor], [], [], timeout_s)
+    return bool(ready)
 
 
 def _control(
@@ -496,29 +596,16 @@ def _control(
     return Control(kind=kind, locators=tuple(locators), name=name, safety=safety)
 
 
-def _is_word(segment: str) -> bool:
-    return bool(_WORD.fullmatch(segment)) and sum(char.isupper() for char in segment) <= 2
-
-
-def _open_dev_tty() -> Any:
-    return open("/dev/tty", "r+", encoding="utf-8")  # noqa: SIM115 - closed by the caller
-
-
-class _Inspected(Exception):  # noqa: N818 - control flow, not an error
-    """Raised from the inspection callback to stop `checked_click` before it clicks."""
-
-    def __init__(self, inspection: Inspection) -> None:
-        super().__init__("inspected")
-        self.inspection = inspection
-
-
-def _answers_in_time(tty: Any, timeout_s: float) -> bool:
+def _discard_pending_input(tty: Any) -> None:
+    """Throw away anything typed ahead, so only an answer to this question counts."""
     try:
-        descriptor = tty.fileno()
-    except AttributeError, OSError, ValueError:
-        return True  # a stream with no descriptor (a test double) is read directly
-    ready, _, _ = select.select([descriptor], [], [], timeout_s)
-    return bool(ready)
+        termios.tcflush(tty.fileno(), termios.TCIFLUSH)
+    except AttributeError, OSError, ValueError, termios.error:
+        return
+
+
+def _href_looks_destructive(href: str) -> bool:
+    return bool(_DESTRUCTIVE.search(_spaced(urlsplit(href).path)))
 
 
 def _is_finalizing(name: str, extra_deny: Sequence[str]) -> bool:
@@ -527,26 +614,44 @@ def _is_finalizing(name: str, extra_deny: Sequence[str]) -> bool:
     )
 
 
-def _link_host(page_url: str, href: str) -> str | None:
-    """The host a link leads to when it is an absolute web address, else None."""
+def _is_word(segment: str) -> bool:
+    return bool(_WORD.fullmatch(segment)) and sum(char.isupper() for char in segment) <= 2
+
+
+def _link_problem(page_url: str, href: str, allowed_hosts: Sequence[str]) -> str | None:
+    """Why a link may not be followed (it leaves the web or the allowed hosts), else None."""
     if not href:
         return None
     parts = urlsplit(urljoin(page_url, href))
-    return (parts.hostname or "") if parts.scheme in ("http", "https") else None
+    if parts.scheme not in ("http", "https"):
+        return f"its link leaves the web ({parts.scheme or 'no scheme'}:)"
+    host = parts.hostname or ""
+    if not host_allowed(host, allowed_hosts):
+        return f"its link leads to {host or 'no host'}"
+    return None
 
 
 def _needs_a_question(name: str) -> bool:
     return (
-        bool(_DESTRUCTIVE.search(name.casefold()))
+        bool(_DESTRUCTIVE.search(_spaced(name)))
         or any(ord(char) > 127 for char in name)
         or sum(char.isalpha() for char in name) < 2
     )
+
+
+def _open_dev_tty() -> Any:
+    return Terminal()
 
 
 def _prompt(role: str, name: str, host: str, href: str) -> str:
     shown = name if len(name) <= 80 else name[:80] + "..."
     target = f" (it links to {href[:120]!r})" if href else ""
     return f"Click the {role} {shown!r} on {host}{target}? It may change state."
+
+
+def _spaced(text: str) -> str:
+    """Lowercase text with `_`, `-` and `/` read as spaces, so `log-out` matches `log out`."""
+    return re.sub(r"[_\-/]+", " ", text.casefold())
 
 
 def _unescape(quoted: str) -> str:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -17,13 +19,21 @@ from blumkin.browser.explore import (
     ExploringDriver,
     Inspection,
     ModelDraft,
+    Terminal,
     TerminalConfirmer,
     attach_exploring,
     decide_click,
     parse_aria_snapshot,
     url_template,
 )
-from blumkin.browser.model import ControlKind, ControlSafety, load_model, save_model
+from blumkin.browser.model import (
+    ControlKind,
+    ControlSafety,
+    Flow,
+    FlowStep,
+    load_model,
+    save_model,
+)
 
 _SNAPSHOT = """\
 - banner:
@@ -148,7 +158,7 @@ def test_observing_a_page_again_updates_it_instead_of_duplicating_it() -> None:
     [
         ("link", "Help", ClickDecision.CLICK),
         ("tab", "Receipts", ClickDecision.CLICK),
-        ("menuitem", "Reports", ClickDecision.CLICK),
+        ("menuitem", "Reports", ClickDecision.ASK),
         ("button", "Add line", ClickDecision.ASK),
         ("checkbox", "Remember me", ClickDecision.ASK),
         ("button", "Create report", ClickDecision.ASK),
@@ -179,6 +189,7 @@ class _Driver:
         self.refusal: str | None = None
         self.href = ""
         self.inspected: list[tuple[str, str]] = []
+        self.expected: Inspection | None = None
 
     @property
     def submit_control(self) -> bool:
@@ -191,14 +202,15 @@ class _Driver:
     def aria_snapshot(self) -> str:
         return self.snapshot
 
-    def click_vetted(self, role: str, name: str) -> None:
+    def click_vetted(self, role: str, name: str, expected: Inspection) -> None:
         self.clicks.append((role, name))
+        self.expected = expected
         if self.lands_on is not None:
             self.url = self.lands_on
 
     def inspect(self, role: str, name: str) -> Inspection:
         self.inspected.append((role, name))
-        return Inspection(refusal=self.refusal, href=self.href)
+        return Inspection(refusal=self.refusal, href=self.href, tag="a")
 
 
 class _Confirmer:
@@ -365,7 +377,7 @@ def test_the_exploring_driver_installs_the_safety_net_and_clicks_through_the_ins
     assert raw.net == 1
     assert driver.url == "https://erp.example.com/expenses"
     assert driver.aria_snapshot() == _SNAPSHOT
-    driver.click_vetted("link", "Help")
+    driver.click_vetted("link", "Help", Inspection(refusal=None, href="", tag="a"))
     assert raw.clicked == [("link", "Help")]
     driver.close()
     assert raw.closed == 1
@@ -383,7 +395,9 @@ def test_the_exploring_driver_installs_the_safety_net_and_clicks_through_the_ins
 def test_the_exploring_driver_refuses_what_the_guard_refuses(info_kwargs: dict[str, Any]) -> None:
     raw = _Raw(ControlInfo(**info_kwargs))
     with pytest.raises(ExploreRefusedError):
-        ExploringDriver(raw).click_vetted("link", "Help")
+        ExploringDriver(raw).click_vetted(
+            "link", "Help", Inspection(refusal=None, href="", tag="a")
+        )
     assert raw.clicked == []
 
 
@@ -602,7 +616,7 @@ def test_the_exploring_driver_inspects_without_clicking_and_reports_the_href() -
     raw = _Raw(ControlInfo(tag="a", input_type="", in_form=False, href="/help"))
     driver = ExploringDriver(raw)
     inspection = driver.inspect("link", "Help")
-    assert inspection == Inspection(refusal=None, href="/help")
+    assert inspection == Inspection(refusal=None, href="/help", tag="a")
     assert raw.clicked == []
     raw.info = ControlInfo(tag="button", input_type="submit", in_form=True)
     assert driver.inspect("button", "Add").refusal == "it is a submit control"
@@ -618,3 +632,188 @@ def test_the_exploring_driver_restricts_navigation_to_the_allowed_hosts() -> Non
     assert allowed("a.example.org") is True
     assert allowed("evil.example.net") is False
     assert allowed("") is False
+
+
+# --- third pass: menus, hrefs, flows, stuck drafts, typed-ahead input -------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Log-out",
+        "Sign off",
+        "Exit",
+        "delete_account",
+        "Archive",
+        "Empty trash",
+        "Move to trash",
+        "Mark as read",
+        "log_out",
+    ],
+)
+def test_more_destructive_spellings_ask_first(name: str) -> None:
+    assert decide_click("link", name) is ClickDecision.ASK
+
+
+@pytest.mark.parametrize(
+    "href",
+    ["/account/delete?confirm=1", "/logout", "/users/42/remove", "/sign-out", "/api/trash/empty"],
+)
+def test_a_link_whose_address_looks_destructive_asks_first(href: str) -> None:
+    driver = _Driver()
+    driver.href = href
+    explorer, confirmer = _explorer(driver, [False])
+    assert explorer.click("link", "Settings") is False
+    assert len(confirmer.asked) == 1
+    assert explorer.last_outcome == "declined"
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "file:///etc/passwd",
+        "mailto:a@b.example",
+        "ftp://erp.example.com/x",
+        "view-source:https://erp.example.com/",
+    ],
+)
+def test_a_link_that_leaves_the_web_is_not_followed(href: str) -> None:
+    driver = _Driver()
+    driver.href = href
+    explorer, _ = _explorer(driver)
+    assert explorer.click("link", "Help") is False
+    assert driver.clicks == []
+    assert "leaves the web" in explorer.last_outcome
+
+
+def test_the_click_receives_what_the_user_was_shown() -> None:
+    driver = _Driver()
+    driver.href = "/help"
+    explorer, _ = _explorer(driver)
+    explorer.click("link", "Help")
+    assert driver.expected == Inspection(refusal=None, href="/help", tag="a")
+
+
+def test_the_exploring_driver_refuses_an_element_that_changed_since_the_question() -> None:
+    raw = _Raw(ControlInfo(tag="a", input_type="", in_form=False, href="/other"))
+    with pytest.raises(ExploreRefusedError, match="changed"):
+        ExploringDriver(raw).click_vetted(
+            "link", "Help", Inspection(refusal=None, href="/help", tag="a")
+        )
+    assert raw.clicked == []
+    raw.info = ControlInfo(tag="button", input_type="button", in_form=False, href="")
+    with pytest.raises(ExploreRefusedError, match="changed"):
+        ExploringDriver(raw).click_vetted(
+            "link", "Help", Inspection(refusal=None, href="", tag="a")
+        )
+
+
+def test_a_click_that_lands_off_host_says_the_click_happened() -> None:
+    driver = _Driver()
+    driver.lands_on = "https://evil.example.net/x"
+    explorer, _ = _explorer(driver)
+    with pytest.raises(ExploreRefusedError, match="click happened"):
+        explorer.click("link", "Help")
+    assert driver.clicks == [("link", "Help")]
+
+
+def test_continuing_a_stored_model_keeps_every_flow_and_its_name(tmp_path: Path) -> None:
+    draft = _draft()
+    draft.add_page(
+        "expense-list",
+        "https://erp.example.com/expenses",
+        (ControlObservation("button", "Add line"), ControlObservation("button", "Edit")),
+    )
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+    flows = (
+        Flow(
+            name="login", steps=(FlowStep("click", "expense-list.add-line", None, "expense-list"),)
+        ),
+        Flow(name="other", steps=(FlowStep("click", "expense-list.edit", None, "expense-list"),)),
+    )
+    stored_model = replace(model, flows=flows)
+    again = ModelDraft.from_model(stored_model)
+    again.add_step("click", page_id="expense-list", control="expense-list.add-line")
+    rebuilt = again.to_model(recorded_at="2026-10-25T13:00:00Z", blumkin_version="1.0.0")
+    assert [(f.name, len(f.steps)) for f in rebuilt.flows] == [
+        ("login", 1),
+        ("other", 1),
+        ("recorded", 1),
+    ]
+    again2 = ModelDraft.from_model(rebuilt)
+    rebuilt2 = again2.to_model(recorded_at="2026-10-25T14:00:00Z", blumkin_version="1.0.0")
+    assert [(f.name, len(f.steps)) for f in rebuilt2.flows] == [
+        ("login", 1),
+        ("other", 1),
+        ("recorded", 1),
+    ]
+
+
+def test_observing_a_page_again_drops_steps_whose_control_is_gone(tmp_path: Path) -> None:
+    draft = _draft()
+    draft.add_page("home", "https://erp.example.com/", (ControlObservation("button", "Go"),))
+    draft.add_step("click", page_id="home", control="home.go")
+    draft.add_page("home", "https://erp.example.com/", (ControlObservation("button", "Start"),))
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+    assert model.flows == ()
+    save_model(tmp_path, model)
+
+
+def test_controls_beyond_the_draft_cap_are_counted_as_skipped() -> None:
+    draft = _draft()
+    controls = tuple(
+        ControlObservation("button", f"Action {chr(97 + n // 26)}{chr(97 + n % 26)}")
+        for n in range(230)
+    )
+    draft.add_page("expense-list", "https://erp.example.com/expenses", controls)
+    assert draft.skipped >= 30
+
+
+def test_pending_terminal_input_is_flushed_before_the_question() -> None:
+    try:
+        master, slave = os.openpty()
+    except OSError:
+        pytest.skip("no pseudo-terminal in this environment")
+    try:
+        os.write(master, b"y\n")  # typed ahead, before the question
+        path = os.ttyname(slave)
+        confirmer = TerminalConfirmer(open_tty=lambda: Terminal(path), timeout_s=0.05)
+        assert confirmer.confirm("Click 'Add line'?") is False
+        assert confirmer.timed_out is True
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_a_real_terminal_is_asked_and_the_answer_read() -> None:
+    try:
+        master, slave = os.openpty()
+    except OSError:
+        pytest.skip("no pseudo-terminal in this environment")
+    asked: list[str] = []
+
+    def user() -> None:
+        seen = b""
+        while b"[y/N]" not in seen:
+            seen += os.read(master, 1024)
+        asked.append(seen.decode())
+        os.write(master, b"y\n")
+
+    helper = threading.Thread(target=user, daemon=True)
+    helper.start()
+    try:
+        path = os.ttyname(slave)
+        confirmer = TerminalConfirmer(open_tty=lambda: Terminal(path), timeout_s=10)
+        assert confirmer.confirm("Click 'Add line'?") is True
+        helper.join(10)
+        assert "Add line" in asked[0]
+        assert confirmer.unavailable is False
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_a_missing_terminal_path_is_unavailable_not_a_crash() -> None:
+    confirmer = TerminalConfirmer(open_tty=lambda: Terminal("/nonexistent/tty"))
+    assert confirmer.confirm("Click?") is False
+    assert confirmer.unavailable is True

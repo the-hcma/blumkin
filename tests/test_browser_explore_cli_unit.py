@@ -41,7 +41,7 @@ class _Driver:
     def inspect(self, role: str, name: str) -> Inspection:
         return Inspection(refusal=self.refusal, href=self.href)
 
-    def click_vetted(self, role: str, name: str) -> None:
+    def click_vetted(self, role: str, name: str, expected: Inspection) -> None:
         self.clicks.append((role, name))
         if self.lands_on is not None:
             self.url = self.lands_on

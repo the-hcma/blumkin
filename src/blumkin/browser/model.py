@@ -324,7 +324,8 @@ def update_draft(
     `change` gets the draft, or the stored model when there is no draft yet, or None when
     there is neither, and returns the new draft (checked like a model) or None to leave
     things as they are. If it raises, or its result is not a valid model, the previous draft
-    is untouched.
+    is untouched. `change` runs while the store lock is held, so it must not call other
+    functions of this module that take that lock (`load_draft`, `save_model`, ...).
     """
     validate_task_name(task)
     with _filesystem("update the draft"):
