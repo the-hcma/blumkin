@@ -11,7 +11,15 @@ import contextlib
 from typing import Any
 
 from blumkin.browser.commands import require_profile
-from blumkin.browser.drift import Grade, ModelDiff, check_page, diff_models
+from blumkin.browser.drift import (
+    Finding,
+    FindingKind,
+    Grade,
+    ModelDiff,
+    check_page,
+    diff_models,
+    worst,
+)
 from blumkin.browser.explore import (
     Explorer,
     PageIdError,
@@ -49,13 +57,27 @@ def model_check(
         url, controls = explorer.observe_with_url()
     check = check_page(page, controls)
     template = url_template(url)
+    findings = list(check.findings)
+    if template != page.url_template:
+        findings.append(
+            Finding(
+                control=None,
+                grade=Grade.DEGRADED,
+                kind=FindingKind.LOOKS_DIFFERENT,
+                note=(
+                    f"The browser is at a different address shape than the recorded "
+                    f"{page.url_template}; check that it is on the {page_id} page"
+                ),
+            )
+        )
+    grade = worst([check.grade, *(f.grade for f in findings)])
     return {
         "findings": [
             {"control": f.control, "grade": f.grade.value, "kind": f.kind.value, "note": f.note}
-            for f in check.findings
+            for f in findings
         ],
-        "grade": check.grade.value,
-        "ok": check.grade is not Grade.INCOMPATIBLE,
+        "grade": grade.value,
+        "ok": grade is not Grade.INCOMPATIBLE,
         "page": page_id,
         "task": task,
         "url_matches": template == page.url_template,
@@ -93,9 +115,12 @@ def _diff_payload(task: str, old: int, new: int, diff: ModelDiff) -> dict[str, A
         "lines": diff.lines(),
         "new": new,
         "ok": True,
+        "flows_changed": list(diff.flows_changed),
         "old": old,
         "pages_added": list(diff.pages_added),
+        "pages_changed": list(diff.pages_changed),
         "pages_removed": list(diff.pages_removed),
+        "safety_changed": {page: list(names) for page, names in diff.safety_changed.items()},
         "task": task,
     }
 

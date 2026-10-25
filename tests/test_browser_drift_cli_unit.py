@@ -210,3 +210,16 @@ def test_the_human_output_is_readable(driver: _Driver, _config_dir: Path) -> Non
     assert result.exit_code == EXIT_OTHER
     assert "incompatible" in result.output
     assert "expense-list.add-line" in result.output
+
+
+def test_a_page_at_another_address_is_at_most_degraded_even_when_every_control_is_there(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _store(_config_dir)
+    driver.url = "https://erp.example.com/somewhere/else"
+    payload = _json(_run("browser", "model", "check", "expense-report", "expense-list"))
+    assert payload["grade"] == "degraded"
+    assert any(
+        f["kind"] == "looks_different" and "address" in f["note"] for f in payload["findings"]
+    )
+    assert payload["ok"] is True

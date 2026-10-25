@@ -314,7 +314,7 @@ class ModelDraft:
             kind = _KIND_BY_ROLE.get(item.role)
             if kind is None:
                 continue
-            if len(built) >= _MAX_DRAFT_CONTROLS:
+            if len(built) >= MAX_DRAFT_CONTROLS:
                 self.skipped += 1
                 continue
             built.append(_control(page_id, item, kind, used, self._extra_deny))
@@ -540,7 +540,7 @@ _DESTRUCTIVE_HREF = re.compile(
     "logoff|logout|purge|remove|reset|revoke|signoff|signout|terminate|trash|unlink|"
     "unsubscribe|wipe"
 )
-_MAX_DRAFT_CONTROLS = 200
+MAX_DRAFT_CONTROLS = 200
 _MAX_MARKS = 100
 _PAGE_ID = re.compile(r"[a-z]+(?:-[a-z]+){0,5}")
 _READ_ONLY_ROLES = frozenset({"link", "tab"})
@@ -593,7 +593,7 @@ _KIND_BY_ROLE: dict[str, ControlKind] = {
     "tab": ControlKind.BUTTON,
     "textbox": ControlKind.TEXT,
 }
-_LABELLED_ROLES = frozenset({"combobox", "listbox", "searchbox", "spinbutton", "textbox"})
+LABELLED_ROLES = frozenset({"combobox", "listbox", "searchbox", "spinbutton", "textbox"})
 
 
 class _Inspected(Exception):  # noqa: N818 - control flow, not an error
@@ -630,7 +630,7 @@ def _control(
         name = f"{page_id}.{slug}-{count}"
     used.add(name)
     locators = [Locator(strategy=LocatorStrategy.ROLE_NAME, value=f"{item.role}:{item.name}")]
-    if item.role in _LABELLED_ROLES:
+    if item.role in LABELLED_ROLES:
         locators.append(Locator(strategy=LocatorStrategy.LABEL, value=item.name))
     finalizing = _is_finalizing(item.name, extra_deny)
     safety = ControlSafety.FINALIZING if finalizing else ControlSafety.SAFE

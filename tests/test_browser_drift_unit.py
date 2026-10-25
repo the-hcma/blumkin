@@ -230,3 +230,135 @@ def test_a_changed_locator_or_safety_flag_is_a_changed_control() -> None:
 @pytest.mark.parametrize("grade", list(Grade))
 def test_grades_have_stable_text(grade: Grade) -> None:
     assert grade.value in {"compatible", "degraded", "incompatible"}
+
+
+# --- review pass: data-driven pages, tiny pages, aliases, truncation, richer diffs ------------
+
+
+_INBOX = """\
+- heading "Inbox" [level=1]
+- button "Compose"
+- link "Mail from Bob"
+- link "Mail from Amy"
+- link "Mail from Cy"
+"""
+
+
+def _inbox_page() -> Page:
+    draft = ModelDraft(task="mail", hosts=("mail.example.com",))
+    draft.add_page("inbox", "https://mail.example.com/inbox", parse_aria_snapshot(_INBOX))
+    return draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0").pages[0]
+
+
+def test_a_list_page_whose_data_links_changed_is_degraded_not_incompatible() -> None:
+    live = '- heading "Inbox"\n- button "Compose"\n- link "Mail from Dee"\n- link "Mail from Eve"\n'
+    check = check_page(_inbox_page(), parse_aria_snapshot(live))
+    assert check.grade is Grade.DEGRADED
+    assert {f.kind for f in check.findings} == {FindingKind.MISSING}
+    assert all(f.grade is Grade.DEGRADED for f in check.findings)
+
+
+def test_a_missing_button_on_a_list_page_is_still_incompatible() -> None:
+    live = (
+        '- heading "Inbox"\n- link "Mail from Bob"\n- link "Mail from Amy"\n- link "Mail from Cy"\n'
+    )
+    check = check_page(_inbox_page(), parse_aria_snapshot(live))
+    assert check.grade is Grade.INCOMPATIBLE
+
+
+@pytest.mark.parametrize("role", ["slider", "menuitemcheckbox", "menuitemradio"])
+def test_a_new_input_of_any_kind_may_be_required(role: str) -> None:
+    grade, found = _findings(_RECORDED + f'  - {role} "Quantity"\n')
+    assert grade is Grade.INCOMPATIBLE
+    assert FindingKind.NEW_FIELD in found
+
+
+def test_a_page_with_too_few_landmarks_is_not_judged_by_their_share() -> None:
+    draft = ModelDraft(task="login", hosts=("erp.example.com",))
+    draft.add_page(
+        "login", "https://erp.example.com/login", (ControlObservation("heading", "Login"),)
+    )
+    page = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0").pages[0]
+    renamed = check_page(page, (ControlObservation("heading", "Sign in"),))
+    assert renamed.grade is Grade.COMPATIBLE
+    assert check_page(page, ()).grade is Grade.INCOMPATIBLE
+
+
+def test_a_page_recorded_with_the_control_cap_does_not_report_every_extra_field() -> None:
+    from blumkin.browser.explore import MAX_DRAFT_CONTROLS
+
+    names = [f"Field {chr(97 + n // 26)}{chr(97 + n % 26)}" for n in range(MAX_DRAFT_CONTROLS + 5)]
+    observed = tuple(ControlObservation("textbox", name) for name in names)
+    draft = ModelDraft(task="big", hosts=("erp.example.com",))
+    draft.add_page("big-form", "https://erp.example.com/big", observed)
+    page = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0").pages[0]
+    check = check_page(page, observed)
+    assert FindingKind.NEW_FIELD not in {f.kind for f in check.findings}
+
+
+@pytest.mark.parametrize(
+    ("recorded", "live"),
+    [("textbox", "searchbox"), ("searchbox", "textbox"), ("combobox", "listbox")],
+)
+def test_a_role_that_the_page_treats_alike_is_a_fallback_not_a_loss(
+    recorded: str, live: str
+) -> None:
+    draft = ModelDraft(task="t", hosts=("erp.example.com",))
+    draft.add_page(
+        "p",
+        "https://erp.example.com/p",
+        (
+            ControlObservation("heading", "One"),
+            ControlObservation("heading", "Two"),
+            ControlObservation("heading", "Three"),
+            ControlObservation(recorded, "Amount"),
+        ),
+    )
+    page = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0").pages[0]
+    observed = (
+        ControlObservation("heading", "One"),
+        ControlObservation("heading", "Two"),
+        ControlObservation("heading", "Three"),
+        ControlObservation(live, "Amount"),
+    )
+    check = check_page(page, observed)
+    assert check.grade is Grade.DEGRADED
+    assert [f.kind for f in check.findings] == [FindingKind.FALLBACK]
+
+
+def test_a_diff_reports_a_changed_page_address_fingerprint_and_flows() -> None:
+    from dataclasses import replace
+
+    from blumkin.browser.model import Flow, FlowStep
+
+    before = _model()
+    page = before.pages[0]
+    after = replace(
+        before,
+        pages=(replace(page, url_template="/expenses/all", fingerprint=("heading:Other",)),),
+        flows=(Flow(name="recorded", steps=(FlowStep("click", None, None, "expense-list"),)),),
+    )
+    diff = diff_models(before, after)
+    assert diff.pages_changed == ("expense-list",)
+    assert diff.flows_changed == ("recorded",)
+    assert diff.empty is False
+    text = "\n".join(diff.lines())
+    assert "page changed: expense-list" in text
+    assert "flow changed: recorded" in text
+
+
+def test_a_diff_names_a_safety_flip() -> None:
+    from dataclasses import replace
+
+    from blumkin.browser.model import ControlSafety
+
+    before = _model()
+    page = before.pages[0]
+    flipped = tuple(
+        replace(c, safety=ControlSafety.FINALIZING) if c.name == "expense-list.add-line" else c
+        for c in page.controls
+    )
+    after = replace(before, pages=(replace(page, controls=flipped),))
+    diff = diff_models(before, after)
+    assert diff.safety_changed == {"expense-list": ("expense-list.add-line",)}
+    assert "now finalizing" in "\n".join(diff.lines()) or "safety" in "\n".join(diff.lines())

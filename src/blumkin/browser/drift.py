@@ -21,7 +21,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from blumkin.browser.explore import ControlObservation, landmark_marks
+from blumkin.browser.explore import (
+    LABELLED_ROLES,
+    MAX_DRAFT_CONTROLS,
+    ControlObservation,
+    landmark_marks,
+)
 from blumkin.browser.model import (
     Control,
     LocatorStrategy,
@@ -66,10 +71,15 @@ class ModelDiff:
     controls_added: dict[str, tuple[str, ...]]
     controls_changed: dict[str, tuple[str, ...]]
     controls_removed: dict[str, tuple[str, ...]]
+    flows_changed: tuple[str, ...]
     hosts_added: tuple[str, ...]
     hosts_removed: tuple[str, ...]
     pages_added: tuple[str, ...]
+    pages_changed: tuple[str, ...]
     pages_removed: tuple[str, ...]
+    safety_changed: dict[str, tuple[str, ...]]
+    #: Lines for a changed safety flag, naming the flip; filled by `diff_models`.
+    safety_lines: tuple[str, ...] = ()
 
     @property
     def empty(self) -> bool:
@@ -77,10 +87,13 @@ class ModelDiff:
             self.controls_added
             or self.controls_changed
             or self.controls_removed
+            or self.flows_changed
             or self.hosts_added
             or self.hosts_removed
             or self.pages_added
+            or self.pages_changed
             or self.pages_removed
+            or self.safety_changed
         )
 
     def lines(self) -> list[str]:
@@ -91,6 +104,9 @@ class ModelDiff:
         out += [f"host removed: {host}" for host in self.hosts_removed]
         out += [f"page added: {page}" for page in self.pages_added]
         out += [f"page removed: {page}" for page in self.pages_removed]
+        out += [f"page changed: {page}" for page in self.pages_changed]
+        out += [f"flow changed: {name}" for name in self.flows_changed]
+        out += list(self.safety_lines)
         for label, changes in (
             ("added", self.controls_added),
             ("changed", self.controls_changed),
@@ -123,29 +139,59 @@ def check_page(page: Page, observed: Sequence[ControlObservation]) -> PageCheck:
 
 
 def diff_models(old: SiteModel, new: SiteModel) -> ModelDiff:
-    """What changed from `old` to `new`: hosts, pages, and controls on the pages both have."""
+    """What changed from `old` to `new`: hosts, pages, flows, and the controls on shared pages."""
     old_pages = {page.page_id: page for page in old.pages}
     new_pages = {page.page_id: page for page in new.pages}
     added: dict[str, tuple[str, ...]] = {}
     changed: dict[str, tuple[str, ...]] = {}
     removed: dict[str, tuple[str, ...]] = {}
-    for page_id in old_pages.keys() & new_pages.keys():
-        before = {c.name: c for c in old_pages[page_id].controls}
-        after = {c.name: c for c in new_pages[page_id].controls}
+    flipped: dict[str, tuple[str, ...]] = {}
+    flip_lines: list[str] = []
+    page_changes: list[str] = []
+    for page_id in sorted(old_pages.keys() & new_pages.keys()):
+        before_page, after_page = old_pages[page_id], new_pages[page_id]
+        if (
+            before_page.url_template != after_page.url_template
+            or before_page.fingerprint != after_page.fingerprint
+        ):
+            page_changes.append(page_id)
+        before = {c.name: c for c in before_page.controls}
+        after = {c.name: c for c in after_page.controls}
         if names := tuple(sorted(after.keys() - before.keys())):
             added[page_id] = names
         if names := tuple(sorted(before.keys() - after.keys())):
             removed[page_id] = names
-        if names := tuple(sorted(n for n in before.keys() & after.keys() if before[n] != after[n])):
+        both = sorted(before.keys() & after.keys())
+        if names := tuple(n for n in both if before[n] != after[n]):
             changed[page_id] = names
+        if names := tuple(n for n in both if before[n].safety != after[n].safety):
+            flipped[page_id] = names
+            flip_lines += [
+                f"control now {after[n].safety.value} on {page_id}: {n} "
+                f"(was {before[n].safety.value})"
+                for n in names
+            ]
+    old_flows = {flow.name: flow for flow in old.flows}
+    new_flows = {flow.name: flow for flow in new.flows}
+    flow_changes = tuple(
+        sorted(
+            name
+            for name in old_flows.keys() | new_flows.keys()
+            if old_flows.get(name) != new_flows.get(name)
+        )
+    )
     return ModelDiff(
         controls_added=added,
         controls_changed=changed,
         controls_removed=removed,
+        flows_changed=flow_changes,
         hosts_added=tuple(sorted(set(new.hosts) - set(old.hosts))),
         hosts_removed=tuple(sorted(set(old.hosts) - set(new.hosts))),
         pages_added=tuple(sorted(new_pages.keys() - old_pages.keys())),
+        pages_changed=tuple(page_changes),
         pages_removed=tuple(sorted(old_pages.keys() - new_pages.keys())),
+        safety_changed=flipped,
+        safety_lines=tuple(flip_lines),
     )
 
 
@@ -154,10 +200,31 @@ def worst(grades: Iterable[Grade]) -> Grade:
     return max(grades, key=_RANK.__getitem__, default=Grade.COMPATIBLE)
 
 
+_ALIASES = {
+    "combobox": ("listbox",),
+    "listbox": ("combobox",),
+    "searchbox": ("textbox",),
+    "textbox": ("searchbox",),
+}
 _FIELD_ROLES = frozenset(
-    {"checkbox", "combobox", "listbox", "radio", "searchbox", "spinbutton", "switch", "textbox"}
+    {
+        "checkbox",
+        "combobox",
+        "listbox",
+        "menuitemcheckbox",
+        "menuitemradio",
+        "radio",
+        "searchbox",
+        "slider",
+        "spinbutton",
+        "switch",
+        "textbox",
+    }
 )
-_LABELLED_ROLES = frozenset({"combobox", "listbox", "searchbox", "spinbutton", "textbox"})
+#: Navigation-like controls whose names are often data (mail subjects, row links).
+_SOFT_ROLES = frozenset({"link", "menuitem", "tab"})
+#: Fewer recorded landmarks than this say too little to judge a page by their share.
+_MIN_LANDMARKS = 3
 _RANK = {Grade.COMPATIBLE: 0, Grade.DEGRADED: 1, Grade.INCOMPATIBLE: 2}
 #: A page whose recorded landmarks are mostly gone is no longer the recorded page.
 _SAME_PAGE = 0.5
@@ -166,33 +233,34 @@ _UNCHANGED = 0.8
 
 
 def _appearance_findings(page: Page, observed: Sequence[ControlObservation]) -> list[Finding]:
-    recorded = set(page.fingerprint)
-    if not recorded:
+    if not observed:
+        return [
+            _looks_different(
+                page, "nothing was found on the page; is it loaded?", Grade.INCOMPATIBLE
+            )
+        ]
+    recorded = {_canonical(mark) for mark in page.fingerprint if not mark.startswith("link:")}
+    if len(recorded) < _MIN_LANDMARKS:
         return []
-    share = len(recorded & landmark_marks(observed)) / len(recorded)
+    live = {_canonical(mark) for mark in landmark_marks(observed) if not mark.startswith("link:")}
+    share = len(recorded & live) / len(recorded)
     if share < _SAME_PAGE:
         return [
-            Finding(
-                control=None,
-                grade=Grade.INCOMPATIBLE,
-                kind=FindingKind.LOOKS_DIFFERENT,
-                note=(
-                    f"Only {share:.0%} of the recorded landmarks of {page.page_id} are on the "
-                    "page; it may be another page or not loaded, so check the address and "
-                    "re-explore it"
-                ),
+            _looks_different(
+                page,
+                f"Only {share:.0%} of the recorded landmarks of {page.page_id} are on the "
+                "page; it may be another page or not loaded, so check the address and "
+                "re-explore it",
+                Grade.INCOMPATIBLE,
             )
         ]
     if share < _UNCHANGED:
         return [
-            Finding(
-                control=None,
-                grade=Grade.DEGRADED,
-                kind=FindingKind.LOOKS_DIFFERENT,
-                note=(
-                    f"{share:.0%} of the recorded landmarks of {page.page_id} are still on the "
-                    "page; review the model and re-explore it if it matters"
-                ),
+            _looks_different(
+                page,
+                f"{share:.0%} of the recorded landmarks of {page.page_id} are still on the "
+                "page; review the model and re-explore it if it matters",
+                Grade.DEGRADED,
             )
         ]
     return []
@@ -213,16 +281,9 @@ def _control_findings(control: Control, live: set[tuple[str, str]]) -> list[Find
                 ),
             )
         ]
-    if not any(verifiable):
-        return [
-            Finding(
-                control=control.name,
-                grade=Grade.INCOMPATIBLE,
-                kind=FindingKind.MISSING,
-                note=f"{control.name} is no longer on the page; re-explore this page",
-            )
-        ]
-    if not verifiable[0]:
+    if verifiable[0] == "found":
+        return []
+    if any(v in ("found", "alias") for v in verifiable):
         return [
             Finding(
                 control=control.name,
@@ -234,22 +295,45 @@ def _control_findings(control: Control, live: set[tuple[str, str]]) -> list[Find
                 ),
             )
         ]
-    return []
+    soft = _role_of(control) in _SOFT_ROLES
+    return [
+        Finding(
+            control=control.name,
+            grade=Grade.DEGRADED if soft else Grade.INCOMPATIBLE,
+            kind=FindingKind.MISSING,
+            note=(
+                f"{control.name} is no longer on the page; "
+                + ("links and menu items are often data, so this may be harmless; " if soft else "")
+                + "re-explore this page"
+            ),
+        )
+    ]
 
 
 def _locator_verdict(
     strategy: LocatorStrategy, value: str, live: set[tuple[str, str]]
-) -> bool | None:
-    """Whether a locator finds its control on the live page; None when a snapshot cannot say."""
+) -> str | None:
+    """`found`, `alias` (a role the page treats alike), `absent`, or None when unverifiable."""
     if strategy is LocatorStrategy.ROLE_NAME:
         role, _, name = value.partition(":")
-        return (role, name) in live
+        if (role, name) in live:
+            return "found"
+        if any((alias, name) in live for alias in _ALIASES.get(role, ())):
+            return "alias"
+        return "absent"
     if strategy is LocatorStrategy.LABEL:
-        return any(role in _LABELLED_ROLES and name == value for role, name in live)
+        found = any(role in LABELLED_ROLES and name == value for role, name in live)
+        return "found" if found else "absent"
     return None
 
 
+def _looks_different(page: Page, note: str, grade: Grade) -> Finding:
+    return Finding(control=None, grade=grade, kind=FindingKind.LOOKS_DIFFERENT, note=note)
+
+
 def _new_field_findings(page: Page, observed: Sequence[ControlObservation]) -> list[Finding]:
+    if len(page.controls) >= MAX_DRAFT_CONTROLS:
+        return []  # the model was cut off at the cap, so what it lacks is not necessarily new
     known_role_names: set[tuple[str, str]] = set()
     known_labels: set[str] = set()
     for control in page.controls:
@@ -265,7 +349,7 @@ def _new_field_findings(page: Page, observed: Sequence[ControlObservation]) -> l
         if item.role in _FIELD_ROLES
         and is_storable_label(item.name)
         and (item.role, item.name) not in known_role_names
-        and not (item.role in _LABELLED_ROLES and item.name in known_labels)
+        and not (item.role in LABELLED_ROLES and item.name in known_labels)
     ]
     if not fresh:
         return []
@@ -278,3 +362,18 @@ def _new_field_findings(page: Page, observed: Sequence[ControlObservation]) -> l
             note=f"New field(s) not in the model: {shown}; one may be required, so re-explore",
         )
     ]
+
+
+def _role_of(control: Control) -> str:
+    """The ARIA role a control was recorded with (from its role-and-name locator)."""
+    for locator in control.locators:
+        if locator.strategy is LocatorStrategy.ROLE_NAME:
+            return locator.value.partition(":")[0]
+    return ""
+
+
+def _canonical(mark: str) -> str:
+    """A `role:name` mark with alias roles folded together (search box and text box alike)."""
+    role, sep, name = mark.partition(":")
+    folded = {"combobox": "listbox", "searchbox": "textbox"}.get(role, role)
+    return f"{folded}{sep}{name}"
