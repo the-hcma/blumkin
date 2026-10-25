@@ -318,7 +318,7 @@ class _Raw:
     """A stand-in for the raw browser driver."""
 
     def __init__(self, info: Any = None) -> None:
-            self.info = info or ControlInfo(tag="a", input_type="", in_form=False)
+        self.info = info or ControlInfo(tag="a", input_type="", in_form=False)
         self.url = "https://erp.example.com/expenses"
         self.net = 0
         self.clicked: list[tuple[str, str]] = []
