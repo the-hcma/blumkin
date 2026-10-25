@@ -141,3 +141,57 @@ def test_the_exit_codes_in_the_guide_match_the_ones_the_commands_use() -> None:
         row = re.search(rf"\| `{slug}` \| (\d) \|", _text("docs/browser-tasks.md"))
         assert row, slug
         assert row.group(1) == expected[name], (slug, row.group(1), name)
+
+
+def _flat(relative: str) -> str:
+    return " ".join(_text(relative).split())
+
+
+def test_the_guide_states_the_limits_of_the_guard_plainly() -> None:
+    guide = _flat("docs/browser-tasks.md")
+    assert "submitted by a GET request" in guide
+    assert "A declared control that is not on the deny list is clicked" in guide
+    assert "detective, not preventive" in guide
+    assert "`goto` is not limited" in guide
+    assert "no POST through" not in guide
+
+
+def test_the_guide_describes_the_deny_rules_as_the_code_applies_them() -> None:
+    guide = _flat("docs/browser-tasks.md")
+    assert "an inline handler whose text mentions submit" in guide
+    assert "any word in its name that starts with a finalizing word" in guide
+    assert "even when it is listed in `allowed_controls`" in guide
+    assert "Shift+Tab" in guide
+    assert "every modifier combination" not in guide
+
+
+def test_the_guide_lists_every_config_rule_the_loader_enforces() -> None:
+    guide = _flat("docs/browser-tasks.md")
+    assert "never `/`, the whole home directory or a path that climbs out of it" in guide
+    assert "needs a dot after the star" in guide
+    assert "public suffixes such as `co.uk` are not checked" in guide
+    assert "`~user` paths are refused" in guide
+    assert "a hard link is refused" in guide
+
+
+def test_the_guide_narrows_what_is_checked_before_the_browser_is_touched() -> None:
+    guide = _flat("docs/browser-tasks.md")
+    assert "checks the file and the folder before the browser is touched" in guide
+    assert "checks the page host once attached" in guide
+
+
+def test_the_guide_documents_click_roles_and_the_ambiguous_errors() -> None:
+    guide = _flat("docs/browser-tasks.md")
+    assert "`--role link`" in guide
+    assert "the task's browser is running or a launch for it is in progress" in guide
+    assert "a file or folder the command named is missing" in guide
+
+
+def test_the_security_page_and_agent_guide_do_not_overclaim() -> None:
+    security = _flat("docs/SECURITY-AT-A-GLANCE.md")
+    assert "A refused action never reaches the page" not in security
+    assert "a GET request" in security
+    assert "inline handlers whose text mentions submit" in security
+    agent = _flat("docs/agent-integration.md")
+    assert "nothing is sent; stop and hand over" not in agent
+    assert "stop and hand over" in agent

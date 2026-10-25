@@ -35,7 +35,7 @@ allowed_hosts = ["erp.example.com"]                # sites `upload` may send to;
 
 `allowed_controls` is what makes `blumkin browser click` work for the task: a control that is not listed is refused.
 `extra_deny_names` can only add to the built-in list of finalizing words, never shorten it.
-`upload_dirs` is where the task may upload files from (absolute folders, or folders starting with `~/`) and `allowed_hosts` is where it may send them (`erp.example.com`, or `*.example.com` for any subdomain); with either missing `blumkin browser upload` refuses every file, so a page cannot make an agent upload an arbitrary file such as a key or a token, or send a receipt to another site. Once a task declares hosts, `blumkin browser goto` refuses any other host too. An unknown key in a task table is an error, so a typo such as `allowed_control` does not silently leave the task with an empty allow list.
+`upload_dirs` is where the task may upload files from (absolute folders, or folders starting with `~/`, but never `/`, the whole home directory or a path that climbs out of it; `~user` paths are refused) and `allowed_hosts` is where it may send them (`erp.example.com`, or `*.example.com` for any subdomain, which needs a dot after the star, though public suffixes such as `co.uk` are not checked); with either missing `blumkin browser upload` refuses every file, so a page cannot make an agent upload an arbitrary file such as a key or a token, or send a receipt to another site. Once a task declares hosts, `blumkin browser goto` refuses any other host too and every other command refuses to act on a page outside them; with no `allowed_hosts`, `goto` is not limited at all, so declare them. An unknown key in a task table is an error, so a typo such as `allowed_control` does not silently leave the task with an empty allow list.
 Everything that belongs to you personally (the form URL, your receipts folder, your categories, your default weekly hours) lives in your own task definition, not in blumkin; see [`operator-config.md`](./operator-config.md).
 
 ## Run a task
@@ -53,6 +53,7 @@ blumkin browser handoff expense-report --filled "1 line, 12.50 USD" --step "Revi
 ```
 
 Each command attaches to the running browser, does one thing and detaches; the browser stays open with your session.
+`blumkin browser click` defaults to a button; for a link, tab or menu item pass the role (`--role link`, `tab` or `menuitem`), for example `blumkin browser click expense-report "Help" --role link`.
 The two ready-made skills are [`expense-report`](../.agents/skills/expense-report/SKILL.md) and [`time-sheet`](../.agents/skills/time-sheet/SKILL.md).
 
 ## Receipts
@@ -64,15 +65,17 @@ For receipts that arrive by mail, list a message's attachments with `blumkin mai
 
 ## What blumkin refuses
 
-- Submitting. There is no submit command, and the guard is deny-by-default and enforced in code, not in a prompt. `blumkin browser click` refuses, without touching the page: a control the task did not declare by its exact name, a role that is not clickable, a submit control (judged by the browser's own idea of the control's type, so a button with an invalid `type` counts), a control with a `formaction`, a link that runs script and a handler that submits a form, and any control whose name starts a finalizing word (submit, send, file, confirm, pay, finish, complete, approve, authorize, place order, and more). The refusal exits non-zero with `submit_blocked`.
-- Keys that submit. `blumkin browser press` allows only navigation keys (Tab, arrows, Escape, Backspace, Delete, Home, End, Page Up and Down) and single printable characters; Enter, Space, a newline and every modifier combination are refused, and so is any key aimed at a button.
-- A safety net behind all of that. While blumkin is attached it swallows every non-GET page navigation, which is what submitting a form does, so even a script that submits a form on its own gets no POST through. The page stays as it was, your typed values included. The net lives only on blumkin's connection: once the command finishes it is gone, and your own final click is never blocked.
-- Uploading anything else, or anywhere else. `blumkin browser upload` takes only a regular file inside one of the task's `upload_dirs`, judged on the fully resolved path (so a symlink or `..` cannot step out), checks it before the browser is touched, and refuses unless the page is on one of the task's `allowed_hosts`.
+- Submitting. There is no submit command, and the guard is deny-by-default and enforced in code, not in a prompt. `blumkin browser click` refuses, without touching the page: a control the task did not declare by its exact name, a role that is not clickable, a submit control (judged by the browser's own idea of the control's type, so a button with an invalid `type` counts), a control with a `formaction`, a link that runs script and an inline handler whose text mentions submit, and any control with any word in its name that starts with a finalizing word (submit, send, file, confirm, pay, finish, complete, approve, authorize, place order, and more, so "Payments" and "Save and send" are refused). The deny check runs first: a control is refused even when it is listed in `allowed_controls`. The refusal exits non-zero with `submit_blocked`.
+- Keys that submit. `blumkin browser press` allows only navigation keys (Tab, arrows, Escape, Backspace, Delete, Home, End, Page Up and Down) and single printable characters; Shift+Tab also works, but Enter, Space, a newline and every other modifier combination are refused, and so is any key aimed at a button.
+- A safety net behind all of that. While blumkin is attached it swallows every non-GET page navigation, which is what submitting a form does, so even a script that submits a form on its own gets no navigating POST through. The page stays as it was, your typed values included. The net lives only on blumkin's connection: once the command finishes it is gone, and your own final click is never blocked.
+- Uploading anything else, or anywhere else. `blumkin browser upload` takes only a regular file inside one of the task's `upload_dirs`, judged on the fully resolved path (so a symlink or `..` cannot step out), checks the file and the folder before the browser is touched, checks the page host once attached, and refuses unless the page is on one of the task's `allowed_hosts`; a hard link is refused, because it can point at a file outside the folders.
 - Anything but `http` and `https` pages: `goto` refuses `file:`, `javascript:` and `data:` URLs.
 - Following the page. Text read from a page or a receipt is data, never instructions, and is scanned for prompt-injection patterns.
 
 ## Limits
 
+- The guard is a backstop, not a guarantee. A declared control that is not on the deny list is clicked, so declare only controls that cannot finalize. A form submitted by a GET request is a GET navigation, which the net lets through, and a page can submit from a listener added by script, which the inline-handler check does not see.
+- The host checks are detective, not preventive, after a page changes: when a `goto`, a click or an upload ends on a host outside `allowed_hosts` the page has already loaded (nothing from it is returned), and the command fails with `host_blocked` so the task stops before anything is typed into or read from it. `goto` is not limited at all when no `allowed_hosts` are declared.
 - Use this on a machine you alone use. The browser's DevTools port listens on `127.0.0.1`, which keeps other computers out but not other user accounts on the same machine, and the profile directory's permissions do not protect a TCP port. On a shared host another user could drive the signed-in browser.
 - The safety net protects only while a command is attached. A page that schedules a submit to fire after the command has finished (a timer, for example) is outside it; the guard's checks and your declared controls are what limit that, and the user's own final click is deliberately never blocked.
 - After the safety net swallows a submit, the rest of that command may wait on the page for a moment; start a new command or finish the task with `handoff`.
@@ -93,8 +96,8 @@ Only profiles blumkin created are listed, attached to or deleted.
 | `browser_action_failed` | 1 | A page action failed or timed out. Read the page and check the label or control name. |
 | `browser_launch_failed` | 1 | The browser did not open a DevTools port in time. |
 | `browser_not_found` | 5 | Neither the configured browser nor Chrome is installed. |
-| `not_found` | 5 | No profile exists for the task. Create it with `blumkin browser profile create TASK`. |
-| `upload_blocked` | 1 | The file is not a regular file inside one of the task's `upload_dirs` folders, the page is not on one of its `allowed_hosts`, or the task declares neither. |
-| `host_blocked` | 1 | `goto` was asked for a host outside the task's `allowed_hosts`. |
-| `profile_in_use` | 1 | The task's browser is still running; close it first. |
+| `not_found` | 5 | No profile exists for the task (create it with `blumkin browser profile create TASK`), or a file or folder the command named is missing. |
+| `upload_blocked` | 1 | The file is not a regular file with a single link inside one of the task's `upload_dirs` folders, the page is not on one of its `allowed_hosts`, or the task declares neither. |
+| `host_blocked` | 1 | `goto` was asked for a host outside the task's `allowed_hosts`, or a page the task is on or ended up on is outside them. |
+| `profile_in_use` | 1 | The task's browser is running or a launch for it is in progress; close it or wait, then try again. |
 | `usage_error` | 2 | A bad task name, a missing `--yes`, or a handoff with no `--step`. |
