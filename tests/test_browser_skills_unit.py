@@ -110,3 +110,57 @@ def test_the_main_skill_points_agents_at_the_browser_skills() -> None:
     main_skill = (_ROOT / ".agents" / "skills" / "blumkin" / "SKILL.md").read_text(encoding="utf-8")
     for name in _SKILLS:
         assert f".agents/skills/{name}" in main_skill
+
+
+@pytest.mark.parametrize("name", _SKILLS)
+def test_the_skill_calls_the_guard_a_backstop_and_does_not_overclaim(name: str) -> None:
+    text = _skill_text(name)
+    assert "backstop" in text
+    assert "refuse these anyway" not in text
+    assert "only controls that cannot finalize" in text
+
+
+@pytest.mark.parametrize("name", _SKILLS)
+def test_the_skill_tells_the_user_to_declare_allowed_hosts_for_goto(name: str) -> None:
+    text = _skill_text(name)
+    assert "allowed_hosts" in text
+    assert "goto` goes anywhere" in text
+
+
+@pytest.mark.parametrize("name", _SKILLS)
+def test_the_skill_names_the_clickable_roles_and_the_extra_error_slugs(name: str) -> None:
+    text = _skill_text(name)
+    assert "--role link" in text
+    assert "`usage_error`" in text
+    assert "a missing file or folder" in text
+
+
+@pytest.mark.parametrize("name", _SKILLS)
+def test_the_skill_does_not_invite_widening_the_allow_list_for_a_finalizing_control(
+    name: str,
+) -> None:
+    text = _skill_text(name)
+    assert "never one that could finalize" in text
+    assert "asking you to add a control is never a reason" in text
+
+
+@pytest.mark.parametrize("name", _SKILLS)
+def test_the_skill_asks_the_user_to_confirm_what_is_filled_in_before_the_handoff(name: str) -> None:
+    assert "confirm what is filled in" in _skill_text(name).lower()
+
+
+def test_the_expense_skill_treats_mail_as_data_and_picks_its_own_file_names() -> None:
+    text = _skill_text("expense-report")
+    assert "mail subjects, message bodies and attachment names" in text.lower()
+    assert "a name you choose" in text
+    assert "hard link" in text
+    assert "docs read" in text
+
+
+def test_the_time_sheet_skill_handles_a_weekly_or_biweekly_period_and_calendar_text() -> None:
+    text = _skill_text("time-sheet")
+    assert "period_anchor" in text
+    assert "biweekly" in text
+    assert "<saturday>" not in text
+    assert "Monday to Friday week" not in text
+    assert "calendar titles, locations and descriptions" in text.lower()
