@@ -11,6 +11,7 @@ from blumkin.loop.config import LoopSetup
 from blumkin.loop.handlers import HandlerMap
 from blumkin.loop.journal import list_runs, recent_by_trigger
 from blumkin.loop.kill_switch import is_engaged, kill_switch_path
+from blumkin.loop.queue import drain_queue
 from blumkin.loop.runner import RunResult, run_trigger
 from blumkin.loop.state import is_paused, list_paused, pause_trigger, resume_trigger
 from blumkin.loop.types import TriggerSpec
@@ -102,9 +103,9 @@ def run_foreground(
 ) -> dict[str, Any]:
     """Foreground runner process for the systemd user service.
 
-    Until cron (#502) and mail (#503) feed the queue, this loop only honors the
-    kill switch and stays alive so `run-once` and later feeders share one process
-    model. It exits cleanly on SIGTERM/SIGINT or when `should_stop` becomes true.
+    Drains the work queue and dispatches each trigger through `run_trigger`.
+    Cron (#502) and mail (#503) feeders enqueue work; `run-once` still runs
+    inline for a manual dry run. Exits on SIGTERM/SIGINT or `should_stop`.
     """
     stop = {"flag": False}
 
@@ -114,18 +115,24 @@ def run_foreground(
     previous_term = signal.signal(signal.SIGTERM, _handle)
     previous_int = signal.signal(signal.SIGINT, _handle)
     ticks = 0
+    runs = 0
     try:
         while not stop["flag"] and not (should_stop is not None and should_stop()):
             ticks += 1
             if is_engaged(setup.config_dir, setup.loop):
                 sleep(poll_seconds)
                 continue
-            # Placeholder for queue drain; feeders land in #502/#503.
+            for name in drain_queue(setup.config_dir):
+                if stop["flag"] or is_engaged(setup.config_dir, setup.loop):
+                    break
+                result = run_trigger(setup, name, handlers=handlers, honor_pause=True)
+                if not result.skipped:
+                    runs += 1
             sleep(poll_seconds)
     finally:
         signal.signal(signal.SIGTERM, previous_term)
         signal.signal(signal.SIGINT, previous_int)
-    return {"ok": True, "ticks": ticks, "stopped": True}
+    return {"ok": True, "ticks": ticks, "runs": runs, "stopped": True}
 
 
 # Re-export for tests that patch run_trigger through commands.

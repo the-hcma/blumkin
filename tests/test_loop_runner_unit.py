@@ -22,6 +22,23 @@ def _setup(tmp_path: Path, **loop_extra: object) -> LoopSetup:
     return parse_loop_setup(tmp_path, {"loop": table})
 
 
+def test_foreground_drains_queue(tmp_path: Path) -> None:
+    from blumkin.loop.commands import run_foreground
+    from blumkin.loop.queue import enqueue
+
+    setup = _setup(tmp_path)
+    enqueue(tmp_path, "probe-trigger")
+    stop_after = {"n": 0}
+
+    def should_stop() -> bool:
+        stop_after["n"] += 1
+        return stop_after["n"] > 1
+
+    payload = run_foreground(setup, poll_seconds=0, sleep=lambda _s: None, should_stop=should_stop)
+    assert payload["runs"] == 1
+    assert list_runs(tmp_path)[0].outcome is RunOutcome.DONE
+
+
 def test_run_once_probe_journals_done(tmp_path: Path) -> None:
     setup = _setup(tmp_path)
     result = run_trigger(setup, "probe-trigger")
@@ -149,7 +166,7 @@ def test_run_budget_exhausted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
     def fail_and_advance(trigger: TriggerSpec) -> HandlerResult:
         calls["n"] += 1
-        clock["t"] += 0.6
+        clock["t"] += 0.5
         return HandlerResult(outcome=RunOutcome.FAILED, reason="again")
 
     register_handler(handlers, "probe", fail_and_advance)
@@ -160,5 +177,5 @@ def test_run_budget_exhausted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     result = run_trigger(setup, "t", handlers=handlers, sleep=sleep)
     assert result.record is not None
     assert result.record.outcome is RunOutcome.FAILED
-    assert result.record.reason in {"run budget exhausted", "again"}
-    assert calls["n"] >= 1
+    assert result.record.reason == "run budget exhausted"
+    assert calls["n"] == 1

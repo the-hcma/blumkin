@@ -17,7 +17,8 @@ def is_engaged(config_dir: Path, loop: LoopConfig) -> bool:
     try:
         return path.is_file() and not path.is_symlink()
     except OSError:
-        return False
+        # Fail closed: an unreadable kill path must stop runs, not allow them.
+        return True
 
 
 def kill_switch_path(config_dir: Path, loop: LoopConfig) -> Path:
