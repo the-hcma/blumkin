@@ -269,13 +269,9 @@ brew install tesseract poppler
 
 ## Browser-assisted tasks
 
-For chores with no API, such as filing an expense report or filling in a time sheet, blumkin drives a browser **you** sign in to.
-You create a dedicated profile (`blumkin browser profile create expense-report`), launch it (`blumkin browser launch expense-report`) and sign in by hand; blumkin never sees your credentials.
-An agent then fills in the form and uploads your receipts over the Chrome DevTools Protocol (Playwright), and **stops before submitting**: the task ends by telling you what to review and which button to press.
+For chores with no API, such as filing an expense report or filling in a time sheet, blumkin drives a browser **you** sign in to. You create a dedicated profile (`blumkin browser profile create expense-report`), launch it (`blumkin browser launch expense-report`) and sign in by hand; blumkin never sees your credentials. An agent then fills in the form and uploads your receipts over the Chrome DevTools Protocol (Playwright), and **stops before submitting**: the task ends by telling you what to review and which button to press.
 
-Chrome, Edge and Chromium are supported; set `[browser] default = "edge"` in `config.toml` (Chrome is used when it is unset or not installed), and declare what each task may click under `[browser.tasks.<task>]`.
-The ready-made skills are `expense-report` and `time-sheet`.
-Setup, the command list, the receipt tools and what blumkin refuses are in [`docs/browser-tasks.md`](./docs/browser-tasks.md), and the threat model is in [`docs/SECURITY-AT-A-GLANCE.md`](./docs/SECURITY-AT-A-GLANCE.md).
+Chrome, Edge and Chromium are supported; set `[browser] default = "edge"` in `config.toml` (Chrome is used when it is unset or not installed), and declare what each task may click under `[browser.tasks.<task>]`. The ready-made skills are `expense-report` and `time-sheet`. Setup, the command list, the receipt tools and what blumkin refuses are in [`docs/browser-tasks.md`](./docs/browser-tasks.md), and the threat model is in [`docs/SECURITY-AT-A-GLANCE.md`](./docs/SECURITY-AT-A-GLANCE.md).
 
 ## Tests
 

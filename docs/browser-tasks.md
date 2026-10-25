@@ -1,8 +1,6 @@
 # Browser-assisted tasks
 
-Some chores have no API: filing an expense report, filling in a weekly time sheet.
-blumkin handles them by driving a browser **you** sign in to, filling in the form for you and then stopping.
-A browser task **never submits**: it ends by telling you exactly what to review and which button to press.
+Some chores have no API: filing an expense report, filling in a weekly time sheet. blumkin handles them by driving a browser **you** sign in to, filling in the form for you and then stopping. A browser task **never submits**: it ends by telling you exactly what to review and which button to press.
 
 ## How it works
 
@@ -33,10 +31,7 @@ upload_dirs = ["~/Documents/receipts"]             # folders `upload` may read f
 allowed_hosts = ["erp.example.com"]                # sites `upload` may send to; also limits `goto`
 ```
 
-`allowed_controls` is what makes `blumkin browser click` work for the task: a control that is not listed is refused.
-`extra_deny_names` can only add to the built-in list of finalizing words, never shorten it.
-`upload_dirs` is where the task may upload files from (absolute folders, or folders starting with `~/`, but never `/`, the whole home directory or a path that climbs out of it; `~user` paths are refused) and `allowed_hosts` is where it may send them (`erp.example.com`, or `*.example.com` for any subdomain, which needs a dot after the star, though public suffixes such as `co.uk` are not checked); with either missing `blumkin browser upload` refuses every file, so a page cannot make an agent upload an arbitrary file such as a key or a token, or send a receipt to another site. Once a task declares hosts, `blumkin browser goto` refuses any other host too and every other command refuses to act on a page outside them; with no `allowed_hosts`, `goto` is not limited at all, so declare them. An unknown key in a task table is an error, so a typo such as `allowed_control` does not silently leave the task with an empty allow list.
-Everything that belongs to you personally (the form URL, your receipts folder, your categories, your default weekly hours) lives in your own task definition, not in blumkin; see [`operator-config.md`](./operator-config.md).
+`allowed_controls` is what makes `blumkin browser click` work for the task: a control that is not listed is refused. `extra_deny_names` can only add to the built-in list of finalizing words, never shorten it. `upload_dirs` is where the task may upload files from (absolute folders, or folders starting with `~/`, but never `/`, the whole home directory or a path that climbs out of it; `~user` paths are refused) and `allowed_hosts` is where it may send them (`erp.example.com`, or `*.example.com` for any subdomain, which needs a dot after the star, though public suffixes such as `co.uk` are not checked); with either missing `blumkin browser upload` refuses every file, so a page cannot make an agent upload an arbitrary file such as a key or a token, or send a receipt to another site. Once a task declares hosts, `blumkin browser goto` refuses any other host too and every other command refuses to act on a page outside them; with no `allowed_hosts`, `goto` is not limited at all, so declare them. An unknown key in a task table is an error, so a typo such as `allowed_control` does not silently leave the task with an empty allow list. Everything that belongs to you personally (the form URL, your receipts folder, your categories, your default weekly hours) lives in your own task definition, not in blumkin; see [`operator-config.md`](./operator-config.md).
 
 ## Run a task
 
@@ -52,16 +47,11 @@ blumkin browser click expense-report "Add line"
 blumkin browser handoff expense-report --filled "1 line, 12.50 USD" --step "Review the line and the total." --step "Press Submit at the bottom right."
 ```
 
-Each command attaches to the running browser, does one thing and detaches; the browser stays open with your session.
-`blumkin browser click` defaults to a button; for a link, tab or menu item pass the role (`--role link`, `tab` or `menuitem`), for example `blumkin browser click expense-report "Help" --role link`.
-The two ready-made skills are [`expense-report`](../.agents/skills/expense-report/SKILL.md) and [`time-sheet`](../.agents/skills/time-sheet/SKILL.md).
+Each command attaches to the running browser, does one thing and detaches; the browser stays open with your session. `blumkin browser click` defaults to a button; for a link, tab or menu item pass the role (`--role link`, `tab` or `menuitem`), for example `blumkin browser click expense-report "Help" --role link`. The two ready-made skills are [`expense-report`](../.agents/skills/expense-report/SKILL.md) and [`time-sheet`](../.agents/skills/time-sheet/SKILL.md).
 
 ## Receipts
 
-`blumkin receipts find --dir ~/Documents/receipts --json` lists the images and PDFs in a folder, newest first.
-`blumkin receipts read ~/Documents/receipts/taxi.jpg --json` reads one with the existing OCR and reports vendor, date, total and currency, each with a confidence (`high`, `low` or `none`), so the task asks you about anything doubtful instead of guessing.
-OCR needs the `ocr` extra (`uv tool install -e '.[pdf,ocr]'`) plus `tesseract` and `poppler`; without it the result says `needs_manual` and the task asks you for the amounts.
-For receipts that arrive by mail, list a message's attachments with `blumkin mail attachments --id <message-id> --json` and save the ones you want with `blumkin mail attachments download`.
+`blumkin receipts find --dir ~/Documents/receipts --json` lists the images and PDFs in a folder, newest first. `blumkin receipts read ~/Documents/receipts/taxi.jpg --json` reads one with the existing OCR and reports vendor, date, total and currency, each with a confidence (`high`, `low` or `none`), so the task asks you about anything doubtful instead of guessing. OCR needs the `ocr` extra (`uv tool install -e '.[pdf,ocr]'`) plus `tesseract` and `poppler`; without it the result says `needs_manual` and the task asks you for the amounts. For receipts that arrive by mail, list a message's attachments with `blumkin mail attachments --id <message-id> --json` and save the ones you want with `blumkin mail attachments download`.
 
 ## What blumkin refuses
 
@@ -83,9 +73,7 @@ For receipts that arrive by mail, list a message's attachments with `blumkin mai
 
 ## Housekeeping
 
-`blumkin browser status` shows each task profile, whether its browser is running and the loopback DevTools endpoint.
-`blumkin browser profile list` lists the profiles, and `blumkin browser profile delete expense-report --yes` removes one, saved sign-in and cookies included; it refuses while that task's browser is still open.
-Only profiles blumkin created are listed, attached to or deleted.
+`blumkin browser status` shows each task profile, whether its browser is running and the loopback DevTools endpoint. `blumkin browser profile list` lists the profiles, and `blumkin browser profile delete expense-report --yes` removes one, saved sign-in and cookies included; it refuses while that task's browser is still open. Only profiles blumkin created are listed, attached to or deleted.
 
 ## Errors
 
