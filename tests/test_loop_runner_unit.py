@@ -64,7 +64,7 @@ def test_foreground_requeues_undispatched_on_kill(tmp_path: Path) -> None:
         kill = tmp_path / "loop" / "KILL"
         kill.parent.mkdir(mode=0o700, exist_ok=True)
         kill.write_text("stop\n", encoding="utf-8")
-        return HandlerResult(outcome=RunOutcome.DONE)
+        return HandlerResult(outcome=RunOutcome.DONE, reason="")
 
     register_handler(handlers, "probe", engage_kill)
     stop_after = {"n": 0}
