@@ -559,7 +559,7 @@ def _loop_fail(exc: BaseException, *, as_json: bool) -> NoReturn:
     """Map a loop-command failure onto the standard error envelope and exit code."""
     if isinstance(exc, LoopTriggerNotFoundError):
         slug, code = "not_found", EXIT_NOT_FOUND
-    elif isinstance(exc, (LoopConfigError, LoopServiceError, ProviderConfigError)):
+    elif isinstance(exc, (LoopConfigError, LoopServiceError, OSError, ProviderConfigError)):
         slug, code = "usage_error", EXIT_USAGE
     else:
         _fail(exc, as_json=as_json)
@@ -2435,7 +2435,7 @@ def loop_install_service(ctx: click.Context, blumkin_path: Path | None, as_json_
     as_json = _as_json(ctx, as_json_flag)
     try:
         path = install_user_unit(blumkin_path=str(blumkin_path) if blumkin_path else None)
-    except LoopServiceError as exc:
+    except (LoopServiceError, OSError) as exc:
         _loop_fail(exc, as_json=as_json)
     payload = {"ok": True, "unit": str(path), "unit_name": path.name}
     if as_json:

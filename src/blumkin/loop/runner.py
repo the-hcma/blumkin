@@ -121,8 +121,8 @@ def _execute(
             )
         try:
             last = handler(trigger)
-        except Exception as exc:  # noqa: BLE001 - bounded retry; journal the failure
-            last = HandlerResult(outcome=RunOutcome.FAILED, reason=f"handler raised: {exc}")
+        except Exception:  # noqa: BLE001 - bounded retry; journal the failure (no exc text)
+            last = HandlerResult(outcome=RunOutcome.FAILED, reason="handler raised")
         if last.outcome is not RunOutcome.FAILED:
             return append_run(
                 setup.config_dir,

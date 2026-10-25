@@ -112,6 +112,21 @@ def test_needs_user_does_not_retry(tmp_path: Path) -> None:
     assert result.record.outcome is RunOutcome.NEEDS_USER
 
 
+def test_handler_exception_journals_fixed_reason(tmp_path: Path) -> None:
+    setup = _setup(tmp_path, max_retries=0)
+    handlers: dict = {}
+
+    def boom(trigger: TriggerSpec) -> HandlerResult:
+        raise RuntimeError("secret receipt amount 12.34")
+
+    register_handler(handlers, "probe", boom)
+    result = run_trigger(setup, "probe-trigger", handlers=handlers, sleep=lambda _s: None)
+    assert result.record is not None
+    assert result.record.outcome is RunOutcome.FAILED
+    assert result.record.reason == "handler raised"
+    assert "12.34" not in result.record.reason
+
+
 def test_run_budget_exhausted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     setup = LoopSetup(
         config_dir=tmp_path,

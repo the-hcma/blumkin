@@ -122,5 +122,14 @@ def test_loop_install_service_writes_unit(
     payload = _json(result)
     assert payload["unit_name"] == UNIT_NAME
     text = Path(payload["unit"]).read_text(encoding="utf-8")
-    assert f"ExecStart={blumkin_bin} loop run" in text
+    assert f"ExecStart={blumkin_bin.resolve()} loop run" in text or (
+        f'ExecStart="{blumkin_bin.resolve()}" loop run' in text
+    )
     assert "BLUMKIN_NONINTERACTIVE=1" in text
+
+
+def test_unit_text_quotes_paths_with_spaces() -> None:
+    from blumkin.loop.service import unit_text
+
+    text = unit_text("/opt/my tools/blumkin")
+    assert 'ExecStart="/opt/my tools/blumkin" loop run' in text

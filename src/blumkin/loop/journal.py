@@ -3,7 +3,9 @@
 Stored at ``<config dir>/loop/journal.jsonl``. Each line is one run: trigger, task,
 instance, outcome and ids only — never message bodies, amounts or file contents.
 Writes use an exclusive lock, one write and an fsync so a crash leaves at most a
-torn last line (ignored by readers).
+torn last line (ignored by readers). When the file nears ``_MAX_JOURNAL_BYTES``,
+``append_run`` compacts it to the newest run per trigger so ``loop status`` stays
+readable.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from typing import Any
 from blumkin.browser.profiles import BrowserProfileError, ensure_private_dir
 from blumkin.loop.types import RunOutcome, RunRecord, TriggerKind
 
+_COMPACT_AT_BYTES = 24 * 1024 * 1024
 _JOURNAL_FILENAME = "journal.jsonl"
 _LOCK_FILENAME = "journal.lock"
 _MAX_JOURNAL_BYTES = 32 * 1024 * 1024
@@ -69,6 +72,7 @@ def append_run(
             },
             at=record.at,
         )
+        _maybe_compact(journal)
     return record
 
 
@@ -78,8 +82,11 @@ def list_runs(config_dir: Path, *, limit: int | None = None) -> list[RunRecord]:
     journal = directory / _JOURNAL_FILENAME
     if not journal.is_file() or journal.is_symlink():
         return []
-    with _reading(directory):
-        records = _read_records(journal)
+    with _writing(directory) as path:
+        # Exclusive: compact an oversized journal left by an older build, then read.
+        if path.is_file() and path.stat().st_size > _COMPACT_AT_BYTES:
+            _maybe_compact(path)
+        records = _read_records(path, allow_oversize=False)
     if limit is not None and limit >= 0:
         records = records[-limit:]
     return records
@@ -118,6 +125,25 @@ def _ensure_loop_dir(config_dir: Path) -> Path:
         raise LoopJournalError(str(exc)) from exc
 
 
+def _maybe_compact(journal: Path) -> None:
+    """Rewrite to the newest run per trigger when the file is large. Lock held."""
+    if not journal.is_file():
+        return
+    size = journal.stat().st_size
+    if size < _COMPACT_AT_BYTES:
+        return
+    records = _read_records(journal, allow_oversize=True)
+    latest: dict[str, RunRecord] = {}
+    for record in records:
+        latest[record.trigger] = record
+    kept = sorted(latest.values(), key=lambda r: (r.at, r.run_id))
+    _rewrite(journal, kept)
+
+
+def _no_constants(name: str) -> Any:
+    raise ValueError(f"unexpected constant {name}")
+
+
 def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -137,18 +163,6 @@ def _parse_record(entry: dict[str, Any]) -> RunRecord:
     )
 
 
-@contextlib.contextmanager
-def _reading(directory: Path) -> Iterator[None]:
-    lock_path = directory / _LOCK_FILENAME
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_SH)
-        yield
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
-
-
 def _read_fd(fd: int) -> bytes:
     chunks: list[bytes] = []
     offset = 0
@@ -161,13 +175,14 @@ def _read_fd(fd: int) -> bytes:
     return b"".join(chunks)
 
 
-def _read_records(journal: Path) -> list[RunRecord]:
+def _read_records(journal: Path, *, allow_oversize: bool) -> list[RunRecord]:
     try:
         fd = os.open(journal, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
         return []
     try:
-        if os.fstat(fd).st_size > _MAX_JOURNAL_BYTES:
+        size = os.fstat(fd).st_size
+        if size > _MAX_JOURNAL_BYTES and not allow_oversize:
             raise LoopJournalError(
                 f"Expected a run journal of at most {_MAX_JOURNAL_BYTES} bytes, got more"
             )
@@ -192,8 +207,38 @@ def _read_records(journal: Path) -> list[RunRecord]:
     return records
 
 
-def _no_constants(name: str) -> Any:
-    raise ValueError(f"unexpected constant {name}")
+def _rewrite(journal: Path, records: list[RunRecord]) -> None:
+    """Replace the journal with `records` (re-sequenced). Lock held."""
+    tmp = journal.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        for seq, record in enumerate(records, start=1):
+            line = (
+                json.dumps(
+                    {
+                        "at": record.at,
+                        "event": "run",
+                        "instance": record.instance,
+                        "outcome": record.outcome.value,
+                        "reason": record.reason,
+                        "run_id": record.run_id,
+                        "seq": seq,
+                        "task": record.task,
+                        "trigger": record.trigger,
+                        "trigger_kind": record.trigger_kind.value,
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            payload = line.encode("utf-8")
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(fd, view) :]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, journal)
 
 
 @contextlib.contextmanager

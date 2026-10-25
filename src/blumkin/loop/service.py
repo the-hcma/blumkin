@@ -20,6 +20,7 @@ def install_user_unit(*, blumkin_path: str | None = None, unit_dir: Path | None 
         raise LoopServiceError(
             "Expected blumkin on PATH (or pass --blumkin-path) to install the loop service"
         )
+    executable = os.path.abspath(executable)
     target_dir = unit_dir or _default_unit_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / UNIT_NAME
@@ -30,6 +31,7 @@ def install_user_unit(*, blumkin_path: str | None = None, unit_dir: Path | None 
 
 def unit_text(blumkin_path: str) -> str:
     """Contents of the systemd user unit."""
+    quoted = _quote_exec(blumkin_path)
     return (
         "[Unit]\n"
         "Description=blumkin loop and cron runner (unattended browser tasks)\n"
@@ -38,7 +40,7 @@ def unit_text(blumkin_path: str) -> str:
         "\n"
         "[Service]\n"
         "Type=simple\n"
-        f"ExecStart={blumkin_path} loop run\n"
+        f"ExecStart={quoted} loop run\n"
         "Restart=on-failure\n"
         "RestartSec=10\n"
         "# Unattended: never wait on a TTY prompt.\n"
@@ -53,3 +55,11 @@ def _default_unit_dir() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "systemd" / "user"
+
+
+def _quote_exec(path: str) -> str:
+    """Quote an ExecStart executable so spaces stay one argument."""
+    if any(ch in path for ch in ' \t"\\'):
+        escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return path

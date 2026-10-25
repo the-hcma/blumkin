@@ -1008,7 +1008,7 @@ def _profile_tables(
         stray = sorted(
             key
             for key in file_data
-            if key not in {"browser", "default_profile", "preferences", "profiles"}
+            if key not in {"browser", "cron", "default_profile", "loop", "preferences", "profiles"}
         )
         if stray:
             shown = ", ".join(stray)
