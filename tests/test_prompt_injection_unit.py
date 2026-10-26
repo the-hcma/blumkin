@@ -230,7 +230,12 @@ def test_scan_result_to_payload_can_omit_snippets_for_file_output() -> None:
 
     assert payload is not None
     assert payload["matched"] is True
-    assert "snippet" not in payload["findings"][0]
+    findings = payload["findings"]
+    assert isinstance(findings, list)
+    assert findings
+    first = findings[0]
+    assert isinstance(first, dict)
+    assert "snippet" not in first
 
 
 def test_scan_finds_multiple_families_in_one_text() -> None:
