@@ -410,7 +410,9 @@ Examples:
   blumkin browser ledger discard timesheet 2026-p21 --yes
 
 Closes the instance as discarded. The journal is kept; nothing on the real form is touched.
-Needs `--yes`. A submitted instance cannot be discarded.
+Receipts previously rehomed into the managed folder are restored to their original paths
+(or the managed copy is removed when it was an email attachment copy). Needs `--yes`. A
+submitted instance cannot be discarded.
 """
 
 BROWSER_LEDGER_EPILOG = """
@@ -1984,12 +1986,15 @@ Examples:
 \b
   blumkin receipts find --dir ~/Documents/receipts --since 2026-10-01 --json
   blumkin receipts read ~/Documents/receipts/taxi.jpg --json
+  blumkin receipts rehome ~/Downloads/scan.jpg --task expense-report --instance trip-lisbon \\
+    --date 2026-10-20 --vendor "Taxi Co" --total 18.50 --currency USD --json
 
-Receipt intake for expense tasks (issue #469): `find` lists the image and PDF files
-in a directory, newest first; `read` runs the file through `docs read` (images are
-always OCR'd, PDFs only when they have no text layer) and reports vendor, date,
-total and currency, each with a confidence, so a task asks you about anything
-doubtful instead of guessing. Receipt contents stay on this machine.
+Receipt intake for expense tasks (issues #469, #491): `find` lists the image and PDF
+files in a directory, newest first; `read` runs the file through `docs read` (images are
+always OCR'd, PDFs only when they have no text layer) and reports vendor, date, total and
+currency, each with a confidence, so a task asks you about anything doubtful instead of
+guessing; `rehome` moves a confirmed receipt into the managed instance folder under a
+canonical name. Receipt contents stay on this machine.
 """
 
 RECEIPTS_FIND_EPILOG = """
@@ -2024,6 +2029,25 @@ several dates or currencies, and a `$` alone all come back `low` or without a va
 a note saying why; the vendor is always `low`. Ask the user about anything that is not
 `high`. When OCR is unavailable the result has `status: needs_manual` and says how to
 install the `ocr` extra; ask the user for the amounts.
+"""
+
+RECEIPTS_REHOME_EPILOG = """
+Examples:
+
+\b
+  blumkin receipts rehome ~/Downloads/scan.jpg --task expense-report --instance trip-lisbon \\
+    --date 2026-10-20 --vendor "Taxi Co" --total 18.50 --currency USD
+  blumkin receipts rehome ~/Downloads/mail-att.pdf --task expense-report --instance trip-lisbon \\
+    --date 2026-10-21 --vendor Hotel --total 210.00 --currency EUR \\
+    --message-id AAMkAG... --json
+
+Moves (or copies, with `--message-id`) a confirmed receipt into the managed per-instance
+folder under the task's first `upload_dirs` entry, named
+`YYYY-MM-DD_vendor_amount-CURRENCY_hash8.ext`. Pass only values the user has confirmed.
+An intent-then-result journal under the browser-task instance records the move so a crash
+is recoverable and `browser ledger discard --yes` can restore originals. A duplicate
+SHA-256 is treated as already filed. Email attachments are copied, not moved, and the
+message id is stored with the journal entry (issue #491).
 """
 
 SKILLS_DESCRIBE_EPILOG = """
