@@ -96,6 +96,12 @@ from blumkin.browser.model_commands import (
     model_versions,
 )
 from blumkin.browser.profiles import BrowserProfileError, ProfileBusyError, ProfileInUseError
+from blumkin.browser.receipt_rehome import (
+    AlreadyFiledError,
+    RehomeError,
+    UnconfirmedError,
+    rehome_receipt,
+)
 from blumkin.capabilities import capability_summary
 from blumkin.config import (
     BlumkinConfig,
@@ -145,6 +151,9 @@ from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
 from blumkin.receipts import (
     DEFAULT_FIND_LIMIT,
+    Confidence,
+    ReceiptField,
+    ReceiptFields,
     ReceiptsDirError,
     find_local_receipts,
     read_receipt,
@@ -3108,10 +3117,12 @@ def loop_status(ctx: click.Context, as_json_flag: bool) -> None:
 
 @main.group(epilog=help_text.RECEIPTS_EPILOG)
 def receipts() -> None:
-    """Find and read receipts for expense tasks (images and PDFs).
+    """Find, read and rehome receipts for expense tasks (images and PDFs).
 
     `find` lists receipt files in a directory; `read` OCRs one and reports vendor,
-    date, total and currency with a confidence for each (issue #469).
+    date, total and currency with a confidence for each (issue #469); `rehome` moves
+    a confirmed receipt into the managed instance folder under a canonical name
+    (issue #491).
     """
 
 
@@ -3217,6 +3228,80 @@ def receipts_read(ctx: click.Context, path: Path, as_json_flag: bool) -> None:
         lines.append(_clean_line(reading.message))
     lines.extend(format_injection_warning_banner(reading.injection_warning))
     emit_lines(lines)
+
+
+@receipts.command("rehome", epilog=help_text.RECEIPTS_REHOME_EPILOG)
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option("--task", required=True, help="Browser task that owns the expense instance.")
+@click.option("--instance", required=True, help="Instance key (trip id, report id).")
+@click.option("--date", "receipt_date", required=True, help="Confirmed receipt date YYYY-MM-DD.")
+@click.option("--vendor", required=True, help="Confirmed vendor name.")
+@click.option("--total", required=True, help="Confirmed total amount (e.g. 12.50).")
+@click.option("--currency", required=True, help="Confirmed ISO currency code (e.g. USD).")
+@click.option(
+    "--message-id",
+    default=None,
+    help="Mail message id when the file came from an attachment (copy, do not move).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def receipts_rehome(
+    ctx: click.Context,
+    path: Path,
+    task: str,
+    instance: str,
+    receipt_date: str,
+    vendor: str,
+    total: str,
+    currency: str,
+    message_id: str | None,
+    as_json_flag: bool,
+) -> None:
+    """Move or copy a confirmed receipt into the managed instance folder."""
+    as_json = _as_json(ctx, as_json_flag)
+    config = _load_config()
+    policy = config.browser.tasks.get(task)
+    if policy is None:
+        _emit_error(
+            error="not_found",
+            message=f"Expected a browser task named {task!r} in config.toml, got none",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_NOT_FOUND)
+    fields = ReceiptFields(
+        currency=ReceiptField(confidence=Confidence.HIGH, value=currency.strip().upper()),
+        date=ReceiptField(confidence=Confidence.HIGH, value=receipt_date.strip()),
+        total=ReceiptField(confidence=Confidence.HIGH, value=total.strip()),
+        vendor=ReceiptField(confidence=Confidence.HIGH, value=vendor.strip()),
+    )
+    try:
+        result = rehome_receipt(
+            config.config_dir,
+            task,
+            instance,
+            path,
+            fields=fields,
+            upload_dirs=policy.upload_dirs,
+            message_id=message_id,
+        )
+    except AlreadyFiledError as exc:
+        _emit_error(error="conflict", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    except UnconfirmedError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except (RehomeError, LedgerError, LedgerNotFoundError) as exc:
+        error = "not_found" if isinstance(exc, LedgerNotFoundError) else "usage_error"
+        code = EXIT_NOT_FOUND if isinstance(exc, LedgerNotFoundError) else EXIT_USAGE
+        _emit_error(error=error, message=str(exc), as_json=as_json)
+        raise SystemExit(code) from exc
+    payload = result.as_dict() | {"ok": True}
+    if as_json:
+        emit_json(payload)
+        return
+    action = "copied" if result.copied else "moved"
+    src = sanitize_terminal(str(result.source))
+    emit_lines([f"{action} {src} -> {sanitize_terminal(result.name)}"])
 
 
 @main.group(epilog=help_text.PROFILES_EPILOG)

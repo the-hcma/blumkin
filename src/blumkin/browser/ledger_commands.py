@@ -31,6 +31,7 @@ from blumkin.browser.ledger_ops import (
     stage_item,
     verify_item,
 )
+from blumkin.browser.receipt_rehome import RehomeError, restore_rehomed
 from blumkin.config import BrowserSetup
 
 
@@ -67,9 +68,15 @@ def ledger_begin(
 
 
 def ledger_discard(config: BrowserSetup, task: str, instance: str, *, yes: bool) -> dict[str, Any]:
-    """Close the instance as discarded (the journal is kept)."""
+    """Close the instance as discarded (the journal is kept; rehomed receipts are restored)."""
     _require_yes(yes, task, instance, "discard", "the journal is kept")
-    return _payload(discard_instance(config.config_dir, task, instance))
+    try:
+        restored = restore_rehomed(config.config_dir, task, instance, yes=True)
+    except RehomeError as exc:
+        raise LedgerError(str(exc)) from exc
+    payload = _payload(discard_instance(config.config_dir, task, instance))
+    payload["receipts_restored"] = [row.as_dict() for row in restored]
+    return payload
 
 
 def ledger_handoff(
