@@ -273,6 +273,10 @@ For chores with no API, such as filing an expense report or filling in a time sh
 
 Chrome, Edge and Chromium are supported; set `[browser] default = "edge"` in `config.toml` (Chrome is used when it is unset or not installed), and declare what each task may click under `[browser.tasks.<task>]`. The ready-made skills are `expense-report` and `time-sheet`. Setup, the command list, the receipt tools and what blumkin refuses are in [`docs/browser-tasks.md`](./docs/browser-tasks.md), and the threat model is in [`docs/SECURITY-AT-A-GLANCE.md`](./docs/SECURITY-AT-A-GLANCE.md).
 
+## Loop and cron (unattended)
+
+For recurring catch-up (mail receipts into an expense instance, end-of-day time sheet), configure `[loop.triggers.*]` and `[cron.*]` and run `blumkin loop` as a systemd user service (or `blumkin loop run` in the foreground). The runner polls allowlisted mailboxes, drains a local queue, fires due cron entries, journals outcomes, and can mail short notices when a run needs you. It does not explore sites or submit forms. Operator guide: [`docs/loop.md`](./docs/loop.md).
+
 ## Tests
 
 ```bash
@@ -300,6 +304,7 @@ blumkin acts as **you** over delegated OAuth — no server, no shared secret, no
 - [`RETROSPECTIVE-M1.md`](./RETROSPECTIVE-M1.md) — M1 ship retrospective (#11)  
 - [`docs/agent-integration.md`](./docs/agent-integration.md) — using blumkin from Cursor / Pi / Copilot CLI, and the frozen `skills list --json` contract  
 - [`docs/browser-tasks.md`](./docs/browser-tasks.md) - browser-assisted tasks: setup, commands, receipts, what is refused  
+- [`docs/loop.md`](./docs/loop.md) — unattended loop / cron runner: config, systemd, notices, kill switch  
 - [`docs/operator-config.md`](./docs/operator-config.md) — optional `~/.config/blumkin/*.md` operator-context files (`email-context.md`)  
 - [`docs/RELEASING.md`](./docs/RELEASING.md) — release flow, PyPI trusted publishing, rollback  
 - [`docs/google-setup.md`](./docs/google-setup.md) — Google Cloud Desktop OAuth + blumkin Google profile  
