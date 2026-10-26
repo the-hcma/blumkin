@@ -391,6 +391,88 @@ it again while the browser is open reports `already_running` and changes nothing
 Uses `[browser] default` from config.toml, falling back to Chrome.
 """
 
+BROWSER_LEDGER_BEGIN_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger begin timesheet 2026-p21 --expect day=10
+  blumkin browser ledger begin expense-report trip-lisbon
+
+Starts the ledger for one instance of a task: this pay period's time sheet, that trip's
+expense report. `--expect KIND=COUNT` (repeatable; kinds are day and receipt) says how many
+items to expect, so status can read "3 of 10 days filed".
+"""
+
+BROWSER_LEDGER_DISCARD_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger discard timesheet 2026-p21 --yes
+
+Closes the instance as discarded. The journal is kept; nothing on the real form is touched.
+Needs `--yes`. A submitted instance cannot be discarded.
+"""
+
+BROWSER_LEDGER_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger begin timesheet 2026-p21 --expect day=10
+  blumkin browser ledger record timesheet 2026-p21 day 2026-10-19 staged
+  blumkin browser ledger status timesheet 2026-p21
+  blumkin browser ledger submitted timesheet 2026-p21 --yes
+
+The ledger remembers what has been filed for one instance of a task, so a restarted session
+knows what is already in the form. Each item goes staged, filled, then verified (read back
+from the page) or failed. It holds identifiers, states, model versions and file hashes only,
+never a value from the form. blumkin has no submit command: `submitted` records that you did.
+"""
+
+BROWSER_LEDGER_LIST_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger list timesheet
+  blumkin browser ledger list timesheet --json
+
+Lists the task's instances and whether each is open, submitted or discarded.
+"""
+
+BROWSER_LEDGER_RECORD_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger record timesheet 2026-p21 day 2026-10-19 staged
+  blumkin browser ledger record timesheet 2026-p21 day 2026-10-19 filled --model-version 3
+  blumkin browser ledger record expense-report trip-lisbon receipt r1 staged --sha256 HEX
+
+Moves one item to a new state: staged, then filled, then verified or failed (a failed item
+can be staged again). A receipt needs the SHA-256 of its file when it is first staged. The
+item id is a short word such as a date; do not put amounts, vendors or paths in it.
+"""
+
+BROWSER_LEDGER_STATUS_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger status timesheet 2026-p21
+  blumkin browser ledger status timesheet 2026-p21 --json
+
+Shows where the instance stands, for example "3 of 10 days filed, 4 receipts filed, not
+submitted", with every item and its state.
+"""
+
+BROWSER_LEDGER_SUBMITTED_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger submitted timesheet 2026-p21 --yes
+
+Records that you submitted the real form. Nothing else records it, and blumkin has no
+submit command. Needs `--yes`; say yes only if you pressed the button yourself. A closed
+instance accepts no more items.
+"""
+
 BROWSER_PRESS_EPILOG = """
 Examples:
 
