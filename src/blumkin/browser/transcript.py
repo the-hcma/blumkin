@@ -187,7 +187,7 @@ def parse_chunk(text: str) -> list[Entry]:
     entries: list[Entry] = []
     index = 0
     while index < len(lines):
-        header = _HEADER.match(lines[index])
+        header = _HEADER.fullmatch(lines[index])
         bare = _BARE_DURATION.fullmatch(lines[index]) is not None
         index += 1
         if header is None or bare:

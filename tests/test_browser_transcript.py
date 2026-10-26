@@ -158,6 +158,17 @@ Done.
     assert BRADEN in entries[0].text
 
 
+def test_parse_chunk_skips_continuation_speech_that_only_starts_like_a_header() -> None:
+    pane = f"""
+it took 2 minutes 5 seconds to run
+{HENRIQUE} 0 minutes 8 seconds
+Done.
+"""
+    entries = parse_chunk(pane)
+
+    assert entries == [Entry(HENRIQUE, 8, "Done.")]
+
+
 def test_parse_chunk_keeps_duration_shaped_speech_inside_the_active_entry() -> None:
     pane = f"""
 {HENRIQUE}
