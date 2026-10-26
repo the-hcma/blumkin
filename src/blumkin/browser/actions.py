@@ -16,13 +16,20 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from blumkin.browser.cdp import BrowserActionError, checked_http_url
+from blumkin.browser.cdp import (
+    DEFAULT_FRAME_WAIT_S,
+    DEFAULT_SCROLL_MAX_STEPS,
+    BrowserActionError,
+    checked_http_url,
+)
 from blumkin.browser.commands import TaskNotFoundError
 from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError, attach_guarded
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.profiles import load_profile
+from blumkin.browser.transcript import assess, format_text, has_stop_marker, merge_chunks
 from blumkin.config import BrowserSetup
 from blumkin.output import sanitize_terminal
+from blumkin.prompt_injection import scan_for_injection
 
 
 class HostBlockedError(BrowserActionError):
@@ -148,6 +155,62 @@ def read_task(config: BrowserSetup, task: str) -> dict[str, Any]:
     return _with_driver(config, task, act)
 
 
+def transcript_task(
+    config: BrowserSetup,
+    task: str,
+    *,
+    duration_s: int | None,
+    out: Path | None,
+    wait_s: float = DEFAULT_FRAME_WAIT_S,
+) -> dict[str, Any]:
+    """Capture the transcript pane of the task's page, scrolling it end to end.
+
+    The pane is read from a child frame on one of the task's `allowed_hosts` (required: a
+    page cannot point the capture at a host the task did not declare). The result carries a
+    coverage report; `out`, when given, receives the transcript as a new private file and
+    is never overwritten.
+    """
+    declared = config.browser.tasks.get(task)
+    hosts = declared.allowed_hosts if declared else ()
+    if not hosts:
+        raise HostBlockedError(
+            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
+            "capturing a transcript, got none"
+        )
+    target = _checked_output(out) if out is not None else None
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        capture = driver.scroll_frame_text(
+            lambda host: host_allowed(host, hosts),
+            max_steps=DEFAULT_SCROLL_MAX_STEPS,
+            wait_s=wait_s,
+        )
+        entries = merge_chunks(capture.chunks)
+        text = format_text(entries)
+        report = assess(
+            entries,
+            duration_s=duration_s,
+            reached_end=capture.reached_end,
+            reached_top=capture.reached_top,
+            transcription_stopped=has_stop_marker(capture.chunks),
+        )
+        if target is not None:
+            _write_private(target, text + "\n")
+        return {
+            "action": "transcript",
+            "coverage": report.to_payload(),
+            "injection_warning": scan_for_injection(text, location="transcript.text").to_payload(),
+            "ok": True,
+            "out": str(target) if target is not None else None,
+            "scroll_steps": capture.steps,
+            "task": task,
+            "text": None if target is not None else text,
+            "untrusted": UNTRUSTED_NOTE,
+        }
+
+    return _with_driver(config, task, act)
+
+
 def upload_task(config: BrowserSetup, task: str, label: str, path: Path) -> dict[str, Any]:
     """Attach an existing file to the file field labelled `label`.
 
@@ -198,6 +261,18 @@ def upload_task(config: BrowserSetup, task: str, label: str, path: Path) -> dict
         return {"action": "upload", "file": resolved.name, "label": label, "ok": True, "task": task}
 
     return _with_driver(config, task, act, check_after=True, check_before=False)
+
+
+def _checked_output(out: Path) -> Path:
+    """The absolute path of a file that does not exist yet, in a folder that does."""
+    target = _expand_home(os.fspath(out)).resolve()
+    if target.exists():
+        raise BrowserActionError(f"Expected a new file for the transcript, got {str(out)!r}")
+    if not target.parent.is_dir():
+        raise BrowserActionError(
+            f"Expected an existing folder for the transcript, got {str(target.parent)!r}"
+        )
+    return target
 
 
 def _expand_home(text: str) -> Path:
@@ -271,3 +346,10 @@ def _with_driver(
         return result
     finally:
         driver.close()
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Create `path` exclusively with mode 0600 and write `text` to it."""
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)

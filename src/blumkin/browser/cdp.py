@@ -62,6 +62,10 @@ class BrowserDriver(Protocol):
 
     def read_text(self) -> PageText: ...
 
+    def scroll_frame_text(
+        self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
+    ) -> FrameCapture: ...
+
     def title(self) -> str: ...
 
     def upload(self, label: str, path: Path) -> None: ...
@@ -92,6 +96,25 @@ class ControlInfo:
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
+
+
+DEFAULT_FRAME_WAIT_S = 30.0
+
+
+DEFAULT_SCROLL_MAX_STEPS = 400
+
+
+@dataclass(frozen=True, slots=True)
+class FrameCapture:
+    """Every chunk of text a scrolled frame showed, top to bottom, and how far the scroll got."""
+
+    chunks: tuple[str, ...]
+    #: The scrolled pane was back at its first row when the capture began.
+    reached_top: bool
+    #: The scroll ended at the last row, not at the step limit.
+    reached_end: bool
+    steps: int
+    url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +279,53 @@ class PlaywrightDriver:
             raise self._action_error("restrict navigation to the allowed hosts", exc) from exc
         self._navigation_handler = handler
 
+    def scroll_frame_text(
+        self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
+    ) -> FrameCapture:
+        """Scroll the biggest scrollable pane of an allowed child frame, collecting its text.
+
+        Virtualized lists keep only the rows near the viewport in the page, so one read sees
+        a fraction of them. This waits up to `wait_s` for a child frame whose host
+        `is_allowed` accepts, scrolls its largest scrollable element from the top in
+        viewport-sized steps and records the frame's text at each one. Read-only: the pane
+        is scrolled, nothing is clicked or typed.
+        """
+        self._require_open()
+        deadline = time.monotonic() + wait_s
+        frame = None
+        while frame is None:
+            frame = self._ready_frame(is_allowed)
+            if frame is not None:
+                break
+            if time.monotonic() >= deadline:
+                raise BrowserActionError(
+                    f"Expected a child frame on an allowed host with text within {wait_s:g}s, "
+                    "got none (is the pane open and its host in allowed_hosts?)"
+                )
+            self._page.wait_for_timeout(500)
+        try:
+            frame.evaluate(_SCROLL_PREPARE_JS)
+            chunks: list[str] = []
+            reached_top = bool(frame.evaluate(_SCROLL_TO_TOP_JS))
+            steps = 0
+            reached_end = False
+            while steps < max_steps:
+                self._page.wait_for_timeout(_SCROLL_SETTLE_MS)
+                chunks.append(str(frame.evaluate("document.body.innerText")))
+                steps += 1
+                if frame.evaluate(_SCROLL_STEP_JS):
+                    reached_end = True
+                    break
+            return FrameCapture(
+                chunks=tuple(chunks),
+                reached_end=reached_end,
+                reached_top=reached_top,
+                steps=steps,
+                url=frame.url,
+            )
+        except PlaywrightError as exc:
+            raise self._action_error("scroll the frame", exc) from exc
+
     def settle(self, previous_url: str, timeout_s: float = 5.0) -> None:
         """Wait for a navigation the last action started: the URL moving on, then the load.
 
@@ -314,6 +384,19 @@ class PlaywrightDriver:
             f"{str(exc).splitlines()[0] if str(exc) else type(exc).__name__}"
         )
 
+    def _ready_frame(self, is_allowed: Callable[[str], bool]) -> Any | None:
+        """The first child frame on an allowed host that already has text, else None."""
+        for frame in self._page.frames:
+            if frame == self._page.main_frame:
+                continue
+            host = urlsplit(frame.url).hostname or ""
+            if not host or not is_allowed(host):
+                continue
+            with contextlib.suppress(PlaywrightError):
+                if int(frame.evaluate("document.body ? document.body.innerText.length : 0")) > 0:
+                    return frame
+        return None
+
     def _require_open(self) -> None:
         if self._closed:
             raise BrowserActionError("Expected an attached browser, got a closed driver")
@@ -337,6 +420,10 @@ class RawBrowserDriver(Protocol):
     def raw_press(self, label: str, key: str) -> None: ...
 
     def read_text(self) -> PageText: ...
+
+    def scroll_frame_text(
+        self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
+    ) -> FrameCapture: ...
 
     def title(self) -> str: ...
 
@@ -451,6 +538,32 @@ def open_driver(
         with contextlib.suppress(PlaywrightError):
             playwright.stop()
         raise
+
+
+_SCROLL_PREPARE_JS = (
+    "() => { const els = [...document.querySelectorAll('*')].filter(e => "
+    "e.scrollHeight > e.clientHeight + 50 && "
+    "['auto', 'scroll'].includes(getComputedStyle(e).overflowY)); "
+    "els.sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)); "
+    "window.__blumkinScroller = els[0] || null; }"
+)
+
+
+_SCROLL_SETTLE_MS = 250
+
+
+_SCROLL_STEP_JS = (
+    "() => { const e = window.__blumkinScroller; if (!e) return true; "
+    "if (e.scrollTop + e.clientHeight >= e.scrollHeight - 2) return true; "
+    "e.scrollTop = Math.min(e.scrollTop + Math.max(e.clientHeight * 0.7, 50), e.scrollHeight); "
+    "return false; }"
+)
+
+
+_SCROLL_TO_TOP_JS = (
+    "() => { const e = window.__blumkinScroller; if (!e) return true; "
+    "e.scrollTop = 0; return e.scrollTop === 0; }"
+)
 
 
 _DESCRIBE_CONTROL_JS = (

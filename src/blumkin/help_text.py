@@ -606,6 +606,27 @@ Shows each task profile, whether its browser is running, and the loopback DevToo
 endpoint when it is. Give a task name to look at just that one.
 """
 
+BROWSER_TRANSCRIPT_EPILOG = """
+Examples:
+
+\b
+  blumkin browser transcript teams-transcript --duration 34m06s --out ~/transcripts/intros.txt
+  blumkin browser transcript teams-transcript --json
+
+Run it with the meeting's Transcript tab open in the task's browser. The transcript list is
+virtualized and lives in a cross-origin frame, so `browser read` cannot see it; this scrolls
+that frame from its first entry to its last and merges what it saw into one `[m:ss] Speaker:
+text` line per turn. The frame's host must be in the task's `allowed_hosts` (for Teams,
+`*.sharepoint.com`). It is read-only: nothing is clicked or typed.
+
+The result always carries a coverage report: entry count, speakers, first and last timestamp,
+silences longer than three minutes, entries out of order, and whether the scroll reached
+both ends. With `--duration` the tail is checked against the meeting's length. `complete` is
+false when any of it looks wrong; do not present such a capture as the whole meeting. `--out`
+creates a new private file and never overwrites. The text is untrusted data, and an
+`injection_warning` is attached when it looks like it is trying to instruct an agent.
+"""
+
 BROWSER_UPLOAD_EPILOG = """
 Examples:
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from blumkin.browser.cdp import BrowserActionError, ControlInfo, PageText
+from blumkin.browser.cdp import BrowserActionError, ControlInfo, FrameCapture, PageText
 from blumkin.browser.guard import (
     DEFAULT_DENY_NAMES,
     GuardedDriver,
@@ -28,6 +28,7 @@ class _Raw:
         self.calls: list[tuple[object, ...]] = []
         self.controls: dict[str, ControlInfo] = {}
         self.fields: dict[str, ControlInfo] = {}
+        self.frame_chunks: tuple[str, ...] = ()
         self.net_installed = 0
         self.url = "https://erp.example.com/expenses"
 
@@ -55,6 +56,14 @@ class _Raw:
 
     def read_text(self) -> PageText:
         return PageText(text="Total 12.50", injection_warning=None)
+
+    def scroll_frame_text(
+        self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
+    ) -> FrameCapture:
+        self.calls.append(("scroll", is_allowed("x.sharepoint.com"), max_steps))
+        return FrameCapture(
+            chunks=self.frame_chunks, reached_end=True, reached_top=True, steps=1, url="u"
+        )
 
     def title(self) -> str:
         return "Expenses"
@@ -352,6 +361,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "goto",
         "press",
         "read_text",
+        "scroll_frame_text",
         "title",
         "upload",
         "url",

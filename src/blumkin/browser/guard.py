@@ -36,6 +36,7 @@ from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
     BrowserActionError,
     ControlInfo,
+    FrameCapture,
     PageText,
     RawBrowserDriver,
     attach,
@@ -116,6 +117,11 @@ class GuardedDriver:
 
     def read_text(self) -> PageText:
         return self._raw.read_text()
+
+    def scroll_frame_text(
+        self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
+    ) -> FrameCapture:
+        return self._raw.scroll_frame_text(is_allowed, max_steps=max_steps, wait_s=wait_s)
 
     def title(self) -> str:
         return self._raw.title()
