@@ -17,6 +17,7 @@ from blumkin.browser.ledger import (
     ItemState,
     LedgerError,
     LedgerStatus,
+    Phase,
     begin_instance,
     discard_instance,
     instance_status,
@@ -70,6 +71,9 @@ def ledger_begin(
 def ledger_discard(config: BrowserSetup, task: str, instance: str, *, yes: bool) -> dict[str, Any]:
     """Close the instance as discarded (the journal is kept; rehomed receipts are restored)."""
     _require_yes(yes, task, instance, "discard", "the journal is kept")
+    status = instance_status(config.config_dir, task, instance)
+    if status.phase is not Phase.OPEN:
+        raise LedgerError(f"Expected an open instance to discard, got a {status.phase.value} one")
     try:
         restored = restore_rehomed(config.config_dir, task, instance, yes=True)
     except RehomeError as exc:

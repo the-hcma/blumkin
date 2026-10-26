@@ -245,3 +245,49 @@ def test_canonical_name_rejects_bad_date() -> None:
             sha256="a" * 64,
             suffix=".jpg",
         )
+
+
+def test_interrupted_move_resumes_when_dest_already_matches(tmp_path: Path) -> None:
+    config, uploads, dirs = _setup(tmp_path)
+    source = tmp_path / "scan.jpg"
+    source.write_bytes(b"interrupted-bytes")
+    digest = file_sha256(source)
+    dest_dir = managed_instance_dir(dirs, "trip-lisbon")
+    dest_dir.mkdir(parents=True)
+    dest = dest_dir / (f"2026-10-20_taxi-co_18.50-USD_{digest[:8]}.jpg")
+    dest.write_bytes(b"interrupted-bytes")
+    journal = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "receipt-moves.jsonl"
+    journal.write_text(
+        json.dumps(
+            {
+                "at": "2026-10-20T12:00:00Z",
+                "copied": False,
+                "dest_name": dest.name,
+                "event": "intent",
+                "message_id": None,
+                "sha256": digest,
+                "source": str(source.resolve()),
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    result = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        source,
+        fields=_fields(),
+        upload_dirs=dirs,
+    )
+    assert not source.exists()
+    assert result.dest == dest.resolve()
+    assert result.sha256 == digest
+    lines = [json.loads(line) for line in journal.read_text().splitlines()]
+    assert lines[-1]["event"] == "result"
+
+
+def test_restore_rejects_a_path_like_instance_name(tmp_path: Path) -> None:
+    config, _uploads, _dirs = _setup(tmp_path)
+    with pytest.raises(RehomeError, match="instance name"):
+        restore_rehomed(config, "expense-report", "../escape", yes=True)

@@ -186,16 +186,40 @@ def rehome_receipt(
         suffix=src.suffix,
     )
     dest = dest_dir / name
-    if dest.exists() and (not dest.is_file() or file_sha256(dest) != digest):
-        # Same canonical stem, different file: keep uniqueness via the hash (already in name).
+    copy_only = message_id is not None
+    if dest.is_file() and not dest.is_symlink() and file_sha256(dest) == digest:
+        # Dest matches: either already filed (result journaled) or an interrupted move.
+        if digest in completed:
+            raise AlreadyFiledError(
+                f"Expected a new receipt, got sha256 {digest[:8]}… already at {dest.name}"
+            )
+        if not copy_only and src.is_file() and not src.is_symlink():
+            src.unlink()
+        _append_move(
+            config_dir,
+            task,
+            instance,
+            {
+                "event": "result",
+                "copied": copy_only,
+                "dest": str(dest.resolve()),
+                "message_id": message_id,
+                "sha256": digest,
+                "source": str(src.resolve()),
+            },
+        )
+        return RehomeResult(
+            dest=dest.resolve(),
+            name=name,
+            sha256=digest,
+            source=src.resolve(),
+            copied=copy_only,
+            message_id=message_id,
+        )
+    if dest.exists():
         raise RehomeError(
             f"Expected a free destination name {name!r} in the managed folder, got a different file"
         )
-    if dest.exists() and file_sha256(dest) == digest:
-        raise AlreadyFiledError(
-            f"Expected a new receipt, got sha256 {digest[:8]}… already at {dest.name}"
-        )
-    copy_only = message_id is not None
     _append_move(
         config_dir,
         task,
@@ -209,11 +233,7 @@ def rehome_receipt(
             "source": str(src.resolve()),
         },
     )
-    try:
-        _place(src, dest, digest=digest, copy_only=copy_only)
-    except Exception:
-        # Leave the intent line; a later restore or retry can finish or undo.
-        raise
+    _place(src, dest, digest=digest, copy_only=copy_only)
     _append_move(
         config_dir,
         task,
@@ -250,6 +270,11 @@ def restore_rehomed(
             f"Expected --yes to restore receipts for {instance!r} of task {task!r}, got none"
         )
     validate_task_name(task)
+    if not _INSTANCE.fullmatch(instance):
+        raise RehomeError(
+            "Expected an instance name of 1-64 lowercase letters, digits, '-' or '_' "
+            f"starting and ending with a letter or digit, got {instance!r}"
+        )
     moves = _read_moves(config_dir, task, instance)
     results: list[RestoreResult] = []
     seen: set[str] = set()
@@ -381,11 +406,14 @@ def _now() -> str:
 
 def _place(src: Path, dest: Path, *, digest: str, copy_only: bool) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # Always copy+verify first so a cross-filesystem move cannot leave a torn dest.
-    shutil.copy2(src, dest)
-    if file_sha256(dest) != digest:
-        dest.unlink(missing_ok=True)
+    # Copy to a temporary name, verify, then rename so a crash never leaves a torn dest.
+    tmp = dest.with_name(f".{dest.name}.part")
+    tmp.unlink(missing_ok=True)
+    shutil.copy2(src, tmp)
+    if file_sha256(tmp) != digest:
+        tmp.unlink(missing_ok=True)
         raise RehomeError("Expected the managed copy to match the source sha256, got a mismatch")
+    os.replace(tmp, dest)
     if not copy_only:
         src.unlink()
 
