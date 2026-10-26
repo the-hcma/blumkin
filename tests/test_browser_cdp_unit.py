@@ -906,6 +906,28 @@ def test_scroll_frame_text_errors_when_no_scroller_and_no_transcript_rows() -> N
         )
 
 
+class _DetachedScrollerFrame(_ScrollFrame):
+    def evaluate(self, script: str) -> object:
+        if script == _SCROLL_STEP_JS:
+            return None
+        return super().evaluate(script)
+
+
+def test_scroll_frame_text_errors_when_the_pane_detaches_mid_scroll() -> None:
+    pane = "Ann\n0 minutes 5 seconds\n0:05\nAnn 0 minutes 5 seconds\nHi\n"
+    pw = _Playwright(
+        _ScrollPage(
+            _DetachedScrollerFrame("https://tenant.sharepoint.com/x", pane, prepare="scroll")
+        )
+    )
+    _, driver = _driver(pw)
+
+    with pytest.raises(BrowserActionError, match="detached pane"):
+        driver.scroll_frame_text(
+            lambda host: host.endswith("sharepoint.com"), max_steps=5, wait_s=1.0
+        )
+
+
 def test_the_navigation_restriction_is_installed_once_and_released_on_detach() -> None:
     pw, driver = _driver()
     driver.restrict_navigation(lambda host: True)

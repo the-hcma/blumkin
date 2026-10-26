@@ -99,13 +99,13 @@ def test_assess_flags_a_missing_middle_a_short_tail_and_an_unfinished_scroll() -
     assert any("step limit" in problem for problem in report.problems)
 
 
-def test_assess_accepts_a_short_tail_once_teams_logged_that_transcription_stopped() -> None:
-    entries = [Entry("A", 24, "x"), Entry("A", 100, "y"), Entry("B", 1903, "z")]
+def test_assess_ignores_tail_after_teams_logged_that_transcription_stopped() -> None:
+    entries = [Entry("A", 24, "x"), Entry("A", 100, "y"), Entry("B", 400, "z")]
 
     report = assess(
         entries,
         duration_s=2046,
-        gap_threshold_s=2000,
+        gap_threshold_s=300,
         reached_end=True,
         reached_top=True,
         transcription_stopped=True,
@@ -156,6 +156,34 @@ Done.
 
     assert len(entries) == 2
     assert BRADEN in entries[0].text
+
+
+def test_parse_chunk_keeps_duration_shaped_speech_inside_the_active_entry() -> None:
+    pane = f"""
+{HENRIQUE}
+0 minutes 5 seconds
+0:05
+{HENRIQUE} 0 minutes 5 seconds
+Please wait.
+give it 30 seconds
+Then retry.
+1 minutes 4 seconds
+{BRADEN}
+0 minutes 40 seconds
+0:40
+{BRADEN} 0 minutes 40 seconds
+Okay.
+"""
+    entries = parse_chunk(pane)
+
+    assert entries == [
+        Entry(
+            HENRIQUE,
+            5,
+            "Please wait. give it 30 seconds Then retry. 1 minutes 4 seconds",
+        ),
+        Entry(BRADEN, 40, "Okay."),
+    ]
 
 
 def test_assess_still_flags_tail_when_only_an_earlier_stop_was_seen() -> None:

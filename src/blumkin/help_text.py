@@ -616,8 +616,9 @@ Examples:
 Run it with the meeting's Transcript tab open in the task's browser. The transcript list is
 virtualized and lives in a cross-origin frame, so `browser read` cannot see it; this scrolls
 that frame from its first entry to its last and merges what it saw into one `[m:ss] Speaker:
-text` line per turn. The frame's host must be in the task's `allowed_hosts` (for Teams,
-`*.sharepoint.com`). It is read-only: nothing is clicked or typed.
+text` line per turn. Both the top-level Teams page host and the frame's host must be in the
+task's `allowed_hosts` (for Teams, `teams.microsoft.com` and `*.sharepoint.com`). It is
+read-only: nothing is clicked or typed.
 
 The result always carries a coverage report: entry count, speakers, first and last timestamp,
 silences longer than three minutes, entries out of order, and whether the scroll reached

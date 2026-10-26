@@ -329,7 +329,13 @@ class PlaywrightDriver:
                 self._page.wait_for_timeout(_SCROLL_SETTLE_MS)
                 chunks.append(str(frame.evaluate("document.body.innerText")))
                 steps += 1
-                if frame.evaluate(_SCROLL_STEP_JS):
+                step = frame.evaluate(_SCROLL_STEP_JS)
+                if step is None:
+                    raise BrowserActionError(
+                        "Expected the transcript pane to stay in the page, got a missing or "
+                        "detached pane"
+                    )
+                if step:
                     reached_end = True
                     break
             return FrameCapture(
@@ -591,7 +597,7 @@ _SCROLL_SETTLE_MS = 250
 
 
 _SCROLL_STEP_JS = (
-    "() => { const e = window.__blumkinScroller; if (!e) return true; "
+    "() => { const e = window.__blumkinScroller; if (!e || !e.isConnected) return null; "
     "if (e.scrollTop + e.clientHeight >= e.scrollHeight - 2) return true; "
     "e.scrollTop = Math.min(e.scrollTop + Math.max(e.clientHeight * 0.7, 50), e.scrollHeight); "
     "return false; }"
@@ -599,7 +605,7 @@ _SCROLL_STEP_JS = (
 
 
 _SCROLL_TO_TOP_JS = (
-    "() => { const e = window.__blumkinScroller; if (!e) return true; "
+    "() => { const e = window.__blumkinScroller; if (!e || !e.isConnected) return false; "
     "e.scrollTop = 0; return e.scrollTop === 0; }"
 )
 

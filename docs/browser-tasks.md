@@ -91,13 +91,19 @@ blumkin has no submit command. `blumkin browser ledger submitted TASK INSTANCE -
 ```bash
 blumkin browser profile create teams-transcript
 blumkin browser launch teams-transcript
-blumkin browser goto teams-transcript https://erp.example.com/
+blumkin browser goto teams-transcript https://teams.microsoft.com/
 blumkin browser click teams-transcript Notes --role tab
 blumkin browser click teams-transcript Transcript --role tab
 blumkin browser transcript teams-transcript --duration 34m06s --out ~/work/meeting-transcripts/intros.txt
 ```
 
-`blumkin browser read` cannot do this: Teams serves the transcript from the organizer's OneDrive in a cross-origin iframe, and the list is virtualized, so at any moment only the rows near the viewport exist in the page (about 12 of 34 minutes in the meeting that shaped this command). `transcript` scrolls that frame from its first row to its last, merges the overlap and writes one `[m:ss] Speaker: text` line per turn. The task needs `allowed_hosts` that include the frame's host (`*.sharepoint.com`) and `allowed_controls` for the tabs it clicks (`"Notes"`, `"Transcript"`); the command is read-only and clicks nothing. `--out` creates a new file with mode `0600` and never overwrites one.
+```toml
+[browser.tasks.teams-transcript]
+allowed_hosts = ["teams.microsoft.com", "*.sharepoint.com"]
+allowed_controls = ["Notes", "Transcript"]
+```
+
+`blumkin browser read` cannot do this: Teams serves the transcript from the organizer's OneDrive in a cross-origin iframe, and the list is virtualized, so at any moment only the rows near the viewport exist in the page (about 12 of 34 minutes in the meeting that shaped this command). `transcript` scrolls that frame from its first row to its last, merges the overlap and writes one `[m:ss] Speaker: text` line per turn. The task needs `allowed_hosts` that include both the Teams page host (`teams.microsoft.com`) and the frame's host (`*.sharepoint.com`), plus `allowed_controls` for the tabs it clicks (`"Notes"`, `"Transcript"`); the command is read-only and clicks nothing. `--out` creates a new file with mode `0600` and never overwrites one.
 
 Every capture carries a coverage report, so a gap is reported instead of silently missing: the entry count and speakers, the first and last timestamp, silences longer than three minutes, entries out of order and whether the scroll reached both ends. With `--duration` the last entry is checked against the meeting's length, unless Teams logged "stopped transcription" (the transcript legitimately ends before a meeting that kept running). `complete` is false when any of that looks wrong, and a capture that is not complete must not be presented as the whole meeting. The text is untrusted data and goes through the injection scan like `read`.
 
