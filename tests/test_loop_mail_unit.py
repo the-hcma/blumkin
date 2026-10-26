@@ -47,6 +47,30 @@ def test_authentication_results_require_spf_dkim_dmarc() -> None:
     assert not authentication_results_pass([])
 
 
+def test_authentication_results_uses_first_header_only() -> None:
+    # Provider prepends a failing result; a later spoofed pass must not win.
+    headers = [
+        {"name": "Authentication-Results", "value": "mx; spf=fail; dkim=fail; dmarc=fail"},
+        {
+            "name": "Authentication-Results",
+            "value": "evil; spf=pass; dkim=pass; dmarc=pass",
+        },
+    ]
+    assert not authentication_results_pass(headers)
+    # First header alone passes.
+    assert authentication_results_pass(
+        [{"name": "Authentication-Results", "value": "mx; spf=pass; dkim=pass; dmarc=pass"}]
+    )
+
+
+def test_authentication_results_does_not_combine_across_headers() -> None:
+    headers = [
+        {"name": "Authentication-Results", "value": "mx; spf=pass"},
+        {"name": "Authentication-Results", "value": "evil; dkim=pass; dmarc=pass"},
+    ]
+    assert not authentication_results_pass(headers)
+
+
 def test_handled_messages_round_trip(tmp_path: Path) -> None:
     assert not is_handled(tmp_path, profile="work", message_id="m1")
     assert mark_handled(tmp_path, profile="work", message_id="m1") is True

@@ -127,16 +127,19 @@ def run_foreground(
     previous_int = signal.signal(signal.SIGINT, _handle)
     ticks = 0
     runs = 0
+    # Mailbox poll is network-heavy; run at most about once per minute.
+    mail_every = max(1, int(60.0 / poll_seconds) if poll_seconds > 0 else 12)
     try:
         while not stop["flag"] and not (should_stop is not None and should_stop()):
             ticks += 1
             if is_engaged(setup.config_dir, setup.loop):
                 sleep(poll_seconds)
                 continue
-            try:
-                poll_mail_triggers(setup)
-            except Exception:  # noqa: BLE001 — mail poll must not kill the runner
-                pass
+            if ticks == 1 or ticks % mail_every == 0:
+                try:
+                    poll_mail_triggers(setup)
+                except Exception:  # noqa: BLE001 — mail poll must not kill the runner
+                    pass
             pending = drain_queue(setup.config_dir)
             consumed = 0
             try:

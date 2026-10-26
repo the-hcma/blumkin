@@ -117,7 +117,12 @@ async def _poll_async(
         try:
             cfg = load_cfg(profile=profile_name)
             refresh_fn(cfg)
-        except Exception:  # noqa: BLE001 — pause this profile; others continue
+        except Exception as exc:  # noqa: BLE001 — classify below
+            from blumkin.auth import AuthTransientError
+
+            if isinstance(exc, AuthTransientError):
+                # Brief outage: skip this tick; do not pause the profile.
+                continue
             pause_profile(setup.config_dir, profile_name, reason="renewal_failed")
             continue
 
@@ -189,6 +194,8 @@ async def _consider_message(
         return "ignored"
     headers = detail.get("internet_message_headers") or detail.get("headers")
     if not authentication_results_pass(headers if isinstance(headers, list) else None):
+        # Record so we do not re-fetch this message on every poll tick.
+        mark_handled(setup.config_dir, profile=profile_name, message_id=message_id)
         return "ignored"
     # Mark handled before enqueue so a crash mid-dispatch cannot double-fire.
     if not mark_handled(setup.config_dir, profile=profile_name, message_id=message_id):

@@ -1,8 +1,10 @@
 """Inbound mail trust gates for loop triggers (issue #503).
 
-A message is acted on only when the sender is allowlisted and the provider's
-Authentication-Results report SPF, DKIM and DMARC as pass. Missing headers fail
-closed. Message content is never used as instructions.
+A message is acted on only when the sender is allowlisted and the *first*
+Authentication-Results header (the receiving MTA typically prepends) reports
+spf=pass, dkim=pass and dmarc=pass in that same header. Missing or partial
+headers fail closed. Sender-injected later headers are ignored. Message content
+is never used as instructions.
 """
 
 from __future__ import annotations
@@ -30,8 +32,8 @@ def allowlisted_sender(sender: str | None, allowlist: tuple[str, ...] | list[str
 
 
 def authentication_results_pass(headers: list[dict[str, Any]] | list[str] | None) -> bool:
-    """True when Authentication-Results reports spf=pass, dkim=pass and dmarc=pass."""
-    text = _authentication_results_text(headers)
+    """True when the first Authentication-Results header alone has spf/dkim/dmarc=pass."""
+    text = _first_authentication_results(headers)
     if not text:
         return False
     return bool(_SPF.search(text) and _DKIM.search(text) and _DMARC.search(text))
@@ -46,19 +48,19 @@ def subject_matches(subject: str | None, tag: str | None) -> bool:
     return tag.strip().lower() in subject.lower()
 
 
-def _authentication_results_text(headers: list[dict[str, Any]] | list[str] | None) -> str:
+def _first_authentication_results(headers: list[dict[str, Any]] | list[str] | None) -> str:
+    """Return the first Authentication-Results value (provider-prepended)."""
     if not headers:
         return ""
-    chunks: list[str] = []
     for entry in headers:
         if isinstance(entry, str):
-            if _AUTH_HEADER.match(entry) or "spf=" in entry.lower():
-                chunks.append(entry)
+            if _AUTH_HEADER.match(entry):
+                return entry
             continue
         if not isinstance(entry, dict):
             continue
         name = str(entry.get("name") or entry.get("key") or "")
         value = str(entry.get("value") or entry.get("val") or "")
-        if name.lower() == "authentication-results" or (not name and "spf=" in value.lower()):
-            chunks.append(f"{name}: {value}" if name else value)
-    return "\n".join(chunks)
+        if name.lower() == "authentication-results" and value.strip():
+            return f"{name}: {value}"
+    return ""
