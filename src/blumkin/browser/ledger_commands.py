@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.ledger import (
     ItemKind,
     ItemState,
@@ -23,7 +24,39 @@ from blumkin.browser.ledger import (
     mark_submitted,
     record_item,
 )
+from blumkin.browser.ledger_ops import (
+    apply_item,
+    handoff_from_ledger,
+    reconcile,
+    stage_item,
+    verify_item,
+)
 from blumkin.config import BrowserSetup
+
+
+def ledger_apply(
+    config: BrowserSetup,
+    task: str,
+    instance: str,
+    kind: str,
+    item: str,
+    *,
+    flow: str,
+    value: Sequence[str] = (),
+    sha256: str | None = None,
+) -> dict[str, Any]:
+    """Run a recorded flow for one item and mark it filled (no-op if already verified)."""
+    result = apply_item(
+        config.config_dir,
+        task,
+        instance,
+        ItemKind(kind),
+        item,
+        flow_name=flow,
+        values=_value_map(value),
+        sha256=sha256,
+    )
+    return result.as_dict() | {"ok": True}
 
 
 def ledger_begin(
@@ -37,6 +70,21 @@ def ledger_discard(config: BrowserSetup, task: str, instance: str, *, yes: bool)
     """Close the instance as discarded (the journal is kept)."""
     _require_yes(yes, task, instance, "discard", "the journal is kept")
     return _payload(discard_instance(config.config_dir, task, instance))
+
+
+def ledger_handoff(
+    config: BrowserSetup,
+    task: str,
+    instance: str,
+    *,
+    step: Sequence[str],
+    decision: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Build the filled-in / NOT-submitted handoff from the ledger."""
+    result: HandoffResult = handoff_from_ledger(
+        config.config_dir, task, instance, steps=step, decisions=decision
+    )
+    return result.to_payload() | {"instance": instance, "ok": True}
 
 
 def ledger_list(config: BrowserSetup, task: str) -> dict[str, Any]:
@@ -87,6 +135,47 @@ def ledger_record(
     }
 
 
+def ledger_reconcile(
+    config: BrowserSetup,
+    task: str,
+    instance: str,
+    *,
+    kind: str,
+    page_item: Sequence[str],
+) -> dict[str, Any]:
+    """Compare ledger items of ``kind`` with ids observed on the live page (read-only)."""
+    return reconcile(
+        config.config_dir,
+        task,
+        instance,
+        kind=ItemKind(kind),
+        page_items=page_item,
+    ).as_dict()
+
+
+def ledger_stage(
+    config: BrowserSetup,
+    task: str,
+    instance: str,
+    kind: str,
+    item: str,
+    *,
+    sha256: str | None = None,
+    model_version: int | None = None,
+) -> dict[str, Any]:
+    """Stage one item unless it is already verified (then a no-op)."""
+    result = stage_item(
+        config.config_dir,
+        task,
+        instance,
+        ItemKind(kind),
+        item,
+        sha256=sha256,
+        model_version=model_version,
+    )
+    return result.as_dict() | {"ok": True}
+
+
 def ledger_status(config: BrowserSetup, task: str, instance: str) -> dict[str, Any]:
     """Where the instance stands: counts, per-item state and whether it was submitted."""
     return _payload(instance_status(config.config_dir, task, instance))
@@ -100,6 +189,31 @@ def ledger_submitted(
         yes, task, instance, "mark submitted", "say yes only if you submitted the form yourself"
     )
     return _payload(mark_submitted(config.config_dir, task, instance))
+
+
+def ledger_verify(
+    config: BrowserSetup,
+    task: str,
+    instance: str,
+    kind: str,
+    item: str,
+    *,
+    present: bool,
+    sha256: str | None = None,
+    model_version: int | None = None,
+) -> dict[str, Any]:
+    """Mark an item verified when the page shows it, otherwise failed."""
+    result = verify_item(
+        config.config_dir,
+        task,
+        instance,
+        ItemKind(kind),
+        item,
+        present_on_page=present,
+        sha256=sha256,
+        model_version=model_version,
+    )
+    return result.as_dict() | {"ok": True}
 
 
 def _expected(values: Sequence[str]) -> dict[ItemKind, int]:
@@ -149,3 +263,13 @@ def _require_yes(yes: bool, task: str, instance: str, action: str, note: str) ->
         raise LedgerError(
             f"Expected --yes to {action} {instance!r} of task {task!r}, got none; {note}"
         )
+
+
+def _value_map(values: Sequence[str]) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for value in values:
+        key, sep, text = value.partition("=")
+        if not sep or not key.strip():
+            raise LedgerError(f"Expected KEY=VALUE for a flow binding, got {value!r}")
+        parsed[key.strip()] = text
+    return parsed
