@@ -20,11 +20,11 @@ One config file, one or more **named profiles** (Microsoft, Google, or both), se
 | `calendar` | `today`, `view`, `freebusy`, `suggest`, `create`, `accept`, `cancel`, `update` |
 | `mail` | `inbox`, `list`, `get`, `folders`, `draft`, `update-draft`, `delete-draft`, `send-draft`, `reply`, `forward`, `signature`, `attachments` (+ `download`) |
 | `chat` (Teams / Google Chat) | `find`, `last`, `send`, `edit`, `delete`, `attachments` (+ `download`) |
-| `browser` | `profile` (`create`, `list`, `delete`), `launch`, `status`, `goto`, `read`, `fill`, `upload`, `click`, `press`, `handoff`, `explore` (`observe`, `click`, `show`, `save`, `discard`), `ledger` (`begin`, `record`, `status`, `list`, `submitted`, `discard`), `model` (`check`, `versions`, `diff`) - browser-assisted tasks that stop before the final submit |
+| `browser` | `profile` (`create`, `list`, `delete`), `launch`, `status`, `goto`, `read`, `fill`, `upload`, `click`, `press`, `handoff`, `explore` (`observe`, `click`, `show`, `save`, `discard`), `ledger` (`begin`, `stage`, `apply`, `verify`, `reconcile`, `handoff`, `record`, `status`, `list`, `submitted`, `discard`), `model` (`check`, `versions`, `diff`) - browser-assisted tasks that stop before the final submit |
 | `docs` | `create` (a Markdown subset → a real Google Doc, or a `.docx` in OneDrive) |
 | `meeting` (Microsoft) | `get`, `transcription` |
 | `people` | `resolve` |
-| `receipts` | `find`, `read` (receipt files, read with OCR and a confidence per field) |
+| `receipts` | `find`, `read`, `rehome` (receipt files: OCR with confidence per field, then rename into a managed instance folder) |
 | `mcp` | `serve`, `install`, `status` |
 
 Plus `blumkin doctor` (setup check), `capabilities` (structured capability/status discovery), `skills` / `profiles` (discovery), `upgrade` (self-update via pipx / uv tool / an editable checkout), and `completion`.
