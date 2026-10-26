@@ -22,6 +22,11 @@ from blumkin.loop.mail_trust import (
     authentication_results_pass,
     subject_matches,
 )
+from blumkin.loop.notices import (
+    is_loop_notice_subject,
+    notice_recipient,
+    notify_profile_paused_async,
+)
 from blumkin.loop.queue import enqueue
 from blumkin.loop.state import list_paused
 from blumkin.loop.types import TriggerKind, TriggerSpec
@@ -129,12 +134,21 @@ async def _poll_async(
             if isinstance(exc, AuthTransientError):
                 # Brief outage: skip this tick; do not pause the profile.
                 continue
-            pause_profile(setup.config_dir, profile_name, reason="renewal_failed")
+            newly = pause_profile(setup.config_dir, profile_name, reason="renewal_failed")
             log.warning(
                 "mail profile %s paused after renewal failure (%s)",
                 profile_name,
                 type(exc).__name__,
             )
+            if newly:
+                to = _pause_notice_to(triggers, setup.loop.notice_to)
+                if to:
+                    # Send from the default profile - the paused mailbox cannot draft.
+                    await notify_profile_paused_async(
+                        profile=profile_name,
+                        reason="renewal_failed",
+                        to=to,
+                    )
             continue
 
         for spec in triggers:
@@ -196,9 +210,12 @@ async def _consider_message(
         sender = sender.get("email") or sender.get("address")
     if not allowlisted_sender(str(sender) if sender else None, spec.allowlist):
         return "ignored"
-    if not subject_matches(
-        item.get("subject") if isinstance(item.get("subject"), str) else None, spec.subject_tag
-    ):
+    subject = item.get("subject") if isinstance(item.get("subject"), str) else None
+    # Outbound loop notices land in the same inbox; never re-enqueue them.
+    if is_loop_notice_subject(subject):
+        mark_handled(setup.config_dir, profile=profile_name, message_id=message_id)
+        return "ignored"
+    if not subject_matches(subject, spec.subject_tag):
         return "ignored"
     try:
         detail_payload = await message_fn(message_id=message_id, config=cfg)
@@ -277,6 +294,16 @@ def _default_refresh(cfg: Any) -> dict[str, Any]:
     from blumkin import auth
 
     return auth.refresh_silent(cfg)
+
+
+def _pause_notice_to(triggers: list[TriggerSpec], fallback: str | None) -> str | None:
+    for spec in triggers:
+        to = notice_recipient(spec, fallback=None)
+        if to:
+            return to
+    if fallback and fallback.strip():
+        return fallback.strip()
+    return None
 
 
 def _resolve_profiles(triggers: list[TriggerSpec], list_profiles: ListProfilesFn) -> list[str]:
