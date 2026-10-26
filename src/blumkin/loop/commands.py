@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import signal
 import time
 from dataclasses import dataclass
@@ -138,8 +139,10 @@ def run_foreground(
             if ticks == 1 or ticks % mail_every == 0:
                 try:
                     poll_mail_triggers(setup)
-                except Exception:  # noqa: BLE001 — mail poll must not kill the runner
-                    pass
+                except Exception as exc:  # noqa: BLE001 — mail poll must not kill the runner
+                    logging.getLogger("blumkin.loop").exception(
+                        "mail poll failed: %s", type(exc).__name__
+                    )
             pending = drain_queue(setup.config_dir)
             consumed = 0
             try:

@@ -197,10 +197,6 @@ async def _consider_message(
         # Record so we do not re-fetch this message on every poll tick.
         mark_handled(setup.config_dir, profile=profile_name, message_id=message_id)
         return "ignored"
-    # Mark handled before enqueue so a crash mid-dispatch cannot double-fire.
-    if not mark_handled(setup.config_dir, profile=profile_name, message_id=message_id):
-        return "ignored"
-    enqueue(setup.config_dir, spec.name)
     try:
         await save_attachments(
             config_dir=setup.config_dir,
@@ -212,6 +208,9 @@ async def _consider_message(
         )
     except Exception:  # noqa: BLE001 — intake is best-effort; trigger still runs
         pass
+    # Enqueue, then mark handled so a queue write failure cannot drop the message.
+    enqueue(setup.config_dir, spec.name)
+    mark_handled(setup.config_dir, profile=profile_name, message_id=message_id)
     return "enqueued"
 
 
@@ -265,11 +264,15 @@ def _default_refresh(cfg: Any) -> dict[str, Any]:
 
 
 def _resolve_profiles(triggers: list[TriggerSpec], list_profiles: ListProfilesFn) -> list[str]:
-    named: set[str] = set()
-    for spec in triggers:
-        named.update(spec.profiles)
-    if named:
-        return sorted(named)
+    # Any trigger with an empty profiles list means "all configured profiles".
+    if any(not spec.profiles for spec in triggers):
+        named: set[str] = set()
+    else:
+        named = set()
+        for spec in triggers:
+            named.update(spec.profiles)
+        if named:
+            return sorted(named)
     rows = list_profiles()
     names: list[str] = []
     for row in rows:
@@ -277,4 +280,7 @@ def _resolve_profiles(triggers: list[TriggerSpec], list_profiles: ListProfilesFn
             names.append(row["name"].strip())
         elif isinstance(row, Mapping) and isinstance(row.get("profile"), str):
             names.append(row["profile"].strip())
-    return sorted(set(names))
+    # Also include explicitly named profiles even if list_profiles is incomplete.
+    for spec in triggers:
+        named.update(spec.profiles)
+    return sorted(set(names) | named)

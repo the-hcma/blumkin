@@ -50,9 +50,10 @@ def init_profiles(
 
     results: list[dict[str, Any]] = []
     for name in sorted(set(names)):
-        cfg = load_fn(profile=name)
-        provider = getattr(cfg, "provider", "microsoft")
+        provider = "unknown"
         try:
+            cfg = load_fn(profile=name)
+            provider = getattr(cfg, "provider", "microsoft")
             if provider == "google":
                 login = login_google
                 if login is None:
@@ -73,7 +74,7 @@ def init_profiles(
                 status = auth.status_dict(cfg)
             resume_profile(config_dir, name)
             results.append({"ok": True, "profile": name, "provider": provider, "status": status})
-        except Exception as exc:  # noqa: BLE001 — report per profile
+        except Exception as exc:  # noqa: BLE001 — report per profile; continue others
             results.append(
                 {
                     "ok": False,
