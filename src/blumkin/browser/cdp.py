@@ -313,6 +313,7 @@ class PlaywrightDriver:
             if scroll_mode == "fixed":
                 self._require_allowed_frame_host(frame, is_allowed)
                 text = str(frame.evaluate("document.body.innerText"))
+                self._require_allowed_frame_host(frame, is_allowed)
                 return FrameCapture(
                     chunks=(text,),
                     reached_end=True,
@@ -327,7 +328,9 @@ class PlaywrightDriver:
             while steps < max_steps:
                 self._require_allowed_frame_host(frame, is_allowed)
                 self._page.wait_for_timeout(_SCROLL_SETTLE_MS)
-                chunks.append(str(frame.evaluate("document.body.innerText")))
+                text = str(frame.evaluate("document.body.innerText"))
+                self._require_allowed_frame_host(frame, is_allowed)
+                chunks.append(text)
                 steps += 1
                 step = frame.evaluate(_SCROLL_STEP_JS)
                 if step is None:

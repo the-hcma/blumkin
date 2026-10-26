@@ -830,8 +830,8 @@ class _ScrollPage(_Page):
 
 
 class _DriftingHostFrame(_ScrollFrame):
-    def __init__(self, text: str) -> None:
-        super().__init__("https://tenant.sharepoint.com/x", text, prepare="scroll")
+    def __init__(self, text: str, *, prepare: str = "scroll") -> None:
+        super().__init__("https://tenant.sharepoint.com/x", text, prepare=prepare)
         self._host_reads = 0
 
     @property
@@ -867,6 +867,17 @@ def test_scroll_frame_text_reads_a_short_non_scrollable_transcript_in_one_step()
 def test_scroll_frame_text_refuses_a_frame_that_drifts_off_allowed_hosts() -> None:
     pane = "Ann\n0 minutes 5 seconds\n0:05\nAnn 0 minutes 5 seconds\nHi\n"
     pw = _Playwright(_ScrollPage(_DriftingHostFrame(pane)))
+    _, driver = _driver(pw)
+
+    with pytest.raises(BrowserActionError, match="allowed host"):
+        driver.scroll_frame_text(
+            lambda host: host.endswith("sharepoint.com"), max_steps=5, wait_s=1.0
+        )
+
+
+def test_scroll_frame_text_refuses_fixed_mode_text_once_the_frame_host_drifts() -> None:
+    pane = "Ann\n0 minutes 5 seconds\n0:05\nAnn 0 minutes 5 seconds\nHi\n"
+    pw = _Playwright(_ScrollPage(_DriftingHostFrame(pane, prepare="fixed")))
     _, driver = _driver(pw)
 
     with pytest.raises(BrowserActionError, match="allowed host"):
