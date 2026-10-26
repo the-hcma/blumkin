@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from blumkin.browser.ledger import LedgerError, LedgerNotFoundError
+from blumkin.browser.ledger import LedgerError, LedgerNotFoundError, Phase, instance_status
 from blumkin.browser.profiles import ensure_private_dir, validate_task_name
 from blumkin.receipts import Confidence, ReceiptFields
 
@@ -164,6 +164,11 @@ def rehome_receipt(
             "Expected an instance name of 1-64 lowercase letters, digits, '-' or '_' "
             f"starting and ending with a letter or digit, got {instance!r}"
         )
+    status = instance_status(config_dir, task, instance)
+    if status.phase is not Phase.OPEN:
+        raise RehomeError(
+            f"Expected an open ledger instance to rehome a receipt, got a {status.phase.value} one"
+        )
     src = source.expanduser()
     if not src.is_file() or src.is_symlink():
         raise RehomeError(f"Expected a regular receipt file, got {str(source)!r}")
@@ -176,7 +181,6 @@ def rehome_receipt(
             f"{completed[digest].name}"
         )
     dest_dir = managed_instance_dir(upload_dirs, instance)
-    ensure_private_dir(dest_dir)
     name = canonical_receipt_name(
         date=date,
         vendor=vendor,
@@ -187,6 +191,11 @@ def rehome_receipt(
     )
     dest = dest_dir / name
     copy_only = message_id is not None
+    if src.resolve() == dest.resolve():
+        raise RehomeError(
+            f"Expected a source outside the managed destination {dest.name!r}, got the same path"
+        )
+    ensure_private_dir(dest_dir)
     if dest.is_file() and not dest.is_symlink() and file_sha256(dest) == digest:
         # Dest matches: either already filed (result journaled) or an interrupted move.
         if digest in completed:
@@ -227,6 +236,7 @@ def rehome_receipt(
         {
             "event": "intent",
             "copied": copy_only,
+            "dest": str(dest.resolve()),
             "dest_name": name,
             "message_id": message_id,
             "sha256": digest,
@@ -279,30 +289,19 @@ def restore_rehomed(
     results: list[RestoreResult] = []
     seen: set[str] = set()
     for entry in reversed(moves):
-        if entry.get("event") != "result":
+        event = entry.get("event")
+        if event not in {"result", "intent"}:
             continue
         digest = str(entry.get("sha256") or "")
         if not _SHA256.fullmatch(digest) or digest in seen:
             continue
-        seen.add(digest)
         dest = Path(str(entry.get("dest") or ""))
+        if not dest.parts:
+            continue
+        seen.add(digest)
         source = Path(str(entry.get("source") or ""))
         copied = bool(entry.get("copied"))
-        restored = False
-        if dest.is_file() and not dest.is_symlink() and file_sha256(dest) == digest:
-            if copied:
-                # Email copy: remove the managed copy only; leave the mailbox download alone.
-                dest.unlink()
-                restored = True
-            else:
-                source.parent.mkdir(parents=True, exist_ok=True)
-                if source.exists():
-                    raise RehomeError(
-                        f"Expected original path {str(source)!r} to be free for restore, "
-                        "got an existing file"
-                    )
-                _place(dest, source, digest=digest, copy_only=False)
-                restored = True
+        restored = _restore_one(dest=dest, source=source, digest=digest, copied=copied)
         results.append(RestoreResult(dest=dest, restored=restored, sha256=digest, source=source))
         _append_move(
             config_dir,
@@ -449,6 +448,22 @@ def _read_moves(config_dir: Path, task: str, instance: str) -> list[dict[str, An
             raise LedgerError(f"Expected a receipt-moves object on line {number}, got a non-object")
         entries.append(payload)
     return entries
+
+
+def _restore_one(*, dest: Path, source: Path, digest: str, copied: bool) -> bool:
+    if not dest.is_file() or dest.is_symlink() or file_sha256(dest) != digest:
+        return False
+    if copied:
+        # Email copy: remove the managed copy only; leave the mailbox download alone.
+        dest.unlink()
+        return True
+    source.parent.mkdir(parents=True, exist_ok=True)
+    if source.exists():
+        raise RehomeError(
+            f"Expected original path {str(source)!r} to be free for restore, got an existing file"
+        )
+    _place(dest, source, digest=digest, copy_only=False)
+    return True
 
 
 def _suffix(suffix: str) -> str:

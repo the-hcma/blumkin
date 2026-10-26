@@ -291,3 +291,69 @@ def test_restore_rejects_a_path_like_instance_name(tmp_path: Path) -> None:
     config, _uploads, _dirs = _setup(tmp_path)
     with pytest.raises(RehomeError, match="instance name"):
         restore_rehomed(config, "expense-report", "../escape", yes=True)
+
+
+def test_rehome_rejects_source_already_at_destination(tmp_path: Path) -> None:
+    config, _uploads, dirs = _setup(tmp_path)
+    dest_dir = managed_instance_dir(dirs, "trip-lisbon")
+    dest_dir.mkdir(parents=True)
+    candidate = dest_dir / "tmp.jpg"
+    candidate.write_bytes(b"already-there")
+    dest = dest_dir / f"2026-10-20_taxi-co_18.50-USD_{file_sha256(candidate)[:8]}.jpg"
+    candidate.rename(dest)
+    with pytest.raises(RehomeError, match="same path"):
+        rehome_receipt(
+            config,
+            "expense-report",
+            "trip-lisbon",
+            dest,
+            fields=_fields(),
+            upload_dirs=dirs,
+        )
+    assert dest.is_file()
+
+
+def test_discard_restores_intent_only_half_finished_move(tmp_path: Path) -> None:
+    config, _uploads, dirs = _setup(tmp_path)
+    source = tmp_path / "inbox" / "scan.jpg"
+    source.parent.mkdir()
+    source.write_bytes(b"intent-only")
+    digest = file_sha256(source)
+    dest_dir = managed_instance_dir(dirs, "trip-lisbon")
+    dest_dir.mkdir(parents=True)
+    dest = dest_dir / f"2026-10-20_taxi-co_18.50-USD_{digest[:8]}.jpg"
+    dest.write_bytes(b"intent-only")
+    source.unlink()
+    journal = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "receipt-moves.jsonl"
+    journal.write_text(
+        json.dumps(
+            {
+                "at": "2026-10-20T12:00:00Z",
+                "copied": False,
+                "dest": str(dest.resolve()),
+                "dest_name": dest.name,
+                "event": "intent",
+                "message_id": None,
+                "sha256": digest,
+                "source": str(source.resolve()),
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    setup = BrowserSetup(
+        browser=BrowserConfig(
+            tasks={
+                "expense-report": BrowserTaskPolicy(
+                    allowed_hosts=("example.test",),
+                    upload_dirs=tuple(dirs),
+                )
+            }
+        ),
+        config_dir=config,
+    )
+    payload = ledger_discard(setup, "expense-report", "trip-lisbon", yes=True)
+    assert source.is_file()
+    assert source.read_bytes() == b"intent-only"
+    assert not dest.exists()
+    assert payload["receipts_restored"][0]["restored"] is True
