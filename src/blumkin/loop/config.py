@@ -38,6 +38,8 @@ class LoopConfig:
     kill_switch: bool = False
     kill_switch_file: Path | None = None
     max_retries: int = DEFAULT_MAX_RETRIES
+    # Optional fallback recipient when a trigger has no allowlist (cron / manual).
+    notice_to: str | None = None
     retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS
     run_budget_seconds: float = DEFAULT_RUN_BUDGET_SECONDS
 
@@ -199,6 +201,7 @@ def _loop_config(raw: Any, config_dir: Path) -> LoopConfig:
             "kill_switch",
             "kill_switch_file",
             "max_retries",
+            "notice_to",
             "retry_backoff_seconds",
             "run_budget_seconds",
             "triggers",
@@ -207,8 +210,8 @@ def _loop_config(raw: Any, config_dir: Path) -> LoopConfig:
     if unknown:
         raise LoopConfigError(
             f"loop has unknown key(s) {', '.join(unknown)} in config.toml; "
-            "expected kill_switch, kill_switch_file, max_retries, retry_backoff_seconds, "
-            "run_budget_seconds, triggers"
+            "expected kill_switch, kill_switch_file, max_retries, notice_to, "
+            "retry_backoff_seconds, run_budget_seconds, triggers"
         )
     kill_file: Path | None = None
     raw_file = raw.get("kill_switch_file")
@@ -221,12 +224,27 @@ def _loop_config(raw: Any, config_dir: Path) -> LoopConfig:
         kill_file = Path(text).expanduser() if text.startswith("~") else Path(text)
         if not kill_file.is_absolute():
             kill_file = config_dir / kill_file
+    notice_to: str | None = None
+    raw_notice = raw.get("notice_to")
+    if raw_notice is not None:
+        if not isinstance(raw_notice, str) or not raw_notice.strip():
+            raise LoopConfigError(
+                f"loop.notice_to must be a non-empty string in config.toml, got {raw_notice!r}"
+            )
+        notice_to = raw_notice.strip()
+        from blumkin.loop.mail_trust import is_allowlist_email
+
+        if not is_allowlist_email(notice_to):
+            raise LoopConfigError(
+                f"loop.notice_to must be an email address in config.toml, got {notice_to!r}"
+            )
     return LoopConfig(
         kill_switch=_coerce_bool(raw.get("kill_switch", False), "loop.kill_switch"),
         kill_switch_file=kill_file,
         max_retries=_coerce_int(
             raw.get("max_retries", DEFAULT_MAX_RETRIES), "loop.max_retries", minimum=0
         ),
+        notice_to=notice_to,
         retry_backoff_seconds=_coerce_float(
             raw.get("retry_backoff_seconds", DEFAULT_RETRY_BACKOFF_SECONDS),
             "loop.retry_backoff_seconds",

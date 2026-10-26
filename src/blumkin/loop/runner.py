@@ -18,6 +18,7 @@ from blumkin.loop.handlers import (
 from blumkin.loop.journal import append_run
 from blumkin.loop.kill_switch import is_engaged
 from blumkin.loop.locks import instance_lock
+from blumkin.loop.notices import notify_run
 from blumkin.loop.state import is_paused
 from blumkin.loop.types import RunOutcome, RunRecord, TriggerSpec
 
@@ -63,6 +64,7 @@ def run_trigger(
     if honor_pause and is_paused(setup.config_dir, name):
         return RunResult(record=None, skipped=True, skip_reason="paused")
     handler = resolve_handler(trigger.task, handlers)
+    record: RunRecord | None = None
     with instance_lock(setup.config_dir, trigger.task, trigger.instance):
         # Re-check after the lock: another caller may have paused or engaged the
         # kill switch while we waited for the same task instance.
@@ -71,17 +73,17 @@ def run_trigger(
         if honor_pause and is_paused(setup.config_dir, name):
             return RunResult(record=None, skipped=True, skip_reason="paused")
         if handler is None:
-            record = append_run(
-                setup.config_dir,
-                instance=trigger.instance,
+            record = _journal(
+                setup,
+                trigger,
                 outcome=RunOutcome.NEEDS_USER,
                 reason=f"no handler registered for task {trigger.task!r}",
-                task=trigger.task,
-                trigger=trigger.name,
-                trigger_kind=trigger.kind,
             )
-            return RunResult(record=record, skipped=False, skip_reason="")
-        record = _execute(setup, trigger, handler, sleep=sleep)
+        else:
+            record = _execute(setup, trigger, handler, sleep=sleep)
+    # Notices leave the instance lock so a hung Graph call cannot stall the next run.
+    if record is not None:
+        notify_run(record, trigger, fallback_to=setup.loop.notice_to)
     return RunResult(record=record, skipped=False, skip_reason="")
 
 
@@ -98,41 +100,32 @@ def _execute(
     last = HandlerResult(outcome=RunOutcome.FAILED, reason="no attempts")
     for attempt in range(attempts):
         if is_engaged(setup.config_dir, setup.loop):
-            return append_run(
-                setup.config_dir,
-                instance=trigger.instance,
+            return _journal(
+                setup,
+                trigger,
                 outcome=RunOutcome.FAILED,
                 reason="kill_switch engaged during run",
                 run_id=run_id,
-                task=trigger.task,
-                trigger=trigger.name,
-                trigger_kind=trigger.kind,
             )
         if time.monotonic() >= deadline:
-            return append_run(
-                setup.config_dir,
-                instance=trigger.instance,
+            return _journal(
+                setup,
+                trigger,
                 outcome=RunOutcome.FAILED,
                 reason="run budget exhausted",
                 run_id=run_id,
-                task=trigger.task,
-                trigger=trigger.name,
-                trigger_kind=trigger.kind,
             )
         try:
             last = handler(trigger)
         except Exception:  # noqa: BLE001 - bounded retry; journal the failure (no exc text)
             last = HandlerResult(outcome=RunOutcome.FAILED, reason="handler raised")
         if last.outcome is not RunOutcome.FAILED:
-            return append_run(
-                setup.config_dir,
-                instance=trigger.instance,
+            return _journal(
+                setup,
+                trigger,
                 outcome=last.outcome,
                 reason=last.reason,
                 run_id=run_id,
-                task=trigger.task,
-                trigger=trigger.name,
-                trigger_kind=trigger.kind,
             )
         if attempt + 1 >= attempts:
             break
@@ -141,11 +134,28 @@ def _execute(
         if remaining <= 0:
             break
         sleep(min(backoff, remaining))
+    return _journal(
+        setup,
+        trigger,
+        outcome=RunOutcome.FAILED,
+        reason=last.reason,
+        run_id=run_id,
+    )
+
+
+def _journal(
+    setup: LoopSetup,
+    trigger: TriggerSpec,
+    *,
+    outcome: RunOutcome,
+    reason: str,
+    run_id: str | None = None,
+) -> RunRecord:
     return append_run(
         setup.config_dir,
         instance=trigger.instance,
-        outcome=RunOutcome.FAILED,
-        reason=last.reason,
+        outcome=outcome,
+        reason=reason,
         run_id=run_id,
         task=trigger.task,
         trigger=trigger.name,

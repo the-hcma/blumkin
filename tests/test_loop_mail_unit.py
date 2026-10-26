@@ -185,6 +185,48 @@ def test_poll_enqueues_trusted_message(tmp_path: Path) -> None:
     assert peek_queue(tmp_path) == ["receipts"]
 
 
+def test_poll_ignores_loop_notice_subjects(tmp_path: Path) -> None:
+    setup = parse_loop_setup(
+        tmp_path,
+        {
+            "loop": {
+                "triggers": {
+                    "receipts": {
+                        "task": "expense-report",
+                        "instance": "trip-1",
+                        "kind": "loop",
+                        "allowlist": ["me@example.com"],
+                        "profiles": ["work"],
+                    }
+                }
+            }
+        },
+    )
+
+    async def inbox(*, top: int = 25, config: Any = None) -> dict[str, Any]:
+        return {
+            "items": [
+                {
+                    "id": "notice-1",
+                    "from_email": "me@example.com",
+                    "subject": "blumkin loop: receipts done",
+                }
+            ]
+        }
+
+    result = poll_mail_triggers(
+        setup,
+        refresh=lambda _cfg: {},
+        load_config=lambda profile: type("Cfg", (), {"provider": "microsoft"})(),
+        list_profiles=lambda: [{"name": "work"}],
+        inbox=inbox,
+        message=_empty_message,
+        download=_empty_saved,
+    )
+    assert result.enqueued == 0
+    assert is_handled(tmp_path, profile="work", message_id="notice-1")
+
+
 def test_poll_ignores_untrusted_sender(tmp_path: Path) -> None:
     setup = parse_loop_setup(
         tmp_path,
@@ -222,7 +264,9 @@ def test_poll_ignores_untrusted_sender(tmp_path: Path) -> None:
     assert peek_queue(tmp_path) == []
 
 
-def test_poll_pauses_profile_on_refresh_failure(tmp_path: Path) -> None:
+def test_poll_pauses_profile_on_refresh_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     setup = parse_loop_setup(
         tmp_path,
         {
@@ -243,6 +287,14 @@ def test_poll_pauses_profile_on_refresh_failure(tmp_path: Path) -> None:
     def boom(_cfg: Any) -> dict[str, Any]:
         raise RuntimeError("token expired")
 
+    noticed: list[dict[str, Any]] = []
+
+    async def capture_notice(**kwargs: Any) -> bool:
+        noticed.append(kwargs)
+        return True
+
+    monkeypatch.setattr("blumkin.loop.mail_poll.notify_profile_paused_async", capture_notice)
+
     result = poll_mail_triggers(
         setup,
         refresh=boom,
@@ -255,6 +307,10 @@ def test_poll_pauses_profile_on_refresh_failure(tmp_path: Path) -> None:
     assert result.enqueued == 0
     assert is_profile_paused(tmp_path, "work")
     assert "work" in result.paused_profiles
+    assert len(noticed) == 1
+    assert noticed[0]["profile"] == "work"
+    assert noticed[0]["reason"] == "renewal_failed"
+    assert noticed[0]["to"] == "me@example.com"
 
 
 async def _empty_inbox(**kwargs: Any) -> dict[str, Any]:
