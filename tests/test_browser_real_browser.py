@@ -22,7 +22,15 @@ from click.testing import CliRunner
 
 from blumkin.browser.cdp import attach
 from blumkin.browser.discovery import BrowserNotFoundError, resolve_browser
-from blumkin.browser.explore import Explorer, ExploreRefusedError, ExploringDriver, Inspection
+from blumkin.browser.drift import Grade, check_page
+from blumkin.browser.explore import (
+    Explorer,
+    ExploreRefusedError,
+    ExploringDriver,
+    Inspection,
+    ModelDraft,
+    parse_aria_snapshot,
+)
 from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError
 from blumkin.browser.launcher import launch
 from blumkin.browser.profiles import create_profile, read_session
@@ -98,6 +106,27 @@ def _explore_page(port: int) -> bytes:
     ).encode()
 
 
+_DRIFT_BASE = (
+    "<!doctype html><title>Drift</title><h1>Expenses</h1>"
+    '<nav><a href="/help">Help</a></nav>'
+    '<label for="a">Amount</label><input id="a">'
+    '<button type="button">{button}</button>'
+    "{extra}"
+)
+
+
+def _drift_page(button: str = "Add line", extra: str = "", reverse: bool = False) -> bytes:
+    page = _DRIFT_BASE.format(button=button, extra=extra)
+    if reverse:
+        page = (
+            "<!doctype html><title>Drift</title>"
+            f'<button type="button">{button}</button>'
+            '<label for="a">Amount</label><input id="a">'
+            '<nav><a href="/help">Help</a></nav><h1>Expenses</h1>' + extra
+        )
+    return page.encode()
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     posts: list[str] = []
     hosts: list[str] = []
@@ -115,6 +144,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         pages = {
             "/bypass": _BYPASS_FORM,
+            "/drift-a": _drift_page(),
+            "/drift-b": _drift_page(button="Add row"),
+            "/drift-c": _drift_page(extra='<label for="c">Cost center</label><input id="c">'),
+            "/drift-d": _drift_page(reverse=True),
+            "/drift-e": _drift_page(extra='<button type="button">Export</button>'),
             "/explore": _explore_page(port),
             "/expense": _EXPENSE_FORM,
             "/report": _SUBMIT_FORM,
@@ -461,6 +495,49 @@ def test_exploration_reads_a_real_page_inspects_without_clicking_and_stays_on_th
         raw.goto(form_url + "explore")
         with pytest.raises(ExploreRefusedError, match="click happened"):
             explorer.click("link", "Redirecting")
+        assert _Handler.posts == []
+        driver.close()
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+def test_drift_is_graded_against_a_real_site_that_is_then_edited(
+    tmp_path: Path, form_url: str
+) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    try:
+        browser = resolve_browser(None)
+    except BrowserNotFoundError:
+        pytest.skip("no Chrome, Edge or Chromium installed")
+    profile = create_profile(tmp_path, "expense-report")
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    try:
+        raw = attach(profile)
+        driver = ExploringDriver(raw, allowed_hosts=("127.0.0.1",))
+
+        def observe(path: str) -> Any:
+            raw.goto(form_url + path)
+            return parse_aria_snapshot(driver.aria_snapshot())
+
+        draft = ModelDraft(task="expense-report", hosts=("127.0.0.1",))
+        draft.add_page("expense-list", form_url + "drift-a", observe("drift-a"))
+        page = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0").pages[0]
+
+        assert check_page(page, observe("drift-a")).grade is Grade.COMPATIBLE
+        # The same controls in another order: layout is ignored.
+        assert check_page(page, observe("drift-d")).grade is Grade.COMPATIBLE
+        # A new button is not drift.
+        assert check_page(page, observe("drift-e")).grade is Grade.COMPATIBLE
+        # A renamed control is gone.
+        renamed = check_page(page, observe("drift-b"))
+        assert renamed.grade is Grade.INCOMPATIBLE
+        missing = [f.control for f in renamed.findings if f.kind.value == "missing"]
+        assert missing == ["expense-list.add-line"]
+        # A new field may be required.
+        added = check_page(page, observe("drift-c"))
+        assert added.grade is Grade.INCOMPATIBLE
+        assert "new_field" in [f.kind.value for f in added.findings]
         assert _Handler.posts == []
         driver.close()
     finally:

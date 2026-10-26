@@ -52,6 +52,9 @@ from blumkin.browser.model import (
 )
 from blumkin.browser.profiles import BrowserProfile
 
+LABELLED_ROLES = frozenset({"combobox", "listbox", "searchbox", "spinbutton", "textbox"})
+MAX_DRAFT_CONTROLS = 200
+
 
 class ClickDecision(StrEnum):
     """What exploration may do with a control."""
@@ -314,7 +317,7 @@ class ModelDraft:
             kind = _KIND_BY_ROLE.get(item.role)
             if kind is None:
                 continue
-            if len(built) >= _MAX_DRAFT_CONTROLS:
+            if len(built) >= MAX_DRAFT_CONTROLS:
                 self.skipped += 1
                 continue
             built.append(_control(page_id, item, kind, used, self._extra_deny))
@@ -494,6 +497,17 @@ def decide_click(role: str, name: str, *, extra_deny: Sequence[str] = ()) -> Cli
     return ClickDecision.RECORD_ONLY
 
 
+def landmark_marks(controls: Sequence[ControlObservation]) -> frozenset[str]:
+    """The `role:name` marks a page is recognized by, as `ModelDraft` records them."""
+    return frozenset(
+        f"{item.role}:{item.name}"
+        for item in controls
+        if item.role not in _SKIPPED_FROM_FINGERPRINT
+        and is_storable_label(item.name)
+        and is_storable_label(f"{item.role}:{item.name}")
+    )
+
+
 def parse_aria_snapshot(text: str) -> tuple[ControlObservation, ...]:
     """The named nodes of a Playwright ARIA snapshot, in order and without repeats."""
     seen: set[tuple[str, str]] = set()
@@ -529,7 +543,6 @@ _DESTRUCTIVE_HREF = re.compile(
     "logoff|logout|purge|remove|reset|revoke|signoff|signout|terminate|trash|unlink|"
     "unsubscribe|wipe"
 )
-_MAX_DRAFT_CONTROLS = 200
 _MAX_MARKS = 100
 _PAGE_ID = re.compile(r"[a-z]+(?:-[a-z]+){0,5}")
 _READ_ONLY_ROLES = frozenset({"link", "tab"})
@@ -582,7 +595,6 @@ _KIND_BY_ROLE: dict[str, ControlKind] = {
     "tab": ControlKind.BUTTON,
     "textbox": ControlKind.TEXT,
 }
-_LABELLED_ROLES = frozenset({"combobox", "listbox", "searchbox", "spinbutton", "textbox"})
 
 
 class _Inspected(Exception):  # noqa: N818 - control flow, not an error
@@ -619,7 +631,7 @@ def _control(
         name = f"{page_id}.{slug}-{count}"
     used.add(name)
     locators = [Locator(strategy=LocatorStrategy.ROLE_NAME, value=f"{item.role}:{item.name}")]
-    if item.role in _LABELLED_ROLES:
+    if item.role in LABELLED_ROLES:
         locators.append(Locator(strategy=LocatorStrategy.LABEL, value=item.name))
     finalizing = _is_finalizing(item.name, extra_deny)
     safety = ControlSafety.FINALIZING if finalizing else ControlSafety.SAFE

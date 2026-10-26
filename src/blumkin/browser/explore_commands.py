@@ -45,7 +45,7 @@ def explore_click(
     config: BrowserSetup, task: str, name: str, *, page_id: str | None, role: str
 ) -> dict[str, Any]:
     """Follow or press one control under the exploration rules; see `Explorer.click`."""
-    hosts, extra_deny = _policy(config, task)
+    hosts, extra_deny = explore_policy(config, task)
     profile = require_profile(config.config_dir, task)
     confirmer = TerminalConfirmer()
     decision = decide_click(role, name, extra_deny=extra_deny)
@@ -78,7 +78,7 @@ def explore_discard(config: BrowserSetup, task: str) -> dict[str, Any]:
 
 def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, Any]:
     """Add the page the task's browser is on to the draft (continuing a stored model)."""
-    hosts, extra_deny = _policy(config, task)
+    hosts, extra_deny = explore_policy(config, task)
     profile = require_profile(config.config_dir, task)
     with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
         explorer = Explorer(driver, TerminalConfirmer(), allowed_hosts=hosts, extra_deny=extra_deny)
@@ -109,9 +109,20 @@ def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, 
     }
 
 
+def explore_policy(config: BrowserSetup, task: str) -> tuple[Sequence[str], Sequence[str]]:
+    validate_task_name(task)
+    declared = config.browser.tasks.get(task)
+    if declared is None or not declared.allowed_hosts:
+        raise ExploreRefusedError(
+            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
+            "exploring, got none"
+        )
+    return declared.allowed_hosts, declared.extra_deny_names
+
+
 def explore_save(config: BrowserSetup, task: str, *, yes: bool) -> dict[str, Any]:
     """Store the draft as the next version of the task's model, once the user has said yes."""
-    hosts, _ = _policy(config, task)
+    hosts, _ = explore_policy(config, task)
     draft = _require_draft(config, task)
     if not yes:
         raise ExploreNeedsConfirmationError(
@@ -172,17 +183,6 @@ def _click_hint(
 def _describe(draft: SiteModel) -> str:
     controls = sum(len(page.controls) for page in draft.pages)
     return f"The draft has {len(draft.pages)} page(s) and {controls} control(s)."
-
-
-def _policy(config: BrowserSetup, task: str) -> tuple[Sequence[str], Sequence[str]]:
-    validate_task_name(task)
-    declared = config.browser.tasks.get(task)
-    if declared is None or not declared.allowed_hosts:
-        raise ExploreRefusedError(
-            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
-            "exploring, got none"
-        )
-    return declared.allowed_hosts, declared.extra_deny_names
 
 
 def _record_step(config: BrowserSetup, task: str, page_id: str, role: str, name: str) -> bool:
