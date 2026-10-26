@@ -1190,16 +1190,31 @@ LOOP_EPILOG = """
 Examples:
 
 \b
+  blumkin loop init
   blumkin loop list
   blumkin loop status
   blumkin loop run-once probe-trigger
   blumkin loop run
 
 One runner process owns loop (mail) and cron triggers that name a task and an
-instance (issue #499 / #501). Unattended runs never prompt: anything that would
-ask becomes `needs_user` and stops. A kill switch in config or a `loop/KILL`
-file stops every run. Triggers live in `[loop.triggers.*]` and `[cron.*]` in
-config.toml.
+instance (issue #499 / #501 / #503). Unattended runs never prompt: anything that
+would ask becomes `needs_user` and stops. A kill switch in config or a
+`loop/KILL` file stops every run. Triggers live in `[loop.triggers.*]` and
+`[cron.*]` in config.toml. Mail triggers need `kind = "loop"`, an allowlist, and
+`blumkin loop init` once per mailbox profile.
+"""
+
+LOOP_INIT_EPILOG = """
+Examples:
+
+\b
+  blumkin loop init
+  blumkin loop init --profile work
+  blumkin loop init --profile work --profile personal --json
+
+Interactive sign-in for each mailbox profile the loop will poll. The runner then
+renews credentials silently; a renewal failure pauses that profile until init
+succeeds again.
 """
 
 LOOP_INSTALL_SERVICE_EPILOG = """
@@ -1250,8 +1265,9 @@ Examples:
 \b
   blumkin loop run
 
-Foreground runner for the systemd user service. Honors the kill switch; cron and
-mail feeders land in later issues. Stops on SIGTERM/SIGINT.
+Foreground runner for the systemd user service. Honors the kill switch; polls
+mail triggers, drains the work queue, then due cron triggers. Stops on
+SIGTERM/SIGINT.
 """
 
 LOOP_RUN_ONCE_EPILOG = """

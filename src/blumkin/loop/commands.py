@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import signal
 import time
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from blumkin.loop.cron import due_fires, mark_due_consumed
 from blumkin.loop.handlers import HandlerMap
 from blumkin.loop.journal import list_runs, recent_by_trigger
 from blumkin.loop.kill_switch import is_engaged, kill_switch_path
+from blumkin.loop.mail_poll import poll_mail_triggers
+from blumkin.loop.mail_profiles import list_paused_profiles
 from blumkin.loop.queue import drain_queue, requeue_front
 from blumkin.loop.runner import RunResult, run_trigger
 from blumkin.loop.state import is_paused, list_paused, pause_trigger, resume_trigger
@@ -95,6 +98,7 @@ def status(setup: LoopSetup) -> dict[str, Any]:
         "kill_switch": is_engaged(setup.config_dir, setup.loop),
         "kill_switch_path": str(kill_switch_path(setup.config_dir, setup.loop)),
         "paused": paused,
+        "paused_mail_profiles": sorted(list_paused_profiles(setup.config_dir)),
         "recent_runs": recent,
         "triggers": [t.as_dict() for t in triggers],
     }
@@ -110,10 +114,10 @@ def run_foreground(
 ) -> dict[str, Any]:
     """Foreground runner process for the systemd user service.
 
-    Drains the work queue and due cron triggers (catch-up at most once per due
-    time), dispatching each through `run_trigger`. Mail feeders land in #503.
-    `run-once` still runs inline for a manual dry run. Exits on SIGTERM/SIGINT
-    or `should_stop`.
+    Polls mailbox profiles for loop triggers, drains the work queue, then due
+    cron triggers (catch-up at most once per due time), dispatching each through
+    `run_trigger`. `run-once` still runs inline for a manual dry run. Exits on
+    SIGTERM/SIGINT or `should_stop`.
     """
     stop = {"flag": False}
 
@@ -124,12 +128,21 @@ def run_foreground(
     previous_int = signal.signal(signal.SIGINT, _handle)
     ticks = 0
     runs = 0
+    # Mailbox poll is network-heavy; run at most about once per minute.
+    mail_every = max(1, int(60.0 / poll_seconds) if poll_seconds > 0 else 12)
     try:
         while not stop["flag"] and not (should_stop is not None and should_stop()):
             ticks += 1
             if is_engaged(setup.config_dir, setup.loop):
                 sleep(poll_seconds)
                 continue
+            if ticks == 1 or ticks % mail_every == 0:
+                try:
+                    poll_mail_triggers(setup)
+                except Exception as exc:  # noqa: BLE001 — mail poll must not kill the runner
+                    logging.getLogger("blumkin.loop").exception(
+                        "mail poll failed: %s", type(exc).__name__
+                    )
             pending = drain_queue(setup.config_dir)
             consumed = 0
             try:

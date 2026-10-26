@@ -111,6 +111,7 @@ from blumkin.install_method import (
 )
 from blumkin.loop import commands as loop_commands
 from blumkin.loop.config import LoopConfigError, LoopTriggerNotFoundError
+from blumkin.loop.init import LoopInitError, init_profiles
 from blumkin.loop.service import LoopServiceError, install_user_unit
 from blumkin.mail_signature_state import (
     clear_signature_state,
@@ -559,7 +560,9 @@ def _loop_fail(exc: BaseException, *, as_json: bool) -> NoReturn:
     """Map a loop-command failure onto the standard error envelope and exit code."""
     if isinstance(exc, LoopTriggerNotFoundError):
         slug, code = "not_found", EXIT_NOT_FOUND
-    elif isinstance(exc, (LoopConfigError, LoopServiceError, OSError, ProviderConfigError)):
+    elif isinstance(
+        exc, (LoopConfigError, LoopInitError, LoopServiceError, OSError, ProviderConfigError)
+    ):
         slug, code = "usage_error", EXIT_USAGE
     else:
         _fail(exc, as_json=as_json)
@@ -2416,9 +2419,39 @@ def loop() -> None:
     """Unattended loop and cron runner: triggers name a task and an instance.
 
     One process owns the work queue (issue #501). Runs for the same task instance
-    are serialized; a kill switch stops every run. Mail and schedule feeders land
-    in later issues under #499.
+    are serialized; a kill switch stops every run. Mail and schedule feeders live
+    under #499 / #503.
     """
+
+
+@loop.command("init", epilog=help_text.LOOP_INIT_EPILOG)
+@click.option(
+    "--profile",
+    "profiles",
+    multiple=True,
+    help="Mailbox profile to authenticate (repeatable; default: every profile).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def loop_init(ctx: click.Context, profiles: tuple[str, ...], as_json_flag: bool) -> None:
+    """Authenticate mailbox profiles for the loop mail feeder (interactive once)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = init_profiles(config_dir(), profiles=list(profiles) or None)
+    except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
+        _loop_fail(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+        return
+    lines = []
+    for row in payload["profiles"]:
+        if row["ok"]:
+            lines.append(f"{row['profile']}: ready ({row['provider']})")
+        else:
+            lines.append(f"{row['profile']}: failed ({row.get('error', 'error')})")
+    emit_lines(lines)
+    if not payload["ok"]:
+        raise SystemExit(EXIT_AUTH)
 
 
 @loop.command("install-service", epilog=help_text.LOOP_INSTALL_SERVICE_EPILOG)

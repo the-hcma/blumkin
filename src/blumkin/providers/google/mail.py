@@ -581,16 +581,25 @@ def _gmail_service(cfg: BlumkinConfig) -> Any:
     return build_api_service("gmail", "v1", creds=creds, config=cfg)
 
 
-def _header_map(msg: dict[str, Any]) -> dict[str, str]:
+def _header_list(msg: dict[str, Any]) -> list[dict[str, str]]:
+    """Preserve duplicate header names in payload order (e.g. Authentication-Results)."""
     headers = ((msg.get("payload") or {}).get("headers")) or []
-    out: dict[str, str] = {}
+    out: list[dict[str, str]] = []
     for item in headers:
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name") or "").casefold()
+        name = str(item.get("name") or "")
         value = item.get("value")
         if name and value is not None:
-            out[name] = str(value)
+            out.append({"name": name, "value": str(value)})
+    return out
+
+
+def _header_map(msg: dict[str, Any]) -> dict[str, str]:
+    # Last-wins map for fields that are single-valued (From, Subject, …).
+    out: dict[str, str] = {}
+    for item in _header_list(msg):
+        out[item["name"].casefold()] = item["value"]
     return out
 
 
@@ -819,6 +828,7 @@ def _message_detail(
         "from_name": from_name,
         "has_attachments": _payload_has_attachments(payload),
         "id": msg.get("id"),
+        "headers": _header_list(msg),
         "injection_warning": scan_mail_message(body=body, subject=subject),
         "internet_message_id": headers.get("message-id"),
         "is_draft": "DRAFT" in label_ids,
