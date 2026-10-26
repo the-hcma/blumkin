@@ -76,12 +76,17 @@ from blumkin.browser.handoff import HandoffError, format_handoff_human
 from blumkin.browser.launcher import BrowserLaunchError
 from blumkin.browser.ledger import LedgerError, LedgerJournalError, LedgerNotFoundError
 from blumkin.browser.ledger_commands import (
+    ledger_apply,
     ledger_begin,
     ledger_discard,
+    ledger_handoff,
     ledger_list,
+    ledger_reconcile,
     ledger_record,
+    ledger_stage,
     ledger_status,
     ledger_submitted,
+    ledger_verify,
 )
 from blumkin.browser.model import SiteModelError
 from blumkin.browser.profiles import BrowserProfileError, ProfileBusyError, ProfileInUseError
@@ -2301,6 +2306,55 @@ def browser_ledger() -> None:
     """Remember what has been filed for one instance of a task."""
 
 
+@browser_ledger.command("apply")
+@click.argument("task")
+@click.argument("instance")
+@click.argument("kind", type=click.Choice(["day", "receipt"]))
+@click.argument("item")
+@click.option("--flow", required=True, help="Recorded site-model flow name to run.")
+@click.option(
+    "--value",
+    "value",
+    multiple=True,
+    help="Flow binding as KEY=VALUE (repeatable), for fill/goto/upload.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--sha256", default=None, help="SHA-256 of a receipt's file (64 hex digits).")
+@click.pass_context
+def browser_ledger_apply(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    kind: str,
+    item: str,
+    flow: str,
+    value: tuple[str, ...],
+    as_json_flag: bool,
+    sha256: str | None,
+) -> None:
+    """Run a recorded flow for one item and mark it filled (no-op if already verified)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_apply(
+            load_browser_setup(),
+            task,
+            instance,
+            kind,
+            item,
+            flow=flow,
+            value=value,
+            sha256=sha256,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    state = payload["item"]["state"]
+    noop = " (already verified)" if payload["noop"] else ""
+    emit_lines([f"{task}/{instance}: {kind} {item} {state}{noop}; {payload['status']['summary']}"])
+
+
 @browser_ledger.command("begin", epilog=help_text.BROWSER_LEDGER_BEGIN_EPILOG)
 @click.argument("task")
 @click.argument("instance")
@@ -2339,6 +2393,46 @@ def browser_ledger_discard(
     _emit_ledger(payload, as_json=as_json)
 
 
+@browser_ledger.command("handoff")
+@click.argument("task")
+@click.argument("instance")
+@click.option(
+    "--step",
+    "step",
+    multiple=True,
+    required=True,
+    help="Final click instruction for the user (repeatable).",
+)
+@click.option(
+    "--decision",
+    "decision",
+    multiple=True,
+    help="Open decision still needing the user (repeatable).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_ledger_handoff(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    step: tuple[str, ...],
+    decision: tuple[str, ...],
+    as_json_flag: bool,
+) -> None:
+    """Build the filled-in / NOT-submitted handoff from the ledger."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_handoff(load_browser_setup(), task, instance, step=step, decision=decision)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    from blumkin.browser.handoff import format_handoff_human, parse_handoff
+
+    emit_lines([format_handoff_human(parse_handoff(payload))])
+
+
 @browser_ledger.command("list", epilog=help_text.BROWSER_LEDGER_LIST_EPILOG)
 @click.argument("task")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
@@ -2358,6 +2452,49 @@ def browser_ledger_list(ctx: click.Context, task: str, as_json_flag: bool) -> No
         emit_lines([f"{task}: no instances (start one with `{begin}`)"])
         return
     emit_lines([f"{entry['instance']}: {entry['phase']}" for entry in payload["instances"]])
+
+
+@browser_ledger.command("reconcile")
+@click.argument("task")
+@click.argument("instance")
+@click.argument("kind", type=click.Choice(["day", "receipt"]))
+@click.option(
+    "--page-item",
+    "page_item",
+    multiple=True,
+    help="Item id observed on the live page (repeatable).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_ledger_reconcile(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    kind: str,
+    page_item: tuple[str, ...],
+    as_json_flag: bool,
+) -> None:
+    """Compare the ledger with page ids (read-only; never re-adds)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_reconcile(
+            load_browser_setup(), task, instance, kind=kind, page_item=page_item
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    lines = [
+        f"{task}/{instance}: matched {len(payload['matched'])}, "
+        f"only in ledger {len(payload['only_in_ledger'])}, "
+        f"only on page {len(payload['only_on_page'])}"
+    ]
+    for item in payload["only_in_ledger"]:
+        lines.append(f"  ledger only: {item}")
+    for item in payload["only_on_page"]:
+        lines.append(f"  page only: {item}")
+    emit_lines(lines)
 
 
 @browser_ledger.command("record", epilog=help_text.BROWSER_LEDGER_RECORD_EPILOG)
@@ -2407,6 +2544,51 @@ def browser_ledger_record(
     )
 
 
+@browser_ledger.command("stage")
+@click.argument("task")
+@click.argument("instance")
+@click.argument("kind", type=click.Choice(["day", "receipt"]))
+@click.argument("item")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--model-version", type=int, default=None, help="Site model version in use.")
+@click.option("--sha256", default=None, help="SHA-256 of a receipt's file (64 hex digits).")
+@click.pass_context
+def browser_ledger_stage(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    kind: str,
+    item: str,
+    as_json_flag: bool,
+    model_version: int | None,
+    sha256: str | None,
+) -> None:
+    """Stage one item (no-op if already verified)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_stage(
+            load_browser_setup(),
+            task,
+            instance,
+            kind,
+            item,
+            sha256=sha256,
+            model_version=model_version,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    noop = " (already verified)" if payload["noop"] else ""
+    emit_lines(
+        [
+            f"{task}/{instance}: {kind} {item} {payload['item']['state']}{noop}; "
+            f"{payload['status']['summary']}"
+        ]
+    )
+
+
 @browser_ledger.command("status", epilog=help_text.BROWSER_LEDGER_STATUS_EPILOG)
 @click.argument("task")
 @click.argument("instance")
@@ -2438,6 +2620,59 @@ def browser_ledger_submitted(
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     _emit_ledger(payload, as_json=as_json)
+
+
+@browser_ledger.command("verify")
+@click.argument("task")
+@click.argument("instance")
+@click.argument("kind", type=click.Choice(["day", "receipt"]))
+@click.argument("item")
+@click.option(
+    "--present/--missing",
+    "present",
+    default=True,
+    help="Whether the item was found on the live page.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--model-version", type=int, default=None, help="Site model version in use.")
+@click.option("--sha256", default=None, help="SHA-256 of a receipt's file (64 hex digits).")
+@click.pass_context
+def browser_ledger_verify(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    kind: str,
+    item: str,
+    present: bool,
+    as_json_flag: bool,
+    model_version: int | None,
+    sha256: str | None,
+) -> None:
+    """Mark an item verified when the page shows it, otherwise failed."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_verify(
+            load_browser_setup(),
+            task,
+            instance,
+            kind,
+            item,
+            present=present,
+            sha256=sha256,
+            model_version=model_version,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    noop = " (already verified)" if payload["noop"] else ""
+    emit_lines(
+        [
+            f"{task}/{instance}: {kind} {item} {payload['item']['state']}{noop}; "
+            f"{payload['status']['summary']}"
+        ]
+    )
 
 
 @browser.command("press", epilog=help_text.BROWSER_PRESS_EPILOG)
