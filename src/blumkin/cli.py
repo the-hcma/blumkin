@@ -2853,8 +2853,8 @@ def browser_transcript(
         return
     coverage = payload["coverage"]
     lines: list[str] = []
+    lines.extend(format_injection_warning_banner(payload["injection_warning"]))
     if payload["text"] is not None:
-        lines.extend(format_injection_warning_banner(payload["injection_warning"]))
         lines.extend([payload["untrusted"], ""])
         lines.extend(sanitize_terminal(payload["text"]).splitlines())
         lines.append("")

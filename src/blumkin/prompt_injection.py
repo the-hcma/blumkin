@@ -99,18 +99,18 @@ class InjectionScanResult:
     matched: bool
     findings: list[InjectionFinding] = field(default_factory=list)
 
-    def to_payload(self) -> dict[str, object] | None:
+    def to_payload(self, *, include_snippets: bool = True) -> dict[str, object] | None:
         """`None` when nothing matched, so callers can omit the key entirely
         and keep their JSON shape stable for consumers that don't check it."""
         if not self.matched:
             return None
-        return {
-            "findings": [
-                {"family": f.family, "location": f.location, "snippet": f.snippet}
-                for f in self.findings
-            ],
-            "matched": True,
-        }
+        findings: list[dict[str, str]] = []
+        for finding in self.findings:
+            item: dict[str, str] = {"family": finding.family, "location": finding.location}
+            if include_snippets:
+                item["snippet"] = finding.snippet
+            findings.append(item)
+        return {"findings": findings, "matched": True}
 
 
 def format_injection_warning_banner(warning: dict[str, Any] | None) -> list[str]:
@@ -130,8 +130,12 @@ def format_injection_warning_banner(warning: dict[str, Any] | None) -> list[str]
     for finding in findings:
         family = finding.get("family")
         location = finding.get("location")
-        snippet = sanitize_terminal(str(finding.get("snippet") or ""))
-        lines.append(f"  - [{family}] {location}: {snippet}")
+        snippet = finding.get("snippet")
+        if snippet:
+            detail = sanitize_terminal(str(snippet))
+        else:
+            detail = "matched content withheld (see --out file or re-run without --out)"
+        lines.append(f"  - [{family}] {location}: {detail}")
     return lines
 
 

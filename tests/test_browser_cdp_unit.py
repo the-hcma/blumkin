@@ -16,6 +16,10 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from blumkin.browser.cdp import (
+    _FRAME_TRANSCRIPT_READY_JS,
+    _SCROLL_PREPARE_JS,
+    _SCROLL_STEP_JS,
+    _SCROLL_TO_TOP_JS,
     BrowserActionError,
     BrowserAttachError,
     ControlInfo,
@@ -787,6 +791,119 @@ def test_navigation_to_an_allowed_host_and_ordinary_requests_pass_through() -> N
     assert _restricted_outcome("https://cdn.example.net/x.js", navigation=False) == ("fallback",)
     assert _restricted_outcome("https://evil.example.net/frame", main_frame=False) == ("fallback",)
     assert _restricted_outcome("about:blank") == ("fallback",)
+
+
+class _ScrollFrame:
+    def __init__(self, url: str, text: str, *, prepare: str = "fixed") -> None:
+        self._frame_url = url
+        self._text = text
+        self._prepare = prepare
+        self._scroll_steps = 0
+
+    @property
+    def url(self) -> str:
+        return self._frame_url
+
+    def evaluate(self, script: str) -> object:
+        if script == _FRAME_TRANSCRIPT_READY_JS:
+            return "minutes" in self._text and "seconds" in self._text
+        if script == _SCROLL_PREPARE_JS:
+            return self._prepare
+        if script == _SCROLL_TO_TOP_JS:
+            return True
+        if script == _SCROLL_STEP_JS:
+            self._scroll_steps += 1
+            return self._scroll_steps >= 1
+        if script == "document.body.innerText":
+            return self._text
+        raise AssertionError(f"unexpected evaluate script: {script[:80]!r}")
+
+
+class _ScrollPage(_Page):
+    def __init__(self, child: _ScrollFrame) -> None:
+        super().__init__()
+        self.main_frame = self
+        self.frames = [self, child]
+
+    def wait_for_timeout(self, ms: float) -> None:
+        self.calls.append(("wait", ms))
+
+
+class _DriftingHostFrame(_ScrollFrame):
+    def __init__(self, text: str) -> None:
+        super().__init__("https://tenant.sharepoint.com/x", text, prepare="scroll")
+        self._host_reads = 0
+
+    @property
+    def url(self) -> str:
+        if self._host_reads > 0:
+            return "https://evil.example.net/x"
+        return "https://tenant.sharepoint.com/x"
+
+    def evaluate(self, script: str) -> object:
+        if script == "document.body.innerText":
+            self._host_reads += 1
+        if script == _SCROLL_STEP_JS:
+            self._scroll_steps += 1
+            return self._scroll_steps >= 2
+        return super().evaluate(script)
+
+
+def test_scroll_frame_text_reads_a_short_non_scrollable_transcript_in_one_step() -> None:
+    pane = "Ann\n0 minutes 5 seconds\n0:05\nAnn 0 minutes 5 seconds\nHi\n"
+    pw = _Playwright(_ScrollPage(_ScrollFrame("https://tenant.sharepoint.com/x", pane)))
+    _, driver = _driver(pw)
+
+    capture = driver.scroll_frame_text(
+        lambda host: host.endswith("sharepoint.com"), max_steps=5, wait_s=1.0
+    )
+
+    assert capture.steps == 1
+    assert capture.reached_end is True
+    assert capture.reached_top is True
+    assert "Hi" in capture.chunks[0]
+
+
+def test_scroll_frame_text_refuses_a_frame_that_drifts_off_allowed_hosts() -> None:
+    pane = "Ann\n0 minutes 5 seconds\n0:05\nAnn 0 minutes 5 seconds\nHi\n"
+    pw = _Playwright(_ScrollPage(_DriftingHostFrame(pane)))
+    _, driver = _driver(pw)
+
+    with pytest.raises(BrowserActionError, match="allowed host"):
+        driver.scroll_frame_text(
+            lambda host: host.endswith("sharepoint.com"), max_steps=5, wait_s=1.0
+        )
+
+
+def test_scroll_frame_text_waits_for_transcript_rows_not_bare_loading_chrome() -> None:
+    pw = _Playwright(_ScrollPage(_ScrollFrame("https://tenant.sharepoint.com/x", "Loading…")))
+    _, driver = _driver(pw)
+
+    with pytest.raises(BrowserActionError, match="allowed host"):
+        driver.scroll_frame_text(
+            lambda host: host.endswith("sharepoint.com"), max_steps=5, wait_s=0.0
+        )
+
+
+class _MissingScrollerFrame(_ScrollFrame):
+    def evaluate(self, script: str) -> object:
+        if script == _FRAME_TRANSCRIPT_READY_JS:
+            return True
+        if script == _SCROLL_PREPARE_JS:
+            return "missing"
+        return super().evaluate(script)
+
+
+def test_scroll_frame_text_errors_when_no_scroller_and_no_transcript_rows() -> None:
+    pw = _Playwright(
+        _ScrollPage(_MissingScrollerFrame("https://tenant.sharepoint.com/x", "Spinner"))
+    )
+    _, driver = _driver(pw)
+
+    with pytest.raises(BrowserActionError, match="still loading"):
+        driver.scroll_frame_text(
+            lambda host: host.endswith("sharepoint.com"), max_steps=5, wait_s=1.0
+        )
 
 
 def test_the_navigation_restriction_is_installed_once_and_released_on_detach() -> None:

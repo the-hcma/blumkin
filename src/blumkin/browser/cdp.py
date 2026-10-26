@@ -304,12 +304,28 @@ class PlaywrightDriver:
                 )
             self._page.wait_for_timeout(500)
         try:
-            frame.evaluate(_SCROLL_PREPARE_JS)
+            scroll_mode = str(frame.evaluate(_SCROLL_PREPARE_JS))
+            if scroll_mode == "missing":
+                raise BrowserActionError(
+                    "Expected a scrollable transcript pane or loaded transcript rows, got neither "
+                    "(is the transcript still loading?)"
+                )
+            if scroll_mode == "fixed":
+                self._require_allowed_frame_host(frame, is_allowed)
+                text = str(frame.evaluate("document.body.innerText"))
+                return FrameCapture(
+                    chunks=(text,),
+                    reached_end=True,
+                    reached_top=True,
+                    steps=1,
+                    url=frame.url,
+                )
             chunks: list[str] = []
             reached_top = bool(frame.evaluate(_SCROLL_TO_TOP_JS))
             steps = 0
             reached_end = False
             while steps < max_steps:
+                self._require_allowed_frame_host(frame, is_allowed)
                 self._page.wait_for_timeout(_SCROLL_SETTLE_MS)
                 chunks.append(str(frame.evaluate("document.body.innerText")))
                 steps += 1
@@ -385,7 +401,7 @@ class PlaywrightDriver:
         )
 
     def _ready_frame(self, is_allowed: Callable[[str], bool]) -> Any | None:
-        """The first child frame on an allowed host that already has text, else None."""
+        """The first child frame on an allowed host whose transcript pane has loaded, else None."""
         for frame in self._page.frames:
             if frame == self._page.main_frame:
                 continue
@@ -393,9 +409,17 @@ class PlaywrightDriver:
             if not host or not is_allowed(host):
                 continue
             with contextlib.suppress(PlaywrightError):
-                if int(frame.evaluate("document.body ? document.body.innerText.length : 0")) > 0:
+                if bool(frame.evaluate(_FRAME_TRANSCRIPT_READY_JS)):
                     return frame
         return None
+
+    def _require_allowed_frame_host(self, frame: Any, is_allowed: Callable[[str], bool]) -> None:
+        host = urlsplit(frame.url).hostname or ""
+        if not host or not is_allowed(host):
+            detail = host or frame.url
+            raise BrowserActionError(
+                f"Expected the transcript frame to stay on an allowed host, got {detail!r}"
+            )
 
     def _require_open(self) -> None:
         if self._closed:
@@ -540,12 +564,26 @@ def open_driver(
         raise
 
 
+_FRAME_TRANSCRIPT_READY_JS = (
+    "() => { const text = document.body ? document.body.innerText : ''; "
+    "return /\\d+ minutes? \\d+ seconds?/.test(text); }"
+)
+
+
 _SCROLL_PREPARE_JS = (
-    "() => { const els = [...document.querySelectorAll('*')].filter(e => "
+    "() => { const text = document.body ? document.body.innerText : ''; "
+    "const hasTurn = /\\d+ minutes? \\d+ seconds?/.test(text); "
+    "const els = [...document.querySelectorAll('*')].filter(e => "
     "e.scrollHeight > e.clientHeight + 50 && "
     "['auto', 'scroll'].includes(getComputedStyle(e).overflowY)); "
     "els.sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)); "
-    "window.__blumkinScroller = els[0] || null; }"
+    "let scroller = els[0] || null; "
+    "if (!scroller) { const root = document.scrollingElement; "
+    "if (root && root.scrollHeight > root.clientHeight + 50) scroller = root; } "
+    "window.__blumkinScroller = scroller; "
+    "if (scroller) return 'scroll'; "
+    "if (hasTurn) return 'fixed'; "
+    "return 'missing'; }"
 )
 
 

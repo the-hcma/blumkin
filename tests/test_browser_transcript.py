@@ -16,6 +16,7 @@ from blumkin.browser.transcript import (
     merge_chunks,
     parse_chunk,
     parse_duration,
+    transcription_stopped_after_capture,
 )
 from blumkin.config import BrowserConfig, BrowserSetup, BrowserTaskPolicy
 
@@ -124,6 +125,59 @@ def test_assess_reports_entries_that_go_back_in_time() -> None:
 def test_has_stop_marker_needs_the_event_line_not_the_words_in_speech() -> None:
     assert has_stop_marker([PANE_NEXT])
     assert not has_stop_marker(["A 1 seconds\nthey stopped transcription yesterday"])
+    assert not has_stop_marker([PANE_NEXT, PANE_TOP])
+
+
+def test_transcription_stopped_after_capture_ignores_an_earlier_stop() -> None:
+    early_stop = (
+        f"{HENRIQUE}\n0 minutes 10 seconds\n0:10\n{HENRIQUE} 0 minutes 10 seconds\n"
+        "Mid-meeting.\n\n stopped transcription\n"
+    )
+    continued = (
+        f"{HENRIQUE}\n0 minutes 10 seconds\n0:10\n{HENRIQUE} 0 minutes 10 seconds\n"
+        "Mid-meeting.\n"
+        f"{BRADEN}\n1 minutes 0 seconds\n1:00\n{BRADEN} 1 minutes 0 seconds\n"
+        "Still going.\n"
+    )
+    entries = merge_chunks([early_stop, continued])
+
+    assert not transcription_stopped_after_capture([early_stop, continued], entries)
+    assert transcription_stopped_after_capture([PANE_NEXT], merge_chunks([PANE_NEXT]))
+
+
+def test_parse_chunk_keeps_a_speaker_name_in_speech_without_following_metadata() -> None:
+    pane = f"""
+{HENRIQUE} 0 minutes 5 seconds
+We should ask {BRADEN} about it.
+{HENRIQUE} 0 minutes 8 seconds
+Done.
+"""
+    entries = parse_chunk(pane)
+
+    assert len(entries) == 2
+    assert BRADEN in entries[0].text
+
+
+def test_assess_still_flags_tail_when_only_an_earlier_stop_was_seen() -> None:
+    early_stop = (
+        f"{HENRIQUE}\n0 minutes 10 seconds\n0:10\n{HENRIQUE} 0 minutes 10 seconds\n"
+        "Only this turn.\n\n stopped transcription\n"
+    )
+    later = (
+        f"{HENRIQUE}\n0 minutes 10 seconds\n0:10\n{HENRIQUE} 0 minutes 10 seconds\n"
+        "Only this turn.\n"
+    )
+    entries = merge_chunks([early_stop, later])
+    report = assess(
+        entries,
+        duration_s=2046,
+        gap_threshold_s=2000,
+        reached_end=True,
+        reached_top=True,
+        transcription_stopped=transcription_stopped_after_capture([early_stop, later], entries),
+    )
+
+    assert any("tail missing" in problem for problem in report.problems)
 
 
 @pytest.mark.parametrize(

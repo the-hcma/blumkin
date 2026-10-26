@@ -124,8 +124,35 @@ def format_text(entries: Iterable[Entry]) -> str:
 
 
 def has_stop_marker(chunks: Iterable[str]) -> bool:
-    """Whether any chunk shows Teams' own "stopped transcription" event (the real end)."""
-    return any(_STOPPED.search(chunk) for chunk in chunks)
+    """Whether the last scroll chunk shows Teams' "stopped transcription" event line."""
+    chunks_list = tuple(chunks)
+    if not chunks_list:
+        return False
+    return _STOPPED.search(chunks_list[-1]) is not None
+
+
+def transcription_stopped_after_capture(chunks: Iterable[str], entries: Sequence[Entry]) -> bool:
+    """Whether transcription stopped after the last captured turn, not at an earlier stop."""
+    if not entries:
+        return False
+    chunks_list = tuple(chunks)
+    if not chunks_list:
+        return False
+    last_chunk = chunks_list[-1]
+    stop = _STOPPED.search(last_chunk)
+    if stop is None:
+        return False
+    last_entry = entries[-1]
+    last_turn_at = -1
+    for match in _HEADER.finditer(last_chunk):
+        if match.group("speaker") != last_entry.speaker:
+            continue
+        if _duration_seconds(match.group("duration")) != last_entry.start_s:
+            continue
+        last_turn_at = match.start()
+    if last_turn_at < 0:
+        return False
+    return stop.start() > last_turn_at
 
 
 def merge_chunks(chunks: Iterable[str]) -> list[Entry]:
@@ -200,7 +227,8 @@ _BARE_CLOCK = re.compile(r"\d{1,2}(?::\d{2}){1,2}")
 _BARE_DURATION = re.compile(_DURATION)
 _HEADER = re.compile(rf"(?P<speaker>.+?) (?P<duration>{_DURATION})")
 _INITIALS = re.compile(r"[A-Z]{1,3}")
-_STOPPED = re.compile(r"^\s*stopped transcription\s*$", re.MULTILINE)
+_STARTED = re.compile(r"^\s*started transcription\s*$", re.IGNORECASE)
+_STOPPED = re.compile(r"^\s*stopped transcription\s*$", re.MULTILINE | re.IGNORECASE)
 _UNIT_SECONDS = {"hour": 3600, "minute": 60, "second": 1}
 
 
@@ -213,12 +241,33 @@ def _duration_seconds(text: str) -> int:
 
 def _is_boundary(lines: Sequence[str], index: int, speakers: set[str]) -> bool:
     line = lines[index]
-    if _HEADER.fullmatch(line) or _BARE_DURATION.fullmatch(line) or _BARE_CLOCK.fullmatch(line):
+    if (
+        _HEADER.fullmatch(line)
+        or _BARE_DURATION.fullmatch(line)
+        or _BARE_CLOCK.fullmatch(line)
+        or _STARTED.fullmatch(line)
+        or _STOPPED.fullmatch(line)
+    ):
         return True
-    if line in speakers:
+    if line in speakers and _follows_speaker_metadata(lines, index):
+        return True
+    if (
+        _INITIALS.fullmatch(line) is not None
+        and index + 2 < len(lines)
+        and lines[index + 1] in speakers
+        and _follows_speaker_metadata(lines, index + 1)
+    ):
+        return True
+    return False
+
+
+def _follows_speaker_metadata(lines: Sequence[str], speaker_index: int) -> bool:
+    if speaker_index + 1 >= len(lines):
+        return False
+    next_line = lines[speaker_index + 1]
+    if _STARTED.fullmatch(next_line) or _STOPPED.fullmatch(next_line):
         return True
     return (
-        _INITIALS.fullmatch(line) is not None
-        and index + 1 < len(lines)
-        and lines[index + 1] in speakers
+        _BARE_DURATION.fullmatch(next_line) is not None
+        or _BARE_CLOCK.fullmatch(next_line) is not None
     )

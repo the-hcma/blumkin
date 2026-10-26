@@ -26,7 +26,12 @@ from blumkin.browser.commands import TaskNotFoundError
 from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError, attach_guarded
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.profiles import load_profile
-from blumkin.browser.transcript import assess, format_text, has_stop_marker, merge_chunks
+from blumkin.browser.transcript import (
+    assess,
+    format_text,
+    merge_chunks,
+    transcription_stopped_after_capture,
+)
 from blumkin.config import BrowserSetup
 from blumkin.output import sanitize_terminal
 from blumkin.prompt_injection import scan_for_injection
@@ -187,19 +192,20 @@ def transcript_task(
         )
         entries = merge_chunks(capture.chunks)
         text = format_text(entries)
+        injection = scan_for_injection(text, location="transcript.text")
         report = assess(
             entries,
             duration_s=duration_s,
             reached_end=capture.reached_end,
             reached_top=capture.reached_top,
-            transcription_stopped=has_stop_marker(capture.chunks),
+            transcription_stopped=transcription_stopped_after_capture(capture.chunks, entries),
         )
         if target is not None:
             _write_private(target, text + "\n")
         return {
             "action": "transcript",
             "coverage": report.to_payload(),
-            "injection_warning": scan_for_injection(text, location="transcript.text").to_payload(),
+            "injection_warning": injection.to_payload(include_snippets=target is None),
             "ok": True,
             "out": str(target) if target is not None else None,
             "scroll_steps": capture.steps,
