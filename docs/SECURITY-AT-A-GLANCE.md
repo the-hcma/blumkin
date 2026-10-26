@@ -51,6 +51,16 @@ None of this is enforced by blumkin's code - it is Entra-side configuration on t
 - **Page text is untrusted.** Text read from a page or a receipt is scanned for prompt-injection patterns and treated as data, never instructions.
 - **Receipts stay local, and the upload target is checked.** Receipt images and amounts are read on this machine and are never logged. An upload needs the task to declare `allowed_hosts` and is refused unless the page is on one of those hosts, which protects only as far as the upload check: it does not limit where the page sends the file afterward, since a background request is not blocked; the destination is only as trustworthy as the hosts the user declared, and the page itself can still be wrong about what it does with the file.
 
+## Loop / cron (unattended runner)
+
+`blumkin loop` polls allowlisted mail and due cron triggers, then runs the same browser tasks as above. Extra bounds:
+
+- **Allowlist + Authentication-Results.** Mail triggers only accept full allowlisted addresses whose first `Authentication-Results` header shows SPF, DKIM and DMARC pass.
+- **Message-as-data.** Subjects, bodies and attachments are not instructions; do not treat them as agent commands.
+- **Kill switch.** `~/.config/blumkin/loop/KILL` or `loop.kill_switch = true` skips every run without stopping the service.
+- **No explore / no submit.** The loop never calls site explore and still cannot submit a form.
+- **Notices.** Short status mail to the allowlist (or `loop.notice_to`) after journaled runs; subjects are ignored on re-poll so notices cannot loop. Details: [`docs/loop.md`](./loop.md).
+
 ## Blast radius
 
 - A skill only ever affects the operator's own tenant, with their own consent.

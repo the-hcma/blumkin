@@ -1,6 +1,6 @@
 # systemd user unit for `blumkin loop`
 
-The loop runner (issue #501 / #499) is meant to run as a systemd user service so it starts with the session and keeps renewing mail credentials without a terminal.
+The loop runner (issue #501 / #499) is meant to run as a systemd user service so it starts with the session and keeps renewing mail credentials without a terminal. Full operator guide: [`docs/loop.md`](../../docs/loop.md).
 
 ## Install
 
