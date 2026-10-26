@@ -3285,8 +3285,8 @@ def receipts_rehome(
             message_id=message_id,
         )
     except AlreadyFiledError as exc:
-        _emit_error(error="conflict", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_OTHER) from exc
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     except UnconfirmedError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
