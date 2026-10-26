@@ -8,6 +8,7 @@ intake is best-effort after enqueue; failures are counted, not fatal to the tick
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -37,6 +38,7 @@ ListProfilesFn = Callable[[], list[dict[str, Any]]]
 class PollResult:
     enqueued: int
     ignored: int
+    intake_failed: int
     paused_profiles: tuple[str, ...]
     scanned: int
 
@@ -44,6 +46,7 @@ class PollResult:
         return {
             "enqueued": self.enqueued,
             "ignored": self.ignored,
+            "intake_failed": self.intake_failed,
             "paused_profiles": list(self.paused_profiles),
             "scanned": self.scanned,
         }
@@ -95,6 +98,7 @@ async def _poll_async(
         return PollResult(
             enqueued=0,
             ignored=0,
+            intake_failed=0,
             paused_profiles=tuple(sorted(list_paused_profiles(setup.config_dir))),
             scanned=0,
         )
@@ -109,7 +113,9 @@ async def _poll_async(
     profiles = _resolve_profiles(triggers, list_prof)
     enqueued = 0
     ignored = 0
+    intake_failed = 0
     scanned = 0
+    log = logging.getLogger("blumkin.loop")
 
     for profile_name in profiles:
         if is_profile_paused(setup.config_dir, profile_name):
@@ -124,6 +130,11 @@ async def _poll_async(
                 # Brief outage: skip this tick; do not pause the profile.
                 continue
             pause_profile(setup.config_dir, profile_name, reason="renewal_failed")
+            log.warning(
+                "mail profile %s paused after renewal failure (%s)",
+                profile_name,
+                type(exc).__name__,
+            )
             continue
 
         for spec in triggers:
@@ -150,12 +161,16 @@ async def _poll_async(
                 )
                 if outcome == "enqueued":
                     enqueued += 1
+                elif outcome == "intake_failed":
+                    enqueued += 1
+                    intake_failed += 1
                 else:
                     ignored += 1
 
     return PollResult(
         enqueued=enqueued,
         ignored=ignored,
+        intake_failed=intake_failed,
         paused_profiles=tuple(sorted(list_paused_profiles(setup.config_dir))),
         scanned=scanned,
     )
@@ -197,6 +212,7 @@ async def _consider_message(
         # Record so we do not re-fetch this message on every poll tick.
         mark_handled(setup.config_dir, profile=profile_name, message_id=message_id)
         return "ignored"
+    intake_ok = True
     try:
         await save_attachments(
             config_dir=setup.config_dir,
@@ -207,11 +223,11 @@ async def _consider_message(
             config=cfg,
         )
     except Exception:  # noqa: BLE001 — intake is best-effort; trigger still runs
-        pass
+        intake_ok = False
     # Enqueue, then mark handled so a queue write failure cannot drop the message.
     enqueue(setup.config_dir, spec.name)
     mark_handled(setup.config_dir, profile=profile_name, message_id=message_id)
-    return "enqueued"
+    return "enqueued" if intake_ok else "intake_failed"
 
 
 def _default_download(**kwargs: Any) -> Awaitable[dict[str, Any]]:

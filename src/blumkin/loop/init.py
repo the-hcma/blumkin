@@ -32,6 +32,7 @@ def init_profiles(
     load_fn = load_config or default_load
     wanted = {p.strip() for p in (profiles or []) if p.strip()}
     rows = list_fn()
+    available: set[str] = set()
     names: list[str] = []
     for row in rows:
         name = ""
@@ -39,12 +40,16 @@ def init_profiles(
             name = str(row.get("name") or row.get("profile") or "").strip()
         if not name:
             continue
+        available.add(name)
         if wanted and name not in wanted:
             continue
         names.append(name)
-    if wanted and not names:
-        missing = ", ".join(sorted(wanted))
-        raise LoopInitError(f"Expected configured mailbox profile(s) {missing}, got none")
+    if wanted:
+        missing = sorted(wanted - available)
+        if missing:
+            raise LoopInitError(
+                f"Expected configured mailbox profile(s) {', '.join(missing)}, got none"
+            )
     if not names:
         raise LoopInitError("Expected at least one mailbox profile in config.toml, got none")
 

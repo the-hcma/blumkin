@@ -286,10 +286,20 @@ def _loop_trigger(name: str, table: Any) -> TriggerSpec:
     subject_tag: str | None = None
     if subject_raw is not None:
         subject_tag = _require_string(subject_raw, f"loop.triggers.{name}.subject_tag")
-    if kind is TriggerKind.LOOP and not allowlist:
-        raise LoopConfigError(
-            f"loop.triggers.{name}.allowlist must list at least one sender email when kind is loop"
-        )
+    if kind is TriggerKind.LOOP:
+        from blumkin.loop.mail_trust import is_allowlist_email
+
+        if not allowlist:
+            raise LoopConfigError(
+                f"loop.triggers.{name}.allowlist must list at least one sender email "
+                "when kind is loop"
+            )
+        bad = [entry for entry in allowlist if not is_allowlist_email(entry)]
+        if bad:
+            raise LoopConfigError(
+                f"loop.triggers.{name}.allowlist entries must be complete email addresses, "
+                f"got {bad!r}"
+            )
     if kind is not TriggerKind.LOOP and (
         allowlist or attachment_types or profiles or subject_tag is not None
     ):

@@ -2,9 +2,9 @@
 
 A message is acted on only when the sender is allowlisted and the *first*
 Authentication-Results header (the receiving MTA typically prepends) reports
-spf=pass, dkim=pass and dmarc=pass in that same header. Missing or partial
-headers fail closed. Sender-injected later headers are ignored. Message content
-is never used as instructions.
+spf=pass, dkim=pass and dmarc=pass as method results (RFC 8601). Comments are
+stripped before matching so comment text cannot spoof a pass. Missing or
+partial headers fail closed. Message content is never used as instructions.
 """
 
 from __future__ import annotations
@@ -13,9 +13,11 @@ import re
 from typing import Any
 
 _AUTH_HEADER = re.compile(r"^authentication-results\s*:", re.IGNORECASE)
-_SPF = re.compile(r"\bspf=(pass)\b", re.IGNORECASE)
-_DKIM = re.compile(r"\bdkim=(pass)\b", re.IGNORECASE)
-_DMARC = re.compile(r"\bdmarc=(pass)\b", re.IGNORECASE)
+_COMMENT = re.compile(r"\([^)]*\)")
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_SPF = re.compile(r"(?<![a-z0-9_])spf=pass(?![a-z0-9_=])", re.IGNORECASE)
+_DKIM = re.compile(r"(?<![a-z0-9_])dkim=pass(?![a-z0-9_=])", re.IGNORECASE)
+_DMARC = re.compile(r"(?<![a-z0-9_])dmarc=pass(?![a-z0-9_=])", re.IGNORECASE)
 
 
 def allowlisted_sender(sender: str | None, allowlist: tuple[str, ...] | list[str]) -> bool:
@@ -23,20 +25,27 @@ def allowlisted_sender(sender: str | None, allowlist: tuple[str, ...] | list[str
     if not sender or not isinstance(sender, str):
         return False
     needle = sender.strip().lower()
-    if not needle or "@" not in needle:
+    if not _EMAIL.match(needle):
         return False
     allowed = {
-        entry.strip().lower() for entry in allowlist if isinstance(entry, str) and entry.strip()
+        entry.strip().lower()
+        for entry in allowlist
+        if isinstance(entry, str) and _EMAIL.match(entry.strip())
     }
     return needle in allowed
 
 
 def authentication_results_pass(headers: list[dict[str, Any]] | list[str] | None) -> bool:
-    """True when the first Authentication-Results header alone has spf/dkim/dmarc=pass."""
-    text = _first_authentication_results(headers)
+    """True when the first Authentication-Results header has spf/dkim/dmarc=pass."""
+    text = _strip_comments(_first_authentication_results(headers))
     if not text:
         return False
     return bool(_SPF.search(text) and _DKIM.search(text) and _DMARC.search(text))
+
+
+def is_allowlist_email(value: str) -> bool:
+    """True when ``value`` looks like a complete sender address."""
+    return bool(_EMAIL.match(value.strip()))
 
 
 def subject_matches(subject: str | None, tag: str | None) -> bool:
@@ -64,3 +73,12 @@ def _first_authentication_results(headers: list[dict[str, Any]] | list[str] | No
         if name.lower() == "authentication-results" and value.strip():
             return f"{name}: {value}"
     return ""
+
+
+def _strip_comments(text: str) -> str:
+    """Remove RFC 8601 parenthetical comments so they cannot spoof method results."""
+    previous = None
+    while previous != text:
+        previous = text
+        text = _COMMENT.sub(" ", text)
+    return text

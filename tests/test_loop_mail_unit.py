@@ -71,6 +71,16 @@ def test_authentication_results_does_not_combine_across_headers() -> None:
     assert not authentication_results_pass(headers)
 
 
+def test_authentication_results_ignores_comment_spoof() -> None:
+    headers = [
+        {
+            "name": "Authentication-Results",
+            "value": "mx.example (spf=pass dkim=pass dmarc=pass); spf=fail; dkim=fail; dmarc=fail",
+        }
+    ]
+    assert not authentication_results_pass(headers)
+
+
 def test_handled_messages_round_trip(tmp_path: Path) -> None:
     assert not is_handled(tmp_path, profile="work", message_id="m1")
     assert mark_handled(tmp_path, profile="work", message_id="m1") is True
