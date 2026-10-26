@@ -3290,7 +3290,7 @@ def receipts_rehome(
     except UnconfirmedError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
-    except (RehomeError, LedgerError, LedgerNotFoundError) as exc:
+    except (BrowserProfileError, RehomeError, LedgerError, LedgerNotFoundError) as exc:
         error = "not_found" if isinstance(exc, LedgerNotFoundError) else "usage_error"
         code = EXIT_NOT_FOUND if isinstance(exc, LedgerNotFoundError) else EXIT_USAGE
         _emit_error(error=error, message=str(exc), as_json=as_json)

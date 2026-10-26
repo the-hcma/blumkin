@@ -202,6 +202,16 @@ def rehome_receipt(
             raise AlreadyFiledError(
                 f"Expected a new receipt, got sha256 {digest[:8]}… already at {dest.name}"
             )
+        intent = _live_intents(_read_moves(config_dir, task, instance)).get(digest)
+        if intent is None or not _intent_matches(
+            intent,
+            dest=dest.resolve(),
+            source=src.resolve(),
+            copied=copy_only,
+        ):
+            raise RehomeError(
+                f"Expected a live journaled intent for sha256 {digest[:8]}… before resume, got none"
+            )
         if not copy_only and src.is_file() and not src.is_symlink():
             src.unlink()
         _append_move(
@@ -290,9 +300,13 @@ def restore_rehomed(
     seen: set[str] = set()
     for entry in reversed(moves):
         event = entry.get("event")
+        digest = str(entry.get("sha256") or "")
+        if event == "restored":
+            if _SHA256.fullmatch(digest):
+                seen.add(digest)
+            continue
         if event not in {"result", "intent"}:
             continue
-        digest = str(entry.get("sha256") or "")
         if not _SHA256.fullmatch(digest) or digest in seen:
             continue
         dest = Path(str(entry.get("dest") or ""))
@@ -301,8 +315,12 @@ def restore_rehomed(
         seen.add(digest)
         source = Path(str(entry.get("source") or ""))
         copied = bool(entry.get("copied"))
-        restored = _restore_one(dest=dest, source=source, digest=digest, copied=copied)
-        results.append(RestoreResult(dest=dest, restored=restored, sha256=digest, source=source))
+        if not _restore_one(dest=dest, source=source, digest=digest, copied=copied):
+            raise RehomeError(
+                f"Expected to restore sha256 {digest[:8]}… from {str(dest)!r}, "
+                "got a missing or mismatched managed file"
+            )
+        results.append(RestoreResult(dest=dest, restored=True, sha256=digest, source=source))
         _append_move(
             config_dir,
             task,
@@ -399,6 +417,29 @@ def _instance_dir(config_dir: Path, task: str, instance: str) -> Path:
     return path
 
 
+def _intent_matches(intent: Mapping[str, Any], *, dest: Path, source: Path, copied: bool) -> bool:
+    return (
+        bool(intent.get("copied")) is copied
+        and Path(str(intent.get("dest") or "")).resolve() == dest
+        and Path(str(intent.get("source") or "")).resolve() == source
+    )
+
+
+def _live_intents(moves: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    """Intents that have not yet been closed by a result or restored event."""
+    live: dict[str, Mapping[str, Any]] = {}
+    for entry in moves:
+        event = entry.get("event")
+        digest = str(entry.get("sha256") or "")
+        if not _SHA256.fullmatch(digest):
+            continue
+        if event == "intent":
+            live[digest] = entry
+        elif event in {"result", "restored"}:
+            live.pop(digest, None)
+    return live
+
+
 def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -459,6 +500,10 @@ def _restore_one(*, dest: Path, source: Path, digest: str, copied: bool) -> bool
         return True
     source.parent.mkdir(parents=True, exist_ok=True)
     if source.exists():
+        if source.is_file() and not source.is_symlink() and file_sha256(source) == digest:
+            # Half-finished move: source already has the bytes; drop the managed copy.
+            dest.unlink()
+            return True
         raise RehomeError(
             f"Expected original path {str(source)!r} to be free for restore, got an existing file"
         )

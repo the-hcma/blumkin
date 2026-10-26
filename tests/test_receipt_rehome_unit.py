@@ -262,6 +262,7 @@ def test_interrupted_move_resumes_when_dest_already_matches(tmp_path: Path) -> N
             {
                 "at": "2026-10-20T12:00:00Z",
                 "copied": False,
+                "dest": str(dest.resolve()),
                 "dest_name": dest.name,
                 "event": "intent",
                 "message_id": None,
@@ -311,6 +312,70 @@ def test_rehome_rejects_source_already_at_destination(tmp_path: Path) -> None:
             upload_dirs=dirs,
         )
     assert dest.is_file()
+
+
+def test_resume_without_a_live_intent_is_refused(tmp_path: Path) -> None:
+    config, _uploads, dirs = _setup(tmp_path)
+    source = tmp_path / "scan.jpg"
+    source.write_bytes(b"no-intent")
+    digest = file_sha256(source)
+    dest_dir = managed_instance_dir(dirs, "trip-lisbon")
+    dest_dir.mkdir(parents=True)
+    dest = dest_dir / f"2026-10-20_taxi-co_18.50-USD_{digest[:8]}.jpg"
+    dest.write_bytes(b"no-intent")
+    with pytest.raises(RehomeError, match="live journaled intent"):
+        rehome_receipt(
+            config,
+            "expense-report",
+            "trip-lisbon",
+            source,
+            fields=_fields(),
+            upload_dirs=dirs,
+        )
+    assert source.is_file()
+
+
+def test_restore_accepts_source_that_already_has_the_bytes(tmp_path: Path) -> None:
+    config, _uploads, dirs = _setup(tmp_path)
+    source = tmp_path / "inbox" / "scan.jpg"
+    source.parent.mkdir()
+    source.write_bytes(b"both-sides")
+    digest = file_sha256(source)
+    dest_dir = managed_instance_dir(dirs, "trip-lisbon")
+    dest_dir.mkdir(parents=True)
+    dest = dest_dir / f"2026-10-20_taxi-co_18.50-USD_{digest[:8]}.jpg"
+    dest.write_bytes(b"both-sides")
+    journal = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "receipt-moves.jsonl"
+    journal.write_text(
+        json.dumps(
+            {
+                "at": "2026-10-20T12:00:00Z",
+                "copied": False,
+                "dest": str(dest.resolve()),
+                "event": "result",
+                "message_id": None,
+                "sha256": digest,
+                "source": str(source.resolve()),
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    setup = BrowserSetup(
+        browser=BrowserConfig(
+            tasks={
+                "expense-report": BrowserTaskPolicy(
+                    allowed_hosts=("example.test",),
+                    upload_dirs=tuple(dirs),
+                )
+            }
+        ),
+        config_dir=config,
+    )
+    payload = ledger_discard(setup, "expense-report", "trip-lisbon", yes=True)
+    assert source.is_file()
+    assert not dest.exists()
+    assert payload["receipts_restored"][0]["restored"] is True
 
 
 def test_discard_restores_intent_only_half_finished_move(tmp_path: Path) -> None:
