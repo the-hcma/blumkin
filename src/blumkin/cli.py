@@ -3295,6 +3295,9 @@ def receipts_rehome(
         code = EXIT_NOT_FOUND if isinstance(exc, LedgerNotFoundError) else EXIT_USAGE
         _emit_error(error=error, message=str(exc), as_json=as_json)
         raise SystemExit(code) from exc
+    except OSError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
     payload = result.as_dict() | {"ok": True}
     if as_json:
         emit_json(payload)

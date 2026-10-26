@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from blumkin.browser.ledger import begin_instance
+from blumkin.browser.ledger import LedgerError, begin_instance
 from blumkin.browser.ledger_commands import ledger_discard
 from blumkin.browser.receipt_rehome import (
     AlreadyFiledError,
@@ -376,6 +376,79 @@ def test_restore_accepts_source_that_already_has_the_bytes(tmp_path: Path) -> No
     assert source.is_file()
     assert not dest.exists()
     assert payload["receipts_restored"][0]["restored"] is True
+
+
+def test_discard_succeeds_when_intent_never_placed_and_source_intact(tmp_path: Path) -> None:
+    config, _uploads, dirs = _setup(tmp_path)
+    source = tmp_path / "inbox" / "scan.jpg"
+    source.parent.mkdir()
+    source.write_bytes(b"never-moved")
+    digest = file_sha256(source)
+    journal = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "receipt-moves.jsonl"
+    journal.write_text(
+        json.dumps(
+            {
+                "at": "2026-10-20T12:00:00Z",
+                "copied": False,
+                "dest": str(tmp_path / "uploads" / "trip-lisbon" / "missing.jpg"),
+                "event": "intent",
+                "message_id": None,
+                "sha256": digest,
+                "source": str(source.resolve()),
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    setup = BrowserSetup(
+        browser=BrowserConfig(
+            tasks={
+                "expense-report": BrowserTaskPolicy(
+                    allowed_hosts=("example.test",),
+                    upload_dirs=tuple(dirs),
+                )
+            }
+        ),
+        config_dir=config,
+    )
+    payload = ledger_discard(setup, "expense-report", "trip-lisbon", yes=True)
+    assert source.is_file()
+    assert payload["receipts_restored"][0]["restored"] is True
+
+
+def test_discard_fails_when_intent_has_no_dest_and_source_is_gone(tmp_path: Path) -> None:
+    config, _uploads, dirs = _setup(tmp_path)
+    source = tmp_path / "inbox" / "gone.jpg"
+    digest = "b" * 64
+    journal = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "receipt-moves.jsonl"
+    journal.write_text(
+        json.dumps(
+            {
+                "at": "2026-10-20T12:00:00Z",
+                "copied": False,
+                "dest": str(tmp_path / "uploads" / "trip-lisbon" / "missing.jpg"),
+                "event": "intent",
+                "message_id": None,
+                "sha256": digest,
+                "source": str(source),
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    setup = BrowserSetup(
+        browser=BrowserConfig(
+            tasks={
+                "expense-report": BrowserTaskPolicy(
+                    allowed_hosts=("example.test",),
+                    upload_dirs=tuple(dirs),
+                )
+            }
+        ),
+        config_dir=config,
+    )
+    with pytest.raises(LedgerError, match="restore"):
+        ledger_discard(setup, "expense-report", "trip-lisbon", yes=True)
 
 
 def test_discard_restores_intent_only_half_finished_move(tmp_path: Path) -> None:

@@ -444,6 +444,10 @@ def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _original_intact(source: Path, digest: str) -> bool:
+    return source.is_file() and not source.is_symlink() and file_sha256(source) == digest
+
+
 def _place(src: Path, dest: Path, *, digest: str, copy_only: bool) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     # Copy to a temporary name, verify, then rename so a crash never leaves a torn dest.
@@ -492,6 +496,9 @@ def _read_moves(config_dir: Path, task: str, instance: str) -> list[dict[str, An
 
 
 def _restore_one(*, dest: Path, source: Path, digest: str, copied: bool) -> bool:
+    # Intent never placed, or restore already moved bytes back: dest gone, source intact.
+    if not dest.is_symlink() and not dest.exists() and _original_intact(source, digest):
+        return True
     if not dest.is_file() or dest.is_symlink() or file_sha256(dest) != digest:
         return False
     if copied:
@@ -500,7 +507,7 @@ def _restore_one(*, dest: Path, source: Path, digest: str, copied: bool) -> bool
         return True
     source.parent.mkdir(parents=True, exist_ok=True)
     if source.exists():
-        if source.is_file() and not source.is_symlink() and file_sha256(source) == digest:
+        if _original_intact(source, digest):
             # Half-finished move: source already has the bytes; drop the managed copy.
             dest.unlink()
             return True
