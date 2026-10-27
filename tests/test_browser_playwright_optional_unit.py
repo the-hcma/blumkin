@@ -21,7 +21,10 @@ from blumkin.browser.profiles import BrowserSession, create_profile, write_sessi
 _WITHOUT_PLAYWRIGHT = textwrap.dedent(
     """
     import importlib.abc
+    import os
     import sys
+    import tempfile
+    from pathlib import Path
 
     class _Blocker(importlib.abc.MetaPathFinder):
         def find_spec(self, name, path=None, target=None):
@@ -31,14 +34,25 @@ _WITHOUT_PLAYWRIGHT = textwrap.dedent(
 
     sys.meta_path.insert(0, _Blocker())
 
+    cfg_dir = Path(tempfile.mkdtemp())
+    (cfg_dir / "config.toml").write_text(
+        '[profiles.default]\\nclient_id = "abc"\\n', encoding="utf-8"
+    )
+    os.environ["BLUMKIN_CONFIG_DIR"] = str(cfg_dir)
+
     import blumkin.cli
     from click.testing import CliRunner
 
     assert "playwright" not in sys.modules, "importing blumkin.cli imported playwright"
-    for args in (["mail", "--help"], ["calendar", "--help"], ["browser", "--help"]):
+    for args in (
+        ["mail", "--help"],
+        ["calendar", "--help"],
+        ["browser", "--help"],
+        ["mail", "signature", "--json"],
+    ):
         result = CliRunner().invoke(blumkin.cli.main, args)
         assert result.exit_code == 0, (args, result.exit_code, result.output)
-    assert "playwright" not in sys.modules, "a help path imported playwright"
+    assert "playwright" not in sys.modules, "a help or mail path imported playwright"
     print("ok")
     """
 )
