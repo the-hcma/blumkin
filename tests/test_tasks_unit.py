@@ -12,19 +12,23 @@ from click.testing import CliRunner
 from blumkin.cli import main
 from blumkin.config import load_config
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_USAGE
-from blumkin.skills.errors import classify_exception
+from blumkin.skills.errors import ConsentRequiredError, classify_exception
 from blumkin.tasks import (
     TaskAmbiguousError,
     TaskConflictError,
     TaskExistsError,
     TaskNotFoundError,
     format_tasks_create_human,
+    format_tasks_delete_human,
     format_tasks_list_human,
     format_tasks_show_human,
+    format_tasks_update_human,
     load_tasks,
     tasks_create,
+    tasks_delete,
     tasks_list,
     tasks_show,
+    tasks_update,
 )
 
 _REPORT = """\
@@ -320,3 +324,88 @@ def test_human_show_formatter() -> None:
     assert format_tasks_show_human({"task": {"name": "wr", "title": "W", "prompt": ""}})[-1] == (
         "(no Prompt: block)"
     )
+
+
+def test_update_preserves_unspecified_fields(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(
+        tasks_create(
+            config=cfg,
+            name="weekly-report",
+            prompt="five bullets",
+            title="Weekly",
+            trigger="wk",
+            input="Reports",
+            output="mail",
+        )
+    )
+    payload = asyncio.run(tasks_update(config=cfg, name="weekly-report", title="Weekly status"))
+    task = payload["task"]
+    assert task["title"] == "Weekly status"
+    assert task["trigger"] == "wk"
+    assert task["input"] == "Reports"
+    assert task["output"] == "mail"
+    assert task["prompt"] == "five bullets"
+
+
+def test_update_and_delete_refuse_conflict_and_missing(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks" / "wk.md").write_text("# A\n**Prompt:**\n\n> body\n", encoding="utf-8")
+    prof = tmp_path / "profiles" / "work" / "tasks"
+    prof.mkdir(parents=True)
+    (prof / "wk.md").write_text("# B\n**Prompt:**\n\n> body\n", encoding="utf-8")
+    with pytest.raises(TaskConflictError):
+        asyncio.run(tasks_update(config=cfg, name="wk", title="C"))
+    with pytest.raises(TaskConflictError):
+        asyncio.run(tasks_delete(config=cfg, name="wk", yes=True))
+    with pytest.raises(TaskNotFoundError):
+        asyncio.run(tasks_update(config=cfg, name="nope", title="x"))
+    with pytest.raises(TaskNotFoundError):
+        asyncio.run(tasks_delete(config=cfg, name="nope", yes=True))
+
+
+def test_delete_requires_yes_unless_dry_run(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="body"))
+    dry = asyncio.run(tasks_delete(config=cfg, name="wk", dry_run=True))
+    assert dry["dry_run"] is True
+    assert (tmp_path / "tasks" / "wk.md").is_file()
+    with pytest.raises(ConsentRequiredError):
+        asyncio.run(tasks_delete(config=cfg, name="wk"))
+    removed = asyncio.run(tasks_delete(config=cfg, name="wk", yes=True))
+    assert removed["dry_run"] is False
+    assert not (tmp_path / "tasks" / "wk.md").exists()
+
+
+def test_cli_tasks_update_and_delete_exit_codes(tmp_path, monkeypatch) -> None:
+    _cfg(tmp_path, monkeypatch)
+    runner = CliRunner()
+    assert (
+        runner.invoke(
+            main,
+            ["tasks", "create", "--name", "wk", "--prompt", "body", "--json"],
+            obj={},
+        ).exit_code
+        == 0
+    )
+    updated = runner.invoke(
+        main,
+        ["tasks", "update", "--name", "wk", "--title", "Weekly", "--json"],
+        obj={},
+    )
+    assert updated.exit_code == 0, updated.output
+    assert json.loads(updated.stdout)["task"]["title"] == "Weekly"
+    no_yes = runner.invoke(main, ["tasks", "delete", "--name", "wk", "--json"], obj={})
+    assert no_yes.exit_code == EXIT_USAGE
+    deleted = runner.invoke(main, ["tasks", "delete", "--name", "wk", "--yes", "--json"], obj={})
+    assert deleted.exit_code == 0, deleted.output
+    missing = runner.invoke(main, ["tasks", "delete", "--name", "wk", "--yes", "--json"], obj={})
+    assert missing.exit_code == EXIT_NOT_FOUND
+
+
+def test_human_update_and_delete_formatters() -> None:
+    assert format_tasks_update_human({"path": "/t/a.md"}) == ["updated /t/a.md"]
+    assert format_tasks_delete_human({"path": "/t/a.md", "dry_run": True}) == [
+        "would delete /t/a.md"
+    ]
+    assert format_tasks_delete_human({"path": "/t/a.md", "dry_run": False}) == ["deleted /t/a.md"]

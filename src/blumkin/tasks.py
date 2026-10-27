@@ -1,11 +1,12 @@
 """``tasks/<name>.md`` - named reusable prompt templates.
 
 One markdown file per template under ``<config-dir>/tasks/`` (and the active
-profile's ``profiles/<name>/tasks/``, merged on top). ``tasks.create`` writes a
-new file; ``tasks.list`` / ``tasks.show`` surface the templates. The agent
-fuzzy-matches the user's request against each template's ``Trigger:`` line,
-confirms the pick with the user, then runs the ``Prompt:`` block itself.
-blumkin ships no matcher and never calls a model.
+profile's ``profiles/<name>/tasks/``, merged on top). ``tasks.create`` /
+``tasks.update`` / ``tasks.delete`` mutate files; ``tasks.list`` /
+``tasks.show`` surface the templates. The agent fuzzy-matches the user's
+request against each template's ``Trigger:`` line, confirms the pick with the
+user, then runs the ``Prompt:`` block itself. blumkin ships no matcher and
+never calls a model.
 
 File shape::
 
@@ -66,6 +67,12 @@ def format_tasks_create_human(payload: dict[str, Any]) -> list[str]:
     return [sanitize_terminal(f"{verb} {payload.get('path', '')}")]
 
 
+def format_tasks_delete_human(payload: dict[str, Any]) -> list[str]:
+    if payload.get("dry_run"):
+        return [sanitize_terminal(f"would delete {payload.get('path', '')}")]
+    return [sanitize_terminal(f"deleted {payload.get('path', '')}")]
+
+
 def format_tasks_list_human(payload: dict[str, Any]) -> list[str]:
     tasks = payload.get("tasks") or []
     if not tasks:
@@ -94,6 +101,10 @@ def format_tasks_show_human(payload: dict[str, Any]) -> list[str]:
     else:
         lines.append("(no Prompt: block)")
     return lines
+
+
+def format_tasks_update_human(payload: dict[str, Any]) -> list[str]:
+    return [sanitize_terminal(f"updated {payload.get('path', '')}")]
 
 
 def load_tasks(config: BlumkinConfig) -> list[Task]:
@@ -164,6 +175,29 @@ async def tasks_create(
     }
 
 
+async def tasks_delete(
+    *,
+    config: BlumkinConfig,
+    name: str,
+    dry_run: bool = False,
+    yes: bool = False,
+) -> dict[str, Any]:
+    """Remove a template file. Requires ``yes`` unless ``dry_run``."""
+    from blumkin.skills.errors import ConsentRequiredError
+
+    task = _select(load_tasks(config), name)
+    path = _mutable_path(config, task)
+    if dry_run:
+        return {"ok": True, "dry_run": True, "name": task.name, "path": str(path)}
+    if not yes:
+        raise ConsentRequiredError(
+            "--yes is required to delete a template",
+            hint="Re-run with --yes, or pass --dry-run to show the path only.",
+        )
+    path.unlink()
+    return {"ok": True, "dry_run": False, "name": task.name, "path": str(path)}
+
+
 async def tasks_list(*, config: BlumkinConfig) -> dict[str, Any]:
     return {
         "ok": True,
@@ -199,6 +233,65 @@ async def tasks_show(*, config: BlumkinConfig, name: str) -> dict[str, Any]:
     }
 
 
+async def tasks_update(
+    *,
+    config: BlumkinConfig,
+    name: str,
+    input: str | None = None,
+    output: str | None = None,
+    prompt: str | None = None,
+    title: str | None = None,
+    trigger: str | None = None,
+) -> dict[str, Any]:
+    """Rewrite one template, preserving fields the caller did not pass."""
+    if all(value is None for value in (input, output, prompt, title, trigger)):
+        raise ValueError(
+            "pass at least one of --title, --trigger, --input, --output, --prompt to update"
+        )
+    task = _select(load_tasks(config), name)
+    path = _mutable_path(config, task)
+    title_value = task.title if title is None else _validate_oneline(title, field="--title")
+    trigger_value = (
+        task.trigger if trigger is None else _validate_oneline(trigger, field="--trigger")
+    )
+    input_value = task.input if input is None else _validate_oneline(input, field="--input")
+    output_value = task.output if output is None else _validate_oneline(output, field="--output")
+    if prompt is None:
+        prompt_value = task.prompt
+    else:
+        prompt_value = prompt if isinstance(prompt, str) else ""
+        if not prompt_value.strip():
+            raise ValueError("--prompt must be non-empty when provided")
+    # When the stored title was the stem default and the caller did not pass
+    # --title, omit the # Title line so a partial update does not invent one.
+    write_title = "" if title is None and task.title == task.name else title_value
+    path.write_text(
+        _render_markdown(
+            title=write_title,
+            trigger=trigger_value,
+            input_value=input_value,
+            output=output_value,
+            prompt=prompt_value,
+        ),
+        encoding="utf-8",
+    )
+    updated = _select(load_tasks(config), task.name)
+    return {
+        "ok": True,
+        "path": str(path),
+        "task": {
+            "conflict": updated.conflict,
+            "input": updated.input,
+            "name": updated.name,
+            "output": updated.output,
+            "prompt": updated.prompt,
+            "sources": list(updated.sources),
+            "title": updated.title,
+            "trigger": updated.trigger,
+        },
+    }
+
+
 def _create_path(directory: Path, name: str) -> Path:
     """Resolve ``directory/name.md`` and refuse anything outside ``directory``."""
     directory_resolved = directory.resolve()
@@ -218,6 +311,26 @@ def _create_tasks_dir(config: BlumkinConfig) -> Path:
     if profile_tasks.is_dir():
         return profile_tasks
     return config.config_dir / "tasks"
+
+
+def _mutable_path(config: BlumkinConfig, task: Task) -> Path:
+    """Resolved file path for update/delete, confined to a known tasks directory.
+
+    Profile ``tasks/`` directories may themselves be symlinks into a separate
+    config repo - that is allowed. A file whose resolved path escapes the
+    resolved tasks directory that listed it is refused.
+    """
+    raw = Path(task.sources[-1])
+    allowed_parents = {
+        (base / "tasks").resolve() for base in (config.config_dir, config.profile_dir)
+    }
+    parent = raw.parent.resolve()
+    if parent not in allowed_parents:
+        raise ValueError(f"refusing to modify path outside a tasks directory: {raw}")
+    resolved = raw.resolve()
+    if not resolved.is_relative_to(parent):
+        raise ValueError(f"refusing path escape from the tasks directory: {raw}")
+    return resolved
 
 
 def _merge(merged: dict[str, Task], parsed: Task) -> None:

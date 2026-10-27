@@ -550,8 +550,10 @@ _CONSENT = {
     "skills.describe": (False, False),
     "skills.list": (False, False),
     "tasks.create": (True, False),
+    "tasks.delete": (True, False),
     "tasks.list": (False, False),
     "tasks.show": (False, False),
+    "tasks.update": (True, False),
 }
 
 

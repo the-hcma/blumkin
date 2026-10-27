@@ -248,8 +248,10 @@ from blumkin.skills.meeting import format_transcription_human
 from blumkin.skills.people import format_resolve_human
 from blumkin.tasks import (
     format_tasks_create_human,
+    format_tasks_delete_human,
     format_tasks_list_human,
     format_tasks_show_human,
+    format_tasks_update_human,
 )
 from blumkin.version import (
     build_info,
@@ -7073,9 +7075,10 @@ def people_resolve_cmd(
 def tasks() -> None:
     """Named reusable prompt templates from `~/.config/blumkin/tasks/*.md`.
 
-    No network, no auth. blumkin surfaces the templates and can create new ones;
-    you (or an agent) match the request to a `Trigger:` line, confirm the pick,
-    and run the `Prompt:` block. blumkin ships no matcher and never calls a model.
+    No network, no auth. blumkin surfaces templates and can create, update, or
+    delete them; you (or an agent) match the request to a `Trigger:` line,
+    confirm the pick, and run the `Prompt:` block. blumkin ships no matcher and
+    never calls a model.
     """
 
 
@@ -7133,6 +7136,39 @@ def tasks_create_cmd(
     )
 
 
+@tasks.command("delete", epilog=help_text.TASKS_DELETE_EPILOG)
+@click.option("--name", "name", required=True, help="Template name (a unique prefix works).")
+@click.option(
+    "--yes",
+    "yes",
+    is_flag=True,
+    help="Confirm deletion (required unless --dry-run).",
+)
+@click.option(
+    "--dry-run",
+    "dry_run",
+    is_flag=True,
+    help="Show the path that would be removed; do not delete.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def tasks_delete_cmd(
+    ctx: click.Context, name: str, yes: bool, dry_run: bool, as_json_flag: bool
+) -> None:
+    """Remove a `tasks/<name>.md` template file.
+
+    Unknown name exits 5; conflict or ambiguous prefix exits 2. Deletion
+    requires `--yes`; `--dry-run` prints the path without removing it.
+    """
+    _dispatch_local(
+        ctx,
+        "tasks.delete",
+        {"dry_run": dry_run, "name": name, "yes": yes},
+        human=format_tasks_delete_human,
+        as_json_flag=as_json_flag,
+    )
+
+
 @tasks.command("list", epilog=help_text.TASKS_LIST_EPILOG)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -7161,6 +7197,50 @@ def tasks_show_cmd(ctx: click.Context, name: str, as_json_flag: bool) -> None:
         "tasks.show",
         {"name": name},
         human=format_tasks_show_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@tasks.command("update", epilog=help_text.TASKS_UPDATE_EPILOG)
+@click.option("--name", "name", required=True, help="Template name (a unique prefix works).")
+@click.option("--title", "title", default=None, help="Replace the # Title line.")
+@click.option("--trigger", "trigger", default=None, help="Replace the Trigger: field.")
+@click.option("--input", "input", default=None, help="Replace the Input: field.")
+@click.option("--output", "output", default=None, help="Replace the Output: field.")
+@click.option("--prompt", "prompt", default=None, help="Replace the Prompt: block body.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def tasks_update_cmd(
+    ctx: click.Context,
+    name: str,
+    title: str | None,
+    trigger: str | None,
+    input: str | None,
+    output: str | None,
+    prompt: str | None,
+    as_json_flag: bool,
+) -> None:
+    """Update fields on an existing template; unspecified fields are preserved.
+
+    Unknown name exits 5; conflict or ambiguous prefix exits 2. Pass at least
+    one of `--title` / `--trigger` / `--input` / `--output` / `--prompt`.
+    """
+    arguments: dict[str, object] = {"name": name}
+    if title is not None:
+        arguments["title"] = title
+    if trigger is not None:
+        arguments["trigger"] = trigger
+    if input is not None:
+        arguments["input"] = input
+    if output is not None:
+        arguments["output"] = output
+    if prompt is not None:
+        arguments["prompt"] = prompt
+    _dispatch_local(
+        ctx,
+        "tasks.update",
+        arguments,
+        human=format_tasks_update_human,
         as_json_flag=as_json_flag,
     )
 
