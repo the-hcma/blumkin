@@ -678,10 +678,15 @@ def _fetch_version(endpoint: str, timeout_s: float) -> dict[str, Any]:
 
 
 def _playwright_error() -> type[Exception]:
-    """Playwright's error type, imported on first use so `blumkin` starts without Playwright."""
+    """Playwright's error type, imported on first use so `blumkin` starts without Playwright.
+
+    Any failure resolving the class (missing install, blocked import, broken
+    package) returns :class:`_NeverRaised` so callers can still surface the
+    original error and run cleanup without the lookup replacing it.
+    """
     try:
         from playwright.sync_api import Error
-    except ImportError:
+    except Exception:
         return _NeverRaised
     return Error
 
