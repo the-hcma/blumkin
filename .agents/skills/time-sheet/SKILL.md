@@ -26,7 +26,7 @@ The values that belong to the user (the time sheet URL, the `period` (`weekly` o
 1. Create the task's browser profile: `blumkin browser profile create time-sheet`.
 2. Declare the controls the task may click in `config.toml`, under `[browser.tasks.time-sheet]` as `allowed_controls`, using the exact names the time card shows. Without this, `blumkin browser click` refuses everything. Declare only controls that cannot finalize the time sheet, and declare the hosts its pages may be on as `allowed_hosts` (for example `["erp.example.com"]`): without it `blumkin browser goto` goes anywhere, and the check after a page loads only stops the task once the other page has already loaded.
 3. Optionally set `[browser] default` to `chrome`, `edge` or `chromium`; Chrome is used when it is unset or not installed.
-4. Explore once (with the user at the terminal for any state-changing click): `blumkin browser launch time-sheet`, open the card, then `blumkin browser explore observe time-sheet <page-id>`, `blumkin browser explore click time-sheet "<control>"` (with `--role` / `--page` as needed), and `blumkin browser explore save time-sheet --yes`. Later sessions use `blumkin browser model check` instead of rediscovering the site.
+4. Explore once (with the user at the terminal for any state-changing click): `blumkin browser launch time-sheet`, open the card, then `blumkin browser explore observe time-sheet <page-id>`, `blumkin browser explore click time-sheet "<control>"` (with `--role` / `--page` as needed), review the draft with `blumkin browser explore show time-sheet`, and only then `blumkin browser explore save time-sheet --yes`. Later sessions use `blumkin browser model check` instead of rediscovering the site.
 
 ## Procedure
 
