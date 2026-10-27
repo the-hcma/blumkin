@@ -39,6 +39,7 @@ _WITHOUT_PLAYWRIGHT = textwrap.dedent(
         '[profiles.default]\\nclient_id = "abc"\\n', encoding="utf-8"
     )
     os.environ["BLUMKIN_CONFIG_DIR"] = str(cfg_dir)
+    os.environ["BLUMKIN_PROFILE"] = "default"
 
     import blumkin.cli
     from click.testing import CliRunner

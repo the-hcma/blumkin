@@ -49,7 +49,7 @@ from blumkin.browser.actions import (
     transcript_task,
     upload_task,
 )
-from blumkin.browser.cdp import BrowserActionError, BrowserAttachError
+from blumkin.browser.cdp import BrowserActionError, BrowserAttachError, BrowserDependencyError
 from blumkin.browser.commands import (
     TaskNotFoundError,
     create_task_profile,
@@ -541,6 +541,12 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "host_blocked", EXIT_OTHER
     elif isinstance(exc, BrowserActionError):
         slug, code = "browser_action_failed", EXIT_OTHER
+    elif isinstance(exc, BrowserDependencyError):
+        slug, code = "browser_dependency", EXIT_OTHER
+        hint = (
+            "Restore playwright with `uv sync` in the blumkin clone "
+            "(or `uv tool install -e . --reinstall`), then retry."
+        )
     elif isinstance(exc, BrowserAttachError):
         slug, code = "browser_not_running", EXIT_OTHER
         hint = f"Launch it first: `blumkin browser launch {task or 'TASK'}`, then sign in."

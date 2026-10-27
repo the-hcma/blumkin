@@ -44,6 +44,10 @@ class BrowserAttachError(RuntimeError):
     """The task browser could not be attached to."""
 
 
+class BrowserDependencyError(BrowserAttachError):
+    """Playwright (or another browser-driver dependency) is missing or broken."""
+
+
 class BrowserDriver(Protocol):
     """What a browser task may do: the guarded surface, with no way to finalize a form."""
 
@@ -734,8 +738,10 @@ def _sync_playwright() -> Any:
     """Start-up handle for Playwright's sync API, imported only when a browser command runs."""
     try:
         from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise BrowserAttachError(
+    except Exception as exc:
+        # ImportError for a missing package; SyntaxError / other Exception for a
+        # damaged install - both need reinstall guidance, not "browser not running".
+        raise BrowserDependencyError(
             f"Expected the playwright package to be importable, got {exc}; "
             "run `uv sync` in the blumkin clone (or `uv tool install -e . --reinstall`) "
             "to restore it, then retry the browser command"
