@@ -618,3 +618,30 @@ def test_a_name_longer_than_a_file_name_allows_is_a_usage_error(tmp_path, monkey
     cfg = _cfg(tmp_path, monkeypatch)
     with pytest.raises(TaskValidationError, match="Expected"):
         asyncio.run(tasks_create(config=cfg, name="a" * 300, prompt="body"))
+
+
+def test_create_force_refuses_when_identical_copies_exist_in_both_directories(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    body = "# Wk\n\n**Prompt:**\n\n> body\n"
+    config_copy = tmp_path / "tasks" / "wk.md"
+    config_copy.write_text(body, encoding="utf-8")
+    profile_tasks = tmp_path / "profiles" / "work" / "tasks"
+    profile_tasks.mkdir(parents=True)
+    profile_copy = profile_tasks / "wk.md"
+    profile_copy.write_text(body, encoding="utf-8")
+    with pytest.raises(TaskExistsError, match="remove or rename"):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="other", force=True))
+    assert config_copy.read_text(encoding="utf-8") == body
+    assert profile_copy.read_text(encoding="utf-8") == body
+
+
+def test_update_refuses_a_template_that_is_not_valid_utf8(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    path = tmp_path / "tasks" / "wk.md"
+    original = b"# Wk\n\n**Prompt:**\n\n> caf\xe9 body\n"
+    path.write_bytes(original)
+    with pytest.raises(TaskValidationError, match="UTF-8"):
+        asyncio.run(tasks_update(config=cfg, name="wk", trigger="t"))
+    assert path.read_bytes() == original

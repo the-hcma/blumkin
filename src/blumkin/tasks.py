@@ -158,9 +158,7 @@ async def tasks_create(
     # conflict / multi-source task that update/delete then refuse. Block that
     # before --force (force only overwrites the destination file).
     existing = next((task for task in load_tasks(config) if task.name == stem), None)
-    if existing is not None and str(path) not in {
-        str(Path(source).resolve()) for source in existing.sources
-    }:
+    if existing is not None and any(Path(source).resolve() != path for source in existing.sources):
         raise TaskExistsError(
             f"template {stem!r} already exists at {', '.join(existing.sources)}; "
             "remove or rename that copy before creating another"
@@ -297,7 +295,14 @@ async def tasks_update(
             raise TaskValidationError("--prompt must be non-empty when provided")
     # Rewriting renders only the modeled fields. Refuse when that would drop
     # anything else in the file (notes, extra headings, a second blockquote).
-    original = _signature(path.read_text(encoding="utf-8-sig", errors="replace"))
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise TaskValidationError(
+            f"Expected template {task.name!r} to be valid UTF-8, got bytes that are not; "
+            "re-save the file as UTF-8 first"
+        ) from exc
+    original = _signature(text)
     unchanged = {
         "trigger": task.trigger,
         "input_value": task.input,
