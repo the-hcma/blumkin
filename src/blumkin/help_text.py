@@ -2109,8 +2109,10 @@ read too and their entries combined. Each file: an optional `# Title` line,
 `**Trigger:**` / `**Input:**` / `**Output:**` fields, and a `**Prompt:**` block
 written as a `>` blockquote. `tasks create` / `update` / `delete` mutate files
 (create writes into the profile `tasks/` dir when that directory already
-exists, otherwise the config-dir one); blumkin never matches a trigger for you
-and never runs a model. See docs/operator-config.md.
+exists, otherwise the config-dir one). `update` refuses a file with content beyond
+those fields (it would drop it) and `delete` needs the exact name; both write files
+atomically and privately. blumkin never matches a trigger for you and never runs a
+model. See docs/operator-config.md.
 """
 
 TASKS_DELETE_EPILOG = TASKS_CREATE_EPILOG

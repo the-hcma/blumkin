@@ -491,3 +491,130 @@ def test_tasks_delete_confirm_false_string_does_not_authorize(tmp_path, monkeypa
             )
         )
     assert (tmp_path / "tasks" / "wk.md").is_file()
+
+
+def test_update_failure_keeps_the_original_template_and_leaves_no_temp_file(
+    tmp_path, monkeypatch
+) -> None:
+    import os
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="original body"))
+    path = tmp_path / "tasks" / "wk.md"
+    before = path.read_text(encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError, match="disk full"):
+        asyncio.run(tasks_update(config=cfg, name="wk", prompt="new body"))
+    assert path.read_text(encoding="utf-8") == before
+    assert [p.name for p in (tmp_path / "tasks").iterdir()] == ["wk.md"]
+
+
+def test_create_force_failure_keeps_the_original_template(tmp_path, monkeypatch) -> None:
+    import os
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="original body"))
+    path = tmp_path / "tasks" / "wk.md"
+    before = path.read_text(encoding="utf-8")
+    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
+    with pytest.raises(OSError, match="full"):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="new", force=True))
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_update_refuses_to_drop_text_it_does_not_model(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    body = (
+        "# Wk\n**Trigger:** wk\n\n**Prompt:**\n\n> body\n\n"
+        "## Examples\n\nSome hand-written notes.\n"
+    )
+    path = tmp_path / "tasks" / "wk.md"
+    path.write_text(body, encoding="utf-8")
+    with pytest.raises(TaskValidationError, match="Expected"):
+        asyncio.run(tasks_update(config=cfg, name="wk", trigger="new"))
+    assert path.read_text(encoding="utf-8") == body
+
+
+def test_update_accepts_a_hand_written_template_that_uses_only_modeled_fields(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    path = tmp_path / "tasks" / "wk.md"
+    path.write_text(
+        "#  Weekly  \n**trigger:**   wk  \n**Input:** reports\n\n\n"
+        "**Prompt:**\n>body\n>  indented\n",
+        encoding="utf-8",
+    )
+    payload = asyncio.run(tasks_update(config=cfg, name="wk", trigger="weekly"))
+    assert payload["task"]["trigger"] == "weekly"
+    assert payload["task"]["input"] == "reports"
+    assert payload["task"]["prompt"] == "body\n indented"
+
+
+def test_update_keeps_a_title_that_equals_the_file_name(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    path = tmp_path / "tasks" / "wk.md"
+    path.write_text("# wk\n\n**Prompt:**\n\n> body\n", encoding="utf-8")
+    asyncio.run(tasks_update(config=cfg, name="wk", trigger="t"))
+    assert path.read_text(encoding="utf-8").startswith("# wk\n")
+
+
+def test_create_force_works_when_the_tasks_directory_is_a_symlink(tmp_path, monkeypatch) -> None:
+    real = tmp_path / "dotfiles-tasks"
+    real.mkdir()
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "tasks").symlink_to(real)
+    (cfg_dir / "config.toml").write_text(
+        '[profiles.work]\nprovider = "microsoft"\ntenant_id = "x"\nclient_id = "y"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("BLUMKIN_PROFILE", "work")
+    cfg = load_config(profile="work")
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="one"))
+    payload = asyncio.run(tasks_create(config=cfg, name="wk", prompt="two", force=True))
+    assert payload["overwrote"] is True
+    assert payload["task"]["prompt"] == "two"
+
+
+def test_created_files_and_a_new_tasks_directory_are_private(tmp_path, monkeypatch) -> None:
+    import stat
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks").rmdir()
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="body"))
+    assert stat.S_IMODE((tmp_path / "tasks").stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "tasks" / "wk.md").stat().st_mode) == 0o600
+
+
+def test_updating_keeps_the_file_private(tmp_path, monkeypatch) -> None:
+    import stat
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="body"))
+    asyncio.run(tasks_update(config=cfg, name="wk", trigger="t"))
+    assert stat.S_IMODE((tmp_path / "tasks" / "wk.md").stat().st_mode) == 0o600
+
+
+def test_delete_needs_the_exact_name_but_a_dry_run_may_use_a_prefix(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="deploy-prod", prompt="body"))
+    preview = asyncio.run(tasks_delete(config=cfg, name="dep", dry_run=True))
+    assert preview["name"] == "deploy-prod"
+    with pytest.raises(TaskValidationError, match="exact"):
+        asyncio.run(tasks_delete(config=cfg, name="dep", yes=True))
+    assert (tmp_path / "tasks" / "deploy-prod.md").is_file()
+    done = asyncio.run(tasks_delete(config=cfg, name="deploy-prod", yes=True))
+    assert done["dry_run"] is False
+    assert not (tmp_path / "tasks" / "deploy-prod.md").exists()
+
+
+def test_a_name_longer_than_a_file_name_allows_is_a_usage_error(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    with pytest.raises(TaskValidationError, match="Expected"):
+        asyncio.run(tasks_create(config=cfg, name="a" * 300, prompt="body"))

@@ -22,7 +22,9 @@ File shape::
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,7 @@ from typing import Any
 from blumkin.config import BlumkinConfig
 from blumkin.output import emit_warning, sanitize_terminal
 
+_MAX_NAME_LENGTH = 64
 _NAME_RE = re.compile(r"^[a-z0-9._-]+$")
 # Characters ``str.splitlines()`` treats as breaks (not only CR/LF).
 _LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
@@ -155,7 +158,9 @@ async def tasks_create(
     # conflict / multi-source task that update/delete then refuse. Block that
     # before --force (force only overwrites the destination file).
     existing = next((task for task in load_tasks(config) if task.name == stem), None)
-    if existing is not None and str(path) not in existing.sources:
+    if existing is not None and str(path) not in {
+        str(Path(source).resolve()) for source in existing.sources
+    }:
         raise TaskExistsError(
             f"template {stem!r} already exists at {', '.join(existing.sources)}; "
             "remove or rename that copy before creating another"
@@ -165,8 +170,9 @@ async def tasks_create(
             f"template {stem!r} already exists at {path}; pass --force to overwrite"
         )
 
-    directory.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _write_private(
+        path,
         _render_markdown(
             title=title_value,
             trigger=trigger_value,
@@ -174,7 +180,6 @@ async def tasks_create(
             output=output_value,
             prompt=prompt_value,
         ),
-        encoding="utf-8",
     )
     loaded = load_tasks(config)
     created = next(task for task in loaded if task.name == stem)
@@ -203,6 +208,7 @@ async def tasks_delete(
     yes: bool = False,
 ) -> dict[str, Any]:
     """Remove a template file. Requires ``yes`` unless ``dry_run``."""
+    # Imported here: blumkin.skills.errors imports this module (circular otherwise).
     from blumkin.skills.errors import ConsentRequiredError
 
     task = _select(load_tasks(config), name)
@@ -210,6 +216,11 @@ async def tasks_delete(
     path = _mutable_path(config, task)
     if dry_run:
         return {"ok": True, "dry_run": True, "name": task.name, "path": str(path)}
+    if task.name != name.strip():
+        raise TaskValidationError(
+            f"Expected the exact template name to delete, got the prefix {name.strip()!r} "
+            f"of {task.name!r}; re-run with the full name (a --dry-run accepts a prefix)"
+        )
     if not yes:
         raise ConsentRequiredError(
             "--yes is required to delete a template",
@@ -284,10 +295,29 @@ async def tasks_update(
         prompt_value = prompt if isinstance(prompt, str) else ""
         if not prompt_value.strip():
             raise TaskValidationError("--prompt must be non-empty when provided")
-    # When the stored title was the stem default and the caller did not pass
-    # --title, omit the # Title line so a partial update does not invent one.
-    write_title = "" if title is None and task.title == task.name else title_value
-    path.write_text(
+    # Rewriting renders only the modeled fields. Refuse when that would drop
+    # anything else in the file (notes, extra headings, a second blockquote).
+    original = _signature(path.read_text(encoding="utf-8-sig", errors="replace"))
+    unchanged = {
+        "trigger": task.trigger,
+        "input_value": task.input,
+        "output": task.output,
+        "prompt": task.prompt,
+    }
+    # The stored title may be the stem default (no # line) or an explicit # line
+    # that happens to equal the name; keep whichever form the file has.
+    for kept_title in ("", task.title):
+        if _signature(_render_markdown(title=kept_title, **unchanged)) == original:
+            break
+    else:
+        raise TaskValidationError(
+            f"Expected template {task.name!r} to hold only a title, Trigger/Input/Output "
+            "lines and a Prompt blockquote, got other content that an update would drop; "
+            "edit the file by hand to change it"
+        )
+    write_title = kept_title if title is None else title_value
+    _write_private(
+        path,
         _render_markdown(
             title=write_title,
             trigger=trigger_value,
@@ -295,7 +325,6 @@ async def tasks_update(
             output=output_value,
             prompt=prompt_value,
         ),
-        encoding="utf-8",
     )
     updated = _select(load_tasks(config), task.name)
     return {
@@ -335,6 +364,30 @@ def _create_tasks_dir(config: BlumkinConfig) -> Path:
     return config.config_dir / "tasks"
 
 
+def _merge(merged: dict[str, Task], parsed: Task) -> None:
+    existing = merged.get(parsed.name)
+    if existing is None:
+        merged[parsed.name] = parsed
+        return
+    same = (existing.title, existing.trigger, existing.input, existing.output, existing.prompt) == (
+        parsed.title,
+        parsed.trigger,
+        parsed.input,
+        parsed.output,
+        parsed.prompt,
+    )
+    merged[parsed.name] = Task(
+        conflict=existing.conflict or not same,
+        input=parsed.input,
+        name=parsed.name,
+        output=parsed.output,
+        prompt=parsed.prompt,
+        sources=(*existing.sources, *parsed.sources),
+        title=parsed.title,
+        trigger=parsed.trigger,
+    )
+
+
 def _mutable_path(config: BlumkinConfig, task: Task) -> Path:
     """Resolved file path for update/delete, confined to a known tasks directory.
 
@@ -360,30 +413,6 @@ def _mutable_path(config: BlumkinConfig, task: Task) -> Path:
     if not resolved.is_relative_to(parent):
         raise TaskValidationError(f"refusing path escape from the tasks directory: {raw}")
     return resolved
-
-
-def _merge(merged: dict[str, Task], parsed: Task) -> None:
-    existing = merged.get(parsed.name)
-    if existing is None:
-        merged[parsed.name] = parsed
-        return
-    same = (existing.title, existing.trigger, existing.input, existing.output, existing.prompt) == (
-        parsed.title,
-        parsed.trigger,
-        parsed.input,
-        parsed.output,
-        parsed.prompt,
-    )
-    merged[parsed.name] = Task(
-        conflict=existing.conflict or not same,
-        input=parsed.input,
-        name=parsed.name,
-        output=parsed.output,
-        prompt=parsed.prompt,
-        sources=(*existing.sources, *parsed.sources),
-        title=parsed.title,
-        trigger=parsed.trigger,
-    )
 
 
 def _parse(path: Path) -> Task:
@@ -471,6 +500,21 @@ def _render_markdown(
     return "\n".join(lines)
 
 
+def _require_single_source(task: Task) -> None:
+    """Refuse update/delete when identical copies exist in more than one tasks dir.
+
+    ``load_tasks`` merges identical config/profile copies into one non-conflicting
+    task. Mutating only ``sources[-1]`` would leave the other copy visible (delete)
+    or create a conflict (update). Ask the operator to remove the duplicate first.
+    """
+    distinct = tuple(dict.fromkeys(task.sources))
+    if len(distinct) > 1:
+        raise TaskConflictError(
+            f"template {task.name!r} has identical copies across {', '.join(distinct)} "
+            "- remove one copy before update or delete"
+        )
+
+
 def _select(tasks: list[Task], name: str) -> Task:
     needle = name.strip()
     if not needle:
@@ -492,19 +536,26 @@ def _select(tasks: list[Task], name: str) -> Task:
     return task
 
 
-def _require_single_source(task: Task) -> None:
-    """Refuse update/delete when identical copies exist in more than one tasks dir.
-
-    ``load_tasks`` merges identical config/profile copies into one non-conflicting
-    task. Mutating only ``sources[-1]`` would leave the other copy visible (delete)
-    or create a conflict (update). Ask the operator to remove the duplicate first.
-    """
-    distinct = tuple(dict.fromkeys(task.sources))
-    if len(distinct) > 1:
-        raise TaskConflictError(
-            f"template {task.name!r} has identical copies across {', '.join(distinct)} "
-            "- remove one copy before update or delete"
-        )
+def _signature(text: str) -> list[str]:
+    """The non-blank lines of a template, normalized so layout differences do not matter."""
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line == ">":
+            continue
+        if line.startswith(">"):
+            lines.append(">" + line[1:].removeprefix(" "))
+        elif line.startswith("#"):
+            lines.append("# " + line.lstrip("#").strip())
+        else:
+            lowered = line.lower()
+            for label in ("trigger", "input", "output", "prompt"):
+                if lowered.startswith(f"**{label}:**"):
+                    lines.append(f"**{label}:** " + line.split(":**", 1)[1].strip())
+                    break
+            else:
+                lines.append(line)
+    return lines
 
 
 def _task_dirs(config: BlumkinConfig) -> list[Path]:
@@ -524,6 +575,10 @@ def _validate_name(name: str) -> str:
         raise TaskValidationError(
             "--name is required (file stem: lowercase letters, digits, ., _, -)"
         )
+    if len(stem) > _MAX_NAME_LENGTH:
+        raise TaskValidationError(
+            f"Expected a --name of at most {_MAX_NAME_LENGTH} characters, got {len(stem)}"
+        )
     if stem in {".", ".."} or "/" in stem or "\\" in stem or "\0" in stem:
         raise TaskValidationError("invalid --name: path separators and '.' / '..' are refused")
     if not _NAME_RE.fullmatch(stem):
@@ -538,3 +593,18 @@ def _validate_oneline(value: str, *, field: str) -> str:
     if any(ch in _LINE_BREAKS for ch in text):
         raise TaskValidationError(f"{field} must be a single line")
     return text.strip()
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Replace ``path`` atomically with ``text`` (mode 0600); the old file survives a failure."""
+    fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
