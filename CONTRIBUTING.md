@@ -12,6 +12,17 @@ Every change to `main` goes through a pull request. No direct pushes, no force p
 - **Agent review runs on every PR head.** `mergestorm-vortex` reviews each push; [`.agents/rules/pr-ship-and-review.md`](.agents/rules/pr-ship-and-review.md) requires an on-thread human reply before any review thread is resolved. Threads are addressed before merge.
 - **Code-owner review.** [`.github/CODEOWNERS`](.github/CODEOWNERS) is `* @thehcma` with `require_code_owner_reviews` on, so GitHub requests @thehcma on every PR and records who reviewed. `required_approving_review_count` is `0` — a solo maintainer cannot approve their own PR, and a block nobody can clear only forces admin-override merges. External contributions get @thehcma's review by practice; only collaborators can merge, and the checks gate it. Rationale and the "second contributor" trigger to raise it back to 1: [`docs/DECISIONS.md`](docs/DECISIONS.md) (D2).
 
+## Hermetic tests (parallel)
+
+CI and `pre-pr-checks` run the hermetic suite with pytest-xdist (`uv run pytest -m 'not live' -n auto -q`). Opt-in `browser` tests stay single-process and are not part of that run (`BLUMKIN_BROWSER_TESTS=1`).
+
+For a single-process debug run (useful when a failure looks worker-order dependent):
+
+```bash
+uv run pytest -m 'not live' -n 0
+# or: PYTEST_ADDOPTS='-p no:xdist' uv run pytest -m 'not live'
+```
+
 ## Static analysis and scanning
 
 Run locally with [`pre-pr-checks`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/dev/pre-pr-checks) (or the individual [`.github/ci/*`](.github/ci) scripts). CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same gates.
@@ -24,7 +35,7 @@ The **required status checks** on `main` are `Scaffold checks`, `Python lint & f
 | `ruff format --check` | Formatting drift | [`.github/ci/python-static`](.github/ci/python-static) | `Python lint & format checks` - **yes** |
 | `pyright` (basic) | Type errors, unresolved names, bad signatures - AST + type graph ([`[tool.pyright]`](pyproject.toml)) | [`.github/ci/python-static`](.github/ci/python-static) | `Python lint & format checks` - **yes** |
 | [`.github/ci/assert-uv-lock-version`](.github/ci/assert-uv-lock-version) | `uv.lock` project version drift vs [`pyproject.toml`](pyproject.toml) | [`.github/ci/python-static`](.github/ci/python-static) | `Python lint & format checks` - **yes** |
-| `pytest -m 'not live'` | Behaviour, offline/mocked | [`.github/ci/pytest-hermetic`](.github/ci/pytest-hermetic) → [`ci.yml` `test`](.github/workflows/ci.yml) | `Pytest (hermetic)` - **yes** |
+| `pytest -m 'not live' -n auto` | Behaviour, offline/mocked (parallel via pytest-xdist) | [`.github/ci/pytest-hermetic`](.github/ci/pytest-hermetic) → [`ci.yml` `test`](.github/workflows/ci.yml) | `Pytest (hermetic)` - **yes** |
 | [`test_packaging`](test_packaging) | Broken entry point / missing package data in the built wheel | [`ci.yml` `packaging`](.github/workflows/ci.yml) | `Packaging smoke` - **yes** |
 | `shellcheck -S info` | Shell script defects | [`.github/ci/shellcheck`](.github/ci/shellcheck) → [`ci.yml` `shellcheck`](.github/workflows/ci.yml) | `Shellcheck` - **yes** |
 | GitHub secret scanning + **push protection** | Recognised secrets | GitHub-native, on the repo | **blocks the `git push`** before the secret lands |
