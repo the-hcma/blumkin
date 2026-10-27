@@ -476,7 +476,8 @@ def _pp_tasks_delete(
 ) -> None:
     # ``--yes`` is normally gate-only (param=None); delete needs the flag in-handler
     # so ``--dry-run`` can skip consent while a real delete still requires it.
-    kwargs["yes"] = bool(arguments.get("yes") or arguments.get("confirm"))
+    # Accept only a real JSON/CLI true - ``bool("false")`` must never authorize.
+    kwargs["yes"] = arguments.get("yes") is True or arguments.get("confirm") is True
 
 
 _PREPROCESSORS: dict[str, Callable[[dict[str, Any], dict[str, Any], BlumkinConfig], None]] = {
@@ -541,7 +542,11 @@ def _run_gates(
 
     # --yes / confirm
     mode = _consent_mode(skill_id, spec_args)
-    if mode == "always" and not _consent_given(arguments):
+    if (
+        mode == "always"
+        and not (skill_id == "tasks.delete" and arguments.get("dry_run"))
+        and not _consent_given(arguments)
+    ):
         raise ConsentRequiredError("--yes is required for this command", hint=_YES_HINT_DEFAULT)
     if mode == "auto_reply":
         if _tristate(arguments, "on", "off") is not None and not _consent_given(arguments):

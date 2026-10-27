@@ -45,7 +45,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - the CLI wrapper re-rais
 # BESPOKE_SKILLS (auth verbs, doctor, skills.*, mail.signature, mcp.serve) have no
 # WorkspaceProvider method, so they can never be dispatched - never expose them.
 _EXCLUDED = BESPOKE_SKILLS
-_CONFIRM_SKILLS = frozenset({"mail.auto-reply", "meeting.transcription"})
+_CONFIRM_SKILLS = frozenset({"mail.auto-reply", "meeting.transcription", "tasks.delete"})
 # A synthetic read-only tool (not a catalog skill) so an agent can enumerate the
 # accounts this server can act as without shell access - issue #227.
 _PROFILES_LIST_TOOL = "profiles.list"

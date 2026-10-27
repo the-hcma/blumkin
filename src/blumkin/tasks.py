@@ -31,6 +31,8 @@ from blumkin.config import BlumkinConfig
 from blumkin.output import emit_warning, sanitize_terminal
 
 _NAME_RE = re.compile(r"^[a-z0-9._-]+$")
+# Characters ``str.splitlines()`` treats as breaks (not only CR/LF).
+_LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 
 
 class TaskAmbiguousError(ValueError):
@@ -44,6 +46,15 @@ class TaskConflictError(ValueError):
 
 class TaskExistsError(ValueError):
     """``tasks create`` would overwrite an existing file without ``--force``."""
+
+
+class TaskValidationError(ValueError):
+    """Bad ``--name`` / oneline field / prompt input for create or update.
+
+    Typed so ``classify_exception`` maps it to ``usage_error`` before the
+    auth-layer ValueError heuristics can re-read operator text (a rejected
+    name containing ``client_id``, or the word ``Missing``) as ``auth_required``.
+    """
 
 
 class TaskNotFoundError(LookupError):
@@ -135,7 +146,7 @@ async def tasks_create(
     output_value = _validate_oneline(output, field="--output")
     prompt_value = prompt if isinstance(prompt, str) else ""
     if not prompt_value.strip():
-        raise ValueError("--prompt is required (the Prompt: block body)")
+        raise TaskValidationError("--prompt is required (the Prompt: block body)")
 
     directory = _create_tasks_dir(config)
     path = _create_path(directory, stem)
@@ -186,6 +197,7 @@ async def tasks_delete(
     from blumkin.skills.errors import ConsentRequiredError
 
     task = _select(load_tasks(config), name)
+    _require_single_source(task)
     path = _mutable_path(config, task)
     if dry_run:
         return {"ok": True, "dry_run": True, "name": task.name, "path": str(path)}
@@ -245,10 +257,11 @@ async def tasks_update(
 ) -> dict[str, Any]:
     """Rewrite one template, preserving fields the caller did not pass."""
     if all(value is None for value in (input, output, prompt, title, trigger)):
-        raise ValueError(
+        raise TaskValidationError(
             "pass at least one of --title, --trigger, --input, --output, --prompt to update"
         )
     task = _select(load_tasks(config), name)
+    _require_single_source(task)
     path = _mutable_path(config, task)
     title_value = task.title if title is None else _validate_oneline(title, field="--title")
     trigger_value = (
@@ -261,7 +274,7 @@ async def tasks_update(
     else:
         prompt_value = prompt if isinstance(prompt, str) else ""
         if not prompt_value.strip():
-            raise ValueError("--prompt must be non-empty when provided")
+            raise TaskValidationError("--prompt must be non-empty when provided")
     # When the stored title was the stem default and the caller did not pass
     # --title, omit the # Title line so a partial update does not invent one.
     write_title = "" if title is None and task.title == task.name else title_value
@@ -317,19 +330,26 @@ def _mutable_path(config: BlumkinConfig, task: Task) -> Path:
     """Resolved file path for update/delete, confined to a known tasks directory.
 
     Profile ``tasks/`` directories may themselves be symlinks into a separate
-    config repo - that is allowed. A file whose resolved path escapes the
-    resolved tasks directory that listed it is refused.
+    config repo - that is allowed. A *file* symlink is refused: unlinking the
+    resolved target would leave a dangling ``*.md`` that ``load_tasks`` still
+    lists. A file whose resolved path escapes the resolved tasks directory
+    that listed it is refused.
     """
     raw = Path(task.sources[-1])
+    if raw.is_symlink():
+        raise TaskValidationError(
+            f"refusing to modify symlinked template file {raw}; replace the "
+            "link with a real file (or delete the link yourself) before update/delete"
+        )
     allowed_parents = {
         (base / "tasks").resolve() for base in (config.config_dir, config.profile_dir)
     }
     parent = raw.parent.resolve()
     if parent not in allowed_parents:
-        raise ValueError(f"refusing to modify path outside a tasks directory: {raw}")
+        raise TaskValidationError(f"refusing to modify path outside a tasks directory: {raw}")
     resolved = raw.resolve()
     if not resolved.is_relative_to(parent):
-        raise ValueError(f"refusing path escape from the tasks directory: {raw}")
+        raise TaskValidationError(f"refusing path escape from the tasks directory: {raw}")
     return resolved
 
 
@@ -463,6 +483,21 @@ def _select(tasks: list[Task], name: str) -> Task:
     return task
 
 
+def _require_single_source(task: Task) -> None:
+    """Refuse update/delete when identical copies exist in more than one tasks dir.
+
+    ``load_tasks`` merges identical config/profile copies into one non-conflicting
+    task. Mutating only ``sources[-1]`` would leave the other copy visible (delete)
+    or create a conflict (update). Ask the operator to remove the duplicate first.
+    """
+    distinct = tuple(dict.fromkeys(task.sources))
+    if len(distinct) > 1:
+        raise TaskConflictError(
+            f"template {task.name!r} has identical copies across {', '.join(distinct)} "
+            "- remove one copy before update or delete"
+        )
+
+
 def _task_dirs(config: BlumkinConfig) -> list[Path]:
     # Mirrors blumkin.contacts.locate_operator_files: config dir first (the base),
     # then the active profile's dir merged on top.
@@ -477,18 +512,20 @@ def _task_dirs(config: BlumkinConfig) -> list[Path]:
 def _validate_name(name: str) -> str:
     stem = name.strip()
     if not stem:
-        raise ValueError("--name is required (file stem: lowercase letters, digits, ., _, -)")
+        raise TaskValidationError(
+            "--name is required (file stem: lowercase letters, digits, ., _, -)"
+        )
     if stem in {".", ".."} or "/" in stem or "\\" in stem or "\0" in stem:
-        raise ValueError(f"invalid --name {name!r}: path separators and '.' / '..' are refused")
+        raise TaskValidationError("invalid --name: path separators and '.' / '..' are refused")
     if not _NAME_RE.fullmatch(stem):
-        raise ValueError(
-            f"invalid --name {name!r}: use lowercase letters, digits, '.', '_' or '-' only"
+        raise TaskValidationError(
+            "invalid --name: use lowercase letters, digits, '.', '_' or '-' only"
         )
     return stem
 
 
 def _validate_oneline(value: str, *, field: str) -> str:
     text = value if isinstance(value, str) else ""
-    if "\n" in text or "\r" in text:
-        raise ValueError(f"{field} must be a single line")
+    if any(ch in _LINE_BREAKS for ch in text):
+        raise TaskValidationError(f"{field} must be a single line")
     return text.strip()

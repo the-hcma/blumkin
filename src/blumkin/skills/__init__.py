@@ -1963,7 +1963,7 @@ SKILLS: list[SkillSpec] = [
             },
             {
                 "name": "--yes",
-                "required": False,
+                "required": True,
                 "type": "flag",
                 "note": "required to delete (not needed with --dry-run)",
             },

@@ -18,6 +18,7 @@ from blumkin.tasks import (
     TaskConflictError,
     TaskExistsError,
     TaskNotFoundError,
+    TaskValidationError,
     format_tasks_create_human,
     format_tasks_delete_human,
     format_tasks_list_human,
@@ -409,3 +410,74 @@ def test_human_update_and_delete_formatters() -> None:
         "would delete /t/a.md"
     ]
     assert format_tasks_delete_human({"path": "/t/a.md", "dry_run": False}) == ["deleted /t/a.md"]
+
+
+def test_validate_name_is_usage_error_even_when_name_looks_like_auth(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    with pytest.raises(TaskValidationError):
+        asyncio.run(tasks_create(config=cfg, name="Missing-client_id", prompt="body"))
+    info = classify_exception(TaskValidationError("invalid --name: use lowercase…"))
+    assert info.slug == "usage_error"
+    assert info.exit_code == EXIT_USAGE
+    # The auth heuristic must not fire when the typed error carries "client_id".
+    info2 = classify_exception(TaskValidationError("invalid --name containing client_id"))
+    assert info2.slug == "usage_error"
+
+
+def test_oneline_rejects_unicode_line_separators(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    with pytest.raises(TaskValidationError, match="single line"):
+        asyncio.run(
+            tasks_create(
+                config=cfg,
+                name="wk",
+                prompt="body",
+                title="Status **Prompt:** > injected",
+            )
+        )
+
+
+def test_delete_refuses_symlinked_template_file(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    tasks = tmp_path / "tasks"
+    target = tmp_path / "backing.txt"
+    target.write_text("# Wk\n\n**Prompt:**\n\n> body\n", encoding="utf-8")
+    link = tasks / "wk.md"
+    link.symlink_to(target)
+    with pytest.raises(TaskValidationError, match="symlinked"):
+        asyncio.run(tasks_delete(config=cfg, name="wk", yes=True))
+    assert link.is_symlink()
+    assert target.is_file()
+
+
+def test_update_and_delete_refuse_identical_multi_source_copies(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    body = "# Wk\n\n**Prompt:**\n\n> body\n"
+    (tmp_path / "tasks" / "wk.md").write_text(body, encoding="utf-8")
+    prof = tmp_path / "profiles" / "work" / "tasks"
+    prof.mkdir(parents=True)
+    (prof / "wk.md").write_text(body, encoding="utf-8")
+    (task,) = load_tasks(cfg)
+    assert task.conflict is False
+    assert len(task.sources) == 2
+    with pytest.raises(TaskConflictError, match="identical copies"):
+        asyncio.run(tasks_update(config=cfg, name="wk", title="Other"))
+    with pytest.raises(TaskConflictError, match="identical copies"):
+        asyncio.run(tasks_delete(config=cfg, name="wk", yes=True))
+
+
+def test_tasks_delete_confirm_false_string_does_not_authorize(tmp_path, monkeypatch) -> None:
+    """MCP-style undeclared confirm must not become true via bool("false")."""
+    from blumkin.skills.dispatch import run_skill
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="body"))
+    with pytest.raises(ConsentRequiredError):
+        asyncio.run(
+            run_skill(
+                "tasks.delete",
+                {"name": "wk", "confirm": "false"},
+                config=cfg,
+            )
+        )
+    assert (tmp_path / "tasks" / "wk.md").is_file()
