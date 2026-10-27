@@ -46,6 +46,7 @@ from blumkin.browser.actions import (
     handoff_task,
     press_task,
     read_task,
+    transcript_task,
     upload_task,
 )
 from blumkin.browser.cdp import BrowserActionError, BrowserAttachError
@@ -102,6 +103,7 @@ from blumkin.browser.receipt_rehome import (
     UnconfirmedError,
     rehome_receipt,
 )
+from blumkin.browser.transcript import parse_duration
 from blumkin.capabilities import capability_summary
 from blumkin.config import (
     BlumkinConfig,
@@ -2813,6 +2815,56 @@ def browser_read(ctx: click.Context, task: str, as_json_flag: bool) -> None:
         lines.extend(
             ["", f"[truncated: only the first {len(payload['text'])} characters are shown]"]
         )
+    emit_lines(lines)
+
+
+@browser.command("transcript", epilog=help_text.BROWSER_TRANSCRIPT_EPILOG)
+@click.argument("task")
+@click.option(
+    "--duration",
+    "duration",
+    default=None,
+    help="How long the meeting ran (34m06s, 1h05m, 34:06 or seconds), to check the tail.",
+)
+@click.option(
+    "--out",
+    "out",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write the transcript to this new file (mode 0600) instead of stdout.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_transcript(
+    ctx: click.Context, task: str, duration: str | None, out: Path | None, as_json_flag: bool
+) -> None:
+    """Capture a Teams transcript pane end to end and report any gaps (read-only)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        duration_s = parse_duration(duration) if duration is not None else None
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    try:
+        payload = transcript_task(load_browser_setup(), task, duration_s=duration_s, out=out)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    coverage = payload["coverage"]
+    lines: list[str] = []
+    lines.extend(format_injection_warning_banner(payload["injection_warning"]))
+    if payload["text"] is not None:
+        lines.extend([payload["untrusted"], ""])
+        lines.extend(sanitize_terminal(payload["text"]).splitlines())
+        lines.append("")
+    verdict = "complete" if coverage["complete"] else "INCOMPLETE"
+    where = f" -> {payload['out']}" if payload["out"] else ""
+    lines.append(
+        f"{task}: transcript {verdict}, {coverage['entries']} entries, "
+        f"{len(coverage['speakers'])} speakers{where}"
+    )
+    lines.extend(f"  problem: {problem}" for problem in coverage["problems"])
     emit_lines(lines)
 
 

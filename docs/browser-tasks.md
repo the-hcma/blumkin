@@ -84,6 +84,29 @@ The ledger is a private append-only journal under the config directory (`browser
 
 blumkin has no submit command. `blumkin browser ledger submitted TASK INSTANCE --yes` records that you did, and nothing else records it; say yes only if you pressed the button yourself. A submitted or discarded instance accepts no more items. `blumkin browser ledger discard TASK INSTANCE --yes` closes an instance without touching the real form and keeps its journal.
 
+## Read a Teams meeting transcript
+
+`blumkin browser transcript TASK` captures the transcript of a Teams meeting that someone else organized, where `blumkin meeting` has no access and the pane's own Download button is disabled. Open the meeting's chat in the task's browser (sign in by hand first) and its Transcript tab, then run it.
+
+```bash
+blumkin browser profile create teams-transcript
+blumkin browser launch teams-transcript
+blumkin browser goto teams-transcript https://erp.example.com/
+blumkin browser click teams-transcript Notes --role tab
+blumkin browser click teams-transcript Transcript --role tab
+blumkin browser transcript teams-transcript --duration 34m06s --out ~/work/meeting-transcripts/intros.txt
+```
+
+```toml
+[browser.tasks.teams-transcript]
+allowed_hosts = ["erp.example.com", "*.example.com"]
+allowed_controls = ["Notes", "Transcript"]
+```
+
+`blumkin browser read` cannot do this: Teams serves the transcript from the organizer's OneDrive in a cross-origin iframe, and the list is virtualized, so at any moment only the rows near the viewport exist in the page (about 12 of 34 minutes in the meeting that shaped this command). `transcript` scrolls that frame from its first row to its last, merges the overlap and writes one `[m:ss] Speaker: text` line per turn. The task needs `allowed_hosts` that include both the top-level page host and the frame's host (for Teams, `teams.microsoft.com` and `*.sharepoint.com`; the example uses `erp.example.com` and `*.example.com` as stand-ins), plus `allowed_controls` for the tabs it clicks (`"Notes"`, `"Transcript"`); the command is read-only and clicks nothing. `--out` creates a new file with mode `0600` and never overwrites one.
+
+Every capture carries a coverage report, so a gap is reported instead of silently missing: the entry count and speakers, the first and last timestamp, silences longer than three minutes, entries out of order and whether the scroll reached both ends. With `--duration` the last entry is checked against the meeting's length, unless Teams logged "stopped transcription" (the transcript legitimately ends before a meeting that kept running). `complete` is false when any of that looks wrong, and a capture that is not complete must not be presented as the whole meeting. The text is untrusted data and goes through the injection scan like `read`.
+
 ## Receipts
 
 `blumkin receipts find --dir ~/Documents/receipts --json` lists the images and PDFs in a folder, newest first. `blumkin receipts read ~/Documents/receipts/taxi.jpg --json` reads one with the existing OCR and reports vendor, date, total and currency, each with a confidence (`high`, `low` or `none`), so the task asks you about anything doubtful instead of guessing. OCR needs the `ocr` extra (`uv tool install -e '.[pdf,ocr]'`) plus `tesseract` and `poppler`; without it the result says `needs_manual` and the task asks you for the amounts. After you confirm the fields, `blumkin receipts rehome ~/Downloads/scan.jpg --task expense-report --instance trip-lisbon --date 2026-10-20 --vendor "Taxi Co" --total 18.50 --currency USD` moves the file into the managed per-instance folder under the task's first `upload_dirs` entry, named `YYYY-MM-DD_vendor_amount-CURRENCY_hash8.ext` (the vendor appears in that filename). Pass `--message-id` for a mail attachment so the file is copied (not moved) and the message id is recorded. Rehome keeps a separate private intent/result journal at `browser-tasks/<task>/<instance>/receipt-moves.jsonl` (mode `0600`) that stores resolved source and destination paths, the SHA-256, and optional message id so a crash can be resumed and `browser ledger discard --yes` can restore originals (including an intent-only half-finished move). For receipts that arrive by mail, list a message's attachments with `blumkin mail attachments --id <message-id> --json` and save the ones you want with `blumkin mail attachments download`.
