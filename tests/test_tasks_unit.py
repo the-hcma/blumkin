@@ -256,6 +256,16 @@ def test_create_uses_profile_tasks_when_that_directory_exists(tmp_path, monkeypa
     assert not (tmp_path / "tasks" / "wk.md").exists()
 
 
+def test_create_refuses_same_name_in_the_other_tasks_dir(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks" / "wk.md").write_text("# Wk\n\n**Prompt:**\n\n> body\n", encoding="utf-8")
+    prof = tmp_path / "profiles" / "work" / "tasks"
+    prof.mkdir(parents=True)
+    with pytest.raises(TaskExistsError, match="already exists"):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="other", force=True))
+    assert not (prof / "wk.md").exists()
+
+
 def test_cli_tasks_create_exit_codes(tmp_path, monkeypatch) -> None:
     _cfg(tmp_path, monkeypatch)
     runner = CliRunner()

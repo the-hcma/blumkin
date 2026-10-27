@@ -151,6 +151,15 @@ async def tasks_create(
     directory = _create_tasks_dir(config)
     path = _create_path(directory, stem)
     overwrote = path.is_file()
+    # A same-named template in the *other* tasks dir would merge into a
+    # conflict / multi-source task that update/delete then refuse. Block that
+    # before --force (force only overwrites the destination file).
+    existing = next((task for task in load_tasks(config) if task.name == stem), None)
+    if existing is not None and str(path) not in existing.sources:
+        raise TaskExistsError(
+            f"template {stem!r} already exists at {', '.join(existing.sources)}; "
+            "remove or rename that copy before creating another"
+        )
     if overwrote and not force:
         raise TaskExistsError(
             f"template {stem!r} already exists at {path}; pass --force to overwrite"
@@ -310,7 +319,7 @@ def _create_path(directory: Path, name: str) -> Path:
     directory_resolved = directory.resolve()
     path = (directory / f"{name}.md").resolve()
     if not path.is_relative_to(directory_resolved):
-        raise ValueError(f"refusing path outside the tasks directory: {path}")
+        raise TaskValidationError(f"refusing path outside the tasks directory: {path}")
     return path
 
 

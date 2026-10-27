@@ -1,6 +1,6 @@
 # Operator context (`~/.config/blumkin/*.md`)
 
-Optional plain-markdown files that let blumkin (and an agent driving it) act with more of *your* context. They live next to `config.toml` and the token cache, are **never written or committed by blumkin**, and are absent by default — nothing here changes behaviour until you add a file.
+Optional plain-markdown files that let blumkin (and an agent driving it) act with more of *your* context. They live next to `config.toml` and the token cache. `email-context.md` is **never written or committed by blumkin**; `tasks/<name>.md` templates are read-only unless you use `blumkin tasks create` / `update` / `delete`. Both are absent by default - nothing here changes behaviour until you add a file.
 
 | File / dir | Purpose | Skill |
 |------------|---------|-------|
@@ -14,7 +14,7 @@ Each file is looked up in two places and their entries **combined**:
 1. `$BLUMKIN_CONFIG_DIR/<file>` (else `~/.config/blumkin/<file>`)
 2. `<config-dir>/profiles/<active-profile>/<file>`
 
-Entries for the same key that **agree** (an address matches; a note fills a blank or is identical) are merged into one. Entries that **clash** — a different address, or two different non-empty notes for one name — are **not** merged: blumkin surfaces each, every one flagged `conflict: true` with its own `sources`, so you (or an agent) can see both and reconcile the files. blumkin never picks one and never edits the files.
+Entries for the same key that **agree** (an address matches; a note fills a blank or is identical) are merged into one. Entries that **clash** - a different address, or two different non-empty notes for one name - are **not** merged: blumkin surfaces each, every one flagged `conflict: true` with its own `sources`, so you (or an agent) can see both and reconcile the files. blumkin never picks a winner. It never edits `email-context.md`; task templates are only written by `tasks create` / `update` / `delete`.
 
 `email-context.md` is in this repo's `.gitignore`, so a config dir that happens to sit inside a working tree will not have it committed by accident. Keep it under version control in your own **private** dotfiles repo if you want history.
 

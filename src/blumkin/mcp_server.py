@@ -286,11 +286,19 @@ def _input_schema(
         if arg.get("required"):
             required.append(key)
     if _needs_confirm(skill):
+        # tasks.delete: confirm is optional so --dry-run works without it; the
+        # consent gate still demands a real true for a non-dry-run delete.
+        optional_confirm = skill["id"] == "tasks.delete"
         props["confirm"] = {
             "type": "boolean",
-            "description": "Must be true - this notifies people or changes a shared setting.",
+            "description": (
+                "True to delete; omit with dry_run. Must be a JSON boolean."
+                if optional_confirm
+                else "Must be true - this notifies people or changes a shared setting."
+            ),
         }
-        required.append("confirm")
+        if not optional_confirm:
+            required.append("confirm")
     if multi and profiles:
         props["profile"] = {
             "type": "string",
