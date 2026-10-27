@@ -246,7 +246,11 @@ from blumkin.skills.meeting import (
 )
 from blumkin.skills.meeting import format_transcription_human
 from blumkin.skills.people import format_resolve_human
-from blumkin.tasks import format_tasks_list_human, format_tasks_show_human
+from blumkin.tasks import (
+    format_tasks_create_human,
+    format_tasks_list_human,
+    format_tasks_show_human,
+)
 from blumkin.version import (
     build_info,
     build_status_fields,
@@ -7069,10 +7073,64 @@ def people_resolve_cmd(
 def tasks() -> None:
     """Named reusable prompt templates from `~/.config/blumkin/tasks/*.md`.
 
-    Read-only, no network, no auth. blumkin surfaces the templates; you (or an
-    agent) match the request to a `Trigger:` line, confirm the pick, and run the
-    `Prompt:` block. blumkin ships no matcher and never calls a model.
+    No network, no auth. blumkin surfaces the templates and can create new ones;
+    you (or an agent) match the request to a `Trigger:` line, confirm the pick,
+    and run the `Prompt:` block. blumkin ships no matcher and never calls a model.
     """
+
+
+@tasks.command("create", epilog=help_text.TASKS_CREATE_EPILOG)
+@click.option(
+    "--name",
+    "name",
+    required=True,
+    help="File stem (lowercase letters, digits, '.', '_', '-').",
+)
+@click.option("--prompt", "prompt", required=True, help="Prompt: block body (multi-line OK).")
+@click.option("--title", "title", default="", help="Optional # Title line.")
+@click.option("--trigger", "trigger", default="", help="Optional one-line Trigger: field.")
+@click.option("--input", "input", default="", help="Optional one-line Input: field.")
+@click.option("--output", "output", default="", help="Optional one-line Output: field.")
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    help="Overwrite an existing template file at the destination path.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def tasks_create_cmd(
+    ctx: click.Context,
+    name: str,
+    prompt: str,
+    title: str,
+    trigger: str,
+    input: str,
+    output: str,
+    force: bool,
+    as_json_flag: bool,
+) -> None:
+    """Write a new `tasks/<name>.md` prompt template.
+
+    Destination is the active profile's `tasks/` directory when that directory
+    already exists; otherwise `<config-dir>/tasks/`. Refuses to overwrite
+    without `--force`. Bad names and multi-line one-line fields exit 2.
+    """
+    _dispatch_local(
+        ctx,
+        "tasks.create",
+        {
+            "force": force,
+            "input": input,
+            "name": name,
+            "output": output,
+            "prompt": prompt,
+            "title": title,
+            "trigger": trigger,
+        },
+        human=format_tasks_create_human,
+        as_json_flag=as_json_flag,
+    )
 
 
 @tasks.command("list", epilog=help_text.TASKS_LIST_EPILOG)

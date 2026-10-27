@@ -40,7 +40,7 @@ from blumkin.skills.errors import (
     FreshnessRequiredError,
     ScopeAddonDisabledError,
 )
-from blumkin.tasks import tasks_list, tasks_show
+from blumkin.tasks import tasks_create, tasks_list, tasks_show
 
 # Skills that retire a draft id for good - its compose-cooldown record (and, for
 # chat, the stashed content) is no longer meaningful once the draft is sent,
@@ -68,6 +68,7 @@ _COMPOSE_RECORD_SKILLS: frozenset[str] = frozenset(
 _CONFIG_HANDLERS: dict[str, Callable[..., Any]] = {
     "docs.read": docs_read,
     "people.context": people_context,
+    "tasks.create": tasks_create,
     "tasks.list": tasks_list,
     "tasks.show": tasks_show,
 }

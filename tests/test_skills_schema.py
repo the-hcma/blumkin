@@ -549,6 +549,7 @@ _CONSENT = {
     "people.resolve": (False, False),
     "skills.describe": (False, False),
     "skills.list": (False, False),
+    "tasks.create": (True, False),
     "tasks.list": (False, False),
     "tasks.show": (False, False),
 }

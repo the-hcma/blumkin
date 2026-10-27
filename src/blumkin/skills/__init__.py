@@ -90,7 +90,7 @@ BESPOKE_SKILLS: frozenset[str] = frozenset(
 # token, no network); they are NOT in `BESPOKE_SKILLS`, so their args get normal
 # `param` enrichment and the MCP server exposes them like any read skill.
 CONFIG_SKILLS: frozenset[str] = frozenset(
-    {"docs.read", "people.context", "tasks.list", "tasks.show"}
+    {"docs.read", "people.context", "tasks.create", "tasks.list", "tasks.show"}
 )
 
 # (skill id, catalog arg name) -> provider kwarg. Only listed where it differs from
@@ -1877,6 +1877,61 @@ SKILLS: list[SkillSpec] = [
         notifies_others=False,
         scopes=[],
         args=[],
+    ),
+    SkillSpec(
+        id="tasks.create",
+        cli=["blumkin", "tasks", "create"],
+        summary=(
+            "Write a new ~/.config/blumkin/tasks/<name>.md prompt template "
+            "(or the active profile's tasks/ when that directory exists)"
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=[],
+        args=[
+            {
+                "name": "--force",
+                "required": False,
+                "type": "flag",
+                "note": "overwrite an existing template file",
+            },
+            {
+                "name": "--input",
+                "required": False,
+                "type": "string",
+                "note": "one-line Input: field",
+            },
+            {
+                "name": "--name",
+                "required": True,
+                "type": "string",
+                "note": "file stem: lowercase letters, digits, ., _, -",
+            },
+            {
+                "name": "--output",
+                "required": False,
+                "type": "string",
+                "note": "one-line Output: field",
+            },
+            {
+                "name": "--prompt",
+                "required": True,
+                "type": "string",
+                "note": "Prompt: block body (multi-line OK)",
+            },
+            {
+                "name": "--title",
+                "required": False,
+                "type": "string",
+                "note": "optional # Title line",
+            },
+            {
+                "name": "--trigger",
+                "required": False,
+                "type": "string",
+                "note": "one-line Trigger: field",
+            },
+        ],
     ),
     SkillSpec(
         id="tasks.list",

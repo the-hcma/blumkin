@@ -5,7 +5,7 @@ Optional plain-markdown files that let blumkin (and an agent driving it) act wit
 | File / dir | Purpose | Skill |
 |------------|---------|-------|
 | `email-context.md` | name / alias → address + relationship notes | `blumkin people context` |
-| `tasks/<name>.md` | named reusable prompt templates | `blumkin tasks list` / `tasks show` |
+| `tasks/<name>.md` | named reusable prompt templates | `blumkin tasks list` / `tasks show` / `tasks create` |
 
 ## Location and precedence
 
@@ -52,7 +52,7 @@ A row with no valid email is skipped with a warning; the rest of the file still 
 
 ## `tasks/<name>.md`
 
-One markdown file per template under `tasks/`, so each is easy to diff and share. The filename stem is the template name (`tasks/weekly-report.md` → `weekly-report`). `<config-dir>/tasks/` and the active profile's `profiles/<name>/tasks/` are both read. A template that exists in both with any **different** field - title, trigger, input, output, or prompt - is flagged `conflict: true` (with both `sources`), and `tasks show` refuses it until you reconcile.
+One markdown file per template under `tasks/`, so each is easy to diff and share. The filename stem is the template name (`tasks/weekly-report.md` → `weekly-report`). `<config-dir>/tasks/` and the active profile's `profiles/<name>/tasks/` are both read. A template that exists in both with any **different** field - title, trigger, input, output, or prompt - is flagged `conflict: true` (with both `sources`), and `tasks show` refuses it until you reconcile. `blumkin tasks create` writes a new file into the profile `tasks/` directory when that directory already exists, otherwise into `<config-dir>/tasks/`; pass `--force` to overwrite.
 
 ```markdown
 # Weekly status report

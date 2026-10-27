@@ -1,11 +1,11 @@
 """``tasks/<name>.md`` - named reusable prompt templates.
 
 One markdown file per template under ``<config-dir>/tasks/`` (and the active
-profile's ``profiles/<name>/tasks/``, merged on top). blumkin never writes them.
-``tasks.list`` / ``tasks.show`` surface the templates; the agent fuzzy-matches
-the user's request against each template's ``Trigger:`` line, confirms the pick
-with the user, then runs the ``Prompt:`` block itself. blumkin ships no matcher
-and never calls a model.
+profile's ``profiles/<name>/tasks/``, merged on top). ``tasks.create`` writes a
+new file; ``tasks.list`` / ``tasks.show`` surface the templates. The agent
+fuzzy-matches the user's request against each template's ``Trigger:`` line,
+confirms the pick with the user, then runs the ``Prompt:`` block itself.
+blumkin ships no matcher and never calls a model.
 
 File shape::
 
@@ -21,12 +21,15 @@ File shape::
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from blumkin.config import BlumkinConfig
 from blumkin.output import emit_warning, sanitize_terminal
+
+_NAME_RE = re.compile(r"^[a-z0-9._-]+$")
 
 
 class TaskAmbiguousError(ValueError):
@@ -36,6 +39,10 @@ class TaskAmbiguousError(ValueError):
 class TaskConflictError(ValueError):
     """The named template exists in both the config dir and the profile dir with
     different content - reconcile the files."""
+
+
+class TaskExistsError(ValueError):
+    """``tasks create`` would overwrite an existing file without ``--force``."""
 
 
 class TaskNotFoundError(LookupError):
@@ -52,6 +59,11 @@ class Task:
     sources: tuple[str, ...]
     title: str
     trigger: str
+
+
+def format_tasks_create_human(payload: dict[str, Any]) -> list[str]:
+    verb = "overwrote" if payload.get("overwrote") else "created"
+    return [sanitize_terminal(f"{verb} {payload.get('path', '')}")]
 
 
 def format_tasks_list_human(payload: dict[str, Any]) -> list[str]:
@@ -93,6 +105,65 @@ def load_tasks(config: BlumkinConfig) -> list[Task]:
     return sorted(merged.values(), key=lambda task: task.name)
 
 
+async def tasks_create(
+    *,
+    config: BlumkinConfig,
+    name: str,
+    prompt: str,
+    force: bool = False,
+    input: str = "",
+    output: str = "",
+    title: str = "",
+    trigger: str = "",
+) -> dict[str, Any]:
+    """Write a new ``tasks/<name>.md`` under the chosen tasks directory."""
+    stem = _validate_name(name)
+    title_value = _validate_oneline(title, field="--title")
+    trigger_value = _validate_oneline(trigger, field="--trigger")
+    input_value = _validate_oneline(input, field="--input")
+    output_value = _validate_oneline(output, field="--output")
+    prompt_value = prompt if isinstance(prompt, str) else ""
+    if not prompt_value.strip():
+        raise ValueError("--prompt is required (the Prompt: block body)")
+
+    directory = _create_tasks_dir(config)
+    path = _create_path(directory, stem)
+    overwrote = path.is_file()
+    if overwrote and not force:
+        raise TaskExistsError(
+            f"template {stem!r} already exists at {path}; pass --force to overwrite"
+        )
+
+    directory.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _render_markdown(
+            title=title_value,
+            trigger=trigger_value,
+            input_value=input_value,
+            output=output_value,
+            prompt=prompt_value,
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_tasks(config)
+    created = next(task for task in loaded if task.name == stem)
+    return {
+        "ok": True,
+        "overwrote": overwrote,
+        "path": str(path),
+        "task": {
+            "conflict": created.conflict,
+            "input": created.input,
+            "name": created.name,
+            "output": created.output,
+            "prompt": created.prompt,
+            "sources": list(created.sources),
+            "title": created.title,
+            "trigger": created.trigger,
+        },
+    }
+
+
 async def tasks_list(*, config: BlumkinConfig) -> dict[str, Any]:
     return {
         "ok": True,
@@ -126,6 +197,27 @@ async def tasks_show(*, config: BlumkinConfig, name: str) -> dict[str, Any]:
             "trigger": task.trigger,
         },
     }
+
+
+def _create_path(directory: Path, name: str) -> Path:
+    """Resolve ``directory/name.md`` and refuse anything outside ``directory``."""
+    directory_resolved = directory.resolve()
+    path = (directory / f"{name}.md").resolve()
+    if not path.is_relative_to(directory_resolved):
+        raise ValueError(f"refusing path outside the tasks directory: {path}")
+    return path
+
+
+def _create_tasks_dir(config: BlumkinConfig) -> Path:
+    """Directory ``tasks create`` writes into.
+
+    Prefer the active profile's ``tasks/`` when that directory already exists
+    (the operator is using profile overlays); otherwise the config-dir ``tasks/``.
+    """
+    profile_tasks = config.profile_dir / "tasks"
+    if profile_tasks.is_dir():
+        return profile_tasks
+    return config.config_dir / "tasks"
 
 
 def _merge(merged: dict[str, Task], parsed: Task) -> None:
@@ -208,6 +300,35 @@ def _parse(path: Path) -> Task:
     )
 
 
+def _render_markdown(
+    *,
+    title: str,
+    trigger: str,
+    input_value: str,
+    output: str,
+    prompt: str,
+) -> str:
+    lines: list[str] = []
+    if title:
+        lines.append(f"# {title}")
+        lines.append("")
+    for label, value in (
+        ("Trigger", trigger),
+        ("Input", input_value),
+        ("Output", output),
+    ):
+        if value:
+            lines.append(f"**{label}:** {value}")
+    if any((trigger, input_value, output)):
+        lines.append("")
+    lines.append("**Prompt:**")
+    lines.append("")
+    for raw in prompt.splitlines() or [""]:
+        lines.append(f"> {raw}" if raw else ">")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _select(tasks: list[Task], name: str) -> Task:
     needle = name.strip()
     if not needle:
@@ -238,3 +359,23 @@ def _task_dirs(config: BlumkinConfig) -> list[Path]:
         if directory.is_dir() and directory not in dirs:
             dirs.append(directory)
     return dirs
+
+
+def _validate_name(name: str) -> str:
+    stem = name.strip()
+    if not stem:
+        raise ValueError("--name is required (file stem: lowercase letters, digits, ., _, -)")
+    if stem in {".", ".."} or "/" in stem or "\\" in stem or "\0" in stem:
+        raise ValueError(f"invalid --name {name!r}: path separators and '.' / '..' are refused")
+    if not _NAME_RE.fullmatch(stem):
+        raise ValueError(
+            f"invalid --name {name!r}: use lowercase letters, digits, '.', '_' or '-' only"
+        )
+    return stem
+
+
+def _validate_oneline(value: str, *, field: str) -> str:
+    text = value if isinstance(value, str) else ""
+    if "\n" in text or "\r" in text:
+        raise ValueError(f"{field} must be a single line")
+    return text.strip()

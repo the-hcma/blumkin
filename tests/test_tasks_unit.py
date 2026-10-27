@@ -16,10 +16,13 @@ from blumkin.skills.errors import classify_exception
 from blumkin.tasks import (
     TaskAmbiguousError,
     TaskConflictError,
+    TaskExistsError,
     TaskNotFoundError,
+    format_tasks_create_human,
     format_tasks_list_human,
     format_tasks_show_human,
     load_tasks,
+    tasks_create,
     tasks_list,
     tasks_show,
 )
@@ -185,11 +188,98 @@ def test_errors_classify_to_the_documented_exit_codes() -> None:
     assert classify_exception(TaskNotFoundError("x")).exit_code == EXIT_NOT_FOUND
     assert classify_exception(TaskAmbiguousError("x")).exit_code == EXIT_USAGE
     assert classify_exception(TaskConflictError("x")).exit_code == EXIT_USAGE
+    assert classify_exception(TaskExistsError("x")).exit_code == EXIT_USAGE
     # operator text ("Missing", "client_id" in a template name / path) must not
     # be re-read as auth_required by the ValueError message heuristics.
     for msg in ("'Missing' matches 2 templates: Missing-a, Missing-b", "client_id.md vs x.md"):
         assert classify_exception(TaskAmbiguousError(msg)).slug == "usage_error"
         assert classify_exception(TaskConflictError(msg)).slug == "usage_error"
+
+
+def test_create_round_trips_via_load_tasks(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    payload = asyncio.run(
+        tasks_create(
+            config=cfg,
+            name="weekly-report",
+            prompt="Summarise in five bullets.\n\nKeep each short.",
+            title="Weekly status report",
+            trigger='"weekly report"',
+            input="the Reports folder",
+            output="five bullets",
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["overwrote"] is False
+    assert Path(payload["path"]) == tmp_path / "tasks" / "weekly-report.md"
+    (task,) = load_tasks(cfg)
+    assert task.name == "weekly-report"
+    assert task.title == "Weekly status report"
+    assert task.trigger == '"weekly report"'
+    assert task.input == "the Reports folder"
+    assert task.output == "five bullets"
+    assert task.prompt == "Summarise in five bullets.\n\nKeep each short."
+
+
+def test_create_refuses_overwrite_without_force(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="first"))
+    with pytest.raises(TaskExistsError):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="second"))
+    payload = asyncio.run(tasks_create(config=cfg, name="wk", prompt="second", force=True))
+    assert payload["overwrote"] is True
+    assert asyncio.run(tasks_show(config=cfg, name="wk"))["task"]["prompt"] == "second"
+
+
+def test_create_rejects_bad_names_and_multiline_fields(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    for bad in ("Weekly", "a/b", "../x", "has space", ""):
+        with pytest.raises(ValueError):
+            asyncio.run(tasks_create(config=cfg, name=bad, prompt="body"))
+    with pytest.raises(ValueError, match="single line"):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="body", title="a\nb"))
+    with pytest.raises(ValueError, match="--prompt"):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="   "))
+
+
+def test_create_uses_profile_tasks_when_that_directory_exists(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    prof = tmp_path / "profiles" / "work" / "tasks"
+    prof.mkdir(parents=True)
+    payload = asyncio.run(tasks_create(config=cfg, name="wk", prompt="body"))
+    assert Path(payload["path"]) == prof / "wk.md"
+    assert not (tmp_path / "tasks" / "wk.md").exists()
+
+
+def test_cli_tasks_create_exit_codes(tmp_path, monkeypatch) -> None:
+    _cfg(tmp_path, monkeypatch)
+    runner = CliRunner()
+    created = runner.invoke(
+        main,
+        ["tasks", "create", "--name", "wk", "--prompt", "do the thing", "--json"],
+        obj={},
+    )
+    assert created.exit_code == 0, created.output
+    assert json.loads(created.stdout)["task"]["prompt"] == "do the thing"
+    again = runner.invoke(
+        main,
+        ["tasks", "create", "--name", "wk", "--prompt", "other", "--json"],
+        obj={},
+    )
+    assert again.exit_code == EXIT_USAGE
+    bad = runner.invoke(
+        main,
+        ["tasks", "create", "--name", "Bad Name", "--prompt", "x", "--json"],
+        obj={},
+    )
+    assert bad.exit_code == EXIT_USAGE
+
+
+def test_human_create_formatter() -> None:
+    assert format_tasks_create_human({"path": "/t/a.md", "overwrote": False}) == ["created /t/a.md"]
+    assert format_tasks_create_human({"path": "/t/a.md", "overwrote": True}) == [
+        "overwrote /t/a.md"
+    ]
 
 
 def test_cli_tasks_runs_with_no_auth_or_provider(tmp_path, monkeypatch) -> None:
