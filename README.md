@@ -24,7 +24,7 @@ One config file, one or more **named profiles** (Microsoft, Google, or both), se
 | `docs` | `create` (a Markdown subset → a real Google Doc, or a `.docx` in OneDrive) |
 | `meeting` (Microsoft) | `get`, `transcription` |
 | `people` | `resolve` |
-| `receipts` | `find`, `read`, `rehome` (receipt files: OCR with confidence per field, then rename into a managed instance folder) |
+| `receipts` | `find`, `read` (OCR with confidence per field), `rehome` (move or copy a confirmed receipt into a managed instance folder) |
 | `mcp` | `serve`, `install`, `status` |
 
 Plus `blumkin doctor` (setup check), `capabilities` (structured capability/status discovery), `skills` / `profiles` (discovery), `upgrade` (self-update via pipx / uv tool / an editable checkout), and `completion`.
