@@ -26,9 +26,6 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import sync_playwright
-
 from blumkin.browser.profiles import (
     BrowserProfile,
     read_session,
@@ -45,6 +42,10 @@ class BrowserActionError(RuntimeError):
 
 class BrowserAttachError(RuntimeError):
     """The task browser could not be attached to."""
+
+
+class BrowserDependencyError(BrowserAttachError):
+    """Playwright (or another browser-driver dependency) is missing or broken."""
 
 
 class BrowserDriver(Protocol):
@@ -151,15 +152,15 @@ class PlaywrightDriver:
         self._closed = True
         try:
             if self._navigation_handler is not None:
-                with contextlib.suppress(PlaywrightError):
+                with contextlib.suppress(_playwright_error()):
                     self._context.unroute("**/*", self._navigation_handler)
             if self._net_installed:
-                with contextlib.suppress(PlaywrightError):
+                with contextlib.suppress(_playwright_error()):
                     self._context.unroute("**/*", _abort_non_get_navigation)
-            with contextlib.suppress(PlaywrightError):
+            with contextlib.suppress(_playwright_error()):
                 self._browser.close()
         finally:
-            with contextlib.suppress(PlaywrightError):
+            with contextlib.suppress(_playwright_error()):
                 self._playwright.stop()
 
     def aria_snapshot(self) -> str:
@@ -167,7 +168,7 @@ class PlaywrightDriver:
         self._require_open()
         try:
             return str(self._page.locator("body").aria_snapshot(timeout=self._timeout_ms))
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error("describe the page", exc) from exc
 
     def block_form_submission(self) -> None:
@@ -184,7 +185,7 @@ class PlaywrightDriver:
             return
         try:
             self._context.route("**/*", _abort_non_get_navigation)
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error("install the form-submission safety net", exc) from exc
         self._net_installed = True
 
@@ -199,13 +200,13 @@ class PlaywrightDriver:
             handle = self._page.get_by_role(role, name=name, exact=True).element_handle(
                 timeout=self._timeout_ms
             )
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error(f"find the {role} named {name!r}", exc) from exc
         try:
             vet(self._describe(handle))
             # A swallowed submit never commits a navigation, so do not wait for one.
             handle.click(timeout=self._timeout_ms, no_wait_after=True)
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error(f"click the {role} named {name!r}", exc) from exc
 
     def describe_field(self, label: str) -> ControlInfo:
@@ -213,18 +214,18 @@ class PlaywrightDriver:
         self._require_open()
         try:
             handle = self._page.get_by_label(label).element_handle(timeout=self._timeout_ms)
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error(f"find the field labelled {label!r}", exc) from exc
         try:
             return self._describe(handle)
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error(f"inspect the field labelled {label!r}", exc) from exc
 
     def fill(self, label: str, value: str) -> None:
         self._require_open()
         try:
             self._page.get_by_label(label).fill(value, timeout=self._timeout_ms)
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error(f"fill the field labelled {label!r}", exc) from exc
 
     def goto(self, url: str) -> None:
@@ -232,21 +233,21 @@ class PlaywrightDriver:
         checked_http_url(url)
         try:
             self._page.goto(url, timeout=self._timeout_ms)
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error(f"open {url!r}", exc) from exc
 
     def raw_press(self, label: str, key: str) -> None:
         self._require_open()
         try:
             self._page.get_by_label(label).press(key, timeout=self._timeout_ms)
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error(f"press {key!r} in the field labelled {label!r}", exc) from exc
 
     def read_text(self) -> PageText:
         self._require_open()
         try:
             text = str(self._page.inner_text("body", timeout=self._timeout_ms))
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error("read the page text", exc) from exc
         return PageText(
             text=text,
@@ -275,7 +276,7 @@ class PlaywrightDriver:
 
         try:
             self._context.route("**/*", handler)
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error("restrict navigation to the allowed hosts", exc) from exc
         self._navigation_handler = handler
 
@@ -348,7 +349,7 @@ class PlaywrightDriver:
                 steps=steps,
                 url=frame.url,
             )
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error("scroll the frame", exc) from exc
 
     def settle(self, previous_url: str, timeout_s: float = 5.0) -> None:
@@ -361,16 +362,16 @@ class PlaywrightDriver:
         not navigate leaves the URL alone, and a swallowed form POST never commits.
         """
         self._require_open()
-        with contextlib.suppress(PlaywrightError):
+        with contextlib.suppress(_playwright_error()):
             self._page.wait_for_url(lambda url: url != previous_url, timeout=1000)
-        with contextlib.suppress(PlaywrightError):
+        with contextlib.suppress(_playwright_error()):
             self._page.wait_for_load_state("load", timeout=timeout_s * 1000)
 
     def title(self) -> str:
         self._require_open()
         try:
             return str(self._page.title())
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error("read the page title", exc) from exc
 
     def upload(self, label: str, path: Path) -> None:
@@ -384,7 +385,7 @@ class PlaywrightDriver:
             raise BrowserActionError(f"Expected an existing file to upload, got {str(path)!r}")
         try:
             self._page.get_by_label(label).set_input_files(str(resolved), timeout=self._timeout_ms)
-        except PlaywrightError as exc:
+        except _playwright_error() as exc:
             raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
 
     @property
@@ -417,7 +418,7 @@ class PlaywrightDriver:
             host = urlsplit(frame.url).hostname or ""
             if not host or not is_allowed(host):
                 continue
-            with contextlib.suppress(PlaywrightError):
+            with contextlib.suppress(_playwright_error()):
                 if bool(frame.evaluate(_FRAME_TRANSCRIPT_READY_JS)):
                     return frame
         return None
@@ -470,7 +471,7 @@ def attach(
     profile: BrowserProfile,
     *,
     attempts: int = ATTACH_ATTEMPTS,
-    factory: Callable[[], Any] = sync_playwright,
+    factory: Callable[[], Any] | None = None,
     fetch_version: Callable[[str, float], dict[str, Any]] | None = None,
     pid_alive: Callable[[int], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -528,7 +529,7 @@ def open_driver(
     endpoint: str,
     *,
     attempts: int = ATTACH_ATTEMPTS,
-    factory: Callable[[], Any] = sync_playwright,
+    factory: Callable[[], Any] | None = None,
     fetch_version: Callable[[str, float], dict[str, Any]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     timeout_s: float = DEFAULT_ACTION_TIMEOUT_S,
@@ -541,7 +542,22 @@ def open_driver(
     """
     _require_loopback_endpoint(endpoint)
     fetch = fetch_version or _fetch_version
-    playwright = factory().start()
+    # Default factory only: a missing/broken playwright driver must surface as
+    # BrowserDependencyError (reinstall guidance), not a generic attach failure.
+    # Caller-supplied factories keep their own exception type.
+    if factory is None:
+        try:
+            playwright = _sync_playwright().start()
+        except Exception as exc:
+            raise BrowserDependencyError(
+                f"Expected the playwright package to start, got {exc}; "
+                "run `uv sync --reinstall-package playwright` in the blumkin clone "
+                "(or `uv tool install -e . --reinstall` / "
+                "`uv tool upgrade blumkin --reinstall-package playwright`) "
+                "to restore it, then retry the browser command"
+            ) from exc
+    else:
+        playwright = factory().start()
     try:
         last: Exception | None = None
         for attempt in range(attempts):
@@ -559,7 +575,7 @@ def open_driver(
             websocket = _require_loopback_websocket(version, endpoint)
             try:
                 browser = playwright.chromium.connect_over_cdp(websocket, timeout=timeout_s * 1000)
-            except PlaywrightError as exc:
+            except _playwright_error() as exc:
                 last = exc
                 continue
             return _driver_for(browser, playwright, endpoint=endpoint, timeout_s=timeout_s)
@@ -568,7 +584,7 @@ def open_driver(
             f"Expected to attach to {endpoint}, got {detail} after {attempts} attempts"
         )
     except BaseException:
-        with contextlib.suppress(PlaywrightError):
+        with contextlib.suppress(_playwright_error()):
             playwright.stop()
         raise
 
@@ -624,6 +640,10 @@ _DESCRIBE_CONTROL_JS = (
 )
 
 
+class _NeverRaised(Exception):
+    """Stands in for Playwright's error type when it cannot be imported; nothing raises it."""
+
+
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
     """Refuse every redirect: `/json/version` must answer from the endpoint itself."""
 
@@ -658,7 +678,7 @@ def _driver_for(
         page = pages[0] if pages else contexts[0].new_page()
         page.set_default_timeout(timeout_s * 1000)
     except BaseException:
-        with contextlib.suppress(PlaywrightError):
+        with contextlib.suppress(_playwright_error()):
             browser.close()
         raise
     return PlaywrightDriver(browser=browser, page=page, playwright=playwright, timeout_s=timeout_s)
@@ -674,6 +694,20 @@ def _fetch_version(endpoint: str, timeout_s: float) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Expected a JSON object from /json/version, got {type(data).__name__}")
     return data
+
+
+def _playwright_error() -> type[Exception]:
+    """Playwright's error type, imported on first use so `blumkin` starts without Playwright.
+
+    Any failure resolving the class (missing install, blocked import, broken
+    package) returns :class:`_NeverRaised` so callers can still surface the
+    original error and run cleanup without the lookup replacing it.
+    """
+    try:
+        from playwright.sync_api import Error
+    except Exception:
+        return _NeverRaised
+    return Error
 
 
 def _require_loopback_endpoint(endpoint: str) -> None:
@@ -713,3 +747,20 @@ def _require_loopback_websocket(version: dict[str, Any], endpoint: str) -> str:
     if parts.scheme != "ws" or parts.hostname != wanted.hostname or port != wanted.port:
         raise BrowserAttachError(problem)
     return advertised
+
+
+def _sync_playwright() -> Any:
+    """Start-up handle for Playwright's sync API, imported only when a browser command runs."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        # ImportError for a missing package; SyntaxError / other Exception for a
+        # damaged install - both need reinstall guidance, not "browser not running".
+        raise BrowserDependencyError(
+            f"Expected the playwright package to be importable, got {exc}; "
+            "run `uv sync --reinstall-package playwright` in the blumkin clone "
+            "(or `uv tool install -e . --reinstall` / "
+            "`uv tool upgrade blumkin --reinstall-package playwright`) "
+            "to restore it, then retry the browser command"
+        ) from exc
+    return sync_playwright()

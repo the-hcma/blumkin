@@ -141,6 +141,7 @@ Every capture carries a coverage report, so a gap is reported instead of silentl
 | `submit_blocked` | 1 | The guard refused a click or key press. Do not retry; hand the final step to the user. |
 | `browser_not_running` | 1 | No browser is running for the task. Run `blumkin browser launch TASK` and sign in again. |
 | `browser_action_failed` | 1 | A page action failed or timed out. Read the page and check the label or control name. |
+| `browser_dependency` | 1 | Playwright is missing or broken. Run `uv sync --reinstall-package playwright` in the blumkin clone, `uv tool install -e . --reinstall`, or `uv tool upgrade blumkin --reinstall-package playwright`, then retry. |
 | `browser_launch_failed` | 1 | The browser did not open a DevTools port in time. |
 | `browser_not_found` | 5 | Neither the configured browser nor Chrome is installed. |
 | `not_found` | 5 | No profile exists for the task (create it with `blumkin browser profile create TASK`), or a file or folder the command named is missing. |

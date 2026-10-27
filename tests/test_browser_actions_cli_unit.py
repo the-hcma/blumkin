@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from blumkin.browser.cdp import (
     BrowserActionError,
     BrowserAttachError,
+    BrowserDependencyError,
     ControlInfo,
     FrameCapture,
     PageText,
@@ -294,6 +295,23 @@ def test_an_action_without_a_running_browser_says_to_launch_it(
     payload = _json(result)
     assert payload["error"] == "browser_not_running"
     assert "blumkin browser launch expense-report" in payload["hint"]
+
+
+def test_a_missing_playwright_dependency_is_not_browser_not_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_dep(profile: Any, policy: Any, **kwargs: Any) -> Any:
+        raise BrowserDependencyError(
+            "Expected the playwright package to be importable, got No module named 'playwright'"
+        )
+
+    monkeypatch.setattr("blumkin.browser.actions.attach_guarded", missing_dep)
+    result = _run("browser", "fill", "expense-report", "Amount", "1")
+    assert result.exit_code == EXIT_OTHER
+    payload = _json(result)
+    assert payload["error"] == "browser_dependency"
+    assert "uv sync --reinstall-package playwright" in payload["hint"]
+    assert "browser launch" not in payload["hint"]
 
 
 def test_a_failed_action_still_closes_the_driver(raw: _Raw) -> None:
