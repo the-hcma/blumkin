@@ -542,7 +542,22 @@ def open_driver(
     """
     _require_loopback_endpoint(endpoint)
     fetch = fetch_version or _fetch_version
-    playwright = (factory or _sync_playwright)().start()
+    # Default factory only: a missing/broken playwright driver must surface as
+    # BrowserDependencyError (reinstall guidance), not a generic attach failure.
+    # Caller-supplied factories keep their own exception type.
+    if factory is None:
+        try:
+            playwright = _sync_playwright().start()
+        except Exception as exc:
+            raise BrowserDependencyError(
+                f"Expected the playwright package to start, got {exc}; "
+                "run `uv sync` in the blumkin clone "
+                "(or `uv tool install -e . --reinstall` / "
+                "`uv tool upgrade blumkin --reinstall-package playwright`) "
+                "to restore it, then retry the browser command"
+            ) from exc
+    else:
+        playwright = factory().start()
     try:
         last: Exception | None = None
         for attempt in range(attempts):
@@ -743,7 +758,9 @@ def _sync_playwright() -> Any:
         # damaged install - both need reinstall guidance, not "browser not running".
         raise BrowserDependencyError(
             f"Expected the playwright package to be importable, got {exc}; "
-            "run `uv sync` in the blumkin clone (or `uv tool install -e . --reinstall`) "
+            "run `uv sync` in the blumkin clone "
+            "(or `uv tool install -e . --reinstall` / "
+            "`uv tool upgrade blumkin --reinstall-package playwright`) "
             "to restore it, then retry the browser command"
         ) from exc
     return sync_playwright()

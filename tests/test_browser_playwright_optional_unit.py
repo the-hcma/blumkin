@@ -117,3 +117,28 @@ def test_playwright_error_lookup_falls_back_to_a_type_nothing_raises(
     error_type = cdp._playwright_error()  # pyright: ignore[reportPrivateUsage]
     assert issubclass(error_type, Exception)
     assert error_type is not Exception
+
+
+def test_open_driver_maps_a_broken_default_playwright_start_to_dependency_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser.cdp import BrowserDependencyError
+
+    class _Broken:
+        def start(self) -> None:
+            raise RuntimeError("Executable doesn't exist")
+
+    monkeypatch.setattr(cdp, "_sync_playwright", lambda: _Broken())
+    with pytest.raises(BrowserDependencyError) as excinfo:
+        open_driver("http://127.0.0.1:40123")
+    assert "uv sync" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+
+def test_open_driver_leaves_a_custom_factory_start_failure_unchanged() -> None:
+    class _Broken:
+        def start(self) -> None:
+            raise RuntimeError("custom boom")
+
+    with pytest.raises(RuntimeError, match="custom boom"):
+        open_driver("http://127.0.0.1:40123", factory=lambda: _Broken())
