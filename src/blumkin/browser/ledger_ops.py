@@ -80,6 +80,7 @@ def apply_item(
     flow_name: str,
     values: Mapping[str, str] | None = None,
     sha256: str | None = None,
+    low_confidence: bool | None = None,
     model: SiteModel | None = None,
     run_step: StepRunner | None = None,
 ) -> ApplyResult:
@@ -96,6 +97,7 @@ def apply_item(
             kind,
             item,
             sha256=sha256,
+            low_confidence=low_confidence,
             model_version=(model.version if model is not None else None),
         )
     site = model if model is not None else load_model(config_dir, task)
@@ -116,6 +118,7 @@ def apply_item(
             kind,
             item,
             ItemState.FAILED,
+            low_confidence=low_confidence,
             model_version=site.version,
             sha256=sha256 if kind is ItemKind.RECEIPT else None,
         )
@@ -127,6 +130,7 @@ def apply_item(
         kind,
         item,
         ItemState.FILLED,
+        low_confidence=low_confidence,
         model_version=site.version,
         sha256=sha256 if kind is ItemKind.RECEIPT else None,
     )
@@ -210,6 +214,7 @@ def stage_item(
     item: str,
     *,
     sha256: str | None = None,
+    low_confidence: bool | None = None,
     model_version: int | None = None,
 ) -> ApplyResult:
     """Stage ``item`` unless it is already verified (then a no-op)."""
@@ -224,6 +229,7 @@ def stage_item(
         kind,
         item,
         ItemState.STAGED,
+        low_confidence=low_confidence,
         model_version=model_version,
         sha256=sha256 if kind is ItemKind.RECEIPT else None,
     )

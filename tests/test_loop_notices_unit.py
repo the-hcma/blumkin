@@ -121,7 +121,7 @@ def test_runner_sends_notice_after_journal(tmp_path: Path, monkeypatch: pytest.M
     handlers: dict = {}
     sent: list[str] = []
 
-    def needs_user(trigger: TriggerSpec) -> HandlerResult:
+    def needs_user(trigger: TriggerSpec, **_: object) -> HandlerResult:
         return HandlerResult(outcome=RunOutcome.NEEDS_USER, reason="site drift")
 
     register_handler(handlers, "probe", needs_user)

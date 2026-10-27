@@ -206,3 +206,22 @@ def test_handoff_from_ledger_never_submitted(tmp_path: Path) -> None:
     assert handoff.needs_user_action is True
     assert any("r1" in line for line in handoff.summary)
     assert any("in progress" in d for d in handoff.open_decisions)
+
+
+def test_apply_records_low_confidence_on_the_item(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    result = apply_item(
+        tmp_path,
+        "expense-report",
+        "trip-1",
+        ItemKind.RECEIPT,
+        "r1",
+        flow_name="add-line",
+        values={"Amount": "8"},
+        sha256="b" * 64,
+        low_confidence=True,
+        model=_model(),
+        run_step=lambda _step, _values: None,
+    )
+    assert result.item.state is ItemState.FILLED
+    assert result.item.low_confidence is True

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from blumkin.loop.config import LoopConfigError, parse_loop_setup
-from blumkin.loop.types import TriggerKind
+from blumkin.loop.types import InstanceResolver, TriggerKind
 
 
 def test_parse_loop_and_cron_triggers(tmp_path: Path) -> None:
@@ -74,4 +74,79 @@ def test_invalid_task_name_fails(tmp_path: Path) -> None:
         parse_loop_setup(
             tmp_path,
             {"loop": {"triggers": {"t": {"task": "../x", "instance": "default"}}}},
+        )
+
+
+def _mail_trigger(**extra: object) -> dict:
+    table: dict = {
+        "task": "expense-report",
+        "kind": "loop",
+        "allowlist": ["me@example.com"],
+    }
+    table.update(extra)
+    return {"loop": {"triggers": {"receipts": table}}}
+
+
+def test_instance_resolver_defaults_to_static_and_needs_instance(tmp_path: Path) -> None:
+    setup = parse_loop_setup(tmp_path, _mail_trigger(instance="trip-1"))
+    spec = setup.triggers["receipts"]
+    assert spec.instance_resolver is InstanceResolver.STATIC
+    assert spec.as_dict()["instance_resolver"] == "static"
+    with pytest.raises(LoopConfigError, match="instance"):
+        parse_loop_setup(tmp_path, _mail_trigger())
+
+
+@pytest.mark.parametrize("resolver", ["newest_open", "subject_trip"])
+def test_dynamic_resolvers_omit_instance(tmp_path: Path, resolver: str) -> None:
+    setup = parse_loop_setup(tmp_path, _mail_trigger(instance_resolver=resolver))
+    spec = setup.triggers["receipts"]
+    assert spec.instance_resolver.value == resolver
+    assert spec.instance == ""
+
+
+def test_dynamic_resolver_rejects_a_configured_instance(tmp_path: Path) -> None:
+    with pytest.raises(LoopConfigError, match="only used with"):
+        parse_loop_setup(
+            tmp_path, _mail_trigger(instance="trip-1", instance_resolver="newest_open")
+        )
+
+
+def test_unknown_resolver_fails(tmp_path: Path) -> None:
+    with pytest.raises(LoopConfigError, match="instance_resolver must be one of"):
+        parse_loop_setup(tmp_path, _mail_trigger(instance_resolver="latest"))
+
+
+def test_subject_trip_needs_a_mail_trigger(tmp_path: Path) -> None:
+    with pytest.raises(LoopConfigError, match="requires kind"):
+        parse_loop_setup(
+            tmp_path,
+            {
+                "loop": {
+                    "triggers": {
+                        "t": {
+                            "task": "expense-report",
+                            "kind": "manual",
+                            "instance_resolver": "subject_trip",
+                        }
+                    }
+                }
+            },
+        )
+
+
+def test_cron_triggers_stay_static(tmp_path: Path) -> None:
+    with pytest.raises(LoopConfigError, match="unknown key"):
+        parse_loop_setup(
+            tmp_path,
+            {
+                "cron": {
+                    "eod": {
+                        "task": "time-sheet",
+                        "instance": "current",
+                        "instance_resolver": "newest_open",
+                        "schedule": "0 18 * * 1-5",
+                        "timezone": "UTC",
+                    }
+                }
+            },
         )

@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from blumkin.loop.types import RunOutcome, TriggerSpec
+from blumkin.loop.types import RunContext, RunOutcome, TriggerSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +25,10 @@ class HandlerResult:
 class TaskHandler(Protocol):
     """A task the runner can invoke without a terminal."""
 
-    def __call__(self, trigger: TriggerSpec) -> HandlerResult: ...
+    def __call__(self, trigger: TriggerSpec, *, context: RunContext | None = None) -> HandlerResult:
+        """Run once. `trigger.instance` is already resolved (issue #504); `context` carries
+        the mail message, when there is one, and the config directory."""
+        ...
 
 
 HandlerMap = Mapping[str, TaskHandler]
@@ -33,7 +36,9 @@ HandlerMap = Mapping[str, TaskHandler]
 
 def default_handlers() -> dict[str, TaskHandler]:
     """Built-in handlers. Browser ledger fill for time-sheet lands with #488/#489."""
-    return {"probe": _probe, "time-sheet": _time_sheet}
+    from blumkin.loop.expense_handler import expense_report
+
+    return {"expense-report": expense_report, "probe": _probe, "time-sheet": _time_sheet}
 
 
 def register_handler(
@@ -51,7 +56,7 @@ def resolve_handler(task: str, handlers: HandlerMap | None = None) -> TaskHandle
     return registry.get(task)
 
 
-def _probe(trigger: TriggerSpec) -> HandlerResult:
+def _probe(trigger: TriggerSpec, *, context: RunContext | None = None) -> HandlerResult:
     """A no-op task used to exercise the runner without a browser."""
     return HandlerResult(
         outcome=RunOutcome.DONE,
@@ -59,7 +64,7 @@ def _probe(trigger: TriggerSpec) -> HandlerResult:
     )
 
 
-def _time_sheet(trigger: TriggerSpec) -> HandlerResult:
+def _time_sheet(trigger: TriggerSpec, *, context: RunContext | None = None) -> HandlerResult:
     """End-of-day time sheet: hours must be declared; never guess (issue #502).
 
     Filing into the browser form and ledger idempotence depend on #488/#489; until

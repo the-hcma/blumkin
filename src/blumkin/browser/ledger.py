@@ -50,6 +50,9 @@ class ItemRecord:
     model_version: int | None
     sha256: str | None
     state: ItemState
+    # Receipt filed from a best reading with a low-confidence field (issue #504). A flag
+    # only: the journal never holds the reading itself. None means never recorded.
+    low_confidence: bool | None = None
 
 
 class ItemState(StrEnum):
@@ -186,10 +189,15 @@ def record_item(
     item: str,
     state: ItemState,
     *,
+    low_confidence: bool | None = None,
     model_version: int | None = None,
     sha256: str | None = None,
 ) -> ItemRecord:
-    """Move one item to `state`; a receipt carries the SHA-256 of its file from the start."""
+    """Move one item to `state`; a receipt carries the SHA-256 of its file from the start.
+
+    `low_confidence` marks a receipt filed from a best reading; a later call that omits it
+    keeps the last recorded value.
+    """
     _check_task(task)
     _check_instance(instance)
     if not _ITEM.fullmatch(item):
@@ -206,6 +214,13 @@ def record_item(
             "Expected a sha256 of 64 lowercase hex digits for a receipt only, "
             f"got {sha256!r} for a {kind.value}"
         )
+    if low_confidence is not None and (
+        kind is not ItemKind.RECEIPT or not isinstance(low_confidence, bool)
+    ):
+        raise LedgerError(
+            f"Expected a boolean low_confidence for a receipt only, got {low_confidence!r} "
+            f"for a {kind.value}"
+        )
     directory = _existing_instance_dir(config_dir, task, instance)
     if directory is None:
         raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
@@ -217,7 +232,7 @@ def record_item(
             )
         _require_open(folded, "record an item")
         previous = folded.items.get((kind, item))
-        entry = _item_entry(kind, item, state, previous, model_version, sha256)
+        entry = _item_entry(kind, item, state, previous, model_version, sha256, low_confidence)
         _append(journal, entry)
         return _record(entry, _now())
 
@@ -337,6 +352,7 @@ def _item_entry(
     previous: ItemRecord | None,
     model_version: int | None,
     sha256: str | None,
+    low_confidence: bool | None = None,
 ) -> dict[str, Any]:
     if previous is None:
         if state is not ItemState.STAGED:
@@ -354,7 +370,7 @@ def _item_entry(
             )
         if sha256 is not None and sha256 != previous.sha256:
             raise LedgerError(f"Expected the sha256 of {item!r} to stay the same, got another")
-    return {
+    entry: dict[str, Any] = {
         "event": "item",
         "item": item,
         "kind": kind.value,
@@ -364,6 +380,15 @@ def _item_entry(
         "sha256": sha256 if sha256 is not None else (previous.sha256 if previous else None),
         "state": state.value,
     }
+    flag = (
+        low_confidence
+        if low_confidence is not None
+        else (previous.low_confidence if previous else None)
+    )
+    # Written only when known, so journals that never use the flag stay byte-identical.
+    if flag is not None:
+        entry["low_confidence"] = flag
+    return entry
 
 
 def _no_constants(name: str) -> Any:
@@ -424,6 +449,7 @@ def _record(entry: dict[str, Any], at: str) -> ItemRecord:
         at=at,
         item=entry["item"],
         kind=ItemKind(entry["kind"]),
+        low_confidence=entry.get("low_confidence"),
         model_version=entry["model_version"],
         sha256=entry["sha256"],
         state=ItemState(entry["state"]),
@@ -483,13 +509,21 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
         raise ValueError("entry after the instance was closed")
     if event == "item":
         record = _record(entry, at)
-        if not _ITEM.fullmatch(record.item) or (
-            record.sha256 is not None and not _SHA256.fullmatch(record.sha256)
+        if (
+            not _ITEM.fullmatch(record.item)
+            or (record.sha256 is not None and not _SHA256.fullmatch(record.sha256))
+            or (record.low_confidence is not None and not isinstance(record.low_confidence, bool))
         ):
             raise ValueError("bad item")
         previous = folded.items.get((record.kind, record.item))
         _item_entry(
-            record.kind, record.item, record.state, previous, record.model_version, record.sha256
+            record.kind,
+            record.item,
+            record.state,
+            previous,
+            record.model_version,
+            record.sha256,
+            record.low_confidence,
         )
         folded.items[(record.kind, record.item)] = record
     elif event == "submitted":

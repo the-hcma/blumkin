@@ -256,6 +256,7 @@ def _payload(status: LedgerStatus) -> dict[str, Any]:
                 "at": item.at,
                 "item": item.item,
                 "kind": item.kind.value,
+                "low_confidence": item.low_confidence,
                 "model_version": item.model_version,
                 "sha256": item.sha256,
                 "state": item.state.value,

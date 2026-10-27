@@ -27,7 +27,7 @@ from blumkin.loop.notices import (
     notice_recipient,
     notify_profile_paused_async,
 )
-from blumkin.loop.queue import enqueue
+from blumkin.loop.queue import QueueEntry, enqueue
 from blumkin.loop.state import list_paused
 from blumkin.loop.types import TriggerKind, TriggerSpec
 
@@ -242,7 +242,15 @@ async def _consider_message(
     except Exception:  # noqa: BLE001 — intake is best-effort; trigger still runs
         intake_ok = False
     # Enqueue, then mark handled so a queue write failure cannot drop the message.
-    enqueue(setup.config_dir, spec.name)
+    enqueue(
+        setup.config_dir,
+        QueueEntry(
+            message_id=message_id,
+            profile=profile_name,
+            subject=subject,
+            trigger=spec.name,
+        ),
+    )
     mark_handled(setup.config_dir, profile=profile_name, message_id=message_id)
     return "enqueued" if intake_ok else "intake_failed"
 
