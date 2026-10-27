@@ -167,6 +167,7 @@ def test_incomplete_intake_is_needs_user_even_when_some_receipts_filed(tmp_path:
     _intake(tmp_path, "taxi.pdf")
     result, _ = _run(tmp_path, _reading(), context=_context(tmp_path, intake_ok=False))
     assert result.outcome is RunOutcome.NEEDS_USER
+    assert "filed 1 receipt(s)" in result.reason
     assert "intake was incomplete" in result.reason
     # What was saved is still filed so a later complete re-run can skip it.
     assert any(i.state is ItemState.FILLED for i in _items(tmp_path))
@@ -403,6 +404,30 @@ def test_hidden_files_in_the_intake_folder_are_skipped(tmp_path: Path) -> None:
     _intake(tmp_path, ".partial.pdf")
     result, _ = _run(tmp_path, _reading())
     assert result.outcome is RunOutcome.NEEDS_USER
+
+
+def test_a_staged_or_failed_receipt_is_not_replayed(tmp_path: Path) -> None:
+    from blumkin.browser.ledger import ItemKind, ItemState, record_item
+
+    _begin(tmp_path)
+    _intake(tmp_path, "taxi.pdf")
+    reading = _reading()
+    # Pretend a prior run left the item staged after hashing the same bytes.
+    source = intake_dir(tmp_path, trigger="receipts", message_id="m1") / "taxi.pdf"
+    sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    record_item(
+        tmp_path,
+        _TASK,
+        _INSTANCE,
+        ItemKind.RECEIPT,
+        f"receipt-{sha[:12]}",
+        ItemState.STAGED,
+        sha256=sha,
+    )
+    result, applier = _run(tmp_path, reading)
+    assert result.outcome is RunOutcome.NEEDS_USER
+    assert "could not be filed" in result.reason
+    assert applier.calls == []
 
 
 def test_expense_report_is_a_default_handler() -> None:

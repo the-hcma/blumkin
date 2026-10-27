@@ -2,10 +2,13 @@
 
 Downloads use the existing provider attachment APIs and
 ``sanitize_attachment_filename``. Filenames are never used as paths or commands.
+Message directory names are a SHA-256 of the Graph message id so Base64 characters
+that would collapse under sanitization cannot collide two messages into one folder.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -24,12 +27,27 @@ class LoopIntakeError(ValueError):
 
 
 def intake_dir(config_dir: Path, *, trigger: str, message_id: str) -> Path:
-    """Private directory for one message's attachments under the loop store."""
+    """Private directory for one message's attachments under the loop store.
+
+    The message segment is `sha256(message_id)` (hex). A legacy directory named with
+    `sanitize_attachment_filename(message_id)` is reused when the hashed path does not
+    exist yet, so in-flight intakes from before the hash key keep working.
+    """
     safe_trigger = sanitize_attachment_filename(trigger)
-    safe_mid = sanitize_attachment_filename(message_id)
+    hashed = hashlib.sha256(message_id.encode("utf-8")).hexdigest()
     try:
         root = ensure_private_dir(config_dir / _STORE_DIRNAME / _INTAKE_DIRNAME)
-        return ensure_private_dir(root / safe_trigger / safe_mid)
+        trigger_root = ensure_private_dir(root / safe_trigger)
+    except BrowserProfileError as exc:
+        raise LoopIntakeError(str(exc)) from exc
+    hashed_path = trigger_root / hashed
+    if hashed_path.is_dir() and not hashed_path.is_symlink():
+        return hashed_path
+    legacy = trigger_root / sanitize_attachment_filename(message_id)
+    if legacy.is_dir() and not legacy.is_symlink() and legacy.name != hashed:
+        return legacy
+    try:
+        return ensure_private_dir(hashed_path)
     except BrowserProfileError as exc:
         raise LoopIntakeError(str(exc)) from exc
 

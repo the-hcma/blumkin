@@ -165,8 +165,13 @@ class _Filer:
     def _ledger(self, sha256: str, dest: Path, reading: ReceiptReading, *, low: bool) -> _Result:
         item = _item_id(sha256)
         try:
-            if _already_filed(instance_status(self.config_dir, self.task, self.instance), item):
+            status = instance_status(self.config_dir, self.task, self.instance)
+            if _already_filed(status, item):
                 return _Result(_Kind.ALREADY, low)
+            if _unresolved_receipt(status, item):
+                # A staged or failed item already drove the browser once; re-applying can
+                # duplicate an upload. Leave it for the operator.
+                return _Result(_Kind.BLOCKED, low)
             self.apply_fn(
                 self.config_dir,
                 self.task,
@@ -231,6 +236,16 @@ def _already_filed(status: LedgerStatus, item: str) -> bool:
     )
 
 
+def _unresolved_receipt(status: LedgerStatus, item: str) -> bool:
+    """True when a prior attempt left the item staged or failed - do not re-run the flow."""
+    return any(
+        record.kind is ItemKind.RECEIPT
+        and record.item == item
+        and record.state in (ItemState.STAGED, ItemState.FAILED)
+        for record in status.items
+    )
+
+
 def _flow_values(reading: ReceiptReading, dest: Path) -> dict[str, str]:
     fields = reading.fields
     return {
@@ -279,24 +294,26 @@ def _summarize(
     count = {kind: sum(1 for r in results if r.kind is kind) for kind in _Kind}
     done = count[_Kind.FILLED] + count[_Kind.ALREADY]
     low = sum(1 for r in results if r.low_confidence and r.kind in (_Kind.FILLED, _Kind.ALREADY))
-    problems: list[str] = []
+    parts: list[str] = []
+    if done:
+        parts.append(f"filed {count[_Kind.FILLED]} receipt(s) into instance {instance}")
+        if count[_Kind.ALREADY]:
+            parts.append(f"{count[_Kind.ALREADY]} already filed")
+        if low:
+            parts.append(
+                f"low_confidence=true for {low} receipt(s), check them against the originals"
+            )
     if not intake_ok:
         # Partial intake must not look like a complete run: surface it even if some filed.
-        problems.append("attachment intake was incomplete; missing receipts were not saved")
+        parts.append("attachment intake was incomplete; missing receipts were not saved")
     if count[_Kind.UNREADABLE]:
-        problems.append(f"{count[_Kind.UNREADABLE]} unreadable receipt(s) need your details")
+        parts.append(f"{count[_Kind.UNREADABLE]} unreadable receipt(s) need your details")
     if count[_Kind.BLOCKED]:
-        problems.append(f"{count[_Kind.BLOCKED]} receipt(s) could not be filed")
+        parts.append(f"{count[_Kind.BLOCKED]} receipt(s) could not be filed")
     if skipped:
-        problems.append(f"{skipped} attachment(s) over the per-message limit were not read")
+        parts.append(f"{skipped} attachment(s) over the per-message limit were not read")
     if not done or not intake_ok:
-        return _needs_user("; ".join(problems) or "no receipt could be filed")
-    parts = [f"filed {count[_Kind.FILLED]} receipt(s) into instance {instance}"]
-    if count[_Kind.ALREADY]:
-        parts.append(f"{count[_Kind.ALREADY]} already filed")
-    if low:
-        parts.append(f"low_confidence=true for {low} receipt(s), check them against the originals")
-    parts.extend(problems)
+        return _needs_user("; ".join(parts) or "no receipt could be filed")
     return HandlerResult(outcome=RunOutcome.DONE, reason="; ".join(parts))
 
 
