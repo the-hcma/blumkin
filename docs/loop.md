@@ -29,7 +29,7 @@ notice_to = "you@example.com"
 [loop.triggers.receipts]
 kind = "loop"
 task = "expense-report"
-instance = "trip-1"                 # until instance resolution (#504) lands
+instance_resolver = "subject_trip"  # static (default) | newest_open | subject_trip
 allowlist = ["you@example.com"]     # full addresses only; required for mail triggers
 profiles = ["work"]                 # empty = every configured profile
 subject_tag = "[trip]"              # optional substring filter
@@ -45,6 +45,32 @@ default_hours = 8.0
 ```
 
 Mail triggers (`kind = "loop"`) require an `allowlist`. Spoof resistance uses the first `Authentication-Results` header (SPF + DKIM + DMARC pass) before enqueue. Cron triggers live under `[cron.<name>]` (not under `loop.triggers`).
+
+## Instance resolution and expense receipts
+
+Every run works on one task instance (for expenses, one trip in the browser ledger). `instance_resolver` on a `[loop.triggers.*]` table says how the runner picks it, before it takes the instance lock:
+
+| `instance_resolver` | Instance used | `instance` key |
+|---------------------|---------------|----------------|
+| `static` (default) | The configured `instance` | required |
+| `newest_open` | The task's newest open (not submitted, not discarded) instance, by journal `begin` time | not allowed |
+| `subject_trip` | The open instance whose name appears as a token in the mail subject | not allowed |
+
+`subject_trip` lowercases the subject, removes the trigger's `subject_tag`, splits on anything but letters, digits, `-` and `_`, and needs exactly one token that equals an open instance name, so `[expense] trip-lisbon taxi` files into `trip-lisbon`. `subject_trip` needs `kind = "loop"` (there is a subject only on mail). Cron triggers are always `static`.
+
+No match, or more than one for `subject_trip`, is `needs_user`: the run is journaled against the placeholder instance `unresolved`, the handler is not called, and the notice says how many open instances there were (never names or subject text). `newest_open` with zero open instances is also `needs_user`; with several it picks the newest by `begin` timestamp (directory mtime, then name, as a tie-break).
+
+The queue carries the context a handler needs. Each entry in `loop/queue.jsonl` is `{"trigger": name}` plus, for mail, `message_id`, `profile` and `subject` (the subject is cut at 512 characters). The runner hands the handler the resolved `trigger.instance` and a run context with the config dir and those mail fields. The task is still chosen by the trigger's `task` and `subject_tag`.
+
+The `expense-report` task files the receipts the poller saved under `loop/intake/<trigger>/<message-id>/`:
+
+1. The ledger instance must exist and be open. The loop never begins a trip, so a missing or closed one is `needs_user`.
+2. Each attachment is read (`blumkin receipts read`), copied into the instance's managed folder under the task's first `upload_dirs` entry under its canonical name (`blumkin receipts rehome` rules; the mail copy is kept), then filed into the draft with the recorded `add-receipt` site-model flow through the ledger (stage, run the flow, mark filled). The flow is driven with the control names `currency`, `date`, `file`, `path`, `total` and `vendor`. Filing needs the task's browser signed in; an unsigned-in browser or a drifted site is `needs_user`.
+3. A low-confidence field does not block. The receipt is filed from the best reading, the ledger item gets `low_confidence: true` (a flag only; the journal never holds a vendor, amount or date) and the run reason says `low_confidence=true` so the notice asks you to check it.
+4. A receipt with nothing usable (unreadable, or a field with no value at all) is not guessed. If no receipt could be filed the run is `needs_user`; if some were, it is `done` and the reason counts the unreadable ones. A receipt whose text looks like it is instructing the agent is also stopped, never filed.
+5. Items stay `filled`, not `verified`: verifying records a read-back of the live page, which an unattended run does not do. `blumkin browser ledger handoff` lists them as filled (not yet verified) for you to confirm, and nothing is ever submitted.
+
+A re-run of the same message is idempotent: a receipt already filled or verified is counted as already filed.
 
 ## Operate
 
@@ -82,6 +108,6 @@ After a journaled run (`done`, `needs_user`, or `failed`), the runner sends a sh
 |---------|---------|
 | `done` | Handler finished; journaled |
 | `failed` | Retries exhausted or kill switch / budget mid-run |
-| `needs_user` | Missing handler, unsigned-in browser, site drift, or other operator action |
+| `needs_user` | Missing handler, unresolved instance, unreadable receipt, unsigned-in browser, site drift, or other operator action |
 
 `blumkin loop status --json` shows the kill switch path, paused triggers, paused mail profiles, and recent journal rows.

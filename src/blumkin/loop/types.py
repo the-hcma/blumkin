@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
+
+
+class InstanceResolver(StrEnum):
+    """How a trigger picks the task instance a run works on (issue #504)."""
+
+    NEWEST_OPEN = "newest_open"
+    STATIC = "static"
+    SUBJECT_TRIP = "subject_trip"
 
 
 class RunOutcome(StrEnum):
@@ -21,6 +30,24 @@ class TriggerKind(StrEnum):
     CRON = "cron"
     LOOP = "loop"
     MANUAL = "manual"
+
+
+@dataclass(frozen=True, slots=True)
+class RunContext:
+    """Per-run facts a handler may need beyond the trigger (issue #504).
+
+    Feeders (the mail poller) fill `message_id`, `profile` and `subject`; the runner
+    fills `config_dir` and the resolved `instance`. `subject` is untrusted data: it is
+    matched against instance names and never executed or echoed into journals.
+    """
+
+    config_dir: Path | None = None
+    # False when the mail feeder could not finish saving attachments for this message.
+    intake_ok: bool = True
+    instance: str = ""
+    message_id: str | None = None
+    profile: str | None = None
+    subject: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +87,9 @@ class TriggerSpec:
     # Loop/mail-only: sender allowlist and optional filters (issue #503).
     allowlist: tuple[str, ...] = ()
     attachment_types: tuple[str, ...] = ()
+    # How the run's instance is chosen; cron triggers are always `static`. For the other
+    # resolvers `instance` is "" in config and the runner resolves it per run (issue #504).
+    instance_resolver: InstanceResolver = InstanceResolver.STATIC
     profiles: tuple[str, ...] = ()
     subject_tag: str | None = None
     # Cron-only: declared hours for the scheduled time-sheet entry (issue #502).
@@ -78,6 +108,7 @@ class TriggerSpec:
         if self.kind is TriggerKind.LOOP:
             payload["allowlist"] = list(self.allowlist)
             payload["attachment_types"] = list(self.attachment_types)
+            payload["instance_resolver"] = self.instance_resolver.value
             payload["profiles"] = list(self.profiles)
             payload["subject_tag"] = self.subject_tag
         if self.kind is TriggerKind.CRON:

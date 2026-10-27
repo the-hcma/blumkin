@@ -380,3 +380,94 @@ def test_the_journal_holds_only_ids_states_versions_and_hashes(tmp_path: Path) -
         "state",
     }
     assert set(entries[2]) == {"at", "event", "seq"}
+
+
+def test_low_confidence_is_a_flag_that_later_states_keep(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    staged = record_item(
+        tmp_path,
+        "expense-report",
+        "trip-lisbon",
+        ItemKind.RECEIPT,
+        "r1",
+        ItemState.STAGED,
+        low_confidence=True,
+        sha256=_SHA,
+    )
+    assert staged.low_confidence is True
+    filled = record_item(
+        tmp_path, "expense-report", "trip-lisbon", ItemKind.RECEIPT, "r1", ItemState.FILLED
+    )
+    assert filled.low_confidence is True
+    status = instance_status(tmp_path, "expense-report", "trip-lisbon")
+    assert [i.low_confidence for i in status.items] == [True]
+    record_item(
+        tmp_path,
+        "expense-report",
+        "trip-lisbon",
+        ItemKind.RECEIPT,
+        "r1",
+        ItemState.VERIFIED,
+        low_confidence=False,
+    )
+    status = instance_status(tmp_path, "expense-report", "trip-lisbon")
+    assert [i.low_confidence for i in status.items] == [False]
+    entries = [
+        json.loads(line)
+        for line in _journal(tmp_path, "expense-report", "trip-lisbon").read_bytes().splitlines()
+    ]
+    # A boolean flag only: never a reading, an amount or a vendor.
+    assert [e.get("low_confidence") for e in entries[1:]] == [True, True, False]
+
+
+def test_an_item_never_flagged_has_no_flag_and_no_journal_key(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    record = record_item(
+        tmp_path,
+        "expense-report",
+        "trip-lisbon",
+        ItemKind.RECEIPT,
+        "r1",
+        ItemState.STAGED,
+        sha256=_SHA,
+    )
+    assert record.low_confidence is None
+    line = _journal(tmp_path, "expense-report", "trip-lisbon").read_bytes().splitlines()[1]
+    assert "low_confidence" not in json.loads(line)
+
+
+def test_low_confidence_is_for_receipts_only(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "timesheet", "2026-p21")
+    with pytest.raises(LedgerError, match="low_confidence"):
+        record_item(
+            tmp_path,
+            "timesheet",
+            "2026-p21",
+            ItemKind.DAY,
+            "2026-10-19",
+            ItemState.STAGED,
+            low_confidence=True,
+        )
+
+
+def test_a_damaged_low_confidence_value_is_a_journal_error(tmp_path: Path) -> None:
+    from blumkin.browser.ledger import LedgerJournalError
+
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    record_item(
+        tmp_path,
+        "expense-report",
+        "trip-lisbon",
+        ItemKind.RECEIPT,
+        "r1",
+        ItemState.STAGED,
+        sha256=_SHA,
+    )
+    journal = _journal(tmp_path, "expense-report", "trip-lisbon")
+    lines = journal.read_bytes().splitlines()
+    entry = json.loads(lines[1])
+    entry["low_confidence"] = "yes"
+    lines[1] = json.dumps(entry, sort_keys=True).encode()
+    journal.write_bytes(b"\n".join(lines) + b"\n")
+    with pytest.raises(LedgerJournalError):
+        instance_status(tmp_path, "expense-report", "trip-lisbon")

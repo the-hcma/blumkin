@@ -168,7 +168,10 @@ def test_poll_enqueues_trusted_message(tmp_path: Path) -> None:
         list_profiles=lambda: [{"name": "work"}],
     )
     assert result.enqueued == 1
-    assert peek_queue(tmp_path) == ["receipts"]
+    queued = peek_queue(tmp_path)
+    assert [(e.trigger, e.message_id, e.profile, e.subject) for e in queued] == [
+        ("receipts", "msg-1", "work", "Receipt [trip]")
+    ]
     assert is_handled(tmp_path, profile="work", message_id="msg-1")
 
     # Second poll must not re-enqueue.
@@ -182,7 +185,7 @@ def test_poll_enqueues_trusted_message(tmp_path: Path) -> None:
         list_profiles=lambda: [{"name": "work"}],
     )
     assert again.enqueued == 0
-    assert peek_queue(tmp_path) == ["receipts"]
+    assert [e.trigger for e in peek_queue(tmp_path)] == ["receipts"]
 
 
 def test_poll_ignores_loop_notice_subjects(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.browser.profiles import is_valid_task_name
-from blumkin.loop.types import TriggerKind, TriggerSpec
+from blumkin.loop.types import InstanceResolver, TriggerKind, TriggerSpec
 
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_BACKOFF_SECONDS = 30.0
@@ -23,6 +23,7 @@ _TRIGGER_KEYS_LOOP = frozenset(
         "allowlist",
         "attachment_types",
         "instance",
+        "instance_resolver",
         "kind",
         "profiles",
         "subject_tag",
@@ -190,6 +191,22 @@ def _cron_trigger(name: str, table: Any) -> TriggerSpec:
     return spec
 
 
+def _instance_resolver(value: Any, label: str) -> InstanceResolver:
+    if value is None:
+        return InstanceResolver.STATIC
+    if not isinstance(value, str):
+        raise LoopConfigError(
+            f"{label}.instance_resolver must be a string in config.toml, got {value!r}"
+        )
+    try:
+        return InstanceResolver(value.strip().lower())
+    except ValueError as exc:
+        raise LoopConfigError(
+            f"{label}.instance_resolver must be one of "
+            f"{', '.join(r.value for r in InstanceResolver)} in config.toml, got {value!r}"
+        ) from exc
+
+
 def _loop_config(raw: Any, config_dir: Path) -> LoopConfig:
     if raw is None:
         return LoopConfig()
@@ -273,11 +290,19 @@ def _loop_trigger(name: str, table: Any) -> TriggerSpec:
         raise LoopConfigError(
             f"loop.triggers.{name}.task must be a valid task name in config.toml, got {task!r}"
         )
-    instance = _require_string(table.get("instance"), f"loop.triggers.{name}.instance")
-    if not is_valid_task_name(instance):
+    resolver = _instance_resolver(table.get("instance_resolver"), f"loop.triggers.{name}")
+    instance = ""
+    if resolver is InstanceResolver.STATIC:
+        instance = _require_string(table.get("instance"), f"loop.triggers.{name}.instance")
+        if not is_valid_task_name(instance):
+            raise LoopConfigError(
+                f"loop.triggers.{name}.instance must be a valid instance name in config.toml, "
+                f"got {instance!r}"
+            )
+    elif "instance" in table:
         raise LoopConfigError(
-            f"loop.triggers.{name}.instance must be a valid instance name in config.toml, "
-            f"got {instance!r}"
+            f"loop.triggers.{name}.instance is only used with instance_resolver = 'static'; "
+            f"remove it when instance_resolver is {resolver.value!r}"
         )
     kind_raw = table.get("kind", "manual")
     if not isinstance(kind_raw, str):
@@ -318,6 +343,11 @@ def _loop_trigger(name: str, table: Any) -> TriggerSpec:
                 f"loop.triggers.{name}.allowlist entries must be complete email addresses, "
                 f"got {bad!r}"
             )
+    if resolver is InstanceResolver.SUBJECT_TRIP and kind is not TriggerKind.LOOP:
+        raise LoopConfigError(
+            f"loop.triggers.{name}.instance_resolver = 'subject_trip' reads a mail subject "
+            "and requires kind = 'loop'"
+        )
     if kind is not TriggerKind.LOOP and (
         allowlist or attachment_types or profiles or subject_tag is not None
     ):
@@ -329,6 +359,7 @@ def _loop_trigger(name: str, table: Any) -> TriggerSpec:
         allowlist=tuple(allowlist),
         attachment_types=tuple(attachment_types),
         instance=instance,
+        instance_resolver=resolver,
         kind=kind,
         name=name,
         profiles=tuple(profiles),

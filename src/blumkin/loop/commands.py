@@ -146,11 +146,17 @@ def run_foreground(
             pending = drain_queue(setup.config_dir)
             consumed = 0
             try:
-                for name in pending:
+                for entry in pending:
                     if stop["flag"] or is_engaged(setup.config_dir, setup.loop):
                         break
                     consumed += 1
-                    result = run_trigger(setup, name, handlers=handlers, honor_pause=True)
+                    result = run_trigger(
+                        setup,
+                        entry.trigger,
+                        context=entry.as_context(),
+                        handlers=handlers,
+                        honor_pause=True,
+                    )
                     if not result.skipped:
                         runs += 1
             finally:
