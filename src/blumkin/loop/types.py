@@ -42,6 +42,8 @@ class RunContext:
     """
 
     config_dir: Path | None = None
+    # False when the mail feeder could not finish saving attachments for this message.
+    intake_ok: bool = True
     instance: str = ""
     message_id: str | None = None
     profile: str | None = None

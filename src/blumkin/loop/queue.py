@@ -33,16 +33,24 @@ class QueueEntry:
     """One pending run: the trigger name and, for mail triggers, where it came from."""
 
     trigger: str
+    intake_ok: bool = True
     message_id: str | None = None
     profile: str | None = None
     subject: str | None = None
 
     def as_context(self) -> RunContext:
         """The mail context a runner hands to the handler (config dir and instance come later)."""
-        return RunContext(message_id=self.message_id, profile=self.profile, subject=self.subject)
+        return RunContext(
+            intake_ok=self.intake_ok,
+            message_id=self.message_id,
+            profile=self.profile,
+            subject=self.subject,
+        )
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"trigger": self.trigger}
+        if not self.intake_ok:
+            payload["intake_ok"] = False
         for key in ("message_id", "profile", "subject"):
             value = getattr(self, key)
             if value is not None:
@@ -71,6 +79,7 @@ def enqueue(config_dir: Path, entry: QueueEntry) -> None:
     directory = _ensure(config_dir)
     if entry.subject is not None and len(entry.subject) > MAX_SUBJECT_CHARS:
         entry = QueueEntry(
+            intake_ok=entry.intake_ok,
             message_id=entry.message_id,
             profile=entry.profile,
             subject=entry.subject[:MAX_SUBJECT_CHARS],
@@ -152,8 +161,12 @@ def _read_entries(path: Path) -> list[QueueEntry]:
             entry = json.loads(line, parse_constant=_no_constants)
             if not isinstance(entry, dict) or not isinstance(entry.get("trigger"), str):
                 raise ValueError("not a trigger object")
+            intake_raw = entry.get("intake_ok", True)
+            if not isinstance(intake_raw, bool):
+                raise ValueError("intake_ok is not a boolean")
             entries.append(
                 QueueEntry(
+                    intake_ok=intake_raw,
                     message_id=_optional_string(entry, "message_id"),
                     profile=_optional_string(entry, "profile"),
                     subject=_optional_string(entry, "subject"),

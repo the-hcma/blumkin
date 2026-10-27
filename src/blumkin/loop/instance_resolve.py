@@ -97,7 +97,11 @@ def _from_subject(
 
 
 def _begin_sort_key(config_dir: Path, task: str, name: str) -> tuple[str, float, str]:
-    """Newest first: ISO `begin` time descending, then mtime descending, then name ascending."""
+    """Sort key for `reverse=True`: latest begin `at`, then greatest mtime, then greatest name.
+
+    An empty or unreadable begin timestamp sorts last under reverse order so mtime (then name)
+    decides among those instances.
+    """
     directory = config_dir / _STORE / task / name
     journal = directory / _JOURNAL
     begun = ""
@@ -115,22 +119,17 @@ def _begin_sort_key(config_dir: Path, task: str, name: str) -> tuple[str, float,
         mtime = directory.stat().st_mtime if directory.is_dir() else 0.0
     except OSError:
         mtime = 0.0
-    # Invert begun/mtime via sort of (-rank): we sort ascending with negated keys.
     return (begun, mtime, name)
 
 
 def _newest_open(setup: LoopSetup, task: str, open_names: list[str]) -> InstanceResolution:
     if not open_names:
         return InstanceResolution(instance=None, reason=f"no open {task} instance")
-    # Newest begin `at` first; empty `at` sorts before real timestamps, so fall back on mtime.
     ranked = sorted(
         open_names,
         key=lambda name: _begin_sort_key(setup.config_dir, task, name),
         reverse=True,
     )
-    # When begin timestamps tie, reverse=True puts the later name first; re-tie-break by
-    # mtime already in the key. Name alone is the last component (ascending under reverse
-    # becomes Z-before-A); prefer the lexicographically greater name only as last resort.
     return InstanceResolution(instance=ranked[0], reason="")
 
 

@@ -64,9 +64,15 @@ def _trigger(instance: str = _INSTANCE) -> TriggerSpec:
     return TriggerSpec(instance=instance, kind=TriggerKind.LOOP, name="receipts", task=_TASK)
 
 
-def _context(tmp_path: Path, message_id: str | None = "m1") -> RunContext:
+def _context(
+    tmp_path: Path, message_id: str | None = "m1", *, intake_ok: bool = True
+) -> RunContext:
     return RunContext(
-        config_dir=tmp_path, instance=_INSTANCE, message_id=message_id, profile="work"
+        config_dir=tmp_path,
+        instance=_INSTANCE,
+        intake_ok=intake_ok,
+        message_id=message_id,
+        profile="work",
     )
 
 
@@ -154,6 +160,16 @@ def test_files_a_confident_receipt_into_the_ledger(tmp_path: Path) -> None:
     ]
     assert source.is_file()
     assert call["values"]["path"] == str(managed / next(managed.iterdir()).name)
+
+
+def test_incomplete_intake_is_needs_user_even_when_some_receipts_filed(tmp_path: Path) -> None:
+    _begin(tmp_path)
+    _intake(tmp_path, "taxi.pdf")
+    result, _ = _run(tmp_path, _reading(), context=_context(tmp_path, intake_ok=False))
+    assert result.outcome is RunOutcome.NEEDS_USER
+    assert "intake was incomplete" in result.reason
+    # What was saved is still filed so a later complete re-run can skip it.
+    assert any(i.state is ItemState.FILLED for i in _items(tmp_path))
 
 
 def test_low_confidence_field_files_with_the_best_reading_and_flags_it(tmp_path: Path) -> None:

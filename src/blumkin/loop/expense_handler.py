@@ -122,7 +122,12 @@ def file_receipts(
         upload_dirs=upload_dirs,
     )
     results = [filer.file(path) for path in files[:MAX_RECEIPTS_PER_MESSAGE]]
-    return _summarize(instance, results, skipped=max(0, len(files) - MAX_RECEIPTS_PER_MESSAGE))
+    return _summarize(
+        instance,
+        results,
+        intake_ok=context.intake_ok,
+        skipped=max(0, len(files) - MAX_RECEIPTS_PER_MESSAGE),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,18 +273,23 @@ def _read_sync(path: Path) -> ReceiptReading:
     return asyncio.run(read_receipt(path, config=None))
 
 
-def _summarize(instance: str, results: list[_Result], *, skipped: int) -> HandlerResult:
+def _summarize(
+    instance: str, results: list[_Result], *, intake_ok: bool, skipped: int
+) -> HandlerResult:
     count = {kind: sum(1 for r in results if r.kind is kind) for kind in _Kind}
     done = count[_Kind.FILLED] + count[_Kind.ALREADY]
     low = sum(1 for r in results if r.low_confidence and r.kind in (_Kind.FILLED, _Kind.ALREADY))
     problems: list[str] = []
+    if not intake_ok:
+        # Partial intake must not look like a complete run: surface it even if some filed.
+        problems.append("attachment intake was incomplete; missing receipts were not saved")
     if count[_Kind.UNREADABLE]:
         problems.append(f"{count[_Kind.UNREADABLE]} unreadable receipt(s) need your details")
     if count[_Kind.BLOCKED]:
         problems.append(f"{count[_Kind.BLOCKED]} receipt(s) could not be filed")
     if skipped:
         problems.append(f"{skipped} attachment(s) over the per-message limit were not read")
-    if not done:
+    if not done or not intake_ok:
         return _needs_user("; ".join(problems) or "no receipt could be filed")
     parts = [f"filed {count[_Kind.FILLED]} receipt(s) into instance {instance}"]
     if count[_Kind.ALREADY]:

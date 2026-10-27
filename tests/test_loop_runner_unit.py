@@ -329,8 +329,8 @@ def test_unresolved_instance_is_needs_user_without_calling_the_handler(tmp_path:
 def test_newest_open_with_several_open_calls_the_handler_on_the_latest(tmp_path: Path) -> None:
     from blumkin.browser.ledger import begin_instance
 
+    begin_instance(tmp_path, "expense-report", "trip-z")
     begin_instance(tmp_path, "expense-report", "trip-a")
-    begin_instance(tmp_path, "expense-report", "trip-b")
     seen: list[str] = []
 
     def handler(trigger: TriggerSpec, **_: object) -> HandlerResult:
@@ -340,10 +340,10 @@ def test_newest_open_with_several_open_calls_the_handler_on_the_latest(tmp_path:
     handlers: dict = {}
     register_handler(handlers, "expense-report", handler)
     result = run_trigger(_resolver_setup(tmp_path), "receipts", handlers=handlers)
-    assert seen == ["trip-b"]
+    assert seen == ["trip-a"]
     assert result.record is not None
     assert result.record.outcome is RunOutcome.DONE
-    assert result.record.instance == "trip-b"
+    assert result.record.instance == "trip-a"
 
 
 def test_subject_trip_picks_the_named_open_trip(tmp_path: Path) -> None:

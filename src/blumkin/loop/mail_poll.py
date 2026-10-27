@@ -245,6 +245,7 @@ async def _consider_message(
     enqueue(
         setup.config_dir,
         QueueEntry(
+            intake_ok=intake_ok,
             message_id=message_id,
             profile=profile_name,
             subject=subject,
