@@ -137,4 +137,5 @@ dev = [
     "mcp>=2.3.0",
     "keyring>=25.7.0",
     "hatchling>=1.32.4",
+    "pytest-xdist>=3.8.0",
 ]

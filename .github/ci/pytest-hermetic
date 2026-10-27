@@ -5,4 +5,6 @@ set -euo pipefail
 bash .github/ci/setup-python
 # CI: mocked / offline only. Live Graph tests run on operator machines
 # (BLUMKIN_LIVE=1; see .cursor/rules/local-live-graph-tests.mdc).
-uv run pytest -m 'not live' -q
+# -n auto: pytest-xdist across available cores (#497). Single-process debug:
+#   PYTEST_ADDOPTS='-p no:xdist'  or  uv run pytest -m 'not live' -n 0
+uv run pytest -m 'not live' -n auto -q
