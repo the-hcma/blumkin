@@ -4,9 +4,9 @@ A mail trigger cannot name its instance in config when the instance is a trip th
 changes over time. The resolver picks one per run, or says it cannot:
 
 - `static`: the trigger's configured `instance` (empty means no answer).
-- `newest_open`: the task's only OPEN (not submitted, not discarded) instance. Several
-  open instances are ambiguous, so the run needs the user rather than a guess about
-  which trip a receipt belongs to.
+- `newest_open`: the task's newest OPEN (not submitted, not discarded) instance, by the
+  journal `begin` timestamp (directory mtime, then name, as a tie-break). Zero open
+  instances means the run needs the user.
 - `subject_trip`: the OPEN instance whose name appears as a token in the mail subject
   (after removing the trigger's `subject_tag`). A token is a run of lowercase letters,
   digits, `-` or `_` (subjects are lowercased first), so `[expense] trip-lisbon taxi`
@@ -19,8 +19,10 @@ Reasons carry counts, not names or subject text.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from blumkin.browser.ledger import LedgerError, Phase, list_instances
 from blumkin.browser.profiles import is_valid_task_name
@@ -28,6 +30,8 @@ from blumkin.loop.config import LoopSetup
 from blumkin.loop.types import InstanceResolver, TriggerSpec
 
 UNRESOLVED_INSTANCE = "unresolved"
+_JOURNAL = "journal.jsonl"
+_STORE = "browser-tasks"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +63,7 @@ def resolve_instance(
     except LedgerError:
         return InstanceResolution(instance=None, reason=f"{trigger.task} ledger is not readable")
     if resolver is InstanceResolver.NEWEST_OPEN:
-        return _only_open(trigger.task, open_names)
+        return _newest_open(setup, trigger.task, open_names)
     return _from_subject(trigger, open_names, subject)
 
 
@@ -92,15 +96,42 @@ def _from_subject(
     )
 
 
-def _only_open(task: str, open_names: list[str]) -> InstanceResolution:
-    if len(open_names) == 1:
-        return InstanceResolution(instance=open_names[0], reason="")
+def _begin_sort_key(config_dir: Path, task: str, name: str) -> tuple[str, float, str]:
+    """Newest first: ISO `begin` time descending, then mtime descending, then name ascending."""
+    directory = config_dir / _STORE / task / name
+    journal = directory / _JOURNAL
+    begun = ""
+    if journal.is_file() and not journal.is_symlink():
+        try:
+            line = journal.read_text(encoding="utf-8").splitlines()[0]
+            entry = json.loads(line)
+            if isinstance(entry, dict) and entry.get("event") == "begin":
+                at = entry.get("at")
+                if isinstance(at, str):
+                    begun = at
+        except OSError, ValueError, IndexError:
+            begun = ""
+    try:
+        mtime = directory.stat().st_mtime if directory.is_dir() else 0.0
+    except OSError:
+        mtime = 0.0
+    # Invert begun/mtime via sort of (-rank): we sort ascending with negated keys.
+    return (begun, mtime, name)
+
+
+def _newest_open(setup: LoopSetup, task: str, open_names: list[str]) -> InstanceResolution:
     if not open_names:
         return InstanceResolution(instance=None, reason=f"no open {task} instance")
-    return InstanceResolution(
-        instance=None,
-        reason=f"{len(open_names)} open {task} instances, expected one",
+    # Newest begin `at` first; empty `at` sorts before real timestamps, so fall back on mtime.
+    ranked = sorted(
+        open_names,
+        key=lambda name: _begin_sort_key(setup.config_dir, task, name),
+        reverse=True,
     )
+    # When begin timestamps tie, reverse=True puts the later name first; re-tie-break by
+    # mtime already in the key. Name alone is the last component (ascending under reverse
+    # becomes Z-before-A); prefer the lexicographically greater name only as last resort.
+    return InstanceResolution(instance=ranked[0], reason="")
 
 
 def _open_instances(setup: LoopSetup, task: str) -> list[str]:

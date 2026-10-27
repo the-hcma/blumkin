@@ -64,14 +64,13 @@ def test_newest_open_with_no_ledger_at_all_needs_the_user(tmp_path: Path) -> Non
     assert resolve_instance(setup, trigger).instance is None
 
 
-def test_newest_open_with_several_open_is_ambiguous(tmp_path: Path) -> None:
+def test_newest_open_picks_the_latest_begun_when_several_are_open(tmp_path: Path) -> None:
     setup, trigger = _setup(tmp_path, instance_resolver="newest_open")
+    # begin_instance appends in call order; the later begin is the newest trip.
     _begin(tmp_path, "trip-a", "trip-b")
     result = resolve_instance(setup, trigger)
-    assert result.instance is None
-    assert "2 open" in result.reason
-    # Counts only: instance names are not echoed.
-    assert "trip-a" not in result.reason
+    assert result.instance == "trip-b"
+    assert result.reason == ""
 
 
 @pytest.mark.parametrize(

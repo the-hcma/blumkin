@@ -309,14 +309,7 @@ def test_resolved_instance_and_context_reach_the_handler(tmp_path: Path) -> None
     assert (context.message_id, context.profile) == ("m1", "work")
 
 
-@pytest.mark.parametrize("opens", [[], ["trip-a", "trip-b"]])
-def test_unresolved_instance_is_needs_user_without_calling_the_handler(
-    tmp_path: Path, opens: list[str]
-) -> None:
-    from blumkin.browser.ledger import begin_instance
-
-    for name in opens:
-        begin_instance(tmp_path, "expense-report", name)
+def test_unresolved_instance_is_needs_user_without_calling_the_handler(tmp_path: Path) -> None:
     calls: list[str] = []
 
     def handler(trigger: TriggerSpec, **_: object) -> HandlerResult:
@@ -331,6 +324,26 @@ def test_unresolved_instance_is_needs_user_without_calling_the_handler(
     assert result.record.outcome is RunOutcome.NEEDS_USER
     assert result.record.instance == "unresolved"
     assert result.record.reason.startswith("instance not resolved:")
+
+
+def test_newest_open_with_several_open_calls_the_handler_on_the_latest(tmp_path: Path) -> None:
+    from blumkin.browser.ledger import begin_instance
+
+    begin_instance(tmp_path, "expense-report", "trip-a")
+    begin_instance(tmp_path, "expense-report", "trip-b")
+    seen: list[str] = []
+
+    def handler(trigger: TriggerSpec, **_: object) -> HandlerResult:
+        seen.append(trigger.instance)
+        return HandlerResult(outcome=RunOutcome.DONE, reason="")
+
+    handlers: dict = {}
+    register_handler(handlers, "expense-report", handler)
+    result = run_trigger(_resolver_setup(tmp_path), "receipts", handlers=handlers)
+    assert seen == ["trip-b"]
+    assert result.record is not None
+    assert result.record.outcome is RunOutcome.DONE
+    assert result.record.instance == "trip-b"
 
 
 def test_subject_trip_picks_the_named_open_trip(tmp_path: Path) -> None:

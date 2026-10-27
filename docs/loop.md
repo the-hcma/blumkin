@@ -53,12 +53,12 @@ Every run works on one task instance (for expenses, one trip in the browser ledg
 | `instance_resolver` | Instance used | `instance` key |
 |---------------------|---------------|----------------|
 | `static` (default) | The configured `instance` | required |
-| `newest_open` | The task's only open (not submitted, not discarded) instance | not allowed |
+| `newest_open` | The task's newest open (not submitted, not discarded) instance, by journal `begin` time | not allowed |
 | `subject_trip` | The open instance whose name appears as a token in the mail subject | not allowed |
 
 `subject_trip` lowercases the subject, removes the trigger's `subject_tag`, splits on anything but letters, digits, `-` and `_`, and needs exactly one token that equals an open instance name, so `[expense] trip-lisbon taxi` files into `trip-lisbon`. `subject_trip` needs `kind = "loop"` (there is a subject only on mail). Cron triggers are always `static`.
 
-No match, or more than one, is `needs_user`: the run is journaled against the placeholder instance `unresolved`, the handler is not called, and the notice says how many open instances there were (never names or subject text). `newest_open` is deliberately strict: with two open trips it asks instead of guessing which one a receipt belongs to.
+No match, or more than one for `subject_trip`, is `needs_user`: the run is journaled against the placeholder instance `unresolved`, the handler is not called, and the notice says how many open instances there were (never names or subject text). `newest_open` with zero open instances is also `needs_user`; with several it picks the newest by `begin` timestamp (directory mtime, then name, as a tie-break).
 
 The queue carries the context a handler needs. Each entry in `loop/queue.jsonl` is `{"trigger": name}` plus, for mail, `message_id`, `profile` and `subject` (the subject is cut at 512 characters). The runner hands the handler the resolved `trigger.instance` and a run context with the config dir and those mail fields. The task is still chosen by the trigger's `task` and `subject_tag`.
 
