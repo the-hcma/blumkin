@@ -1,11 +1,11 @@
 # Operator context (`~/.config/blumkin/*.md`)
 
-Optional plain-markdown files that let blumkin (and an agent driving it) act with more of *your* context. They live next to `config.toml` and the token cache, are **never written or committed by blumkin**, and are absent by default — nothing here changes behaviour until you add a file.
+Optional plain-markdown files that let blumkin (and an agent driving it) act with more of *your* context. They live next to `config.toml` and the token cache. `email-context.md` is **never written or committed by blumkin**; `tasks/<name>.md` templates are read-only unless you use `blumkin tasks create` / `update` / `delete`. Both are absent by default - nothing here changes behaviour until you add a file.
 
 | File / dir | Purpose | Skill |
 |------------|---------|-------|
 | `email-context.md` | name / alias → address + relationship notes | `blumkin people context` |
-| `tasks/<name>.md` | named reusable prompt templates | `blumkin tasks list` / `tasks show` |
+| `tasks/<name>.md` | named reusable prompt templates | `blumkin tasks list` / `show` / `create` / `update` / `delete` |
 
 ## Location and precedence
 
@@ -14,7 +14,7 @@ Each file is looked up in two places and their entries **combined**:
 1. `$BLUMKIN_CONFIG_DIR/<file>` (else `~/.config/blumkin/<file>`)
 2. `<config-dir>/profiles/<active-profile>/<file>`
 
-Entries for the same key that **agree** (an address matches; a note fills a blank or is identical) are merged into one. Entries that **clash** — a different address, or two different non-empty notes for one name — are **not** merged: blumkin surfaces each, every one flagged `conflict: true` with its own `sources`, so you (or an agent) can see both and reconcile the files. blumkin never picks one and never edits the files.
+Entries for the same key that **agree** (an address matches; a note fills a blank or is identical) are merged into one. Entries that **clash** - a different address, or two different non-empty notes for one name - are **not** merged: blumkin surfaces each, every one flagged `conflict: true` with its own `sources`, so you (or an agent) can see both and reconcile the files. blumkin never picks a winner. It never edits `email-context.md`; task templates are only written by `tasks create` / `update` / `delete`.
 
 `email-context.md` is in this repo's `.gitignore`, so a config dir that happens to sit inside a working tree will not have it committed by accident. Keep it under version control in your own **private** dotfiles repo if you want history.
 
@@ -52,7 +52,7 @@ A row with no valid email is skipped with a warning; the rest of the file still 
 
 ## `tasks/<name>.md`
 
-One markdown file per template under `tasks/`, so each is easy to diff and share. The filename stem is the template name (`tasks/weekly-report.md` → `weekly-report`). `<config-dir>/tasks/` and the active profile's `profiles/<name>/tasks/` are both read. A template that exists in both with any **different** field - title, trigger, input, output, or prompt - is flagged `conflict: true` (with both `sources`), and `tasks show` refuses it until you reconcile.
+One markdown file per template under `tasks/`, so each is easy to diff and share. The filename stem is the template name (`tasks/weekly-report.md` → `weekly-report`). `<config-dir>/tasks/` and the active profile's `profiles/<name>/tasks/` are both read. A template that exists in both with any **different** field - title, trigger, input, output, or prompt - is flagged `conflict: true` (with both `sources`), and `tasks show` / `update` / `delete` refuse it until you reconcile. `blumkin tasks create` writes a new file into the profile `tasks/` directory when that directory already exists, otherwise into `<config-dir>/tasks/` (pass `--force` to overwrite). `tasks update --name <n>` changes any of `--title` / `--trigger` / `--input` / `--output` / `--prompt` in place (unspecified fields are preserved); it refuses a file that holds anything beyond a title, the three one-line fields and the Prompt blockquote (notes, extra headings, a second blockquote), because rewriting would drop it, so edit such a file by hand. Files are written atomically and kept private (mode `0600`, new `tasks/` directory `0700`). `tasks delete --name <n> --yes` removes the file and needs the exact template name (`--dry-run` prints the path only and accepts a unique prefix).
 
 ```markdown
 # Weekly status report

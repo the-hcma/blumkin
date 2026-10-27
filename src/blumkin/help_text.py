@@ -2093,25 +2093,37 @@ Examples:
 a `notifies_others` flag per skill. Prefer `--json` in agent sessions.
 """
 
-TASKS_EPILOG = """
+TASKS_CREATE_EPILOG = """
 Examples:
 
 \b
   blumkin tasks list --json
   blumkin tasks show --name weekly-report --json
+  blumkin tasks create --name weekly-report --prompt 'Summarise in five bullets.'
+  blumkin tasks update --name weekly-report --title 'Weekly status'
+  blumkin tasks delete --name weekly-report --yes
 
 One markdown file per template under `~/.config/blumkin/tasks/` (or
 `$BLUMKIN_CONFIG_DIR/tasks/`); the active profile's `profiles/<name>/tasks/` is
 read too and their entries combined. Each file: an optional `# Title` line,
 `**Trigger:**` / `**Input:**` / `**Output:**` fields, and a `**Prompt:**` block
-written as a `>` blockquote. blumkin never writes these files, never matches a
-trigger for you, and never runs a model - it surfaces the text. See
-docs/operator-config.md.
+written as a `>` blockquote. `tasks create` / `update` / `delete` mutate files
+(create writes into the profile `tasks/` dir when that directory already
+exists, otherwise the config-dir one). `update` refuses a file with content beyond
+those fields (it would drop it) and `delete` needs the exact name; both write files
+atomically and privately. blumkin never matches a trigger for you and never runs a
+model. See docs/operator-config.md.
 """
+
+TASKS_DELETE_EPILOG = TASKS_CREATE_EPILOG
+
+TASKS_EPILOG = TASKS_CREATE_EPILOG
 
 TASKS_LIST_EPILOG = TASKS_EPILOG
 
 TASKS_SHOW_EPILOG = TASKS_EPILOG
+
+TASKS_UPDATE_EPILOG = TASKS_EPILOG
 
 UNINSTALL_EPILOG = """
 Examples:

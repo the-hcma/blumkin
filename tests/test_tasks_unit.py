@@ -12,16 +12,24 @@ from click.testing import CliRunner
 from blumkin.cli import main
 from blumkin.config import load_config
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_USAGE
-from blumkin.skills.errors import classify_exception
+from blumkin.skills.errors import ConsentRequiredError, classify_exception
 from blumkin.tasks import (
     TaskAmbiguousError,
     TaskConflictError,
+    TaskExistsError,
     TaskNotFoundError,
+    TaskValidationError,
+    format_tasks_create_human,
+    format_tasks_delete_human,
     format_tasks_list_human,
     format_tasks_show_human,
+    format_tasks_update_human,
     load_tasks,
+    tasks_create,
+    tasks_delete,
     tasks_list,
     tasks_show,
+    tasks_update,
 )
 
 _REPORT = """\
@@ -185,11 +193,108 @@ def test_errors_classify_to_the_documented_exit_codes() -> None:
     assert classify_exception(TaskNotFoundError("x")).exit_code == EXIT_NOT_FOUND
     assert classify_exception(TaskAmbiguousError("x")).exit_code == EXIT_USAGE
     assert classify_exception(TaskConflictError("x")).exit_code == EXIT_USAGE
+    assert classify_exception(TaskExistsError("x")).exit_code == EXIT_USAGE
     # operator text ("Missing", "client_id" in a template name / path) must not
     # be re-read as auth_required by the ValueError message heuristics.
     for msg in ("'Missing' matches 2 templates: Missing-a, Missing-b", "client_id.md vs x.md"):
         assert classify_exception(TaskAmbiguousError(msg)).slug == "usage_error"
         assert classify_exception(TaskConflictError(msg)).slug == "usage_error"
+
+
+def test_create_round_trips_via_load_tasks(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    payload = asyncio.run(
+        tasks_create(
+            config=cfg,
+            name="weekly-report",
+            prompt="Summarise in five bullets.\n\nKeep each short.",
+            title="Weekly status report",
+            trigger='"weekly report"',
+            input="the Reports folder",
+            output="five bullets",
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["overwrote"] is False
+    assert Path(payload["path"]) == tmp_path / "tasks" / "weekly-report.md"
+    (task,) = load_tasks(cfg)
+    assert task.name == "weekly-report"
+    assert task.title == "Weekly status report"
+    assert task.trigger == '"weekly report"'
+    assert task.input == "the Reports folder"
+    assert task.output == "five bullets"
+    assert task.prompt == "Summarise in five bullets.\n\nKeep each short."
+
+
+def test_create_refuses_overwrite_without_force(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="first"))
+    with pytest.raises(TaskExistsError):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="second"))
+    payload = asyncio.run(tasks_create(config=cfg, name="wk", prompt="second", force=True))
+    assert payload["overwrote"] is True
+    assert asyncio.run(tasks_show(config=cfg, name="wk"))["task"]["prompt"] == "second"
+
+
+def test_create_rejects_bad_names_and_multiline_fields(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    for bad in ("Weekly", "a/b", "../x", "has space", ""):
+        with pytest.raises(ValueError):
+            asyncio.run(tasks_create(config=cfg, name=bad, prompt="body"))
+    with pytest.raises(ValueError, match="single line"):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="body", title="a\nb"))
+    with pytest.raises(ValueError, match="--prompt"):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="   "))
+
+
+def test_create_uses_profile_tasks_when_that_directory_exists(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    prof = tmp_path / "profiles" / "work" / "tasks"
+    prof.mkdir(parents=True)
+    payload = asyncio.run(tasks_create(config=cfg, name="wk", prompt="body"))
+    assert Path(payload["path"]) == prof / "wk.md"
+    assert not (tmp_path / "tasks" / "wk.md").exists()
+
+
+def test_create_refuses_same_name_in_the_other_tasks_dir(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks" / "wk.md").write_text("# Wk\n\n**Prompt:**\n\n> body\n", encoding="utf-8")
+    prof = tmp_path / "profiles" / "work" / "tasks"
+    prof.mkdir(parents=True)
+    with pytest.raises(TaskExistsError, match="already exists"):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="other", force=True))
+    assert not (prof / "wk.md").exists()
+
+
+def test_cli_tasks_create_exit_codes(tmp_path, monkeypatch) -> None:
+    _cfg(tmp_path, monkeypatch)
+    runner = CliRunner()
+    created = runner.invoke(
+        main,
+        ["tasks", "create", "--name", "wk", "--prompt", "do the thing", "--json"],
+        obj={},
+    )
+    assert created.exit_code == 0, created.output
+    assert json.loads(created.stdout)["task"]["prompt"] == "do the thing"
+    again = runner.invoke(
+        main,
+        ["tasks", "create", "--name", "wk", "--prompt", "other", "--json"],
+        obj={},
+    )
+    assert again.exit_code == EXIT_USAGE
+    bad = runner.invoke(
+        main,
+        ["tasks", "create", "--name", "Bad Name", "--prompt", "x", "--json"],
+        obj={},
+    )
+    assert bad.exit_code == EXIT_USAGE
+
+
+def test_human_create_formatter() -> None:
+    assert format_tasks_create_human({"path": "/t/a.md", "overwrote": False}) == ["created /t/a.md"]
+    assert format_tasks_create_human({"path": "/t/a.md", "overwrote": True}) == [
+        "overwrote /t/a.md"
+    ]
 
 
 def test_cli_tasks_runs_with_no_auth_or_provider(tmp_path, monkeypatch) -> None:
@@ -230,3 +335,313 @@ def test_human_show_formatter() -> None:
     assert format_tasks_show_human({"task": {"name": "wr", "title": "W", "prompt": ""}})[-1] == (
         "(no Prompt: block)"
     )
+
+
+def test_update_preserves_unspecified_fields(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(
+        tasks_create(
+            config=cfg,
+            name="weekly-report",
+            prompt="five bullets",
+            title="Weekly",
+            trigger="wk",
+            input="Reports",
+            output="mail",
+        )
+    )
+    payload = asyncio.run(tasks_update(config=cfg, name="weekly-report", title="Weekly status"))
+    task = payload["task"]
+    assert task["title"] == "Weekly status"
+    assert task["trigger"] == "wk"
+    assert task["input"] == "Reports"
+    assert task["output"] == "mail"
+    assert task["prompt"] == "five bullets"
+
+
+def test_update_and_delete_refuse_conflict_and_missing(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks" / "wk.md").write_text("# A\n**Prompt:**\n\n> body\n", encoding="utf-8")
+    prof = tmp_path / "profiles" / "work" / "tasks"
+    prof.mkdir(parents=True)
+    (prof / "wk.md").write_text("# B\n**Prompt:**\n\n> body\n", encoding="utf-8")
+    with pytest.raises(TaskConflictError):
+        asyncio.run(tasks_update(config=cfg, name="wk", title="C"))
+    with pytest.raises(TaskConflictError):
+        asyncio.run(tasks_delete(config=cfg, name="wk", yes=True))
+    with pytest.raises(TaskNotFoundError):
+        asyncio.run(tasks_update(config=cfg, name="nope", title="x"))
+    with pytest.raises(TaskNotFoundError):
+        asyncio.run(tasks_delete(config=cfg, name="nope", yes=True))
+
+
+def test_delete_requires_yes_unless_dry_run(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="body"))
+    dry = asyncio.run(tasks_delete(config=cfg, name="wk", dry_run=True))
+    assert dry["dry_run"] is True
+    assert (tmp_path / "tasks" / "wk.md").is_file()
+    with pytest.raises(ConsentRequiredError):
+        asyncio.run(tasks_delete(config=cfg, name="wk"))
+    removed = asyncio.run(tasks_delete(config=cfg, name="wk", yes=True))
+    assert removed["dry_run"] is False
+    assert not (tmp_path / "tasks" / "wk.md").exists()
+
+
+def test_cli_tasks_update_and_delete_exit_codes(tmp_path, monkeypatch) -> None:
+    _cfg(tmp_path, monkeypatch)
+    runner = CliRunner()
+    assert (
+        runner.invoke(
+            main,
+            ["tasks", "create", "--name", "wk", "--prompt", "body", "--json"],
+            obj={},
+        ).exit_code
+        == 0
+    )
+    updated = runner.invoke(
+        main,
+        ["tasks", "update", "--name", "wk", "--title", "Weekly", "--json"],
+        obj={},
+    )
+    assert updated.exit_code == 0, updated.output
+    assert json.loads(updated.stdout)["task"]["title"] == "Weekly"
+    no_yes = runner.invoke(main, ["tasks", "delete", "--name", "wk", "--json"], obj={})
+    assert no_yes.exit_code == EXIT_USAGE
+    deleted = runner.invoke(main, ["tasks", "delete", "--name", "wk", "--yes", "--json"], obj={})
+    assert deleted.exit_code == 0, deleted.output
+    missing = runner.invoke(main, ["tasks", "delete", "--name", "wk", "--yes", "--json"], obj={})
+    assert missing.exit_code == EXIT_NOT_FOUND
+
+
+def test_human_update_and_delete_formatters() -> None:
+    assert format_tasks_update_human({"path": "/t/a.md"}) == ["updated /t/a.md"]
+    assert format_tasks_delete_human({"path": "/t/a.md", "dry_run": True}) == [
+        "would delete /t/a.md"
+    ]
+    assert format_tasks_delete_human({"path": "/t/a.md", "dry_run": False}) == ["deleted /t/a.md"]
+
+
+def test_validate_name_is_usage_error_even_when_name_looks_like_auth(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    with pytest.raises(TaskValidationError):
+        asyncio.run(tasks_create(config=cfg, name="Missing-client_id", prompt="body"))
+    info = classify_exception(TaskValidationError("invalid --name: use lowercase…"))
+    assert info.slug == "usage_error"
+    assert info.exit_code == EXIT_USAGE
+    # The auth heuristic must not fire when the typed error carries "client_id".
+    info2 = classify_exception(TaskValidationError("invalid --name containing client_id"))
+    assert info2.slug == "usage_error"
+
+
+def test_oneline_rejects_unicode_line_separators(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    with pytest.raises(TaskValidationError, match="single line"):
+        asyncio.run(
+            tasks_create(
+                config=cfg,
+                name="wk",
+                prompt="body",
+                title="Status **Prompt:** > injected",
+            )
+        )
+
+
+def test_delete_refuses_symlinked_template_file(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    tasks = tmp_path / "tasks"
+    target = tmp_path / "backing.txt"
+    target.write_text("# Wk\n\n**Prompt:**\n\n> body\n", encoding="utf-8")
+    link = tasks / "wk.md"
+    link.symlink_to(target)
+    with pytest.raises(TaskValidationError, match="symlinked"):
+        asyncio.run(tasks_delete(config=cfg, name="wk", yes=True))
+    assert link.is_symlink()
+    assert target.is_file()
+
+
+def test_update_and_delete_refuse_identical_multi_source_copies(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    body = "# Wk\n\n**Prompt:**\n\n> body\n"
+    (tmp_path / "tasks" / "wk.md").write_text(body, encoding="utf-8")
+    prof = tmp_path / "profiles" / "work" / "tasks"
+    prof.mkdir(parents=True)
+    (prof / "wk.md").write_text(body, encoding="utf-8")
+    (task,) = load_tasks(cfg)
+    assert task.conflict is False
+    assert len(task.sources) == 2
+    with pytest.raises(TaskConflictError, match="identical copies"):
+        asyncio.run(tasks_update(config=cfg, name="wk", title="Other"))
+    with pytest.raises(TaskConflictError, match="identical copies"):
+        asyncio.run(tasks_delete(config=cfg, name="wk", yes=True))
+
+
+def test_tasks_delete_confirm_false_string_does_not_authorize(tmp_path, monkeypatch) -> None:
+    """MCP-style undeclared confirm must not become true via bool("false")."""
+    from blumkin.skills.dispatch import run_skill
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="body"))
+    with pytest.raises(ConsentRequiredError):
+        asyncio.run(
+            run_skill(
+                "tasks.delete",
+                {"name": "wk", "confirm": "false"},
+                config=cfg,
+            )
+        )
+    assert (tmp_path / "tasks" / "wk.md").is_file()
+
+
+def test_update_failure_keeps_the_original_template_and_leaves_no_temp_file(
+    tmp_path, monkeypatch
+) -> None:
+    import os
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="original body"))
+    path = tmp_path / "tasks" / "wk.md"
+    before = path.read_text(encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError, match="disk full"):
+        asyncio.run(tasks_update(config=cfg, name="wk", prompt="new body"))
+    assert path.read_text(encoding="utf-8") == before
+    assert [p.name for p in (tmp_path / "tasks").iterdir()] == ["wk.md"]
+
+
+def test_create_force_failure_keeps_the_original_template(tmp_path, monkeypatch) -> None:
+    import os
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="original body"))
+    path = tmp_path / "tasks" / "wk.md"
+    before = path.read_text(encoding="utf-8")
+    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
+    with pytest.raises(OSError, match="full"):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="new", force=True))
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_update_refuses_to_drop_text_it_does_not_model(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    body = (
+        "# Wk\n**Trigger:** wk\n\n**Prompt:**\n\n> body\n\n"
+        "## Examples\n\nSome hand-written notes.\n"
+    )
+    path = tmp_path / "tasks" / "wk.md"
+    path.write_text(body, encoding="utf-8")
+    with pytest.raises(TaskValidationError, match="Expected"):
+        asyncio.run(tasks_update(config=cfg, name="wk", trigger="new"))
+    assert path.read_text(encoding="utf-8") == body
+
+
+def test_update_accepts_a_hand_written_template_that_uses_only_modeled_fields(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    path = tmp_path / "tasks" / "wk.md"
+    path.write_text(
+        "#  Weekly  \n**trigger:**   wk  \n**Input:** reports\n\n\n"
+        "**Prompt:**\n>body\n>  indented\n",
+        encoding="utf-8",
+    )
+    payload = asyncio.run(tasks_update(config=cfg, name="wk", trigger="weekly"))
+    assert payload["task"]["trigger"] == "weekly"
+    assert payload["task"]["input"] == "reports"
+    assert payload["task"]["prompt"] == "body\n indented"
+
+
+def test_update_keeps_a_title_that_equals_the_file_name(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    path = tmp_path / "tasks" / "wk.md"
+    path.write_text("# wk\n\n**Prompt:**\n\n> body\n", encoding="utf-8")
+    asyncio.run(tasks_update(config=cfg, name="wk", trigger="t"))
+    assert path.read_text(encoding="utf-8").startswith("# wk\n")
+
+
+def test_create_force_works_when_the_tasks_directory_is_a_symlink(tmp_path, monkeypatch) -> None:
+    real = tmp_path / "dotfiles-tasks"
+    real.mkdir()
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "tasks").symlink_to(real)
+    (cfg_dir / "config.toml").write_text(
+        '[profiles.work]\nprovider = "microsoft"\ntenant_id = "x"\nclient_id = "y"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("BLUMKIN_PROFILE", "work")
+    cfg = load_config(profile="work")
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="one"))
+    payload = asyncio.run(tasks_create(config=cfg, name="wk", prompt="two", force=True))
+    assert payload["overwrote"] is True
+    assert payload["task"]["prompt"] == "two"
+
+
+def test_created_files_and_a_new_tasks_directory_are_private(tmp_path, monkeypatch) -> None:
+    import stat
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks").rmdir()
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="body"))
+    assert stat.S_IMODE((tmp_path / "tasks").stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "tasks" / "wk.md").stat().st_mode) == 0o600
+
+
+def test_updating_keeps_the_file_private(tmp_path, monkeypatch) -> None:
+    import stat
+
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="wk", prompt="body"))
+    asyncio.run(tasks_update(config=cfg, name="wk", trigger="t"))
+    assert stat.S_IMODE((tmp_path / "tasks" / "wk.md").stat().st_mode) == 0o600
+
+
+def test_delete_needs_the_exact_name_but_a_dry_run_may_use_a_prefix(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    asyncio.run(tasks_create(config=cfg, name="deploy-prod", prompt="body"))
+    preview = asyncio.run(tasks_delete(config=cfg, name="dep", dry_run=True))
+    assert preview["name"] == "deploy-prod"
+    with pytest.raises(TaskValidationError, match="exact"):
+        asyncio.run(tasks_delete(config=cfg, name="dep", yes=True))
+    assert (tmp_path / "tasks" / "deploy-prod.md").is_file()
+    done = asyncio.run(tasks_delete(config=cfg, name="deploy-prod", yes=True))
+    assert done["dry_run"] is False
+    assert not (tmp_path / "tasks" / "deploy-prod.md").exists()
+
+
+def test_a_name_longer_than_a_file_name_allows_is_a_usage_error(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    with pytest.raises(TaskValidationError, match="Expected"):
+        asyncio.run(tasks_create(config=cfg, name="a" * 300, prompt="body"))
+
+
+def test_create_force_refuses_when_identical_copies_exist_in_both_directories(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    body = "# Wk\n\n**Prompt:**\n\n> body\n"
+    config_copy = tmp_path / "tasks" / "wk.md"
+    config_copy.write_text(body, encoding="utf-8")
+    profile_tasks = tmp_path / "profiles" / "work" / "tasks"
+    profile_tasks.mkdir(parents=True)
+    profile_copy = profile_tasks / "wk.md"
+    profile_copy.write_text(body, encoding="utf-8")
+    with pytest.raises(TaskExistsError, match="remove or rename"):
+        asyncio.run(tasks_create(config=cfg, name="wk", prompt="other", force=True))
+    assert config_copy.read_text(encoding="utf-8") == body
+    assert profile_copy.read_text(encoding="utf-8") == body
+
+
+def test_update_refuses_a_template_that_is_not_valid_utf8(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    path = tmp_path / "tasks" / "wk.md"
+    original = b"# Wk\n\n**Prompt:**\n\n> caf\xe9 body\n"
+    path.write_bytes(original)
+    with pytest.raises(TaskValidationError, match="UTF-8"):
+        asyncio.run(tasks_update(config=cfg, name="wk", trigger="t"))
+    assert path.read_bytes() == original

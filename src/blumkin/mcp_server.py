@@ -45,7 +45,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - the CLI wrapper re-rais
 # BESPOKE_SKILLS (auth verbs, doctor, skills.*, mail.signature, mcp.serve) have no
 # WorkspaceProvider method, so they can never be dispatched - never expose them.
 _EXCLUDED = BESPOKE_SKILLS
-_CONFIRM_SKILLS = frozenset({"mail.auto-reply", "meeting.transcription"})
+_CONFIRM_SKILLS = frozenset({"mail.auto-reply", "meeting.transcription", "tasks.delete"})
 # A synthetic read-only tool (not a catalog skill) so an agent can enumerate the
 # accounts this server can act as without shell access - issue #227.
 _PROFILES_LIST_TOOL = "profiles.list"
@@ -286,11 +286,19 @@ def _input_schema(
         if arg.get("required"):
             required.append(key)
     if _needs_confirm(skill):
+        # tasks.delete: confirm is optional so --dry-run works without it; the
+        # consent gate still demands a real true for a non-dry-run delete.
+        optional_confirm = skill["id"] == "tasks.delete"
         props["confirm"] = {
             "type": "boolean",
-            "description": "Must be true - this notifies people or changes a shared setting.",
+            "description": (
+                "True to delete; omit with dry_run. Must be a JSON boolean."
+                if optional_confirm
+                else "Must be true - this notifies people or changes a shared setting."
+            ),
         }
-        required.append("confirm")
+        if not optional_confirm:
+            required.append("confirm")
     if multi and profiles:
         props["profile"] = {
             "type": "string",

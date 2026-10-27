@@ -90,7 +90,15 @@ BESPOKE_SKILLS: frozenset[str] = frozenset(
 # token, no network); they are NOT in `BESPOKE_SKILLS`, so their args get normal
 # `param` enrichment and the MCP server exposes them like any read skill.
 CONFIG_SKILLS: frozenset[str] = frozenset(
-    {"docs.read", "people.context", "tasks.list", "tasks.show"}
+    {
+        "docs.read",
+        "people.context",
+        "tasks.create",
+        "tasks.delete",
+        "tasks.list",
+        "tasks.show",
+        "tasks.update",
+    }
 )
 
 # (skill id, catalog arg name) -> provider kwarg. Only listed where it differs from
@@ -1879,6 +1887,89 @@ SKILLS: list[SkillSpec] = [
         args=[],
     ),
     SkillSpec(
+        id="tasks.create",
+        cli=["blumkin", "tasks", "create"],
+        summary=(
+            "Write a new ~/.config/blumkin/tasks/<name>.md prompt template "
+            "(or the active profile's tasks/ when that directory exists)"
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=[],
+        args=[
+            {
+                "name": "--force",
+                "required": False,
+                "type": "flag",
+                "note": "overwrite an existing template file",
+            },
+            {
+                "name": "--input",
+                "required": False,
+                "type": "string",
+                "note": "one-line Input: field",
+            },
+            {
+                "name": "--name",
+                "required": True,
+                "type": "string",
+                "note": "file stem: lowercase letters, digits, ., _, -",
+            },
+            {
+                "name": "--output",
+                "required": False,
+                "type": "string",
+                "note": "one-line Output: field",
+            },
+            {
+                "name": "--prompt",
+                "required": True,
+                "type": "string",
+                "note": "Prompt: block body (multi-line OK)",
+            },
+            {
+                "name": "--title",
+                "required": False,
+                "type": "string",
+                "note": "optional # Title line",
+            },
+            {
+                "name": "--trigger",
+                "required": False,
+                "type": "string",
+                "note": "one-line Trigger: field",
+            },
+        ],
+    ),
+    SkillSpec(
+        id="tasks.delete",
+        cli=["blumkin", "tasks", "delete"],
+        summary="Delete a prompt template file (requires --yes; --dry-run shows the path)",
+        mutates=True,
+        notifies_others=False,
+        scopes=[],
+        args=[
+            {
+                "name": "--dry-run",
+                "required": False,
+                "type": "flag",
+                "note": "show the path that would be removed; no --yes needed",
+            },
+            {
+                "name": "--name",
+                "required": True,
+                "type": "string",
+                "note": "template name; a unique prefix is accepted",
+            },
+            {
+                "name": "--yes",
+                "required": True,
+                "type": "flag",
+                "note": "required to delete (not needed with --dry-run)",
+            },
+        ],
+    ),
+    SkillSpec(
         id="tasks.list",
         cli=["blumkin", "tasks", "list"],
         summary=(
@@ -1903,6 +1994,55 @@ SKILLS: list[SkillSpec] = [
                 "required": True,
                 "type": "string",
                 "note": "template name; a unique prefix is accepted",
+            },
+        ],
+    ),
+    SkillSpec(
+        id="tasks.update",
+        cli=["blumkin", "tasks", "update"],
+        summary=(
+            "Update fields on an existing prompt template in place; "
+            "unspecified fields are preserved"
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=[],
+        args=[
+            {
+                "name": "--input",
+                "required": False,
+                "type": "string",
+                "note": "replace the Input: field",
+            },
+            {
+                "name": "--name",
+                "required": True,
+                "type": "string",
+                "note": "template name; a unique prefix is accepted",
+            },
+            {
+                "name": "--output",
+                "required": False,
+                "type": "string",
+                "note": "replace the Output: field",
+            },
+            {
+                "name": "--prompt",
+                "required": False,
+                "type": "string",
+                "note": "replace the Prompt: block body",
+            },
+            {
+                "name": "--title",
+                "required": False,
+                "type": "string",
+                "note": "replace the # Title line",
+            },
+            {
+                "name": "--trigger",
+                "required": False,
+                "type": "string",
+                "note": "replace the Trigger: field",
             },
         ],
     ),

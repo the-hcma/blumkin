@@ -40,7 +40,7 @@ from blumkin.skills.errors import (
     FreshnessRequiredError,
     ScopeAddonDisabledError,
 )
-from blumkin.tasks import tasks_list, tasks_show
+from blumkin.tasks import tasks_create, tasks_delete, tasks_list, tasks_show, tasks_update
 
 # Skills that retire a draft id for good - its compose-cooldown record (and, for
 # chat, the stashed content) is no longer meaningful once the draft is sent,
@@ -68,8 +68,11 @@ _COMPOSE_RECORD_SKILLS: frozenset[str] = frozenset(
 _CONFIG_HANDLERS: dict[str, Callable[..., Any]] = {
     "docs.read": docs_read,
     "people.context": people_context,
+    "tasks.create": tasks_create,
+    "tasks.delete": tasks_delete,
     "tasks.list": tasks_list,
     "tasks.show": tasks_show,
+    "tasks.update": tasks_update,
 }
 
 # Either key satisfies the notify gate. The MCP server maps its synthetic
@@ -468,12 +471,22 @@ def _pp_auto_reply(kwargs: dict[str, Any], raw: dict[str, Any], config: BlumkinC
         )
 
 
+def _pp_tasks_delete(
+    kwargs: dict[str, Any], arguments: dict[str, Any], _config: BlumkinConfig
+) -> None:
+    # ``--yes`` is normally gate-only (param=None); delete needs the flag in-handler
+    # so ``--dry-run`` can skip consent while a real delete still requires it.
+    # Accept only a real JSON/CLI true - ``bool("false")`` must never authorize.
+    kwargs["yes"] = arguments.get("yes") is True or arguments.get("confirm") is True
+
+
 _PREPROCESSORS: dict[str, Callable[[dict[str, Any], dict[str, Any], BlumkinConfig], None]] = {
-    "calendar.create": _pp_calendar_create,
     "calendar.accept": _pp_rsvp,
+    "calendar.create": _pp_calendar_create,
     "calendar.decline": _pp_rsvp,
     "calendar.tentative": _pp_rsvp,
     "mail.auto-reply": _pp_auto_reply,
+    "tasks.delete": _pp_tasks_delete,
 }
 
 
@@ -529,7 +542,11 @@ def _run_gates(
 
     # --yes / confirm
     mode = _consent_mode(skill_id, spec_args)
-    if mode == "always" and not _consent_given(arguments):
+    if (
+        mode == "always"
+        and not (skill_id == "tasks.delete" and arguments.get("dry_run"))
+        and not _consent_given(arguments)
+    ):
         raise ConsentRequiredError("--yes is required for this command", hint=_YES_HINT_DEFAULT)
     if mode == "auto_reply":
         if _tristate(arguments, "on", "off") is not None and not _consent_given(arguments):
