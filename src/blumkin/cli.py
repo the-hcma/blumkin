@@ -544,8 +544,8 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
     elif isinstance(exc, BrowserDependencyError):
         slug, code = "browser_dependency", EXIT_OTHER
         hint = (
-            "Restore playwright with `uv sync` in the blumkin clone, "
-            "`uv tool install -e . --reinstall`, or "
+            "Restore playwright with `uv sync --reinstall-package playwright` "
+            "in the blumkin clone, `uv tool install -e . --reinstall`, or "
             "`uv tool upgrade blumkin --reinstall-package playwright`, then retry."
         )
     elif isinstance(exc, BrowserAttachError):

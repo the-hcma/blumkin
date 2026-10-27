@@ -551,7 +551,7 @@ def open_driver(
         except Exception as exc:
             raise BrowserDependencyError(
                 f"Expected the playwright package to start, got {exc}; "
-                "run `uv sync` in the blumkin clone "
+                "run `uv sync --reinstall-package playwright` in the blumkin clone "
                 "(or `uv tool install -e . --reinstall` / "
                 "`uv tool upgrade blumkin --reinstall-package playwright`) "
                 "to restore it, then retry the browser command"
@@ -758,7 +758,7 @@ def _sync_playwright() -> Any:
         # damaged install - both need reinstall guidance, not "browser not running".
         raise BrowserDependencyError(
             f"Expected the playwright package to be importable, got {exc}; "
-            "run `uv sync` in the blumkin clone "
+            "run `uv sync --reinstall-package playwright` in the blumkin clone "
             "(or `uv tool install -e . --reinstall` / "
             "`uv tool upgrade blumkin --reinstall-package playwright`) "
             "to restore it, then retry the browser command"

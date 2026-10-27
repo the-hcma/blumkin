@@ -310,7 +310,7 @@ def test_a_missing_playwright_dependency_is_not_browser_not_running(
     assert result.exit_code == EXIT_OTHER
     payload = _json(result)
     assert payload["error"] == "browser_dependency"
-    assert "uv sync" in payload["hint"]
+    assert "uv sync --reinstall-package playwright" in payload["hint"]
     assert "browser launch" not in payload["hint"]
 
 
