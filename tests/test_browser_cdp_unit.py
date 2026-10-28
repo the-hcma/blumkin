@@ -1346,3 +1346,13 @@ def test_read_frame_text_without_a_wait_still_refuses_a_frame_with_no_address() 
     driver = _driver(_Playwright(page))[1]
     with pytest.raises(BrowserActionError, match="no web host"):
         driver.read_frame_text(1, _sharepoint)
+
+
+def test_frame_list_waits_until_every_child_frame_has_an_address() -> None:
+    page = _FramesPage(_PlainFrame("https://tenant.sharepoint.com/x"))
+    page.frames.append(_AddressLateFrame(page, "rows"))
+    driver = _driver(_Playwright(page))[1]
+    assert [f.host for f in driver.frame_list(_sharepoint, wait_s=5.0)] == [
+        "tenant.sharepoint.com",
+        "tenant.sharepoint.com",
+    ]

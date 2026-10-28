@@ -301,11 +301,11 @@ class PlaywrightDriver:
 
         A frame in another origin is reported to a fresh connection a moment after it
         attaches, and with no address at first, so `wait_s` waits for at least one frame that
-        has a web address before listing.
+        has a web address (every frame, once there is one) before listing.
         """
         self._require_open()
         deadline = time.monotonic() + clamp_wait(wait_s)
-        while not any(_web_host(frame.url) for frame in self._child_frames()):
+        while not _all_addressed(self._child_frames()):
             if time.monotonic() >= deadline:
                 break
             self._pause()
@@ -988,3 +988,8 @@ def _web_host(url: str) -> str:
     """The host of an http(s) address, else "" (about:, data:, blob:, ftp: and the like)."""
     parts = urlsplit(url)
     return (parts.hostname or "") if parts.scheme in ("http", "https") else ""
+
+
+def _all_addressed(frames: Sequence[Any]) -> bool:
+    """True when there is at least one frame and every frame has a web address."""
+    return bool(frames) and all(_web_host(frame.url) for frame in frames)

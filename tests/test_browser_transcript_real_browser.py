@@ -4,11 +4,14 @@ Needs an installed Chrome, Edge or Chromium and `BLUMKIN_BROWSER_TESTS=1`; it is
 CI. The page imitates what shaped the transcript commands, with synthetic text only: a pane
 served from another host inside an iframe that attaches late, a virtualized list that keeps
 only the rows near the viewport in the page, a tab that reloads the pane only when another tab
-was shown first, and a control that appears after the page loaded.
+was shown first, and a control that appears after the page loaded. The pane is served from
+`localhost` while the meeting is on `127.0.0.1`, which Chrome treats as different sites, so the
+pane is an out-of-process iframe like the real one.
 """
 
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import os
@@ -190,7 +193,8 @@ def meeting_cli(
         assert cli("goto", "meeting", meeting_url).exit_code == EXIT_SUCCESS
         yield cli
     finally:
-        os.kill(result.session.pid, signal.SIGTERM)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(result.session.pid, signal.SIGTERM)
 
 
 def _poll(condition: Callable[[], bool], *, timeout_s: float = 15.0) -> bool:
@@ -244,13 +248,16 @@ def test_a_frame_read_waits_for_the_pane_to_attach_and_load(
 
 
 @pytest.mark.xfail(
+    raises=AssertionError,
     strict=True,
     reason="a fresh attach cannot see a cross-origin frame that already exists (#551)",
 )
 def test_frames_on_a_page_that_has_settled_still_lists_the_pane(
     meeting_cli: Callable[..., Any],
 ) -> None:
-    assert meeting_cli("read", "meeting", "--frame", "1", "--wait", "20").exit_code == EXIT_SUCCESS
+    primed = meeting_cli("read", "meeting", "--frame", "1", "--wait", "20")
+    if primed.exit_code != EXIT_SUCCESS:  # not the #551 symptom: a real regression
+        raise RuntimeError(primed.output)
 
     frames = json.loads(meeting_cli("frames", "meeting", "--wait", "3").output)["frames"]
 
