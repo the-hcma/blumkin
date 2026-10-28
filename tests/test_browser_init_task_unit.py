@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
+import threading
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -193,3 +195,119 @@ def test_the_template_names_complete(config: Path) -> None:
         prog_name="blumkin",
     )
     assert "teams-transcript" in result.output
+
+
+def test_concurrent_runs_for_one_task_leave_exactly_one_table(config: Path) -> None:
+    from blumkin.browser.init_task import init_task
+
+    barrier = threading.Barrier(8)
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            barrier.wait()
+            init_task(config, "teams-transcript", "teams-transcript", write=True)
+        except BaseException as exc:  # noqa: BLE001 - collected and asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    text = (config / "config.toml").read_text(encoding="utf-8")
+    assert text.count("[browser.tasks.teams-transcript]") == 1
+    assert "teams-transcript" in tomllib.loads(text)["browser"]["tasks"]
+
+
+@pytest.mark.parametrize("ending", ["\n", "", "\r\n"])
+def test_files_with_other_line_endings_still_get_a_valid_table(config: Path, ending: str) -> None:
+    (config / "config.toml").write_bytes(
+        _BASE.replace("\n", ending).rstrip("\r\n").encode() + ending.encode()
+    )
+
+    assert _run("--template", "teams-transcript", "--yes").exit_code == EXIT_SUCCESS
+    assert (
+        "teams-transcript"
+        in tomllib.loads((config / "config.toml").read_text())["browser"]["tasks"]
+    )
+
+
+def test_a_byte_order_mark_is_refused_with_a_hint_and_the_file_is_left_alone(config: Path) -> None:
+    (config / "config.toml").write_bytes(b"\xef\xbb\xbf" + _BASE.encode())
+
+    result = _run("--template", "teams-transcript", "--yes")
+
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert "byte order mark" in _payload(result)["message"]
+    assert (config / "config.toml").read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_a_policy_written_with_dotted_keys_counts_as_declared(config: Path) -> None:
+    dotted = _BASE + '\nbrowser.tasks.teams-transcript.allowed_controls = ["Mine"]\n'
+    (config / "config.toml").write_text(dotted, encoding="utf-8")
+
+    result = _run("--template", "teams-transcript", "--yes")
+
+    assert _payload(result)["already_declared"] is True
+    assert (config / "config.toml").read_text(encoding="utf-8") == dotted
+
+
+def test_the_mode_of_an_existing_config_file_is_left_as_it_was(config: Path) -> None:
+    os.chmod(config / "config.toml", 0o640)
+
+    assert _run("--template", "teams-transcript", "--yes").exit_code == EXIT_SUCCESS
+
+    assert stat.S_IMODE((config / "config.toml").stat().st_mode) == 0o640
+
+
+def test_a_config_path_that_is_not_a_regular_file_is_refused_without_blocking(config: Path) -> None:
+    (config / "config.toml").unlink()
+    os.mkfifo(config / "config.toml")
+
+    result = _run("--template", "teams-transcript", "--yes")
+
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert "regular file" in _payload(result)["message"]
+
+
+def test_a_write_that_fails_part_way_restores_the_file_and_is_not_a_usage_error(
+    config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = (config / "config.toml").read_bytes()
+    real = os.pwrite
+
+    def half_then_fail(fd: int, data: bytes, offset: int) -> int:
+        real(fd, data[: len(data) // 2], offset)
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr("blumkin.browser.init_task.os.pwrite", half_then_fail)
+
+    result = _run("--template", "teams-transcript", "--yes")
+
+    assert result.exit_code not in (EXIT_SUCCESS, EXIT_USAGE), result.output
+    assert (config / "config.toml").read_bytes() == before
+
+
+def test_the_profile_is_created_before_the_config_is_written(
+    config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser.profiles import BrowserProfileError
+
+    def refuse(config_dir: Path, task: str) -> Any:
+        raise BrowserProfileError("Expected a real directory, got a symlink")
+
+    monkeypatch.setattr("blumkin.browser.init_task.create_profile", refuse)
+    before = (config / "config.toml").read_text(encoding="utf-8")
+
+    result = _run("--template", "teams-transcript", "--yes")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert (config / "config.toml").read_text(encoding="utf-8") == before
+
+
+def test_the_output_tells_the_user_to_narrow_the_sharepoint_wildcard(config: Path) -> None:
+    result = CliRunner().invoke(main, ["browser", "init-task", "--template", "teams-transcript"])
+    assert "tenant" in result.output and "sharepoint" in result.output.lower()

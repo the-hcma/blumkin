@@ -86,3 +86,18 @@ def test_the_main_skill_and_the_guide_point_at_it() -> None:
     guide = (_ROOT / "docs" / "browser-tasks.md").read_text("utf-8")
     assert "blumkin browser init-task" in guide
     assert ".agents/skills/teams-transcript" in guide
+
+
+def test_the_skill_tells_the_user_to_narrow_the_sharepoint_wildcard() -> None:
+    text = _text()
+    assert "tenant" in text and "narrow" in text
+
+
+def test_the_skill_maps_an_existing_output_file_to_the_error_the_command_emits() -> None:
+    text = _text()
+    usage = next(line for line in text.splitlines() if line.startswith("- `usage_error`"))
+    action = next(
+        line for line in text.splitlines() if line.startswith("- `browser_action_failed`")
+    )
+    assert "--out" not in usage
+    assert "--out" in action
