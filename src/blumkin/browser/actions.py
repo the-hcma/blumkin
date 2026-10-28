@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import stat
+import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,15 @@ _ARIA_FIELD_VALUE = re.compile(
     + rf'|{_ARIA_FIELD_ROLES}(?: "(?:[^"\\]|\\.)*")?(?: \[[^\]]*\])*'
     + r")):\s.*$"
 )
+
+
+_DOWNLOAD_EXTENSIONS = frozenset({".csv", ".md", ".srt", ".txt", ".vtt"})
+_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
+_DOWNLOAD_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ ()-]{0,119}")
+
+
+class DownloadBlockedError(BrowserActionError):
+    """The download is not one the task may keep."""
 
 
 class HostBlockedError(BrowserActionError):
@@ -86,6 +97,79 @@ def click_task(
     def act(driver: GuardedDriver) -> dict[str, Any]:
         found = driver.click(name, role, waited)
         return {"action": "click", "name": name, "ok": True, "role": found, "task": task}
+
+    return _with_driver(config, task, act, check_after=True)
+
+
+def download_task(
+    config: BrowserSetup,
+    task: str,
+    control: str,
+    *,
+    into: Path,
+    name: str | None = None,
+    role: str | None = None,
+    wait_s: float | None = None,
+) -> dict[str, Any]:
+    """Click a declared control that starts a download and keep the file in a declared folder.
+
+    Default deny: the task must declare `download_dirs` and `allowed_hosts`, the folder must be
+    inside one of them (judged on the resolved path, before the browser is touched), and the
+    file must come from an allowed host and be a small text file. It is saved to a private
+    temporary folder first, then linked into place as a new file (mode 0600, never an
+    overwrite), and its text is scanned like `read`. The text is not returned.
+    """
+    declared = config.browser.tasks.get(task)
+    folders = declared.download_dirs if declared else ()
+    hosts = declared.allowed_hosts if declared else ()
+    if not folders:
+        raise DownloadBlockedError(
+            f"Expected [browser.tasks.{task}] to declare download_dirs in config.toml before "
+            "downloading, got none"
+        )
+    if not hosts:
+        raise DownloadBlockedError(
+            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
+            "downloading, got none"
+        )
+    folder = _expand_home(os.fspath(into)).resolve()
+    roots = [_expand_home(entry).resolve() for entry in folders]
+    if not folder.is_dir() or not any(folder.is_relative_to(root) for root in roots):
+        raise DownloadBlockedError(
+            f"Expected an existing folder inside a download_dirs folder of task {task!r}, "
+            f"got {str(into)!r}"
+        )
+    chosen = _download_name(name) if name is not None else None
+    waited = wait_s if wait_s is not None else _default_wait(role)
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        staging = Path(tempfile.mkdtemp(prefix=".blumkin-download-", dir=folder))
+        try:
+            got = driver.download(control, role, save_to=staging, wait_s=waited)
+            host = urlsplit(got.url).hostname or ""
+            if not host_allowed(host, hosts):
+                raise HostBlockedError(
+                    f"Expected the download to come from an allowed_hosts host of task "
+                    f"{task!r}, got {host or 'no host'!r}"
+                )
+            file_name = chosen or _download_name(_clean_download_name(got.filename))
+            kept = _keep_download(got.path, staging, folder / file_name)
+            text = kept.read_text(encoding="utf-8", errors="replace")
+            injection = scan_for_injection(text, location="download.text")
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        return {
+            "action": "download",
+            "bytes": kept.stat().st_size,
+            "file": kept.name,
+            "injection_warning": injection.to_payload(include_snippets=False),
+            "into": str(folder),
+            "ok": True,
+            "path": str(kept),
+            "task": task,
+            "untrusted": UNTRUSTED_NOTE,
+            "url_host": host,
+        }
 
     return _with_driver(config, task, act, check_after=True)
 
@@ -400,6 +484,44 @@ def _checked_output(out: Path) -> Path:
 
 def _default_wait(role: str | None) -> float:
     return DEFAULT_CLICK_WAIT_S if role is None else DEFAULT_ACTION_TIMEOUT_S
+
+
+def _clean_download_name(suggested: str) -> str:
+    """The base name of the name a page suggested, with anything unusual made a plain character."""
+    base = suggested.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return re.sub(r"[^A-Za-z0-9._ ()-]", "_", base).lstrip(". ")
+
+
+def _download_name(name: str) -> str:
+    """`name` if it is a plain text-file name (no folders, no leading dot), else refuse."""
+    if not _DOWNLOAD_NAME.fullmatch(name) or ".." in name:
+        raise DownloadBlockedError(f"Expected a plain file name for the download, got {name!r}")
+    if os.path.splitext(name)[1].lower() not in _DOWNLOAD_EXTENSIONS:
+        raise DownloadBlockedError(
+            f"Expected a {', '.join(sorted(_DOWNLOAD_EXTENSIONS))} file, got {name!r}"
+        )
+    return name
+
+
+def _keep_download(source: Path, staging: Path, target: Path) -> Path:
+    """Link a downloaded file into place as a new private file; never replace one."""
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or source.resolve().parent != staging.resolve():
+        raise DownloadBlockedError(
+            "Expected the download to be a regular file in the staging folder"
+        )
+    if info.st_size > _DOWNLOAD_MAX_BYTES:
+        raise DownloadBlockedError(
+            f"Expected a download of at most {_DOWNLOAD_MAX_BYTES} bytes, got {info.st_size}"
+        )
+    source.chmod(0o600)
+    try:
+        os.link(source, target)
+    except FileExistsError as exc:
+        raise DownloadBlockedError(
+            f"Expected a new file for the download, got {target.name!r} already there"
+        ) from exc
+    return target
 
 
 def _declared_hosts(config: BrowserSetup, task: str) -> tuple[str, ...]:

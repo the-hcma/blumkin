@@ -44,9 +44,11 @@ from blumkin.auth_setup import (
     remove_first_run_config,
 )
 from blumkin.browser.actions import (
+    DownloadBlockedError,
     HostBlockedError,
     UploadBlockedError,
     click_task,
+    download_task,
     fill_task,
     frames_task,
     goto_task,
@@ -568,6 +570,8 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "submit_blocked", EXIT_OTHER
     elif isinstance(exc, UploadBlockedError):
         slug, code = "upload_blocked", EXIT_OTHER
+    elif isinstance(exc, DownloadBlockedError):
+        slug, code = "download_blocked", EXIT_OTHER
     elif isinstance(exc, HostBlockedError):
         slug, code = "host_blocked", EXIT_OTHER
     elif isinstance(exc, BrowserActionError):
@@ -2408,6 +2412,54 @@ def browser_explore_show(ctx: click.Context, task: str, as_json_flag: bool) -> N
         lines.append(
             f"  {page['page_id']} {page['url_template']} - {page['controls']} control(s){marked}"
         )
+    emit_lines(lines)
+
+
+@browser.command("download", epilog=help_text.BROWSER_DOWNLOAD_EPILOG)
+@click.argument("task")
+@click.argument("control")
+@click.option(
+    "--into",
+    "into",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="An existing folder inside the task's download_dirs to save the file in.",
+)
+@click.option("--name", "name", default=None, help="Save as this file name (default: the page's).")
+@click.option("--role", default=None, help="Accessible role of the control (default: by name).")
+@click.option(
+    "--wait",
+    "wait_s",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=None,
+    help="Seconds to wait for the control (default 5 by name, 30 with --role).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_download(
+    ctx: click.Context,
+    task: str,
+    control: str,
+    into: Path,
+    name: str | None,
+    role: str | None,
+    wait_s: float | None,
+    as_json_flag: bool,
+) -> None:
+    """Click a declared control that starts a download and keep the text file it saves."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = download_task(
+            load_browser_setup(), task, control, into=into, name=name, role=role, wait_s=wait_s
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    lines = [f"{task}: saved {sanitize_terminal(payload['file'])} ({payload['bytes']} bytes)"]
+    lines.extend(format_injection_warning_banner(payload["injection_warning"]))
     emit_lines(lines)
 
 

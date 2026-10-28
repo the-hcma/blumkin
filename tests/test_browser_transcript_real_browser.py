@@ -52,6 +52,7 @@ _MEETING = """<!doctype html><title>Example meeting</title>
 <button role="tab" id="transcript" aria-selected="true">Transcript</button>
 </div>
 <p id="mounts">mounts: 0</p>
+<button id="dl" onclick="location.href = '/transcript.vtt'">Download</button>
 <div id="host"></div>
 <script>
 let mounts = 0;
@@ -148,9 +149,21 @@ def _pane_page() -> bytes:
     )
 
 
+_VTT = "WEBVTT\n\n00:00.000 --> 00:02.000\nLovelace, Ada (Example Corp): Turn 0 point 0.\n"
+
+
 def _serve(body: Callable[[], bytes]) -> tuple[http.server.ThreadingHTTPServer, int]:
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            if self.path == "/transcript.vtt":
+                data = _VTT.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/vtt")
+                self.send_header("Content-Disposition", 'attachment; filename="meeting.vtt"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
@@ -198,9 +211,12 @@ def meeting_cli(
     config = tmp_path / "config"
     config.mkdir()
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(config))
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
     (config / "config.toml").write_text(
         '[browser.tasks.meeting]\nallowed_hosts = ["127.0.0.1", "localhost"]\n'
-        'allowed_controls = ["Notes", "Transcript", "Late action"]\n'
+        'allowed_controls = ["Notes", "Transcript", "Late action", "Download"]\n'
+        f'download_dirs = ["{downloads}"]\n'
     )
     profile = create_profile(config, "meeting")
     result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
@@ -338,3 +354,25 @@ def test_refresh_tab_reloads_the_pane_that_clicking_the_selected_tab_does_not(
 
     assert refreshed.exit_code == EXIT_SUCCESS, refreshed.output
     assert _poll(lambda: mounts() == "mounts: 2")
+
+
+def test_a_download_the_page_offers_is_kept_privately_and_never_overwritten(
+    meeting_cli: Callable[..., Any], tmp_path: Path
+) -> None:
+    into = tmp_path / "downloads"
+
+    first = meeting_cli("download", "meeting", "Download", "--into", str(into), "--wait", "10")
+
+    assert first.exit_code == EXIT_SUCCESS, first.output
+    saved = into / "meeting.vtt"
+    assert saved.read_text() == _VTT
+    assert saved.stat().st_mode & 0o777 == 0o600
+    assert json.loads(first.output)["url_host"] == "127.0.0.1"
+    assert [path.name for path in into.iterdir()] == ["meeting.vtt"]
+
+    again = meeting_cli("download", "meeting", "Download", "--into", str(into), "--wait", "10")
+
+    assert again.exit_code == EXIT_OTHER, again.output
+    assert json.loads(again.output)["error"] == "download_blocked"
+    assert saved.read_text() == _VTT
+    assert [path.name for path in into.iterdir()] == ["meeting.vtt"]

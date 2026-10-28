@@ -69,6 +69,15 @@ class BrowserDriver(Protocol):
 
     def close(self) -> None: ...
 
+    def download(
+        self,
+        name: str,
+        role: str | None = None,
+        *,
+        save_to: Path,
+        wait_s: float = DEFAULT_CLICK_WAIT_S,
+    ) -> DownloadedFile: ...
+
     def fill(self, label: str, value: str) -> None: ...
 
     def frame_aria_snapshot(
@@ -139,6 +148,17 @@ DEFAULT_FRAME_WAIT_S = 30.0
 
 
 DEFAULT_SCROLL_MAX_STEPS = 400
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadedFile:
+    """A file the browser downloaded, saved to a path the caller chose."""
+
+    #: The suggested name from the page (untrusted: the caller cleans it).
+    filename: str
+    path: Path
+    #: Where the file came from (untrusted: the caller checks the host).
+    url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +288,40 @@ class PlaywrightDriver:
             handle.click(timeout=self._timeout_ms, no_wait_after=True)
         except _playwright_error() as exc:
             raise self._action_error(f"click the {role} named {name!r}", exc) from exc
+
+    def checked_download(
+        self,
+        name: str,
+        role: str,
+        vet: Callable[[ControlInfo], None],
+        *,
+        save_to: Path,
+        timeout_s: float,
+    ) -> DownloadedFile:
+        """Resolve one element, vet it, click it and save the download it starts to `save_to`.
+
+        The file lands at `save_to/download.bin`; its name and address, which the page
+        controls, are returned for the caller to check.
+        """
+        self._require_open()
+        try:
+            handle = self._page.get_by_role(role, name=name, exact=True).element_handle(
+                timeout=self._timeout_ms
+            )
+        except _playwright_error() as exc:
+            raise self._action_error(f"find the {role} named {name!r}", exc) from exc
+        target = save_to / "download.bin"
+        try:
+            vet(self._describe(handle))
+            with self._page.expect_download(timeout=timeout_s * 1000) as started:
+                handle.click(timeout=self._timeout_ms, no_wait_after=True)
+            download = started.value
+            download.save_as(str(target))
+        except _playwright_error() as exc:
+            raise self._action_error(f"download from the {role} named {name!r}", exc) from exc
+        return DownloadedFile(
+            filename=str(download.suggested_filename), path=target, url=str(download.url)
+        )
 
     def describe_field(self, label: str) -> ControlInfo:
         """Describe the element a label resolves to (for example to see it is a button)."""
@@ -687,6 +741,16 @@ class RawBrowserDriver(Protocol):
     def block_form_submission(self) -> None: ...
 
     def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None: ...
+
+    def checked_download(
+        self,
+        name: str,
+        role: str,
+        vet: Callable[[ControlInfo], None],
+        *,
+        save_to: Path,
+        timeout_s: float,
+    ) -> DownloadedFile: ...
 
     def close(self) -> None: ...
 
