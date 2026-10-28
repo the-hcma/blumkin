@@ -8,6 +8,7 @@ import json
 import socket
 import struct
 import threading
+import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -315,13 +316,19 @@ def test_a_raw_frame_evaluate_error_is_a_raw_frame_error(server: Any) -> None:
 
 
 class _Opened:
-    def __init__(self, parent: str) -> None:
+    def __init__(self, parent: str, children: tuple[str, ...] = ()) -> None:
         self.parent = parent
+        self.children = children
         self.closed = False
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         assert method == "Page.getFrameTree"
-        return {"frameTree": {"frame": {"id": "x", "parentId": self.parent}}}
+        return {
+            "frameTree": {
+                "frame": {"id": "x", "parentId": self.parent},
+                "childFrames": [{"frame": {"id": child}} for child in self.children],
+            }
+        }
 
     def close(self) -> None:
         self.closed = True
@@ -599,3 +606,106 @@ def test_discovery_opens_at_most_a_fixed_number_of_frames() -> None:
         many, page_frame_ids={"MAIN"}, known_urls=set(), open_socket=opener, reuse={}
     )
     assert len(opened) == len(found) == 32
+
+
+def test_a_complete_error_answer_keeps_the_socket_open_for_the_next_call(server: Any) -> None:
+    answers: list[str] = []
+
+    def handler(request: dict[str, Any]) -> list[bytes]:
+        answers.append(request["method"])
+        if len(answers) == 1:
+            return [
+                text_frame(
+                    {"id": request["id"], "error": {"message": "Execution context was destroyed"}}
+                )
+            ]
+        return reply(request, {"ok": True})
+
+    sock = CdpSocket.connect(server(handler).url, timeout_s=5)
+    try:
+        with pytest.raises(RawFrameError, match="destroyed"):
+            sock.call("Runtime.evaluate", {"expression": "1"})
+        assert sock.closed is False
+        assert sock.call("Runtime.evaluate", {"expression": "1"}) == {"ok": True}
+    finally:
+        sock.close()
+
+
+def test_a_call_can_be_given_its_own_timeout(server: Any) -> None:
+    sock = CdpSocket.connect(server(lambda request: None).url, timeout_s=30)
+    try:
+        started = time.monotonic()
+        with pytest.raises(RawFrameError, match="timed out"):
+            sock.call("Runtime.evaluate", {"expression": "1"}, timeout_s=0.3)
+        assert time.monotonic() - started < 5
+    finally:
+        sock.close()
+
+
+def test_discovery_follows_same_process_children_of_a_frame_it_reads() -> None:
+    parents = {
+        "a": ("MAIN", ("SAME-PROCESS-X",)),
+        "n": ("SAME-PROCESS-X", ()),
+        "b": ("ELSEWHERE", ()),
+    }
+    found = discover_frames(
+        _targets(),
+        page_frame_ids={"MAIN"},
+        known_urls=[],
+        open_socket=lambda ws_url: _Opened(*parents[ws_url.rsplit("/", 1)[1]]),
+        reuse={},
+    )
+    assert [f.target_id for f in found] == ["A", "N"]
+
+
+def test_a_frame_whose_parent_is_a_child_of_another_candidate_is_not_declared_foreign() -> None:
+    rejected: set[str] = set()
+    discover_frames(
+        _targets(),
+        page_frame_ids={"MAIN"},
+        known_urls=[],
+        open_socket=lambda ws_url: _Opened(
+            {"a": "MAIN", "b": "ELSEWHERE", "n": "SAME-PROCESS-X"}[ws_url.rsplit("/", 1)[1]],
+            ("SAME-PROCESS-X",) if ws_url.endswith("/a") else (),
+        ),
+        reuse={},
+        rejected=rejected,
+    )
+    assert rejected == {"B"}
+
+
+def test_known_addresses_are_matched_one_for_one_not_by_address() -> None:
+    twins = [
+        {
+            "type": "iframe",
+            "id": "T1",
+            "url": "http://localhost:2/pane",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9/t1",
+        },
+        {
+            "type": "iframe",
+            "id": "T2",
+            "url": "http://localhost:2/pane",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9/t2",
+        },
+    ]
+    found = discover_frames(
+        twins,
+        page_frame_ids={"MAIN"},
+        known_urls=["http://localhost:2/pane"],
+        open_socket=lambda ws_url: _Opened("MAIN"),
+        reuse={},
+    )
+    assert [f.target_id for f in found] == ["T2"]
+
+
+def test_a_raw_frame_script_gets_the_evaluate_timeout_not_the_probe_one(server: Any) -> None:
+    sock = CdpSocket.connect(server(lambda request: None).url, timeout_s=0.2)
+    frame = RawFrame(sock, "F1", "", evaluate_timeout_s=0.4)
+    try:
+        started = time.monotonic()
+        with pytest.raises(RawFrameError, match="timed out"):
+            frame.evaluate("1")
+        assert time.monotonic() - started >= 0.3
+    finally:
+        frame.close()

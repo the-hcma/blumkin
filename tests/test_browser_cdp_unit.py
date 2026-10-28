@@ -1462,3 +1462,29 @@ def test_a_source_that_raises_anything_leaves_the_playwright_frames_usable(
 
     driver = _existing_driver(_Odd(), _PlainFrame("https://tenant.sharepoint.com/x", text="t"))
     assert [f.host for f in driver.frame_list(_sharepoint)] == ["tenant.sharepoint.com"]
+
+
+def test_frame_discovery_uses_a_short_probe_timeout_not_the_action_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import cdpws
+    from blumkin.browser.cdp import _existing_frames_for
+
+    seen: list[float] = []
+
+    def connect(ws_url: str, *, timeout_s: float, **kwargs: Any) -> Any:
+        seen.append(timeout_s)
+        raise cdpws.RawFrameError("stop")
+
+    monkeypatch.setattr(cdpws.CdpSocket, "connect", staticmethod(connect))
+    source = _existing_frames_for("http://127.0.0.1:40123", _Page(), 30.0)
+    with pytest.raises(cdpws.RawFrameError):
+        source._open_socket("ws://127.0.0.1:40123/devtools/page/A")
+    assert seen == [3.0]
+
+
+def test_the_driver_gives_the_source_only_the_addresses_of_playwrights_child_frames() -> None:
+    existing = _Existing()
+    driver = _existing_driver(existing, _PlainFrame("https://tenant.sharepoint.com/seen"))
+    driver.frame_list(_sharepoint)
+    assert list(existing.seen_urls or []) == ["https://tenant.sharepoint.com/seen"]
