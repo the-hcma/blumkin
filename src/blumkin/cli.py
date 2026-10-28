@@ -2383,12 +2383,21 @@ def browser_fill(ctx: click.Context, task: str, label: str, value: str, as_json_
 @browser.command("frames", epilog=help_text.BROWSER_FRAMES_EPILOG)
 @click.argument("task")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--wait",
+    "wait_s",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=2.0,
+    show_default=True,
+    help="Seconds to wait for a frame that attaches late.",
+)
 @click.pass_context
-def browser_frames(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+def browser_frames(ctx: click.Context, task: str, as_json_flag: bool, wait_s: float) -> None:
     """List the page's child frames (host only) and whether the task allows each."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = frames_task(load_browser_setup(), task)
+        payload = frames_task(load_browser_setup(), task, wait_s)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     if as_json:

@@ -145,8 +145,10 @@ class GuardedDriver:
     ) -> str:
         return self._raw.frame_aria_snapshot(index, is_allowed, expect_host, wait_s=wait_s)
 
-    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]:
-        return self._raw.frame_list(is_allowed)
+    def frame_list(
+        self, is_allowed: Callable[[str], bool], *, wait_s: float = 0.0
+    ) -> tuple[FrameInfo, ...]:
+        return self._raw.frame_list(is_allowed, wait_s=wait_s)
 
     def goto(self, url: str) -> None:
         self._raw.goto(url)

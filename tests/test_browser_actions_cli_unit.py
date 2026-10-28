@@ -45,6 +45,7 @@ class _Raw:
         self.aria_text = '- button "Add line"'
         self.pins: list[str | None] = []
         self.waits: list[float] = []
+        self.frame_waits: list[float] = []
         self.roles_present: dict[str, tuple[str, ...]] = {}
         self.probes: list[tuple[str, float]] = []
 
@@ -81,7 +82,10 @@ class _Raw:
         self.calls.append(("frame-aria", index))
         return self.aria_text
 
-    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]:
+    def frame_list(
+        self, is_allowed: Callable[[str], bool], *, wait_s: float = 0.0
+    ) -> tuple[FrameInfo, ...]:
+        self.frame_waits.append(wait_s)
         self.calls.append(("frames",))
         return tuple(
             FrameInfo(
@@ -1148,3 +1152,19 @@ def test_refresh_tab_checks_both_tabs_before_the_first_click(raw: _Raw, _config_
     assert result.exit_code == EXIT_OTHER, result.output
     assert _json(result)["error"] == "submit_blocked"
     assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_frames_waits_a_couple_of_seconds_by_default_for_late_frames(raw: _Raw) -> None:
+    _run("browser", "frames", "expense-report")
+    assert raw.frame_waits == [2.0]
+
+
+def test_frames_wait_can_be_chosen(raw: _Raw) -> None:
+    _run("browser", "frames", "expense-report", "--wait", "9")
+    assert raw.frame_waits == [9.0]
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-1", "1000"])
+def test_frames_wait_must_be_a_sane_number_of_seconds(raw: _Raw, value: str) -> None:
+    result = _run("browser", "frames", "expense-report", "--wait", value)
+    assert result.exit_code == EXIT_USAGE, result.output
