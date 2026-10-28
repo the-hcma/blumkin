@@ -44,6 +44,8 @@ class _Raw:
         self.child_frames: list[tuple[str, str]] = []
         self.aria_text = '- button "Add line"'
         self.pins: list[str | None] = []
+        self.waits: list[float] = []
+        self.roles_present: dict[str, tuple[str, ...]] = {}
 
     def close(self) -> None:
         self.closed += 1
@@ -58,12 +60,21 @@ class _Raw:
         if self.lands_on is not None:
             self.url = self.lands_on
 
+    def matching_roles(self, name: str, roles: Any, wait_s: float) -> tuple[str, ...]:
+        self.calls.append(("probe", name, wait_s))
+        return tuple(role for role in roles if role in self.roles_present.get(name, ("button",)))
+
     def aria_snapshot(self) -> str:
         self.calls.append(("aria",))
         return self.aria_text
 
     def frame_aria_snapshot(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> str:
         self.calls.append(("frame-aria", index))
         return self.aria_text
@@ -81,8 +92,14 @@ class _Raw:
         )
 
     def read_frame_text(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> PageText:
+        self.waits.append(wait_s)
         self.pins.append(expect_host)
         self.calls.append(("frame-text", index, is_allowed(self.child_frames[index - 1][0][8:])))
         return PageText(text=self.child_frames[index - 1][1], injection_warning=None)
@@ -982,3 +999,75 @@ def test_read_aria_removes_values_of_fields_whose_names_need_yaml_quoting(raw: _
     assert "'textbox \"Email: work\"'" in text
     assert "'combobox \"Team #1\" [expanded]'" in text
     assert "'link \"Docs: home\"'" in text
+
+
+def test_click_without_a_role_reports_the_role_it_found(raw: _Raw) -> None:
+    raw.roles_present["Add line"] = ("tab",)
+    payload = _json(_run("browser", "click", "expense-report", "Add line"))
+    assert payload["role"] == "tab"
+    assert ("click", "tab", "Add line") in raw.calls
+
+
+def test_click_without_a_role_on_an_ambiguous_name_exits_with_the_roles(raw: _Raw) -> None:
+    raw.roles_present["Add line"] = ("link", "tab")
+    result = _run("browser", "click", "expense-report", "Add line")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert "link, tab" in _json(result)["message"]
+
+
+def test_click_with_a_role_and_a_wait_probes_that_role_for_that_long(raw: _Raw) -> None:
+    raw.roles_present["Add line"] = ("link",)
+    payload = _json(
+        _run("browser", "click", "expense-report", "Add line", "--role", "link", "--wait", "7")
+    )
+    assert payload["role"] == "link"
+    assert ("probe", "Add line", 7.0) in raw.calls
+
+
+def test_click_wait_defaults_to_a_few_seconds(raw: _Raw) -> None:
+    _run("browser", "click", "expense-report", "Add line")
+    (probe,) = [call for call in raw.calls if call[0] == "probe"]
+    assert 1.0 <= probe[2] <= 10.0
+
+
+def test_click_with_a_negative_wait_is_a_usage_error(raw: _Raw) -> None:
+    result = _run("browser", "click", "expense-report", "Add line", "--wait", "-1")
+    assert result.exit_code == EXIT_USAGE, result.output
+
+
+def test_refresh_tab_selects_the_other_tab_then_comes_back(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Notes", "Transcript"]')
+    raw.roles_present.update({"Notes": ("tab",), "Transcript": ("tab",)})
+    payload = _json(
+        _run("browser", "refresh-tab", "expense-report", "Transcript", "--via", "Notes")
+    )
+    assert payload["action"] == "refresh-tab"
+    assert payload["tab"] == "Transcript"
+    assert payload["via"] == "Notes"
+    clicks = [call for call in raw.calls if call[0] == "click"]
+    assert clicks == [("click", "tab", "Notes"), ("click", "tab", "Transcript")]
+
+
+def test_refresh_tab_needs_both_tabs_declared(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Transcript"]')
+    result = _run("browser", "refresh-tab", "expense-report", "Transcript", "--via", "Notes")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "submit_blocked"
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_refresh_tab_requires_via(raw: _Raw) -> None:
+    result = _run("browser", "refresh-tab", "expense-report", "Transcript")
+    assert result.exit_code == EXIT_USAGE, result.output
+
+
+def test_read_frame_wait_is_passed_to_the_driver(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com", "*.sharepoint.com"]')
+    raw.child_frames = [_PANE]
+    _json(_run("browser", "read", "expense-report", "--frame", "1", "--wait", "12"))
+    assert raw.waits == [12.0]
+
+
+def test_read_wait_without_a_frame_is_a_usage_error(raw: _Raw) -> None:
+    result = _run("browser", "read", "expense-report", "--wait", "5")
+    assert result.exit_code == EXIT_USAGE, result.output
