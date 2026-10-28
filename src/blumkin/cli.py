@@ -52,10 +52,16 @@ from blumkin.browser.actions import (
     handoff_task,
     press_task,
     read_task,
+    refresh_tab_task,
     transcript_task,
     upload_task,
 )
-from blumkin.browser.cdp import BrowserActionError, BrowserAttachError, BrowserDependencyError
+from blumkin.browser.cdp import (
+    DEFAULT_CLICK_WAIT_S,
+    BrowserActionError,
+    BrowserAttachError,
+    BrowserDependencyError,
+)
 from blumkin.browser.commands import (
     TaskNotFoundError,
     create_task_profile,
@@ -2197,17 +2203,38 @@ def browser_launch(ctx: click.Context, task: str, as_json_flag: bool) -> None:
 @click.argument("task")
 @click.argument("name")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
-@click.option("--role", default="button", show_default=True, help="Accessible role of the control.")
+@click.option(
+    "--role",
+    default=None,
+    help="Accessible role of the control (default: find it by name across the clickable roles).",
+)
+@click.option(
+    "--wait",
+    "wait_s",
+    type=click.FloatRange(min=0.0),
+    default=DEFAULT_CLICK_WAIT_S,
+    show_default=True,
+    help="Seconds to wait for the control to appear before giving up.",
+)
 @click.pass_context
-def browser_click(ctx: click.Context, task: str, name: str, as_json_flag: bool, role: str) -> None:
+def browser_click(
+    ctx: click.Context,
+    task: str,
+    name: str,
+    as_json_flag: bool,
+    role: str | None,
+    wait_s: float,
+) -> None:
     """Click a control the task declared (never a submit or finalizing control)."""
-    _browser_action(
-        ctx,
-        as_json_flag,
-        task,
-        lambda: click_task(load_browser_setup(), task, name, role),
-        "clicked",
-    )
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = click_task(load_browser_setup(), task, name, role, wait_s)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([f"{task}: clicked {payload['role']} {sanitize_terminal(name)!r}"])
 
 
 @browser.group("explore", epilog=help_text.BROWSER_EXPLORE_EPILOG)
@@ -2903,6 +2930,13 @@ def browser_press(ctx: click.Context, task: str, label: str, key: str, as_json_f
     help="With --frame: refuse unless that frame is on this host (numbers can shift).",
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--wait",
+    "wait_s",
+    type=click.FloatRange(min=0.0),
+    default=None,
+    help="With --frame: seconds to wait for the frame to attach and have text.",
+)
 @click.pass_context
 def browser_read(
     ctx: click.Context,
@@ -2911,13 +2945,18 @@ def browser_read(
     frame: int | None,
     host: str | None,
     as_json_flag: bool,
+    wait_s: float | None,
 ) -> None:
     """Read the page, or one child frame (`--frame`), as text or an ARIA snapshot (untrusted)."""
     as_json = _as_json(ctx, as_json_flag)
     if host is not None and frame is None:
         raise click.UsageError("--host needs --frame")
+    if wait_s is not None and frame is None:
+        raise click.UsageError("--wait needs --frame")
     try:
-        payload = read_task(load_browser_setup(), task, aria=aria, frame=frame, host=host)
+        payload = read_task(
+            load_browser_setup(), task, aria=aria, frame=frame, host=host, wait_s=wait_s or 0.0
+        )
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     if as_json:
@@ -2932,6 +2971,33 @@ def browser_read(
             ["", f"[truncated: only the first {len(payload['text'])} characters are shown]"]
         )
     emit_lines(lines)
+
+
+@browser.command("refresh-tab", epilog=help_text.BROWSER_REFRESH_TAB_EPILOG)
+@click.argument("task")
+@click.argument("tab")
+@click.option("--via", required=True, help="The other tab to select first (a declared control).")
+@click.option(
+    "--wait",
+    "wait_s",
+    type=click.FloatRange(min=0.0),
+    default=DEFAULT_CLICK_WAIT_S,
+    show_default=True,
+    help="Seconds to wait for each tab to appear.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_refresh_tab(
+    ctx: click.Context, task: str, tab: str, via: str, wait_s: float, as_json_flag: bool
+) -> None:
+    """Reload a tab's pane by selecting another tab and then this one again."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: refresh_tab_task(load_browser_setup(), task, tab, via, wait_s),
+        f"refreshed tab {sanitize_terminal(tab)!r} via {sanitize_terminal(via)!r}",
+    )
 
 
 @browser.command("transcript", epilog=help_text.BROWSER_TRANSCRIPT_EPILOG)

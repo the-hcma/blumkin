@@ -46,6 +46,7 @@ class _Raw:
         self.pins: list[str | None] = []
         self.waits: list[float] = []
         self.roles_present: dict[str, tuple[str, ...]] = {}
+        self.probes: list[tuple[str, float]] = []
 
     def close(self) -> None:
         self.closed += 1
@@ -61,8 +62,9 @@ class _Raw:
             self.url = self.lands_on
 
     def matching_roles(self, name: str, roles: Any, wait_s: float) -> tuple[str, ...]:
-        self.calls.append(("probe", name, wait_s))
-        return tuple(role for role in roles if role in self.roles_present.get(name, ("button",)))
+        self.probes.append((name, wait_s))
+        present = self.roles_present.get(name, tuple(roles) if len(roles) == 1 else ("button",))
+        return tuple(role for role in roles if role in present)
 
     def aria_snapshot(self) -> str:
         self.calls.append(("aria",))
@@ -1021,13 +1023,13 @@ def test_click_with_a_role_and_a_wait_probes_that_role_for_that_long(raw: _Raw) 
         _run("browser", "click", "expense-report", "Add line", "--role", "link", "--wait", "7")
     )
     assert payload["role"] == "link"
-    assert ("probe", "Add line", 7.0) in raw.calls
+    assert ("Add line", 7.0) in raw.probes
 
 
 def test_click_wait_defaults_to_a_few_seconds(raw: _Raw) -> None:
     _run("browser", "click", "expense-report", "Add line")
-    (probe,) = [call for call in raw.calls if call[0] == "probe"]
-    assert 1.0 <= probe[2] <= 10.0
+    ((_, waited),) = raw.probes
+    assert 1.0 <= waited <= 10.0
 
 
 def test_click_with_a_negative_wait_is_a_usage_error(raw: _Raw) -> None:

@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from blumkin.browser.cdp import (
+    DEFAULT_CLICK_WAIT_S,
     DEFAULT_FRAME_WAIT_S,
     DEFAULT_SCROLL_MAX_STEPS,
     BrowserActionError,
@@ -69,18 +70,23 @@ class UploadBlockedError(BrowserActionError):
     """The file is not one the task may upload."""
 
 
-def click_task(config: BrowserSetup, task: str, name: str, role: str = "button") -> dict[str, Any]:
-    """Click a control the task declared (never a submit control or a finalizing name)."""
-    if task not in config.browser.tasks:
-        raise SubmitBlockedError(
-            f"Refused to click {name!r}: Expected a [browser.tasks.{task}] table with "
-            "allowed_controls in config.toml, got none. A browser task never submits; "
-            "stop and hand the final step to the user"
-        )
+def click_task(
+    config: BrowserSetup,
+    task: str,
+    name: str,
+    role: str | None = None,
+    wait_s: float = DEFAULT_CLICK_WAIT_S,
+) -> dict[str, Any]:
+    """Click a control the task declared (never a submit control or a finalizing name).
+
+    Without `role` the control is found by name across the clickable roles and the role it
+    was found in is reported; `wait_s` is how long to wait for it to appear.
+    """
+    _require_declared_controls(config, task, name)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        driver.click(name, role)
-        return {"action": "click", "name": name, "ok": True, "role": role, "task": task}
+        found = driver.click(name, role, wait_s)
+        return {"action": "click", "name": name, "ok": True, "role": found, "task": task}
 
     return _with_driver(config, task, act, check_after=True)
 
@@ -184,6 +190,7 @@ def read_task(
     aria: bool = False,
     frame: int | None = None,
     host: str | None = None,
+    wait_s: float = 0.0,
 ) -> dict[str, Any]:
     """Read the page's visible text, flagged when it looks like it is trying to instruct.
 
@@ -191,7 +198,8 @@ def read_task(
     task to declare `allowed_hosts`; `aria` returns the ARIA snapshot (roles and accessible
     names) of the page or that frame instead of its text, with link addresses and field
     values removed. `host` pins the frame: one on another host is refused, since frame
-    numbers shift when the page adds or reloads a frame.
+    numbers shift when the page adds or reloads a frame. `wait_s` waits that long for the
+    frame to attach and to have text, so a pane that loads late is not read empty.
     """
     hosts = _declared_hosts(config, task)
     if frame is not None and not hosts:
@@ -208,7 +216,7 @@ def read_task(
             snapshot = _redact_aria(
                 driver.aria_snapshot()
                 if frame is None
-                else driver.frame_aria_snapshot(frame, allowed, host)
+                else driver.frame_aria_snapshot(frame, allowed, host, wait_s=wait_s)
             )
             page = PageText(
                 text=snapshot,
@@ -218,7 +226,7 @@ def read_task(
             page = (
                 driver.read_text()
                 if frame is None
-                else driver.read_frame_text(frame, allowed, host)
+                else driver.read_frame_text(frame, allowed, host, wait_s=wait_s)
             )
         return {
             "action": "read",
@@ -236,6 +244,24 @@ def read_task(
         }
 
     return _with_driver(config, task, act)
+
+
+def refresh_tab_task(
+    config: BrowserSetup, task: str, tab: str, via: str, wait_s: float = DEFAULT_CLICK_WAIT_S
+) -> dict[str, Any]:
+    """Reload a tab's pane by selecting another tab (`via`) and then `tab` again.
+
+    Some panes only reload when another tab is shown first; clicking the selected tab does
+    nothing. Both tabs must be declared controls of the task.
+    """
+    _require_declared_controls(config, task, f"{via} / {tab}")
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        driver.click(via, "tab", wait_s)
+        driver.click(tab, "tab", wait_s)
+        return {"action": "refresh-tab", "ok": True, "tab": tab, "task": task, "via": via}
+
+    return _with_driver(config, task, act, check_after=True)
 
 
 def transcript_task(
@@ -385,6 +411,15 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
         allowed_controls=frozenset(declared.allowed_controls),
         extra_deny_names=declared.extra_deny_names,
     )
+
+
+def _require_declared_controls(config: BrowserSetup, task: str, what: str) -> None:
+    if task not in config.browser.tasks:
+        raise SubmitBlockedError(
+            f"Refused to click {what!r}: Expected a [browser.tasks.{task}] table with "
+            "allowed_controls in config.toml, got none. A browser task never submits; "
+            "stop and hand the final step to the user"
+        )
 
 
 def _redact_aria(snapshot: str) -> str:

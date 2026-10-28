@@ -20,7 +20,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -34,6 +34,10 @@ from blumkin.browser.profiles import (
 from blumkin.prompt_injection import scan_for_injection
 
 ATTACH_ATTEMPTS = 3
+
+
+#: How long a click waits for its control to appear before reporting it missing.
+DEFAULT_CLICK_WAIT_S = 5.0
 
 
 class BrowserActionError(RuntimeError):
@@ -53,14 +57,21 @@ class BrowserDriver(Protocol):
 
     def aria_snapshot(self) -> str: ...
 
-    def click(self, name: str, role: str = "button") -> None: ...
+    def click(
+        self, name: str, role: str | None = None, wait_s: float = DEFAULT_CLICK_WAIT_S
+    ) -> str: ...
 
     def close(self) -> None: ...
 
     def fill(self, label: str, value: str) -> None: ...
 
     def frame_aria_snapshot(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> str: ...
 
     def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]: ...
@@ -70,7 +81,12 @@ class BrowserDriver(Protocol):
     def press(self, label: str, key: str) -> None: ...
 
     def read_frame_text(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> PageText: ...
 
     def read_text(self) -> PageText: ...
@@ -253,9 +269,15 @@ class PlaywrightDriver:
             raise self._action_error(f"fill the field labelled {label!r}", exc) from exc
 
     def frame_aria_snapshot(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> str:
         """A child frame's body as a Playwright ARIA snapshot, on an allowed host only."""
+        self._wait_for_frame(index, wait_s)
         frame = self._child_frame(index, is_allowed, expect_host)
         try:
             snapshot = str(frame.locator("body").aria_snapshot(timeout=self._timeout_ms))
@@ -291,6 +313,27 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error(f"open {url!r}", exc) from exc
 
+    def matching_roles(self, name: str, roles: Sequence[str], wait_s: float) -> tuple[str, ...]:
+        """The roles in which a control named `name` exists, waiting up to `wait_s` for one.
+
+        Polls the page's own accessibility tree (a count, not a click), so a wrong role or a
+        missing control is reported after `wait_s`, not after the 30 second action timeout.
+        """
+        self._require_open()
+        deadline = time.monotonic() + max(wait_s, 0.0)
+        while True:
+            try:
+                found = tuple(
+                    role
+                    for role in roles
+                    if self._page.get_by_role(role, name=name, exact=True).count() > 0
+                )
+            except _playwright_error() as exc:
+                raise self._action_error(f"look for a control named {name!r}", exc) from exc
+            if found or time.monotonic() >= deadline:
+                return found
+            self._page.wait_for_timeout(_POLL_MS)
+
     def raw_press(self, label: str, key: str) -> None:
         self._require_open()
         try:
@@ -299,14 +342,21 @@ class PlaywrightDriver:
             raise self._action_error(f"press {key!r} in the field labelled {label!r}", exc) from exc
 
     def read_frame_text(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> PageText:
-        """A child frame's visible text, on an allowed host only; untrusted data."""
+        """A child frame's visible text, on an allowed host only; untrusted data.
+
+        With `wait_s`, waits that long for the frame to attach and to have text, so a pane that
+        loads late is not read empty.
+        """
+        self._wait_for_frame(index, wait_s)
         frame = self._child_frame(index, is_allowed, expect_host)
-        try:
-            text = str(frame.evaluate("document.body.innerText"))
-        except _playwright_error() as exc:
-            raise self._action_error(f"read frame {index}", exc) from exc
+        text = self._frame_text(frame, index, wait_s)
         self._require_allowed_frame_host(frame, is_allowed)
         return PageText(
             text=text,
@@ -506,6 +556,28 @@ class PlaywrightDriver:
             )
         return frame
 
+    def _frame_text(self, frame: Any, index: int, wait_s: float) -> str:
+        """The frame's text; with `wait_s`, waits for it to be non-blank."""
+        deadline = time.monotonic() + max(wait_s, 0.0)
+        while True:
+            try:
+                text = str(frame.evaluate("document.body.innerText"))
+            except _playwright_error() as exc:
+                raise self._action_error(f"read frame {index}", exc) from exc
+            if text.strip() or wait_s <= 0.0:
+                return text
+            if time.monotonic() >= deadline:
+                raise BrowserActionError(
+                    f"Expected text in frame {index} within {wait_s:g} seconds, got an empty frame"
+                )
+            self._page.wait_for_timeout(_POLL_MS)
+
+    def _wait_for_frame(self, index: int, wait_s: float) -> None:
+        """Wait up to `wait_s` for child frame number `index` to exist."""
+        deadline = time.monotonic() + max(wait_s, 0.0)
+        while len(self._child_frames()) < index and time.monotonic() < deadline:
+            self._page.wait_for_timeout(_POLL_MS)
+
     def _child_frames(self) -> list[Any]:
         return [frame for frame in self._page.frames if frame != self._page.main_frame]
 
@@ -552,17 +624,29 @@ class RawBrowserDriver(Protocol):
     def fill(self, label: str, value: str) -> None: ...
 
     def frame_aria_snapshot(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> str: ...
 
     def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]: ...
 
     def goto(self, url: str) -> None: ...
 
+    def matching_roles(self, name: str, roles: Sequence[str], wait_s: float) -> tuple[str, ...]: ...
+
     def raw_press(self, label: str, key: str) -> None: ...
 
     def read_frame_text(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> PageText: ...
 
     def read_text(self) -> PageText: ...
@@ -722,6 +806,9 @@ _SCROLL_PREPARE_JS = (
     "if (hasTurn) return 'fixed'; "
     "return 'missing'; }"
 )
+
+
+_POLL_MS = 250
 
 
 _SCROLL_SETTLE_MS = 250

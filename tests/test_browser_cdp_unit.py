@@ -1211,7 +1211,7 @@ def test_read_frame_text_waits_for_the_frame_to_have_text() -> None:
 
 def test_read_frame_text_reports_a_frame_that_stays_empty() -> None:
     page = _FramesPage()
-    page.frames.append(_LateTextFrame(page, "rows", after=10_000))
+    page.frames.append(_LateTextFrame(page, "rows", after=10**12))
     driver = _driver(_Playwright(page))[1]
     with pytest.raises(BrowserActionError, match="empty frame"):
-        driver.read_frame_text(1, _sharepoint, wait_s=1.0)
+        driver.read_frame_text(1, _sharepoint, wait_s=0.05)

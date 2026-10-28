@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -38,11 +38,13 @@ class _Raw:
         self.net_installed = 0
         #: name -> roles a control of that name exists in.
         self.present: dict[str, tuple[str, ...]] = {}
+        self.probes: list[tuple[str, tuple[str, ...], float]] = []
         self.url = "https://erp.example.com/expenses"
 
     def matching_roles(self, name: str, roles: Sequence[str], wait_s: float) -> tuple[str, ...]:
-        self.calls.append(("probe", name, tuple(roles), wait_s))
-        return tuple(role for role in roles if role in self.present.get(name, ()))
+        self.probes.append((name, tuple(roles), wait_s))
+        present = self.present.get(name, tuple(roles) if len(roles) == 1 else ("button",))
+        return tuple(role for role in roles if role in present)
 
     def aria_snapshot(self) -> str:
         self.calls.append(("aria",))
@@ -65,7 +67,12 @@ class _Raw:
         self.calls.append(("fill", label, value))
 
     def frame_aria_snapshot(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> str:
         self.calls.append(("frame-aria", index, is_allowed("a.example.com")))
         return '- tab "Transcript"'
@@ -83,7 +90,12 @@ class _Raw:
         self.calls.append(("press", label, key))
 
     def read_frame_text(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> PageText:
         self.calls.append(("frame-text", index, is_allowed("a.example.com")))
         return PageText(text="pane", injection_warning=None)
@@ -477,9 +489,10 @@ def test_click_without_a_role_refuses_an_ambiguous_name_listing_the_roles() -> N
 
 def test_click_without_a_role_fails_when_no_role_has_the_control() -> None:
     raw, driver = _guard("Notes")
+    raw.present["Notes"] = ()
     with pytest.raises(BrowserActionError, match="named 'Notes'"):
         driver.click("Notes", wait_s=2.0)
-    assert any(call[:2] == ("probe", "Notes") and call[3] == 2.0 for call in raw.calls)
+    assert [probe[0::2] for probe in raw.probes] == [("Notes", 2.0)]
 
 
 def test_click_with_a_role_probes_only_that_role_and_fails_fast_when_it_is_absent() -> None:
@@ -487,7 +500,7 @@ def test_click_with_a_role_probes_only_that_role_and_fails_fast_when_it_is_absen
     raw.present["Notes"] = ("tab",)
     with pytest.raises(BrowserActionError, match="link named 'Notes'"):
         driver.click("Notes", "link", wait_s=3.0)
-    assert ("probe", "Notes", ("link",), 3.0) in raw.calls
+    assert raw.probes == [("Notes", ("link",), 3.0)]
     assert not any(call[0] == "click" for call in raw.calls)
 
 
@@ -498,3 +511,4 @@ def test_the_policy_is_checked_before_the_page_is_probed() -> None:
     with pytest.raises(SubmitBlockedError):
         driver.click("Other")
     assert raw.calls == []
+    assert raw.probes == []
