@@ -37,6 +37,7 @@ from blumkin.browser.cdp import (
     BrowserActionError,
     ControlInfo,
     FrameCapture,
+    FrameInfo,
     PageText,
     RawBrowserDriver,
     attach,
@@ -87,6 +88,9 @@ class GuardedDriver:
         self._raw = raw
         raw.block_form_submission()
 
+    def aria_snapshot(self) -> str:
+        return self._raw.aria_snapshot()
+
     def click(self, name: str, role: str = "button") -> None:
         action = f"click {name!r}"
         if role not in _CLICKABLE_ROLES:
@@ -103,6 +107,14 @@ class GuardedDriver:
     def fill(self, label: str, value: str) -> None:
         self._raw.fill(label, value)
 
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str:
+        return self._raw.frame_aria_snapshot(index, is_allowed, expect_host)
+
+    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]:
+        return self._raw.frame_list(is_allowed)
+
     def goto(self, url: str) -> None:
         self._raw.goto(url)
 
@@ -114,6 +126,11 @@ class GuardedDriver:
         if _is_button_like(info):
             raise self._refuse(action, "the field is a button, not a text field")
         self._raw.raw_press(label, key)
+
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText:
+        return self._raw.read_frame_text(index, is_allowed, expect_host)
 
     def read_text(self) -> PageText:
         return self._raw.read_text()

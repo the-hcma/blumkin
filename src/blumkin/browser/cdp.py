@@ -51,15 +51,27 @@ class BrowserDependencyError(BrowserAttachError):
 class BrowserDriver(Protocol):
     """What a browser task may do: the guarded surface, with no way to finalize a form."""
 
+    def aria_snapshot(self) -> str: ...
+
     def click(self, name: str, role: str = "button") -> None: ...
 
     def close(self) -> None: ...
 
     def fill(self, label: str, value: str) -> None: ...
 
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str: ...
+
+    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]: ...
+
     def goto(self, url: str) -> None: ...
 
     def press(self, label: str, key: str) -> None: ...
+
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText: ...
 
     def read_text(self) -> PageText: ...
 
@@ -116,6 +128,18 @@ class FrameCapture:
     reached_end: bool
     steps: int
     url: str
+
+
+@dataclass(frozen=True, slots=True)
+class FrameInfo:
+    """One child frame: its number, host and origin (never its path or query), and policy."""
+
+    #: Whether the task's `allowed_hosts` accept this frame's host.
+    allowed: bool
+    host: str
+    #: 1-based position among the page's child frames, as `browser frames` numbers them.
+    index: int
+    origin: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +252,37 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error(f"fill the field labelled {label!r}", exc) from exc
 
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str:
+        """A child frame's body as a Playwright ARIA snapshot, on an allowed host only."""
+        frame = self._child_frame(index, is_allowed, expect_host)
+        try:
+            snapshot = str(frame.locator("body").aria_snapshot(timeout=self._timeout_ms))
+        except _playwright_error() as exc:
+            raise self._action_error(f"describe frame {index}", exc) from exc
+        self._require_allowed_frame_host(frame, is_allowed)
+        return snapshot
+
+    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]:
+        """The page's child frames, numbered from 1; each shows its host and origin only."""
+        self._require_open()
+        found: list[FrameInfo] = []
+        for number, frame in enumerate(self._child_frames(), start=1):
+            host = _web_host(frame.url)
+            port = urlsplit(frame.url).port if host else None
+            found.append(
+                FrameInfo(
+                    allowed=bool(host) and is_allowed(host),
+                    host=host,
+                    index=number,
+                    origin=f"{urlsplit(frame.url).scheme}://{host}{f':{port}' if port else ''}"
+                    if host
+                    else "",
+                )
+            )
+        return tuple(found)
+
     def goto(self, url: str) -> None:
         self._require_open()
         checked_http_url(url)
@@ -242,6 +297,21 @@ class PlaywrightDriver:
             self._page.get_by_label(label).press(key, timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"press {key!r} in the field labelled {label!r}", exc) from exc
+
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText:
+        """A child frame's visible text, on an allowed host only; untrusted data."""
+        frame = self._child_frame(index, is_allowed, expect_host)
+        try:
+            text = str(frame.evaluate("document.body.innerText"))
+        except _playwright_error() as exc:
+            raise self._action_error(f"read frame {index}", exc) from exc
+        self._require_allowed_frame_host(frame, is_allowed)
+        return PageText(
+            text=text,
+            injection_warning=scan_for_injection(text, location="frame.text").to_payload(),
+        )
 
     def read_text(self) -> PageText:
         self._require_open()
@@ -410,6 +480,35 @@ class PlaywrightDriver:
             f"{str(exc).splitlines()[0] if str(exc) else type(exc).__name__}"
         )
 
+    def _child_frame(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> Any:
+        """Child frame number `index` (1-based), refused unless its host is allowed.
+
+        `expect_host` pins the frame the caller meant: frame numbers shift when the page adds
+        or reloads a frame, so a different frame at that number is refused.
+        """
+        self._require_open()
+        frames = self._child_frames()
+        if not frames:
+            raise BrowserActionError("Expected a child frame, got no child frames on the page")
+        if not 1 <= index <= len(frames):
+            raise BrowserActionError(
+                f"Expected a frame number between 1 and {len(frames)}, got {index}"
+            )
+        frame = frames[index - 1]
+        self._require_allowed_frame_host(frame, is_allowed)
+        host = _web_host(frame.url)
+        if expect_host is not None and host.lower() != expect_host.strip().lower():
+            raise BrowserActionError(
+                f"Expected frame {index} to be on {expect_host!r}, got {host!r}; "
+                "list the frames again"
+            )
+        return frame
+
+    def _child_frames(self) -> list[Any]:
+        return [frame for frame in self._page.frames if frame != self._page.main_frame]
+
     def _ready_frame(self, is_allowed: Callable[[str], bool]) -> Any | None:
         """The first child frame on an allowed host whose transcript pane has loaded, else None."""
         for frame in self._page.frames:
@@ -424,11 +523,12 @@ class PlaywrightDriver:
         return None
 
     def _require_allowed_frame_host(self, frame: Any, is_allowed: Callable[[str], bool]) -> None:
-        host = urlsplit(frame.url).hostname or ""
+        host = _web_host(frame.url)
         if not host or not is_allowed(host):
-            detail = host or frame.url
+            # Never the frame's URL: a data: or blob: address can carry a payload or a token.
+            detail = host or f"no web host (scheme {urlsplit(frame.url).scheme or 'none'!r})"
             raise BrowserActionError(
-                f"Expected the transcript frame to stay on an allowed host, got {detail!r}"
+                f"Expected the frame to stay on an allowed host, got {detail!r}"
             )
 
     def _require_open(self) -> None:
@@ -438,6 +538,8 @@ class PlaywrightDriver:
 
 class RawBrowserDriver(Protocol):
     """The unguarded surface `GuardedDriver` wraps (`PlaywrightDriver` implements it)."""
+
+    def aria_snapshot(self) -> str: ...
 
     def block_form_submission(self) -> None: ...
 
@@ -449,9 +551,19 @@ class RawBrowserDriver(Protocol):
 
     def fill(self, label: str, value: str) -> None: ...
 
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str: ...
+
+    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]: ...
+
     def goto(self, url: str) -> None: ...
 
     def raw_press(self, label: str, key: str) -> None: ...
+
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText: ...
 
     def read_text(self) -> PageText: ...
 
@@ -764,3 +876,9 @@ def _sync_playwright() -> Any:
             "to restore it, then retry the browser command"
         ) from exc
     return sync_playwright()
+
+
+def _web_host(url: str) -> str:
+    """The host of an http(s) address, else "" (about:, data:, blob:, ftp: and the like)."""
+    parts = urlsplit(url)
+    return (parts.hostname or "") if parts.scheme in ("http", "https") else ""

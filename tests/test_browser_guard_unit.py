@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from blumkin.browser.cdp import BrowserActionError, ControlInfo, FrameCapture, PageText
+from blumkin.browser.cdp import (
+    BrowserActionError,
+    ControlInfo,
+    FrameCapture,
+    FrameInfo,
+    PageText,
+)
 from blumkin.browser.guard import (
     DEFAULT_DENY_NAMES,
     GuardedDriver,
@@ -32,6 +38,10 @@ class _Raw:
         self.net_installed = 0
         self.url = "https://erp.example.com/expenses"
 
+    def aria_snapshot(self) -> str:
+        self.calls.append(("aria",))
+        return '- button "Go"'
+
     def block_form_submission(self) -> None:
         self.net_installed += 1
 
@@ -48,11 +58,29 @@ class _Raw:
     def fill(self, label: str, value: str) -> None:
         self.calls.append(("fill", label, value))
 
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str:
+        self.calls.append(("frame-aria", index, is_allowed("a.example.com")))
+        return '- tab "Transcript"'
+
+    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]:
+        self.calls.append(("frames", is_allowed("a.example.com")))
+        return (
+            FrameInfo(allowed=True, host="a.example.com", index=1, origin="https://a.example.com"),
+        )
+
     def goto(self, url: str) -> None:
         self.calls.append(("goto", url))
 
     def raw_press(self, label: str, key: str) -> None:
         self.calls.append(("press", label, key))
+
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText:
+        self.calls.append(("frame-text", index, is_allowed("a.example.com")))
+        return PageText(text="pane", injection_warning=None)
 
     def read_text(self) -> PageText:
         return PageText(text="Total 12.50", injection_warning=None)
@@ -355,11 +383,15 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
     _, driver = _guard()
     public = {name for name in dir(driver) if not name.startswith("_")}
     assert public == {
+        "aria_snapshot",
         "click",
         "close",
         "fill",
+        "frame_aria_snapshot",
+        "frame_list",
         "goto",
         "press",
+        "read_frame_text",
         "read_text",
         "scroll_frame_text",
         "title",
@@ -406,3 +438,17 @@ def test_attach_guarded_closes_the_raw_driver_when_the_safety_net_cannot_be_inst
             attach_raw=lambda profile, **kwargs: raw,
         )
     assert ("close",) in raw.calls
+
+
+def test_frame_reads_pass_through_the_guard_with_the_hosts_check() -> None:
+    raw, driver = _guard()
+    assert driver.frame_list(lambda host: True)[0].host == "a.example.com"
+    assert driver.read_frame_text(1, lambda host: True).text == "pane"
+    assert driver.frame_aria_snapshot(1, lambda host: False) == '- tab "Transcript"'
+    assert driver.aria_snapshot() == '- button "Go"'
+    assert raw.calls == [
+        ("frames", True),
+        ("frame-text", 1, True),
+        ("frame-aria", 1, False),
+        ("aria",),
+    ]
