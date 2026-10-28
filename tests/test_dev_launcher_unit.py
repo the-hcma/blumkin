@@ -20,7 +20,10 @@ import pytest
 _ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT = _ROOT / "scripts" / "dev" / "blumkin"
 
-pytestmark = pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required")
+pytestmark = [
+    pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required"),
+    pytest.mark.skipif(not (_ROOT / ".git").exists(), reason="needs a git checkout"),
+]
 
 
 def _env(config: Path) -> dict[str, str]:
@@ -79,7 +82,7 @@ def test_without_a_config_and_without_a_terminal_it_fails_with_a_hint(tmp_path: 
     assert not config.exists()
 
 
-def test_help_and_doctor_do_not_trigger_the_first_run_check(tmp_path: Path) -> None:
+def test_help_and_version_do_not_trigger_the_first_run_check(tmp_path: Path) -> None:
     config = tmp_path / "empty"
     helped = _run(["--help"], config, tmp_path)
     assert helped.returncode == 0 and "Usage" in helped.stdout
@@ -123,3 +126,62 @@ def test_on_a_terminal_a_yes_starts_auth_setup_which_asks_for_the_provider(
     # Nothing is written until the provider is chosen and the walkthrough completes.
     assert not config.exists()
     child.terminate(force=True)
+    child.close()
+
+
+def test_end_of_input_at_the_prompt_is_a_clean_decline(tmp_path: Path) -> None:
+    config = tmp_path / "empty"
+    child = _session(["mail", "inbox"], config, tmp_path)
+    child.expect("Run the guided setup now")
+    child.sendeof()
+    child.expect(pexpect.EOF)
+    child.close()
+    assert child.exitstatus == 2
+    assert "auth setup" in str(child.before)
+    assert not config.exists()
+
+
+def test_the_profile_option_in_its_equals_form_reaches_the_guided_setup(tmp_path: Path) -> None:
+    config = tmp_path / "empty"
+    child = _session(["--profile=work", "mail", "inbox"], config, tmp_path)
+    child.expect("Run the guided setup now")
+    child.sendline("y")
+    child.expect("Which provider will this profile use")
+    child.sendline("microsoft")
+    child.expect("Console steps for microsoft")
+    child.terminate(force=True)
+    child.close()
+    assert not config.exists() or "profiles.work" in (config / "config.toml").read_text()
+
+
+def test_a_blank_config_dir_variable_counts_as_unset_and_a_tilde_is_expanded(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home & more"
+    home.mkdir()
+    env = _env(tmp_path / "unused")
+    env["HOME"] = str(home)
+    env["BLUMKIN_CONFIG_DIR"] = "   "
+    blank = subprocess.run(
+        [str(_SCRIPT), "mail", "inbox"],
+        capture_output=True,
+        check=False,
+        cwd=tmp_path,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        timeout=180,
+    )
+    assert str(home / ".config" / "blumkin") in blank.stderr
+    env["BLUMKIN_CONFIG_DIR"] = "~/chosen"
+    tilde = subprocess.run(
+        [str(_SCRIPT), "mail", "inbox"],
+        capture_output=True,
+        check=False,
+        cwd=tmp_path,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        timeout=180,
+    )
+    assert str(home / "chosen") in tilde.stderr

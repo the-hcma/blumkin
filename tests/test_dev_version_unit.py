@@ -99,14 +99,49 @@ def test_a_missing_git_binary_means_no_marker_not_a_crash(
     assert dev_version_suffix(repository=repo) == ""
 
 
-def test_the_version_everywhere_carries_the_marker_in_this_checkout() -> None:
+needs_checkout = pytest.mark.skipif(source_tree() is None, reason="needs a git checkout")
+
+
+@needs_checkout
+def test_the_marker_appears_only_for_a_dev_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BLUMKIN_DEV", raising=False)
+    package, _commit = version_module.get_build_info()
+    assert "+dev" not in package  # an editable install keeps its plain version
+    version_module.get_build_info.cache_clear()
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
     package, _commit = version_module.get_build_info()
     assert re.search(r"\+dev\.[0-9a-f]{7}\.\d{8}(-dirty)?$", package)
+
+
+@needs_checkout
+def test_a_dev_run_shows_the_marker_in_every_place_the_version_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
     result = CliRunner().invoke(main, ["--version"])
     assert re.search(r"\+dev\.[0-9a-f]{7}\.\d{8}", result.output.splitlines()[0])
     assert re.search(r"\+dev\.[0-9a-f]{7}\.\d{8}", version_module.build_version())
+    assert re.search(r"\+dev\.", version_module.build_status_fields()["build_version"])
 
 
+def test_git_is_asked_not_to_take_optional_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    seen: list[list[str]] = []
+    real = version_module.subprocess.run
+
+    def spy(argv: list[str], **kwargs: object):
+        seen.append(list(argv))
+        return real(argv, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(version_module.subprocess, "run", spy)
+    dev_version_suffix(repository=repo)
+    status = [argv for argv in seen if "status" in argv]
+    assert status and all("--no-optional-locks" in argv for argv in status)
+
+
+@needs_checkout
 def test_the_source_tree_is_the_checkout_here_and_none_without_one(tmp_path: Path) -> None:
     tree = source_tree()
     assert tree is not None and (tree / "pyproject.toml").is_file()

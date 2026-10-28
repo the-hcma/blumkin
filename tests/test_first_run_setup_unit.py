@@ -74,14 +74,24 @@ def test_an_existing_directory_keeps_its_permissions(tmp_path: Path) -> None:
     assert stat.S_IMODE(directory.stat().st_mode) == 0o755
 
 
-def test_a_symlinked_directory_is_refused(tmp_path: Path) -> None:
-    real = tmp_path / "real"
-    real.mkdir()
+def test_a_symlink_to_an_existing_directory_is_used_as_it_is(tmp_path: Path) -> None:
+    real = tmp_path / "dotfiles" / "blumkin"
+    real.mkdir(parents=True)
     link = tmp_path / "link"
     link.symlink_to(real)
-    with pytest.raises(FirstRunConfigError, match="symlink"):
-        create_first_run_config(link, profile="default", provider="google")
-    assert not (real / "config.toml").exists()
+    create_first_run_config(link, profile="default", provider="google")
+    assert (real / "config.toml").read_text() == '[profiles.default]\nprovider = "google"\n'
+
+
+def test_a_dangling_symlink_or_a_file_in_the_way_is_refused_cleanly(tmp_path: Path) -> None:
+    dangling = tmp_path / "dangling"
+    dangling.symlink_to(tmp_path / "nowhere")
+    with pytest.raises(FirstRunConfigError, match="Expected"):
+        create_first_run_config(dangling, profile="default", provider="google")
+    in_the_way = tmp_path / "file"
+    in_the_way.write_text("x")
+    with pytest.raises(FirstRunConfigError, match="Expected"):
+        create_first_run_config(in_the_way, profile="default", provider="google")
 
 
 @pytest.mark.parametrize(
@@ -154,3 +164,57 @@ def test_the_provider_is_asked_for_on_a_terminal_and_only_when_it_is_needed() ->
     assert len(asked) == 1
     assert resolve(None, tty=True, yes=True, prompt=prompt) is None
     assert resolve(None, tty=False, yes=False, prompt=prompt) is None
+
+
+def test_a_setup_that_fails_validation_leaves_no_config_behind(fresh_dir: Path) -> None:
+    bad = CliRunner().invoke(
+        main,
+        [
+            "auth",
+            "setup",
+            "--yes",
+            "--provider",
+            "microsoft",
+            "--client-id",
+            "not-a-guid",
+            "--tenant-id",
+            "contoso.onmicrosoft.com",
+            "--account-type",
+            "organizational",
+            "--json",
+        ],
+    )
+    assert bad.exit_code == EXIT_USAGE
+    assert not fresh_dir.exists()
+    good = CliRunner().invoke(main, ["auth", "setup", "--yes", "--provider", "google", "--json"])
+    assert "match" not in json.loads(good.output).get("message", "")
+
+
+def test_an_interrupted_setup_leaves_no_config_behind(
+    fresh_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import click
+
+    def abort(*args: Any, **kwargs: Any) -> None:
+        raise click.Abort()
+
+    monkeypatch.setattr(cli_module, "_collect_microsoft_setup", abort)
+    result = CliRunner().invoke(
+        main, ["auth", "setup", "--yes", "--provider", "microsoft", *_MS_FLAGS]
+    )
+    assert result.exit_code != 0
+    assert not fresh_dir.exists()
+
+
+def test_the_rollback_keeps_a_directory_that_was_already_there(
+    fresh_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fresh_dir.mkdir(parents=True)
+    (fresh_dir / "notes.txt").write_text("mine")
+    result = CliRunner().invoke(
+        main,
+        ["auth", "setup", "--yes", "--provider", "microsoft", "--client-id", "bad", *_MS_FLAGS[2:]],
+    )
+    assert result.exit_code == EXIT_USAGE
+    assert (fresh_dir / "notes.txt").read_text() == "mine"
+    assert not (fresh_dir / "config.toml").exists()
