@@ -179,6 +179,7 @@ from blumkin.receipts import (
     find_local_receipts,
     read_receipt,
 )
+from blumkin.repository_status import current_status
 from blumkin.secret_store import macos_keychain_missing
 from blumkin.skills import describe_skill, skills_catalog
 from blumkin.skills.calendar import (
@@ -897,6 +898,10 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
         return
     click.echo(build_info())
     click.echo(f"running from {running_command_path()}")
+    status = current_status(running_commands=list(getattr(ctx.command, "commands", {})))
+    note = status.note() if status is not None else None
+    if note:
+        click.echo(f"note: {note}")
     ctx.exit()
 
 
@@ -1335,7 +1340,7 @@ def _xdg_base(var: str, default: Path) -> Path:
     callback=_print_version,
     expose_value=False,
     is_eager=True,
-    help="Show the version, commit, and binary path, then exit.",
+    help="Show the version, commit and binary path (and a note if behind the checkout), then exit.",
 )
 @click.pass_context
 def main(
@@ -4137,6 +4142,10 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
             f"installed metadata ({stale[0]}) is stale vs the checkout ({stale[1]}) - a "
             f"`git pull` did not re-bake it; run: {reinstall}"
         )
+    repository = current_status(running_commands=list(main.commands))
+    repository_note = repository.note() if repository is not None else None
+    if repository_note:
+        warnings.append(repository_note)
     orphaned_agents = agent_processes.orphaned_agent_instances()
     if orphaned_agents:
         warnings.append(
@@ -4192,6 +4201,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         "wo1162425_scopes": cfg.wo1162425_scopes,
         "problems": problems,
         "warnings": warnings,
+        "repository": repository.as_dict() if repository is not None else None,
         "install": {
             "checkout": install.checkout.as_dict() if install.checkout is not None else None,
             "managed_path": (

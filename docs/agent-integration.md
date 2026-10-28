@@ -177,6 +177,8 @@ client id or call Graph directly when a blumkin skill covers the job.
   provider, not a bad grant. Safe to retry the same command once.
 ```
 
+- **A command is missing, or the docs describe something the CLI lacks.** An installed blumkin can be older than the repository it is used next to. `blumkin --version` then adds a `note:` line, and `blumkin doctor --json` carries a `repository` block (`relation`, `behind_by`, `missing_commands`) and a warning; run `blumkin upgrade` (it prints the right command for how blumkin was installed) and try again. The check is offline and uses the checkout in the working directory or the one named by `BLUMKIN_REPOSITORY`.
+
 Keep it short. It competes with everything else in the context window, and the detail belongs in `blumkin skills list --json`, which is always current.
 
 ---

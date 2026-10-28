@@ -8,16 +8,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from click.testing import CliRunner
+
+from blumkin.cli import main
+from blumkin.exit_codes import EXIT_SUCCESS
 from blumkin.repository_status import (
     checkout_commands,
     current_status,
     find_repository,
     repository_status,
 )
-from click.testing import CliRunner
-
-from blumkin.cli import main
-from blumkin.exit_codes import EXIT_SUCCESS
 
 _ROOT = Path(__file__).resolve().parents[1]
 _GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"]

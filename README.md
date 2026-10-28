@@ -71,7 +71,7 @@ uv sync --group dev
 uv tool install -e .        # editable; `blumkin` now points at the checkout
 ```
 
-`blumkin --version` reports the checkout's commit. `blumkin upgrade` recognises the editable install and prints (or, with `--yes`, runs) `git pull --ff-only` followed by `uv tool install -e . --force` to re-bake the metadata; `blumkin doctor` warns when a pull left the installed version stale.
+`blumkin --version` reports the checkout's commit. `blumkin upgrade` recognises the editable install and prints (or, with `--yes`, runs) `git pull --ff-only` followed by `uv tool install -e . --force` to re-bake the metadata; `blumkin doctor` warns when a pull left the installed version stale. When a released install (pipx, uv tool) is used next to a checkout of the repository, `blumkin --version` adds a `note:` line if the install is behind it or lacks commands it has, and `blumkin doctor` reports the same under `repository` with a warning. The checkout is the one in the working directory or its parents, or the one named by `BLUMKIN_REPOSITORY`; nothing is fetched, and `blumkin upgrade` prints the fix.
 
 ### Run the checkout without installing (dev launcher)
 
