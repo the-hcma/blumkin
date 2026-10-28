@@ -501,3 +501,24 @@ def test_the_private_writer_creates_a_new_file_and_refuses_an_existing_one(
     with pytest.raises(ValueError, match="already exists"):
         write_new_private_file(dest, b"other")
     assert dest.read_bytes() == b"data"
+
+
+def test_the_private_writer_closes_the_descriptor_when_it_cannot_wrap_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from blumkin.attachments import write_new_private_file
+
+    closed: list[int] = []
+    real_close = os.close
+    monkeypatch.setattr(
+        "blumkin.attachments.os.close", lambda fd: (closed.append(fd), real_close(fd))
+    )
+    monkeypatch.setattr(
+        "blumkin.attachments.os.fdopen", lambda *a, **k: (_ for _ in ()).throw(OSError("no"))
+    )
+    dest = tmp_path / "x.bin"
+    with pytest.raises(OSError, match="no"):
+        write_new_private_file(dest, b"data")
+    assert closed and not dest.exists()

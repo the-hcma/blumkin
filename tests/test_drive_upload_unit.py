@@ -27,6 +27,7 @@ from blumkin.providers.kind import ProviderKind
 from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
 from blumkin.skills.dispatch import run_skill
 from blumkin.skills.drive import (
+    DriveItemNotFoundError,
     DriveUploadError,
     resolve_upload_source,
 )
@@ -135,6 +136,7 @@ def test_a_mime_type_must_look_like_type_slash_subtype(
         resolve_upload_source(str(source), name=None, mime_type=mime, config_dir=config_dir)
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs named pipes")
 def test_a_missing_file_a_folder_and_a_special_file_are_refused(
     tmp_path: Path, config_dir: Path
 ) -> None:
@@ -537,3 +539,296 @@ def test_the_cli_uploads_and_prints_the_link(
     assert first.args[1]["file"] == str(source)
     assert first.args[1]["folder"] == "Reports"
     assert first.args[1]["yes"] is True
+
+
+# ------------------------------------------------------------------ what must never leave
+
+
+def test_a_path_is_judged_by_which_directory_it_is_in_not_by_how_it_is_spelled(
+    config_dir: Path, tmp_path: Path
+) -> None:
+    from blumkin.skills.drive import path_is_inside
+
+    (config_dir / "profiles").mkdir()
+    (config_dir / "profiles" / "t.json").write_text("x")
+    alias = tmp_path / "alias"
+    alias.symlink_to(config_dir)
+    unresolved = alias / "profiles" / "t.json"
+    assert not unresolved.is_relative_to(config_dir)
+    assert path_is_inside(unresolved, config_dir)
+    assert not path_is_inside(tmp_path / "work", config_dir)
+
+
+def test_a_hard_link_to_a_secret_is_refused_even_outside_the_config_directory(
+    tmp_path: Path, config_dir: Path
+) -> None:
+    secret = config_dir / "google_token.json"
+    secret.write_text("tokens")
+    linked = tmp_path / "innocent.json"
+    os.link(secret, linked)
+    with pytest.raises(DriveUploadError, match="link"):
+        resolve_upload_source(str(linked), name=None, mime_type=None, config_dir=config_dir)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [".ssh/id_rsa", ".aws/credentials", ".gnupg/key", ".config/gcloud/creds.json", ".netrc"],
+)
+def test_well_known_secret_locations_are_refused(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch, relative: str
+) -> None:
+    home = tmp_path / "home"
+    target = home / relative
+    target.parent.mkdir(parents=True)
+    target.write_text("secret")
+    monkeypatch.setenv("HOME", str(home))
+    with pytest.raises(DriveUploadError, match="secret"):
+        resolve_upload_source(str(target), name=None, mime_type=None, config_dir=config_dir)
+
+
+def test_an_env_file_is_refused_wherever_it_is(tmp_path: Path, config_dir: Path) -> None:
+    env = tmp_path / "project" / ".env"
+    env.parent.mkdir()
+    env.write_text("KEY=1")
+    with pytest.raises(DriveUploadError, match="secret"):
+        resolve_upload_source(str(env), name=None, mime_type=None, config_dir=config_dir)
+
+
+def test_the_google_oauth_client_file_is_refused_wherever_it_lives(
+    tmp_path: Path, config_dir: Path
+) -> None:
+    client = tmp_path / "downloads" / "client_secret.json"
+    client.parent.mkdir()
+    client.write_text("{}")
+    with pytest.raises(DriveUploadError, match="secret"):
+        resolve_upload_source(
+            str(client), name=None, mime_type=None, config_dir=config_dir, denied=(client,)
+        )
+
+
+def test_the_checked_file_is_the_one_that_is_read_even_if_it_is_swapped_afterwards(
+    source: Path, tmp_path: Path, config_dir: Path
+) -> None:
+    found = resolve_upload_source(str(source), name=None, mime_type=None, config_dir=config_dir)
+    try:
+        secret = config_dir / "google_token.json"
+        secret.write_text("tokens")
+        os.replace(secret, source)  # the name now leads to a different file
+        assert found.handle.read() == b"\x89PNG-bytes"
+    finally:
+        found.close()
+
+
+def test_a_file_that_changes_while_it_is_sent_is_detected(source: Path, config_dir: Path) -> None:
+    found = resolve_upload_source(str(source), name=None, mime_type=None, config_dir=config_dir)
+    try:
+        found.ensure_unchanged()
+        with source.open("ab") as handle:
+            handle.write(b"more")
+        with pytest.raises(DriveUploadError, match="changed"):
+            found.ensure_unchanged()
+    finally:
+        found.close()
+
+
+def test_the_google_upload_reads_from_the_checked_handle(source: Path, config_dir: Path) -> None:
+    service = MagicMock()
+    files = service.files.return_value
+    files.list.return_value.execute.return_value = {"files": []}
+    files.create.return_value.execute.return_value = _created()
+    _google_upload(service, config_dir, file=str(source))
+    media = files.create.call_args.kwargs["media_body"]
+    assert media.getbytes(0, 100) == b"\x89PNG-bytes"
+
+
+def test_google_upload_that_the_service_rejects_is_translated_like_the_other_verbs(
+    source: Path, config_dir: Path
+) -> None:
+    service = MagicMock()
+    files = service.files.return_value
+    files.list.return_value.execute.return_value = {"files": []}
+    files.create.return_value.execute.side_effect = HttpError(
+        SimpleNamespace(status=404, reason="not found"), b"{}"
+    )
+    with pytest.raises(DriveItemNotFoundError):
+        _google_upload(service, config_dir, file=str(source))
+
+
+def test_google_upload_with_no_file_in_the_answer_is_an_error_not_a_success(
+    source: Path, config_dir: Path
+) -> None:
+    service = MagicMock()
+    files = service.files.return_value
+    files.list.return_value.execute.return_value = {"files": []}
+    files.create.return_value.execute.return_value = None
+    with pytest.raises(RuntimeError, match="no file"):
+        _google_upload(service, config_dir, file=str(source))
+
+
+@pytest.mark.parametrize(
+    "name", ["a:b.txt", "a*b.txt", 'a"b.txt', "a<b.txt", "a|b.txt", "a?.txt", "ends.", "ends "]
+)
+def test_onedrive_names_it_cannot_hold_are_refused_before_anything_is_sent(
+    source: Path, config_dir: Path, name: str
+) -> None:
+    send = AsyncMock()
+    with pytest.raises(DriveUploadError, match="OneDrive"):
+        _ms_upload(_ms_client(send), config_dir, file=str(source), name=name)
+    send.assert_not_called()
+
+
+def test_the_session_client_honours_the_proxy_and_certificate_environment() -> None:
+    from blumkin.providers.microsoft_drive import _session_client
+
+    with _session_client() as client:
+        assert client.trust_env is True
+
+
+def _big(tmp_path: Path) -> Path:
+    big = tmp_path / "big.bin"
+    big.write_bytes(os.urandom(5 * 1024 * 1024))
+    return big
+
+
+def _session_send() -> AsyncMock:
+    return AsyncMock(return_value=SimpleNamespace(upload_url="https://upload.example/session/1"))
+
+
+def test_a_chunk_that_gets_a_server_error_is_retried_and_the_upload_still_completes(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = _big(tmp_path)
+    attempts = {"n": 0}
+    pauses: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        total = int(request.headers["Content-Range"].split("/")[1])
+        end = int(request.headers["Content-Range"].split("-")[1].split("/")[0])
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(503, headers={"Retry-After": "2"})
+        if end + 1 < total:
+            return httpx.Response(202)
+        return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
+
+    monkeypatch.setattr(
+        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(f"{_MS_MOD}._pause", pauses.append)
+
+    payload = _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
+
+    assert payload["item"]["id"] == "bigid"
+    assert pauses == [2.0]
+
+
+def test_a_timeout_on_a_chunk_is_retried_too(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = _big(tmp_path)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadTimeout("slow", request=request)
+        total = int(request.headers["Content-Range"].split("/")[1])
+        end = int(request.headers["Content-Range"].split("-")[1].split("/")[0])
+        if end + 1 < total:
+            return httpx.Response(202)
+        return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
+
+    monkeypatch.setattr(
+        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(f"{_MS_MOD}._pause", lambda seconds: None)
+
+    assert (
+        _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))["item"]["id"] == "bigid"
+    )
+
+
+def test_a_chunk_that_keeps_failing_gives_up_after_a_few_tries_and_cancels(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = _big(tmp_path)
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(204) if request.method == "DELETE" else httpx.Response(503)
+
+    monkeypatch.setattr(
+        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(f"{_MS_MOD}._pause", lambda seconds: None)
+
+    with pytest.raises(DriveUploadError, match="503"):
+        _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
+
+    assert methods.count("PUT") == 4  # one try and three retries
+    assert methods[-1] == "DELETE"
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://127.0.0.1/s", "https://localhost/s", "https://[::1]/s", "http://upload.example/s"],
+)
+def test_an_upload_session_url_must_be_a_public_https_address(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    big = _big(tmp_path)
+    send = AsyncMock(return_value=SimpleNamespace(upload_url=url))
+    with pytest.raises(DriveUploadError, match="session"):
+        _ms_upload(_ms_client(send), config_dir, file=str(big))
+
+
+def test_a_final_answer_that_is_not_json_is_an_upload_error_and_cancels_the_session(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = _big(tmp_path)
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        end = (
+            int(request.headers["Content-Range"].split("-")[1].split("/")[0])
+            if request.method == "PUT"
+            else 0
+        )
+        total = (
+            int(request.headers["Content-Range"].split("/")[1]) if request.method == "PUT" else 0
+        )
+        if request.method == "PUT" and end + 1 < total:
+            return httpx.Response(202)
+        return (
+            httpx.Response(204) if request.method == "DELETE" else httpx.Response(201, text="oops")
+        )
+
+    monkeypatch.setattr(
+        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(DriveUploadError, match="answer"):
+        _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
+
+
+def test_a_file_that_changes_during_a_large_upload_cancels_the_session(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = _big(tmp_path)
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.method == "PUT" and len(methods) == 1:
+            with big.open("ab") as handle:
+                handle.write(b"grown")
+            return httpx.Response(202)
+        return httpx.Response(204) if request.method == "DELETE" else httpx.Response(202)
+
+    monkeypatch.setattr(
+        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(DriveUploadError, match="changed"):
+        _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
+    assert methods[-1] == "DELETE"
