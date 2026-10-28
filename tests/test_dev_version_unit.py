@@ -108,8 +108,8 @@ def test_the_version_everywhere_carries_the_marker_in_this_checkout() -> None:
 
 
 def test_the_source_tree_is_the_checkout_here_and_none_without_one(tmp_path: Path) -> None:
-    assert (source_tree() or Path()) / "pyproject.toml" == (source_tree() or Path()) / "pyproject.toml"
-    assert source_tree() is not None and (source_tree() / "pyproject.toml").is_file()
+    tree = source_tree()
+    assert tree is not None and (tree / "pyproject.toml").is_file()
     assert source_tree(repository=tmp_path) is None
 
 

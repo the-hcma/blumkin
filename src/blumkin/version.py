@@ -54,7 +54,53 @@ def format_cli_version_line(*, prog: str) -> str:
 @lru_cache(maxsize=1)
 def get_build_info() -> tuple[str, str]:
     """Return ``(package_version, commit_short_or_unknown)`` once per process."""
-    return (package_version(), git_commit())
+    return (package_version() + dev_version_suffix(), git_commit())
+
+
+def dev_version_suffix(*, repository: Path | None = None) -> str:
+    """``+dev.<short sha>.<commit date>`` (plus ``-dirty``) when running from a checkout.
+
+    A release install (a baked-in version, or no git checkout around the code) gets an
+    empty string, so its version is unchanged. Any git failure also gives an empty string:
+    the marker is a convenience and must never break ``--version``. Untracked files count
+    as dirty (they change what runs), ignored files do not.
+    """
+    embedded = getattr(_build_metadata, "EMBEDDED_VERSION", "")
+    if isinstance(embedded, str) and embedded.strip():
+        return ""
+    checkout = repository or _repository_root()
+    if not (checkout / ".git").exists():
+        return ""
+    try:
+        head = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "show",
+                "--no-patch",
+                "--format=%h %cd",
+                "--date=format:%Y%m%d",
+                "--abbrev=7",
+                "HEAD",
+            ],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=2,
+        ).stdout.split()
+        changes = subprocess.run(
+            ["git", "-C", str(checkout), "status", "--porcelain"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+    except OSError, subprocess.SubprocessError:
+        return ""
+    if len(head) != 2:
+        return ""
+    return f"+dev.{head[0]}.{head[1]}" + ("-dirty" if changes else "")
 
 
 def git_commit(
@@ -184,6 +230,12 @@ def running_command_path() -> Path:
         return argv0.absolute()
     except OSError:
         return argv0
+
+
+def source_tree(*, repository: Path | None = None) -> Path | None:
+    """The git checkout this code runs from, or None for an installed release."""
+    checkout = repository or _repository_root()
+    return checkout if (checkout / ".git").exists() else None
 
 
 def _normalize_commit(token: str) -> str:

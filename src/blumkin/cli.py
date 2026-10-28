@@ -108,6 +108,7 @@ from blumkin.capabilities import capability_summary
 from blumkin.config import (
     BlumkinConfig,
     config_dir,
+    config_dir_source,
     google_oauth_installed_client,
     list_profiles,
     load_browser_setup,
@@ -261,6 +262,7 @@ from blumkin.version import (
     package_version,
     read_installed_version,
     running_command_path,
+    source_tree,
 )
 
 # Fallback next-step guidance per error slug, used when a call site does not pass
@@ -3856,10 +3858,17 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
             "the macOS login keychain is locked - run: blumkin auth unlock "
             f"(keychain_unlock = {cfg.keychain_unlock!r})"
         )
+    resolved_dir, selected_by = config_dir_source()
+    tree = source_tree()
     payload = {
         "ok": not problems,
         "keychain": {"locked": keychain_locked, "unlock_mode": cfg.keychain_unlock},
         "build": build,
+        "config": {
+            "dir": str(resolved_dir),
+            "selected_by": selected_by,
+            "source_tree": str(tree) if tree is not None else None,
+        },
         "capabilities": capabilities,
         "account_type": cfg.account_type,
         "wo1162425_scopes": cfg.wo1162425_scopes,
@@ -3895,6 +3904,12 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"build: {build['build_version']} ({build['build_commit']})"])
         emit_lines([f"install: {install.method}"])
         emit_lines([f"running_from: {build['running_from']}"])
+        emit_lines(
+            [
+                f"config_dir: {resolved_dir} ({selected_by})",
+                f"source_tree: {tree if tree is not None else '(installed release)'}",
+            ]
+        )
         emit_lines([f"account_type: {cfg.account_type}"])
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])

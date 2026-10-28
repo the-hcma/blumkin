@@ -217,13 +217,18 @@ class PreferencesConfig:
 
 def config_dir() -> Path:
     """Resolve the config directory (``BLUMKIN_CONFIG_DIR`` selects which dir)."""
+    return config_dir_source()[0]
+
+
+def config_dir_source() -> tuple[Path, str]:
+    """The config directory and what selected it: an environment variable or ``default``."""
     override = os.environ.get("BLUMKIN_CONFIG_DIR", "").strip()
     if override:
-        return Path(override).expanduser()
+        return Path(override).expanduser(), "BLUMKIN_CONFIG_DIR"
     xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
     if xdg:
-        return Path(xdg).expanduser() / "blumkin"
-    return Path.home() / ".config" / "blumkin"
+        return Path(xdg).expanduser() / "blumkin", "XDG_CONFIG_HOME"
+    return Path.home() / ".config" / "blumkin", "default"
 
 
 def google_oauth_installed_client(path: Path) -> dict[str, Any]:
