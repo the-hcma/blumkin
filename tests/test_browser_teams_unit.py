@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import blumkin.browser
 from blumkin.browser.teams import (
     has_stop_marker,
     merge_chunks,
     parse_chunk,
     transcription_stopped_after_capture,
 )
-
-import blumkin.browser
 from blumkin.browser.transcript import Entry, assess
 
 PANE_TOP = """

@@ -12,12 +12,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from blumkin.browser.teams import (
-    FRAME_READY_JS,
-    SCROLL_PREPARE_JS,
-    SCROLL_STEP_JS,
-    SCROLL_TO_TOP_JS,
-)
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
@@ -35,6 +29,12 @@ from blumkin.browser.profiles import (
     NotBlumkinProfileError,
     create_profile,
     write_session,
+)
+from blumkin.browser.teams import (
+    FRAME_READY_JS,
+    SCROLL_PREPARE_JS,
+    SCROLL_STEP_JS,
+    SCROLL_TO_TOP_JS,
 )
 
 
