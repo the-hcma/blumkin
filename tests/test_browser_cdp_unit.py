@@ -1490,3 +1490,30 @@ def test_the_driver_gives_the_source_only_the_addresses_of_playwrights_child_fra
     driver = _existing_driver(existing, _PlainFrame("https://tenant.sharepoint.com/seen"))
     driver.frame_list(_sharepoint)
     assert list(existing.seen_urls or []) == ["https://tenant.sharepoint.com/seen"]
+
+
+class _BlinkingAddressFrame(_PlainFrame):
+    """A frame whose address reads fine once and then fails, as a navigating page can."""
+
+    def __init__(self) -> None:
+        super().__init__("")
+        self.reads = 0
+
+    @property
+    def url(self) -> str:
+        self.reads += 1
+        return "https://tenant.sharepoint.com/x" if self.reads == 1 else ""
+
+    @url.setter
+    def url(self, _value: str) -> None:
+        return None
+
+
+def test_frame_list_reads_each_frames_address_once_per_listing() -> None:
+    flaky = _BlinkingAddressFrame()
+    driver = _existing_driver(_Existing(flaky))
+    listed = driver.frame_list(_sharepoint)
+    assert [(f.host, f.origin, f.allowed) for f in listed] == [
+        ("tenant.sharepoint.com", "https://tenant.sharepoint.com", True)
+    ]
+    assert flaky.reads == 1
