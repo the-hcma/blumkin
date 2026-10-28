@@ -157,6 +157,11 @@ def finish_lesson(
                 f"Expected no other finish in progress for {item.id}, "
                 f"got one started at {item.claimed_at}"
             )
+        if item.draft_id and item.docs and item.docs != links:
+            raise LessonError(
+                f"Expected the same --doc links as the earlier attempt for {item.id}, got "
+                "different ones; the saved reply draft already carries the earlier links"
+            )
         item = _save(store, _with(item, claimed_at=_now(), docs=links))
     try:
         draft_id = item.draft_id

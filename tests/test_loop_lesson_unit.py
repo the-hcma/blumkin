@@ -488,3 +488,18 @@ def test_a_reply_response_without_a_draft_id_is_refused() -> None:
     provider = _Provider({"to": "me@example.com"})
     with pytest.raises(LessonError, match="Expected"):
         prepare_reply("personal", _MESSAGE, "body", _ALLOW, provider=provider)
+
+
+def test_a_retry_with_other_links_than_the_saved_draft_is_refused(tmp_path: Path) -> None:
+    item_id = _queue(tmp_path)
+    replies = _Replies()
+    replies.fail_send = True
+    with pytest.raises(LessonReplyError):
+        _finish(tmp_path, item_id, [_DOC_ONE], replies)
+    with pytest.raises(LessonError, match="same"):
+        _finish(tmp_path, item_id, [_DOC_TWO], replies)
+    (item,) = pending_lessons(tmp_path)
+    assert item.docs == (_DOC_ONE,)
+    assert replies.sent == []
+    replies.fail_send = False
+    assert _finish(tmp_path, item_id, [_DOC_ONE], replies).docs == (_DOC_ONE,)
