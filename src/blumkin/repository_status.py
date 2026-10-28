@@ -97,9 +97,11 @@ class RepositoryStatus:
             return (
                 f"{lead} - the build is newer than the checkout; update the checkout (`git pull`)"
             )
+        path = shlex.quote(str(self.path))
         return (
             f"{lead} - a newer release may add them (`blumkin upgrade`), or install the "
-            f"checkout: `uv tool install -e {shlex.quote(str(self.path))}`"
+            f"checkout: `uv tool install -e {path}` "
+            f"(`pipx install --editable {path} --force` for a pipx install)"
         )
 
 

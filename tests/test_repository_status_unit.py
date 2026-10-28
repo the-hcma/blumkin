@@ -451,7 +451,7 @@ def test_doctor_reports_being_behind_without_a_warning_when_nothing_is_missing(
     payload = json.loads(CliRunner().invoke(main, ["doctor", "--json"]).output)
 
     assert payload["repository"]["relation"] == "behind"
-    assert not any("checkout" in warning for warning in payload["warnings"])
+    assert not any("lacks commands" in warning for warning in payload["warnings"])
 
 
 def test_git_ignores_the_users_global_and_system_configuration_and_never_fetches(
@@ -548,3 +548,26 @@ def test_a_failed_shallow_probe_is_not_taken_as_evidence_of_divergence(
     assert (
         repository_status(repo, build_commit=side[:12], running_commands=[]).relation == "unknown"
     )
+
+
+def test_the_note_names_the_pipx_alternative_to_the_uv_checkout_install(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "r")
+    old = _git(repo, "rev-parse", "HEAD")[:12]
+    _commit(repo, "second")
+    note = repository_status(repo, build_commit=old, running_commands=["auth"]).note() or ""
+    assert "pipx install --editable" in note
+
+
+def test_the_agent_docs_keep_the_missing_command_guidance_inside_the_copied_block() -> None:
+    text = (Path(__file__).parent.parent / "docs" / "agent-integration.md").read_text("utf-8")
+    block = text.split("```markdown", 1)[1].split("\n```\n", 1)[0]
+    assert "A command is missing" in block
+
+
+def test_the_agent_guidance_says_upgrade_changes_the_install_and_needs_approval() -> None:
+    root = Path(__file__).parent.parent
+    for relative in (".agents/skills/blumkin/SKILL.md", "docs/agent-integration.md"):
+        text = (root / relative).read_text("utf-8")
+        line = next(item for item in text.splitlines() if "older than the repository" in item)
+        assert "prints the" not in line, relative
+        assert "approval" in line, relative
