@@ -73,6 +73,15 @@ uv tool install -e .        # editable; `blumkin` now points at the checkout
 
 `blumkin --version` reports the checkout's commit. `blumkin upgrade` recognises the editable install and prints (or, with `--yes`, runs) `git pull --ff-only` followed by `uv tool install -e . --force` to re-bake the metadata; `blumkin doctor` warns when a pull left the installed version stale.
 
+### Run the checkout without installing (dev launcher)
+
+```bash
+scripts/dev/blumkin --version       # blumkin 1.13.0+dev.<sha>.<date> (<commit>), -dirty when uncommitted
+scripts/dev/blumkin mail inbox      # the in-repo code against your real config
+```
+
+`scripts/dev/blumkin` runs the checkout (or any worktree of it, from any directory) with `uv run --frozen`, so there is no install step and no way to run a stale copy by mistake. It uses your real config directory, keychain entries, token cache and agent state, with no separate namespace; set `BLUMKIN_CONFIG_DIR` to an empty directory for a throwaway setup. `--version`, `doctor` and the MCP server report a `+dev.<short sha>.<commit date>` marker (plus `-dirty` for uncommitted or untracked changes), and `doctor` also shows the source tree and which setting chose the config directory. If the config directory has no `config.toml`, a terminal is offered the guided `auth setup` (which creates the directory with mode 0700 and a minimal config.toml with mode 0600), and anything else fails with a hint; nothing is created or overwritten unless you say yes. Agent sessions use the `blumkin-dev` skill ([`.agents/skills/blumkin-dev/SKILL.md`](./.agents/skills/blumkin-dev/SKILL.md)).
+
 On macOS, `uv sync`/`uv tool install` compile the `blumkin-agent` daemon (see [`rust-agent/README.md`](./rust-agent/README.md)) via a `hatchling` build hook (`hatch_build.py`) — a Rust toolchain (`brew install rust` or [rustup](https://rustup.rs)) must be on `PATH`. No toolchain, or a non-macOS platform, degrades gracefully: the install still succeeds, just without that binary.
 
 To expose every skill as a typed **MCP tool** for MCP-aware agents, run **`blumkin mcp install`** — a guided setup that registers `blumkin mcp serve` with Claude Code, Cursor, and the GitHub Copilot CLI, confirming each. `mcp` is a core dependency (no extra install step needed). See [`docs/agent-integration.md`](./docs/agent-integration.md#mcp-server).

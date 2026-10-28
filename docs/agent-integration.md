@@ -403,6 +403,10 @@ Running the server needs no extra install step: `mcp` is a core dependency of `b
 
 Auth is unchanged — run `blumkin auth login` on a TTY once; every registered server shares the same `~/.config/blumkin/` token cache. The host spawns `blumkin mcp serve` as a child process and reaps it when the session ends; there is no daemon.
 
+### Dev sessions: serve the checkout
+
+To test unreleased changes through an MCP client, run the server from the checkout with `scripts/dev/blumkin`. Either run `scripts/dev/blumkin mcp install` (it registers this checkout's own console script, so the client runs the checkout), or register by hand: set the client's `command` to the absolute path of `scripts/dev/blumkin` and its `args` to `["mcp", "serve"]`. No code change is needed: the launcher forwards its arguments, keeps stdout clean for the protocol, and the server's version carries the `+dev.<sha>.<date>` marker so a client can tell it is the checkout. The server asks to be restarted when the checkout changes under it (the marker includes `-dirty`), which is the point in a dev session. The same real config, keychain and token cache are used; see the `blumkin-dev` skill for the rules that apply.
+
 ### Register it: `blumkin mcp install`
 
 ```bash
