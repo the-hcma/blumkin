@@ -33,8 +33,9 @@ def task_names(ctx: click.Context, param: click.Parameter, incomplete: str) -> l
     """Task template names from the config and active profile `tasks/` directories."""
     try:
         # Loading warns (on stderr) about malformed templates; Tab must stay silent.
+        profile = ctx.find_root().params.get("profile")
         with contextlib.redirect_stderr(io.StringIO()):
-            tasks = load_tasks(load_config())
+            tasks = load_tasks(load_config(profile=profile if isinstance(profile, str) else None))
     except Exception:  # noqa: BLE001 - completion must never break the shell
         return []
     return [

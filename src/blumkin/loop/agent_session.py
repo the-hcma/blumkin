@@ -84,7 +84,8 @@ def run_agent_session(setup: LoopSetup) -> SessionResult:
             failure = _drive(setup, command, waiting, log)
         finally:
             log.close()
-    remaining = tuple(i for i in waiting if i in {x.id for x in pending_items(setup.config_dir)})
+    open_ids = {item.id for item in pending_items(setup.config_dir)}
+    remaining = tuple(i for i in waiting if i in open_ids)
     handled = tuple(i for i in waiting if i not in remaining)
     if failure is None and remaining:
         failure = "The agent ended while items were still waiting"
@@ -172,7 +173,9 @@ def _drive(
         outcome = _watch(child, log, setup, waiting, deadline)
         if outcome != "closed":
             return outcome
-        _submit(child, log, settings.agent_exit_input)
+        # An agent that already left closed its end of the pty; the work is done either way.
+        with contextlib.suppress(OSError):
+            _submit(child, log, settings.agent_exit_input)
         _read_until_eof(child, log, _EXIT_GRACE_SECONDS)
         return None
     finally:
