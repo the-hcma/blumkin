@@ -964,3 +964,21 @@ def test_read_frame_host_pin_is_passed_to_the_driver_and_echoed(
 def test_read_host_pin_without_a_frame_is_a_usage_error(raw: _Raw) -> None:
     result = _run("browser", "read", "expense-report", "--host", "tenant.sharepoint.com")
     assert result.exit_code == EXIT_USAGE, result.output
+
+
+def test_read_aria_removes_values_of_fields_whose_names_need_yaml_quoting(raw: _Raw) -> None:
+    raw.aria_text = "\n".join(
+        [
+            "- 'textbox \"Email: work\"': jane@example.com",
+            "- 'combobox \"Team #1\" [expanded]': Blue",
+            "- 'textbox \"O''Brien: id\"': SECRETVALUE",
+            "- 'link \"Docs: home\"':",
+            "  - /url: https://x.example/doc?sig=SECRET",
+        ]
+    )
+    text = _json(_run("browser", "read", "expense-report", "--aria"))["text"]
+    for leaked in ("jane@example.com", "Blue", "SECRETVALUE", "SECRET"):
+        assert leaked not in text
+    assert "'textbox \"Email: work\"'" in text
+    assert "'combobox \"Team #1\" [expanded]'" in text
+    assert "'link \"Docs: home\"'" in text
