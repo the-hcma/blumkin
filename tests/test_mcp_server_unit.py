@@ -8,6 +8,7 @@ network). The provider is always mocked - these tests never touch Graph.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import tempfile
 import tomllib
@@ -138,7 +139,7 @@ def test_required_yes_skills_expose_confirm_not_a_deadlock() -> None:
 
 def test_notifying_tool_without_confirm_is_a_domain_error() -> None:
     with patch("blumkin.mcp_server.load_config", return_value=_CFG):
-        result = _drive(lambda c: c.call_tool("chat.send", {"with": "Ada", "text": "hi"}))
+        result = _drive(lambda c: c.call_tool("chat.send", {"draft_id": "d1"}))
     assert result.is_error is True
     assert result.structured_content["ok"] is False
     assert result.structured_content["error"] == "usage_error"
@@ -509,9 +510,7 @@ def test_provider_capability_mismatch_surfaces_as_usage_error() -> None:
         patch("blumkin.mcp_server.load_config", return_value=cfg),
         patch("blumkin.skills.dispatch.get_provider", return_value=prov),
     ):
-        result = _drive(
-            lambda c: c.call_tool("drive.read", {"item_id": "01ABC", "profile": "work"})
-        )
+        result = _drive(lambda c: c.call_tool("drive.read", {"id": "01ABC", "profile": "work"}))
     assert result.is_error is True
     assert result.structured_content["error"] == "usage_error"
     assert "not supported" in result.structured_content["message"]
@@ -769,3 +768,166 @@ def test_stale_server_checker_serializes_concurrent_probes() -> None:
         first.join(timeout=5)
         second.join(timeout=5)
         assert not second.is_alive()
+
+
+def _unknown_arguments_call(tool: str, arguments: dict[str, Any]) -> tuple[Any, AsyncMock]:
+    provider_call = AsyncMock(return_value={"event": {"id": "e1"}})
+    prov = SimpleNamespace(
+        calendar_create=provider_call,
+        calendar_update=provider_call,
+        calendar_today=provider_call,
+        mail_list=provider_call,
+    )
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=_CFG),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        return _drive(lambda c: c.call_tool(tool, arguments)), provider_call
+
+
+def test_an_unknown_argument_is_a_usage_error_not_silently_dropped() -> None:
+    result, provider_call = _unknown_arguments_call(
+        "calendar.create",
+        {
+            "subject": "Sync",
+            "start": "2026-10-23T14:30:00",
+            "attendees": "someone@example.com",
+            "end": "2026-10-23T14:45:00",
+            "teams": True,
+        },
+    )
+    assert result.is_error is True
+    body = result.structured_content
+    assert body["error"] == "usage_error"
+    for name in ("attendees", "end", "teams"):
+        assert name in body["message"]
+    assert provider_call.await_count == 0
+
+
+def test_the_hint_for_a_known_mistake_names_the_right_argument() -> None:
+    result, _ = _unknown_arguments_call(
+        "calendar.create",
+        {
+            "subject": "Sync",
+            "start": "2026-10-23T14:30:00",
+            "attendees": "a@example.com",
+            "end": "2026-10-23T14:45:00",
+            "teams": True,
+        },
+    )
+    hint = result.structured_content["hint"]
+    assert "calendar.create has no attendees" in hint
+    assert "takes duration" in hint and "not end" in hint
+    assert "pass no_teams=true" in hint
+
+
+def test_a_near_miss_suggests_the_closest_argument() -> None:
+    result, _ = _unknown_arguments_call(
+        "calendar.create", {"subject": "S", "start": "x", "durration": "30"}
+    )
+    assert "did you mean `duration`" in result.structured_content["hint"]
+
+
+def test_the_message_lists_the_valid_arguments_without_echoing_values() -> None:
+    result, _ = _unknown_arguments_call(
+        "calendar.create", {"subject": "S", "start": "x", "bogus": "SENTINEL-value-1234"}
+    )
+    body = result.structured_content
+    assert "SENTINEL-value-1234" not in json.dumps(body)
+    assert "valid arguments for calendar.create: " in body["hint"]
+    assert "`bogus`" in body["message"]
+
+
+def test_a_key_that_looks_like_an_auth_error_is_still_a_usage_error() -> None:
+    result, _ = _unknown_arguments_call("calendar.today", {"client_id": "x", "Missing": "y"})
+    assert result.structured_content["error"] == "usage_error"
+
+
+def test_known_arguments_and_the_synthetic_ones_still_work() -> None:
+    result, provider_call = _unknown_arguments_call(
+        "calendar.update",
+        {"event_id": "e1", "subject": "New", "with": ["a@example.com"], "confirm": True},
+    )
+    assert result.is_error is False
+    assert provider_call.await_count == 1
+
+
+def test_key_names_are_shown_safely_and_extra_ones_are_counted() -> None:
+    many = {f"bogus{n}": 1 for n in range(7)}
+    many["it's `odd`\nname" + "x" * 80] = 1
+    result, _ = _unknown_arguments_call("calendar.today", many)
+    message = result.structured_content["message"]
+    assert "\n" not in message
+    assert "and 3 more" in message
+    assert len(message) < 400
+
+
+def test_every_advertised_property_gets_past_the_unknown_check_on_the_real_server() -> None:
+    """Send each tool all of its own advertised properties through `on_call_tool`."""
+    refused: list[str] = []
+    for name, tool in _list_tools().items():
+        if name == "profiles.list":
+            continue
+        arguments: dict[str, Any] = {}
+        for key, spec in tool.input_schema["properties"].items():
+            kind = spec.get("type")
+            arguments[key] = [] if kind == "array" else False if kind == "boolean" else "x"
+        with patch("blumkin.mcp_server.load_config", return_value=_CFG):
+            result = _drive(lambda c: c.call_tool(name, arguments))
+        body = result.structured_content or {}
+        if "does not take the argument" in str(body.get("message", "")):
+            refused.append(name)
+    assert refused == []
+
+
+def test_yes_is_still_refused_before_the_unknown_check() -> None:
+    result, _ = _unknown_arguments_call("calendar.today", {"yes": True, "bogus": 1})
+    assert "pass `confirm`, not `yes`" in result.structured_content["message"]
+
+
+def test_tasks_delete_dry_run_needs_no_confirm_and_on_is_accepted(tmp_path: Path) -> None:
+    prov = SimpleNamespace(mail_auto_reply=AsyncMock(return_value={"ok": True}))
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=_CFG),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        refused = _drive(lambda c: c.call_tool("mail.auto-reply", {"on": False, "confirm": True}))
+    assert "does not take" not in str((refused.structured_content or {}).get("message", ""))
+
+
+def test_a_multi_account_server_still_accepts_profile_next_to_real_arguments() -> None:
+    prov = SimpleNamespace(calendar_today=AsyncMock(return_value={"events": []}))
+    cfg = SimpleNamespace(default_tz="UTC", provider=ProviderKind.MICROSOFT, wo1162425_scopes=True)
+    with (
+        _profiles(_TWO_PROFILES),
+        patch("blumkin.mcp_server.load_config", return_value=cfg),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        result = _drive_server(
+            build_server(), lambda c: c.call_tool("calendar.today", {"profile": "work"})
+        )
+        bad = _drive_server(
+            build_server(), lambda c: c.call_tool("calendar.today", {"profile": "work", "bogus": 1})
+        )
+    assert result.is_error is False
+    assert bad.structured_content["error"] == "usage_error"
+
+
+def test_profiles_list_refuses_arguments_it_does_not_take_but_works_without() -> None:
+    with _profiles(_TWO_PROFILES), patch("blumkin.mcp_server.load_config", return_value=_CFG):
+        server = build_server()
+        plain = _drive_server(server, lambda c: c.call_tool("profiles.list", {}))
+        extra = _drive_server(server, lambda c: c.call_tool("profiles.list", {"bogus": 1}))
+    assert plain.is_error is False
+    assert extra.is_error is True
+    assert extra.structured_content["error"] == "usage_error"
+    assert "bogus" in extra.structured_content["message"]
+
+
+def test_the_teams_hint_says_which_provider_attaches_a_meeting() -> None:
+    result, _ = _unknown_arguments_call(
+        "calendar.create", {"subject": "S", "start": "x", "teams": True}
+    )
+    hint = result.structured_content["hint"]
+    assert "Microsoft" in hint and "pass no_teams=true" in hint
+    assert "Google" in hint

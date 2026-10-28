@@ -15,6 +15,7 @@ skill, plus ``mail delete`` / ``mark`` / ``move`` and the ``mail.auto-reply`` /
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import threading
 import time
@@ -26,7 +27,7 @@ from blumkin.config import list_profiles, load_config
 from blumkin.providers.kind import ProviderConfigError
 from blumkin.skills import BESPOKE_SKILLS, skills_catalog
 from blumkin.skills.dispatch import run_skill
-from blumkin.skills.errors import ServerOutdatedError, classify_exception
+from blumkin.skills.errors import ServerOutdatedError, UnknownArgumentError, classify_exception
 from blumkin.version import build_version, read_installed_version, running_command
 
 try:
@@ -45,6 +46,20 @@ except ModuleNotFoundError as exc:  # pragma: no cover - the CLI wrapper re-rais
 # BESPOKE_SKILLS (auth verbs, doctor, skills.*, mail.signature, mcp.serve) have no
 # WorkspaceProvider method, so they can never be dispatched - never expose them.
 _EXCLUDED = BESPOKE_SKILLS
+# Known wrong guesses: (tool, argument the caller sent) -> what to send instead (issue #456).
+_ARGUMENT_HINTS = {
+    ("calendar.create", "attendees"): (
+        "calendar.create has no attendees: create the event, then add them with "
+        "calendar.update (event_id, with=[...], confirm=true)"
+    ),
+    ("calendar.create", "end"): (
+        "calendar.create takes duration (for example 30m), not end; calendar.update accepts end"
+    ),
+    ("calendar.create", "teams"): (
+        "Microsoft timed events attach a Teams meeting by default; pass no_teams=true to leave "
+        "it off (Google calendar.create attaches no online meeting)"
+    ),
+}
 _CONFIRM_SKILLS = frozenset({"mail.auto-reply", "meeting.transcription", "tasks.delete"})
 # A synthetic read-only tool (not a catalog skill) so an agent can enumerate the
 # accounts this server can act as without shell access - issue #227.
@@ -123,6 +138,7 @@ def build_server(
     profile_names = {item["name"] for item in profiles}
     tools = build_tools(read_only=read_only, only=only, profiles=profiles, pinned=pinned)
     names = {tool.name for tool in tools}
+    tool_props = {tool.name: set(tool.input_schema["properties"]) for tool in tools}
     bool_props = {
         tool.name: {
             key
@@ -152,6 +168,10 @@ def build_server(
                 # `auth_required` instead of "restart me".
                 return _error_result(stale_error)
         if params.name == _PROFILES_LIST_TOOL and _PROFILES_LIST_TOOL in names:
+            if params.arguments:
+                return _error_result(
+                    _unknown_argument_error(_PROFILES_LIST_TOOL, sorted(params.arguments), set())
+                )
             return _profiles_list_result(profiles, pinned_name=profile)
         if params.name not in names:
             return _error_result(LookupError(f"unknown tool: {params.name}"))
@@ -171,6 +191,13 @@ def build_server(
         # An inbound `yes` (e.g. `"yes": "false"`, truthy) would smuggle past the gate.
         if "yes" in args:
             return _error_result(ValueError("pass `confirm`, not `yes`, to consent"))
+        # An argument the skill does not declare would be dropped and the call would still
+        # succeed (issue #456: attendees, end and teams on calendar.create): refuse it.
+        unknown = _unknown_arguments(args, tool_props[params.name])
+        if unknown:
+            return _error_result(
+                _unknown_argument_error(params.name, unknown, tool_props[params.name])
+            )
         # The low-level Server does not type-check arguments against the schema, so
         # a model can send `"confirm": "false"` (truthy) or `"enable": "false"`.
         # Every property advertised as boolean must arrive as a real JSON bool -
@@ -494,3 +521,34 @@ def _stale_server_checker(
 
 def _tool_arg_key(name: str) -> str:
     return name.lstrip("-").replace("-", "_")
+
+
+def _show_name(name: str) -> str:
+    """An argument name made safe to echo: printable, no backticks, at most 40 characters."""
+    cleaned = "".join(ch if ch.isprintable() and ch != "`" else "?" for ch in name)
+    return cleaned if len(cleaned) <= 40 else cleaned[:40] + "..."
+
+
+def _unknown_argument_error(tool: str, unknown: list[str], known: set[str]) -> UnknownArgumentError:
+    """The usage error for `unknown` argument names: specific hints, then near misses."""
+    shown = ", ".join(f"`{_show_name(name)}`" for name in unknown[:5])
+    if len(unknown) > 5:
+        shown += f" and {len(unknown) - 5} more"
+    hints: list[str] = []
+    for name in unknown[:5]:
+        specific = _ARGUMENT_HINTS.get((tool, name))
+        if specific is not None:
+            hints.append(specific)
+            continue
+        close = difflib.get_close_matches(name, sorted(known), n=1, cutoff=0.6)
+        if close:
+            hints.append(f"did you mean `{close[0]}` instead of `{_show_name(name)}`?")
+    hints.append(f"valid arguments for {tool}: {', '.join(sorted(known)) or '(none)'}")
+    return UnknownArgumentError(
+        f"{tool} does not take the argument(s) {shown}; nothing was done", hint="; ".join(hints)
+    )
+
+
+def _unknown_arguments(args: dict[str, Any], known: set[str]) -> list[str]:
+    """Argument names the call sent that the tool's schema does not advertise, sorted."""
+    return sorted(name for name in args if name not in known)

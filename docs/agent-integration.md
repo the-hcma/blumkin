@@ -458,6 +458,8 @@ A provider/verb combination with no backend for the chosen account (e.g. `drive.
 
 Every tool whose CLI form requires `--yes` carries a **required `confirm: true`** argument the server enforces — the MCP mirror of the `--yes` gate. That is the notifying skills (calendar RSVP/create/cancel, `chat.send`, `chat.edit`, `chat.delete`, `mail.send-draft`), the `mail.delete` / `mail.mark` / `mail.move` safety confirms, the `drive.mkdir` / `drive.move` / `drive.rename` writes, and the `mail.auto-reply` / `meeting.transcription` setting changes. Those tools also carry `anthropic/requiresUserInteraction` metadata, and every tool sets `readOnlyHint` / `destructiveHint`, so MCP clients can prompt appropriately. (`mail.forward`, `mail.draft`, `chat.draft`, and `chat.edit-draft` only compose - draft/edit-draft skills stash content for the matching send/edit step to read back - so none of them need confirm.) The three `drive` write verbs are also hidden under `--read-only`; the read verbs (`drive.list` / `.get` / `.download` / `.export` / `.read`) stay visible.
 
+A call that names an argument the tool's schema does not advertise fails with `usage_error` and does nothing: the message names the unknown argument(s), and the `hint` carries the right spelling when it is a known mistake (`calendar.create` takes `duration`, not `end`; attendees are added with `calendar.update` and `with`; `no_teams` turns the Teams meeting off) or the closest valid argument, followed by the valid ones. The values you sent are never echoed. Argument values are not type-checked beyond the JSON booleans described above.
+
 v1 is stdio only. A loopback HTTP transport is a later option if a host needs it.
 
 ---
