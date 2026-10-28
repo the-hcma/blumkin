@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from kiota_abstractions.method import Method
@@ -36,6 +37,9 @@ from msgraph.generated.models.single_value_legacy_extended_property import (
 )
 from msgraph.generated.users.item.mail_folders.item.child_folders.child_folders_request_builder import (  # noqa: E501
     ChildFoldersRequestBuilder,
+)
+from msgraph.generated.users.item.mail_folders.item.messages.delta.delta_request_builder import (
+    DeltaRequestBuilder,
 )
 from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import (
     MailFoldersRequestBuilder,
@@ -73,6 +77,7 @@ from blumkin.attachments import (
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.mail_signature_state import load_signature_state
+from blumkin.mail_sync import MailSyncResetError
 from blumkin.message_policy import should_suppress_signature, validate_outbound_text
 from blumkin.output import sanitize_terminal
 from blumkin.prompt_injection import format_injection_warning_banner, scan_mail_message
@@ -83,6 +88,17 @@ MailBodyType = Literal["html", "text"]
 # What --body-type accepts when *composing* a message. "markdown" is rendered to
 # HTML on the wire (see resolve_mail_body); "text" / "html" pass through verbatim.
 MailComposeType = Literal["markdown", "html", "text"]
+_DELTA_MAX_PAGES = 20
+_DELTA_SELECT = ("id", "from", "subject", "receivedDateTime", "hasAttachments")
+_GRAPH_HOSTS = frozenset(
+    {
+        "dod-graph.microsoft.us",
+        "graph.microsoft.com",
+        "graph.microsoft.us",
+        "microsoftgraph.chinacloudapi.cn",
+    }
+)
+_SYNC_RESET_CODES = frozenset({"resyncrequired", "syncstateinvalid", "syncstatenotfound"})
 _DEFAULT_COMPOSE_TYPE = "markdown"
 
 
@@ -1277,6 +1293,58 @@ async def mail_list(
     }
 
 
+async def mail_new(
+    *,
+    state: str | None,
+    since: datetime,
+    top: int = 50,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Inbox messages that arrived since `state`, and the state to use next (Graph delta).
+
+    With no `state` this takes a fresh delta token and returns the messages received since
+    `since` (the delta query is filtered, so it never walks the whole mailbox). With a saved
+    `state` (the delta link of the last read) it returns only what changed since. Only created
+    messages are requested and entries Graph marks removed are skipped. A link that is not a
+    Graph delta URL, an expired delta state or a page chain that never ends raises
+    `MailSyncResetError`: the caller then rescans and takes a fresh token.
+    """
+    if state is not None and not _is_graph_delta_url(state):
+        raise MailSyncResetError("Expected a Graph delta link as the saved sync state, got another")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    delta = client.me.mail_folders.by_mail_folder_id("inbox").messages.delta
+    try:
+        if state is None:
+            query = DeltaRequestBuilder.DeltaRequestBuilderGetQueryParameters(
+                change_type="created",
+                filter=f"receivedDateTime ge {_odata_datetime(since)}",
+                select=list(_DELTA_SELECT),
+                top=max(1, min(top, 100)),
+            )
+            page = await delta.get(request_config(query))
+        else:
+            page = await delta.with_url(state).get()
+        items: list[dict[str, Any]] = []
+        for _ in range(_DELTA_MAX_PAGES):
+            if page is None:
+                break
+            for msg in page.value or []:
+                if "@removed" in (getattr(msg, "additional_data", None) or {}):
+                    continue
+                items.append(_message_to_dict(msg))
+            if page.odata_delta_link:
+                return {"items": items, "state": page.odata_delta_link}
+            if not page.odata_next_link or not _is_graph_delta_url(page.odata_next_link):
+                break
+            page = await delta.with_url(page.odata_next_link).get()
+    except ODataError as exc:
+        if _is_sync_reset(exc):
+            raise MailSyncResetError("Graph no longer has the saved delta state") from exc
+        raise
+    raise MailSyncResetError("Expected Graph to end the delta read with a delta link, got none")
+
+
 async def mail_reply(
     *,
     message_id: str,
@@ -2282,6 +2350,30 @@ def _internet_message_headers(msg: Any) -> list[dict[str, str]]:
         if isinstance(name, str) and isinstance(value, str):
             out.append({"name": name, "value": value})
     return out
+
+
+def _is_graph_delta_url(url: str) -> bool:
+    """Whether `url` is an https Graph delta URL we may send the bearer token to."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "https"
+        and parts.hostname in _GRAPH_HOSTS
+        and parts.username is None
+        and parts.password is None
+        and port is None
+        and "/delta" in parts.path
+    )
+
+
+def _is_sync_reset(exc: ODataError) -> bool:
+    """Whether Graph says the saved delta state is gone or unusable."""
+    status = getattr(exc, "response_status_code", None)
+    code = str(getattr(getattr(exc, "error", None), "code", "") or "").casefold()
+    return status == 410 or code in _SYNC_RESET_CODES
 
 
 def _message_to_dict(msg: Any) -> dict[str, Any]:

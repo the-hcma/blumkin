@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from msgraph.generated.models.email_address import EmailAddress
@@ -21,6 +24,14 @@ from blumkin.skills.mail import mail_new
 
 _SINCE = datetime(2026, 10, 28, 4, 30, tzinfo=UTC)
 _BASE = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta"
+
+
+def _sync(fn: Callable[..., Awaitable[None]]) -> Callable[..., None]:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> None:
+        asyncio.run(fn(*args, **kwargs))
+
+    return wrapper
 
 
 def _message(n: int, *, removed: bool = False) -> Message:
@@ -40,7 +51,7 @@ def _page(*messages: Message, next_link: str | None = None, delta_link: str | No
 
 
 class _Delta:
-    def __init__(self, pages: dict[str | None, Any], calls: list[Any], key: str | None = None):
+    def __init__(self, pages: Mapping[Any, Any], calls: list[Any], key: str | None = None):
         self._pages, self._calls, self._key = pages, calls, key
 
     def with_url(self, url: str) -> _Delta:
@@ -55,27 +66,30 @@ class _Delta:
         return page
 
 
-def _client(pages: dict[str | None, Any], calls: list[Any]) -> Any:
+def _client(pages: Mapping[Any, Any], calls: list[Any]) -> Any:
     folders: list[str] = []
 
     def by_id(folder_id: str) -> Any:
         folders.append(folder_id)
         return SimpleNamespace(messages=SimpleNamespace(delta=_Delta(pages, calls)))
 
-    client = SimpleNamespace(me=SimpleNamespace(mail_folders=SimpleNamespace(by_mail_folder_id=by_id)))
+    client = SimpleNamespace(
+        me=SimpleNamespace(mail_folders=SimpleNamespace(by_mail_folder_id=by_id))
+    )
     client.folders = folders  # type: ignore[attr-defined]
     return client
 
 
-async def _run(pages: dict[str | None, Any], *, state: str | None, calls: list[Any]):
+async def _run(pages: Mapping[Any, Any], *, state: str | None, calls: list[Any]):
     client = _client(pages, calls)
     from unittest.mock import patch
 
     with patch("blumkin.skills.mail.create_graph_client", return_value=client):
-        payload = await mail_new(state=state, since=_SINCE, top=25, config=SimpleNamespace())
+        payload = await mail_new(state=state, since=_SINCE, top=25, config=cast(Any, SimpleNamespace()))
     return payload, client
 
 
+@_sync
 async def test_the_first_read_asks_for_created_inbox_mail_since_then_and_returns_a_token() -> None:
     calls: list[Any] = []
     pages = {None: _page(_message(1), delta_link=f"{_BASE}?$deltatoken=abc")}
@@ -93,6 +107,7 @@ async def test_the_first_read_asks_for_created_inbox_mail_since_then_and_returns
     assert query.top == 25
 
 
+@_sync
 async def test_next_links_are_followed_until_the_delta_link() -> None:
     calls: list[Any] = []
     nxt = f"{_BASE}?$skiptoken=2"
@@ -106,6 +121,7 @@ async def test_next_links_are_followed_until_the_delta_link() -> None:
     assert ("with_url", nxt) in calls
 
 
+@_sync
 async def test_a_later_read_continues_from_the_saved_link_without_a_filter() -> None:
     calls: list[Any] = []
     saved = f"{_BASE}?$deltatoken=abc"
@@ -117,6 +133,7 @@ async def test_a_later_read_continues_from_the_saved_link_without_a_filter() -> 
     assert calls[1][2] is None
 
 
+@_sync
 async def test_entries_marked_removed_are_skipped() -> None:
     pages = {None: _page(_message(1), _message(2, removed=True), delta_link=f"{_BASE}?t=1")}
     payload, _ = await _run(pages, state=None, calls=[])
@@ -134,6 +151,7 @@ async def test_entries_marked_removed_are_skipped() -> None:
         "not a url",
     ],
 )
+@_sync
 async def test_a_saved_link_that_is_not_a_graph_delta_url_is_a_reset_and_sends_nothing(
     state: str,
 ) -> None:
@@ -153,23 +171,27 @@ def _odata(code: str, status: int) -> ODataError:
 @pytest.mark.parametrize(
     ("code", "status"), [("SyncStateNotFound", 410), ("resyncRequired", 410), ("Gone", 410)]
 )
+@_sync
 async def test_an_expired_delta_state_is_a_reset(code: str, status: int) -> None:
     saved = f"{_BASE}?$deltatoken=old"
     with pytest.raises(MailSyncResetError):
         await _run({saved: _odata(code, status)}, state=saved, calls=[])
 
 
+@_sync
 async def test_other_graph_errors_are_not_swallowed() -> None:
     saved = f"{_BASE}?$deltatoken=old"
     with pytest.raises(ODataError):
         await _run({saved: _odata("ErrorAccessDenied", 403)}, state=saved, calls=[])
 
 
+@_sync
 async def test_a_page_with_neither_link_is_a_reset() -> None:
     with pytest.raises(MailSyncResetError):
         await _run({None: _page(_message(1))}, state=None, calls=[])
 
 
+@_sync
 async def test_an_endless_chain_of_next_links_is_a_reset() -> None:
     loop = f"{_BASE}?$skiptoken=again"
     pages = {None: _page(_message(1), next_link=loop), loop: _page(_message(2), next_link=loop)}

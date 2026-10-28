@@ -354,6 +354,17 @@ class WorkspaceProvider(Protocol):
         until: datetime | None = None,
     ) -> dict[str, Any]: ...
 
+    async def mail_new(
+        self, *, state: str | None, since: datetime, top: int = 50
+    ) -> dict[str, Any]:
+        """Inbox messages that arrived since `state`, and the state to use next.
+
+        `{"items": [...], "state": "<opaque token>"}`. With no `state` it returns a fresh
+        token (and the messages received since `since`). Raises
+        `blumkin.mail_sync.MailSyncResetError` when `state` is no longer valid.
+        """
+        ...
+
     async def mail_reply(
         self,
         *,
