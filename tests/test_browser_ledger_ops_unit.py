@@ -225,3 +225,23 @@ def test_apply_records_low_confidence_on_the_item(tmp_path: Path) -> None:
     )
     assert result.item.state is ItemState.FILLED
     assert result.item.low_confidence is True
+
+
+def test_a_recorded_click_step_keeps_the_button_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    seen: list[tuple[str, str | None]] = []
+
+    def fake_click(config: Any, task: str, name: str, role: str | None = None, **_: Any) -> dict:
+        seen.append((name, role))
+        return {}
+
+    monkeypatch.setattr(actions, "click_task", fake_click)
+    run = ledger_ops._default_run_step("expense-report")
+    run(FlowStep(action="click", control="Add line", expect=None, page="form"), {})
+    run(FlowStep(action="press", control="Add line", expect=None, page="form"), {})
+    assert seen == [("Add line", "button"), ("Add line", "button")]

@@ -34,6 +34,7 @@ from typing import Any
 
 from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
+    DEFAULT_CLICK_WAIT_S,
     BrowserActionError,
     ControlInfo,
     FrameCapture,
@@ -91,15 +92,42 @@ class GuardedDriver:
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()
 
-    def click(self, name: str, role: str = "button") -> None:
+    def check_click(self, name: str, role: str | None = None) -> None:
+        """Raise `SubmitBlockedError` unless a click on `name` is allowed (no page access)."""
         action = f"click {name!r}"
-        if role not in _CLICKABLE_ROLES:
+        if role is not None and role not in _CLICKABLE_ROLES:
             raise self._refuse(action, f"the role {role!r} is not one a task may click")
         if _is_denied(name, self._deny):
             raise self._refuse(action, "its name is a finalizing action")
         if _exact(name) not in self._allowed:
             raise self._refuse(action, "the control is not declared by the task")
-        self._raw.checked_click(name, role, lambda info: self._vet_control(action, info))
+
+    def click(
+        self, name: str, role: str | None = None, wait_s: float = DEFAULT_CLICK_WAIT_S
+    ) -> str:
+        """Click a declared control and return the role it was found in.
+
+        With no `role`, the control is looked up by name across the clickable roles and must
+        be in exactly one of them. The policy is checked before the page is touched, and the
+        control is waited for up to `wait_s` seconds, so a wrong role fails in seconds.
+        """
+        action = f"click {name!r}"
+        self.check_click(name, role)
+        roles = (role,) if role is not None else tuple(sorted(_CLICKABLE_ROLES))
+        found = self._raw.matching_roles(name, roles, wait_s)
+        label = role if role is not None else "control"
+        if not found:
+            tried = "" if role is not None else f" in any of {', '.join(roles)}"
+            raise BrowserActionError(
+                f"Expected a {label} named {name!r} within {wait_s:g} seconds{tried}, got none"
+            )
+        if len(found) > 1:
+            raise BrowserActionError(
+                f"Expected {name!r} in one role, got {', '.join(found)}; pass --role to choose"
+            )
+        chosen = next(iter(found))
+        self._raw.checked_click(name, chosen, lambda info: self._vet_control(action, info))
+        return chosen
 
     def close(self) -> None:
         self._raw.close()
@@ -108,9 +136,14 @@ class GuardedDriver:
         self._raw.fill(label, value)
 
     def frame_aria_snapshot(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> str:
-        return self._raw.frame_aria_snapshot(index, is_allowed, expect_host)
+        return self._raw.frame_aria_snapshot(index, is_allowed, expect_host, wait_s=wait_s)
 
     def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]:
         return self._raw.frame_list(is_allowed)
@@ -128,9 +161,14 @@ class GuardedDriver:
         self._raw.raw_press(label, key)
 
     def read_frame_text(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> PageText:
-        return self._raw.read_frame_text(index, is_allowed, expect_host)
+        return self._raw.read_frame_text(index, is_allowed, expect_host, wait_s=wait_s)
 
     def read_text(self) -> PageText:
         return self._raw.read_text()

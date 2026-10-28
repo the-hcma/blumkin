@@ -52,9 +52,15 @@ class _Handle:
 
 
 class _Locator:
-    def __init__(self, page: _Page, label: str) -> None:
+    def __init__(self, page: _Page, label: str, role: str = "") -> None:
         self._page = page
         self._label = label
+        self._role = role
+
+    def count(self) -> int:
+        counts = self._page.role_counts.get((self._role, self._label), [0])
+        self._page.calls.append(("count", self._role, self._label))
+        return counts.pop(0) if len(counts) > 1 else counts[0]
 
     def element_handle(self, *, timeout: float) -> _Handle:
         if self._label in self._page.missing:
@@ -99,6 +105,10 @@ class _Page:
         self.calls: list[tuple[Any, ...]] = []
         self.missing: set[str] = set()
         self.default_timeout: float | None = None
+        #: (role, name) -> successive counts; the last one repeats.
+        self.role_counts: dict[tuple[str, str], list[int]] = {}
+        self.waits = 0
+        self.wait_error: Exception | None = None
 
     def get_by_label(self, label: str) -> _Locator:
         return _Locator(self, label)
@@ -109,7 +119,7 @@ class _Page:
 
     def get_by_role(self, role: str, *, name: str, exact: bool) -> _Locator:
         self.calls.append(("get_by_role", role, name, exact))
-        return _Locator(self, name)
+        return _Locator(self, name, role)
 
     def goto(self, url: str, *, timeout: float) -> None:
         self.calls.append(("goto", url, timeout))
@@ -121,6 +131,12 @@ class _Page:
 
     def set_default_timeout(self, ms: float) -> None:
         self.default_timeout = ms
+
+    def wait_for_timeout(self, ms: float) -> None:
+        if self.wait_error is not None:
+            raise self.wait_error
+        self.waits += 1
+        self.calls.append(("wait", ms))
 
     def title(self) -> str:
         return self._title
@@ -1122,3 +1138,139 @@ def test_a_host_pin_that_matches_reads_the_frame() -> None:
     driver = _frames_driver(_PlainFrame("https://tenant.sharepoint.com/x", text="pane"))
     page = driver.read_frame_text(1, _sharepoint, expect_host="Tenant.SharePoint.com")
     assert page.text == "pane"
+
+
+def _driver_with_counts(counts: dict[tuple[str, str], list[int]]):
+    page = _Page()
+    page.role_counts = counts
+    return page, _driver(_Playwright(page))[1]
+
+
+def test_matching_roles_reports_every_role_that_has_a_control_of_that_name() -> None:
+    page, driver = _driver_with_counts({("tab", "Notes"): [1], ("link", "Notes"): [1]})
+    found = driver.matching_roles("Notes", ("button", "link", "tab"), 0.0)
+    assert found == ("link", "tab")
+    assert page.waits == 0
+
+
+def test_matching_roles_waits_for_a_late_control_up_to_the_timeout() -> None:
+    page, driver = _driver_with_counts({("tab", "Transcript"): [0, 0, 1]})
+    assert driver.matching_roles("Transcript", ("tab",), 5.0) == ("tab",)
+    assert page.waits == 2
+
+
+def test_matching_roles_gives_up_when_nothing_appears() -> None:
+    page, driver = _driver_with_counts({})
+    assert driver.matching_roles("Nope", ("button", "link"), 1.0) == ()
+    assert page.waits >= 1
+
+
+class _LateFrames(_FramesPage):
+    """A page whose child frame is attached only after a few poll waits."""
+
+    def __init__(self, late: _PlainFrame, after: int) -> None:
+        super().__init__()
+        self._late = late
+        self._after = after
+
+    def wait_for_timeout(self, ms: float) -> None:
+        super().wait_for_timeout(ms)
+        if self.waits >= self._after and self._late not in self.frames:
+            self.frames.append(self._late)
+
+
+def test_read_frame_text_waits_for_a_frame_that_attaches_late() -> None:
+    late = _PlainFrame("https://tenant.sharepoint.com/x", text="row one")
+    driver = _driver(_Playwright(_LateFrames(late, after=2)))[1]
+    assert driver.read_frame_text(1, _sharepoint, wait_s=5.0).text == "row one"
+
+
+def test_read_frame_text_without_a_wait_still_fails_at_once() -> None:
+    late = _PlainFrame("https://tenant.sharepoint.com/x", text="row one")
+    driver = _driver(_Playwright(_LateFrames(late, after=2)))[1]
+    with pytest.raises(BrowserActionError, match="no child frames"):
+        driver.read_frame_text(1, _sharepoint)
+
+
+class _LateTextFrame(_PlainFrame):
+    """A frame that is attached but empty until the page has waited a few times."""
+
+    def __init__(self, page: _Page, text: str, after: int) -> None:
+        super().__init__("https://tenant.sharepoint.com/x")
+        self._page = page
+        self._real = text
+        self._after = after
+
+    def evaluate(self, script: str) -> object:
+        return self._real if self._page.waits >= self._after else ""
+
+
+def test_read_frame_text_waits_for_the_frame_to_have_text() -> None:
+    page = _FramesPage()
+    page.frames.append(_LateTextFrame(page, "rows", after=3))
+    driver = _driver(_Playwright(page))[1]
+    assert driver.read_frame_text(1, _sharepoint, wait_s=5.0).text == "rows"
+
+
+def test_read_frame_text_reports_a_frame_that_stays_empty() -> None:
+    page = _FramesPage()
+    page.frames.append(_LateTextFrame(page, "rows", after=10**12))
+    driver = _driver(_Playwright(page))[1]
+    with pytest.raises(BrowserActionError, match="empty frame"):
+        driver.read_frame_text(1, _sharepoint, wait_s=0.05)
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [(float("nan"), 0.0), (-3.0, 0.0), (2.5, 2.5), (float("inf"), 300.0), (1e9, 300.0)],
+)
+def test_wait_seconds_are_clamped_to_a_sane_range(given: float, expected: float) -> None:
+    from blumkin.browser.cdp import clamp_wait
+
+    assert clamp_wait(given) == expected
+
+
+def test_matching_roles_with_a_nan_wait_does_not_poll_forever() -> None:
+    page, driver = _driver_with_counts({})
+    assert driver.matching_roles("Nope", ("button",), float("nan")) == ()
+    assert page.waits == 0
+
+
+def test_a_page_that_closes_mid_poll_is_reported_as_a_browser_action_error() -> None:
+    page, driver = _driver_with_counts({})
+    page.wait_error = PlaywrightError("Target closed")
+    with pytest.raises(BrowserActionError, match="Target closed"):
+        driver.matching_roles("Nope", ("button",), 5.0)
+
+
+def test_two_controls_with_the_same_name_in_one_role_are_reported_as_ambiguous() -> None:
+    _, driver = _driver_with_counts({("button", "Add"): [2]})
+    with pytest.raises(BrowserActionError, match="2 buttons named 'Add'"):
+        driver.matching_roles("Add", ("button",), 0.0)
+
+
+class _FlakyFrame(_PlainFrame):
+    """A frame whose first reads fail while the pane is still navigating."""
+
+    def __init__(self, failures: int) -> None:
+        super().__init__("https://tenant.sharepoint.com/x", text="rows")
+        self._failures = failures
+
+    def evaluate(self, script: str) -> object:
+        if self._failures > 0:
+            self._failures -= 1
+            raise PlaywrightError("Execution context was destroyed")
+        return super().evaluate(script)
+
+
+def test_read_frame_text_retries_a_read_that_fails_while_the_frame_navigates() -> None:
+    page = _FramesPage(_FlakyFrame(failures=2))
+    driver = _driver(_Playwright(page))[1]
+    assert driver.read_frame_text(1, _sharepoint, wait_s=5.0).text == "rows"
+
+
+def test_read_frame_text_without_a_wait_reports_a_failed_read_at_once() -> None:
+    page = _FramesPage(_FlakyFrame(failures=2))
+    driver = _driver(_Playwright(page))[1]
+    with pytest.raises(BrowserActionError, match="destroyed"):
+        driver.read_frame_text(1, _sharepoint)

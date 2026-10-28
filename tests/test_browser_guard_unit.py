@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -36,7 +36,15 @@ class _Raw:
         self.fields: dict[str, ControlInfo] = {}
         self.frame_chunks: tuple[str, ...] = ()
         self.net_installed = 0
+        #: name -> roles a control of that name exists in.
+        self.present: dict[str, tuple[str, ...]] = {}
+        self.probes: list[tuple[str, tuple[str, ...], float]] = []
         self.url = "https://erp.example.com/expenses"
+
+    def matching_roles(self, name: str, roles: Sequence[str], wait_s: float) -> tuple[str, ...]:
+        self.probes.append((name, tuple(roles), wait_s))
+        present = self.present.get(name, tuple(roles) if len(roles) == 1 else ("button",))
+        return tuple(role for role in roles if role in present)
 
     def aria_snapshot(self) -> str:
         self.calls.append(("aria",))
@@ -59,7 +67,12 @@ class _Raw:
         self.calls.append(("fill", label, value))
 
     def frame_aria_snapshot(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> str:
         self.calls.append(("frame-aria", index, is_allowed("a.example.com")))
         return '- tab "Transcript"'
@@ -77,7 +90,12 @@ class _Raw:
         self.calls.append(("press", label, key))
 
     def read_frame_text(
-        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+        self,
+        index: int,
+        is_allowed: Callable[[str], bool],
+        expect_host: str | None = None,
+        *,
+        wait_s: float = 0.0,
     ) -> PageText:
         self.calls.append(("frame-text", index, is_allowed("a.example.com")))
         return PageText(text="pane", injection_warning=None)
@@ -384,6 +402,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
     public = {name for name in dir(driver) if not name.startswith("_")}
     assert public == {
         "aria_snapshot",
+        "check_click",
         "click",
         "close",
         "fill",
@@ -452,3 +471,55 @@ def test_frame_reads_pass_through_the_guard_with_the_hosts_check() -> None:
         ("frame-aria", 1, False),
         ("aria",),
     ]
+
+
+def test_click_without_a_role_finds_the_one_role_and_reports_it() -> None:
+    raw, driver = _guard("Notes")
+    raw.present["Notes"] = ("tab",)
+    assert driver.click("Notes") == "tab"
+    assert ("click", "tab", "Notes") in raw.calls
+
+
+def test_click_without_a_role_refuses_an_ambiguous_name_listing_the_roles() -> None:
+    raw, driver = _guard("Notes")
+    raw.present["Notes"] = ("link", "tab")
+    with pytest.raises(BrowserActionError, match="link, tab"):
+        driver.click("Notes")
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_click_without_a_role_fails_when_no_role_has_the_control() -> None:
+    raw, driver = _guard("Notes")
+    raw.present["Notes"] = ()
+    with pytest.raises(BrowserActionError, match="named 'Notes'"):
+        driver.click("Notes", wait_s=2.0)
+    assert [probe[0::2] for probe in raw.probes] == [("Notes", 2.0)]
+
+
+def test_click_with_a_role_probes_only_that_role_and_fails_fast_when_it_is_absent() -> None:
+    raw, driver = _guard("Notes")
+    raw.present["Notes"] = ("tab",)
+    with pytest.raises(BrowserActionError, match="link named 'Notes'"):
+        driver.click("Notes", "link", wait_s=3.0)
+    assert raw.probes == [("Notes", ("link",), 3.0)]
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_the_policy_is_checked_before_the_page_is_probed() -> None:
+    raw, driver = _guard("Notes")
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Submit")
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Other")
+    assert raw.calls == []
+    assert raw.probes == []
+
+
+def test_check_click_applies_the_policy_without_touching_the_page() -> None:
+    raw, driver = _guard("Notes")
+    driver.check_click("Notes", "tab")
+    with pytest.raises(SubmitBlockedError):
+        driver.check_click("Other", "tab")
+    with pytest.raises(SubmitBlockedError):
+        driver.check_click("Notes", "heading")
+    assert raw.calls == [] and raw.probes == []
