@@ -1,21 +1,23 @@
-"""The `lesson` loop task: queue a page photo for the operator's agent, then reply (issue #506).
+"""The `agent` loop task: queue a mail for the operator's agent, then reply (issues #506, #527).
 
-blumkin calls no model and the loop starts no agent. A mail with a photo of a lesson page
-and a keyword in the subject (a name, say) makes this handler record a *pending lesson*:
-the template the keyword selects, the saved page image(s) and the message to answer. The
-run ends `needs_user` with a short "lesson waiting" notice. The operator then runs an agent
-session and tells it to run the loop: `blumkin loop pending` lists what is waiting, the
-agent follows the named `tasks/<template>.md` template for each item (the saved photo
-replaces the "find it in mail" steps), and `blumkin loop finish ITEM --doc URL` replies to
-the original message with the document link(s) and closes the item.
+blumkin calls no model and the loop starts no agent. A mail from an allowlisted sender with a
+keyword in the subject makes this handler record a *pending item*: the template the keyword
+selects, the attachments the mail intake saved and the message to answer. The run ends
+`needs_user` with a short "waiting for an agent" notice. The operator then runs an agent
+session and tells it to run the loop: `blumkin loop pending` lists what is waiting, the agent
+follows the named `tasks/<template>.md` template for each item (the saved attachments replace
+any "find it in mail" steps), and `blumkin loop finish ITEM --doc URL` replies to the original
+message with the document link(s) and closes the item. What the item is for (a vocabulary list,
+a weekly summary, anything) lives only in the operator's templates and trigger config.
 
 Rules this module keeps:
 
 - The subject is only matched against configured keywords (case and accents folded). It is
-  never executed and never copied into a reason, a journal row or a notice. Attachment
-  names from the mail are replaced by `page-N.ext` so they never reach the agent.
+  never executed and never copied into a reason, a journal row or a notice. Attachment names
+  from the mail are replaced by `attachment-N.ext` so they never reach the agent.
 - Exactly one distinct template must match, otherwise the run is `needs_user` and nothing is
-  queued.
+  queued. Which attachments are kept is the trigger's `attachment_types` (applied by the mail
+  intake); a mail with none saved is not queued.
 - A link is accepted only when it is an https Google Docs or Drive document, file or folder
   URL; nothing else is ever sent in a reply.
 - The reply is a threaded plain-text reply whose draft is checked before it is sent: every
@@ -28,7 +30,7 @@ Rules this module keeps:
   soon as the draft exists so a retry sends that draft instead of making another, and a
   closed item is never answered twice.
 
-Items are JSON files under `<config dir>/loop/lessons/` (mode `0600`, directory `0700`),
+Items are JSON files under `<config dir>/loop/agent-items/` (mode `0600`, directory `0700`),
 written atomically under a lock.
 """
 
@@ -55,8 +57,8 @@ from blumkin.loop.handlers import HandlerResult
 from blumkin.loop.journal import append_run
 from blumkin.loop.mail_intake import LoopIntakeError, intake_dir
 from blumkin.loop.types import (
-    LESSON_TASK,
-    LESSON_WAITING,
+    AGENT_TASK,
+    AGENT_WAITING,
     RunContext,
     RunOutcome,
     TriggerKind,
@@ -74,13 +76,13 @@ PrepareFn = Callable[[str | None, str, str, Sequence[str]], str]
 SendFn = Callable[[str | None, str], None]
 
 
-class LessonError(ValueError):
-    """A lesson item, link, id or reply is not acceptable."""
+class AgentTaskError(ValueError):
+    """An agent item, link, id or reply is not acceptable."""
 
 
 @dataclass(frozen=True, slots=True)
-class LessonItem:
-    """One lesson as stored on disk."""
+class AgentItem:
+    """One agent item as stored on disk."""
 
     claimed_at: str
     created_at: str
@@ -114,11 +116,11 @@ class LessonItem:
         }
 
 
-class LessonNotFoundError(LookupError):
-    """No lesson item has that id."""
+class AgentItemNotFoundError(LookupError):
+    """No agent item has that id."""
 
 
-class LessonReplyError(LessonError):
+class AgentReplyError(AgentTaskError):
     """The reply could not be sent; the item is kept so `finish` can be repeated."""
 
 
@@ -130,7 +132,7 @@ class TemplatePick:
     template: str | None
 
 
-def finish_lesson(
+def finish_item(
     config_dir: Path,
     item_id: str,
     docs: Sequence[str],
@@ -138,13 +140,13 @@ def finish_lesson(
     allowed_recipients: Sequence[str] = (),
     prepare: PrepareFn | None = None,
     send: SendFn | None = None,
-) -> LessonItem:
+) -> AgentItem:
     """Reply to the original message with `docs` and close the item (repeat-safe)."""
     _check_id(item_id)
     links = _check_docs(docs)
     allowed = tuple(allowed_recipients)
     if not allowed:
-        raise LessonError(
+        raise AgentTaskError(
             "Expected the trigger to have an allowlist to check the reply against, got none"
         )
     store = _store(config_dir)
@@ -153,12 +155,12 @@ def finish_lesson(
         if item.state == "done":
             return item
         if _claimed(item):
-            raise LessonError(
+            raise AgentTaskError(
                 f"Expected no other finish in progress for {item.id}, "
                 f"got one started at {item.claimed_at}"
             )
         if item.draft_id and item.docs and item.docs != links:
-            raise LessonError(
+            raise AgentTaskError(
                 f"Expected the same --doc links as the earlier attempt for {item.id}, got "
                 "different ones; the saved reply draft already carries the earlier links"
             )
@@ -172,12 +174,12 @@ def finish_lesson(
             with _locked(store):
                 item = _save(store, _with(_load(store, item_id), draft_id=draft_id))
         (send or send_draft)(item.profile, draft_id)
-    except LessonError:
+    except AgentTaskError:
         _release(store, item_id)
         raise
     except Exception as exc:  # noqa: BLE001 - keep the item, report the type only
         _release(store, item_id)
-        raise LessonReplyError(
+        raise AgentReplyError(
             f"Expected the reply to be sent, got {type(exc).__name__}; the documents are "
             f"saved, so run `blumkin loop finish {item.id} --doc ...` again"
         ) from exc
@@ -187,8 +189,8 @@ def finish_lesson(
             config_dir,
             instance=closed.instance,
             outcome=RunOutcome.DONE,
-            reason=f"lesson done: {len(links)} document(s)",
-            task=LESSON_TASK,
+            reason=f"done: {len(links)} document(s)",
+            task=AGENT_TASK,
             trigger=closed.trigger,
             trigger_kind=TriggerKind.LOOP,
         )
@@ -201,7 +203,7 @@ def fold_keyword(text: str) -> str | None:
     return tokens[0] if len(tokens) == 1 else None
 
 
-def get_lesson(config_dir: Path, item_id: str) -> LessonItem:
+def get_item(config_dir: Path, item_id: str) -> AgentItem:
     """One item by id, in any state."""
     _check_id(item_id)
     store = _store(config_dir)
@@ -209,16 +211,16 @@ def get_lesson(config_dir: Path, item_id: str) -> LessonItem:
         return _load(store, item_id)
 
 
-def hand_back_lesson(config_dir: Path, item_id: str, note: str) -> LessonItem:
+def hand_back_item(config_dir: Path, item_id: str, note: str) -> AgentItem:
     """Give an item back to the operator with a short reason (nothing is sent)."""
     _check_id(item_id)
     store = _store(config_dir)
     with _locked(store):
         item = _load(store, item_id)
         if item.state == "done":
-            raise LessonError(f"Expected an open lesson item, got {item.id} which is done")
+            raise AgentTaskError(f"Expected an open agent item, got {item.id} which is done")
         if _claimed(item):
-            raise LessonError(
+            raise AgentTaskError(
                 f"Expected no finish in progress for {item.id}, got one started at "
                 f"{item.claimed_at}"
             )
@@ -227,31 +229,38 @@ def hand_back_lesson(config_dir: Path, item_id: str, note: str) -> LessonItem:
             config_dir,
             instance=handed.instance,
             outcome=RunOutcome.NEEDS_USER,
-            reason="lesson handed back by the agent",
-            task=LESSON_TASK,
+            reason="handed back by the agent",
+            task=AGENT_TASK,
             trigger=handed.trigger,
             trigger_kind=TriggerKind.LOOP,
         )
         return handed
 
 
-def lesson(trigger: TriggerSpec, *, context: RunContext | None = None) -> HandlerResult:
-    """The registered handler: queue the mailed page photo for the operator's agent."""
+def agent_task(trigger: TriggerSpec, *, context: RunContext | None = None) -> HandlerResult:
+    """The registered handler: queue the mail for the operator's agent."""
     if context is None or context.config_dir is None or not context.message_id:
-        return _stop("lesson not queued: it needs a mail message")
+        return _stop("agent task not queued: it needs a mail message")
+    # A replayed mail is answered from the item it already has, before the folder is touched.
+    existing = _find_item(
+        context.config_dir, _item_id(trigger.name, context.profile, context.message_id)
+    )
+    if existing is not None:
+        return _item_result(existing, ignored=0)
     pick = pick_template(trigger, context.subject)
     if pick.template is None:
-        return _stop(f"lesson not queued: {pick.reason}")
+        return _stop(f"agent task not queued: {pick.reason}")
     if not context.intake_ok:
-        return _stop("lesson not queued: the page image was not saved")
+        return _stop("agent task not queued: the attachments were not saved")
     try:
-        files = _page_images(
-            intake_dir(context.config_dir, trigger=trigger.name, message_id=context.message_id)
+        files, ignored = _attachments(
+            intake_dir(context.config_dir, trigger=trigger.name, message_id=context.message_id),
+            trigger.attachment_types,
         )
-    except LoopIntakeError:
-        return _stop("lesson not queued: the intake folder is not usable")
+    except LoopIntakeError, OSError:
+        return _stop("agent task not queued: the intake folder is not usable")
     if not files:
-        return _stop("lesson not queued: no page image was saved")
+        return _stop("agent task not queued: no attachment was saved")
     item = _queue(
         context.config_dir,
         trigger=trigger,
@@ -261,14 +270,10 @@ def lesson(trigger: TriggerSpec, *, context: RunContext | None = None) -> Handle
         instance=context.instance or trigger.instance,
         files=files,
     )
-    if item.state == "done":
-        return HandlerResult(outcome=RunOutcome.DONE, reason="lesson already answered")
-    if item.state == "needs_user":
-        return _stop("lesson handed back earlier; see blumkin loop pending --handed-back")
-    return _stop(f"{LESSON_WAITING}: {item.template} ({len(item.files)} page image(s))")
+    return _item_result(item, ignored=ignored)
 
 
-def pending_lessons(config_dir: Path, *, handed_back: bool = False) -> list[LessonItem]:
+def pending_items(config_dir: Path, *, handed_back: bool = False) -> list[AgentItem]:
     """The items waiting for an agent, oldest first (and handed-back ones when asked)."""
     store = _existing_store(config_dir)
     if store is None:
@@ -286,10 +291,10 @@ def pick_template(trigger: TriggerSpec, subject: str | None) -> TemplatePick:
     if len(matched) == 1:
         return TemplatePick(reason="", template=matched[0])
     if matched:
-        return TemplatePick(reason="the subject names more than one lesson", template=None)
+        return TemplatePick(reason="the subject names more than one template", template=None)
     keywords = ", ".join(sorted(keyword for keyword, _ in trigger.templates))
     return TemplatePick(
-        reason=f"no lesson keyword in the subject (expected one of: {keywords})",
+        reason=f"no keyword in the subject (expected one of: {keywords})",
         template=None,
     )
 
@@ -336,9 +341,53 @@ def _addresses(value: Any) -> set[str]:
     return found
 
 
+def _attachments(directory: Path, attachment_types: Sequence[str]) -> tuple[tuple[str, ...], int]:
+    """The mail's saved attachments as `attachment-N.ext`, and how many were left out.
+
+    Only files whose suffix the trigger's `attachment_types` allows now count, even when an
+    older setting let more through at intake. The mail's own file names are data: every other
+    file is renamed to the next free `attachment-N` (a hard link then an unlink, so an
+    existing file is never overwritten), and files already named that way are kept. Hidden and
+    partial-download files are not attachments, and at most `_MAX_ATTACHMENTS` are kept.
+    """
+    allowed = {(ext if ext.startswith(".") else f".{ext}").lower() for ext in attachment_types}
+    found = [
+        path
+        for path in sorted(directory.iterdir())
+        if path.is_file()
+        and not path.is_symlink()
+        and not _is_partial(path.name)
+        and path.suffix.lower() in allowed
+    ]
+    ours: list[tuple[int, Path]] = []
+    others: list[Path] = []
+    for path in found:
+        match = _OURS.fullmatch(path.name)
+        if match is None:
+            others.append(path)
+        else:
+            ours.append((int(match.group(1)), path))
+    ours.sort()
+    used = {number for number, _ in ours}
+    kept = [(number, str(path)) for number, path in ours[:_MAX_ATTACHMENTS]]
+    for path in others:
+        if len(kept) >= _MAX_ATTACHMENTS:
+            break
+        number = 1
+        while number in used:
+            number += 1
+        used.add(number)
+        target = directory / f"attachment-{number}{path.suffix.lower()}"
+        os.link(path, target)
+        path.unlink()
+        kept.append((number, str(target)))
+    kept.sort()
+    return tuple(name for _, name in kept), len(found) - len(kept)
+
+
 def _check_docs(docs: Sequence[str]) -> tuple[str, ...]:
     if not 1 <= len(docs) <= _MAX_DOCS:
-        raise LessonError(f"Expected 1-{_MAX_DOCS} document links, got {len(docs)}")
+        raise AgentTaskError(f"Expected 1-{_MAX_DOCS} document links, got {len(docs)}")
     for url in docs:
         _check_url(url)
     return tuple(dict.fromkeys(docs))
@@ -346,7 +395,7 @@ def _check_docs(docs: Sequence[str]) -> tuple[str, ...]:
 
 def _check_id(item_id: str) -> None:
     if not isinstance(item_id, str) or not _ITEM_ID.fullmatch(item_id):
-        raise LessonError(f"Expected a lesson item id of 16 hex digits, got {item_id!r:.40}")
+        raise AgentTaskError(f"Expected an agent item id of 16 hex digits, got {item_id!r:.40}")
 
 
 def _check_url(url: str) -> None:
@@ -356,14 +405,14 @@ def _check_url(url: str) -> None:
         f"on docs.google.com or drive.google.com, got {shown}"
     )
     if not isinstance(url, str) or not url or len(url) > _MAX_URL:
-        raise LessonError(problem)
+        raise AgentTaskError(problem)
     if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
-        raise LessonError(problem)
+        raise AgentTaskError(problem)
     try:
         parts = urlsplit(url)
         port = parts.port
     except ValueError as exc:
-        raise LessonError(problem) from exc
+        raise AgentTaskError(problem) from exc
     ok = (
         parts.scheme == "https"
         and parts.hostname in _DOC_HOSTS
@@ -374,10 +423,10 @@ def _check_url(url: str) -> None:
         and _DOC_PATH.fullmatch(parts.path) is not None
     )
     if not ok:
-        raise LessonError(problem)
+        raise AgentTaskError(problem)
 
 
-def _claimed(item: LessonItem) -> bool:
+def _claimed(item: AgentItem) -> bool:
     """Whether a finish started recently enough that it may still be running."""
     if not item.claimed_at:
         return False
@@ -398,27 +447,53 @@ def _existing_store(config_dir: Path) -> Path | None:
     return _store(config_dir) if root.is_dir() else None
 
 
+def _find_item(config_dir: Path, item_id: str) -> AgentItem | None:
+    store = _existing_store(config_dir)
+    if store is None:
+        return None
+    with _locked(store):
+        try:
+            return _load(store, item_id)
+        except AgentItemNotFoundError:
+            return None
+
+
+def _is_partial(name: str) -> bool:
+    """Whether a file name looks hidden or like an unfinished download."""
+    return name.startswith(".") or Path(name).suffix.lower() in _PARTIAL_SUFFIXES
+
+
 def _item_id(trigger: str, profile: str | None, message_id: str) -> str:
     key = f"{trigger}\0{profile or ''}\0{message_id}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
-def _load(store: Path, item_id: str) -> LessonItem:
+def _item_result(item: AgentItem, *, ignored: int) -> HandlerResult:
+    """What the run reports for an item, whatever state it is in."""
+    if item.state == "done":
+        return HandlerResult(outcome=RunOutcome.DONE, reason="already answered")
+    if item.state == "needs_user":
+        return _stop("handed back earlier; see blumkin loop pending --handed-back")
+    extra = f", {ignored} more ignored" if ignored else ""
+    return _stop(f"{AGENT_WAITING}: {item.template} ({len(item.files)} attachment(s){extra})")
+
+
+def _load(store: Path, item_id: str) -> AgentItem:
     path = store / f"{item_id}.json"
     if not path.is_file() or path.is_symlink():
-        raise LessonNotFoundError(f"Expected a lesson item {item_id}, got none")
+        raise AgentItemNotFoundError(f"Expected an agent item {item_id}, got none")
     return _parse(path)
 
 
-def _load_all(store: Path) -> list[LessonItem]:
-    items: list[LessonItem] = []
+def _load_all(store: Path) -> list[AgentItem]:
+    items: list[AgentItem] = []
     for path in sorted(store.glob("*.json")):
         if path.is_symlink() or not path.is_file():
             continue
         try:
             items.append(_parse(path))
-        except LessonError:
-            _LOG.warning("skipping an unreadable lesson item file")
+        except AgentTaskError:
+            _LOG.warning("skipping an unreadable agent item file")
     return items
 
 
@@ -436,32 +511,13 @@ def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _page_images(directory: Path) -> tuple[str, ...]:
-    """The page images of one mail, renamed to `page-N.ext` (the mail's names are data)."""
-    pages: list[Path] = []
-    for path in sorted(directory.iterdir()):
-        if path.is_symlink() or not path.is_file():
-            continue
-        if path.suffix.lower() in _IMAGE_SUFFIXES:
-            pages.append(path)
-    renamed: list[str] = []
-    for number, path in enumerate(pages[:_MAX_IMAGES], start=1):
-        target = directory / f"page-{number}{path.suffix.lower()}"
-        if path != target:
-            if target.exists():
-                continue
-            path.rename(target)
-        renamed.append(str(target))
-    return tuple(renamed)
-
-
-def _parse(path: Path) -> LessonItem:
+def _parse(path: Path) -> AgentItem:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("not an object")
         profile = data["profile"]
-        item = LessonItem(
+        item = AgentItem(
             claimed_at=str(data.get("claimed_at", "")),
             created_at=str(data["created_at"]),
             docs=tuple(str(d) for d in data["docs"]),
@@ -477,9 +533,11 @@ def _parse(path: Path) -> LessonItem:
             trigger=str(data["trigger"]),
         )
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise LessonError(f"Expected a valid lesson item file, got {type(exc).__name__}") from exc
+        raise AgentTaskError(f"Expected a valid agent item file, got {type(exc).__name__}") from exc
     if item.state not in _STATES or not _ITEM_ID.fullmatch(item.id) or path.stem != item.id:
-        raise LessonError("Expected a lesson item with a known state and its own id, got neither")
+        raise AgentTaskError(
+            "Expected an agent item with a known state and its own id, got neither"
+        )
     return item
 
 
@@ -500,12 +558,12 @@ async def _prepare_async(
         draft = nested if isinstance(nested, Mapping) else created
         draft_id = str(draft.get("id") or "").strip() if isinstance(draft, Mapping) else ""
         if not draft_id:
-            raise LessonError("Expected the reply response to carry a draft id, got none")
+            raise AgentTaskError("Expected the reply response to carry a draft id, got none")
         problem = _recipient_problem(draft, allowed)
         if problem:
             with contextlib.suppress(Exception):
                 await chosen.mail_delete_draft(draft_id=draft_id)
-            raise LessonError(problem)
+            raise AgentTaskError(problem)
         return draft_id
 
     return await asyncio.wait_for(_create_and_check(), timeout=REPLY_TIMEOUT_SECONDS)
@@ -528,7 +586,7 @@ def _queue(
     profile: str | None,
     instance: str,
     files: tuple[str, ...],
-) -> LessonItem:
+) -> AgentItem:
     store = _store(config_dir)
     item_id = _item_id(trigger.name, profile, message_id)
     with _locked(store):
@@ -536,7 +594,7 @@ def _queue(
             return _load(store, item_id)
         return _save(
             store,
-            LessonItem(
+            AgentItem(
                 claimed_at="",
                 created_at=_now(),
                 docs=(),
@@ -567,18 +625,18 @@ def _recipient_problem(draft: Mapping[str, Any], allowed: tuple[str, ...]) -> st
 
 
 def _release(store: Path, item_id: str) -> None:
-    with _locked(store), contextlib.suppress(LessonNotFoundError):
+    with _locked(store), contextlib.suppress(AgentItemNotFoundError):
         _save(store, _with(_load(store, item_id), claimed_at=""))
 
 
 def _reply_body(docs: Sequence[str]) -> str:
-    lines = ["Your lesson is ready:", ""]
+    lines = ["Done. Here are the links:", ""]
     lines.extend(docs)
-    lines.extend(["", "Sent by: blumkin loop (lesson task)"])
+    lines.extend(["", "Sent by: blumkin loop (agent task)"])
     return "\n".join(lines) + "\n"
 
 
-def _save(store: Path, item: LessonItem) -> LessonItem:
+def _save(store: Path, item: AgentItem) -> AgentItem:
     write_private(store / f"{item.id}.json", json.dumps(item.as_dict(), sort_keys=True))
     return item
 
@@ -598,13 +656,13 @@ def _store(config_dir: Path) -> Path:
     try:
         return ensure_private_dir(ensure_private_dir(config_dir / _LOOP_DIRNAME) / _STORE_DIRNAME)
     except BrowserProfileError as exc:
-        raise LessonError(str(exc)) from exc
+        raise AgentTaskError(str(exc)) from exc
 
 
-def _with(item: LessonItem, **changes: Any) -> LessonItem:
+def _with(item: AgentItem, **changes: Any) -> AgentItem:
     data = item.as_dict()
     data.update(changes)
-    return LessonItem(
+    return AgentItem(
         claimed_at=data["claimed_at"],
         created_at=data["created_at"],
         docs=tuple(data["docs"]),
@@ -626,15 +684,14 @@ _DOC_PATH = re.compile(
     r"/(?:document|spreadsheets|presentation|file)/d/[A-Za-z0-9_-]+(?:/.*)?"
     r"|/drive/(?:u/\d+/)?folders/[A-Za-z0-9_-]+/?"
 )
-_IMAGE_SUFFIXES = frozenset(
-    {".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".pdf", ".png", ".tif", ".tiff", ".webp"}
-)
 _ITEM_ID = re.compile(r"[0-9a-f]{16}")
 _LOCK_FILENAME = ".lock"
 _LOOP_DIRNAME = "loop"
+_MAX_ATTACHMENTS = 10
 _MAX_DOCS = 10
-_MAX_IMAGES = 10
 _MAX_NOTE = 200
 _MAX_URL = 512
+_OURS = re.compile(r"attachment-(\d+)(?:\.[a-z0-9]{1,10})?")
+_PARTIAL_SUFFIXES = frozenset({".crdownload", ".download", ".part", ".partial", ".tmp"})
 _STATES = frozenset({"done", "needs_user", "pending"})
-_STORE_DIRNAME = "lessons"
+_STORE_DIRNAME = "agent-items"

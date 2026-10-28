@@ -151,18 +151,18 @@ def test_parse_notice_to(tmp_path: Path) -> None:
     assert setup.loop.notice_to == "ops@example.com"
 
 
-def test_a_waiting_lesson_notice_tells_the_operator_to_run_their_agent() -> None:
+def test_a_waiting_agent_item_notice_tells_the_operator_to_run_their_agent() -> None:
     from blumkin.loop.notices import format_run_notice
-    from blumkin.loop.types import LESSON_WAITING, RunOutcome, RunRecord, TriggerKind
+    from blumkin.loop.types import AGENT_WAITING, RunOutcome, RunRecord, TriggerKind
 
     record = RunRecord(
         at="2026-10-27T12:00:00Z",
-        instance="lessons",
+        instance="requests",
         outcome=RunOutcome.NEEDS_USER,
-        reason=f"{LESSON_WAITING}: eb-lesson (1 page image(s))",
+        reason=f"{AGENT_WAITING}: weekly-report (1 attachment(s))",
         run_id="r1",
-        task="lesson",
-        trigger="lessons",
+        task="agent",
+        trigger="requests",
         trigger_kind=TriggerKind.LOOP,
     )
     _subject, body = format_run_notice(record)
@@ -170,7 +170,7 @@ def test_a_waiting_lesson_notice_tells_the_operator_to_run_their_agent() -> None
     assert "resume or run-once" not in body
 
 
-def test_the_lesson_task_is_a_registered_handler() -> None:
+def test_the_agent_task_is_a_registered_handler() -> None:
     from blumkin.loop.handlers import default_handlers
 
-    assert "lesson" in default_handlers()
+    assert "agent" in default_handlers()

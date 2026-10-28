@@ -1366,9 +1366,9 @@ Examples:
 
 \b
   blumkin loop finish 0123456789abcdef --doc https://docs.google.com/document/d/ID/edit
-  blumkin loop finish 0123456789abcdef --needs-user "the photo is too blurry to read"
+  blumkin loop finish 0123456789abcdef --needs-user "the attachment is too blurry to read"
 
-Closes a lesson that `blumkin loop pending` listed. With `--doc` (repeat it per
+Closes an item that `blumkin loop pending` listed. With `--doc` (repeat it per
 document) it replies to the original message, to its sender only, with the
 link(s) and marks the item done; only https Google Docs, Sheets, Slides and
 Drive document, file and folder links are accepted. The reply draft is checked
@@ -1433,12 +1433,12 @@ Examples:
   blumkin loop pending
   blumkin loop pending --handed-back --json
 
-Lists lessons the loop queued from a mail (a page photo and a subject keyword)
-that are waiting for an agent: the template to follow and the saved page
-image(s). blumkin calls no model and the loop starts no agent, so run this from
-your own agent session ("run the blumkin loop"), follow each template, then
-close it with `blumkin loop finish`. `--handed-back` also lists items handed back, with
-the reason given; `finish` can still close those.
+Lists items the loop queued from a mail (an allowlisted sender, a subject keyword
+and the saved attachments) that are waiting for an agent: the template to follow
+and the saved attachment path(s). blumkin calls no model and the loop starts no
+agent, so run this from your own agent session (tell it to run the blumkin loop), follow
+each template, then close it with `blumkin loop finish`. `--handed-back` also
+lists items handed back, with the reason given; `finish` can still close those.
 """
 
 LOOP_RESUME_EPILOG = """

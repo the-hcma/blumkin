@@ -1,4 +1,4 @@
-"""`blumkin loop pending` and `blumkin loop finish` for the lesson task (issue #506)."""
+"""`blumkin loop pending` and `blumkin loop finish` for the agent task (issues #506, #527)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from click.testing import CliRunner
 
 from blumkin.cli import main
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_OTHER, EXIT_SUCCESS, EXIT_USAGE
-from blumkin.loop.lesson import lesson
+from blumkin.loop.agent_task import agent_task
 from blumkin.loop.mail_intake import intake_dir
 from blumkin.loop.types import RunContext, TriggerKind, TriggerSpec
 
@@ -28,15 +28,16 @@ def _config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 "[profiles.default]",
                 'client_id = "abc-123"',
                 "",
-                "[loop.triggers.lessons]",
+                "[loop.triggers.requests]",
                 'kind = "loop"',
-                'task = "lesson"',
-                'instance = "lessons"',
+                'task = "agent"',
+                'instance = "requests"',
                 'allowlist = ["me@example.com"]',
+                'attachment_types = [".jpg"]',
                 "",
-                "[loop.triggers.lessons.templates]",
-                'bia = "eb-lesson"',
-                'ana = "aj-lesson"',
+                "[loop.triggers.requests.templates]",
+                'report = "weekly-report"',
+                'digest = "daily-digest"',
                 "",
             ]
         ),
@@ -54,8 +55,8 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str | None, str, str, tu
         calls.append((profile, message_id, body, tuple(allowed)))
         return f"draft-{len(calls)}"
 
-    monkeypatch.setattr("blumkin.loop.lesson.prepare_reply", prepare)
-    monkeypatch.setattr("blumkin.loop.lesson.send_draft", lambda profile, draft_id: None)
+    monkeypatch.setattr("blumkin.loop.agent_task.prepare_reply", prepare)
+    monkeypatch.setattr("blumkin.loop.agent_task.send_draft", lambda profile, draft_id: None)
     return calls
 
 
@@ -70,43 +71,44 @@ def _json(result: Any) -> dict[str, Any]:
 def _queue(config: Path) -> str:
     trigger = TriggerSpec(
         allowlist=("me@example.com",),
-        instance="lessons",
+        attachment_types=(".jpg",),
+        instance="requests",
         kind=TriggerKind.LOOP,
-        name="lessons",
-        task="lesson",
-        templates=(("bia", "eb-lesson"),),
+        name="requests",
+        task="agent",
+        templates=(("report", "weekly-report"),),
     )
-    directory = intake_dir(config, trigger="lessons", message_id=_MESSAGE)
-    (directory / "page.jpg").write_bytes(b"x")
-    lesson(
+    directory = intake_dir(config, trigger="requests", message_id=_MESSAGE)
+    (directory / "scan.jpg").write_bytes(b"x")
+    agent_task(
         trigger,
         context=RunContext(
             config_dir=config,
-            instance="lessons",
+            instance="requests",
             message_id=_MESSAGE,
             profile="personal",
-            subject="Bia's lesson",
+            subject="Report's ready",
         ),
     )
     payload = _json(_run("loop", "pending"))
     return payload["items"][0]["id"]
 
 
-def test_pending_is_empty_before_any_lesson_mail() -> None:
+def test_pending_is_empty_before_any_mail() -> None:
     result = _run("loop", "pending")
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert _json(result)["items"] == []
     text = CliRunner().invoke(main, ["loop", "pending"])
-    assert "no lessons waiting" in text.output
+    assert "nothing waiting" in text.output
 
 
-def test_pending_lists_the_template_and_the_saved_page(_config_dir: Path) -> None:
+def test_pending_lists_the_template_and_the_saved_attachment(_config_dir: Path) -> None:
     item_id = _queue(_config_dir)
     payload = _json(_run("loop", "pending"))
     (item,) = payload["items"]
     assert item["id"] == item_id
-    assert item["template"] == "eb-lesson"
-    assert item["files"][0].endswith("page-1.jpg")
+    assert item["template"] == "weekly-report"
+    assert item["files"][0].endswith("attachment-1.jpg")
     assert "message_id" not in item
     assert "blumkin loop finish" in payload["instructions"]
     assert "data" in payload["instructions"]
@@ -168,8 +170,8 @@ def test_a_reply_that_fails_is_reported_and_can_be_repeated(
     def boom(profile: str | None, draft_id: str) -> None:
         raise OSError("graph down")
 
-    monkeypatch.setattr("blumkin.loop.lesson.prepare_reply", lambda *a, **k: "draft-1")
-    monkeypatch.setattr("blumkin.loop.lesson.send_draft", boom)
+    monkeypatch.setattr("blumkin.loop.agent_task.prepare_reply", lambda *a, **k: "draft-1")
+    monkeypatch.setattr("blumkin.loop.agent_task.send_draft", boom)
     result = _run("loop", "finish", item_id, "--doc", _DOC)
     assert result.exit_code == EXIT_OTHER
     assert _json(result)["error"] == "reply_failed"
