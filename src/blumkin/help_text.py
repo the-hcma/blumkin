@@ -376,7 +376,9 @@ Examples:
 
 Lists the child frames of the page the task's browser is on: a 1-based number, the host,
 the origin (scheme and host, never the path or query) and whether the task's
-`allowed_hosts` accept it. Read one with `blumkin browser read TASK --frame N`. Pages such
+`allowed_hosts` accept it. A frame in another origin shows up a moment after it attaches, so
+the list waits up to `--wait` seconds (default 2) for one. Read one with
+`blumkin browser read TASK --frame N`. Pages such
 as Teams show some panes (the transcript) in a cross-origin frame, so the page text alone
 does not hold them.
 """

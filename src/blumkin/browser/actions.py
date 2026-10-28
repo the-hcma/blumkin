@@ -157,12 +157,15 @@ def press_task(config: BrowserSetup, task: str, label: str, key: str) -> dict[st
     return _with_driver(config, task, act)
 
 
-def frames_task(config: BrowserSetup, task: str) -> dict[str, Any]:
-    """List the page's child frames: number, host, origin and whether the task allows them."""
+def frames_task(config: BrowserSetup, task: str, wait_s: float = 0.0) -> dict[str, Any]:
+    """List the page's child frames: number, host, origin and whether the task allows them.
+
+    `wait_s` waits for a frame that attaches late (or is reported without an address yet).
+    """
     hosts = _declared_hosts(config, task)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        frames = driver.frame_list(lambda host: host_allowed(host, hosts))
+        frames = driver.frame_list(lambda host: host_allowed(host, hosts), wait_s=wait_s)
         return {
             "action": "frames",
             "frames": [

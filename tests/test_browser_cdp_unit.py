@@ -1308,3 +1308,41 @@ def test_frame_list_waits_while_a_frame_has_no_address_yet() -> None:
     page.frames.append(_Settling(page))
     driver = _driver(_Playwright(page))[1]
     assert [f.host for f in driver.frame_list(_sharepoint, wait_s=5.0)] == ["tenant.sharepoint.com"]
+
+
+class _AddressLateFrame(_PlainFrame):
+    """A frame that is attached at once but has no address until the page has waited a bit."""
+
+    def __init__(self, page: _Page, text: str) -> None:
+        super().__init__("", text=text, aria="- row")
+        self._page = page
+
+    @property
+    def url(self) -> str:
+        return "https://tenant.sharepoint.com/x" if self._page.waits >= 2 else ""
+
+    @url.setter
+    def url(self, _value: str) -> None:
+        return None
+
+
+def test_read_frame_text_waits_for_the_frame_to_have_an_address() -> None:
+    page = _FramesPage()
+    page.frames.append(_AddressLateFrame(page, "rows"))
+    driver = _driver(_Playwright(page))[1]
+    assert driver.read_frame_text(1, _sharepoint, wait_s=5.0).text == "rows"
+
+
+def test_frame_aria_snapshot_waits_for_the_frame_to_have_an_address() -> None:
+    page = _FramesPage()
+    page.frames.append(_AddressLateFrame(page, "rows"))
+    driver = _driver(_Playwright(page))[1]
+    assert driver.frame_aria_snapshot(1, _sharepoint, wait_s=5.0) == "- row"
+
+
+def test_read_frame_text_without_a_wait_still_refuses_a_frame_with_no_address() -> None:
+    page = _FramesPage()
+    page.frames.append(_AddressLateFrame(page, "rows"))
+    driver = _driver(_Playwright(page))[1]
+    with pytest.raises(BrowserActionError, match="no web host"):
+        driver.read_frame_text(1, _sharepoint)

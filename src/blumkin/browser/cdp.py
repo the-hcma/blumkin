@@ -80,7 +80,9 @@ class BrowserDriver(Protocol):
         wait_s: float = 0.0,
     ) -> str: ...
 
-    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]: ...
+    def frame_list(
+        self, is_allowed: Callable[[str], bool], *, wait_s: float = 0.0
+    ) -> tuple[FrameInfo, ...]: ...
 
     def goto(self, url: str) -> None: ...
 
@@ -292,9 +294,21 @@ class PlaywrightDriver:
         self._require_allowed_frame_host(frame, is_allowed)
         return snapshot
 
-    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]:
-        """The page's child frames, numbered from 1; each shows its host and origin only."""
+    def frame_list(
+        self, is_allowed: Callable[[str], bool], *, wait_s: float = 0.0
+    ) -> tuple[FrameInfo, ...]:
+        """The page's child frames, numbered from 1; each shows its host and origin only.
+
+        A frame in another origin is reported to a fresh connection a moment after it
+        attaches, and with no address at first, so `wait_s` waits for at least one frame that
+        has a web address before listing.
+        """
         self._require_open()
+        deadline = time.monotonic() + clamp_wait(wait_s)
+        while not any(_web_host(frame.url) for frame in self._child_frames()):
+            if time.monotonic() >= deadline:
+                break
+            self._pause()
         found: list[FrameInfo] = []
         for number, frame in enumerate(self._child_frames(), start=1):
             host = _web_host(frame.url)
@@ -598,10 +612,18 @@ class PlaywrightDriver:
             raise self._action_error("wait for the page", exc) from exc
 
     def _wait_for_frame(self, index: int, wait_s: float) -> None:
-        """Wait up to `wait_s` for child frame number `index` to exist."""
+        """Wait up to `wait_s` for child frame number `index` to exist and have a web address.
+
+        A frame is reported to a new connection with no address at first, so existing is not
+        enough: reading it then would be refused for having no host.
+        """
         deadline = time.monotonic() + clamp_wait(wait_s)
-        while len(self._child_frames()) < index and time.monotonic() < deadline:
+        while not self._frame_has_address(index) and time.monotonic() < deadline:
             self._pause()
+
+    def _frame_has_address(self, index: int) -> bool:
+        frames = self._child_frames()
+        return len(frames) >= index and bool(_web_host(frames[index - 1].url))
 
     def _child_frames(self) -> list[Any]:
         return [frame for frame in self._page.frames if frame != self._page.main_frame]
@@ -657,7 +679,9 @@ class RawBrowserDriver(Protocol):
         wait_s: float = 0.0,
     ) -> str: ...
 
-    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]: ...
+    def frame_list(
+        self, is_allowed: Callable[[str], bool], *, wait_s: float = 0.0
+    ) -> tuple[FrameInfo, ...]: ...
 
     def goto(self, url: str) -> None: ...
 
