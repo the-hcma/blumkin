@@ -37,9 +37,15 @@ from blumkin.config import BrowserSetup
 from blumkin.output import sanitize_terminal
 from blumkin.prompt_injection import scan_for_injection
 
+_ARIA_FIELD_ROLES = r"(?:combobox|searchbox|slider|spinbutton|textbox)"
+
+# A field line's key, plain (`- textbox "Name" [attr]`) or, when the name needs it, wrapped in
+# YAML single quotes with inner quotes doubled (`- 'textbox "Name: x"'`); the value follows `: `.
 _ARIA_FIELD_VALUE = re.compile(
-    r'^(\s*- (?:combobox|searchbox|slider|spinbutton|textbox)(?: "(?:[^"\\]|\\.)*")?'
-    r"(?: \[[^\]]*\])*):\s.*$"
+    r"^(\s*- (?:"
+    + rf"'{_ARIA_FIELD_ROLES}(?:[^']|'')*'"
+    + rf'|{_ARIA_FIELD_ROLES}(?: "(?:[^"\\]|\\.)*")?(?: \[[^\]]*\])*'
+    + r")):\s.*$"
 )
 
 
