@@ -259,7 +259,7 @@ def test_agent_that_leaves_the_item_waiting_is_ended_and_reported(config: Path) 
     _write_config(
         config,
         _stand_in(config, "idle", item),
-        timeout=2,
+        timeout=4,
     )
     result = _run()
     assert result.exit_code == EXIT_OTHER, result.output
@@ -277,7 +277,7 @@ def test_agent_that_never_answers_times_out_and_is_terminated(config: Path) -> N
     _write_config(
         config,
         _stand_in(config, "hang", item),
-        timeout=2,
+        timeout=4,
     )
     result = _run()
     assert result.exit_code == EXIT_OTHER, result.output

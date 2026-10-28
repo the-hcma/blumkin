@@ -29,6 +29,7 @@ from blumkin.loop.kill_switch import is_engaged
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
 _CHECK_INTERVAL_SECONDS = 1.0
 _DEFAULT_TERM = "xterm-256color"
+_DRAIN_SECONDS = 1.0
 _EXIT_GRACE_SECONDS = 5.0
 _PARTIAL_LINE_LIMIT = 2000
 _READ_SIZE = 4096
@@ -280,4 +281,5 @@ def _watch(
                 closed_at = now
         if closed_at is not None and (now - last_output >= quiet or now - closed_at >= quiet):
             return "closed"
+    _read_until_eof(child, log, _DRAIN_SECONDS)  # keep what it said last in the log
     return "The agent timed out with items still waiting"
