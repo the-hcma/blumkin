@@ -355,11 +355,15 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
     _, driver = _guard()
     public = {name for name in dir(driver) if not name.startswith("_")}
     assert public == {
+        "aria_snapshot",
         "click",
         "close",
         "fill",
+        "frame_aria_snapshot",
+        "frame_list",
         "goto",
         "press",
+        "read_frame_text",
         "read_text",
         "scroll_frame_text",
         "title",
