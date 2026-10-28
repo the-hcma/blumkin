@@ -880,3 +880,172 @@ def test_a_missing_destination_has_the_exit_code_the_docs_name(
     with pytest.raises(ValueError, match="does not name a drive item") as google:
         _google_upload(service, config_dir, file=str(source), folder_id="x")
     assert classify_exception(google.value).exit_code == 2
+
+
+def test_a_chunk_whose_answer_was_lost_resumes_from_where_the_session_says_it_is(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = _big(tmp_path)
+    chunk = 320 * 1024 * 12
+    log: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            log.append("status")
+            return httpx.Response(200, json={"nextExpectedRanges": [f"{chunk}-"]})
+        rng = request.headers["Content-Range"]
+        start = int(rng.split(" ")[1].split("-")[0])
+        end = int(rng.split("-")[1].split("/")[0])
+        total = int(rng.split("/")[1])
+        log.append(f"put:{start}")
+        if log.count(f"put:{start}") == 1 and start == 0:
+            raise httpx.ReadTimeout("answer lost", request=request)  # the server kept the bytes
+        if start == 0:
+            return httpx.Response(416)
+        if end + 1 < total:
+            return httpx.Response(202)
+        return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
+
+    monkeypatch.setattr(
+        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(f"{_MS_MOD}._pause", lambda seconds: None)
+
+    payload = _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
+
+    assert payload["item"]["id"] == "bigid"
+    assert "status" in log
+    assert log.count("put:0") == 2 and f"put:{chunk}" in log
+
+
+def test_a_final_chunk_whose_answer_was_lost_is_not_reported_as_a_name_clash(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = _big(tmp_path)
+    last_seen = {"n": 0}
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.method in {"DELETE", "GET"}:
+            return httpx.Response(404 if request.method == "GET" else 204)
+        rng = request.headers["Content-Range"]
+        end = int(rng.split("-")[1].split("/")[0])
+        total = int(rng.split("/")[1])
+        if end + 1 < total:
+            return httpx.Response(202)
+        last_seen["n"] += 1
+        if last_seen["n"] == 1:
+            raise httpx.ReadTimeout("answer lost", request=request)
+        return httpx.Response(409)
+
+    monkeypatch.setattr(
+        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(f"{_MS_MOD}._pause", lambda seconds: None)
+
+    with pytest.raises(DriveUploadError, match="may have completed") as caught:
+        _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
+
+    assert "already exists" not in str(caught.value)
+
+
+def test_a_retry_after_that_is_not_a_finite_number_falls_back_to_the_backoff(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = _big(tmp_path)
+    pauses: list[float] = []
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "nan"})
+        rng = request.headers["Content-Range"]
+        end = int(rng.split("-")[1].split("/")[0])
+        total = int(rng.split("/")[1])
+        if end + 1 < total:
+            return httpx.Response(202)
+        return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
+
+    monkeypatch.setattr(
+        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(f"{_MS_MOD}._pause", pauses.append)
+
+    assert _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))["item"]["id"]
+    assert pauses == [1.0]
+
+
+def test_a_file_that_changed_after_it_was_uploaded_names_the_copy_that_was_left(
+    source: Path, config_dir: Path
+) -> None:
+    service = MagicMock()
+    files = service.files.return_value
+    files.list.return_value.execute.return_value = {"files": []}
+
+    def create(**kwargs: Any) -> MagicMock:
+        with source.open("ab") as handle:
+            handle.write(b"changed")
+        request = MagicMock()
+        request.execute.return_value = _created()
+        return request
+
+    files.create.side_effect = create
+    with pytest.raises(DriveUploadError, match="changed") as caught:
+        _google_upload(service, config_dir, file=str(source))
+    assert "newid" in str(caught.value)
+
+
+def test_a_path_that_leads_somewhere_else_by_the_time_it_is_opened_is_refused(
+    source: Path, tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = tmp_path / "other.png"
+    other.write_bytes(b"other")
+    real = Path.resolve
+    calls = {"n": 0}
+
+    def swapping(self: Path, *args: Any, **kwargs: Any) -> Path:
+        if self == source:
+            calls["n"] += 1
+            return real(other) if calls["n"] > 1 else real(self)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", swapping)
+    with pytest.raises(DriveUploadError, match="changed"):
+        resolve_upload_source(str(source), name=None, mime_type=None, config_dir=config_dir)
+
+
+def test_an_unknown_home_directory_skips_the_credential_folders_instead_of_crashing(
+    source: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_home() -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+    found = resolve_upload_source(str(source), name=None, mime_type=None, config_dir=config_dir)
+    found.close()
+    assert found.name == "photo.png"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "CON",
+        "con.txt",
+        "NUL.png",
+        "COM1",
+        "lpt9.txt",
+        "desktop.ini",
+        ".lock",
+        "~$draft.docx",
+        "a_vti_b.txt",
+    ],
+)
+def test_onedrive_reserved_names_are_refused_before_anything_is_sent(
+    source: Path, config_dir: Path, name: str
+) -> None:
+    send = AsyncMock()
+    with pytest.raises(DriveUploadError, match="OneDrive"):
+        _ms_upload(_ms_client(send), config_dir, file=str(source), name=name)
+    send.assert_not_called()
