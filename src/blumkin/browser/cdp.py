@@ -317,22 +317,24 @@ class PlaywrightDriver:
         """
         self._require_open()
         deadline = time.monotonic() + clamp_wait(wait_s)
-        while not _all_addressed(self._child_frames()):
-            if time.monotonic() >= deadline:
+        while True:
+            # One read of each address per poll: a frame's address is a live read, and the
+            # listing must be built from the same values the wait judged.
+            addresses = [str(frame.url) for frame in self._child_frames()]
+            if _all_addressed(addresses) or time.monotonic() >= deadline:
                 break
             self._pause()
         found: list[FrameInfo] = []
-        for number, frame in enumerate(self._child_frames(), start=1):
-            host = _web_host(frame.url)
-            port = urlsplit(frame.url).port if host else None
+        for number, address in enumerate(addresses, start=1):
+            host = _web_host(address)
+            parts = urlsplit(address)
+            port = f":{parts.port}" if host and parts.port else ""
             found.append(
                 FrameInfo(
                     allowed=bool(host) and is_allowed(host),
                     host=host,
                     index=number,
-                    origin=f"{urlsplit(frame.url).scheme}://{host}{f':{port}' if port else ''}"
-                    if host
-                    else "",
+                    origin=f"{parts.scheme}://{host}{port}" if host else "",
                 )
             )
         return tuple(found)
@@ -1091,6 +1093,6 @@ def _web_host(url: str) -> str:
     return (parts.hostname or "") if parts.scheme in ("http", "https") else ""
 
 
-def _all_addressed(frames: Sequence[Any]) -> bool:
+def _all_addressed(addresses: Sequence[str]) -> bool:
     """True when there is at least one frame and every frame has a web address."""
-    return bool(frames) and all(_web_host(frame.url) for frame in frames)
+    return bool(addresses) and all(_web_host(address) for address in addresses)
