@@ -187,8 +187,9 @@ def resolve_upload_source(
     """Check the local file `drive upload` was asked to send, before anything leaves the machine.
 
     The file is opened once, without following a symlink in its final place, and every check
-    and every later read uses that open file, so it cannot be swapped for another after the
-    check. It must be a regular file with a single link (a hard link can be a secret under
+    on it and every later read use that open file, so it cannot be swapped for another after
+    the check (the folders on the way to it are re-resolved after the open, to catch a swap
+    there). It must be a regular file with a single link (a hard link can be a secret under
     another name), no larger than `UPLOAD_MAX_BYTES`, and must not be inside blumkin's own
     config directory (tokens and auth records), one of the well-known credential places under
     the home directory, an `.env` file, or one of the `denied` files (for example the Google
@@ -208,6 +209,11 @@ def resolve_upload_source(
         raise DriveUploadError(f"no such file to upload: {file!r}") from exc
     try:
         info = os.fstat(fd)
+        # The path was resolved before it was opened: if it leads elsewhere now (a folder in it
+        # was swapped for a link in between), the file that was opened is not the one judged.
+        again = given.resolve()
+        if again != resolved or not os.path.samestat(info, again.stat()):
+            raise DriveUploadError(f"{file!r} changed while it was being checked")
         if not stat.S_ISREG(info.st_mode):
             raise DriveUploadError(f"{file!r} is not a regular file")
         if info.st_nlink > 1:
@@ -441,16 +447,20 @@ def _refuse_secrets(
     secret = f"{resolved.name!r} is a secret: refusing to upload it"
     if resolved.name == ".env" or resolved.name.startswith(".env."):
         raise DriveUploadError(secret + " (an .env file)")
-    home = Path.home()
-    for relative in _SECRET_HOME_FOLDERS:
-        if (home / relative).is_dir() and path_is_inside(resolved, home / relative):
-            raise DriveUploadError(secret + f" (~/{relative})")
-    for relative in _SECRET_HOME_FILES:
-        try:
-            if os.path.samestat(info, (home / relative).stat()):
+    try:
+        home = Path.home()
+    except OSError, RuntimeError:  # no home directory known: no credential folders to find
+        home = None
+    if home is not None:
+        for relative in _SECRET_HOME_FOLDERS:
+            if (home / relative).is_dir() and path_is_inside(resolved, home / relative):
                 raise DriveUploadError(secret + f" (~/{relative})")
-        except OSError:
-            continue
+        for relative in _SECRET_HOME_FILES:
+            try:
+                if os.path.samestat(info, (home / relative).stat()):
+                    raise DriveUploadError(secret + f" (~/{relative})")
+            except OSError:
+                continue
     for entry in denied:
         try:
             if os.path.samestat(info, entry.stat()) or path_is_inside(resolved, entry):

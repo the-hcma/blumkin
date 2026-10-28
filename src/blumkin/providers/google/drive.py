@@ -416,7 +416,13 @@ async def drive_upload(
                 created = execute(request)
         except HttpError as exc:
             raise _translate(exc, item_id=parent) from exc
-        source.ensure_unchanged()
+        try:
+            source.ensure_unchanged()
+        except DriveUploadError as exc:
+            raise DriveUploadError(
+                f"{exc}; the copy already created (id {(created or {}).get('id')}) was left "
+                "in the drive"
+            ) from exc
     if not created:
         raise RuntimeError("Drive returned no file for the upload")
     return {"item": _to_item(created), "bytes": source.size}

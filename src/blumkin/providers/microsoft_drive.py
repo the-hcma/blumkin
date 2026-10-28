@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import ipaddress
 import json
+import math
 import time
 from datetime import datetime
 from typing import Any
@@ -42,6 +43,7 @@ from blumkin.skills.drive import (
     DriveItemNotFoundError,
     DriveReadUnsupportedError,
     DriveUploadError,
+    UploadSource,
     export_mime,
     normalize_order,
     resolve_export_dest,
@@ -62,23 +64,29 @@ _EXPORT_URL = "https://graph.microsoft.com/v1.0/me/drive/items/{id}/content?form
 _ITEM_BY_ID_URL = "https://graph.microsoft.com/v1.0/me/drive/items/{id}"
 _ITEM_BY_PATH_URL = "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}"
 _OFFICE_KIND = {"docx": "doc", "doc": "doc", "xlsx": "sheet", "xls": "sheet", "pptx": "slides"}
+_ONEDRIVE_DEVICE_NAMES = frozenset(
+    {"AUX", "CON", "NUL", "PRN"}
+    | {f"COM{digit}" for digit in range(1, 10)}
+    | {f"LPT{digit}" for digit in range(1, 10)}
+)
 _ORDER_FIELD = {"modified": "lastModifiedDateTime desc", "name": "name"}
 _PAGE = 200
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _SEARCH_BASE = "https://graph.microsoft.com/v1.0/me/drive/root/search(q='{+q}')"
 _SESSION_PARENT_URL = (
     "https://graph.microsoft.com/v1.0/me/drive/items/{parent}:/{+path}:/createUploadSession"
 )
 _SESSION_ROOT_URL = "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}:/createUploadSession"
-# Graph's simple PUT takes at most 4 MB; a session takes chunks that are multiples of 320 KiB.
-_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+# Graph's simple PUT takes at most 4 MB.
 _SIMPLE_UPLOAD_MAX = 4_000_000
-_UPLOAD_RETRIES = 3
+# A session takes chunks that are multiples of 320 KiB.
 _UPLOAD_CHUNK = 320 * 1024 * 12
 # `fail` so an upload can never replace an existing file of that name (Graph's default is replace).
 _UPLOAD_PARENT_URL = (
     "https://graph.microsoft.com/v1.0/me/drive/items/{parent}:/{+path}:/content"
     "?%40microsoft.graph.conflictBehavior=fail"
 )
+_UPLOAD_RETRIES = 3
 _UPLOAD_ROOT_URL = (
     "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}:/content"
     "?%40microsoft.graph.conflictBehavior=fail"
@@ -332,10 +340,19 @@ def _cancel_session(http: httpx.Client, upload_url: str) -> None:
 
 def _check_onedrive_name(name: str) -> None:
     """OneDrive refuses some names Google accepts; say so before anything is sent."""
-    if any(char in name for char in '"*:<>?/\\|') or name.endswith("."):
+    lowered = name.lower()
+    if (
+        any(char in name for char in '"*:<>?/\\|')
+        or name.endswith(".")
+        or name.split(".", 1)[0].upper() in _ONEDRIVE_DEVICE_NAMES
+        or lowered in {".lock", "desktop.ini"}
+        or lowered.startswith("~$")
+        or "_vti_" in lowered
+    ):
         raise DriveUploadError(
-            f'OneDrive cannot hold the name {name!r}: names cannot contain " * : < > ? / \\ | '
-            "or end with a dot"
+            f'OneDrive cannot hold the name {name!r}: it refuses names with " * : < > ? / \\ |, '
+            "a trailing dot, device names (CON, NUL, COM1...), .lock, desktop.ini, ~$ prefixes "
+            "and _vti_"
         )
 
 
@@ -381,6 +398,13 @@ def _finished_item(response: httpx.Response) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise DriveUploadError("expected a JSON object from the service, got another")
     return _item_from_json(data)
+
+
+def _maybe_done(name: str) -> DriveUploadError:
+    return DriveUploadError(
+        f"the service answered that {name!r} exists after a retried chunk: the upload may have "
+        "completed - check the folder before trying again"
+    )
 
 
 def _item_from_json(data: dict[str, Any]) -> dict[str, Any]:
@@ -435,9 +459,14 @@ def _require_folder(item: DriveItem | None, label: str) -> str:
 
 def _send_chunk(
     http: httpx.Client, upload_url: str, chunk: bytes, offset: int, end: int, total: int
-) -> httpx.Response:
-    """PUT one chunk, retrying a throttled or failing service a few times (Retry-After honoured)."""
+) -> tuple[httpx.Response, bool]:
+    """PUT one chunk; retry a throttled or failing service a few times (Retry-After honoured).
+
+    Returns the answer and whether a retry happened: after one, the service may already hold
+    the chunk, so a 416 or 409 does not mean what it would on a first try.
+    """
     headers = {"Content-Range": f"bytes {offset}-{end}/{total}"}
+    retried = False
     for attempt in range(_UPLOAD_RETRIES + 1):
         last = attempt == _UPLOAD_RETRIES
         try:
@@ -448,20 +477,33 @@ def _send_chunk(
                     f"expected the upload to continue, got {type(exc).__name__}"
                 ) from exc
             _pause(2.0**attempt)
+            retried = True
             continue
         if response.status_code in _RETRY_STATUSES and not last:
             _pause(_retry_delay(response, attempt))
+            retried = True
             continue
-        return response
+        return response, retried
     raise AssertionError("unreachable")  # pragma: no cover
 
 
-def _retry_delay(response: httpx.Response, attempt: int) -> float:
-    """Seconds to wait before retrying: the service's Retry-After when it sent one."""
+def _next_offset(http: httpx.Client, upload_url: str) -> int | None:
+    """Where the session says the next byte should go, or None when it cannot say."""
     try:
-        return min(max(float(response.headers.get("Retry-After", "")), 0.0), 60.0)
+        response = http.get(upload_url)
+        ranges = response.json().get("nextExpectedRanges") if response.status_code == 200 else None
+        return int(str(ranges[0]).split("-", 1)[0]) if ranges else None
+    except httpx.HTTPError, ValueError, AttributeError, IndexError, TypeError:
+        return None
+
+
+def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    """Seconds to wait before retrying: the service's Retry-After when it sent a number."""
+    try:
+        wait = float(response.headers.get("Retry-After", ""))
     except ValueError:
         return 2.0**attempt
+    return min(max(wait, 0.0), 60.0) if math.isfinite(wait) else 2.0**attempt
 
 
 def _session_client() -> httpx.Client:
@@ -472,7 +514,7 @@ def _session_client() -> httpx.Client:
     return httpx.Client(timeout=httpx.Timeout(60.0), follow_redirects=False)
 
 
-def _upload_chunks(upload_url: str, source: Any) -> dict[str, Any]:
+def _upload_chunks(upload_url: str, source: UploadSource) -> dict[str, Any]:
     """Send the file to an upload session in aligned chunks; cancel the session on any failure."""
     _check_session_url(upload_url)
     with _session_client() as http:
@@ -485,21 +527,41 @@ def _upload_chunks(upload_url: str, source: Any) -> dict[str, Any]:
                     raise DriveUploadError(
                         "expected the upload to finish with the last chunk, got no answer"
                     )
-                end = offset + len(chunk) - 1
-                response = _send_chunk(http, upload_url, chunk, offset, end, source.size)
                 source.ensure_unchanged()
-                if response.status_code in (200, 201):
-                    return _finished_item(response)
-                if response.status_code == 409:
-                    raise _exists(source.name)
-                if response.status_code != 202:
-                    raise DriveUploadError(
-                        f"expected the upload to succeed, got HTTP {response.status_code}"
-                    )
+                end = offset + len(chunk) - 1
+                response, retried = _send_chunk(http, upload_url, chunk, offset, end, source.size)
+                status = response.status_code
+                if status in (200, 201):
+                    item = _finished_item(response)
+                    _ensure_unchanged_after(source, item)
+                    return item
+                if status == 416 and retried:
+                    resume = _next_offset(http, upload_url)
+                    if resume is None or resume <= offset:
+                        raise DriveUploadError(
+                            "expected the upload to resume where the service says, got no answer"
+                        )
+                    source.handle.seek(resume)
+                    offset = resume
+                    continue
+                if status == 409:
+                    raise _maybe_done(source.name) if retried else _exists(source.name)
+                if status != 202:
+                    raise DriveUploadError(f"expected the upload to succeed, got HTTP {status}")
                 offset = end + 1
         except BaseException:
             _cancel_session(http, upload_url)
             raise
+
+
+def _ensure_unchanged_after(source: UploadSource, item: dict[str, Any]) -> None:
+    """Check the file once the copy exists: if it changed, name the copy that was left."""
+    try:
+        source.ensure_unchanged()
+    except DriveUploadError as exc:
+        raise DriveUploadError(
+            f"{exc}; the copy already created (id {item.get('id')}) was left in the drive"
+        ) from exc
 
 
 async def _children(
@@ -598,7 +660,7 @@ async def _patch_item(client: Any, item_id: str, patch: DriveItem) -> DriveItem:
 
 
 async def _put_in_session(
-    client: Any, source: Any, url: str, params: dict[str, str]
+    client: Any, source: UploadSource, url: str, params: dict[str, str]
 ) -> dict[str, Any]:
     """Create an upload session (failing on a name clash) and send the file through it."""
     info = RequestInformation(Method.POST, url, params)
