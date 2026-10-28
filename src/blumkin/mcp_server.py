@@ -56,7 +56,8 @@ _ARGUMENT_HINTS = {
         "calendar.create takes duration (for example 30m), not end; calendar.update accepts end"
     ),
     ("calendar.create", "teams"): (
-        "a Teams meeting is attached by default; pass no_teams=true to leave it off"
+        "Microsoft timed events attach a Teams meeting by default; pass no_teams=true to leave "
+        "it off (Google calendar.create attaches no online meeting)"
     ),
 }
 _CONFIRM_SKILLS = frozenset({"mail.auto-reply", "meeting.transcription", "tasks.delete"})
@@ -167,6 +168,10 @@ def build_server(
                 # `auth_required` instead of "restart me".
                 return _error_result(stale_error)
         if params.name == _PROFILES_LIST_TOOL and _PROFILES_LIST_TOOL in names:
+            if params.arguments:
+                return _error_result(
+                    _unknown_argument_error(_PROFILES_LIST_TOOL, sorted(params.arguments), set())
+                )
             return _profiles_list_result(profiles, pinned_name=profile)
         if params.name not in names:
             return _error_result(LookupError(f"unknown tool: {params.name}"))

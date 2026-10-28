@@ -911,3 +911,23 @@ def test_a_multi_account_server_still_accepts_profile_next_to_real_arguments() -
         )
     assert result.is_error is False
     assert bad.structured_content["error"] == "usage_error"
+
+
+def test_profiles_list_refuses_arguments_it_does_not_take_but_works_without() -> None:
+    with _profiles(_TWO_PROFILES), patch("blumkin.mcp_server.load_config", return_value=_CFG):
+        server = build_server()
+        plain = _drive_server(server, lambda c: c.call_tool("profiles.list", {}))
+        extra = _drive_server(server, lambda c: c.call_tool("profiles.list", {"bogus": 1}))
+    assert plain.is_error is False
+    assert extra.is_error is True
+    assert extra.structured_content["error"] == "usage_error"
+    assert "bogus" in extra.structured_content["message"]
+
+
+def test_the_teams_hint_says_which_provider_attaches_a_meeting() -> None:
+    result, _ = _unknown_arguments_call(
+        "calendar.create", {"subject": "S", "start": "x", "teams": True}
+    )
+    hint = result.structured_content["hint"]
+    assert "Microsoft" in hint and "pass no_teams=true" in hint
+    assert "Google" in hint
