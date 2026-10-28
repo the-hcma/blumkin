@@ -88,7 +88,9 @@ MailBodyType = Literal["html", "text"]
 # What --body-type accepts when *composing* a message. "markdown" is rendered to
 # HTML on the wire (see resolve_mail_body); "text" / "html" pass through verbatim.
 MailComposeType = Literal["markdown", "html", "text"]
+_DEFAULT_COMPOSE_TYPE = "markdown"
 _DELTA_MAX_PAGES = 20
+_DELTA_PAGE_SIZE = 50
 _DELTA_SELECT = ("id", "from", "subject", "receivedDateTime", "hasAttachments")
 _GRAPH_HOSTS = frozenset(
     {
@@ -99,7 +101,6 @@ _GRAPH_HOSTS = frozenset(
     }
 )
 _SYNC_RESET_CODES = frozenset({"resyncrequired", "syncstateinvalid", "syncstatenotfound"})
-_DEFAULT_COMPOSE_TYPE = "markdown"
 
 
 class MailAttachError(Exception):
@@ -1306,8 +1307,9 @@ async def mail_new(
     `since` (the delta query is filtered, so it never walks the whole mailbox). With a saved
     `state` (the delta link of the last read) it returns only what changed since. Only created
     messages are requested and entries Graph marks removed are skipped. A link that is not a
-    Graph delta URL, an expired delta state or a page chain that never ends raises
-    `MailSyncResetError`: the caller then rescans and takes a fresh token.
+    Graph delta URL, an expired delta state or a page chain with no end link raises
+    `MailSyncResetError`: the caller then rescans and takes a fresh token. A burst longer than the
+    page cap returns the messages read so far with the next-page link as the state.
     """
     if state is not None and not _is_graph_delta_url(state):
         raise MailSyncResetError("Expected a Graph delta link as the saved sync state, got another")
@@ -1321,13 +1323,18 @@ async def mail_new(
                 filter=f"receivedDateTime ge {_odata_datetime(since)}",
                 orderby=["receivedDateTime desc"],
                 select=list(_DELTA_SELECT),
-                top=max(1, min(top, 100)),
             )
-            page = await delta.get(request_config(query))
+            # The page size goes in the Prefer header: it is ignored when unsupported, while an
+            # unsupported query option would fail the whole call.
+            page = await delta.get(
+                request_config(
+                    query, headers={"Prefer": f"odata.maxpagesize={max(top, _DELTA_PAGE_SIZE)}"}
+                )
+            )
         else:
             page = await delta.with_url(state).get()
         items: list[dict[str, Any]] = []
-        for _ in range(_DELTA_MAX_PAGES):
+        for number in range(1, _DELTA_MAX_PAGES + 1):
             if page is None:
                 break
             for msg in page.value or []:
@@ -1336,9 +1343,14 @@ async def mail_new(
                 items.append(_message_to_dict(msg))
             if page.odata_delta_link:
                 return {"items": items, "state": page.odata_delta_link}
-            if not page.odata_next_link or not _is_graph_delta_url(page.odata_next_link):
+            next_link = page.odata_next_link
+            if not next_link or not _is_graph_delta_url(next_link):
                 break
-            page = await delta.with_url(page.odata_next_link).get()
+            if number == _DELTA_MAX_PAGES:
+                # A very long burst: hand back what was read and resume from this page next
+                # poll, instead of dropping the rest.
+                return {"items": items, "state": next_link}
+            page = await delta.with_url(next_link).get()
     except ODataError as exc:
         if _is_sync_reset(exc):
             raise MailSyncResetError("Graph no longer has the saved delta state") from exc

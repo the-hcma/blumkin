@@ -8,10 +8,12 @@ intake is best-effort after enqueue; failures are counted, not fatal to the tick
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from blumkin.loop.config import LoopSetup
@@ -45,6 +47,8 @@ RefreshFn = Callable[[Any], dict[str, Any]]
 SyncFn = Callable[..., Awaitable[dict[str, Any]]]
 LoadConfigFn = Callable[..., Any]
 ListProfilesFn = Callable[[], list[dict[str, Any]]]
+
+_CLOCK_SKEW = timedelta(minutes=5)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,30 +173,43 @@ async def _poll_async(
         if not applicable:
             continue
         provider = _provider_name(cfg)
+        scope = _scope(applicable, cfg)
         started = datetime.now(UTC)
-        state = load_sync_state(setup.config_dir, profile_name, provider=provider)
+        # Look back a few minutes: Graph filters on its own received time, not this clock.
+        since = started - _CLOCK_SKEW
+        state = load_sync_state(setup.config_dir, profile_name, provider=provider, scope=scope)
         batch_items: list[Mapping[str, Any]] = []
         token: str | None = None
         scan = state is None
         if state is not None:
             try:
-                batch = await sync_fn(state=state.token, since=started, top=top, config=cfg)
+                batch = await sync_fn(state=state.token, since=since, top=top, config=cfg)
                 token, batch_items = _batch(batch)
             except MailSyncResetError:
                 # The saved token is no longer valid: start over with a fresh one and one scan.
                 log.info("mail sync token for profile %s expired; rescanning", profile_name)
                 clear_sync_state(setup.config_dir, profile_name)
                 scan = True
-            except Exception:  # noqa: BLE001 - keep the token and try again next tick
+            except Exception as exc:  # noqa: BLE001 - keep the token and try again next tick
+                log.warning(
+                    "mail sync for profile %s failed (%s); keeping the token and retrying",
+                    profile_name,
+                    type(exc).__name__,
+                )
                 ignored += 1
                 continue
         if scan:
             # Take the token before scanning, so mail that arrives during the scan is in the
             # next incremental read instead of in a gap between the two.
             try:
-                batch = await sync_fn(state=None, since=started, top=top, config=cfg)
+                batch = await sync_fn(state=None, since=since, top=top, config=cfg)
                 token, batch_items = _batch(batch)
-            except Exception:  # noqa: BLE001 - no incremental sync: the scan alone still works
+            except Exception as exc:  # noqa: BLE001 - no incremental sync: the scan alone works
+                log.warning(
+                    "mail sync for profile %s unavailable (%s); scanning the newest messages",
+                    profile_name,
+                    type(exc).__name__,
+                )
                 token, batch_items = None, []
             try:
                 listing = await inbox_fn(top=top, config=cfg)
@@ -231,6 +248,7 @@ async def _poll_async(
                 provider=provider,
                 token=token,
                 mode="scan" if scan else "delta",
+                scope=scope,
             )
 
     return PollResult(
@@ -330,16 +348,6 @@ def _default_download(**kwargs: Any) -> Awaitable[dict[str, Any]]:
     )
 
 
-def _default_sync(**kwargs: Any) -> Awaitable[dict[str, Any]]:
-    from blumkin.providers import get_provider
-
-    provider = get_provider(kwargs.get("config"))
-    method = getattr(provider, "mail_new", None)
-    if method is None:
-        raise MailSyncUnsupportedError("Expected a provider with mail_new, got none")
-    return method(state=kwargs["state"], since=kwargs["since"], top=int(kwargs.get("top") or 50))
-
-
 def _default_inbox(**kwargs: Any) -> Awaitable[dict[str, Any]]:
     from blumkin.providers import get_provider
 
@@ -377,6 +385,16 @@ def _default_refresh(cfg: Any) -> dict[str, Any]:
     return auth.refresh_silent(cfg)
 
 
+def _default_sync(**kwargs: Any) -> Awaitable[dict[str, Any]]:
+    from blumkin.providers import get_provider
+
+    provider = get_provider(kwargs.get("config"))
+    method = getattr(provider, "mail_new", None)
+    if method is None:
+        raise MailSyncUnsupportedError("Expected a provider with mail_new, got none")
+    return method(state=kwargs["state"], since=kwargs["since"], top=int(kwargs.get("top") or 50))
+
+
 def _merge(first: list[Mapping[str, Any]], second: list[Any]) -> list[Mapping[str, Any]]:
     """`first` then `second`, each message once (by id)."""
     seen: set[str] = set()
@@ -392,11 +410,6 @@ def _merge(first: list[Mapping[str, Any]], second: list[Any]) -> list[Mapping[st
     return merged
 
 
-def _provider_name(cfg: Any) -> str:
-    provider = getattr(cfg, "provider", "")
-    return str(getattr(provider, "value", provider)) or "unknown"
-
-
 def _pause_notice_to(triggers: list[TriggerSpec], fallback: str | None) -> str | None:
     for spec in triggers:
         to = notice_recipient(spec, fallback=None)
@@ -405,6 +418,11 @@ def _pause_notice_to(triggers: list[TriggerSpec], fallback: str | None) -> str |
     if fallback and fallback.strip():
         return fallback.strip()
     return None
+
+
+def _provider_name(cfg: Any) -> str:
+    provider = getattr(cfg, "provider", "")
+    return str(getattr(provider, "value", provider)) or "unknown"
 
 
 def _resolve_profiles(triggers: list[TriggerSpec], list_profiles: ListProfilesFn) -> list[str]:
@@ -428,3 +446,12 @@ def _resolve_profiles(triggers: list[TriggerSpec], list_profiles: ListProfilesFn
     for spec in triggers:
         named.update(spec.profiles)
     return sorted(set(names) | named)
+
+
+def _scope(applicable: list[TriggerSpec], cfg: Any) -> str:
+    """Fingerprint of what a sync token is taken for: the profile's triggers and account."""
+    payload = {
+        "email": str(getattr(cfg, "email", "") or ""),
+        "triggers": [spec.as_dict() for spec in applicable],
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]

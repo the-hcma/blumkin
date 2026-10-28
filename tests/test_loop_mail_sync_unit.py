@@ -91,7 +91,7 @@ class _Mailbox:
         return {"saved": []}
 
 
-def _poll(setup: LoopSetup, box: _Mailbox, *, with_sync: bool = True):
+def _poll(setup: LoopSetup, box: _Mailbox, *, with_sync: bool = True, email: str = ""):
     return poll_mail_triggers(
         setup,
         inbox=box.inbox,
@@ -99,7 +99,9 @@ def _poll(setup: LoopSetup, box: _Mailbox, *, with_sync: bool = True):
         message=box.message,
         download=box.download,
         refresh=lambda _cfg: {"ok": True},
-        load_config=lambda profile: type("Cfg", (), {"provider": "microsoft", "name": profile})(),
+        load_config=lambda profile: type(
+            "Cfg", (), {"provider": "microsoft", "name": profile, "email": email}
+        )(),
         list_profiles=lambda: [{"name": "work"}],
     )
 
@@ -298,3 +300,80 @@ def test_status_shows_the_sync_mode_in_the_human_output(
     assert result.exit_code == 0, result.output
     assert "mail sync work: delta" in result.output
     assert "SENTINEL-token-9" not in result.output
+
+
+def test_a_changed_set_of_triggers_for_the_profile_starts_over(tmp_path: Path) -> None:
+    box = _Mailbox()
+    _poll(_setup(tmp_path), box)
+    box.sync_calls.clear()
+    box.inbox_calls = 0
+    changed = parse_loop_setup(
+        tmp_path,
+        {
+            "loop": {
+                "triggers": {
+                    "receipts0": {
+                        "task": "expense-report",
+                        "instance": "trip-0",
+                        "kind": "loop",
+                        "allowlist": ["someone-else@example.com"],
+                        "profiles": ["work"],
+                        "subject_tag": "[trip]",
+                    }
+                }
+            }
+        },
+    )
+    _poll(changed, box)
+    assert box.sync_calls[0]["state"] is None
+    assert box.inbox_calls == 1
+
+
+def test_a_changed_account_email_starts_over(tmp_path: Path) -> None:
+    setup = _setup(tmp_path)
+    box = _Mailbox()
+    _poll(setup, box, email="one@example.com")
+    box.sync_calls.clear()
+    _poll(setup, box, email="two@example.com")
+    assert box.sync_calls[0]["state"] is None
+
+
+def test_pausing_and_resuming_a_profile_forgets_its_token(tmp_path: Path) -> None:
+    from blumkin.loop.mail_profiles import pause_profile, resume_profile
+
+    setup = _setup(tmp_path)
+    box = _Mailbox()
+    _poll(setup, box)
+    assert load_sync_state(tmp_path, "work", provider="microsoft") is not None
+    pause_profile(tmp_path, "work", reason="renewal_failed")
+    assert load_sync_state(tmp_path, "work", provider="microsoft") is None
+    _poll(setup, box)  # paused: skipped
+    resume_profile(tmp_path, "work")
+    box.sync_calls.clear()
+    _poll(setup, box)
+    assert box.sync_calls[0]["state"] is None
+
+
+def test_the_first_read_looks_back_a_few_minutes_for_clock_skew(tmp_path: Path) -> None:
+    from datetime import UTC, timedelta
+    from datetime import datetime as dt
+
+    box = _Mailbox()
+    _poll(_setup(tmp_path), box)
+    since = box.sync_calls[0]["since"]
+    assert dt.now(UTC) - since >= timedelta(minutes=4)
+
+
+def test_a_sync_that_cannot_run_is_logged_without_the_token(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    box = _Mailbox()
+    _poll(_setup(tmp_path), box)
+    box.sync_error = OSError("SENTINEL-token-secret network down")
+    with caplog.at_level(logging.WARNING, logger="blumkin.loop"):
+        _poll(_setup(tmp_path), box)
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "mail sync" in text and "OSError" in text
+    assert "SENTINEL" not in text and "token-1" not in text

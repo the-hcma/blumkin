@@ -107,7 +107,7 @@ async def test_the_first_read_asks_for_created_inbox_mail_since_then_and_returns
     assert query.filter == "receivedDateTime ge 2026-10-28T04:30:00Z"
     assert query.orderby == ["receivedDateTime desc"]
     assert "id" in query.select and "from" in query.select and "subject" in query.select
-    assert query.top == 25
+    assert query.top is None
 
 
 @_sync
@@ -195,8 +195,40 @@ async def test_a_page_with_neither_link_is_a_reset() -> None:
 
 
 @_sync
-async def test_an_endless_chain_of_next_links_is_a_reset() -> None:
+async def test_an_endless_chain_of_next_links_is_cut_off_with_a_continuation() -> None:
     loop = f"{_BASE}?$skiptoken=again"
     pages = {None: _page(_message(1), next_link=loop), loop: _page(_message(2), next_link=loop)}
-    with pytest.raises(MailSyncResetError):
-        await _run(pages, state=None, calls=[])
+    payload, _ = await _run(pages, state=None, calls=[])
+    assert payload["state"] == loop
+    assert len(payload["items"]) >= 2
+
+
+@_sync
+async def test_the_first_read_sets_the_page_size_with_the_prefer_header_not_top() -> None:
+    calls: list[Any] = []
+    pages = {None: _page(_message(1), delta_link=f"{_BASE}?$deltatoken=abc")}
+    await _run(pages, state=None, calls=calls)
+    config = calls[0][2]
+    assert config.query_parameters.top is None
+    assert list(config.headers.try_get("Prefer")) == ["odata.maxpagesize=50"]
+
+
+@_sync
+async def test_a_burst_longer_than_the_page_cap_returns_a_partial_batch_and_resumes() -> None:
+    from blumkin.skills import mail as mail_module
+
+    calls: list[Any] = []
+    links = [f"{_BASE}?$skiptoken={n}" for n in range(1, 4)]
+    pages: dict[Any, Any] = {None: _page(_message(0), next_link=links[0])}
+    pages[links[0]] = _page(_message(1), next_link=links[1])
+    pages[links[1]] = _page(_message(2), next_link=links[2])
+    pages[links[2]] = _page(_message(3), delta_link=f"{_BASE}?$deltatoken=end")
+    from unittest.mock import patch
+
+    with patch.object(mail_module, "_DELTA_MAX_PAGES", 2):
+        first, _ = await _run(pages, state=None, calls=calls)
+        assert [i["id"] for i in first["items"]] == ["msg-0", "msg-1"]
+        assert first["state"] == links[1]
+        second, _ = await _run(pages, state=first["state"], calls=[])
+    assert [i["id"] for i in second["items"]] == ["msg-2", "msg-3"]
+    assert second["state"].endswith("deltatoken=end")

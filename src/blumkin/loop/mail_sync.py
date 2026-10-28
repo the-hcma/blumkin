@@ -32,6 +32,7 @@ class SyncState:
     last_poll: str
     mode: str
     provider: str
+    scope: str
     token: str
 
 
@@ -61,21 +62,30 @@ def list_sync_states(config_dir: Path) -> list[dict[str, Any]]:
     return sorted(found, key=lambda entry: entry["profile"])
 
 
-def load_sync_state(config_dir: Path, profile: str, *, provider: str) -> SyncState | None:
-    """The saved state for `profile`, or None when there is none for this provider."""
+def load_sync_state(
+    config_dir: Path, profile: str, *, provider: str, scope: str | None = None
+) -> SyncState | None:
+    """The saved state for `profile`, or None when there is none for this provider and scope.
+
+    `scope` fingerprints what the token was taken for (the profile's triggers and account); a
+    different scope means the token no longer covers what is wanted, so there is no state.
+    """
     data = _read(_path(config_dir, profile))
     if data is None or data["provider"] != provider or data["profile"] != profile:
+        return None
+    if scope is not None and data["scope"] != scope:
         return None
     return SyncState(
         last_poll=data["last_poll"],
         mode=data["mode"],
         provider=data["provider"],
+        scope=data["scope"],
         token=data["token"],
     )
 
 
 def save_sync_state(
-    config_dir: Path, profile: str, *, provider: str, token: str, mode: str
+    config_dir: Path, profile: str, *, provider: str, token: str, mode: str, scope: str = "-"
 ) -> None:
     """Remember `token` for `profile` (atomic, private)."""
     if mode not in _MODES:
@@ -91,6 +101,7 @@ def save_sync_state(
         "mode": mode,
         "profile": profile,
         "provider": provider,
+        "scope": scope,
         "token": token,
     }
     write_private(directory / _file_name(profile), json.dumps(payload, sort_keys=True))
@@ -113,7 +124,7 @@ def _read(path: Path) -> dict[str, str] | None:
         return None
     if not isinstance(data, dict):
         return None
-    wanted = ("last_poll", "mode", "profile", "provider", "token")
+    wanted = ("last_poll", "mode", "profile", "provider", "scope", "token")
     if not all(isinstance(data.get(key), str) and data[key] for key in wanted):
         return None
     if data["mode"] not in _MODES:

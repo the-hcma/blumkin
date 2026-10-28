@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.browser.profiles import BrowserProfileError, ensure_private_dir
+from blumkin.loop.mail_sync import clear_sync_state
 
 _LOCK_FILENAME = "mail-profiles.lock"
 _PAUSED_FILENAME = "mail-profiles-paused.json"
@@ -45,6 +46,8 @@ def pause_profile(config_dir: Path, profile: str, *, reason: str = "renewal_fail
             return False
         paused[name] = reason
         _rewrite(path, paused)
+        # A token kept across a pause would bring back a backlog on resume.
+        clear_sync_state(config_dir, name)
         return True
 
 
@@ -59,6 +62,7 @@ def resume_profile(config_dir: Path, profile: str) -> bool:
             return False
         del paused[name]
         _rewrite(path, paused)
+        clear_sync_state(config_dir, name)
         return True
 
 
