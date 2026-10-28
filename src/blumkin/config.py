@@ -17,6 +17,7 @@ import tomlkit.exceptions
 
 from blumkin.browser.discovery import BrowserConfigError, parse_browser_kind
 from blumkin.browser.profiles import is_valid_task_name
+from blumkin.config_lock import config_file_lock
 from blumkin.loop.config import LoopSetup
 from blumkin.output import emit_warning
 from blumkin.providers.kind import ProviderConfigError, ProviderKind, parse_provider_kind
@@ -478,6 +479,15 @@ def set_profile_email(
         # parse on every later command - a newline could even inject a table header.
         raise ValueError("email must not contain control characters or newlines")
     try:
+        with config_file_lock(config_path):
+            return _write_profile_email(config_path, profile, value, overwrite)
+    except OSError:
+        return False
+
+
+def _write_profile_email(config_path: Path, profile: str, value: str, overwrite: bool) -> bool:
+    """The read-modify-write of `set_profile_email`, run under the config lock."""
+    try:
         doc = tomlkit.parse(config_path.read_text())
     except OSError, tomlkit.exceptions.TOMLKitError:
         return False
@@ -525,6 +535,17 @@ def set_profile_fields(
     """
     if not config_path.is_file():
         raise ProviderConfigError(f"{config_path} does not exist - create the profile first.")
+    try:
+        with config_file_lock(config_path):
+            _write_profile_fields(config_path, profile, fields)
+    except OSError as exc:
+        raise ProviderConfigError(f"could not lock {config_path}: {exc}") from exc
+
+
+def _write_profile_fields(
+    config_path: Path, profile: str, fields: dict[str, str | list[str]]
+) -> None:
+    """The read-modify-write of `set_profile_fields`, run under the config lock."""
     try:
         doc = tomlkit.parse(config_path.read_text(encoding="utf-8"))
     except (OSError, tomlkit.exceptions.TOMLKitError) as exc:
