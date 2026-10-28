@@ -8,6 +8,7 @@ network). The provider is always mocked - these tests never touch Graph.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import tempfile
 import tomllib
@@ -769,3 +770,92 @@ def test_stale_server_checker_serializes_concurrent_probes() -> None:
         first.join(timeout=5)
         second.join(timeout=5)
         assert not second.is_alive()
+
+
+def _unknown_arguments_call(tool: str, arguments: dict[str, Any]) -> tuple[Any, AsyncMock]:
+    provider_call = AsyncMock(return_value={"event": {"id": "e1"}})
+    prov = SimpleNamespace(
+        calendar_create=provider_call,
+        calendar_update=provider_call,
+        calendar_today=provider_call,
+        mail_list=provider_call,
+    )
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=_CFG),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        return _drive(lambda c: c.call_tool(tool, arguments)), provider_call
+
+
+def test_an_unknown_argument_is_a_usage_error_not_silently_dropped() -> None:
+    result, provider_call = _unknown_arguments_call(
+        "calendar.create",
+        {
+            "subject": "Sync",
+            "start": "2026-10-23T14:30:00",
+            "attendees": "someone@example.com",
+            "end": "2026-10-23T14:45:00",
+            "teams": True,
+        },
+    )
+    assert result.is_error is True
+    body = result.structured_content
+    assert body["error"] == "usage_error"
+    for name in ("attendees", "end", "teams"):
+        assert name in body["message"]
+    assert provider_call.await_count == 0
+
+
+def test_the_hint_for_a_known_mistake_names_the_right_argument() -> None:
+    result, _ = _unknown_arguments_call(
+        "calendar.create",
+        {
+            "subject": "Sync",
+            "start": "2026-10-23T14:30:00",
+            "attendees": "a@example.com",
+            "end": "2026-10-23T14:45:00",
+            "teams": True,
+        },
+    )
+    hint = result.structured_content["hint"]
+    assert "calendar.update" in hint and "with" in hint
+    assert "duration" in hint
+    assert "no_teams" in hint
+
+
+def test_a_near_miss_suggests_the_closest_argument() -> None:
+    result, _ = _unknown_arguments_call("calendar.create", {"subject": "S", "start": "x", "durration": "30"})
+    assert "duration" in result.structured_content["hint"]
+
+
+def test_the_message_lists_the_valid_arguments_without_echoing_values() -> None:
+    result, _ = _unknown_arguments_call(
+        "calendar.create", {"subject": "S", "start": "x", "bogus": "SENTINEL-value-1234"}
+    )
+    body = result.structured_content
+    assert "SENTINEL-value-1234" not in json.dumps(body)
+    assert "duration" in body["hint"]
+
+
+def test_a_key_that_looks_like_an_auth_error_is_still_a_usage_error() -> None:
+    result, _ = _unknown_arguments_call(
+        "calendar.today", {"client_id": "x", "Missing": "y"}
+    )
+    assert result.structured_content["error"] == "usage_error"
+
+
+def test_known_arguments_and_the_synthetic_ones_still_work() -> None:
+    result, provider_call = _unknown_arguments_call(
+        "calendar.update", {"event_id": "e1", "subject": "New", "with": ["a@example.com"], "confirm": True}
+    )
+    assert result.is_error is False
+    assert provider_call.await_count == 1
+
+
+def test_every_advertised_property_of_every_tool_is_accepted() -> None:
+    """The allowed set is the schema: nothing the schema advertises may be refused."""
+    from blumkin.mcp_server import _unknown_arguments
+
+    for name, tool in _list_tools().items():
+        props = tool.input_schema["properties"]
+        assert _unknown_arguments(name, dict.fromkeys(props), set(props)) == [], name
