@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Run blumkin from this checkout (or any worktree of it) with no install step.
+#
+# It runs the in-repo code against the real config directory, keychain entries, token cache
+# and agent state, so what you see is what the installed `blumkin` would do with this code.
+# `--version` carries a `+dev.<sha>.<date>` marker (plus `-dirty`) so you can tell which code
+# ran. Point BLUMKIN_CONFIG_DIR at an empty directory for a throwaway setup.
+#
+# If the config directory has no config.toml, a terminal gets an offer to run the guided
+# `auth setup`; without a terminal this fails with a hint. Nothing is created or overwritten
+# unless you say yes.
+set -euo pipefail
+
+resolve_path() {
+  local path="$1" directory
+  while [[ -L "${path}" ]]; do
+    directory="$(cd "$(dirname "${path}")" && pwd -P)"
+    path="$(readlink "${path}")"
+    [[ "${path}" == /* ]] || path="${directory}/${path}"
+  done
+  printf '%s/%s\n' "$(cd "$(dirname "${path}")" && pwd -P)" "$(basename "${path}")"
+}
+
+script_path="$(resolve_path "${BASH_SOURCE[0]}")"
+repo_root="$(cd "$(dirname "${script_path}")/../.." && pwd -P)"
+readonly script_path repo_root
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "blumkin (dev): uv is required but was not found on PATH" >&2
+  exit 127
+fi
+
+run_blumkin() {
+  uv run --frozen --project "${repo_root}" blumkin "$@"
+}
+
+# Mirrors blumkin.config.config_dir(): BLUMKIN_CONFIG_DIR, then XDG_CONFIG_HOME, then ~/.config.
+config_dir() {
+  local chosen
+  if [[ -n "${BLUMKIN_CONFIG_DIR:-}" ]]; then
+    chosen="${BLUMKIN_CONFIG_DIR}"
+  elif [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    chosen="${XDG_CONFIG_HOME}/blumkin"
+  else
+    chosen="${HOME}/.config/blumkin"
+  fi
+  printf '%s\n' "${chosen/#\~/${HOME}}"
+}
+
+# Whether the command can run without a config.toml: help, version and `auth setup` itself.
+needs_config() {
+  local arg previous="" positional=()
+  for arg in "$@"; do
+    case "${arg}" in
+      --help | -h | --version) return 1 ;;
+    esac
+    if [[ "${arg}" != -* && "${previous}" != "--profile" ]]; then
+      positional+=("${arg}")
+    fi
+    previous="${arg}"
+  done
+  [[ "${positional[0]:-}" == "auth" && "${positional[1]:-}" == "setup" ]] && return 1
+  [[ "${positional[0]:-}" == "skills" ]] && return 1
+  [[ ${#positional[@]} -eq 0 ]] && return 1
+  return 0
+}
+
+# The --profile option, if given, so the guided setup configures the profile being run.
+profile_arguments() {
+  local arg previous=""
+  for arg in "$@"; do
+    if [[ "${previous}" == "--profile" ]]; then
+      printf '%s\n' "--profile" "${arg}"
+      return
+    fi
+    previous="${arg}"
+  done
+}
+
+if needs_config "$@"; then
+  directory="$(config_dir)"
+  if [[ ! -f "${directory}/config.toml" ]]; then
+    echo "blumkin (dev): no config.toml in ${directory}" >&2
+    if [[ -t 0 && -t 1 ]]; then
+      read -r -p "Run the guided setup now (creates ${directory}/config.toml)? [y/N] " answer
+      if [[ "${answer}" =~ ^[Yy] ]]; then
+        # Written for bash 3.2 (macOS): no mapfile, and an empty array needs the + guard.
+        setup_profile=()
+        while IFS= read -r line; do
+          setup_profile+=("${line}")
+        done < <(profile_arguments "$@")
+        run_blumkin ${setup_profile[@]+"${setup_profile[@]}"} auth setup
+      else
+        echo "Run it yourself when ready: scripts/dev/blumkin auth setup" >&2
+        exit 2
+      fi
+    else
+      echo "Run on a terminal: scripts/dev/blumkin auth setup" >&2
+      echo "or without one: scripts/dev/blumkin auth setup --yes --provider google|microsoft" \
+        "plus the value flags (see: scripts/dev/blumkin auth setup --help)" >&2
+      exit 2
+    fi
+  fi
+fi
+
+exec uv run --frozen --project "${repo_root}" blumkin "$@"
