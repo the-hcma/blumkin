@@ -1517,3 +1517,29 @@ def test_frame_list_reads_each_frames_address_once_per_listing() -> None:
         ("tenant.sharepoint.com", "https://tenant.sharepoint.com", True)
     ]
     assert flaky.reads == 1
+
+
+def test_a_click_that_starts_no_download_is_a_clear_browser_action_error() -> None:
+    from blumkin.browser.cdp import ControlInfo as Info
+
+    class _NoDownload:
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            raise PlaywrightTimeout("Timeout 30000ms exceeded waiting for download")
+
+    page = _Page()
+    page.expect_download = lambda **kwargs: _NoDownload()  # type: ignore[attr-defined]
+    pw = _Playwright(page)
+    _, driver = _driver(pw)
+    page.element_info["Download"] = _PLAIN_ELEMENT
+    with pytest.raises(BrowserActionError, match="download from the button named 'Download'"):
+        driver.checked_download(
+            "Download",
+            "button",
+            lambda info: None,
+            save_to=Path("/nonexistent"),
+            timeout_s=1.0,
+        )
+    assert Info is ControlInfo

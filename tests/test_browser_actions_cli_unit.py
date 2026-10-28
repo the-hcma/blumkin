@@ -83,6 +83,8 @@ class _Raw:
     ) -> DownloadedFile:
         vet(self.controls.get(name, ControlInfo(tag="button", input_type="button", in_form=False)))
         self.calls.append(("download", role, name))
+        if self.lands_on is not None:
+            self.url = self.lands_on
         self.save_dirs.append(save_to)
         target = save_to / "download.bin"
         target.write_bytes(self.download_bytes)
@@ -1368,3 +1370,117 @@ def test_download_clicks_only_a_declared_control(raw: _Raw, downloads: Path) -> 
 
 def test_download_requires_into(raw: _Raw, downloads: Path) -> None:
     assert _download().exit_code == EXIT_USAGE
+
+
+def test_a_download_that_also_leaves_the_allowed_hosts_keeps_nothing(
+    raw: _Raw, downloads: Path
+) -> None:
+    raw.lands_on = "https://evil.example.net/x"
+
+    result = _download("--into", str(downloads))
+
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "host_blocked"
+    assert list(downloads.iterdir()) == []
+
+
+def test_a_failure_after_the_file_is_in_place_removes_it(
+    raw: _Raw, downloads: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(text: str, *, location: str) -> Any:
+        raise RuntimeError("scan failed")
+
+    monkeypatch.setattr("blumkin.browser.actions.scan_for_injection", boom)
+
+    result = _download("--into", str(downloads))
+
+    assert result.exit_code != EXIT_SUCCESS, result.output
+    assert list(downloads.iterdir()) == []
+
+
+@pytest.mark.parametrize("error", [PermissionError(1, "not permitted"), OSError(95, "unsupported")])
+def test_a_folder_that_cannot_hold_hard_links_still_gets_a_private_new_file(
+    raw: _Raw, downloads: Path, monkeypatch: pytest.MonkeyPatch, error: OSError
+) -> None:
+    def no_links(*args: Any, **kwargs: Any) -> None:
+        raise error
+
+    monkeypatch.setattr("blumkin.browser.actions.os.link", no_links)
+
+    result = _download("--into", str(downloads))
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    saved = downloads / "meeting.vtt"
+    assert saved.read_bytes() == raw.download_bytes
+    assert saved.stat().st_mode & 0o777 == 0o600
+    assert [path.name for path in downloads.iterdir()] == ["meeting.vtt"]
+
+
+def test_the_copy_fallback_also_never_overwrites(
+    raw: _Raw, downloads: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "blumkin.browser.actions.os.link",
+        lambda *a, **k: (_ for _ in ()).throw(OSError(95, "unsupported")),
+    )
+    (downloads / "meeting.vtt").write_text("keep")
+
+    result = _download("--into", str(downloads))
+
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert (downloads / "meeting.vtt").read_text() == "keep"
+
+
+@pytest.mark.parametrize(
+    ("url", "ok"),
+    [
+        ("blob:https://erp.example.com/6f1c", True),
+        ("blob:https://evil.example.net/6f1c", False),
+        ("blob:null/6f1c", False),
+        ("data:text/plain;base64,SGk=", False),
+        ("about:blank", False),
+    ],
+)
+def test_a_blob_download_is_judged_by_the_origin_that_made_it(
+    raw: _Raw, downloads: Path, url: str, ok: bool
+) -> None:
+    raw.download_url = url
+    result = _download("--into", str(downloads))
+    assert (result.exit_code == EXIT_SUCCESS) is ok, result.output
+    assert (len(list(downloads.iterdir())) == 1) is ok
+
+
+def test_into_a_home_of_another_user_is_a_download_error_not_an_upload_error(
+    raw: _Raw, downloads: Path
+) -> None:
+    result = _download("--into", "~someone/transcripts")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "download_blocked"
+
+
+@pytest.mark.parametrize(
+    ("suggested", "expected"),
+    [("été.vtt", "t_.vtt"), ("日本.vtt", "download.vtt"), ("_hidden.txt", "hidden.txt")],
+)
+def test_a_suggested_name_with_unusual_leading_characters_still_gets_a_plain_name(
+    raw: _Raw, downloads: Path, suggested: str, expected: str
+) -> None:
+    raw.download_name = suggested
+    result = _download("--into", str(downloads))
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert [path.name for path in downloads.iterdir()] == [expected]
+
+
+def test_a_download_folder_entry_that_is_itself_a_symlink_is_followed_to_its_target(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    _download_policy(_config_dir, link)
+
+    result = _download("--into", str(link))
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert [path.name for path in real.iterdir()] == ["meeting.vtt"]
