@@ -521,3 +521,98 @@ def test_a_retry_with_other_links_than_the_saved_draft_is_refused(tmp_path: Path
     assert replies.sent == []
     replies.fail_send = False
     assert _finish(tmp_path, item_id, [_DOC_ONE], replies).docs == (_DOC_ONE,)
+
+
+def _attachment_names(config: Path) -> list[str]:
+    directory = intake_dir(config, trigger="requests", message_id=_MESSAGE)
+    return sorted(p.name for p in directory.iterdir())
+
+
+def test_a_replay_with_an_empty_intake_folder_still_reports_the_existing_item(
+    tmp_path: Path,
+) -> None:
+    _queue(tmp_path)
+    directory = intake_dir(tmp_path, trigger="requests", message_id=_MESSAGE)
+    for path in directory.iterdir():
+        path.unlink()
+    result = agent_task(_trigger(), context=_context(tmp_path))
+    assert result.outcome is RunOutcome.NEEDS_USER
+    assert result.reason.startswith(AGENT_WAITING)
+    assert len(pending_items(tmp_path)) == 1
+
+
+def test_a_replay_of_an_answered_mail_ignores_what_is_in_the_folder(tmp_path: Path) -> None:
+    item_id = _queue(tmp_path)
+    _finish(tmp_path, item_id, [_DOC_ONE], _Replies())
+    directory = intake_dir(tmp_path, trigger="requests", message_id=_MESSAGE)
+    for path in directory.iterdir():
+        path.unlink()
+    result = agent_task(_trigger(), context=_context(tmp_path))
+    assert result.outcome is RunOutcome.DONE
+    assert "already" in result.reason
+
+
+def test_a_replay_leaves_a_redownloaded_file_alone(tmp_path: Path) -> None:
+    _queue(tmp_path)
+    _save_attachment(tmp_path, "scan.jpg")
+    agent_task(_trigger(), context=_context(tmp_path))
+    assert _attachment_names(tmp_path) == ["attachment-1.jpg", "scan.jpg"]
+
+
+def test_a_mail_attachment_named_like_ours_does_not_make_a_file_disappear(tmp_path: Path) -> None:
+    _save_attachment(tmp_path, "attachment-1.jpg")
+    _save_attachment(tmp_path, "a.jpg")
+    agent_task(_trigger(), context=_context(tmp_path))
+    (item,) = pending_items(tmp_path)
+    assert sorted(Path(f).name for f in item.files) == ["attachment-1.jpg", "attachment-2.jpg"]
+    assert _attachment_names(tmp_path) == ["attachment-1.jpg", "attachment-2.jpg"]
+
+
+def test_more_than_ten_attachments_are_capped_and_the_rest_counted(tmp_path: Path) -> None:
+    for n in range(12):
+        _save_attachment(tmp_path, f"scan-{n:02d}.jpg")
+    result = agent_task(_trigger(), context=_context(tmp_path))
+    (item,) = pending_items(tmp_path)
+    assert len(item.files) == 10
+    assert "2 more ignored" in result.reason
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("scan.tar.gz", "attachment-1.gz"),
+        ("README", "attachment-1"),
+        ("weird.abcdefghijk", "attachment-1"),
+        ("Photo.JPEG", "attachment-1.jpeg"),
+    ],
+)
+def test_the_saved_suffix_is_sanitized(tmp_path: Path, name: str, expected: str) -> None:
+    _save_attachment(tmp_path, name)
+    agent_task(_trigger(), context=_context(tmp_path))
+    (item,) = pending_items(tmp_path)
+    assert [Path(f).name for f in item.files] == [expected]
+
+
+def test_hidden_and_partial_download_files_are_not_attachments(tmp_path: Path) -> None:
+    _save_attachment(tmp_path, ".hidden")
+    _save_attachment(tmp_path, "scan.jpg.part")
+    _save_attachment(tmp_path, "scan.crdownload")
+    result = agent_task(_trigger(), context=_context(tmp_path))
+    assert result.outcome is RunOutcome.NEEDS_USER
+    assert "no attachment was saved" in result.reason
+    assert pending_items(tmp_path) == []
+
+
+def test_an_error_while_renaming_is_a_needs_user_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_attachment(tmp_path, "scan.jpg")
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("disk trouble")
+
+    monkeypatch.setattr("os.link", boom)
+    result = agent_task(_trigger(), context=_context(tmp_path))
+    assert result.outcome is RunOutcome.NEEDS_USER
+    assert "intake folder is not usable" in result.reason
+    assert pending_items(tmp_path) == []

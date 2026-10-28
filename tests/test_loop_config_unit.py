@@ -158,6 +158,7 @@ def _agent_trigger(**extra: object) -> dict:
         "kind": "loop",
         "instance": "requests",
         "allowlist": ["me@example.com"],
+        "attachment_types": [".jpg", ".pdf"],
         "templates": {
             "Report": "weekly-report",
             "summary": "weekly-report",
@@ -193,6 +194,7 @@ def test_agent_templates_are_parsed_with_folded_keywords(tmp_path: Path) -> None
         ({"templates": {"report": 3}}, "template"),
         ({"templates": {"Report": "a", "report": "b"}}, "twice"),
         ({"kind": "manual", "allowlist": None}, "kind"),
+        ({"attachment_types": []}, "attachment_types"),
     ],
 )
 def test_a_bad_agent_trigger_is_refused(tmp_path: Path, change: dict, fragment: str) -> None:

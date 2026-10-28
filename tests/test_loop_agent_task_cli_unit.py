@@ -33,6 +33,7 @@ def _config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 'task = "agent"',
                 'instance = "requests"',
                 'allowlist = ["me@example.com"]',
+                'attachment_types = [".jpg"]',
                 "",
                 "[loop.triggers.requests.templates]",
                 'report = "weekly-report"',
