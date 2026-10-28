@@ -185,3 +185,37 @@ def test_a_blank_config_dir_variable_counts_as_unset_and_a_tilde_is_expanded(
         timeout=180,
     )
     assert str(home / "chosen") in tilde.stderr
+
+
+def test_a_global_option_value_is_not_mistaken_for_the_subcommand(tmp_path: Path) -> None:
+    config = tmp_path / "empty"
+    exempt = _run(["--tz", "America/New_York", "skills", "list", "--json"], config, tmp_path)
+    assert exempt.returncode == 0, exempt.stderr
+    blocked = _run(["--tz", "UTC", "mail", "inbox"], config, tmp_path)
+    assert blocked.returncode == 2 and "auth setup" in blocked.stderr
+    assert not config.exists()
+
+
+def test_the_config_dir_value_is_trimmed_like_the_python_side(tmp_path: Path) -> None:
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    (chosen / "config.toml").write_text('[profiles.default]\nprovider = "microsoft"\n')
+    env = _env(chosen)
+    env["BLUMKIN_CONFIG_DIR"] = f"{chosen}  "
+    result = subprocess.run(
+        [str(_SCRIPT), "mail", "inbox"],
+        capture_output=True,
+        check=False,
+        cwd=tmp_path,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        timeout=180,
+    )
+    assert "no config.toml" not in result.stderr
+
+
+def test_the_launcher_tells_blumkin_where_it_is_so_mcp_install_can_register_it() -> None:
+    text = _SCRIPT.read_text()
+    assert "export BLUMKIN_DEV=1" in text
+    assert "export BLUMKIN_DEV_LAUNCHER=" in text

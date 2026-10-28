@@ -218,3 +218,41 @@ def test_the_rollback_keeps_a_directory_that_was_already_there(
     assert result.exit_code == EXIT_USAGE
     assert (fresh_dir / "notes.txt").read_text() == "mine"
     assert not (fresh_dir / "config.toml").exists()
+
+
+def test_a_failed_write_leaves_no_partial_config_and_a_clean_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    def full_disk(fd: int) -> None:
+        raise OSError("no space left")
+
+    monkeypatch.setattr(os, "fsync", full_disk)
+    directory = tmp_path / "blumkin"
+    with pytest.raises(FirstRunConfigError, match="Expected"):
+        create_first_run_config(directory, profile="default", provider="google")
+    assert not (directory / "config.toml").exists()
+
+
+def test_the_profile_environment_variable_names_the_first_run_profile(
+    fresh_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_PROFILE", "work")
+    result = CliRunner().invoke(
+        main, ["auth", "setup", "--yes", "--provider", "microsoft", *_MS_FLAGS, "--json"]
+    )
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "[profiles.work]" in (fresh_dir / "config.toml").read_text()
+
+
+def test_an_explicit_profile_flag_wins_over_the_environment_variable(
+    fresh_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_PROFILE", "work")
+    result = CliRunner().invoke(
+        main,
+        ["--profile", "home", "auth", "setup", "--yes", "--provider", "microsoft", *_MS_FLAGS],
+    )
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "[profiles.home]" in (fresh_dir / "config.toml").read_text()
