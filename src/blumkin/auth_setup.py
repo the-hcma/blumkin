@@ -201,10 +201,14 @@ def create_first_run_config(directory: Path, *, profile: str, provider: str) -> 
         ) from exc
     except OSError as exc:
         raise FirstRunConfigError(f"Expected to create {path}, got {type(exc).__name__}") from exc
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(f'[profiles.{profile}]\nprovider = "{provider}"\n')
-        handle.flush()
-        os.fsync(handle.fileno())
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(f'[profiles.{profile}]\nprovider = "{provider}"\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        path.unlink(missing_ok=True)
+        raise FirstRunConfigError(f"Expected to write {path}, got {type(exc).__name__}") from exc
     return path
 
 

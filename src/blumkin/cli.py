@@ -6462,11 +6462,13 @@ def _create_first_run_config_if_missing(
             as_json=as_json,
         )
         raise SystemExit(EXIT_USAGE)
-    profile = "default"
+    profile: str | None = None
     if isinstance(ctx.obj, dict):
         raw = ctx.obj.get("profile")
         if isinstance(raw, str) and raw.strip():
             profile = raw.strip()
+    if profile is None:
+        profile = os.environ.get("BLUMKIN_PROFILE", "").strip() or "default"
     directory_was_new = not directory.exists()
     try:
         return (

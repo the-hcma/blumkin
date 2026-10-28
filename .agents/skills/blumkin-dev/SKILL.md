@@ -27,4 +27,4 @@ If the config directory has no `config.toml`, the launcher offers the guided `au
 
 ## MCP
 
-`scripts/dev/blumkin mcp install` registers this checkout's own console script, so the MCP client runs the checkout. To register by hand, set the client's `command` to the absolute path of `scripts/dev/blumkin` and its `args` to `["mcp", "serve"]`. The MCP server's version carries the same dev marker, and it asks to be restarted when the checkout changes under it (the marker includes `-dirty`).
+`scripts/dev/blumkin mcp install` registers the launcher itself, so the MCP client runs the checkout with the dev marker. To register by hand, set the client's `command` to the absolute path of `scripts/dev/blumkin` and its `args` to `["mcp", "serve"]`. The MCP server's version carries the same dev marker, and it asks to be restarted when the checkout changes under it (the marker includes `-dirty`).

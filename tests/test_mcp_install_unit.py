@@ -793,12 +793,12 @@ def test_a_dev_run_registers_the_launcher_not_a_blumkin_on_path(
 ) -> None:
     launcher = tmp_path / "blumkin-launcher"
     launcher.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(mcp_install.shutil, "which", lambda name: "/usr/local/bin/blumkin")
+    monkeypatch.setattr(mi.shutil, "which", lambda name: "/usr/local/bin/blumkin")
     monkeypatch.delenv("BLUMKIN_DEV", raising=False)
     monkeypatch.delenv("BLUMKIN_DEV_LAUNCHER", raising=False)
-    assert mcp_install.resolve_binary() == ("blumkin", True)
+    assert mi.resolve_binary() == ("blumkin", True)
     monkeypatch.setenv("BLUMKIN_DEV", "1")
     monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(launcher))
-    assert mcp_install.resolve_binary() == (str(launcher), False)
+    assert mi.resolve_binary() == (str(launcher), False)
     monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(tmp_path / "missing"))
-    assert mcp_install.resolve_binary() == ("blumkin", True)
+    assert mi.resolve_binary() == ("blumkin", True)

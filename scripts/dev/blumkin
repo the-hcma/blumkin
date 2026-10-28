@@ -28,6 +28,8 @@ resolve_path() {
 script_path="$(resolve_path "${BASH_SOURCE[0]}")"
 repo_root="$(cd "$(dirname "${script_path}")/../.." && pwd -P)"
 readonly script_path repo_root
+# So `mcp install` run through this launcher registers the launcher itself.
+export BLUMKIN_DEV_LAUNCHER="${script_path}"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "blumkin (dev): uv is required but was not found on PATH" >&2
@@ -38,18 +40,23 @@ run_blumkin() {
   uv run --frozen --project "${repo_root}" blumkin "$@"
 }
 
+# `value` without leading and trailing whitespace (Python strips these env values too).
+trim() {
+  printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 # Mirrors blumkin.config.config_dir(): BLUMKIN_CONFIG_DIR, then XDG_CONFIG_HOME, then ~/.config.
 # Blank values count as unset, and a leading ~ or ~/ is expanded (not ~user, like a plain ~/).
 config_dir() {
   local chosen override xdg
   override="${BLUMKIN_CONFIG_DIR:-}"
   xdg="${XDG_CONFIG_HOME:-}"
-  override="$(printf '%s' "${override}" | tr -d '[:space:]')"
-  xdg="$(printf '%s' "${xdg}" | tr -d '[:space:]')"
+  override="$(trim "${override}")"
+  xdg="$(trim "${xdg}")"
   if [[ -n "${override}" ]]; then
-    chosen="${BLUMKIN_CONFIG_DIR}"
+    chosen="${override}"
   elif [[ -n "${xdg}" ]]; then
-    chosen="${XDG_CONFIG_HOME}/blumkin"
+    chosen="${xdg}/blumkin"
   else
     chosen="${HOME}/.config/blumkin"
   fi
@@ -68,7 +75,7 @@ needs_config() {
     case "${arg}" in
       --help | -h | --version) return 1 ;;
     esac
-    if [[ "${arg}" != -* && "${previous}" != "--profile" ]]; then
+    if [[ "${arg}" != -* && "${previous}" != "--profile" && "${previous}" != "--tz" ]]; then
       positional+=("${arg}")
     fi
     previous="${arg}"
