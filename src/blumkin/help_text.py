@@ -1435,6 +1435,25 @@ Pauses a trigger. Missed due times are not caught up on resume unless a later
 command asks for catch-up.
 """
 
+LOOP_AGENT_EPILOG = """
+Examples:
+
+\b
+  blumkin loop agent
+  blumkin loop agent --json
+
+When items are waiting (see `blumkin loop pending`), starts the agent named by
+`loop.agent_command` in config.toml in a pty, sends it `loop.agent_prompt` (default
+"run the blumkin loop"), and waits until every waiting item is finished or handed back,
+then sends `loop.agent_exit_input` (default "/exit"). Every prompt sent and everything the
+agent prints is written to a timestamped log under <config>/loop/agent-logs/ (owner-only);
+it can hold mail content, so keep it out of issues and chats. Nothing is started when
+nothing is waiting or the kill switch is engaged. Exits non-zero when the agent could not
+be started, exited early, or timed out (`loop.agent_timeout_seconds`, default 1800) with
+items still waiting. `loop.agent_quiet_seconds` (default 5) is the output silence that
+counts as "ready" and "done answering".
+"""
+
 LOOP_PENDING_EPILOG = """
 Examples:
 

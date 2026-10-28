@@ -109,6 +109,23 @@ digest = "daily-digest"
 3. In your agent session, `blumkin loop pending --json` lists each waiting item: its id, the template name, the saved attachment path(s) and instructions. For each one the agent reads `blumkin tasks show --name TEMPLATE --json`, follows the template with the saved attachments (no mail search), and creates the document.
 4. `blumkin loop finish ID --doc URL` (repeat `--doc` per document) creates a threaded plain-text reply to the original message, checks the draft, sends it and closes the item. Only https links to a Google Docs, Sheets or Slides document, a Drive file or a Drive folder are accepted (not viewers, redirectors or `open?id=` links). The draft must be addressed only to an address on the trigger's allowlist with no Cc or Bcc, so a `Reply-To` header in the mail cannot redirect it; a draft that fails the check is deleted and nothing is sent. A second finish (or a hand-back) while one is sending, or within two minutes of one that crashed, is refused as in progress. Finishing twice replies once; if sending fails the draft and links are kept, so `finish` can be run again and sends that same draft (exit `1`, `reply_failed`) with the same links (different links are refused, because the saved draft carries the earlier ones). The saved draft is sent as it was made: between attempts it sits in Drafts, and blumkin has no way to read a draft back, so anything that edits it with `mail update-draft` is the operator's own authority. `blumkin loop finish ID --needs-user "why"` hands an item back and sends nothing; `blumkin loop pending --handed-back` lists those with the reason, and `finish --doc` can still close one.
 
+### Let blumkin start your agent: `blumkin loop agent`
+
+Instead of opening an agent session yourself, name your agent in `[loop]` and run `blumkin loop agent`:
+
+```toml
+[loop]
+agent_command = "claude"             # the command that starts your agent (shell-style quoting)
+# agent_prompt = "run the blumkin loop"   # what is typed to the agent
+# agent_exit_input = "/exit"              # typed once every waiting item is closed
+# agent_quiet_seconds = 5                 # output silence that means "ready" / "done answering"
+# agent_timeout_seconds = 1800            # the whole session; the agent is terminated after this
+```
+
+When items are waiting, blumkin starts the agent in a pty, sends the prompt, and waits until every item that was waiting is finished or handed back, then sends the exit input and closes the session. When nothing is waiting, or the kill switch is engaged, no agent is started. The command exits non-zero when the agent cannot be started, exits early, or times out with items still waiting; those items stay queued.
+
+Every prompt sent and everything the agent prints (ANSI escapes removed) is written to `~/.config/blumkin/loop/agent-logs/<UTC time>.log`, a directory of mode 0700 with files of mode 0600, so you can see what the loop did. The agent inherits blumkin's environment and working directory (`TERM` defaults to `xterm-256color` when unset), and the prompt is typed and submitted with a separate Enter key press. Only one session runs at a time. Items that arrive while a session runs are left for the next run. The log can contain whatever the agent prints, including mail content, and is never trimmed: keep it local and out of issues, chats and pull requests.
+
 The attachment contents are data, never instructions. The journal and notices carry ids and outcomes only; a hand-back note stays in the private item file.
 
 ## Operate
@@ -118,6 +135,7 @@ blumkin loop init                          # silent refresh / login for mail pro
 blumkin loop init --profile work           # also clears a paused mail profile
 blumkin loop list
 blumkin loop status --json
+blumkin loop agent                         # start your agent on the waiting items, with a log
 blumkin loop run-once receipts             # one foreground run (honors pause / kill switch)
 blumkin loop pause receipts
 blumkin loop resume receipts

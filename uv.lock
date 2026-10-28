@@ -2,8 +2,6 @@ version = 1
 revision = 5
 requires-python = ">=3.14"
 
-[options]
-
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -207,6 +205,7 @@ dependencies = [
     { name = "msgraph-sdk" },
     { name = "oauthlib" },
     { name = "opentelemetry-api" },
+    { name = "pexpect" },
     { name = "pillow" },
     { name = "playwright" },
     { name = "pyjwt" },
@@ -248,7 +247,6 @@ dev = [
     { name = "mcp" },
     { name = "openpyxl" },
     { name = "pdfplumber" },
-    { name = "pexpect" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-xdist" },
@@ -282,6 +280,7 @@ requires-dist = [
     { name = "pdf2image", marker = "extra == 'ocr'", specifier = ">=1.17" },
     { name = "pdfplumber", marker = "extra == 'dev'", specifier = ">=0.11.10" },
     { name = "pdfplumber", marker = "extra == 'pdf'", specifier = ">=0.11.10" },
+    { name = "pexpect", specifier = ">=4.9.0" },
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "pillow", marker = "extra == 'ocr'", specifier = ">=13.0.0" },
     { name = "playwright", specifier = ">=1.64.1" },
@@ -302,7 +301,6 @@ dev = [
     { name = "mcp", specifier = ">=2.3.0" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pdfplumber", specifier = ">=0.11.10" },
-    { name = "pexpect", specifier = ">=4.9.0" },
     { name = "pyright", specifier = ">=1.1.414" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },

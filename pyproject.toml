@@ -63,6 +63,7 @@ dependencies = [
     "certifi==2026.10.19",
     "pillow>=13.0.0",
     "opentelemetry-api==1.45.1",
+    "pexpect>=4.9.0",
     "playwright>=1.64.1",
 ]
 
@@ -138,5 +139,4 @@ dev = [
     "keyring>=25.7.0",
     "hatchling>=1.32.4",
     "pytest-xdist>=3.8.0",
-    "pexpect>=4.9.0",
 ]
