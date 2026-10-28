@@ -241,16 +241,22 @@ def agent_task(trigger: TriggerSpec, *, context: RunContext | None = None) -> Ha
     """The registered handler: queue the mail for the operator's agent."""
     if context is None or context.config_dir is None or not context.message_id:
         return _stop("agent task not queued: it needs a mail message")
+    # A replayed mail is answered from the item it already has, before the folder is touched.
+    existing = _find_item(
+        context.config_dir, _item_id(trigger.name, context.profile, context.message_id)
+    )
+    if existing is not None:
+        return _item_result(existing, ignored=0)
     pick = pick_template(trigger, context.subject)
     if pick.template is None:
         return _stop(f"agent task not queued: {pick.reason}")
     if not context.intake_ok:
         return _stop("agent task not queued: the attachments were not saved")
     try:
-        files = _attachments(
+        files, ignored = _attachments(
             intake_dir(context.config_dir, trigger=trigger.name, message_id=context.message_id)
         )
-    except LoopIntakeError:
+    except LoopIntakeError, OSError:
         return _stop("agent task not queued: the intake folder is not usable")
     if not files:
         return _stop("agent task not queued: no attachment was saved")
@@ -263,11 +269,7 @@ def agent_task(trigger: TriggerSpec, *, context: RunContext | None = None) -> Ha
         instance=context.instance or trigger.instance,
         files=files,
     )
-    if item.state == "done":
-        return HandlerResult(outcome=RunOutcome.DONE, reason="already answered")
-    if item.state == "needs_user":
-        return _stop("handed back earlier; see blumkin loop pending --handed-back")
-    return _stop(f"{AGENT_WAITING}: {item.template} ({len(item.files)} attachment(s))")
+    return _item_result(item, ignored=ignored)
 
 
 def pending_items(config_dir: Path, *, handed_back: bool = False) -> list[AgentItem]:
@@ -338,21 +340,45 @@ def _addresses(value: Any) -> set[str]:
     return found
 
 
-def _attachments(directory: Path) -> tuple[str, ...]:
-    """The mail's saved attachments, renamed to `attachment-N.ext` (the mail's names are data)."""
-    found = [p for p in sorted(directory.iterdir()) if p.is_file() and not p.is_symlink()]
-    renamed: list[str] = []
-    for number, path in enumerate(found[:_MAX_ATTACHMENTS], start=1):
+def _attachments(directory: Path) -> tuple[tuple[str, ...], int]:
+    """The mail's saved attachments as `attachment-N.ext`, and how many were left out.
+
+    The mail's own file names are data: every other file is renamed to the next free
+    `attachment-N` (a hard link then an unlink, so an existing file is never overwritten),
+    and files already named that way are kept. Hidden and partial-download files are not
+    attachments, and at most `_MAX_ATTACHMENTS` are kept.
+    """
+    found = [
+        path
+        for path in sorted(directory.iterdir())
+        if path.is_file() and not path.is_symlink() and not _is_partial(path.name)
+    ]
+    ours: list[tuple[int, Path]] = []
+    others: list[Path] = []
+    for path in found:
+        match = _OURS.fullmatch(path.name)
+        if match is None:
+            others.append(path)
+        else:
+            ours.append((int(match.group(1)), path))
+    ours.sort()
+    used = {number for number, _ in ours}
+    names = [str(path) for _, path in ours[:_MAX_ATTACHMENTS]]
+    for path in others:
+        if len(names) >= _MAX_ATTACHMENTS:
+            break
         suffix = path.suffix.lower()
         if not _SUFFIX.fullmatch(suffix):
             suffix = ""
+        number = 1
+        while number in used:
+            number += 1
+        used.add(number)
         target = directory / f"attachment-{number}{suffix}"
-        if path != target:
-            if target.exists():
-                continue
-            path.rename(target)
-        renamed.append(str(target))
-    return tuple(renamed)
+        os.link(path, target)
+        path.unlink()
+        names.append(str(target))
+    return tuple(sorted(names)), len(found) - len(names)
 
 
 def _check_docs(docs: Sequence[str]) -> tuple[str, ...]:
@@ -417,9 +443,35 @@ def _existing_store(config_dir: Path) -> Path | None:
     return _store(config_dir) if root.is_dir() else None
 
 
+def _find_item(config_dir: Path, item_id: str) -> AgentItem | None:
+    store = _existing_store(config_dir)
+    if store is None:
+        return None
+    with _locked(store):
+        try:
+            return _load(store, item_id)
+        except AgentItemNotFoundError:
+            return None
+
+
+def _is_partial(name: str) -> bool:
+    """Whether a file name looks hidden or like an unfinished download."""
+    return name.startswith(".") or Path(name).suffix.lower() in _PARTIAL_SUFFIXES
+
+
 def _item_id(trigger: str, profile: str | None, message_id: str) -> str:
     key = f"{trigger}\0{profile or ''}\0{message_id}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def _item_result(item: AgentItem, *, ignored: int) -> HandlerResult:
+    """What the run reports for an item, whatever state it is in."""
+    if item.state == "done":
+        return HandlerResult(outcome=RunOutcome.DONE, reason="already answered")
+    if item.state == "needs_user":
+        return _stop("handed back earlier; see blumkin loop pending --handed-back")
+    extra = f", {ignored} more ignored" if ignored else ""
+    return _stop(f"{AGENT_WAITING}: {item.template} ({len(item.files)} attachment(s){extra})")
 
 
 def _load(store: Path, item_id: str) -> AgentItem:
@@ -635,6 +687,8 @@ _MAX_ATTACHMENTS = 10
 _MAX_DOCS = 10
 _MAX_NOTE = 200
 _MAX_URL = 512
+_OURS = re.compile(r"attachment-(\d+)(?:\.[a-z0-9]{1,10})?")
+_PARTIAL_SUFFIXES = frozenset({".crdownload", ".download", ".part", ".partial", ".tmp"})
 _STATES = frozenset({"done", "needs_user", "pending"})
 _STORE_DIRNAME = "agent-items"
 _SUFFIX = re.compile(r"\.[a-z0-9]{1,10}")

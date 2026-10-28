@@ -371,6 +371,12 @@ def _loop_trigger(name: str, table: Any) -> TriggerSpec:
     if subject_raw is not None:
         subject_tag = _require_string(subject_raw, f"loop.triggers.{name}.subject_tag")
     templates = _agent_templates(name, task, kind, table.get("templates"))
+    if task == AGENT_TASK and not attachment_types:
+        raise LoopConfigError(
+            f"loop.triggers.{name}.attachment_types must list at least one suffix, such as "
+            f"'.pdf', for task = '{AGENT_TASK}' in config.toml (it limits what reaches your "
+            "agent), got none"
+        )
     if kind is TriggerKind.LOOP:
         from blumkin.loop.mail_trust import is_allowlist_email
 
