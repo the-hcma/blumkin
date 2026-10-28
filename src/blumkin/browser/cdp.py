@@ -645,7 +645,7 @@ class PlaywrightDriver:
         """
         frames = [frame for frame in self._page.frames if frame != self._page.main_frame]
         if self._existing_frames is not None:
-            known = {str(frame.url) for frame in self._page.frames}
+            known = [str(frame.url) for frame in frames]
             try:
                 frames.extend(self._existing_frames.frames(known))
             except Exception:  # noqa: BLE001 - a best-effort source must not hide Playwright's frames
@@ -871,6 +871,9 @@ def open_driver(
         raise
 
 
+_DISCOVERY_TIMEOUT_S = 3.0
+
+
 _POLL_MS = 250
 
 
@@ -972,11 +975,13 @@ def _existing_frames_for(endpoint: str, page: Any, timeout_s: float) -> Any:
             with contextlib.suppress(_playwright_error()):
                 session.detach()
 
+    probe_s = min(timeout_s, _DISCOVERY_TIMEOUT_S)
     return ExistingFrames(
         endpoint_port=urlsplit(endpoint).port or 0,
-        fetch_targets=lambda: _fetch_targets(endpoint, timeout_s),
+        evaluate_timeout_s=timeout_s,
+        fetch_targets=lambda: _fetch_targets(endpoint, probe_s),
         on_close=detach,
-        open_socket=lambda ws_url: CdpSocket.connect(ws_url, timeout_s=timeout_s),
+        open_socket=lambda ws_url: CdpSocket.connect(ws_url, timeout_s=probe_s),
         page_frame_ids=page_frame_ids,
     )
 

@@ -1416,7 +1416,9 @@ class _FixedSocket:
     def __init__(self, value: str) -> None:
         self._value = value
 
-    def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def call(
+        self, method: str, params: dict[str, Any] | None = None, *, timeout_s: float | None = None
+    ) -> dict[str, Any]:
         return {"result": {"type": "string", "value": self._value}}
 
     def close(self) -> None:

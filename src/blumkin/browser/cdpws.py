@@ -19,6 +19,7 @@ import re
 import socket
 import struct
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -36,7 +37,9 @@ _LOOPBACK_HOSTS = ("127.0.0.1", "::1")
 
 
 class _Caller(Protocol):
-    def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]: ...
+    def call(
+        self, method: str, params: dict[str, Any] | None = None, *, timeout_s: float | None = None
+    ) -> dict[str, Any]: ...
 
     def close(self) -> None: ...
 
@@ -90,8 +93,14 @@ class CdpSocket:
     def closed(self) -> bool:
         return self._closed
 
-    def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Send one allowed request and return its result, skipping events and other answers."""
+    def call(
+        self, method: str, params: dict[str, Any] | None = None, *, timeout_s: float | None = None
+    ) -> dict[str, Any]:
+        """Send one allowed request and return its result, skipping events and other answers.
+
+        A transport or protocol failure closes the socket (a half-read message must never be
+        parsed as the start of the next one); a complete error answer does not.
+        """
         if method not in _ALLOWED_METHODS:
             raise RawFrameError(
                 f"Expected a DevTools call blumkin allows, got {method!r}: not allowed"
@@ -99,7 +108,9 @@ class CdpSocket:
         if self._closed:
             raise RawFrameError("Expected an open DevTools socket, got a closed one")
         try:
-            return self._call(method, params)
+            return self._call(method, params, timeout_s or self._timeout_s)
+        except RawFrameAnswerError:
+            raise
         except RawFrameError:
             self.close()
             raise
@@ -114,11 +125,11 @@ class CdpSocket:
         with contextlib.suppress(OSError):
             self._sock.close()
 
-    def _call(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    def _call(self, method: str, params: dict[str, Any] | None, timeout_s: float) -> dict[str, Any]:
         self._next_id += 1
         request = {"id": self._next_id, "method": method, "params": params or {}}
-        deadline = time.monotonic() + self._timeout_s
-        self._send(json.dumps(request).encode())
+        deadline = time.monotonic() + timeout_s
+        self._send(json.dumps(request).encode(), timeout_s=timeout_s)
         while True:
             try:
                 message = json.loads(self._read_message(deadline))
@@ -129,7 +140,7 @@ class CdpSocket:
             error = message.get("error")
             if error:
                 detail = error.get("message", "unknown error") if isinstance(error, dict) else error
-                raise RawFrameError(f"Expected {method} to succeed, got {detail}")
+                raise RawFrameAnswerError(f"Expected {method} to succeed, got {detail}")
             result = message.get("result")
             return result if isinstance(result, dict) else {}
 
@@ -194,9 +205,9 @@ class CdpSocket:
             if fin:
                 return b"".join(parts).decode("utf-8", errors="replace")
 
-    def _send(self, payload: bytes, *, opcode: int = 1) -> None:
+    def _send(self, payload: bytes, *, opcode: int = 1, timeout_s: float | None = None) -> None:
         try:
-            self._sock.settimeout(self._timeout_s)
+            self._sock.settimeout(timeout_s or self._timeout_s)
             self._sock.sendall(_encode_frame(opcode, payload))
         except OSError as exc:
             raise RawFrameError(f"Expected to send to DevTools, got {exc}") from exc
@@ -212,9 +223,11 @@ class ExistingFrames:
         fetch_targets: Callable[[], Sequence[Mapping[str, Any]]],
         open_socket: Callable[[str], _Caller],
         page_frame_ids: Callable[[], set[str]],
+        evaluate_timeout_s: float | None = None,
         on_close: Callable[[], None] | None = None,
     ) -> None:
         self._endpoint_port = endpoint_port
+        self._evaluate_timeout_s = evaluate_timeout_s
         self._fetch_targets = fetch_targets
         self._frames: dict[str, RawFrame] = {}
         self._on_close = on_close
@@ -231,8 +244,8 @@ class ExistingFrames:
             with contextlib.suppress(Exception):
                 self._on_close()
 
-    def frames(self, known_urls: set[str]) -> list[RawFrame]:
-        """The page's frames that are not in `known_urls`, each with its socket open."""
+    def frames(self, known_urls: Iterable[str]) -> list[RawFrame]:
+        """The page's frames beyond the ones Playwright lists (`known_urls`), sockets open."""
         for target_id in [key for key, frame in self._frames.items() if not frame.is_open]:
             del self._frames[target_id]
         try:
@@ -248,6 +261,7 @@ class ExistingFrames:
                 open_socket=self._open_socket,
                 reuse=self._frames,
                 rejected=self._rejected,
+                evaluate_timeout_s=self._evaluate_timeout_s,
             )
         except OSError, ValueError, KeyError, TypeError, AttributeError, BrowserActionError:
             return []
@@ -262,12 +276,25 @@ class ExistingFrames:
 class RawFrame:
     """One frame read over its own DevTools socket; it answers like a Playwright frame."""
 
-    def __init__(self, sock: _Caller, target_id: str, url: str) -> None:
+    def __init__(
+        self,
+        sock: _Caller,
+        target_id: str,
+        url: str,
+        *,
+        evaluate_timeout_s: float | None = None,
+    ) -> None:
         self.target_id = target_id
         self._closed = False
-        self._parent: str | None = None
+        self._evaluate_timeout_s = evaluate_timeout_s
+        self._tree: tuple[str, frozenset[str]] | None = None
         self._sock = sock
         self._url = url
+
+    @property
+    def descendant_ids(self) -> frozenset[str]:
+        """The ids of the frames inside this one that share its process, read once."""
+        return self._read_tree()[1]
 
     @property
     def is_open(self) -> bool:
@@ -276,13 +303,7 @@ class RawFrame:
     @property
     def parent_id(self) -> str:
         """The id of the frame this one is embedded in, read once."""
-        if self._parent is None:
-            tree = self._sock.call("Page.getFrameTree")
-            try:
-                self._parent = str(tree["frameTree"]["frame"].get("parentId", ""))
-            except (KeyError, TypeError, AttributeError) as exc:
-                raise RawFrameError(f"Expected a frame tree, got {tree!r}") from exc
-        return self._parent
+        return self._read_tree()[0]
 
     @property
     def url(self) -> str:
@@ -302,16 +323,17 @@ class RawFrame:
     def evaluate(self, script: str) -> Any:
         """Run an expression, or an `() => ...` function, in the frame and return its value."""
         expression = f"({script})()" if _ARROW_CALL.match(script) else script
-        result = self._sock.call(
-            "Runtime.evaluate",
-            {"expression": expression, "returnByValue": True, "awaitPromise": False},
-        )
+        params = {"expression": expression, "returnByValue": True, "awaitPromise": False}
+        if self._evaluate_timeout_s is None:
+            result = self._sock.call("Runtime.evaluate", params)
+        else:
+            result = self._sock.call("Runtime.evaluate", params, timeout_s=self._evaluate_timeout_s)
         try:
             details = result.get("exceptionDetails")
             if details:
                 exception = details.get("exception", {})
                 text = exception.get("description") or details.get("text") or "an exception"
-                raise RawFrameError(f"Expected the script to run in the frame, got {text}")
+                raise RawFrameAnswerError(f"Expected the script to run in the frame, got {text}")
             return result.get("result", {}).get("value")
         except (AttributeError, TypeError) as exc:
             raise RawFrameError(f"Expected an evaluate answer, got {result!r}") from exc
@@ -319,38 +341,63 @@ class RawFrame:
     def locator(self, selector: str) -> _NoAriaSnapshot:
         return _NoAriaSnapshot()
 
+    def _read_tree(self) -> tuple[str, frozenset[str]]:
+        if self._tree is None:
+            answer = self._sock.call("Page.getFrameTree")
+            try:
+                tree = answer["frameTree"]
+                self._tree = (str(tree["frame"].get("parentId", "")), _descendants(tree))
+            except (KeyError, TypeError, AttributeError) as exc:
+                raise RawFrameError(f"Expected a frame tree, got {answer!r}") from exc
+        return self._tree
+
 
 class RawFrameError(BrowserActionError):
     """A frame read over its own DevTools socket failed."""
+
+
+class RawFrameAnswerError(RawFrameError):
+    """DevTools answered a request with an error; the socket is still usable."""
 
 
 def discover_frames(
     targets: Iterable[Mapping[str, Any]],
     *,
     page_frame_ids: set[str],
-    known_urls: set[str],
+    known_urls: Iterable[str],
     open_socket: Callable[[str], _Caller],
     reuse: dict[str, RawFrame],
     rejected: set[str] | None = None,
+    evaluate_timeout_s: float | None = None,
 ) -> list[RawFrame]:
     """Frame targets embedded (directly or through other frames) in the driven page.
 
     `page_frame_ids` are the frames of the page Playwright's own connection can name (the main
     frame and its same-process children); a target belongs to the page when its parent chain
-    leads to one of them. Targets whose address Playwright already lists are skipped, as are
-    debugger URLs that are not on this machine and everything past `MAX_FRAMES`. A frame is
-    opened once and reused through `reuse`. Only a frame that definitely belongs to another page
-    is closed and remembered in `rejected`; one that could not be asked is retried next time.
+    leads to one of them, through the same-process frames inside the targets themselves.
+    `known_urls` are the addresses of the frames Playwright already lists: each one accounts
+    for one target with that address, so a second, unseen frame at the same address is still
+    found. Debugger URLs that are not on this machine and everything past `MAX_FRAMES` are
+    skipped. A frame is opened once and reused through `reuse`. Only a frame that definitely
+    belongs to another page is closed and remembered in `rejected`; one that could not be asked
+    is retried next time.
     """
     declined = rejected if rejected is not None else set()
-    candidates = [
-        target
-        for target in targets
-        if target.get("type") == "iframe"
-        and str(target.get("id", "")) not in declined
-        and str(target.get("url", "")) not in known_urls
-        and _loopback_websocket(str(target.get("webSocketDebuggerUrl", ""))) is not None
-    ][:MAX_FRAMES]
+    accounted = Counter(known_urls)
+    candidates: list[Mapping[str, Any]] = []
+    for target in targets:
+        url = str(target.get("url", ""))
+        if (
+            target.get("type") != "iframe"
+            or str(target.get("id", "")) in declined
+            or _loopback_websocket(str(target.get("webSocketDebuggerUrl", ""))) is None
+        ):
+            continue
+        if accounted[url] > 0:
+            accounted[url] -= 1
+            continue
+        candidates.append(target)
+    candidates = candidates[:MAX_FRAMES]
     candidate_ids = {str(target["id"]) for target in candidates}
     opened: dict[str, RawFrame] = {}
     for target in candidates:
@@ -363,13 +410,16 @@ def discover_frames(
                 open_socket(str(target["webSocketDebuggerUrl"])),
                 target_id,
                 str(target.get("url", "")),
+                evaluate_timeout_s=evaluate_timeout_s,
             )
         except RawFrameError:
             continue
     parents: dict[str, str] = {}
+    inside: dict[str, frozenset[str]] = {}
     for target_id, frame in opened.items():
         with contextlib.suppress(RawFrameError):
             parents[target_id] = frame.parent_id
+            inside[target_id] = frame.descendant_ids
     reachable = set(page_frame_ids)
     kept: set[str] = set()
     changed = True
@@ -379,11 +429,13 @@ def discover_frames(
             if target_id not in kept and parent in reachable:
                 kept.add(target_id)
                 reachable.add(target_id)
+                reachable |= inside[target_id]
                 changed = True
+    nameable = candidate_ids.union(*inside.values()) if inside else candidate_ids
     for target_id, frame in opened.items():
         if target_id in kept or target_id in reuse:
             continue
-        if target_id in parents and parents[target_id] not in candidate_ids:
+        if target_id in parents and parents[target_id] not in nameable:
             declined.add(target_id)
         with contextlib.suppress(RawFrameError):
             frame.close()
@@ -402,6 +454,15 @@ class _NoAriaSnapshot:
 def _debugger_port(target: Mapping[str, Any]) -> int | None:
     parsed = _loopback_websocket(str(target.get("webSocketDebuggerUrl", "")))
     return parsed[1] if parsed is not None else None
+
+
+def _descendants(tree: Mapping[str, Any]) -> frozenset[str]:
+    """The ids of every frame below `tree` (not the root itself)."""
+    found: set[str] = set()
+    for child in tree.get("childFrames", []):
+        found.add(str(child["frame"]["id"]))
+        found |= _descendants(child)
+    return frozenset(found)
 
 
 def _encode_frame(opcode: int, payload: bytes) -> bytes:

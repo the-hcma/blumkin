@@ -321,7 +321,9 @@ class _Opened:
         self.children = children
         self.closed = False
 
-    def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def call(
+        self, method: str, params: dict[str, Any] | None = None, *, timeout_s: float | None = None
+    ) -> dict[str, Any]:
         assert method == "Page.getFrameTree"
         return {
             "frameTree": {
@@ -541,7 +543,13 @@ def test_discovery_finds_a_frame_nested_under_a_frame_playwright_already_lists()
 
 def test_discovery_does_not_remember_a_frame_it_could_not_ask_as_rejected() -> None:
     class _Failing(_Opened):
-        def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        def call(
+            self,
+            method: str,
+            params: dict[str, Any] | None = None,
+            *,
+            timeout_s: float | None = None,
+        ) -> dict[str, Any]:
             raise RawFrameError("Expected Page.getFrameTree to succeed, got loading")
 
     rejected: set[str] = set()
