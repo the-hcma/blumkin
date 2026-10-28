@@ -23,7 +23,7 @@ The values that belong to the user (which meeting, where to save the file, how l
 ## One-time setup (the user)
 
 1. Create the task and see its policy: `blumkin browser init-task` (it creates the browser profile and prints the table). Add `--yes` to append the table to `config.toml`; an existing table of that name is never changed.
-2. Check the table against what Teams shows for the user: the hosts it uses (the transcript pane is served from a SharePoint host, which is why `*.sharepoint.com` is there) and the exact names of the Notes and Transcript tabs.
+2. Check the table against what Teams shows for the user: the hosts it uses (the transcript pane is served from a SharePoint host, which is why `*.sharepoint.com` is there; narrow that wildcard to the user's tenant host, because it covers every organization's SharePoint) and the exact names of the Notes and Transcript tabs.
 
 ## Procedure
 
@@ -37,9 +37,9 @@ A tail that ends a little before `--duration` is normal when Teams logged "stopp
 
 ## When something goes wrong
 
-- `not_found`: there is no browser profile for the task. Ask the user to run `blumkin browser init-task`.
-- `usage_error`: the task name, the option or `config.toml` is not valid, or `--out` names a file that already exists; read the message and ask the user to correct it.
+- `not_found`: there is no browser profile for the task. Ask the user to run `blumkin browser init-task` (or `blumkin browser profile create teams-transcript`).
+- `usage_error`: the task name, the option or `config.toml` is not valid; read the message and ask the user to correct it.
 - `host_blocked`: the page, or the frame holding the transcript, is not on `allowed_hosts`; do not look for another route, ask the user.
 - `browser_not_running`: run `blumkin browser launch teams-transcript` and ask the user to sign in again.
-- `browser_action_failed`: the pane did not load in time or a frame could not be read; ask the user to open the Transcript view, then try `blumkin browser frames teams-transcript` and `refresh-tab` once, and tell the user if it still fails.
+- `browser_action_failed`: `--out` names a file that already exists or a folder that does not (the capture never overwrites; ask for a new path), or the pane did not load in time or a frame could not be read; ask the user to open the Transcript view, then try `blumkin browser frames teams-transcript` and `refresh-tab` once, and tell the user if it still fails.
 - `submit_blocked`: you reached for a control that is not declared or could finalize something. Do not retry or work around it; tell the user.

@@ -57,7 +57,7 @@ Some panes are not in the page text. `blumkin browser frames TASK` lists the pag
 
 ## Start a task from a template
 
-`blumkin browser init-task [TASK] --template teams-transcript` creates the task's browser profile and prints the `[browser.tasks.TASK]` table the template starts from: the hosts the site uses (for Teams that includes the SharePoint host its transcript pane is served from) and the navigation controls the task may click. Nothing is written to `config.toml` unless you add `--yes`, which appends the table (creating the file with mode 0600 if it is missing); a table of that name that already exists is never changed, and a `config.toml` that is not valid TOML, or is a symlink, is left alone. The ready-made skill for the Teams template is [`teams-transcript`](../.agents/skills/teams-transcript/SKILL.md).
+`blumkin browser init-task [TASK] --template teams-transcript` creates the task's browser profile and prints the `[browser.tasks.TASK]` table the template starts from: the hosts the site uses (for Teams that includes the SharePoint host its transcript pane is served from) and the navigation controls the task may click. Nothing is written to `config.toml` unless you add `--yes`, which appends the table (creating the file with mode 0600 if it is missing); a table of that name that already exists is never changed, and a `config.toml` that is not valid TOML, or is a symlink, is left alone. The template's `*.sharepoint.com` covers every organization's SharePoint: narrow it to your tenant's host once you know it. The ready-made skill for the Teams template is [`teams-transcript`](../.agents/skills/teams-transcript/SKILL.md).
 
 ## Explore a site once
 

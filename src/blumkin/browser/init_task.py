@@ -2,14 +2,21 @@
 
 A browser task needs a profile and a `[browser.tasks.<task>]` policy in `config.toml`. For a
 known site the policy is the same for everyone (the hosts it uses and the navigation controls
-it needs), so it ships here as a template. The profile is always created (it is empty and
+it needs), so it ships here as a template. The profile is always created first (it is empty and
 harmless); the policy is only printed unless the caller asks for it to be written, and a policy
 of the same name that already exists is never changed.
+
+`config.toml` holds the user's only settings, so it is written with care: the file is opened
+once (never through a symlink, never blocking on a special file), locked, read and checked
+under the lock, and extended only if the result is still valid TOML. A write that fails part
+way is cut back to the original size.
 """
 
 from __future__ import annotations
 
 import contextlib
+import errno
+import fcntl
 import os
 import stat
 import tomllib
@@ -18,6 +25,10 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.browser.profiles import BrowserProfileError, create_profile, validate_task_name
+
+
+class InitTaskError(ValueError):
+    """The template or the task name is unknown, or `config.toml` cannot take the policy."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,16 +43,15 @@ class TaskTemplate:
     summary: str
 
 
-class InitTaskError(ValueError):
-    """The template or the task name is unknown, or `config.toml` cannot take the policy."""
-
-
 TEMPLATES: dict[str, TaskTemplate] = {
     "teams-transcript": TaskTemplate(
         allowed_controls=("Notes", "Transcript"),
         allowed_hosts=("teams.cloud.microsoft", "teams.microsoft.com", "*.sharepoint.com"),
         name="teams-transcript",
         next_steps=(
+            "Narrow `*.sharepoint.com` to your tenant's SharePoint host (for example "
+            "`yourtenant-my.sharepoint.com`) in config.toml once you know it: the wildcard "
+            "covers every organization's SharePoint.",
             "Launch the browser: `blumkin browser launch {task}`, then sign in to Teams by hand "
             "(SSO and MFA included) and open the meeting's Notes or Transcript view.",
             "Check what the page shows: `blumkin browser frames {task}`.",
@@ -62,17 +72,12 @@ def init_task(config_dir: Path, task: str, template_name: str, *, write: bool) -
         )
     try:
         validate_task_name(task)
+        create_profile(config_dir, task)
     except BrowserProfileError as exc:
         raise InitTaskError(str(exc)) from exc
     path = config_dir / "config.toml"
-    existing = _read_config(path)
     table = render_table(task, template)
-    declared = task in _declared_tasks(existing)
-    written = False
-    if write and not declared:
-        _append(path, existing, table, task)
-        written = True
-    create_profile(config_dir, task)
+    declared, written = _update_config(path, task, table, write=write)
     return {
         "action": "init-task",
         "already_declared": declared,
@@ -94,49 +99,89 @@ def render_table(task: str, template: TaskTemplate) -> str:
     return f"[browser.tasks.{task}]\nallowed_hosts = [{hosts}]\nallowed_controls = [{controls}]\n"
 
 
-def _append(path: Path, existing: str | None, table: str, task: str) -> None:
-    """Append `table` to `path` (creating it 0600), after proving the result is valid TOML."""
-    prefix = existing or ""
-    separator = "" if not prefix else ("\n" if prefix.endswith("\n") else "\n\n")
-    addition = f"{separator}{table}" if not prefix else f"{separator}\n{table}"
-    combined = prefix + addition
-    try:
-        tomllib.loads(combined)
-    except tomllib.TOMLDecodeError as exc:
-        raise InitTaskError(
-            f"Expected {path} to take a [browser.tasks.{task}] table, got: {exc}"
-        ) from exc
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    except OSError as exc:
-        raise InitTaskError(f"Expected to write {path}, got {type(exc).__name__}") from exc
-    with contextlib.closing(os.fdopen(fd, "a", encoding="utf-8")) as handle:
-        if stat.S_IMODE(os.fstat(handle.fileno()).st_mode) & 0o077 and not prefix:
-            os.fchmod(handle.fileno(), 0o600)
-        handle.write(addition)
-        handle.flush()
-        os.fsync(handle.fileno())
-
-
-def _declared_tasks(existing: str | None) -> set[str]:
-    if not existing:
-        return set()
-    tasks = tomllib.loads(existing).get("browser", {}).get("tasks", {})
+def _declared_tasks(parsed: dict[str, Any]) -> set[str]:
+    tasks = parsed.get("browser", {}).get("tasks", {})
     return set(tasks) if isinstance(tasks, dict) else set()
 
 
-def _read_config(path: Path) -> str | None:
-    """The text of `config.toml` (None when absent), checked to be valid TOML."""
-    if path.is_symlink():
-        raise InitTaskError(f"Expected {path} to be a regular file, got a symlink")
+def _parse(text: str, path: Path) -> dict[str, Any]:
     try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise InitTaskError(f"Expected to read {path}, got {type(exc).__name__}") from exc
-    try:
-        tomllib.loads(text)
+        return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        raise InitTaskError(f"Expected {path} to be valid TOML, got: {exc}") from exc
-    return text
+        hint = (
+            "; remove the byte order mark at the start of the file" if text.startswith("﻿") else ""
+        )
+        raise InitTaskError(f"Expected {path} to be valid TOML, got: {exc}{hint}") from exc
+
+
+def _read_all(fd: int, size: int) -> bytes:
+    chunks: list[bytes] = []
+    offset = 0
+    while offset < size:
+        chunk = os.pread(fd, min(1 << 20, size - offset), offset)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        offset += len(chunk)
+    return b"".join(chunks)
+
+
+def _update_config(path: Path, task: str, table: str, *, write: bool) -> tuple[bool, bool]:
+    """(already declared, written): check `config.toml` and, when asked, extend it.
+
+    Everything happens on one file descriptor under an exclusive lock, so two runs cannot both
+    append and an editor saving in between cannot be appended to unchecked.
+    """
+    flags = os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_RDWR | os.O_CREAT if write else os.O_RDONLY)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileNotFoundError:
+        return False, False
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise InitTaskError(f"Expected {path} to be a regular file, got a symlink") from exc
+        raise
+    with contextlib.closing(os.fdopen(fd, "rb", closefd=True)):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise InitTaskError(f"Expected {path} to be a regular file, got something else")
+        if write:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            info = os.fstat(fd)
+        size = info.st_size
+        try:
+            text = _read_all(fd, size).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise InitTaskError(f"Expected {path} to be UTF-8 text, got {exc.reason}") from exc
+        declared = task in _declared_tasks(_parse(text, path))
+        if declared or not write:
+            return declared, False
+        addition = _separator(text) + table
+        try:
+            tomllib.loads(text + addition)
+        except tomllib.TOMLDecodeError as exc:
+            raise InitTaskError(
+                f"Expected {path} to take a [browser.tasks.{task}] table, got: {exc}"
+            ) from exc
+        _append(fd, size, addition.encode("utf-8"))
+        return False, True
+
+
+def _append(fd: int, size: int, data: bytes) -> None:
+    """Write `data` at `size`; on any failure cut the file back to `size`."""
+    try:
+        written = 0
+        while written < len(data):
+            written += os.pwrite(fd, data[written:], size + written)
+        os.fsync(fd)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.ftruncate(fd, size)
+        raise
+
+
+def _separator(text: str) -> str:
+    """What to put between the existing text and the new table."""
+    if not text:
+        return ""
+    return "\n" if text.endswith("\n") else "\n\n"

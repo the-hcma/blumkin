@@ -222,17 +222,18 @@ def test_concurrent_runs_for_one_task_leave_exactly_one_table(config: Path) -> N
     assert "teams-transcript" in tomllib.loads(text)["browser"]["tasks"]
 
 
-@pytest.mark.parametrize("ending", ["\n", "", "\r\n"])
-def test_files_with_other_line_endings_still_get_a_valid_table(config: Path, ending: str) -> None:
-    (config / "config.toml").write_bytes(
-        _BASE.replace("\n", ending).rstrip("\r\n").encode() + ending.encode()
-    )
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("trailing", [True, False])
+def test_files_with_other_line_endings_still_get_a_valid_table(
+    config: Path, newline: str, trailing: bool
+) -> None:
+    text = _BASE.rstrip("\n").replace("\n", newline) + (newline if trailing else "")
+    (config / "config.toml").write_bytes(text.encode())
 
     assert _run("--template", "teams-transcript", "--yes").exit_code == EXIT_SUCCESS
-    assert (
-        "teams-transcript"
-        in tomllib.loads((config / "config.toml").read_text())["browser"]["tasks"]
-    )
+
+    parsed = tomllib.loads((config / "config.toml").read_text(encoding="utf-8"))
+    assert "teams-transcript" in parsed["browser"]["tasks"]
 
 
 def test_a_byte_order_mark_is_refused_with_a_hint_and_the_file_is_left_alone(config: Path) -> None:
@@ -246,7 +247,7 @@ def test_a_byte_order_mark_is_refused_with_a_hint_and_the_file_is_left_alone(con
 
 
 def test_a_policy_written_with_dotted_keys_counts_as_declared(config: Path) -> None:
-    dotted = _BASE + '\nbrowser.tasks.teams-transcript.allowed_controls = ["Mine"]\n'
+    dotted = 'browser.tasks.teams-transcript.allowed_controls = ["Mine"]\n' + _BASE
     (config / "config.toml").write_text(dotted, encoding="utf-8")
 
     result = _run("--template", "teams-transcript", "--yes")

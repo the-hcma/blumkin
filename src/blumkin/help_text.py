@@ -420,8 +420,10 @@ Creates the task's browser profile (empty; your sign-in lives there later) and p
 SharePoint host its transcript pane is served from, and the navigation controls the task may
 click. Without `--yes` nothing is written to config.toml; with `--yes` the table is appended
 to it (the file is created with mode 0600 when it does not exist). A table of that name that
-already exists is never changed, and a config.toml that is not valid TOML, or is a symlink, is
-left alone. TASK defaults to the template name. Templates: teams-transcript.
+already exists is never changed, and a config.toml that is not valid TOML, or is a symlink or
+not a regular file, is left alone. The profile is created either way. TASK defaults to the
+template name. The Teams template's `*.sharepoint.com` covers every organization's SharePoint:
+narrow it to your tenant's host. Templates: teams-transcript.
 """
 
 BROWSER_LAUNCH_EPILOG = """
