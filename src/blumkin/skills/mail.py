@@ -1319,6 +1319,7 @@ async def mail_new(
             query = DeltaRequestBuilder.DeltaRequestBuilderGetQueryParameters(
                 change_type="created",
                 filter=f"receivedDateTime ge {_odata_datetime(since)}",
+                orderby=["receivedDateTime desc"],
                 select=list(_DELTA_SELECT),
                 top=max(1, min(top, 100)),
             )

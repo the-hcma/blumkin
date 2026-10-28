@@ -85,7 +85,9 @@ async def _run(pages: Mapping[Any, Any], *, state: str | None, calls: list[Any])
     from unittest.mock import patch
 
     with patch("blumkin.skills.mail.create_graph_client", return_value=client):
-        payload = await mail_new(state=state, since=_SINCE, top=25, config=cast(Any, SimpleNamespace()))
+        payload = await mail_new(
+            state=state, since=_SINCE, top=25, config=cast(Any, SimpleNamespace())
+        )
     return payload, client
 
 
@@ -103,6 +105,7 @@ async def test_the_first_read_asks_for_created_inbox_mail_since_then_and_returns
     query = config.query_parameters
     assert query.change_type == "created"
     assert query.filter == "receivedDateTime ge 2026-10-28T04:30:00Z"
+    assert query.orderby == ["receivedDateTime desc"]
     assert "id" in query.select and "from" in query.select and "subject" in query.select
     assert query.top == 25
 

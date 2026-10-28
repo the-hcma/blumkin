@@ -46,6 +46,17 @@ default_hours = 8.0
 
 Mail triggers (`kind = "loop"`) require an `allowlist`. Spoof resistance uses the first `Authentication-Results` header (SPF + DKIM + DMARC pass) before enqueue. Cron triggers live under `[cron.<name>]` (not under `loop.triggers`).
 
+## How mail is polled
+
+Each poll reads every mailbox profile once, however many triggers use it, and only what is new since the last poll. Microsoft profiles use the Graph delta query on the inbox (only created messages, entries Graph marks removed are skipped); Google profiles read the Gmail history of the INBOX label from the last history id. The provider's opaque sync token is kept per profile under `loop/mail-sync/` (private, one small file per profile) and never shown: `blumkin loop status` lists each profile with its mode and last poll, for example `mail sync work: delta (last poll ...)`.
+
+- **First poll, or after an expired token:** the runner takes a fresh token first, then lists the newest messages once (the old behavior) so nothing that was already in the inbox is missed, and marks the poll `scan`. A sync token Graph or Gmail no longer has (`syncStateNotFound`, a stale history id) is handled the same way, with no mail dropped.
+- **Normal polls (`delta`):** one small request, no message bodies fetched when nothing is new, and a burst of more than 25 messages between polls is all seen.
+- **Nothing is lost on a hiccup:** the token only moves forward after every message of the batch was dealt with. If a message could not be loaded, the same batch is read again next poll (handled message ids make that safe); if the sync call itself fails the token is kept and the profile is skipped for that poll.
+- **Trust is unchanged:** the allowlist, `Authentication-Results`, the subject tag and the handled-message ids still decide what runs. The token only changes what is listed.
+- **A provider without incremental sync** keeps the old newest-messages scan on every poll and saves no token. A saved token written for another provider is ignored.
+- A Graph delta link is only followed if it is an https URL on a Graph host, so a damaged state file cannot send your token anywhere else.
+
 ## Instance resolution and expense receipts
 
 Every run works on one task instance (for expenses, one trip in the browser ledger). `instance_resolver` on a `[loop.triggers.*]` table says how the runner picks it, before it takes the instance lock:

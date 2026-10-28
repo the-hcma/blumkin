@@ -588,6 +588,11 @@ class GoogleWorkspaceProvider:
             config=self._config,
         )
 
+    async def mail_new(
+        self, *, state: str | None, since: datetime, top: int = 50
+    ) -> dict[str, Any]:
+        return await google_mail.mail_new(state=state, since=since, top=top, config=self._config)
+
     async def mail_reply(
         self,
         *,

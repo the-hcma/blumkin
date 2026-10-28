@@ -37,7 +37,9 @@ def _cfg(config_dir: Path) -> BlumkinConfig:
         graph_timeout_seconds=60.0,
         mail_signature=MailSignatureConfig(),
         preferences=PreferencesConfig(),
+        profile="default",
         provider=ProviderKind.GOOGLE,
+        tags=(),
         tenant_id="",
         wo1162425_scopes=False,
     )
