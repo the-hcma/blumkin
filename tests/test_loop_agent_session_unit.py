@@ -386,3 +386,26 @@ def test_a_command_that_cannot_be_executed_is_a_clear_failure(config: Path) -> N
     result = _run()
     assert result.exit_code in (EXIT_OTHER, EXIT_USAGE), result.output
     assert "not-executable" in json.loads(result.output)["message"]
+
+
+def test_a_send_failure_on_the_exit_input_does_not_lose_the_result(
+    config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pexpect
+
+    original = pexpect.spawn.send
+
+    def send(self: pexpect.spawn, text: str) -> int:
+        if text == "/exit":
+            raise OSError("pty closed")
+        return original(self, text)
+
+    monkeypatch.setattr(pexpect.spawn, "send", send)
+    _write_config(config, "x")
+    item = _queue(config)
+    _write_config(config, _stand_in(config, "handback", item))
+    result = _run()
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["handled"] == [item]

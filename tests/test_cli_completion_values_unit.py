@@ -26,6 +26,7 @@ _TEMPLATE = (
 @pytest.fixture
 def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
     (tmp_path / "config.toml").write_text(
         "\n".join(
             [
@@ -158,3 +159,34 @@ def test_no_config_dir_completes_nothing(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path / "missing"))
     assert _complete("blumkin loop finish ") == []
     assert _complete("blumkin loop resume ") == []
+
+
+def test_task_completion_follows_the_selected_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("BLUMKIN_PROFILE", raising=False)
+    (tmp_path / "config.toml").write_text(
+        "\n".join(
+            [
+                "[profiles.personal]",
+                'client_id = "abc-123"',
+                "",
+                "[profiles.work]",
+                'client_id = "def-456"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "shared-note.md").write_text(_TEMPLATE, encoding="utf-8")
+    (tmp_path / "profiles" / "work" / "tasks").mkdir(parents=True)
+    (tmp_path / "profiles" / "work" / "tasks" / "work-only.md").write_text(
+        _TEMPLATE, encoding="utf-8"
+    )
+    work = _complete("blumkin --profile work tasks show --name ")
+    personal = _complete("blumkin --profile personal tasks show --name ")
+    assert {"shared-note", "work-only"} <= set(work)
+    assert "work-only" not in personal
+    assert "shared-note" in personal
