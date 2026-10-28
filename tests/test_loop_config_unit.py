@@ -152,25 +152,25 @@ def test_cron_triggers_stay_static(tmp_path: Path) -> None:
         )
 
 
-def _lesson_trigger(**extra: object) -> dict:
+def _agent_trigger(**extra: object) -> dict:
     table: dict = {
-        "task": "lesson",
+        "task": "agent",
         "kind": "loop",
-        "instance": "lessons",
+        "instance": "requests",
         "allowlist": ["me@example.com"],
-        "templates": {"Bia": "eb-lesson", "elena": "eb-lesson", "Ana": "aj-lesson"},
+        "templates": {"Report": "weekly-report", "summary": "weekly-report", "Digest": "daily-digest"},
     }
     table.update(extra)
-    return {"loop": {"triggers": {"lessons": table}}}
+    return {"loop": {"triggers": {"requests": table}}}
 
 
-def test_lesson_templates_are_parsed_with_folded_keywords(tmp_path: Path) -> None:
-    spec = parse_loop_setup(tmp_path, _lesson_trigger()).triggers["lessons"]
-    assert spec.templates == (("ana", "aj-lesson"), ("bia", "eb-lesson"), ("elena", "eb-lesson"))
+def test_agent_templates_are_parsed_with_folded_keywords(tmp_path: Path) -> None:
+    spec = parse_loop_setup(tmp_path, _agent_trigger()).triggers["requests"]
+    assert spec.templates == (("digest", "daily-digest"), ("report", "weekly-report"), ("summary", "weekly-report"))
     assert spec.as_dict()["templates"] == {
-        "ana": "aj-lesson",
-        "bia": "eb-lesson",
-        "elena": "eb-lesson",
+        "digest": "daily-digest",
+        "report": "weekly-report",
+        "summary": "weekly-report",
     }
 
 
@@ -178,26 +178,26 @@ def test_lesson_templates_are_parsed_with_folded_keywords(tmp_path: Path) -> Non
     ("change", "fragment"),
     [
         ({"templates": {}}, "templates"),
-        ({"templates": "eb-lesson"}, "templates"),
-        ({"templates": {"bia lesson": "eb-lesson"}}, "keyword"),
-        ({"templates": {"": "eb-lesson"}}, "keyword"),
-        ({"templates": {"bia": "../x"}}, "template"),
-        ({"templates": {"bia": 3}}, "template"),
-        ({"templates": {"Bia": "a", "bia": "b"}}, "twice"),
+        ({"templates": "weekly-report"}, "templates"),
+        ({"templates": {"two words": "weekly-report"}}, "keyword"),
+        ({"templates": {"": "weekly-report"}}, "keyword"),
+        ({"templates": {"report": "../x"}}, "template"),
+        ({"templates": {"report": 3}}, "template"),
+        ({"templates": {"Report": "a", "report": "b"}}, "twice"),
         ({"kind": "manual", "allowlist": None}, "kind"),
     ],
 )
-def test_a_bad_lesson_trigger_is_refused(tmp_path: Path, change: dict, fragment: str) -> None:
-    table = _lesson_trigger(**change)
+def test_a_bad_agent_trigger_is_refused(tmp_path: Path, change: dict, fragment: str) -> None:
+    table = _agent_trigger(**change)
     if change.get("allowlist", 1) is None:
-        del table["loop"]["triggers"]["lessons"]["allowlist"]
+        del table["loop"]["triggers"]["requests"]["allowlist"]
     with pytest.raises(LoopConfigError, match=fragment):
         parse_loop_setup(tmp_path, table)
 
 
-def test_templates_belong_to_the_lesson_task_only(tmp_path: Path) -> None:
-    with pytest.raises(LoopConfigError, match="lesson"):
+def test_templates_belong_to_the_agent_task_only(tmp_path: Path) -> None:
+    with pytest.raises(LoopConfigError, match="agent"):
         parse_loop_setup(
             tmp_path,
-            _mail_trigger(instance="trip-1", templates={"bia": "eb-lesson"}),
+            _mail_trigger(instance="trip-1", templates={"report": "weekly-report"}),
         )
