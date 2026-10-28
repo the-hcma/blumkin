@@ -58,7 +58,9 @@ class _Raw:
     def fill(self, label: str, value: str) -> None:
         self.calls.append(("fill", label, value))
 
-    def frame_aria_snapshot(self, index: int, is_allowed: Callable[[str], bool]) -> str:
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str:
         self.calls.append(("frame-aria", index, is_allowed("a.example.com")))
         return '- tab "Transcript"'
 
@@ -74,7 +76,9 @@ class _Raw:
     def raw_press(self, label: str, key: str) -> None:
         self.calls.append(("press", label, key))
 
-    def read_frame_text(self, index: int, is_allowed: Callable[[str], bool]) -> PageText:
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText:
         self.calls.append(("frame-text", index, is_allowed("a.example.com")))
         return PageText(text="pane", injection_warning=None)
 

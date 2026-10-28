@@ -1052,3 +1052,73 @@ def test_frame_aria_snapshot_refuses_a_frame_on_another_host() -> None:
     driver = _frames_driver(_PlainFrame("https://ads.example.net/x", aria="- link"))
     with pytest.raises(BrowserActionError, match="allowed host"):
         driver.frame_aria_snapshot(1, _sharepoint)
+
+
+class _DriftAfterReadFrame(_PlainFrame):
+    """A frame whose URL moves to another host as soon as it has been read."""
+
+    def __init__(self) -> None:
+        super().__init__("https://tenant.sharepoint.com/x", text="row", aria="- row")
+        self._moved = False
+
+    @property
+    def url(self) -> str:
+        return "https://evil.example.net/x" if self._moved else "https://tenant.sharepoint.com/x"
+
+    @url.setter
+    def url(self, _value: str) -> None:
+        return None
+
+    def evaluate(self, script: str) -> object:
+        self._moved = True
+        return super().evaluate(script)
+
+    def locator(self, selector: str) -> _AriaLocator:
+        self._moved = True
+        return super().locator(selector)
+
+
+def test_read_frame_text_discards_text_when_the_frame_moved_during_the_read() -> None:
+    driver = _frames_driver(_DriftAfterReadFrame())
+    with pytest.raises(BrowserActionError, match="allowed host"):
+        driver.read_frame_text(1, _sharepoint)
+
+
+def test_frame_aria_snapshot_discards_the_snapshot_when_the_frame_moved() -> None:
+    driver = _frames_driver(_DriftAfterReadFrame())
+    with pytest.raises(BrowserActionError, match="allowed host"):
+        driver.frame_aria_snapshot(1, _sharepoint)
+
+
+@pytest.mark.parametrize(
+    "url", ["data:text/html,SECRETPAYLOAD", "blob:https://x.example/uuid?sig=SECRETPAYLOAD"]
+)
+def test_a_frame_without_a_host_is_refused_without_echoing_its_url(url: str) -> None:
+    driver = _frames_driver(_PlainFrame(url, text="x"))
+    with pytest.raises(BrowserActionError) as excinfo:
+        driver.read_frame_text(1, lambda host: True)
+    assert "SECRETPAYLOAD" not in str(excinfo.value)
+    assert [f.allowed for f in driver.frame_list(lambda host: True)] == [False]
+
+
+def test_a_non_web_scheme_on_an_allowed_host_is_neither_listed_allowed_nor_readable() -> None:
+    driver = _frames_driver(_PlainFrame("ftp://tenant.sharepoint.com/x", text="x"))
+    assert [f.allowed for f in driver.frame_list(_sharepoint)] == [False]
+    with pytest.raises(BrowserActionError, match="allowed host"):
+        driver.read_frame_text(1, _sharepoint)
+
+
+def test_a_host_pin_refuses_a_different_frame_than_the_one_listed() -> None:
+    driver = _frames_driver(
+        _PlainFrame("https://other.sharepoint.com/x", text="wrong pane"),
+    )
+    with pytest.raises(BrowserActionError, match="tenant.sharepoint.com"):
+        driver.read_frame_text(1, _sharepoint, expect_host="tenant.sharepoint.com")
+    with pytest.raises(BrowserActionError, match="tenant.sharepoint.com"):
+        driver.frame_aria_snapshot(1, _sharepoint, expect_host="tenant.sharepoint.com")
+
+
+def test_a_host_pin_that_matches_reads_the_frame() -> None:
+    driver = _frames_driver(_PlainFrame("https://tenant.sharepoint.com/x", text="pane"))
+    page = driver.read_frame_text(1, _sharepoint, expect_host="Tenant.SharePoint.com")
+    assert page.text == "pane"

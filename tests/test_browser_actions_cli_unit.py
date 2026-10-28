@@ -43,6 +43,7 @@ class _Raw:
         #: Child frames as (origin, text); what `frame_list` and `read_frame_text` serve.
         self.child_frames: list[tuple[str, str]] = []
         self.aria_text = '- button "Add line"'
+        self.pins: list[str | None] = []
 
     def close(self) -> None:
         self.closed += 1
@@ -61,7 +62,9 @@ class _Raw:
         self.calls.append(("aria",))
         return self.aria_text
 
-    def frame_aria_snapshot(self, index: int, is_allowed: Callable[[str], bool]) -> str:
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str:
         self.calls.append(("frame-aria", index))
         return self.aria_text
 
@@ -77,7 +80,10 @@ class _Raw:
             for number, (origin, _text) in enumerate(self.child_frames, start=1)
         )
 
-    def read_frame_text(self, index: int, is_allowed: Callable[[str], bool]) -> PageText:
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText:
+        self.pins.append(expect_host)
         self.calls.append(("frame-text", index, is_allowed(self.child_frames[index - 1][0][8:])))
         return PageText(text=self.child_frames[index - 1][1], injection_warning=None)
 
@@ -918,3 +924,43 @@ def test_read_aria_of_a_frame_uses_the_frame_snapshot(raw: _Raw, _config_dir: Pa
     assert payload["mode"] == "aria"
     assert payload["frame"] == 1
     assert ("frame-aria", 1) in raw.calls
+
+
+def test_read_aria_removes_link_urls_and_field_values(raw: _Raw) -> None:
+    raw.aria_text = "\n".join(
+        [
+            '- link "Open":',
+            "  - /url: https://x.example/doc?sig=SECRET",
+            '- textbox "Email: work": jane@example.com',
+            '- textbox "Empty"',
+            '- combobox "Team" [expanded]: Blue',
+            '- button "Add line"',
+        ]
+    )
+    payload = _json(_run("browser", "read", "expense-report", "--aria"))
+    text = payload["text"]
+    assert "SECRET" not in text
+    assert "jane@example.com" not in text
+    assert "Blue" not in text
+    assert '- link "Open"' in text
+    assert '- textbox "Email: work"' in text
+    assert '- textbox "Empty"' in text
+    assert '- combobox "Team" [expanded]' in text
+    assert '- button "Add line"' in text
+
+
+def test_read_frame_host_pin_is_passed_to_the_driver_and_echoed(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com", "*.sharepoint.com"]')
+    raw.child_frames = [_PANE]
+    payload = _json(
+        _run("browser", "read", "expense-report", "--frame", "1", "--host", "tenant.sharepoint.com")
+    )
+    assert payload["frame_host"] == "tenant.sharepoint.com"
+    assert raw.pins == ["tenant.sharepoint.com"]
+
+
+def test_read_host_pin_without_a_frame_is_a_usage_error(raw: _Raw) -> None:
+    result = _run("browser", "read", "expense-report", "--host", "tenant.sharepoint.com")
+    assert result.exit_code == EXIT_USAGE, result.output
