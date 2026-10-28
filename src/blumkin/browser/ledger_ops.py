@@ -302,7 +302,7 @@ def _default_run_step(task: str) -> StepRunner:
         if action in {"click", "press"}:
             if not step.control:
                 raise LedgerError(f"Flow step {action!r} needs a control")
-            actions.click_task(config, task, step.control)
+            actions.click_task(config, task, step.control, role="button")
             return
         if action == "fill":
             if not step.control:
