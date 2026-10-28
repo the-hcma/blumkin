@@ -1448,3 +1448,17 @@ def test_a_source_that_fails_leaves_the_playwright_frames_usable() -> None:
 
     driver = _existing_driver(_Broken(), _PlainFrame("https://tenant.sharepoint.com/x", text="t"))
     assert [f.host for f in driver.frame_list(_sharepoint)] == ["tenant.sharepoint.com"]
+
+
+@pytest.mark.parametrize(
+    "error", [KeyError("frameTree"), AttributeError("x"), PlaywrightError("closed")]
+)
+def test_a_source_that_raises_anything_leaves_the_playwright_frames_usable(
+    error: Exception,
+) -> None:
+    class _Odd(_Existing):
+        def frames(self, known_urls: set[str]) -> list[_PlainFrame]:
+            raise error
+
+    driver = _existing_driver(_Odd(), _PlainFrame("https://tenant.sharepoint.com/x", text="t"))
+    assert [f.host for f in driver.frame_list(_sharepoint)] == ["tenant.sharepoint.com"]

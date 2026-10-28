@@ -31,6 +31,8 @@ class _Server:
         self.handler = handler
         self.requests: list[dict[str, Any]] = []
         self.accept_override: str | None = None
+        self.after_handshake = b""
+        self.omit_upgrade = False
         self.status = "101 Switching Protocols"
         self._listener = socket.socket()
         self._listener.bind(("127.0.0.1", 0))
@@ -64,9 +66,11 @@ class _Server:
                 self.accept_override
                 or base64.b64encode(hashlib.sha1((key + _GUID).encode()).digest()).decode()
             )
+            upgrade = "" if self.omit_upgrade else "Upgrade: websocket\r\n"
             conn.sendall(
-                f"HTTP/1.1 {self.status}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"HTTP/1.1 {self.status}\r\n{upgrade}Connection: Upgrade\r\n"
                 f"Sec-WebSocket-Accept: {accept}\r\n\r\n".encode()
+                + self.after_handshake
             )
             if not self.status.startswith("101"):
                 return
@@ -361,7 +365,7 @@ def _opener(parents: dict[str, str]) -> Callable[[str], Any]:
 def test_discovery_keeps_frames_below_this_page_including_nested_ones() -> None:
     found = discover_frames(
         _targets(),
-        main_frame_id="MAIN",
+        page_frame_ids={"MAIN"},
         known_urls=set(),
         open_socket=_opener({"a": "MAIN", "b": "ELSEWHERE", "n": "A"}),
         reuse={},
@@ -372,7 +376,7 @@ def test_discovery_keeps_frames_below_this_page_including_nested_ones() -> None:
 def test_discovery_skips_frames_playwright_already_has_and_non_frame_targets() -> None:
     found = discover_frames(
         _targets(),
-        main_frame_id="MAIN",
+        page_frame_ids={"MAIN"},
         known_urls={"http://localhost:2/pane"},
         open_socket=_opener({"a": "MAIN", "b": "MAIN", "n": "A"}),
         reuse={},
@@ -386,7 +390,7 @@ def test_discovery_reuses_an_open_frame_and_closes_the_ones_it_does_not_keep() -
     reuse = {"A": kept}
     found = discover_frames(
         _targets(),
-        main_frame_id="MAIN",
+        page_frame_ids={"MAIN"},
         known_urls=set(),
         open_socket=lambda ws_url: rejected if ws_url.endswith("/b") else _Opened("MAIN"),
         reuse=reuse,
@@ -407,10 +411,187 @@ def test_discovery_refuses_a_debugger_url_that_is_not_loopback() -> None:
     assert (
         discover_frames(
             targets,
-            main_frame_id="MAIN",
+            page_frame_ids={"MAIN"},
             known_urls=set(),
             open_socket=_opener({"a": "MAIN"}),
             reuse={},
         )
         == []
     )
+
+
+def _raw_frames(*frames: bytes) -> Callable[[dict[str, Any]], list[bytes]]:
+    return lambda request: list(frames)
+
+
+def _connect_and_call(server: Any, handler: Callable[[dict[str, Any]], list[bytes]]) -> Any:
+    sock = CdpSocket.connect(server(handler).url, timeout_s=2)
+    try:
+        return sock.call("Runtime.evaluate", {"expression": "1"})
+    finally:
+        sock.close()
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        bytes([0x82, 2]) + b"{}",  # binary data frame
+        bytes([0x83, 0]),  # reserved opcode
+        bytes([0xC1, 2]) + b"{}",  # a reserved bit set
+        bytes([0x80, 2]) + b"{}",  # continuation with nothing to continue
+        bytes([0x09, 0]),  # fragmented ping
+        bytes([0x89, 126, 0, 200]) + b"x" * 200,  # ping over 125 bytes
+    ],
+)
+def test_frames_that_break_the_websocket_rules_are_refused(server: Any, frame: bytes) -> None:
+    with pytest.raises(RawFrameError, match="Expected"):
+        _connect_and_call(server, _raw_frames(frame))
+
+
+def test_a_new_data_frame_in_the_middle_of_a_fragmented_message_is_refused(server: Any) -> None:
+    broken = [text_frame("{", fin=False), text_frame("{}")]
+    with pytest.raises(RawFrameError, match="fragment"):
+        _connect_and_call(server, _raw_frames(*broken))
+
+
+def test_control_frames_do_not_count_toward_the_message_size_cap(server: Any) -> None:
+    def handler(request: dict[str, Any]) -> list[bytes]:
+        pings = [text_frame("p" * 100, opcode=9) for _ in range(20)]
+        return [*pings, *reply(request, {"ok": True})]
+
+    sock = CdpSocket.connect(server(handler).url, timeout_s=5, max_message_bytes=500)
+    try:
+        assert sock.call("Page.getFrameTree") == {"ok": True}
+    finally:
+        sock.close()
+
+
+def test_a_frame_sent_with_the_handshake_answer_is_not_lost(server: Any) -> None:
+    fake = server(_echo)
+    fake.after_handshake = text_frame({"method": "Runtime.executionContextCreated", "params": {}})
+    sock = CdpSocket.connect(fake.url, timeout_s=5)
+    try:
+        assert sock.call("Runtime.evaluate", {"expression": "1"}) == {
+            "result": {"type": "string", "value": "ok"}
+        }
+    finally:
+        sock.close()
+
+
+def test_a_handshake_without_the_upgrade_header_is_refused(server: Any) -> None:
+    fake = server(_echo)
+    fake.omit_upgrade = True
+    with pytest.raises(RawFrameError, match="Upgrade"):
+        CdpSocket.connect(fake.url, timeout_s=5)
+
+
+def test_invalid_json_from_the_peer_is_a_raw_frame_error(server: Any) -> None:
+    with pytest.raises(RawFrameError, match="JSON"):
+        _connect_and_call(server, _raw_frames(text_frame("not json")))
+
+
+def test_a_failed_call_closes_the_socket_so_the_stream_cannot_desync(server: Any) -> None:
+    sock = CdpSocket.connect(server(lambda request: None).url, timeout_s=0.3)
+    with pytest.raises(RawFrameError, match="timed out"):
+        sock.call("Runtime.evaluate", {"expression": "1"})
+    assert sock.closed is True
+    with pytest.raises(RawFrameError, match="closed"):
+        sock.call("Runtime.evaluate", {"expression": "1"})
+
+
+def test_a_raw_frame_whose_url_is_not_text_reports_no_address(server: Any) -> None:
+    def handler(request: dict[str, Any]) -> list[bytes]:
+        return reply(request, {"result": {"type": "object", "value": {"a": 1}}})
+
+    frame = RawFrame(CdpSocket.connect(server(handler).url, timeout_s=5), "F1", "http://stale/")
+    try:
+        assert frame.url == ""
+    finally:
+        frame.close()
+
+
+def test_a_raw_frame_reports_when_its_socket_is_closed(server: Any) -> None:
+    frame = RawFrame(CdpSocket.connect(_frame_server(server).url, timeout_s=5), "F1", "")
+    assert frame.is_open is True
+    frame.close()
+    assert frame.is_open is False
+
+
+def test_discovery_finds_a_frame_nested_under_a_frame_playwright_already_lists() -> None:
+    found = discover_frames(
+        _targets(),
+        page_frame_ids={"MAIN", "SAME-PROCESS-CHILD"},
+        known_urls=set(),
+        open_socket=_opener({"a": "SAME-PROCESS-CHILD", "b": "ELSEWHERE", "n": "ELSEWHERE"}),
+        reuse={},
+    )
+    assert [f.target_id for f in found] == ["A"]
+
+
+def test_discovery_does_not_remember_a_frame_it_could_not_ask_as_rejected() -> None:
+    class _Failing(_Opened):
+        def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            raise RawFrameError("Expected Page.getFrameTree to succeed, got loading")
+
+    rejected: set[str] = set()
+    first = discover_frames(
+        _targets(),
+        page_frame_ids={"MAIN"},
+        known_urls=set(),
+        open_socket=lambda ws_url: _Failing("") if ws_url.endswith("/a") else _Opened("ELSEWHERE"),
+        reuse={},
+        rejected=rejected,
+    )
+    assert first == []
+    assert "A" not in rejected
+    assert "B" in rejected
+    second = discover_frames(
+        _targets(),
+        page_frame_ids={"MAIN"},
+        known_urls=set(),
+        open_socket=_opener({"a": "MAIN", "b": "ELSEWHERE", "n": "ELSEWHERE"}),
+        reuse={},
+        rejected=rejected,
+    )
+    assert [f.target_id for f in second] == ["A"]
+
+
+def test_discovery_does_not_remember_a_socket_that_would_not_open() -> None:
+    def flaky(ws_url: str) -> Any:
+        raise RawFrameError("Expected to connect, got refused")
+
+    rejected: set[str] = set()
+    assert (
+        discover_frames(
+            _targets(),
+            page_frame_ids={"MAIN"},
+            known_urls=set(),
+            open_socket=flaky,
+            reuse={},
+            rejected=rejected,
+        )
+        == []
+    )
+    assert rejected == set()
+
+
+def test_discovery_opens_at_most_a_fixed_number_of_frames() -> None:
+    many = [
+        {
+            "type": "iframe",
+            "id": f"T{i}",
+            "url": f"http://localhost:{i}/",
+            "webSocketDebuggerUrl": f"ws://127.0.0.1:9/t{i}",
+        }
+        for i in range(100)
+    ]
+    opened: list[str] = []
+
+    def opener(ws_url: str) -> Any:
+        opened.append(ws_url)
+        return _Opened("MAIN")
+
+    found = discover_frames(
+        many, page_frame_ids={"MAIN"}, known_urls=set(), open_socket=opener, reuse={}
+    )
+    assert len(opened) == len(found) == 32
