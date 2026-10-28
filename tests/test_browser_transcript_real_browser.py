@@ -25,7 +25,12 @@ from typing import Any, cast
 import pytest
 from click.testing import CliRunner
 
-from blumkin.browser.discovery import BrowserNotFoundError, resolve_browser
+from blumkin.browser.discovery import (
+    BrowserKind,
+    BrowserNotFoundError,
+    ResolvedBrowser,
+    resolve_browser,
+)
 from blumkin.browser.launcher import launch
 from blumkin.browser.profiles import create_profile
 from blumkin.cli import main
@@ -33,6 +38,10 @@ from blumkin.exit_codes import EXIT_OTHER, EXIT_SUCCESS
 
 pytestmark = pytest.mark.browser
 
+#: How long after the meeting page loads (or a tab switch) the pane's iframe is attached. The
+#: commands under test attach to the browser fresh, and a connection made after the iframe
+#: exists cannot see it (#551), so this has to comfortably outlast one command's start-up.
+_PANE_DELAY_MS = 4000
 _TURNS = 60
 _SECONDS_PER_TURN = 20
 _SPEAKERS = ("Lovelace, Ada (Example Corp)", "Turing, Alan (Example Corp)")
@@ -56,7 +65,7 @@ function mount() {
     frame.src = 'http://localhost:__PANE_PORT__/pane';
     frame.width = '600'; frame.height = '320';
     host.appendChild(frame);
-  }, 1200);
+  }, __PANE_DELAY_MS__);
 }
 function select(id) {
   for (const tab of document.querySelectorAll('[role=tab]')) {
@@ -122,7 +131,11 @@ setTimeout(render, 800);
 
 
 def _meeting_page(pane_port: int) -> bytes:
-    return _MEETING.replace("__PANE_PORT__", str(pane_port)).encode()
+    return (
+        _MEETING.replace("__PANE_PORT__", str(pane_port))
+        .replace("__PANE_DELAY_MS__", str(_PANE_DELAY_MS))
+        .encode()
+    )
 
 
 def _pane_page() -> bytes:
@@ -164,6 +177,16 @@ def meeting_url() -> Iterator[str]:
             server.server_close()
 
 
+def _installed_browser() -> ResolvedBrowser:
+    """The first of Chrome, Edge and Chromium that is installed, else skip the test."""
+    for kind in BrowserKind:
+        try:
+            return resolve_browser(kind.value)
+        except BrowserNotFoundError:
+            continue
+    pytest.skip("no Chrome, Edge or Chromium installed")
+
+
 @pytest.fixture
 def meeting_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meeting_url: str
@@ -171,10 +194,7 @@ def meeting_cli(
     """`blumkin --json browser ...` against a headless browser already on the meeting page."""
     if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
         pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
-    try:
-        browser = resolve_browser(None)
-    except BrowserNotFoundError:
-        pytest.skip("no Chrome, Edge or Chromium installed")
+    browser = _installed_browser()
     config = tmp_path / "config"
     config.mkdir()
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(config))
