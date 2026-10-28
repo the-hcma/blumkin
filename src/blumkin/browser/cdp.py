@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from blumkin.browser import teams
 from blumkin.browser.profiles import (
     BrowserProfile,
     read_session,
@@ -435,7 +436,7 @@ class PlaywrightDriver:
                 )
             self._page.wait_for_timeout(500)
         try:
-            scroll_mode = str(frame.evaluate(_SCROLL_PREPARE_JS))
+            scroll_mode = str(frame.evaluate(teams.SCROLL_PREPARE_JS))
             if scroll_mode == "missing":
                 raise BrowserActionError(
                     "Expected a scrollable transcript pane or loaded transcript rows, got neither "
@@ -453,7 +454,7 @@ class PlaywrightDriver:
                     url=frame.url,
                 )
             chunks: list[str] = []
-            reached_top = bool(frame.evaluate(_SCROLL_TO_TOP_JS))
+            reached_top = bool(frame.evaluate(teams.SCROLL_TO_TOP_JS))
             steps = 0
             reached_end = False
             while steps < max_steps:
@@ -463,7 +464,7 @@ class PlaywrightDriver:
                 self._require_allowed_frame_host(frame, is_allowed)
                 chunks.append(text)
                 steps += 1
-                step = frame.evaluate(_SCROLL_STEP_JS)
+                step = frame.evaluate(teams.SCROLL_STEP_JS)
                 if step is None:
                     raise BrowserActionError(
                         "Expected the transcript pane to stay in the page, got a missing or "
@@ -614,7 +615,7 @@ class PlaywrightDriver:
             if not host or not is_allowed(host):
                 continue
             with contextlib.suppress(_playwright_error()):
-                if bool(frame.evaluate(_FRAME_TRANSCRIPT_READY_JS)):
+                if bool(frame.evaluate(teams.FRAME_READY_JS)):
                     return frame
         return None
 
@@ -816,47 +817,10 @@ def open_driver(
         raise
 
 
-_FRAME_TRANSCRIPT_READY_JS = (
-    "() => { const text = document.body ? document.body.innerText : ''; "
-    "return /\\d+ minutes? \\d+ seconds?/.test(text); }"
-)
-
-
-_SCROLL_PREPARE_JS = (
-    "() => { const text = document.body ? document.body.innerText : ''; "
-    "const hasTurn = /\\d+ minutes? \\d+ seconds?/.test(text); "
-    "const els = [...document.querySelectorAll('*')].filter(e => "
-    "e.scrollHeight > e.clientHeight + 50 && "
-    "['auto', 'scroll'].includes(getComputedStyle(e).overflowY)); "
-    "els.sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)); "
-    "let scroller = els[0] || null; "
-    "if (!scroller) { const root = document.scrollingElement; "
-    "if (root && root.scrollHeight > root.clientHeight + 50) scroller = root; } "
-    "window.__blumkinScroller = scroller; "
-    "if (scroller) return 'scroll'; "
-    "if (hasTurn) return 'fixed'; "
-    "return 'missing'; }"
-)
-
-
 _POLL_MS = 250
 
 
 _SCROLL_SETTLE_MS = 250
-
-
-_SCROLL_STEP_JS = (
-    "() => { const e = window.__blumkinScroller; if (!e || !e.isConnected) return null; "
-    "if (e.scrollTop + e.clientHeight >= e.scrollHeight - 2) return true; "
-    "e.scrollTop = Math.min(e.scrollTop + Math.max(e.clientHeight * 0.7, 50), e.scrollHeight); "
-    "return false; }"
-)
-
-
-_SCROLL_TO_TOP_JS = (
-    "() => { const e = window.__blumkinScroller; if (!e || !e.isConnected) return false; "
-    "e.scrollTop = 0; return e.scrollTop === 0; }"
-)
 
 
 _DESCRIBE_CONTROL_JS = (

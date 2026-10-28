@@ -1,10 +1,11 @@
-"""Turn the text a scrolled transcript pane yields into ordered entries and a coverage report.
+"""Ordered transcript entries, their overlap merge and the coverage report.
 
-Teams renders a meeting transcript in a virtualized list: only the rows near the viewport
-exist in the page, so one read sees a fraction of a long meeting. The browser layer scrolls
-the pane and hands over every chunk of text it saw; this module parses the chunks, merges
-the overlap between them and says what is still missing, so a gap is reported instead of
-being silently absent from the result.
+A transcript pane is a virtualized list: only the rows near the viewport exist in the page,
+so one read sees a fraction of a long meeting. The browser layer scrolls the pane and hands
+over every chunk of text it saw; a page adapter (see `blumkin.browser.teams`) parses the
+chunks into `Entry` values, this module merges the overlap between them and says what is
+still missing, so a gap is reported instead of being silently absent from the result.
+This module knows nothing about what the page looks like.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ class CoverageReport:
     out_of_order: int
     problems: tuple[str, ...]
     speakers: tuple[str, ...]
-    #: Teams logged "stopped transcription" at the end, so a tail shorter than the meeting is real.
+    #: The page logged that transcription stopped, so a tail shorter than the meeting is real.
     transcription_stopped: bool = False
 
     def to_payload(self) -> dict[str, object]:
@@ -123,94 +124,22 @@ def format_text(entries: Iterable[Entry]) -> str:
     return "\n".join(f"[{format_clock(e.start_s)}] {e.speaker}: {e.text}" for e in entries)
 
 
-def has_stop_marker(chunks: Iterable[str]) -> bool:
-    """Whether the last scroll chunk shows Teams' "stopped transcription" event line."""
-    chunks_list = tuple(chunks)
-    if not chunks_list:
-        return False
-    return _STOPPED.search(chunks_list[-1]) is not None
+def merge_entries(groups: Iterable[Iterable[Entry]]) -> list[Entry]:
+    """Merge groups of entries, keeping the order each entry first appeared in.
 
-
-def transcription_stopped_after_capture(chunks: Iterable[str], entries: Sequence[Entry]) -> bool:
-    """Whether transcription stopped after the last captured turn, not at an earlier stop."""
-    if not entries:
-        return False
-    chunks_list = tuple(chunks)
-    if not chunks_list:
-        return False
-    last_chunk = chunks_list[-1]
-    stop = _STOPPED.search(last_chunk)
-    if stop is None:
-        return False
-    last_entry = entries[-1]
-    last_turn_at = -1
-    for match in _HEADER.finditer(last_chunk):
-        if match.group("speaker") != last_entry.speaker:
-            continue
-        if _duration_seconds(match.group("duration")) != last_entry.start_s:
-            continue
-        last_turn_at = match.start()
-    if last_turn_at < 0:
-        return False
-    return stop.start() > last_turn_at
-
-
-def merge_chunks(chunks: Iterable[str]) -> list[Entry]:
-    """Parse every scroll chunk and merge them, keeping the order each entry first appeared in.
-
-    Adjacent chunks overlap, so an entry seen twice is kept once. Entries are keyed on
+    Adjacent groups overlap, so an entry seen twice is kept once. Entries are keyed on
     start time, speaker and text; a different utterance by the same person in the same
     second is therefore kept, and the same utterance seen again is not.
     """
     seen: set[tuple[int, str, str]] = set()
     merged: list[Entry] = []
-    for chunk in chunks:
-        for entry in parse_chunk(chunk):
+    for group in groups:
+        for entry in group:
             key = (entry.start_s, entry.speaker, entry.text)
             if key not in seen:
                 seen.add(key)
                 merged.append(entry)
     return merged
-
-
-def parse_chunk(text: str) -> list[Entry]:
-    """Parse the visible text of the transcript pane into entries.
-
-    Each entry carries a header line, `Speaker 4 minutes 12 seconds`, followed by the words
-    spoken. Teams also renders the speaker, the duration and a `4:12` clock as separate
-    lines before the first entry of a run and an avatar's initials before a new speaker;
-    those lines carry nothing the header does not, so they end an entry's text and are dropped.
-    """
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    speakers = _metadata_speakers(lines)
-    allow_unknown_headers = not speakers
-    entries: list[Entry] = []
-    index = 0
-    while index < len(lines):
-        header = _HEADER.fullmatch(lines[index])
-        bare = _BARE_DURATION.fullmatch(lines[index]) is not None
-        index += 1
-        if header is None or bare:
-            continue
-        speaker = header.group("speaker")
-        if not _accept_header_speaker(speaker, speakers, allow_unknown_headers):
-            continue
-        speakers.add(speaker)
-        spoken: list[str] = []
-        while index < len(lines) and not _is_boundary(
-            lines, index, speakers, allow_unknown_headers
-        ):
-            spoken.append(lines[index])
-            index += 1
-        if spoken:
-            entries.append(
-                Entry(
-                    speaker=speaker,
-                    start_s=_duration_seconds(header.group("duration")),
-                    text=" ".join(spoken),
-                )
-            )
-    return entries
 
 
 def parse_duration(text: str) -> int:
@@ -227,101 +156,3 @@ def parse_duration(text: str) -> int:
     if text.strip().isdigit():
         return int(text.strip())
     raise ValueError(f"Expected a duration like 34m, 1h05m, 34:06 or seconds, got {text!r}")
-
-
-_DURATION = r"(?:\d+ hours? )?(?:\d+ minutes? )?\d+ seconds?"
-_BARE_CLOCK = re.compile(r"\d{1,2}(?::\d{2}){1,2}")
-_BARE_DURATION = re.compile(_DURATION)
-_HEADER = re.compile(rf"(?P<speaker>.+?) (?P<duration>{_DURATION})")
-_INITIALS = re.compile(r"[A-Z]{1,3}")
-_STARTED = re.compile(r"^\s*started transcription\s*$", re.IGNORECASE)
-_STOPPED = re.compile(r"^\s*stopped transcription\s*$", re.MULTILINE | re.IGNORECASE)
-_UNIT_SECONDS = {"hour": 3600, "minute": 60, "second": 1}
-
-
-def _accept_header_speaker(speaker: str, speakers: set[str], allow_unknown_headers: bool) -> bool:
-    if _duration_shaped_speaker(speaker):
-        return False
-    if speaker in speakers:
-        return True
-    return allow_unknown_headers
-
-
-def _duration_seconds(text: str) -> int:
-    return sum(
-        int(number) * _UNIT_SECONDS[unit]
-        for number, unit in re.findall(r"(\d+) (hour|minute|second)", text)
-    )
-
-
-def _duration_shaped_speaker(speaker: str) -> bool:
-    return (
-        _BARE_DURATION.fullmatch(speaker) is not None
-        or re.fullmatch(r"\d+(?: hours?| minutes?| seconds?)+", speaker) is not None
-    )
-
-
-def _follows_speaker_metadata(lines: Sequence[str], speaker_index: int) -> bool:
-    if speaker_index + 1 >= len(lines):
-        return False
-    next_line = lines[speaker_index + 1]
-    if _STARTED.fullmatch(next_line) or _STOPPED.fullmatch(next_line):
-        return True
-    if _BARE_CLOCK.fullmatch(next_line):
-        return True
-    if _BARE_DURATION.fullmatch(next_line) is None:
-        return False
-    # A bare duration alone can be speech ("1 minutes 4 seconds"); Teams chrome pairs it
-    # with a clock or the same speaker's combined header on the next line.
-    if speaker_index + 2 >= len(lines):
-        return False
-    after = lines[speaker_index + 2]
-    if _BARE_CLOCK.fullmatch(after):
-        return True
-    header = _HEADER.fullmatch(after)
-    return header is not None and header.group("speaker") == lines[speaker_index]
-
-
-def _is_boundary(
-    lines: Sequence[str],
-    index: int,
-    speakers: set[str],
-    allow_unknown_headers: bool,
-) -> bool:
-    line = lines[index]
-    header = _HEADER.fullmatch(line)
-    if header is not None and _accept_header_speaker(
-        header.group("speaker"), speakers, allow_unknown_headers
-    ):
-        return True
-    if _BARE_CLOCK.fullmatch(line) or _STARTED.fullmatch(line) or _STOPPED.fullmatch(line):
-        return True
-    if line in speakers and _follows_speaker_metadata(lines, index):
-        return True
-    if (
-        _INITIALS.fullmatch(line) is not None
-        and index + 2 < len(lines)
-        and lines[index + 1] in speakers
-        and _follows_speaker_metadata(lines, index + 1)
-    ):
-        return True
-    return False
-
-
-def _is_chrome_line(line: str) -> bool:
-    return (
-        _BARE_DURATION.fullmatch(line) is not None
-        or _BARE_CLOCK.fullmatch(line) is not None
-        or _STARTED.fullmatch(line) is not None
-        or _STOPPED.fullmatch(line) is not None
-        or _INITIALS.fullmatch(line) is not None
-        or _HEADER.fullmatch(line) is not None
-    )
-
-
-def _metadata_speakers(lines: Sequence[str]) -> set[str]:
-    return {
-        line
-        for index, line in enumerate(lines)
-        if not _is_chrome_line(line) and _follows_speaker_metadata(lines, index)
-    }

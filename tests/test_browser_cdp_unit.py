@@ -16,10 +16,6 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from blumkin.browser.cdp import (
-    _FRAME_TRANSCRIPT_READY_JS,
-    _SCROLL_PREPARE_JS,
-    _SCROLL_STEP_JS,
-    _SCROLL_TO_TOP_JS,
     BrowserActionError,
     BrowserAttachError,
     ControlInfo,
@@ -33,6 +29,12 @@ from blumkin.browser.profiles import (
     NotBlumkinProfileError,
     create_profile,
     write_session,
+)
+from blumkin.browser.teams import (
+    FRAME_READY_JS,
+    SCROLL_PREPARE_JS,
+    SCROLL_STEP_JS,
+    SCROLL_TO_TOP_JS,
 )
 
 
@@ -821,13 +823,13 @@ class _ScrollFrame:
         return self._frame_url
 
     def evaluate(self, script: str) -> object:
-        if script == _FRAME_TRANSCRIPT_READY_JS:
+        if script == FRAME_READY_JS:
             return "minutes" in self._text and "seconds" in self._text
-        if script == _SCROLL_PREPARE_JS:
+        if script == SCROLL_PREPARE_JS:
             return self._prepare
-        if script == _SCROLL_TO_TOP_JS:
+        if script == SCROLL_TO_TOP_JS:
             return True
-        if script == _SCROLL_STEP_JS:
+        if script == SCROLL_STEP_JS:
             self._scroll_steps += 1
             return self._scroll_steps >= 1
         if script == "document.body.innerText":
@@ -859,7 +861,7 @@ class _DriftingHostFrame(_ScrollFrame):
     def evaluate(self, script: str) -> object:
         if script == "document.body.innerText":
             self._host_reads += 1
-        if script == _SCROLL_STEP_JS:
+        if script == SCROLL_STEP_JS:
             self._scroll_steps += 1
             return self._scroll_steps >= 2
         return super().evaluate(script)
@@ -914,9 +916,9 @@ def test_scroll_frame_text_waits_for_transcript_rows_not_bare_loading_chrome() -
 
 class _MissingScrollerFrame(_ScrollFrame):
     def evaluate(self, script: str) -> object:
-        if script == _FRAME_TRANSCRIPT_READY_JS:
+        if script == FRAME_READY_JS:
             return True
-        if script == _SCROLL_PREPARE_JS:
+        if script == SCROLL_PREPARE_JS:
             return "missing"
         return super().evaluate(script)
 
@@ -935,7 +937,7 @@ def test_scroll_frame_text_errors_when_no_scroller_and_no_transcript_rows() -> N
 
 class _DetachedScrollerFrame(_ScrollFrame):
     def evaluate(self, script: str) -> object:
-        if script == _SCROLL_STEP_JS:
+        if script == SCROLL_STEP_JS:
             return None
         return super().evaluate(script)
 
