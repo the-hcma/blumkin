@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -451,3 +452,99 @@ def test_doctor_reports_being_behind_without_a_warning_when_nothing_is_missing(
 
     assert payload["repository"]["relation"] == "behind"
     assert not any("checkout" in warning for warning in payload["warnings"])
+
+
+def test_git_ignores_the_users_global_and_system_configuration_and_never_fetches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _make_repo(tmp_path / "r")
+    seen: list[tuple[list[str], dict[str, str]]] = []
+    real = subprocess.run
+
+    def spy(argv: list[str], **kwargs: Any) -> Any:
+        seen.append((argv, kwargs.get("env") or {}))
+        return real(argv, **kwargs)
+
+    monkeypatch.setattr("blumkin.repository_status.subprocess.run", spy)
+    repository_status(repo, build_commit="abcdef1", running_commands=[])
+    assert seen
+    for argv, env in seen:
+        assert env.get("GIT_CONFIG_GLOBAL") == "/dev/null"
+        assert env.get("GIT_CONFIG_SYSTEM") == "/dev/null"
+        assert env.get("GIT_NO_LAZY_FETCH") == "1"
+        for protocol in ("", "http.", "https.", "ssh.", "git.", "file."):
+            assert f"protocol.{protocol}allow=never" in argv
+
+
+def test_a_broken_user_git_configuration_does_not_break_the_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _make_repo(tmp_path / "r")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text("[broken\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    head = _git(repo, "rev-parse", "HEAD")[:12]
+    status = repository_status(repo, build_commit=head, running_commands=checkout_commands(repo))
+    assert status.relation == "same"
+
+
+def test_the_suggested_command_quotes_a_checkout_path_with_spaces(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "My Projects" / "blum kin; echo hi")
+    old = _git(repo, "rev-parse", "HEAD")[:12]
+    _commit(repo, "second")
+    note = repository_status(repo, build_commit=old, running_commands=["auth"]).note() or ""
+    command = note.split("`uv tool install -e ", 1)[1].split("`", 1)[0]
+    assert shlex.split(command) == [str(repo)]
+
+
+def _failing(*probes: str, code: int = 128) -> Any:
+    """A subprocess.run that makes the git commands named in `probes` fail with `code`."""
+    real = subprocess.run
+
+    def run(argv: list[str], **kwargs: Any) -> Any:
+        if any(probe in argv for probe in probes):
+            return subprocess.CompletedProcess(argv, code, stdout="", stderr="boom")
+        return real(argv, **kwargs)
+
+    return run
+
+
+def test_a_failed_ancestry_probe_is_unknown_not_diverged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _make_repo(tmp_path / "r")
+    old = _git(repo, "rev-parse", "HEAD")[:12]
+    _commit(repo, "second")
+    monkeypatch.setattr("blumkin.repository_status.subprocess.run", _failing("merge-base"))
+    status = repository_status(repo, build_commit=old, running_commands=[])
+    assert status.relation == "unknown"
+    assert status.behind_by is None
+
+
+def test_a_failed_commit_count_is_unknown_not_zero_commits_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _make_repo(tmp_path / "r")
+    old = _git(repo, "rev-parse", "HEAD")[:12]
+    _commit(repo, "second")
+    monkeypatch.setattr("blumkin.repository_status.subprocess.run", _failing("rev-list"))
+    status = repository_status(repo, build_commit=old, running_commands=["auth"])
+    assert status.relation == "unknown"
+    assert "0 commit" not in (status.note() or "")
+
+
+def test_a_failed_shallow_probe_is_not_taken_as_evidence_of_divergence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _make_repo(tmp_path / "r")
+    base = _git(repo, "rev-parse", "HEAD")
+    side = _commit(repo, "side")
+    _git(repo, "checkout", "-q", base)
+    _commit(repo, "other")
+    monkeypatch.setattr(
+        "blumkin.repository_status.subprocess.run", _failing("--is-shallow-repository")
+    )
+    assert (
+        repository_status(repo, build_commit=side[:12], running_commands=[]).relation == "unknown"
+    )
