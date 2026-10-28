@@ -105,7 +105,9 @@ def _poll(setup: LoopSetup, box: _Mailbox, *, with_sync: bool = True):
 
 
 def test_a_sync_state_round_trips_privately_and_never_appears_in_a_listing(tmp_path: Path) -> None:
-    save_sync_state(tmp_path, "work", provider="microsoft", token="SENTINEL-token-1234", mode="delta")
+    save_sync_state(
+        tmp_path, "work", provider="microsoft", token="SENTINEL-token-1234", mode="delta"
+    )
     state = load_sync_state(tmp_path, "work", provider="microsoft")
     assert state is not None and state.token == "SENTINEL-token-1234"
     files = list((tmp_path / "loop" / "mail-sync").glob("*.json"))
@@ -136,7 +138,7 @@ def test_the_first_poll_takes_a_token_first_then_scans_the_newest_messages(tmp_p
     assert [c["state"] for c in box.sync_calls] == [None]
     assert box.inbox_calls == 1
     state = load_sync_state(tmp_path, "work", provider="microsoft")
-    assert state is not None and state.token == "token-1" and state.mode == "delta"
+    assert state is not None and state.token == "token-1" and state.mode == "scan"
 
 
 def test_later_polls_use_the_token_and_do_not_list_the_inbox(tmp_path: Path) -> None:
@@ -151,7 +153,7 @@ def test_later_polls_use_the_token_and_do_not_list_the_inbox(tmp_path: Path) -> 
     assert box.sync_calls[-1]["state"] == "token-1"
     assert box.inbox_calls == 0
     state = load_sync_state(tmp_path, "work", provider="microsoft")
-    assert state is not None and state.token == "token-2"
+    assert state is not None and state.token == "token-2" and state.mode == "delta"
 
 
 def test_a_burst_of_more_than_25_messages_is_all_seen(tmp_path: Path) -> None:
@@ -267,7 +269,7 @@ def test_status_lists_each_profile_sync_without_the_token(tmp_path: Path) -> Non
     _poll(setup, box)
     payload = status(setup)
     assert payload["mail_sync"][0]["profile"] == "work"
-    assert payload["mail_sync"][0]["mode"] == "delta"
+    assert payload["mail_sync"][0]["mode"] == "scan"
     assert "SENTINEL-token-5678" not in json.dumps(payload)
 
 
@@ -276,3 +278,23 @@ def test_profile_names_cannot_escape_the_state_folder(tmp_path: Path, name: str)
     save_sync_state(tmp_path, name, provider="microsoft", token="t", mode="delta")
     files = list((tmp_path / "loop" / "mail-sync").glob("*.json"))
     assert len(files) == 1 and files[0].parent == tmp_path / "loop" / "mail-sync"
+
+
+def test_status_shows_the_sync_mode_in_the_human_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from blumkin.cli import main
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc-123"\n\n[loop.triggers.probe]\ntask = "probe"\n'
+        'instance = "default"\nkind = "manual"\n',
+        encoding="utf-8",
+    )
+    save_sync_state(tmp_path, "work", provider="microsoft", token="SENTINEL-token-9", mode="delta")
+    result = CliRunner().invoke(main, ["loop", "status"])
+    assert result.exit_code == 0, result.output
+    assert "mail sync work: delta" in result.output
+    assert "SENTINEL-token-9" not in result.output
