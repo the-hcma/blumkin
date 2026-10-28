@@ -30,11 +30,13 @@ from blumkin.app_secrets import (
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
 from blumkin.auth_setup import (
     ACCOUNT_TYPES,
+    FirstRunConfigError,
     GoogleSetupInput,
     MicrosoftSetupInput,
     apply_google_setup,
     apply_microsoft_setup,
     console_steps,
+    create_first_run_config,
     google_setup_from_client_json,
 )
 from blumkin.browser.actions import (
@@ -1775,6 +1777,13 @@ def _read_app_secret_value(
     help="Google only, without --from-file: read client_secret from stdin.",
 )
 @click.option("--client-id", "client_id", default=None, help="Google or Microsoft client id.")
+@click.option(
+    "--provider",
+    "provider_flag",
+    type=click.Choice(["microsoft", "google"]),
+    default=None,
+    help="First run only: the provider for the profile in a new config.toml.",
+)
 @click.option("--tenant-id", "tenant_id", default=None, help="Microsoft only.")
 @click.option(
     "--account-type",
@@ -1806,6 +1815,7 @@ def auth_setup(
     from_file: Path | None,
     from_stdin: bool,
     client_id: str | None,
+    provider_flag: str | None,
     tenant_id: str | None,
     account_type: str | None,
     auth_uri: str,
@@ -1823,8 +1833,19 @@ def auth_setup(
     config.toml. The `[profiles.<name>]` table must already exist.
     """
     as_json = _as_json(ctx, as_json_flag)
-    cfg = _load_config()
     tty = _stdio_is_tty()
+    created_config = _create_first_run_config_if_missing(
+        ctx, provider_flag, tty=tty, yes=yes, as_json=as_json
+    )
+    cfg = _load_config()
+    if provider_flag is not None and cfg.provider.value != provider_flag:
+        _emit_error(
+            error="usage_error",
+            message=f"Expected --provider to match the profile's provider, got {provider_flag!r} "
+            f"for profile {cfg.profile!r} which uses {cfg.provider.value!r}.",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
     interactive = tty and not yes
     if not tty and not yes:
         _emit_error(
@@ -1880,9 +1901,13 @@ def auth_setup(
         payload: dict[str, object] = {"ok": True, "provider": provider, "profile": cfg.profile}
         if vaulted is False:
             payload["vaulted"] = False
+        if created_config is not None:
+            payload["created_config"] = str(created_config)
         emit_json(payload)
     else:
         lines = [f"{provider} OAuth client configured for profile {cfg.profile!r}."]
+        if created_config is not None:
+            lines.insert(0, f"Created {created_config} (mode 0600) with profile {cfg.profile!r}.")
         if vaulted is False:
             lines.append(
                 "Note: client_id was not vaulted in the OS keychain (no usable backend) - "
@@ -6383,6 +6408,59 @@ def mcp_serve_cmd(
         if isinstance(raw, str) and raw.strip():
             profile = raw.strip()
     mcp_server.serve(profile=profile, read_only=read_only, only=tuple(only))
+
+
+def _create_first_run_config_if_missing(
+    ctx: click.Context,
+    provider_flag: str | None,
+    *,
+    tty: bool,
+    yes: bool,
+    as_json: bool,
+) -> Path | None:
+    """Create a minimal `config.toml` when the resolved config directory has none.
+
+    Returns the created path, or None when a config already exists (nothing is touched).
+    """
+    directory = config_dir()
+    if (directory / "config.toml").exists():
+        return None
+    provider = _first_run_provider(provider_flag, tty=tty, yes=yes, prompt=click.prompt)
+    if provider is None:
+        _emit_error(
+            error="usage_error",
+            message=f"No config.toml in {directory}. Pass --provider google|microsoft (with "
+            "--yes and the value flags) or run `blumkin auth setup` on a terminal to be asked.",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    profile = "default"
+    if isinstance(ctx.obj, dict):
+        raw = ctx.obj.get("profile")
+        if isinstance(raw, str) and raw.strip():
+            profile = raw.strip()
+    try:
+        return create_first_run_config(directory, profile=profile, provider=provider)
+    except FirstRunConfigError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+
+
+def _first_run_provider(
+    flag: str | None, *, tty: bool, yes: bool, prompt: Callable[..., str]
+) -> str | None:
+    """The provider for a new config: the flag, else asked on a terminal, else None."""
+    if flag is not None:
+        return flag
+    if tty and not yes:
+        return str(
+            prompt(
+                "Which provider will this profile use?",
+                type=click.Choice(["microsoft", "google"]),
+                default="microsoft",
+            )
+        )
+    return None
 
 
 def _stdio_is_tty() -> bool:
