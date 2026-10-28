@@ -8,20 +8,27 @@ from pathlib import Path
 
 import pytest
 
-from blumkin.loop.journal import list_runs
 from blumkin.loop.agent_task import (
-    AgentTaskError,
     AgentItemNotFoundError,
     AgentReplyError,
+    AgentTaskError,
+    agent_task,
     finish_item,
     hand_back_item,
-    agent_task,
     pending_items,
     pick_template,
     prepare_reply,
 )
+from blumkin.loop.journal import list_runs
 from blumkin.loop.mail_intake import intake_dir
-from blumkin.loop.types import AGENT_TASK, AGENT_WAITING, RunContext, RunOutcome, TriggerKind, TriggerSpec
+from blumkin.loop.types import (
+    AGENT_TASK,
+    AGENT_WAITING,
+    RunContext,
+    RunOutcome,
+    TriggerKind,
+    TriggerSpec,
+)
 
 _MESSAGE = "AAMkAGI2-message-one"
 _TEMPLATES = (

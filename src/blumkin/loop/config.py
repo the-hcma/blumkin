@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.browser.profiles import is_valid_task_name
-from blumkin.loop.lesson import fold_keyword
-from blumkin.loop.types import LESSON_TASK, InstanceResolver, TriggerKind, TriggerSpec
+from blumkin.loop.agent_task import fold_keyword
+from blumkin.loop.types import AGENT_TASK, InstanceResolver, TriggerKind, TriggerSpec
 
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_BACKOFF_SECONDS = 30.0
@@ -209,21 +209,21 @@ def _instance_resolver(value: Any, label: str) -> InstanceResolver:
         ) from exc
 
 
-def _lesson_templates(
+def _agent_templates(
     name: str, task: str, kind: TriggerKind, raw: Any
 ) -> tuple[tuple[str, str], ...]:
-    """The subject-keyword to template table of a `lesson` trigger (issue #506)."""
+    """The subject-keyword to template table of an `agent` trigger (issues #506, #527)."""
     label = f"loop.triggers.{name}.templates"
-    if task != LESSON_TASK:
+    if task != AGENT_TASK:
         if raw is not None:
             raise LoopConfigError(
-                f"{label} is only used with task = '{LESSON_TASK}' in config.toml; "
+                f"{label} is only used with task = '{AGENT_TASK}' in config.toml; "
                 f"remove it from a {task!r} trigger"
             )
         return ()
     if kind is not TriggerKind.LOOP:
         raise LoopConfigError(
-            f"loop.triggers.{name}.kind must be 'loop' for task = '{LESSON_TASK}' in "
+            f"loop.triggers.{name}.kind must be 'loop' for task = '{AGENT_TASK}' in "
             f"config.toml, got {kind.value!r}"
         )
     if not isinstance(raw, dict) or not raw:
@@ -370,7 +370,7 @@ def _loop_trigger(name: str, table: Any) -> TriggerSpec:
     subject_tag: str | None = None
     if subject_raw is not None:
         subject_tag = _require_string(subject_raw, f"loop.triggers.{name}.subject_tag")
-    templates = _lesson_templates(name, task, kind, table.get("templates"))
+    templates = _agent_templates(name, task, kind, table.get("templates"))
     if kind is TriggerKind.LOOP:
         from blumkin.loop.mail_trust import is_allowlist_email
 

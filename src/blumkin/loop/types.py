@@ -7,9 +7,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-LESSON_TASK = "lesson"
-# Reason prefix of a run that queued a lesson page for the operator's agent (issue #506).
-LESSON_WAITING = "lesson waiting for an agent"
+AGENT_TASK = "agent"
+# Reason prefix of a run that queued a mail for the operator's agent (issues #506, #527).
+AGENT_WAITING = "waiting for an agent"
 
 
 class InstanceResolver(StrEnum):
@@ -96,7 +96,7 @@ class TriggerSpec:
     instance_resolver: InstanceResolver = InstanceResolver.STATIC
     profiles: tuple[str, ...] = ()
     subject_tag: str | None = None
-    # Lesson task only: (subject keyword, template name) pairs, keywords already folded (#506).
+    # Agent task only: (subject keyword, template name) pairs, keywords already folded (#506, #527).
     templates: tuple[tuple[str, str], ...] = ()
     # Cron-only: declared hours for the scheduled time-sheet entry (issue #502).
     default_hours: float | None = None

@@ -138,9 +138,9 @@ from blumkin.install_method import (
     upgrade_steps,
 )
 from blumkin.loop import commands as loop_commands
+from blumkin.loop.agent_task import AgentItemNotFoundError, AgentReplyError, AgentTaskError
 from blumkin.loop.config import LoopConfigError, LoopTriggerNotFoundError
 from blumkin.loop.init import LoopInitError, init_profiles
-from blumkin.loop.lesson import LessonError, LessonNotFoundError, LessonReplyError
 from blumkin.loop.service import LoopServiceError, install_user_unit
 from blumkin.mail_signature_state import (
     clear_signature_state,
@@ -626,14 +626,14 @@ def _emit_ledger(payload: dict[str, Any], *, as_json: bool, items: bool = False)
 
 def _loop_fail(exc: BaseException, *, as_json: bool) -> NoReturn:
     """Map a loop-command failure onto the standard error envelope and exit code."""
-    if isinstance(exc, (LessonNotFoundError, LoopTriggerNotFoundError)):
+    if isinstance(exc, (AgentItemNotFoundError, LoopTriggerNotFoundError)):
         slug, code = "not_found", EXIT_NOT_FOUND
-    elif isinstance(exc, LessonReplyError):
+    elif isinstance(exc, AgentReplyError):
         slug, code = "reply_failed", EXIT_OTHER
     elif isinstance(
         exc,
         (
-            LessonError,
+            AgentTaskError,
             LoopConfigError,
             LoopInitError,
             LoopServiceError,
@@ -3018,7 +3018,7 @@ def loop_finish(
     as_json_flag: bool,
     needs_user: str | None,
 ) -> None:
-    """Close a waiting lesson: reply with its link(s), or hand it back."""
+    """Close a waiting item: reply with its link(s), or hand it back."""
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = loop_commands.finish(load_loop_setup(), item, docs=docs, needs_user=needs_user)
@@ -3141,7 +3141,7 @@ def loop_pause(ctx: click.Context, trigger: str, as_json_flag: bool) -> None:
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def loop_pending(ctx: click.Context, as_json_flag: bool, handed_back: bool) -> None:
-    """List lessons waiting for an agent."""
+    """List items waiting for an agent."""
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = loop_commands.pending(load_loop_setup(), handed_back=handed_back)
@@ -3151,7 +3151,7 @@ def loop_pending(ctx: click.Context, as_json_flag: bool, handed_back: bool) -> N
         emit_json({"ok": True, **payload})
         return
     if not payload["items"]:
-        emit_lines(["no lessons waiting"])
+        emit_lines(["nothing waiting"])
         return
     lines = [payload["instructions"], ""]
     for entry in payload["items"]:

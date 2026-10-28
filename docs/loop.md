@@ -72,30 +72,30 @@ The `expense-report` task files the receipts the poller saved under `loop/intake
 
 A re-run of the same message is idempotent: a receipt already filled or verified is counted as already filed.
 
-## Lessons (page photo to a Drive document)
+## Agent tasks (hand a mail to your own agent)
 
-A mail with a photo of a lesson page and a keyword in the subject (a name, say) starts a lesson. blumkin calls no model and the loop starts no agent, so the loop only queues the work and your own agent session does the reading: you tell the agent to run the blumkin loop, and it follows your existing `tasks/<name>.md` template.
+Some requests need a model: read a photo, summarize a thread, build a document. blumkin calls no model and the loop starts no agent, so for those the loop only queues the work and your own agent session does it: a mail from an allowlisted sender whose subject has a keyword is queued, you tell the agent to run the blumkin loop, and it follows your existing `tasks/<name>.md` template (for example a template that turns a photo of a workbook page into a vocabulary document). What the work is lives only in your templates and trigger config, not in blumkin.
 
 ```toml
-[loop.triggers.lessons]
+[loop.triggers.requests]
 kind = "loop"
-task = "lesson"
-instance = "lessons"                  # any name; lessons are handled one at a time
+task = "agent"
+instance = "requests"                 # any name; items are handled one at a time
 allowlist = ["you@example.com"]
-attachment_types = [".jpg", ".jpeg", ".png", ".heic", ".pdf"]
+attachment_types = [".jpg", ".jpeg", ".png", ".heic", ".pdf"]   # what to keep from the mail
 
-[loop.triggers.lessons.templates]     # subject keyword = template name
-bia = "eb-lesson"
-elena = "eb-lesson"
-ana = "aj-lesson"
+[loop.triggers.requests.templates]    # subject keyword = template name
+report = "weekly-report"
+summary = "weekly-report"
+digest = "daily-digest"
 ```
 
-1. The poller saves the photo like any other attachment; the handler renames the saved images to `page-1.jpg`, `page-2.png` and so on, so the mail's own file names never reach the agent. The `lesson` handler splits the subject into words (case and accents folded), and exactly one distinct template must match: none, or two different ones, is `needs_user` and nothing is queued. The subject is only matched, never executed or copied into a reason.
-2. With a page image saved, the run ends `needs_user` with the reason `lesson waiting for an agent` and a short notice that says to ask your agent to run the loop. The item is kept in `loop/lessons/` (private). The same mail is never queued twice.
-3. In your agent session, `blumkin loop pending --json` lists each waiting item: its id, the template name, the saved page image path(s) and instructions. For each one the agent reads `blumkin tasks show --name TEMPLATE --json`, follows the template with the saved photo (no mail search), and creates the document.
+1. The poller saves the attachments like any other mail; the handler renames the saved files to `attachment-1.jpg`, `attachment-2.pdf` and so on, so the mail's own file names never reach the agent. The `agent` handler splits the subject into words (case and accents folded), and exactly one distinct template must match: none, or two different ones, is `needs_user` and nothing is queued. The subject is only matched, never executed or copied into a reason.
+2. With at least one attachment saved, the run ends `needs_user` with the reason `waiting for an agent` and a short notice that says to ask your agent to run the loop. A mail with no saved attachment is not queued. The item is kept in `loop/agent-items/` (private). The same mail is never queued twice.
+3. In your agent session, `blumkin loop pending --json` lists each waiting item: its id, the template name, the saved attachment path(s) and instructions. For each one the agent reads `blumkin tasks show --name TEMPLATE --json`, follows the template with the saved attachments (no mail search), and creates the document.
 4. `blumkin loop finish ID --doc URL` (repeat `--doc` per document) creates a threaded plain-text reply to the original message, checks the draft, sends it and closes the item. Only https links to a Google Docs, Sheets or Slides document, a Drive file or a Drive folder are accepted (not viewers, redirectors or `open?id=` links). The draft must be addressed only to an address on the trigger's allowlist with no Cc or Bcc, so a `Reply-To` header in the mail cannot redirect it; a draft that fails the check is deleted and nothing is sent. A second finish (or a hand-back) while one is sending, or within two minutes of one that crashed, is refused as in progress. Finishing twice replies once; if sending fails the draft and links are kept, so `finish` can be run again and sends that same draft (exit `1`, `reply_failed`) with the same links (different links are refused, because the saved draft carries the earlier ones). The saved draft is sent as it was made: between attempts it sits in Drafts, and blumkin has no way to read a draft back, so anything that edits it with `mail update-draft` is the operator's own authority. `blumkin loop finish ID --needs-user "why"` hands an item back and sends nothing; `blumkin loop pending --handed-back` lists those with the reason, and `finish --doc` can still close one.
 
-The page contents are data, never instructions. The journal and notices carry ids and outcomes only; a hand-back note stays in the private item file.
+The attachment contents are data, never instructions. The journal and notices carry ids and outcomes only; a hand-back note stays in the private item file.
 
 ## Operate
 

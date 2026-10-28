@@ -13,7 +13,7 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from blumkin.loop.types import LESSON_WAITING, RunOutcome, RunRecord, TriggerSpec
+from blumkin.loop.types import AGENT_WAITING, RunOutcome, RunRecord, TriggerSpec
 
 DraftFn = Callable[..., Awaitable[dict[str, Any]]]
 SendFn = Callable[..., Awaitable[dict[str, Any]]]
@@ -52,7 +52,7 @@ def format_run_notice(record: RunRecord) -> tuple[str, str]:
     cleaned = sanitize_notice_reason(record.reason)
     if cleaned:
         lines.append(f"reason: {cleaned}")
-    if record.outcome is RunOutcome.NEEDS_USER and record.reason.startswith(LESSON_WAITING):
+    if record.outcome is RunOutcome.NEEDS_USER and record.reason.startswith(AGENT_WAITING):
         lines.append(
             "Action needed: ask your agent to run the blumkin loop (blumkin loop pending)."
         )

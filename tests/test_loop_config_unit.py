@@ -158,7 +158,11 @@ def _agent_trigger(**extra: object) -> dict:
         "kind": "loop",
         "instance": "requests",
         "allowlist": ["me@example.com"],
-        "templates": {"Report": "weekly-report", "summary": "weekly-report", "Digest": "daily-digest"},
+        "templates": {
+            "Report": "weekly-report",
+            "summary": "weekly-report",
+            "Digest": "daily-digest",
+        },
     }
     table.update(extra)
     return {"loop": {"triggers": {"requests": table}}}
@@ -166,7 +170,11 @@ def _agent_trigger(**extra: object) -> dict:
 
 def test_agent_templates_are_parsed_with_folded_keywords(tmp_path: Path) -> None:
     spec = parse_loop_setup(tmp_path, _agent_trigger()).triggers["requests"]
-    assert spec.templates == (("digest", "daily-digest"), ("report", "weekly-report"), ("summary", "weekly-report"))
+    assert spec.templates == (
+        ("digest", "daily-digest"),
+        ("report", "weekly-report"),
+        ("summary", "weekly-report"),
+    )
     assert spec.as_dict()["templates"] == {
         "digest": "daily-digest",
         "report": "weekly-report",
