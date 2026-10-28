@@ -54,7 +54,7 @@ def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def _write_config(config: Path, agent: str, extra: str = "") -> None:
+def _write_config(config: Path, agent: str, extra: str = "", timeout: int = 20) -> None:
     (config / "agent.py").write_text(_AGENT, encoding="utf-8")
     (config / "config.toml").write_text(
         "\n".join(
@@ -65,7 +65,7 @@ def _write_config(config: Path, agent: str, extra: str = "") -> None:
                 "[loop]",
                 f"agent_command = {json.dumps(agent)}",
                 "agent_quiet_seconds = 0.3",
-                "agent_timeout_seconds = 20",
+                f"agent_timeout_seconds = {timeout}",
                 extra,
                 "",
                 "[loop.triggers.requests]",
@@ -180,9 +180,7 @@ def test_nothing_waiting_starts_no_agent(config: Path) -> None:
 def test_waiting_items_without_an_agent_command_is_a_usage_error(config: Path) -> None:
     _write_config(config, "x")
     text = (config / "config.toml").read_text(encoding="utf-8")
-    (config / "config.toml").write_text(
-        text.replace('agent_command = "x"\n', ""), encoding="utf-8"
-    )
+    (config / "config.toml").write_text(text.replace('agent_command = "x"\n', ""), encoding="utf-8")
     _queue(config)
     result = _run()
     assert result.exit_code == EXIT_USAGE, result.output
@@ -250,7 +248,7 @@ def test_agent_that_leaves_the_item_waiting_is_ended_and_reported(config: Path) 
     _write_config(
         config,
         _stand_in(config, "idle", item),
-        extra="agent_timeout_seconds = 2",
+        timeout=2,
     )
     result = _run()
     assert result.exit_code == EXIT_OTHER, result.output
@@ -268,7 +266,7 @@ def test_agent_that_never_answers_times_out_and_is_terminated(config: Path) -> N
     _write_config(
         config,
         _stand_in(config, "hang", item),
-        extra="agent_timeout_seconds = 2",
+        timeout=2,
     )
     result = _run()
     assert result.exit_code == EXIT_OTHER, result.output

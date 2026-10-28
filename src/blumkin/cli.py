@@ -144,6 +144,7 @@ from blumkin.install_method import (
     upgrade_steps,
 )
 from blumkin.loop import commands as loop_commands
+from blumkin.loop.agent_session import AgentSessionError
 from blumkin.loop.agent_task import AgentItemNotFoundError, AgentReplyError, AgentTaskError
 from blumkin.loop.config import LoopConfigError, LoopTriggerNotFoundError
 from blumkin.loop.init import LoopInitError, init_profiles
@@ -640,6 +641,7 @@ def _loop_fail(exc: BaseException, *, as_json: bool) -> NoReturn:
     elif isinstance(
         exc,
         (
+            AgentSessionError,
             AgentTaskError,
             LoopConfigError,
             LoopInitError,
@@ -3043,6 +3045,29 @@ def loop() -> None:
     are serialized; a kill switch stops every run. Mail and schedule feeders live
     under #499 / #503.
     """
+
+
+@loop.command("agent", epilog=help_text.LOOP_AGENT_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def loop_agent(ctx: click.Context, as_json_flag: bool) -> None:
+    """Run your agent in a pty to work through waiting loop items, logging the session."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = loop_commands.run_agent(load_loop_setup())
+    except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
+        _loop_fail(exc, as_json=as_json)
+    if as_json:
+        emit_json(payload)
+    else:
+        lines = [payload["message"]]
+        if payload["log"]:
+            lines.append(f"log: {payload['log']}")
+        if not payload["ok"]:
+            lines.extend(f"  still waiting: {item}" for item in payload["remaining"])
+        emit_lines(lines)
+    if not payload["ok"]:
+        raise SystemExit(EXIT_OTHER)
 
 
 @loop.command("finish", epilog=help_text.LOOP_FINISH_EPILOG)

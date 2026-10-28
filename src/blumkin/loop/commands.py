@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from blumkin.loop.agent_session import run_agent_session
 from blumkin.loop.agent_task import (
     AgentTaskError,
     finish_item,
@@ -44,6 +45,11 @@ class TriggerStatus:
             "paused": self.paused,
             "trigger": self.trigger,
         }
+
+
+def run_agent(setup: LoopSetup) -> dict[str, Any]:
+    """Run the configured agent against the waiting items; the payload carries `ok`."""
+    return run_agent_session(setup).as_dict()
 
 
 def finish(

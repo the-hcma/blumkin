@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,10 @@ from blumkin.browser.profiles import is_valid_task_name
 from blumkin.loop.agent_task import fold_keyword
 from blumkin.loop.types import AGENT_TASK, InstanceResolver, TriggerKind, TriggerSpec
 
+DEFAULT_AGENT_EXIT_INPUT = "/exit"
+DEFAULT_AGENT_PROMPT = "run the blumkin loop"
+DEFAULT_AGENT_QUIET_SECONDS = 5.0
+DEFAULT_AGENT_TIMEOUT_SECONDS = 1800.0
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_BACKOFF_SECONDS = 30.0
 DEFAULT_RUN_BUDGET_SECONDS = 600.0
@@ -38,6 +43,13 @@ _TRIGGER_KEYS_LOOP = frozenset(
 class LoopConfig:
     """Top-level `[loop]` runner settings."""
 
+    # The agent `blumkin loop agent` runs in a pty (argv; empty when not configured).
+    agent_command: tuple[str, ...] = ()
+    agent_exit_input: str = DEFAULT_AGENT_EXIT_INPUT
+    agent_prompt: str = DEFAULT_AGENT_PROMPT
+    # Output silence that means the agent is ready, or has finished answering.
+    agent_quiet_seconds: float = DEFAULT_AGENT_QUIET_SECONDS
+    agent_timeout_seconds: float = DEFAULT_AGENT_TIMEOUT_SECONDS
     kill_switch: bool = False
     kill_switch_file: Path | None = None
     max_retries: int = DEFAULT_MAX_RETRIES
@@ -104,6 +116,18 @@ def parse_loop_setup(config_dir: Path, file_data: dict[str, Any]) -> LoopSetup:
                 )
             triggers[spec.name] = spec
     return LoopSetup(config_dir=config_dir, loop=loop, triggers=triggers)
+
+
+def _agent_command(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    text = _require_string(value, "loop.agent_command")
+    try:
+        return tuple(shlex.split(text))
+    except ValueError as exc:
+        raise LoopConfigError(
+            f"loop.agent_command must be a shell-style command line in config.toml, got {text!r}"
+        ) from exc
 
 
 def _check_name(kind: str, name: str) -> str:
@@ -256,6 +280,11 @@ def _loop_config(raw: Any, config_dir: Path) -> LoopConfig:
     unknown = sorted(
         set(raw)
         - {
+            "agent_command",
+            "agent_exit_input",
+            "agent_prompt",
+            "agent_quiet_seconds",
+            "agent_timeout_seconds",
             "kill_switch",
             "kill_switch_file",
             "max_retries",
@@ -268,7 +297,9 @@ def _loop_config(raw: Any, config_dir: Path) -> LoopConfig:
     if unknown:
         raise LoopConfigError(
             f"loop has unknown key(s) {', '.join(unknown)} in config.toml; "
-            "expected kill_switch, kill_switch_file, max_retries, notice_to, "
+            "expected agent_command, agent_exit_input, agent_prompt, "
+            "agent_quiet_seconds, agent_timeout_seconds, kill_switch, kill_switch_file, "
+            "max_retries, notice_to, "
             "retry_backoff_seconds, run_budget_seconds, triggers"
         )
     kill_file: Path | None = None
@@ -297,6 +328,23 @@ def _loop_config(raw: Any, config_dir: Path) -> LoopConfig:
                 f"loop.notice_to must be an email address in config.toml, got {notice_to!r}"
             )
     return LoopConfig(
+        agent_command=_agent_command(raw.get("agent_command")),
+        agent_exit_input=_require_string(
+            raw.get("agent_exit_input", DEFAULT_AGENT_EXIT_INPUT), "loop.agent_exit_input"
+        ),
+        agent_prompt=_require_string(
+            raw.get("agent_prompt", DEFAULT_AGENT_PROMPT), "loop.agent_prompt"
+        ),
+        agent_quiet_seconds=_coerce_float(
+            raw.get("agent_quiet_seconds", DEFAULT_AGENT_QUIET_SECONDS),
+            "loop.agent_quiet_seconds",
+            minimum=0.05,
+        ),
+        agent_timeout_seconds=_coerce_float(
+            raw.get("agent_timeout_seconds", DEFAULT_AGENT_TIMEOUT_SECONDS),
+            "loop.agent_timeout_seconds",
+            minimum=1.0,
+        ),
         kill_switch=_coerce_bool(raw.get("kill_switch", False), "loop.kill_switch"),
         kill_switch_file=kill_file,
         max_retries=_coerce_int(
