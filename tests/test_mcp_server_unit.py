@@ -139,7 +139,7 @@ def test_required_yes_skills_expose_confirm_not_a_deadlock() -> None:
 
 def test_notifying_tool_without_confirm_is_a_domain_error() -> None:
     with patch("blumkin.mcp_server.load_config", return_value=_CFG):
-        result = _drive(lambda c: c.call_tool("chat.send", {"with": "Ada", "text": "hi"}))
+        result = _drive(lambda c: c.call_tool("chat.send", {"draft_id": "d1"}))
     assert result.is_error is True
     assert result.structured_content["ok"] is False
     assert result.structured_content["error"] == "usage_error"
@@ -510,9 +510,7 @@ def test_provider_capability_mismatch_surfaces_as_usage_error() -> None:
         patch("blumkin.mcp_server.load_config", return_value=cfg),
         patch("blumkin.skills.dispatch.get_provider", return_value=prov),
     ):
-        result = _drive(
-            lambda c: c.call_tool("drive.read", {"item_id": "01ABC", "profile": "work"})
-        )
+        result = _drive(lambda c: c.call_tool("drive.read", {"id": "01ABC", "profile": "work"}))
     assert result.is_error is True
     assert result.structured_content["error"] == "usage_error"
     assert "not supported" in result.structured_content["message"]
@@ -824,7 +822,9 @@ def test_the_hint_for_a_known_mistake_names_the_right_argument() -> None:
 
 
 def test_a_near_miss_suggests_the_closest_argument() -> None:
-    result, _ = _unknown_arguments_call("calendar.create", {"subject": "S", "start": "x", "durration": "30"})
+    result, _ = _unknown_arguments_call(
+        "calendar.create", {"subject": "S", "start": "x", "durration": "30"}
+    )
     assert "duration" in result.structured_content["hint"]
 
 
@@ -838,15 +838,14 @@ def test_the_message_lists_the_valid_arguments_without_echoing_values() -> None:
 
 
 def test_a_key_that_looks_like_an_auth_error_is_still_a_usage_error() -> None:
-    result, _ = _unknown_arguments_call(
-        "calendar.today", {"client_id": "x", "Missing": "y"}
-    )
+    result, _ = _unknown_arguments_call("calendar.today", {"client_id": "x", "Missing": "y"})
     assert result.structured_content["error"] == "usage_error"
 
 
 def test_known_arguments_and_the_synthetic_ones_still_work() -> None:
     result, provider_call = _unknown_arguments_call(
-        "calendar.update", {"event_id": "e1", "subject": "New", "with": ["a@example.com"], "confirm": True}
+        "calendar.update",
+        {"event_id": "e1", "subject": "New", "with": ["a@example.com"], "confirm": True},
     )
     assert result.is_error is False
     assert provider_call.await_count == 1
@@ -858,4 +857,4 @@ def test_every_advertised_property_of_every_tool_is_accepted() -> None:
 
     for name, tool in _list_tools().items():
         props = tool.input_schema["properties"]
-        assert _unknown_arguments(name, dict.fromkeys(props), set(props)) == [], name
+        assert _unknown_arguments(dict.fromkeys(props), set(props)) == [], name

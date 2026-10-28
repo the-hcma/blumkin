@@ -162,6 +162,14 @@ class ServerOutdatedError(RuntimeError):
     """
 
 
+class UnknownArgumentError(ValueError):
+    """A tool call named arguments the skill does not declare (issue #456)."""
+
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint
+
+
 def graph_http_status(exc: BaseException) -> int | None:
     """Best-effort HTTP status from a kiota/msgraph or googleapiclient exception."""
     for attr in ("response_status_code", "status_code"):
@@ -195,7 +203,7 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
             str(exc),
             agent_instructions=exc.agent_instructions,
         )
-    if isinstance(exc, ConsentRequiredError | ScopeAddonDisabledError):
+    if isinstance(exc, ConsentRequiredError | ScopeAddonDisabledError | UnknownArgumentError):
         return ErrorInfo("usage_error", EXIT_USAGE, str(exc), exc.hint)
     if isinstance(exc, ServerOutdatedError):
         return ErrorInfo("server_outdated", EXIT_OTHER, str(exc), _SERVER_OUTDATED_HINT)
