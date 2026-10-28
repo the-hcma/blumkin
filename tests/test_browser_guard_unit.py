@@ -77,7 +77,9 @@ class _Raw:
         self.calls.append(("frame-aria", index, is_allowed("a.example.com")))
         return '- tab "Transcript"'
 
-    def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]:
+    def frame_list(
+        self, is_allowed: Callable[[str], bool], *, wait_s: float = 0.0
+    ) -> tuple[FrameInfo, ...]:
         self.calls.append(("frames", is_allowed("a.example.com")))
         return (
             FrameInfo(allowed=True, host="a.example.com", index=1, origin="https://a.example.com"),
