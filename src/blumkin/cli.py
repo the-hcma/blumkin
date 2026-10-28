@@ -87,6 +87,7 @@ from blumkin.browser.explore_commands import (
 )
 from blumkin.browser.guard import SubmitBlockedError
 from blumkin.browser.handoff import HandoffError, format_handoff_human
+from blumkin.browser.init_task import TEMPLATES, InitTaskError, init_task
 from blumkin.browser.launcher import BrowserLaunchError
 from blumkin.browser.ledger import LedgerError, LedgerJournalError, LedgerNotFoundError
 from blumkin.browser.ledger_commands import (
@@ -2179,6 +2180,53 @@ def browser() -> None:
     profile that blumkin launches and you sign in to by hand (issue #462). The task
     fills in the form and never submits; it ends by telling you what to click.
     """
+
+
+@browser.command("init-task", epilog=help_text.BROWSER_INIT_TASK_EPILOG)
+@click.argument("task", required=False)
+@click.option(
+    "--template",
+    "template",
+    type=click.Choice(sorted(TEMPLATES)),
+    default="teams-transcript",
+    show_default=True,
+    help="The built-in task template to start from.",
+)
+@click.option(
+    "--yes", "yes", is_flag=True, help="Write the table to config.toml (never overwrites)."
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_init_task(
+    ctx: click.Context, task: str | None, template: str, yes: bool, as_json_flag: bool
+) -> None:
+    """Create a task's browser profile and its starting policy from a built-in template."""
+    as_json = _as_json(ctx, as_json_flag)
+    name = task or template
+    try:
+        payload = init_task(config_dir(), name, template, write=yes)
+    except InitTaskError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=name)
+    if as_json:
+        emit_json(payload)
+        return
+    lines = [payload["summary"], "", payload["table"].rstrip()]
+    if payload["written"]:
+        lines.extend(["", f"added to {payload['config_path']}"])
+    elif payload["already_declared"]:
+        lines.extend(
+            ["", f"{name} is already declared in {payload['config_path']}; left unchanged"]
+        )
+    else:
+        lines.extend(
+            ["", f"not written: add it to {payload['config_path']} yourself, or re-run with --yes"]
+        )
+    lines.extend(["", "Next:"])
+    lines.extend(f"  {number}. {step}" for number, step in enumerate(payload["next_steps"], 1))
+    emit_lines(lines)
 
 
 @browser.command("launch", epilog=help_text.BROWSER_LAUNCH_EPILOG)

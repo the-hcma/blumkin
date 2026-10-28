@@ -408,6 +408,22 @@ repeatable) and the numbered steps for the user's final click (`--step`, repeata
 at least one). The task never submits; this is how it hands over.
 """
 
+BROWSER_INIT_TASK_EPILOG = """
+Examples:
+
+\b
+  blumkin browser init-task --template teams-transcript
+  blumkin browser init-task weekly-sync --template teams-transcript --yes
+
+Creates the task's browser profile (empty; your sign-in lives there later) and prints the
+`[browser.tasks.TASK]` table the template starts from: the hosts the site uses, including the
+SharePoint host its transcript pane is served from, and the navigation controls the task may
+click. Without `--yes` nothing is written to config.toml; with `--yes` the table is appended
+to it (the file is created with mode 0600 when it does not exist). A table of that name that
+already exists is never changed, and a config.toml that is not valid TOML, or is a symlink, is
+left alone. TASK defaults to the template name. Templates: teams-transcript.
+"""
+
 BROWSER_LAUNCH_EPILOG = """
 Examples:
 

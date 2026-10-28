@@ -70,7 +70,7 @@ With `provider = "google"` in config, supported verbs are calendar (`today` / `v
 
 ## Browser-assisted tasks
 
-For work that has no API, such as filing an expense report or filling in a time sheet, use the skills in `.agents/skills/expense-report` and `.agents/skills/time-sheet`.
+For work that has no API, such as filing an expense report or filling in a time sheet, use the skills in `.agents/skills/expense-report` and `.agents/skills/time-sheet`. To capture a Teams meeting transcript, use `.agents/skills/teams-transcript`.
 
 They drive a browser the user signs in to themselves with `blumkin browser` (`profile create`, `launch`, `goto`, `read`, `fill`, `upload`, `click`, `press`, `handoff`, `transcript`) and read receipts with `blumkin receipts`; a task fills the form and never submits, and ends by telling the user what to click.
 

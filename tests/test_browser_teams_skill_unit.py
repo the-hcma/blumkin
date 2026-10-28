@@ -50,9 +50,7 @@ def test_the_skill_is_read_only_and_keeps_the_transcript_private() -> None:
         assert place in text
 
 
-def test_the_skill_explains_the_coverage_report_and_never_claims_a_complete_transcript_unchecked() -> (
-    None
-):
+def test_the_skill_explains_the_coverage_report_and_does_not_claim_unchecked_completeness() -> None:
     text = _text()
     assert "coverage" in text
     assert "`complete`" in text
