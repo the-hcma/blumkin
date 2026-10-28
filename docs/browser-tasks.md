@@ -150,5 +150,6 @@ Every capture carries a coverage report, so a gap is reported instead of silentl
 | `profile_in_use` | 1 | Raised when the task's browser is running or a launch for it is in progress; close it or wait, then try again. |
 | `explore_refused` | 1 | Exploration needs `allowed_hosts` for the task, or the page is (or a click led) outside them. |
 | `model_invalid` | 1 | The draft or the stored model was rejected: a field outside the schema, a value that looks like typed data, a symlink or a file that is too large. |
+| `reply_failed` | 1 | `blumkin loop finish` could not send its reply; the lesson's documents are kept, so run it again. |
 | `ledger_invalid` | 1 | A task instance journal has a damaged line (not just a torn last one); restore it from a backup or discard the instance. |
 | `usage_error` | 2 | A bad task name, a missing `--yes`, or a handoff with no `--step`. |

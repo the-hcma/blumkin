@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.browser.profiles import is_valid_task_name
-from blumkin.loop.types import InstanceResolver, TriggerKind, TriggerSpec
+from blumkin.loop.lesson import fold_keyword
+from blumkin.loop.types import LESSON_TASK, InstanceResolver, TriggerKind, TriggerSpec
 
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_BACKOFF_SECONDS = 30.0
@@ -28,6 +29,7 @@ _TRIGGER_KEYS_LOOP = frozenset(
         "profiles",
         "subject_tag",
         "task",
+        "templates",
     }
 )
 
@@ -207,6 +209,45 @@ def _instance_resolver(value: Any, label: str) -> InstanceResolver:
         ) from exc
 
 
+def _lesson_templates(
+    name: str, task: str, kind: TriggerKind, raw: Any
+) -> tuple[tuple[str, str], ...]:
+    """The subject-keyword to template table of a `lesson` trigger (issue #506)."""
+    label = f"loop.triggers.{name}.templates"
+    if task != LESSON_TASK:
+        if raw is not None:
+            raise LoopConfigError(
+                f"{label} is only used with task = '{LESSON_TASK}' in config.toml; "
+                f"remove it from a {task!r} trigger"
+            )
+        return ()
+    if kind is not TriggerKind.LOOP:
+        raise LoopConfigError(
+            f"loop.triggers.{name}.kind must be 'loop' for task = '{LESSON_TASK}' in "
+            f"config.toml, got {kind.value!r}"
+        )
+    if not isinstance(raw, dict) or not raw:
+        raise LoopConfigError(
+            f"{label} must be a non-empty table of subject keyword = template name "
+            f"in config.toml, got {raw!r}"
+        )
+    pairs: dict[str, str] = {}
+    for key, value in raw.items():
+        keyword = fold_keyword(key) if isinstance(key, str) else None
+        if keyword is None:
+            raise LoopConfigError(
+                f"{label} keyword must be one word of letters or digits in config.toml, got {key!r}"
+            )
+        if not isinstance(value, str) or not is_valid_task_name(value):
+            raise LoopConfigError(
+                f"{label}.{key} template must be a valid task name in config.toml, got {value!r}"
+            )
+        if keyword in pairs:
+            raise LoopConfigError(f"{label} lists the keyword {keyword!r} twice in config.toml")
+        pairs[keyword] = value
+    return tuple(sorted(pairs.items()))
+
+
 def _loop_config(raw: Any, config_dir: Path) -> LoopConfig:
     if raw is None:
         return LoopConfig()
@@ -329,6 +370,7 @@ def _loop_trigger(name: str, table: Any) -> TriggerSpec:
     subject_tag: str | None = None
     if subject_raw is not None:
         subject_tag = _require_string(subject_raw, f"loop.triggers.{name}.subject_tag")
+    templates = _lesson_templates(name, task, kind, table.get("templates"))
     if kind is TriggerKind.LOOP:
         from blumkin.loop.mail_trust import is_allowlist_email
 
@@ -365,6 +407,7 @@ def _loop_trigger(name: str, table: Any) -> TriggerSpec:
         profiles=tuple(profiles),
         subject_tag=subject_tag,
         task=task,
+        templates=templates,
     )
 
 

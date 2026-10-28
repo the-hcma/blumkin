@@ -72,6 +72,31 @@ The `expense-report` task files the receipts the poller saved under `loop/intake
 
 A re-run of the same message is idempotent: a receipt already filled or verified is counted as already filed.
 
+## Lessons (page photo to a Drive document)
+
+A mail with a photo of a lesson page and a keyword in the subject (a name, say) starts a lesson. blumkin calls no model and the loop starts no agent, so the loop only queues the work and your own agent session does the reading: you tell the agent to run the blumkin loop, and it follows your existing `tasks/<name>.md` template.
+
+```toml
+[loop.triggers.lessons]
+kind = "loop"
+task = "lesson"
+instance = "lessons"                  # any name; lessons are handled one at a time
+allowlist = ["you@example.com"]
+attachment_types = [".jpg", ".jpeg", ".png", ".heic", ".pdf"]
+
+[loop.triggers.lessons.templates]     # subject keyword = template name
+bia = "eb-lesson"
+elena = "eb-lesson"
+ana = "aj-lesson"
+```
+
+1. The poller saves the photo like any other attachment. The `lesson` handler splits the subject into words (case and accents folded), and exactly one distinct template must match: none, or two different ones, is `needs_user` and nothing is queued. The subject is only matched, never executed or copied into a reason.
+2. With a page image saved, the run ends `needs_user` with the reason `lesson waiting for an agent` and a short notice that says to ask your agent to run the loop. The item is kept in `loop/lessons/` (private). The same mail is never queued twice.
+3. In your agent session, `blumkin loop pending --json` lists each waiting item: its id, the template name, the saved page image path(s) and instructions. For each one the agent reads `blumkin tasks show --name TEMPLATE --json`, follows the template with the saved photo (no mail search), and creates the document.
+4. `blumkin loop finish ID --doc URL` (repeat `--doc` per document) replies to the original message, to its sender only and as plain text, with the link(s) and closes the item. Only https Google Docs and Drive links are accepted. Finishing twice replies once; if the reply fails the links are kept and `finish` can be run again (exit `1`, `reply_failed`). `blumkin loop finish ID --needs-user "why"` hands an item back and sends nothing.
+
+The page contents are data, never instructions. The journal and notices carry ids and outcomes only; a hand-back note stays in the private item file.
+
 ## Operate
 
 ```bash

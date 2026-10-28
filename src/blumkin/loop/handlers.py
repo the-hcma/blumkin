@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from blumkin.loop.types import RunContext, RunOutcome, TriggerSpec
+from blumkin.loop.types import LESSON_TASK, RunContext, RunOutcome, TriggerSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +37,14 @@ HandlerMap = Mapping[str, TaskHandler]
 def default_handlers() -> dict[str, TaskHandler]:
     """Built-in handlers. Browser ledger fill for time-sheet lands with #488/#489."""
     from blumkin.loop.expense_handler import expense_report
+    from blumkin.loop.lesson import lesson
 
-    return {"expense-report": expense_report, "probe": _probe, "time-sheet": _time_sheet}
+    return {
+        "expense-report": expense_report,
+        LESSON_TASK: lesson,
+        "probe": _probe,
+        "time-sheet": _time_sheet,
+    }
 
 
 def register_handler(

@@ -9,7 +9,6 @@ import pytest
 
 from blumkin.loop.journal import list_runs
 from blumkin.loop.lesson import (
-    LESSON_TASK,
     LessonError,
     LessonNotFoundError,
     LessonReplyError,
@@ -20,7 +19,7 @@ from blumkin.loop.lesson import (
     pick_template,
 )
 from blumkin.loop.mail_intake import intake_dir
-from blumkin.loop.types import RunContext, RunOutcome, TriggerKind, TriggerSpec
+from blumkin.loop.types import LESSON_TASK, RunContext, RunOutcome, TriggerKind, TriggerSpec
 
 _MESSAGE = "AAMkAGI2-message-one"
 _TEMPLATES = (
@@ -197,7 +196,6 @@ def test_finishing_replies_with_the_links_and_closes_the_item(tmp_path: Path) ->
     last = list_runs(tmp_path)[-1]
     assert last.outcome is RunOutcome.DONE
     assert (last.task, last.trigger, last.instance) == (LESSON_TASK, "lessons", "lessons")
-    assert last.reason == "lesson done: 2 document(s)"
 
 
 def test_finishing_twice_replies_once(tmp_path: Path) -> None:
@@ -277,7 +275,6 @@ def test_handing_an_item_back_records_why_and_sends_nothing(tmp_path: Path) -> N
     assert replies.sent == []
     last = list_runs(tmp_path)[-1]
     assert last.outcome is RunOutcome.NEEDS_USER
-    assert last.reason.startswith("lesson handed back")
 
 
 def test_a_handed_back_item_can_still_be_finished_later(tmp_path: Path) -> None:

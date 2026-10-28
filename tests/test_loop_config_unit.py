@@ -150,3 +150,54 @@ def test_cron_triggers_stay_static(tmp_path: Path) -> None:
                 }
             },
         )
+
+
+def _lesson_trigger(**extra: object) -> dict:
+    table: dict = {
+        "task": "lesson",
+        "kind": "loop",
+        "instance": "lessons",
+        "allowlist": ["me@example.com"],
+        "templates": {"Bia": "eb-lesson", "elena": "eb-lesson", "Ana": "aj-lesson"},
+    }
+    table.update(extra)
+    return {"loop": {"triggers": {"lessons": table}}}
+
+
+def test_lesson_templates_are_parsed_with_folded_keywords(tmp_path: Path) -> None:
+    spec = parse_loop_setup(tmp_path, _lesson_trigger()).triggers["lessons"]
+    assert spec.templates == (("ana", "aj-lesson"), ("bia", "eb-lesson"), ("elena", "eb-lesson"))
+    assert spec.as_dict()["templates"] == {
+        "ana": "aj-lesson",
+        "bia": "eb-lesson",
+        "elena": "eb-lesson",
+    }
+
+
+@pytest.mark.parametrize(
+    ("change", "fragment"),
+    [
+        ({"templates": {}}, "templates"),
+        ({"templates": "eb-lesson"}, "templates"),
+        ({"templates": {"bia lesson": "eb-lesson"}}, "keyword"),
+        ({"templates": {"": "eb-lesson"}}, "keyword"),
+        ({"templates": {"bia": "../x"}}, "template"),
+        ({"templates": {"bia": 3}}, "template"),
+        ({"templates": {"Bia": "a", "bia": "b"}}, "twice"),
+        ({"kind": "manual", "allowlist": None}, "kind"),
+    ],
+)
+def test_a_bad_lesson_trigger_is_refused(tmp_path: Path, change: dict, fragment: str) -> None:
+    table = _lesson_trigger(**change)
+    if change.get("allowlist", 1) is None:
+        del table["loop"]["triggers"]["lessons"]["allowlist"]
+    with pytest.raises(LoopConfigError, match=fragment):
+        parse_loop_setup(tmp_path, table)
+
+
+def test_templates_belong_to_the_lesson_task_only(tmp_path: Path) -> None:
+    with pytest.raises(LoopConfigError, match="lesson"):
+        parse_loop_setup(
+            tmp_path,
+            _mail_trigger(instance="trip-1", templates={"bia": "eb-lesson"}),
+        )

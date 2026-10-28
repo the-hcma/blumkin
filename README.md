@@ -275,7 +275,7 @@ Chrome, Edge and Chromium are supported; set `[browser] default = "edge"` in `co
 
 ## Loop and cron (unattended)
 
-For recurring catch-up (mail receipts into an expense instance, end-of-day time sheet), configure `[loop.triggers.*]` and `[cron.*]` and run `blumkin loop` as a systemd user service (or `blumkin loop run` in the foreground). The runner polls allowlisted mailboxes, drains a local queue, fires due cron entries, journals outcomes, and can mail short notices when a run needs you. It does not explore sites or submit forms. Operator guide: [`docs/loop.md`](./docs/loop.md).
+For recurring catch-up (mail receipts into an expense instance, end-of-day time sheet), configure `[loop.triggers.*]` and `[cron.*]` and run `blumkin loop` as a systemd user service (or `blumkin loop run` in the foreground). The runner polls allowlisted mailboxes, drains a local queue, fires due cron entries, journals outcomes, and can mail short notices when a run needs you. A mailed lesson-page photo is queued for your own agent session (`blumkin loop pending`, then `blumkin loop finish`), which replies with the Drive link. It does not explore sites or submit forms. Operator guide: [`docs/loop.md`](./docs/loop.md).
 
 ## Tests
 
