@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import stat
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -45,7 +46,7 @@ _ALLOW = ("me@example.com",)
 def _trigger() -> TriggerSpec:
     return TriggerSpec(
         allowlist=("me@example.com",),
-        attachment_types=(".jpg", ".png"),
+        attachment_types=(".jpg", ".jpeg", ".png", "TXT", ".gz"),
         instance="requests",
         kind=TriggerKind.LOOP,
         name="requests",
@@ -581,8 +582,6 @@ def test_more_than_ten_attachments_are_capped_and_the_rest_counted(tmp_path: Pat
     ("name", "expected"),
     [
         ("scan.tar.gz", "attachment-1.gz"),
-        ("README", "attachment-1"),
-        ("weird.abcdefghijk", "attachment-1"),
         ("Photo.JPEG", "attachment-1.jpeg"),
     ],
 )
@@ -616,3 +615,31 @@ def test_an_error_while_renaming_is_a_needs_user_not_a_crash(
     assert result.outcome is RunOutcome.NEEDS_USER
     assert "intake folder is not usable" in result.reason
     assert pending_items(tmp_path) == []
+
+
+@pytest.mark.parametrize("name", ["README", "weird.abcdefghijk", "run.exe", "page.html"])
+def test_a_file_the_trigger_does_not_allow_is_not_an_attachment(tmp_path: Path, name: str) -> None:
+    _save_attachment(tmp_path, name)
+    _save_attachment(tmp_path, "scan.jpg")
+    agent_task(_trigger(), context=_context(tmp_path))
+    (item,) = pending_items(tmp_path)
+    assert [Path(f).name for f in item.files] == ["attachment-1.jpg"]
+
+
+def test_a_file_saved_under_an_older_policy_is_dropped_when_the_policy_narrows(
+    tmp_path: Path,
+) -> None:
+    _save_attachment(tmp_path, "notes.txt")
+    _save_attachment(tmp_path, "scan.jpg")
+    narrowed = replace(_trigger(), attachment_types=(".jpg",))
+    agent_task(narrowed, context=_context(tmp_path))
+    (item,) = pending_items(tmp_path)
+    assert [Path(f).name for f in item.files] == ["attachment-1.jpg"]
+
+
+def test_attachments_come_back_in_numeric_not_text_order(tmp_path: Path) -> None:
+    for number in range(1, 11):
+        _save_attachment(tmp_path, f"attachment-{number}.jpg")
+    agent_task(_trigger(), context=_context(tmp_path))
+    (item,) = pending_items(tmp_path)
+    assert [Path(f).name for f in item.files] == [f"attachment-{n}.jpg" for n in range(1, 11)]

@@ -254,7 +254,8 @@ def agent_task(trigger: TriggerSpec, *, context: RunContext | None = None) -> Ha
         return _stop("agent task not queued: the attachments were not saved")
     try:
         files, ignored = _attachments(
-            intake_dir(context.config_dir, trigger=trigger.name, message_id=context.message_id)
+            intake_dir(context.config_dir, trigger=trigger.name, message_id=context.message_id),
+            trigger.attachment_types,
         )
     except LoopIntakeError, OSError:
         return _stop("agent task not queued: the intake folder is not usable")
@@ -340,18 +341,23 @@ def _addresses(value: Any) -> set[str]:
     return found
 
 
-def _attachments(directory: Path) -> tuple[tuple[str, ...], int]:
+def _attachments(directory: Path, attachment_types: Sequence[str]) -> tuple[tuple[str, ...], int]:
     """The mail's saved attachments as `attachment-N.ext`, and how many were left out.
 
-    The mail's own file names are data: every other file is renamed to the next free
-    `attachment-N` (a hard link then an unlink, so an existing file is never overwritten),
-    and files already named that way are kept. Hidden and partial-download files are not
-    attachments, and at most `_MAX_ATTACHMENTS` are kept.
+    Only files whose suffix the trigger's `attachment_types` allows now count, even when an
+    older setting let more through at intake. The mail's own file names are data: every other
+    file is renamed to the next free `attachment-N` (a hard link then an unlink, so an
+    existing file is never overwritten), and files already named that way are kept. Hidden and
+    partial-download files are not attachments, and at most `_MAX_ATTACHMENTS` are kept.
     """
+    allowed = {(ext if ext.startswith(".") else f".{ext}").lower() for ext in attachment_types}
     found = [
         path
         for path in sorted(directory.iterdir())
-        if path.is_file() and not path.is_symlink() and not _is_partial(path.name)
+        if path.is_file()
+        and not path.is_symlink()
+        and not _is_partial(path.name)
+        and path.suffix.lower() in allowed
     ]
     ours: list[tuple[int, Path]] = []
     others: list[Path] = []
@@ -363,22 +369,20 @@ def _attachments(directory: Path) -> tuple[tuple[str, ...], int]:
             ours.append((int(match.group(1)), path))
     ours.sort()
     used = {number for number, _ in ours}
-    names = [str(path) for _, path in ours[:_MAX_ATTACHMENTS]]
+    kept = [(number, str(path)) for number, path in ours[:_MAX_ATTACHMENTS]]
     for path in others:
-        if len(names) >= _MAX_ATTACHMENTS:
+        if len(kept) >= _MAX_ATTACHMENTS:
             break
-        suffix = path.suffix.lower()
-        if not _SUFFIX.fullmatch(suffix):
-            suffix = ""
         number = 1
         while number in used:
             number += 1
         used.add(number)
-        target = directory / f"attachment-{number}{suffix}"
+        target = directory / f"attachment-{number}{path.suffix.lower()}"
         os.link(path, target)
         path.unlink()
-        names.append(str(target))
-    return tuple(sorted(names)), len(found) - len(names)
+        kept.append((number, str(target)))
+    kept.sort()
+    return tuple(name for _, name in kept), len(found) - len(kept)
 
 
 def _check_docs(docs: Sequence[str]) -> tuple[str, ...]:
@@ -691,4 +695,3 @@ _OURS = re.compile(r"attachment-(\d+)(?:\.[a-z0-9]{1,10})?")
 _PARTIAL_SUFFIXES = frozenset({".crdownload", ".download", ".part", ".partial", ".tmp"})
 _STATES = frozenset({"done", "needs_user", "pending"})
 _STORE_DIRNAME = "agent-items"
-_SUFFIX = re.compile(r"\.[a-z0-9]{1,10}")

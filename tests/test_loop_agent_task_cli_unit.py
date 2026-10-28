@@ -71,6 +71,7 @@ def _json(result: Any) -> dict[str, Any]:
 def _queue(config: Path) -> str:
     trigger = TriggerSpec(
         allowlist=("me@example.com",),
+        attachment_types=(".jpg",),
         instance="requests",
         kind=TriggerKind.LOOP,
         name="requests",
