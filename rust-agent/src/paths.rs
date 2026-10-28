@@ -282,6 +282,19 @@ pub(crate) mod tests {
     // wins over every `TMPDIR`/`TEMP`/`TMP` candidate below - the fallback
     // order those two tests exercise only ever applies on a non-Darwin
     // Unix, or if `confstr(3)` itself somehow failed.
+
+    #[test]
+    fn lock_env_still_works_after_a_test_panicked_while_holding_it() {
+        // One failing test must not fail every later test that takes the lock
+        // with a `PoisonError` (issue #464).
+        let panicker = std::thread::spawn(|| {
+            let _held = lock_env();
+            panic!("simulated failure while holding the env lock");
+        });
+        assert!(panicker.join().is_err());
+        let _again = lock_env();
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn base_dir_ignores_tmpdir_on_macos_matching_the_python_client() {
