@@ -144,3 +144,63 @@ def test_doctor_reports_the_source_tree_and_how_the_config_dir_was_chosen(
     text = CliRunner().invoke(main, ["doctor"]).output
     assert f"config_dir: {tmp_path} (BLUMKIN_CONFIG_DIR)" in text
     assert "source_tree:" in text
+
+
+def _agent_tree(tmp_path: Path) -> Path:
+    tree = tmp_path / "tree"
+    (tree / "rust-agent" / "src").mkdir(parents=True)
+    (tree / "rust-agent" / "Cargo.toml").write_text("[package]\n")
+    (tree / "rust-agent" / "src" / "main.rs").write_text("fn main() {}\n")
+    return tree
+
+
+def test_the_agent_binary_status_says_missing_stale_or_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from blumkin.agent import paths as agent_paths
+
+    tree = _agent_tree(tmp_path)
+    binary = tmp_path / "bin" / "blumkin-agent"
+    monkeypatch.setattr(agent_paths, "binary_path", lambda: binary)
+    monkeypatch.setattr(agent_paths, "is_supported_platform", lambda: True)
+    missing = agent_paths.binary_status(tree)
+    assert (missing["present"], missing["stale"], missing["supported"]) == (False, None, True)
+    binary.parent.mkdir()
+    binary.write_text("binary")
+    old = tree / "rust-agent" / "src" / "main.rs"
+    os.utime(old, (1_000_000_000, 1_000_000_000))
+    os.utime(tree / "rust-agent" / "Cargo.toml", (1_000_000_000, 1_000_000_000))
+    assert agent_paths.binary_status(tree)["stale"] is False
+    os.utime(old, None)  # a source file newer than the binary
+    os.utime(binary, (1_000_000_100, 1_000_000_100))
+    assert agent_paths.binary_status(tree)["stale"] is True
+    assert agent_paths.binary_status(None)["stale"] is None
+
+
+def test_doctor_warns_in_a_checkout_when_the_agent_binary_is_missing_or_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        "[profiles.default]\n"
+        'client_id = "fake-google-desktop-client.apps.googleusercontent.com"\n'
+        'provider = "google"\n'
+        'default_tz = "UTC"\n'
+    )
+
+    def run(status: dict[str, object]) -> dict:
+        monkeypatch.setattr("blumkin.cli.binary_status", lambda tree: status)
+        return json.loads(CliRunner().invoke(main, ["doctor", "--json"]).output)
+
+    base = {"path": "/x/blumkin-agent", "present": True, "stale": False, "supported": True}
+    quiet = run(base)
+    assert quiet["agent_binary"] == base
+    assert not any("blumkin-agent" in w for w in quiet["warnings"])
+    missing = run({**base, "present": False, "stale": None})
+    assert any("not built" in w and "uv sync" in w for w in missing["warnings"])
+    stale = run({**base, "stale": True})
+    assert any("older than" in w and "rust-agent" in w for w in stale["warnings"])
+    unsupported = run({**base, "present": False, "stale": None, "supported": False})
+    assert not any("not built" in w for w in unsupported["warnings"])
