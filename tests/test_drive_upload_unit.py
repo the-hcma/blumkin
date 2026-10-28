@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -460,6 +461,7 @@ def test_onedrive_large_upload_cancels_the_session_when_a_chunk_fails(
         f"{_MS_MOD}._session_client",
         lambda: httpx.Client(transport=httpx.MockTransport(handler)),
     )
+    monkeypatch.setattr(f"{_MS_MOD}._pause", lambda seconds: None)
     send = AsyncMock(return_value=SimpleNamespace(upload_url="https://upload.example/session/1"))
 
     with pytest.raises(DriveUploadError, match="upload"):
@@ -1049,3 +1051,76 @@ def test_onedrive_reserved_names_are_refused_before_anything_is_sent(
     with pytest.raises(DriveUploadError, match="OneDrive"):
         _ms_upload(_ms_client(send), config_dir, file=str(source), name=name)
     send.assert_not_called()
+
+
+def test_upload_errors_are_usage_errors_whatever_the_file_name_says() -> None:
+    from blumkin.skills.errors import classify_exception
+
+    for text in (
+        "a file named 'Missing_Q3.docx' already exists in that folder",
+        "a file named 'client_id.txt' already exists in that folder",
+    ):
+        info = classify_exception(DriveUploadError(text))
+        assert (info.slug, info.exit_code) == ("usage_error", 2), text
+
+
+def test_the_other_drive_value_errors_are_classified_by_type_too() -> None:
+    from blumkin.skills.drive import (
+        DriveDownloadError,
+        DriveExportError,
+        DriveFolderAmbiguousError,
+        DriveReadUnsupportedError,
+        DriveSelectorError,
+    )
+    from blumkin.skills.errors import classify_exception
+
+    for error in (
+        DriveDownloadError("'Missing client_id' is a folder"),
+        DriveExportError("Missing format"),
+        DriveFolderAmbiguousError("Missing client_id twice"),
+        DriveReadUnsupportedError("Missing"),
+        DriveSelectorError("Missing client_id"),
+    ):
+        info = classify_exception(error)
+        assert (info.slug, info.exit_code) == ("usage_error", 2), error
+
+
+def test_a_large_google_upload_does_not_run_on_the_event_loop_thread(
+    tmp_path: Path, config_dir: Path
+) -> None:
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * (6 * 1024 * 1024))
+    service = MagicMock()
+    files = service.files.return_value
+    files.list.return_value.execute.return_value = {"files": []}
+    seen: list[int] = []
+
+    def next_chunk(**kwargs: Any) -> tuple[None, dict[str, Any]]:
+        seen.append(threading.get_ident())
+        return None, _created(name="big.bin")
+
+    files.create.return_value.next_chunk.side_effect = next_chunk
+    _google_upload(service, config_dir, file=str(big))
+    assert seen and threading.get_ident() not in seen
+
+
+def test_a_large_onedrive_upload_does_not_run_on_the_event_loop_thread(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = _big(tmp_path)
+    seen: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(threading.get_ident())
+        rng = request.headers["Content-Range"]
+        end = int(rng.split("-")[1].split("/")[0])
+        total = int(rng.split("/")[1])
+        if end + 1 < total:
+            return httpx.Response(202)
+        return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
+
+    monkeypatch.setattr(
+        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
+    assert seen and threading.get_ident() not in seen
