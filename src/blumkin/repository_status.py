@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import os
 import re
+import shlex
 import subprocess
 import time
 import tomllib
@@ -39,6 +40,16 @@ _GIT_FLAGS = (
     "core.hooksPath=/dev/null",
     "-c",
     "protocol.allow=never",
+    "-c",
+    "protocol.http.allow=never",
+    "-c",
+    "protocol.https.allow=never",
+    "-c",
+    "protocol.ssh.allow=never",
+    "-c",
+    "protocol.git.allow=never",
+    "-c",
+    "protocol.file.allow=never",
 )
 _SHORT_HASH = re.compile(r"[0-9a-f]{7,40}")
 
@@ -88,7 +99,7 @@ class RepositoryStatus:
             )
         return (
             f"{lead} - a newer release may add them (`blumkin upgrade`), or install the "
-            f"checkout: `uv tool install -e {self.path}`"
+            f"checkout: `uv tool install -e {shlex.quote(str(self.path))}`"
         )
 
 
@@ -170,13 +181,20 @@ def repository_status(
         if full_head.startswith(commit):
             relation, behind_by = "same", 0
         elif git.run("cat-file", "-t", f"{commit}^{{commit}}") == (0, "commit"):
-            if git.run("merge-base", "--is-ancestor", commit, full_head)[0] == 0:
-                count = git.run("rev-list", "--count", f"{commit}..{full_head}")[1]
-                relation, behind_by = "behind", int(count) if count.isdigit() else None
-            elif git.run("merge-base", "--is-ancestor", full_head, commit)[0] == 0:
-                relation, behind_by = "ahead", 0
-            elif git.run("rev-parse", "--is-shallow-repository")[1] != "true":
-                relation = "diverged"
+            # Only exit code 1 of `--is-ancestor` means "no"; any other failure is unknown.
+            forward = git.run("merge-base", "--is-ancestor", commit, full_head)[0]
+            if forward == 0:
+                counted, count = git.run("rev-list", "--count", f"{commit}..{full_head}")
+                if counted == 0 and count.isdigit():
+                    relation, behind_by = "behind", int(count)
+            elif forward == 1:
+                backward = git.run("merge-base", "--is-ancestor", full_head, commit)[0]
+                if backward == 0:
+                    relation, behind_by = "ahead", 0
+                elif backward == 1:
+                    shallow_code, shallow = git.run("rev-parse", "--is-shallow-repository")
+                    if shallow_code == 0 and shallow == "false":
+                        relation = "diverged"
     return RepositoryStatus(
         behind_by=behind_by,
         build_commit=build_commit,
@@ -194,7 +212,14 @@ class _Git:
         self._deadline = time.monotonic() + GIT_DEADLINE_S
         self._env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         self._env.update(
-            {"GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
+            {
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_SYSTEM": "/dev/null",
+                "GIT_NO_LAZY_FETCH": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_TERMINAL_PROMPT": "0",
+            }
         )
         self._repository = repository
 
