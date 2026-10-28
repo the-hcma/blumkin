@@ -3135,13 +3135,16 @@ def loop_pause(ctx: click.Context, trigger: str, as_json_flag: bool) -> None:
 
 
 @loop.command("pending", epilog=help_text.LOOP_PENDING_EPILOG)
+@click.option(
+    "--handed-back", "handed_back", is_flag=True, help="Also list items handed back, with why."
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
-def loop_pending(ctx: click.Context, as_json_flag: bool) -> None:
+def loop_pending(ctx: click.Context, as_json_flag: bool, handed_back: bool) -> None:
     """List lessons waiting for an agent."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = loop_commands.pending(load_loop_setup())
+        payload = loop_commands.pending(load_loop_setup(), handed_back=handed_back)
     except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
         _loop_fail(exc, as_json=as_json)
     if as_json:
@@ -3152,7 +3155,9 @@ def loop_pending(ctx: click.Context, as_json_flag: bool) -> None:
         return
     lines = [payload["instructions"], ""]
     for entry in payload["items"]:
-        lines.append(f"{entry['id']}: template {entry['template']}")
+        lines.append(f"{entry['id']}: template {entry['template']} ({entry['state']})")
+        if entry["note"]:
+            lines.append(f"  handed back: {sanitize_terminal(entry['note'])}")
         lines.extend(f"  page: {path}" for path in entry["files"])
     emit_lines(lines)
 

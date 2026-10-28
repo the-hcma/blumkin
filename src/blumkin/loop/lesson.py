@@ -12,15 +12,21 @@ the original message with the document link(s) and closes the item.
 Rules this module keeps:
 
 - The subject is only matched against configured keywords (case and accents folded). It is
-  never executed and never copied into a reason, a journal row or a notice.
+  never executed and never copied into a reason, a journal row or a notice. Attachment
+  names from the mail are replaced by `page-N.ext` so they never reach the agent.
 - Exactly one distinct template must match, otherwise the run is `needs_user` and nothing is
   queued.
-- A link is accepted only when it is an https Google Docs or Drive URL; nothing else is ever
-  sent in a reply. The reply goes to the sender of the message only, as plain text.
+- A link is accepted only when it is an https Google Docs or Drive document, file or folder
+  URL; nothing else is ever sent in a reply.
+- The reply is a threaded plain-text reply whose draft is checked before it is sent: every
+  recipient must be an address on the trigger's allowlist and there must be no Cc or Bcc, so
+  a `Reply-To` header in the mail cannot redirect it. A draft that fails the check is deleted.
 - Journals and notices carry ids and outcomes only. The agent's own words (a hand-back
   note) live in the private item file.
-- Finishing is safe to repeat: a closed item is never answered twice, and an item whose reply
-  failed keeps its documents so `finish` can be run again.
+- Finishing is safe to repeat and to race. An item is claimed for the duration of a finish
+  (a second finish or a hand-back is refused as "in progress"), the draft id is saved as
+  soon as the draft exists so a retry sends that draft instead of making another, and a
+  closed item is never answered twice.
 
 Items are JSON files under `<config dir>/loop/lessons/` (mode `0600`, directory `0700`),
 written atomically under a lock.
@@ -37,7 +43,7 @@ import logging
 import os
 import re
 import unicodedata
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -57,23 +63,29 @@ from blumkin.loop.types import (
     TriggerSpec,
 )
 
+CLAIM_SECONDS = 120.0
 REPLY_TIMEOUT_SECONDS = 30.0
 
 _LOG = logging.getLogger(__name__)
 
-ReplyFn = Callable[[str | None, str, str], None]
+# (profile, message id, body, allowed recipients) -> id of a checked reply draft.
+PrepareFn = Callable[[str | None, str, str, Sequence[str]], str]
+# (profile, draft id) -> None
+SendFn = Callable[[str | None, str], None]
 
 
 class LessonError(ValueError):
-    """A lesson item, link or id is not acceptable."""
+    """A lesson item, link, id or reply is not acceptable."""
 
 
 @dataclass(frozen=True, slots=True)
 class LessonItem:
-    """One pending (or closed) lesson as stored on disk."""
+    """One lesson as stored on disk."""
 
+    claimed_at: str
     created_at: str
     docs: tuple[str, ...]
+    draft_id: str
     files: tuple[str, ...]
     id: str
     instance: str
@@ -86,8 +98,10 @@ class LessonItem:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "claimed_at": self.claimed_at,
             "created_at": self.created_at,
             "docs": list(self.docs),
+            "draft_id": self.draft_id,
             "files": list(self.files),
             "id": self.id,
             "instance": self.instance,
@@ -121,30 +135,49 @@ def finish_lesson(
     item_id: str,
     docs: Sequence[str],
     *,
-    reply: ReplyFn | None = None,
+    allowed_recipients: Sequence[str] = (),
+    prepare: PrepareFn | None = None,
+    send: SendFn | None = None,
 ) -> LessonItem:
     """Reply to the original message with `docs` and close the item (repeat-safe)."""
     _check_id(item_id)
     links = _check_docs(docs)
+    allowed = tuple(allowed_recipients)
+    if not allowed:
+        raise LessonError(
+            "Expected the trigger to have an allowlist to check the reply against, got none"
+        )
     store = _store(config_dir)
     with _locked(store):
         item = _load(store, item_id)
         if item.state == "done":
             return item
-        item = _save(store, _with(item, docs=links))
-    body = _reply_body(links)
+        if _claimed(item):
+            raise LessonError(
+                f"Expected no other finish in progress for {item.id}, "
+                f"got one started at {item.claimed_at}"
+            )
+        item = _save(store, _with(item, claimed_at=_now(), docs=links))
     try:
-        (reply or send_reply)(item.profile, item.message_id, body)
+        draft_id = item.draft_id
+        if not draft_id:
+            draft_id = (prepare or prepare_reply)(
+                item.profile, item.message_id, _reply_body(links), allowed
+            )
+            with _locked(store):
+                item = _save(store, _with(_load(store, item_id), draft_id=draft_id))
+        (send or send_draft)(item.profile, draft_id)
+    except LessonError:
+        _release(store, item_id)
+        raise
     except Exception as exc:  # noqa: BLE001 - keep the item, report the type only
+        _release(store, item_id)
         raise LessonReplyError(
             f"Expected the reply to be sent, got {type(exc).__name__}; the documents are "
             f"saved, so run `blumkin loop finish {item.id} --doc ...` again"
         ) from exc
     with _locked(store):
-        current = _load(store, item_id)
-        if current.state == "done":
-            return current
-        closed = _save(store, _with(current, state="done"))
+        closed = _save(store, _with(_load(store, item_id), claimed_at="", state="done"))
         append_run(
             config_dir,
             instance=closed.instance,
@@ -163,6 +196,14 @@ def fold_keyword(text: str) -> str | None:
     return tokens[0] if len(tokens) == 1 else None
 
 
+def get_lesson(config_dir: Path, item_id: str) -> LessonItem:
+    """One item by id, in any state."""
+    _check_id(item_id)
+    store = _store(config_dir)
+    with _locked(store):
+        return _load(store, item_id)
+
+
 def hand_back_lesson(config_dir: Path, item_id: str, note: str) -> LessonItem:
     """Give an item back to the operator with a short reason (nothing is sent)."""
     _check_id(item_id)
@@ -171,6 +212,11 @@ def hand_back_lesson(config_dir: Path, item_id: str, note: str) -> LessonItem:
         item = _load(store, item_id)
         if item.state == "done":
             raise LessonError(f"Expected an open lesson item, got {item.id} which is done")
+        if _claimed(item):
+            raise LessonError(
+                f"Expected no finish in progress for {item.id}, got one started at "
+                f"{item.claimed_at}"
+            )
         handed = _save(store, _with(item, note=_clean_note(note), state="needs_user"))
         append_run(
             config_dir,
@@ -201,7 +247,7 @@ def lesson(trigger: TriggerSpec, *, context: RunContext | None = None) -> Handle
         return _stop("lesson not queued: the intake folder is not usable")
     if not files:
         return _stop("lesson not queued: no page image was saved")
-    _queue(
+    item = _queue(
         context.config_dir,
         trigger=trigger,
         template=pick.template,
@@ -210,16 +256,21 @@ def lesson(trigger: TriggerSpec, *, context: RunContext | None = None) -> Handle
         instance=context.instance or trigger.instance,
         files=files,
     )
-    return _stop(f"{LESSON_WAITING}: {pick.template} ({len(files)} page image(s))")
+    if item.state == "done":
+        return HandlerResult(outcome=RunOutcome.DONE, reason="lesson already answered")
+    if item.state == "needs_user":
+        return _stop("lesson handed back earlier; see blumkin loop pending --handed-back")
+    return _stop(f"{LESSON_WAITING}: {item.template} ({len(item.files)} page image(s))")
 
 
-def pending_lessons(config_dir: Path) -> list[LessonItem]:
-    """The items waiting for an agent, oldest first."""
+def pending_lessons(config_dir: Path, *, handed_back: bool = False) -> list[LessonItem]:
+    """The items waiting for an agent, oldest first (and handed-back ones when asked)."""
     store = _existing_store(config_dir)
     if store is None:
         return []
+    wanted = {"pending", "needs_user"} if handed_back else {"pending"}
     with _locked(store):
-        items = [item for item in _load_all(store) if item.state == "pending"]
+        items = [item for item in _load_all(store) if item.state in wanted]
     return sorted(items, key=lambda item: (item.created_at, item.id))
 
 
@@ -238,9 +289,25 @@ def pick_template(trigger: TriggerSpec, subject: str | None) -> TemplatePick:
     )
 
 
-def send_reply(profile: str | None, message_id: str, body: str) -> None:
-    """Reply to `message_id` (sender only, plain text) and send it."""
-    asyncio.run(_send_reply_async(profile, message_id, body))
+def prepare_reply(
+    profile: str | None,
+    message_id: str,
+    body: str,
+    allowed: Sequence[str],
+    *,
+    provider: Any | None = None,
+) -> str:
+    """Create a threaded plain-text reply draft and check who it is addressed to.
+
+    Returns the draft id. A draft with a recipient outside `allowed` (a `Reply-To` header
+    can add one), or with any Cc or Bcc, is deleted and refused.
+    """
+    return asyncio.run(_prepare_async(profile, message_id, body, tuple(allowed), provider))
+
+
+def send_draft(profile: str | None, draft_id: str) -> None:
+    """Send a draft made by `prepare_reply`."""
+    asyncio.run(_send_async(profile, draft_id))
 
 
 def subject_tokens(text: str) -> tuple[str, ...]:
@@ -248,6 +315,20 @@ def subject_tokens(text: str) -> tuple[str, ...]:
     folded = unicodedata.normalize("NFKD", text.casefold())
     stripped = "".join(ch for ch in folded if not unicodedata.combining(ch))
     return tuple(re.findall(r"[a-z0-9]+", stripped))
+
+
+def _addresses(value: Any) -> set[str]:
+    if not isinstance(value, str):
+        return set()
+    found: set[str] = set()
+    for part in value.split(","):
+        text = part.strip()
+        if "<" in text and ">" in text:
+            text = text[text.index("<") + 1 : text.index(">")]
+        text = text.strip().lower()
+        if text:
+            found.add(text)
+    return found
 
 
 def _check_docs(docs: Sequence[str]) -> tuple[str, ...]:
@@ -266,8 +347,8 @@ def _check_id(item_id: str) -> None:
 def _check_url(url: str) -> None:
     shown = f"{url!r:.80}" if isinstance(url, str) else repr(type(url).__name__)
     problem = (
-        "Expected an https Google Docs or Drive link (docs.google.com or drive.google.com), "
-        f"got {shown}"
+        "Expected an https Google Docs, Sheets, Slides or Drive document, file or folder link "
+        f"on docs.google.com or drive.google.com, got {shown}"
     )
     if not isinstance(url, str) or not url or len(url) > _MAX_URL:
         raise LessonError(problem)
@@ -285,10 +366,21 @@ def _check_url(url: str) -> None:
         and parts.password is None
         and port is None
         and "@" not in parts.netloc
-        and len(parts.path) > 1
+        and _DOC_PATH.fullmatch(parts.path) is not None
     )
     if not ok:
         raise LessonError(problem)
+
+
+def _claimed(item: LessonItem) -> bool:
+    """Whether a finish started recently enough that it may still be running."""
+    if not item.claimed_at:
+        return False
+    try:
+        started = datetime.strptime(item.claimed_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    return (datetime.now(UTC) - started).total_seconds() < CLAIM_SECONDS
 
 
 def _clean_note(note: str) -> str:
@@ -340,13 +432,22 @@ def _now() -> str:
 
 
 def _page_images(directory: Path) -> tuple[str, ...]:
-    found: list[str] = []
+    """The page images of one mail, renamed to `page-N.ext` (the mail's names are data)."""
+    pages: list[Path] = []
     for path in sorted(directory.iterdir()):
         if path.is_symlink() or not path.is_file():
             continue
         if path.suffix.lower() in _IMAGE_SUFFIXES:
-            found.append(str(path))
-    return tuple(found[:_MAX_IMAGES])
+            pages.append(path)
+    renamed: list[str] = []
+    for number, path in enumerate(pages[:_MAX_IMAGES], start=1):
+        target = directory / f"page-{number}{path.suffix.lower()}"
+        if path != target:
+            if target.exists():
+                continue
+            path.rename(target)
+        renamed.append(str(target))
+    return tuple(renamed)
 
 
 def _parse(path: Path) -> LessonItem:
@@ -356,8 +457,10 @@ def _parse(path: Path) -> LessonItem:
             raise ValueError("not an object")
         profile = data["profile"]
         item = LessonItem(
+            claimed_at=str(data.get("claimed_at", "")),
             created_at=str(data["created_at"]),
             docs=tuple(str(d) for d in data["docs"]),
+            draft_id=str(data.get("draft_id", "")),
             files=tuple(str(f) for f in data["files"]),
             id=str(data["id"]),
             instance=str(data["instance"]),
@@ -373,6 +476,42 @@ def _parse(path: Path) -> LessonItem:
     if item.state not in _STATES or not _ITEM_ID.fullmatch(item.id) or path.stem != item.id:
         raise LessonError("Expected a lesson item with a known state and its own id, got neither")
     return item
+
+
+async def _prepare_async(
+    profile: str | None,
+    message_id: str,
+    body: str,
+    allowed: tuple[str, ...],
+    provider: Any | None,
+) -> str:
+    chosen = provider if provider is not None else _provider_for(profile)
+
+    async def _create_and_check() -> str:
+        created = await chosen.mail_reply(
+            message_id=message_id, body=body, body_type="text", no_signature=True
+        )
+        nested = created.get("draft") if isinstance(created, Mapping) else None
+        draft = nested if isinstance(nested, Mapping) else created
+        draft_id = str(draft.get("id") or "").strip() if isinstance(draft, Mapping) else ""
+        if not draft_id:
+            raise LessonError("Expected the reply response to carry a draft id, got none")
+        problem = _recipient_problem(draft, allowed)
+        if problem:
+            with contextlib.suppress(Exception):
+                await chosen.mail_delete_draft(draft_id=draft_id)
+            raise LessonError(problem)
+        return draft_id
+
+    return await asyncio.wait_for(_create_and_check(), timeout=REPLY_TIMEOUT_SECONDS)
+
+
+def _provider_for(profile: str | None) -> Any:
+    # Imported here: the provider layer imports a lot and is only needed to send.
+    from blumkin.config import load_config
+    from blumkin.providers import get_provider
+
+    return get_provider(load_config(profile=profile) if profile else load_config())
 
 
 def _queue(
@@ -393,8 +532,10 @@ def _queue(
         return _save(
             store,
             LessonItem(
+                claimed_at="",
                 created_at=_now(),
                 docs=(),
+                draft_id="",
                 files=files,
                 id=item_id,
                 instance=instance,
@@ -406,6 +547,23 @@ def _queue(
                 trigger=trigger.name,
             ),
         )
+
+
+def _recipient_problem(draft: Mapping[str, Any], allowed: tuple[str, ...]) -> str | None:
+    wanted = {address.lower() for address in allowed}
+    to = _addresses(draft.get("to"))
+    others = _addresses(draft.get("cc")) | _addresses(draft.get("bcc"))
+    if to and not others and to <= wanted:
+        return None
+    return (
+        "Expected the reply to go only to an allowlisted sender, got a draft with another or "
+        "no recipient (the draft was deleted)"
+    )
+
+
+def _release(store: Path, item_id: str) -> None:
+    with _locked(store), contextlib.suppress(LessonNotFoundError):
+        _save(store, _with(_load(store, item_id), claimed_at=""))
 
 
 def _reply_body(docs: Sequence[str]) -> str:
@@ -420,24 +578,11 @@ def _save(store: Path, item: LessonItem) -> LessonItem:
     return item
 
 
-async def _send_reply_async(profile: str | None, message_id: str, body: str) -> None:
-    # Imported here: the provider layer imports a lot and is only needed to send.
-    from blumkin.config import load_config
-    from blumkin.providers import get_provider
-
-    config = load_config(profile=profile) if profile else load_config()
-    provider = get_provider(config)
-
-    async def _reply_and_send() -> None:
-        created = await provider.mail_reply(
-            message_id=message_id, body=body, body_type="text", no_signature=True
-        )
-        draft_id = str(created.get("id") or created.get("draft_id") or "").strip()
-        if not draft_id:
-            raise ValueError("reply response missing id")
-        await provider.mail_send_draft(draft_id=draft_id)
-
-    await asyncio.wait_for(_reply_and_send(), timeout=REPLY_TIMEOUT_SECONDS)
+async def _send_async(profile: str | None, draft_id: str) -> None:
+    provider = _provider_for(profile)
+    await asyncio.wait_for(
+        provider.mail_send_draft(draft_id=draft_id), timeout=REPLY_TIMEOUT_SECONDS
+    )
 
 
 def _stop(reason: str) -> HandlerResult:
@@ -454,11 +599,11 @@ def _store(config_dir: Path) -> Path:
 def _with(item: LessonItem, **changes: Any) -> LessonItem:
     data = item.as_dict()
     data.update(changes)
-    if isinstance(data["docs"], tuple):
-        data["docs"] = list(data["docs"])
     return LessonItem(
+        claimed_at=data["claimed_at"],
         created_at=data["created_at"],
         docs=tuple(data["docs"]),
+        draft_id=data["draft_id"],
         files=tuple(data["files"]),
         id=data["id"],
         instance=data["instance"],
@@ -472,6 +617,10 @@ def _with(item: LessonItem, **changes: Any) -> LessonItem:
 
 
 _DOC_HOSTS = frozenset({"docs.google.com", "drive.google.com"})
+_DOC_PATH = re.compile(
+    r"/(?:document|spreadsheets|presentation|file)/d/[A-Za-z0-9_-]+(?:/.*)?"
+    r"|/drive/(?:u/\d+/)?folders/[A-Za-z0-9_-]+/?"
+)
 _IMAGE_SUFFIXES = frozenset(
     {".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".pdf", ".png", ".tif", ".tiff", ".webp"}
 )

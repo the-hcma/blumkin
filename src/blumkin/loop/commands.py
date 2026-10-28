@@ -17,6 +17,7 @@ from blumkin.loop.kill_switch import is_engaged, kill_switch_path
 from blumkin.loop.lesson import (
     LessonError,
     finish_lesson,
+    get_lesson,
     hand_back_lesson,
     pending_lessons,
 )
@@ -59,7 +60,12 @@ def finish(
         )
     if needs_user is not None:
         return {"item": hand_back_lesson(setup.config_dir, item_id, needs_user).as_dict()}
-    return {"item": finish_lesson(setup.config_dir, item_id, docs).as_dict()}
+    waiting = get_lesson(setup.config_dir, item_id)
+    spec = setup.triggers.get(waiting.trigger)
+    allowed = spec.allowlist if spec is not None else ()
+    return {
+        "item": finish_lesson(setup.config_dir, item_id, docs, allowed_recipients=allowed).as_dict()
+    }
 
 
 def list_triggers(setup: LoopSetup) -> list[dict[str, Any]]:
@@ -78,18 +84,20 @@ def pause(setup: LoopSetup, name: str) -> dict[str, Any]:
     return {"name": name, "paused": True, "changed": changed}
 
 
-def pending(setup: LoopSetup) -> dict[str, Any]:
-    """Lessons waiting for an agent, with what the agent should do for each."""
+def pending(setup: LoopSetup, *, handed_back: bool = False) -> dict[str, Any]:
+    """Lessons waiting for an agent (and handed-back ones when asked), with what to do."""
     items = [
         {
             "created_at": item.created_at,
             "files": list(item.files),
             "id": item.id,
             "instance": item.instance,
+            "note": item.note,
+            "state": item.state,
             "template": item.template,
             "trigger": item.trigger,
         }
-        for item in pending_lessons(setup.config_dir)
+        for item in pending_lessons(setup.config_dir, handed_back=handed_back)
     ]
     return {"instructions": _LESSON_INSTRUCTIONS, "items": items}
 
@@ -221,8 +229,10 @@ def run_foreground(
 __all__ = [
     "RunResult",
     "TriggerStatus",
+    "finish",
     "list_triggers",
     "pause",
+    "pending",
     "resume",
     "run_foreground",
     "run_once",
