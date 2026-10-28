@@ -126,7 +126,7 @@ blumkin completion zsh > ~/.blumkin-complete.zsh
 echo 'source ~/.blumkin-complete.zsh' >> ~/.zshrc
 ```
 
-Open a new shell afterwards. The script calls back into `blumkin` for completions, so keep it on `PATH`.
+Open a new shell afterwards. The script calls back into `blumkin` for completions, so keep it on `PATH`. Besides commands and options, Tab completes values from your own files: waiting item ids for `blumkin loop finish`, trigger names for `loop pause`, `resume` and `run-once`, and template names for `tasks show`, `update` and `delete --name`. These read local files only and complete nothing when the config is missing or broken.
 
 ## Config (`~/.config/blumkin/`)
 

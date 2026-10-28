@@ -19,7 +19,7 @@ from typing import Any, NoReturn
 import click
 from click.shell_completion import get_completion_class
 
-from blumkin import help_text, keychain_unlock
+from blumkin import completion_values, help_text, keychain_unlock
 from blumkin.agent import client as agent_client
 from blumkin.agent import processes as agent_processes
 from blumkin.agent.paths import binary_status
@@ -3071,7 +3071,7 @@ def loop_agent(ctx: click.Context, as_json_flag: bool) -> None:
 
 
 @loop.command("finish", epilog=help_text.LOOP_FINISH_EPILOG)
-@click.argument("item")
+@click.argument("item", shell_complete=completion_values.waiting_item_ids)
 @click.option("--doc", "docs", multiple=True, help="Google Docs/Drive link to reply with.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--needs-user", "needs_user", default=None, help="Hand the item back, with why.")
@@ -3183,7 +3183,7 @@ def loop_list(ctx: click.Context, as_json_flag: bool) -> None:
 
 
 @loop.command("pause", epilog=help_text.LOOP_PAUSE_EPILOG)
-@click.argument("trigger")
+@click.argument("trigger", shell_complete=completion_values.loop_trigger_names)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def loop_pause(ctx: click.Context, trigger: str, as_json_flag: bool) -> None:
@@ -3228,7 +3228,7 @@ def loop_pending(ctx: click.Context, as_json_flag: bool, handed_back: bool) -> N
 
 
 @loop.command("resume", epilog=help_text.LOOP_RESUME_EPILOG)
-@click.argument("trigger")
+@click.argument("trigger", shell_complete=completion_values.loop_trigger_names)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def loop_resume(ctx: click.Context, trigger: str, as_json_flag: bool) -> None:
@@ -3261,7 +3261,7 @@ def loop_run(ctx: click.Context, as_json_flag: bool) -> None:
 
 
 @loop.command("run-once", epilog=help_text.LOOP_RUN_ONCE_EPILOG)
-@click.argument("trigger")
+@click.argument("trigger", shell_complete=completion_values.loop_trigger_names)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def loop_run_once(ctx: click.Context, trigger: str, as_json_flag: bool) -> None:
@@ -7362,7 +7362,13 @@ def tasks_create_cmd(
 
 
 @tasks.command("delete", epilog=help_text.TASKS_DELETE_EPILOG)
-@click.option("--name", "name", required=True, help="Template name (a unique prefix works).")
+@click.option(
+    "--name",
+    "name",
+    required=True,
+    help="Template name (a unique prefix works).",
+    shell_complete=completion_values.task_names,
+)
 @click.option(
     "--yes",
     "yes",
@@ -7408,7 +7414,13 @@ def tasks_list_cmd(ctx: click.Context, as_json_flag: bool) -> None:
 
 
 @tasks.command("show", epilog=help_text.TASKS_SHOW_EPILOG)
-@click.option("--name", "name", required=True, help="Template name (a unique prefix works).")
+@click.option(
+    "--name",
+    "name",
+    required=True,
+    help="Template name (a unique prefix works).",
+    shell_complete=completion_values.task_names,
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def tasks_show_cmd(ctx: click.Context, name: str, as_json_flag: bool) -> None:
@@ -7427,7 +7439,13 @@ def tasks_show_cmd(ctx: click.Context, name: str, as_json_flag: bool) -> None:
 
 
 @tasks.command("update", epilog=help_text.TASKS_UPDATE_EPILOG)
-@click.option("--name", "name", required=True, help="Template name (a unique prefix works).")
+@click.option(
+    "--name",
+    "name",
+    required=True,
+    help="Template name (a unique prefix works).",
+    shell_complete=completion_values.task_names,
+)
 @click.option("--title", "title", default=None, help="Replace the # Title line.")
 @click.option("--trigger", "trigger", default=None, help="Replace the Trigger: field.")
 @click.option("--input", "input", default=None, help="Replace the Input: field.")

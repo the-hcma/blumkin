@@ -13,7 +13,14 @@ from blumkin.loop.mail_intake import intake_dir
 from blumkin.loop.types import RunContext, TriggerKind, TriggerSpec
 
 _MESSAGE = "AAMkAGI2-message-one"
-_TEMPLATE = '# Weekly status report\n**Trigger:** "weekly"\n**Input:** x\n**Output:** y\n\nPrompt:\nDo it.\n'
+_TEMPLATE = (
+    "# Weekly status report\n"
+    '**Trigger:** "weekly"\n'
+    "**Input:** x\n"
+    "**Output:** y\n\n"
+    "**Prompt:**\n\n"
+    "> Do it.\n"
+)
 
 
 @pytest.fixture
@@ -48,6 +55,7 @@ def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "tasks").mkdir()
     (tmp_path / "tasks" / "weekly-report.md").write_text(_TEMPLATE, encoding="utf-8")
     (tmp_path / "tasks" / "daily-digest.md").write_text(_TEMPLATE, encoding="utf-8")
+    (tmp_path / "tasks" / "broken-note.md").write_text("no prompt here\n", encoding="utf-8")
     return tmp_path
 
 
@@ -123,6 +131,12 @@ def test_loop_commands_complete_trigger_names(config: Path, command: str) -> Non
 def test_task_commands_complete_template_names(config: Path, command: str) -> None:
     names = _complete(f"blumkin tasks {command} --name ")
     assert {"daily-digest", "weekly-report"} <= set(names)
+
+
+def test_a_template_warning_never_reaches_the_completion_output(config: Path) -> None:
+    names = _complete("blumkin tasks show --name ")
+    assert "broken-note" in names
+    assert all(" " not in name for name in names)
 
 
 def test_task_names_filter_by_prefix(config: Path) -> None:
