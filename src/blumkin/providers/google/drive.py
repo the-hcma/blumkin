@@ -10,6 +10,7 @@ before hitting a type-specific API, so a listable-but-wrong-kind id is a clean
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from googleapiclient.errors import HttpError
@@ -410,8 +411,9 @@ async def drive_upload(
                 **_SHARED,
             )
             if resumable:
-                while created is None:
-                    _status, created = request.next_chunk(num_retries=3)
+                # Chunk after chunk of network calls: off the event loop, so a large upload
+                # does not stall other tool calls.
+                created = await asyncio.to_thread(_send_resumable, request)
             else:
                 created = execute(request)
         except HttpError as exc:
@@ -527,6 +529,14 @@ def resolve_folder_path(
             )
         parent = last["id"]
     return parent, last
+
+
+def _send_resumable(request: Any) -> dict[str, Any] | None:
+    """Send a resumable upload chunk by chunk until the service answers with the file."""
+    created: dict[str, Any] | None = None
+    while created is None:
+        _status, created = request.next_chunk(num_retries=3)
+    return created
 
 
 def _to_item(entry: dict[str, Any]) -> dict[str, Any]:

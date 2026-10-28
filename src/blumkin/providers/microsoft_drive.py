@@ -12,6 +12,7 @@ Graph backend.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ipaddress
 import json
@@ -670,7 +671,8 @@ async def _put_in_session(
     upload_url = getattr(session, "upload_url", None)
     if not upload_url:
         raise DriveUploadError("expected an upload session from the service, got none")
-    return _upload_chunks(upload_url, source)
+    # Blocking HTTP and retry waits: off the event loop, so a large upload does not stall it.
+    return await asyncio.to_thread(_upload_chunks, upload_url, source)
 
 
 async def _put_small(
