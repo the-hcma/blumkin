@@ -277,12 +277,6 @@ pub(crate) mod tests {
         dir
     }
 
-    // On macOS, `darwin_user_temp_dir()` always succeeds (it is the OS's own
-    // per-user temp dir, not something a test can make disappear), so it
-    // wins over every `TMPDIR`/`TEMP`/`TMP` candidate below - the fallback
-    // order those two tests exercise only ever applies on a non-Darwin
-    // Unix, or if `confstr(3)` itself somehow failed.
-
     #[test]
     fn lock_env_still_works_after_a_test_panicked_while_holding_it() {
         // One failing test must not fail every later test that takes the lock
@@ -294,6 +288,12 @@ pub(crate) mod tests {
         assert!(panicker.join().is_err());
         let _again = lock_env();
     }
+
+    // On macOS, `darwin_user_temp_dir()` always succeeds (it is the OS's own
+    // per-user temp dir, not something a test can make disappear), so it
+    // wins over every `TMPDIR`/`TEMP`/`TMP` candidate below - the fallback
+    // order those two tests exercise only ever applies on a non-Darwin
+    // Unix, or if `confstr(3)` itself somehow failed.
 
     #[cfg(target_os = "macos")]
     #[test]

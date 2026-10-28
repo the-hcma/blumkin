@@ -791,8 +791,8 @@ mod tests {
 
         // The peer answers the probe's ping like a live agent would. It waits
         // for the real connection (there is no wall-clock deadline to miss on a
-        // loaded runner) and only gives up once `bind` has returned without ever
-        // connecting, so a failure reports what the peer saw instead of hanging
+        // loaded runner) and normally gives up only once `bind` has returned without
+        // ever connecting (an accept or stream-setup error ends it earlier), so a failure reports what the peer saw instead of hanging
         // or passing by luck (issue #464).
         let bind_returned = std::sync::Arc::new(AtomicBool::new(false));
         let peer_flag = std::sync::Arc::clone(&bind_returned);
@@ -824,9 +824,21 @@ mod tests {
                 .map_err(|err| format!("could not answer the probe: {err}"))
         });
 
+        let started = Instant::now();
         let result = bind(&sock_path);
+        let bind_took = started.elapsed();
         bind_returned.store(true, Ordering::SeqCst);
-        let peer_outcome = peer.join().expect("the peer thread panicked");
+        let peer_outcome = match peer.join() {
+            Ok(outcome) => outcome,
+            Err(payload) => {
+                let detail = payload
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "a non-text panic".to_string());
+                Err(format!("the peer thread panicked: {detail}"))
+            }
+        };
 
         let deferred = matches!(result, Ok(None));
         let bind_summary = match &result {
@@ -838,8 +850,8 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
         assert!(
             deferred,
-            "expected bind to defer to the live agent (Ok(None)), got {bind_summary}; \
-             the peer reported {peer_outcome:?}"
+            "expected bind to defer to the live agent (Ok(None)), got {bind_summary} after \
+             {bind_took:?}; the peer reported {peer_outcome:?}"
         );
         assert_eq!(peer_outcome, Ok(()));
     }
