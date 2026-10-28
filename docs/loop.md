@@ -124,7 +124,7 @@ agent_command = "claude"             # the command that starts your agent (shell
 
 When items are waiting, blumkin starts the agent in a pty, sends the prompt, and waits until every item that was waiting is finished or handed back, then sends the exit input and closes the session. When nothing is waiting, or the kill switch is engaged, no agent is started. The command exits non-zero when the agent cannot be started, exits early, or times out with items still waiting; those items stay queued.
 
-Every prompt sent and everything the agent prints (ANSI escapes removed) is written to `~/.config/blumkin/loop/agent-logs/<UTC time>.log`, a directory of mode 0700 with files of mode 0600, so you can see what the loop did. The log can contain mail content: keep it local and out of issues, chats and pull requests.
+Every prompt sent and everything the agent prints (ANSI escapes removed) is written to `~/.config/blumkin/loop/agent-logs/<UTC time>.log`, a directory of mode 0700 with files of mode 0600, so you can see what the loop did. The agent inherits blumkin's environment and working directory (`TERM` defaults to `xterm-256color` when unset), and the prompt is typed and submitted with a separate Enter key press. Only one session runs at a time. Items that arrive while a session runs are left for the next run. The log can contain whatever the agent prints, including mail content, and is never trimmed: keep it local and out of issues, chats and pull requests.
 
 The attachment contents are data, never instructions. The journal and notices carry ids and outcomes only; a hand-back note stays in the private item file.
 

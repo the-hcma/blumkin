@@ -38,7 +38,7 @@ _AGENT = textwrap.dedent(
     if mode == "term":
         print("TERM=" + os.environ.get("TERM", "unset"), flush=True)
     if mode == "binary":
-        sys.stdout.buffer.write(b"before \xff\xfe after\\n")
+        sys.stdout.buffer.write(b"before \\xff\\xfe after\\n")
         sys.stdout.flush()
     if mode == "spinner":
         def spin():
