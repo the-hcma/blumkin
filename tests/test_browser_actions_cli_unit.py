@@ -1073,3 +1073,69 @@ def test_read_frame_wait_is_passed_to_the_driver(raw: _Raw, _config_dir: Path) -
 def test_read_wait_without_a_frame_is_a_usage_error(raw: _Raw) -> None:
     result = _run("browser", "read", "expense-report", "--wait", "5")
     assert result.exit_code == EXIT_USAGE, result.output
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "1000"])
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("browser", "click", "expense-report", "Add line"),
+        ("browser", "refresh-tab", "expense-report", "Transcript", "--via", "Notes"),
+        ("browser", "read", "expense-report", "--frame", "1"),
+    ],
+)
+def test_a_wait_that_is_not_a_sane_number_of_seconds_is_a_usage_error(
+    raw: _Raw, args: tuple[str, ...], value: str
+) -> None:
+    result = _run(*args, "--wait", value)
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert raw.probes == []
+
+
+def test_a_click_with_an_explicit_role_keeps_the_long_action_wait(raw: _Raw) -> None:
+    _run("browser", "click", "expense-report", "Add line", "--role", "button")
+    assert raw.probes == [("Add line", 30.0)]
+
+
+def test_a_click_without_a_role_uses_the_short_wait(raw: _Raw) -> None:
+    _run("browser", "click", "expense-report", "Add line")
+    assert raw.probes == [("Add line", 5.0)]
+
+
+def test_refresh_tab_keeps_the_long_action_wait_by_default(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Notes", "Transcript"]')
+    raw.roles_present.update({"Notes": ("tab",), "Transcript": ("tab",)})
+    _run("browser", "refresh-tab", "expense-report", "Transcript", "--via", "Notes")
+    assert raw.probes == [("Notes", 30.0), ("Transcript", 30.0)]
+
+
+def test_refresh_tab_stops_when_the_first_click_leaves_the_allowed_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(
+        _config_dir,
+        'allowed_controls = ["Notes", "Transcript"]\nallowed_hosts = ["erp.example.com"]',
+    )
+    raw.roles_present.update({"Notes": ("tab",), "Transcript": ("tab",)})
+    raw.lands_on = "https://evil.example.net/x"
+    result = _run("browser", "refresh-tab", "expense-report", "Transcript", "--via", "Notes")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "host_blocked"
+    assert [call for call in raw.calls if call[0] == "click"] == [("click", "tab", "Notes")]
+
+
+def test_refresh_tab_says_where_the_page_was_left_when_the_second_tab_is_missing(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Notes", "Transcript"]')
+    raw.roles_present.update({"Notes": ("tab",), "Transcript": ()})
+    result = _run("browser", "refresh-tab", "expense-report", "Transcript", "--via", "Notes")
+    assert result.exit_code == EXIT_OTHER, result.output
+    message = _json(result)["message"]
+    assert "Transcript" in message
+    assert "left on" in message and "Notes" in message
+
+
+def test_refresh_tab_via_the_same_tab_is_a_usage_error(raw: _Raw) -> None:
+    result = _run("browser", "refresh-tab", "expense-report", "Notes", "--via", "Notes")
+    assert result.exit_code == EXIT_USAGE, result.output

@@ -108,6 +108,7 @@ class _Page:
         #: (role, name) -> successive counts; the last one repeats.
         self.role_counts: dict[tuple[str, str], list[int]] = {}
         self.waits = 0
+        self.wait_error: Exception | None = None
 
     def get_by_label(self, label: str) -> _Locator:
         return _Locator(self, label)
@@ -132,6 +133,8 @@ class _Page:
         self.default_timeout = ms
 
     def wait_for_timeout(self, ms: float) -> None:
+        if self.wait_error is not None:
+            raise self.wait_error
         self.waits += 1
         self.calls.append(("wait", ms))
 
@@ -1215,3 +1218,59 @@ def test_read_frame_text_reports_a_frame_that_stays_empty() -> None:
     driver = _driver(_Playwright(page))[1]
     with pytest.raises(BrowserActionError, match="empty frame"):
         driver.read_frame_text(1, _sharepoint, wait_s=0.05)
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [(float("nan"), 0.0), (-3.0, 0.0), (2.5, 2.5), (float("inf"), 300.0), (1e9, 300.0)],
+)
+def test_wait_seconds_are_clamped_to_a_sane_range(given: float, expected: float) -> None:
+    from blumkin.browser.cdp import clamp_wait
+
+    assert clamp_wait(given) == expected
+
+
+def test_matching_roles_with_a_nan_wait_does_not_poll_forever() -> None:
+    page, driver = _driver_with_counts({})
+    assert driver.matching_roles("Nope", ("button",), float("nan")) == ()
+    assert page.waits == 0
+
+
+def test_a_page_that_closes_mid_poll_is_reported_as_a_browser_action_error() -> None:
+    page, driver = _driver_with_counts({})
+    page.wait_error = PlaywrightError("Target closed")
+    with pytest.raises(BrowserActionError, match="Target closed"):
+        driver.matching_roles("Nope", ("button",), 5.0)
+
+
+def test_two_controls_with_the_same_name_in_one_role_are_reported_as_ambiguous() -> None:
+    _, driver = _driver_with_counts({("button", "Add"): [2]})
+    with pytest.raises(BrowserActionError, match="2 buttons named 'Add'"):
+        driver.matching_roles("Add", ("button",), 0.0)
+
+
+class _FlakyFrame(_PlainFrame):
+    """A frame whose first reads fail while the pane is still navigating."""
+
+    def __init__(self, failures: int) -> None:
+        super().__init__("https://tenant.sharepoint.com/x", text="rows")
+        self._failures = failures
+
+    def evaluate(self, script: str) -> object:
+        if self._failures > 0:
+            self._failures -= 1
+            raise PlaywrightError("Execution context was destroyed")
+        return super().evaluate(script)
+
+
+def test_read_frame_text_retries_a_read_that_fails_while_the_frame_navigates() -> None:
+    page = _FramesPage(_FlakyFrame(failures=2))
+    driver = _driver(_Playwright(page))[1]
+    assert driver.read_frame_text(1, _sharepoint, wait_s=5.0).text == "rows"
+
+
+def test_read_frame_text_without_a_wait_reports_a_failed_read_at_once() -> None:
+    page = _FramesPage(_FlakyFrame(failures=2))
+    driver = _driver(_Playwright(page))[1]
+    with pytest.raises(BrowserActionError, match="destroyed"):
+        driver.read_frame_text(1, _sharepoint)
