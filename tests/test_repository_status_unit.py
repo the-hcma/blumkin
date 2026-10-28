@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,15 @@ from blumkin.repository_status import (
 
 _ROOT = Path(__file__).resolve().parents[1]
 _GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"]
+
+
+def _git_env() -> dict[str, str]:
+    """The environment for the fixtures' git: no user config, hooks or inherited GIT_* state."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update({"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
+    return env
+
+
 _CLI = """import click
 
 @click.group()
@@ -50,7 +60,7 @@ def login(): ...
 
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
-        [*_GIT, "-C", str(repo), *args], check=True, capture_output=True, text=True
+        [*_GIT, "-C", str(repo), *args], check=True, capture_output=True, text=True, env=_git_env()
     ).stdout.strip()
 
 
@@ -58,7 +68,7 @@ def _make_repo(path: Path, cli: str = _CLI, name: str = "blumkin") -> Path:
     (path / "src" / "blumkin").mkdir(parents=True)
     (path / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n', encoding="utf-8")
     (path / "src" / "blumkin" / "cli.py").write_text(cli, encoding="utf-8")
-    subprocess.run([*_GIT, "init", "-q", str(path)], check=True)
+    subprocess.run([*_GIT, "init", "-q", str(path)], check=True, env=_git_env())
     _git(path, "add", "-A")
     _git(path, "commit", "-q", "-m", "first")
     return path
@@ -129,39 +139,156 @@ def test_an_older_build_is_behind_by_the_commits_since(tmp_path: Path) -> None:
     status = repository_status(repo, build_commit=old, running_commands=checkout_commands(repo))
     assert status.relation == "behind"
     assert status.behind_by == 2
-    assert "2 commits behind" in (status.note() or "")
-    assert "blumkin upgrade" in (status.note() or "")
 
 
-def test_commands_the_checkout_has_and_the_running_cli_lacks_are_listed(tmp_path: Path) -> None:
+def test_being_behind_alone_is_not_worth_a_note(tmp_path: Path) -> None:
+    """A release is always some commits behind main; only missing commands are actionable."""
     repo = _make_repo(tmp_path / "r")
-    head = _git(repo, "rev-parse", "HEAD")[:12]
-    status = repository_status(repo, build_commit=head, running_commands=["auth", "doctor"])
-    assert status.missing_commands == ("browser", "sync", "upload-files")
-    assert "browser" in (status.note() or "")
-
-
-def test_a_newer_build_than_the_checkout_is_ahead_and_not_a_problem(tmp_path: Path) -> None:
-    repo = _make_repo(tmp_path / "r")
-    old = _git(repo, "rev-parse", "HEAD")
+    old = _git(repo, "rev-parse", "HEAD")[:12]
     _commit(repo, "second")
-    _git(repo, "checkout", "-q", old)
-    newer = "0" * 12
-    status = repository_status(repo, build_commit=newer, running_commands=checkout_commands(repo))
-    assert status.relation == "unknown"
-    assert status.note() is not None
+    status = repository_status(repo, build_commit=old, running_commands=checkout_commands(repo))
+    assert status.relation == "behind"
+    assert status.note() is None
 
 
-def test_a_build_commit_the_checkout_does_not_know_is_reported_as_not_comparable(
+def test_missing_commands_are_the_note_and_it_offers_a_release_or_the_checkout(
     tmp_path: Path,
 ) -> None:
+    repo = _make_repo(tmp_path / "r")
+    old = _git(repo, "rev-parse", "HEAD")[:12]
+    _commit(repo, "second")
+    status = repository_status(repo, build_commit=old, running_commands=["auth", "doctor"])
+    note = status.note() or ""
+    assert status.missing_commands == ("browser", "sync", "upload-files")
+    assert "lacks commands" in note and "browser" in note
+    assert "1 commit behind" in note
+    assert "blumkin upgrade" in note
+    assert f"uv tool install -e {repo}" in note
+
+
+def test_a_build_newer_than_the_checkout_points_at_the_checkout_not_the_install(
+    tmp_path: Path,
+) -> None:
+    repo = _make_repo(tmp_path / "r")
+    first = _git(repo, "rev-parse", "HEAD")
+    build = _commit(repo, "second")
+    _git(repo, "checkout", "-q", first)
+    status = repository_status(repo, build_commit=build[:12], running_commands=["auth"])
+    assert status.relation == "unknown"  # the build commit is not in this checkout's history now
+    repo2 = _make_repo(tmp_path / "r2")
+    head2 = _git(repo2, "rev-parse", "HEAD")
+    _commit(repo2, "second")
+    _git(repo2, "checkout", "-q", head2)
+    newer = (
+        _git(repo2, "rev-parse", "main")
+        if _git(repo2, "branch", "--list", "main")
+        else _git(repo2, "rev-parse", "master")
+    )
+    ahead = repository_status(repo2, build_commit=newer[:12], running_commands=["auth"])
+    assert ahead.relation == "ahead"
+    assert "git pull" in (ahead.note() or "")
+    assert "uv tool install" not in (ahead.note() or "")
+
+
+def test_diverged_history_is_reported_in_the_block_but_has_no_note_of_its_own(
+    tmp_path: Path,
+) -> None:
+    repo = _make_repo(tmp_path / "r")
+    base = _git(repo, "rev-parse", "HEAD")
+    side = _commit(repo, "side")
+    _git(repo, "checkout", "-q", base)
+    _commit(repo, "other")
+    status = repository_status(
+        repo, build_commit=side[:12], running_commands=checkout_commands(repo)
+    )
+    assert status.relation == "diverged"
+    assert status.note() is None
+
+
+@pytest.mark.parametrize("commit", ["a", "abc", "zzzzzzzz", "-x", "--help", "HEAD", ""])
+def test_a_build_commit_that_is_not_a_real_short_hash_is_never_matched(
+    tmp_path: Path, commit: str
+) -> None:
+    repo = _make_repo(tmp_path / "r")
+    status = repository_status(repo, build_commit=commit, running_commands=checkout_commands(repo))
+    assert status.relation == "unknown"
+    assert status.note() is None
+
+
+def test_a_build_commit_the_checkout_does_not_know_is_unknown_and_quiet(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path / "r")
     status = repository_status(
         repo, build_commit="deadbeefcafe", running_commands=checkout_commands(repo)
     )
     assert status.relation == "unknown"
     assert status.behind_by is None
-    assert "not in" in (status.note() or "")
+    assert status.note() is None
+
+
+def test_a_shallow_checkout_is_unknown_not_diverged(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "r")
+    old = _git(repo, "rev-parse", "HEAD")[:12]
+    _commit(repo, "second")
+    _commit(repo, "third")
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{repo}", str(shallow)],
+        check=True,
+        env=_git_env(),
+    )
+    status = repository_status(
+        shallow, build_commit=old, running_commands=checkout_commands(shallow)
+    )
+    assert status.relation == "unknown"
+
+
+def test_a_checkout_that_is_a_linked_worktree_is_found_and_compared(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "r")
+    linked = tmp_path / "linked"
+    _git(repo, "worktree", "add", "-q", str(linked), "-b", "side")
+    assert (linked / ".git").is_file()
+    assert find_repository(start=linked, environ={}) == linked
+    head = _git(linked, "rev-parse", "HEAD")[:12]
+    assert repository_status(linked, build_commit=head, running_commands=[]).relation == "same"
+
+
+def test_a_missing_git_binary_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _make_repo(tmp_path / "r")
+
+    def no_git(*args: Any, **kwargs: Any) -> Any:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("blumkin.repository_status.subprocess.run", no_git)
+    status = repository_status(repo, build_commit="abcdef1", running_commands=["auth"])
+    assert status.relation == "unknown"
+    assert status.head is None
+    assert status.missing_commands != ()
+
+
+def test_git_is_run_without_inherited_repository_state_or_user_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _make_repo(tmp_path / "r")
+    seen: list[tuple[list[str], dict[str, str]]] = []
+    real = subprocess.run
+
+    def spy(argv: list[str], **kwargs: Any) -> Any:
+        seen.append((argv, kwargs.get("env") or {}))
+        return real(argv, **kwargs)
+
+    monkeypatch.setenv("GIT_DIR", "/nonexistent")
+    monkeypatch.setenv("GIT_WORK_TREE", "/nonexistent")
+    monkeypatch.setattr("blumkin.repository_status.subprocess.run", spy)
+    head = _git(repo, "rev-parse", "HEAD")[:12] if False else "abcdef1"
+    status = repository_status(repo, build_commit=head, running_commands=["auth"])
+    assert status.head is not None  # the inherited GIT_DIR did not redirect git
+    assert seen
+    for argv, env in seen:
+        assert "core.fsmonitor=false" in argv
+        assert "core.hooksPath=/dev/null" in argv
+        assert "GIT_DIR" not in env and "GIT_WORK_TREE" not in env
+        assert env.get("GIT_CONFIG_NOSYSTEM") == "1"
+        assert env.get("GIT_TERMINAL_PROMPT") == "0"
 
 
 def test_an_unknown_build_commit_is_reported_without_guessing(tmp_path: Path) -> None:
@@ -197,7 +324,7 @@ def test_a_cli_running_from_the_checkout_itself_is_never_compared(tmp_path: Path
             start=repo,
             environ={},
             build_commit="deadbeefcafe",
-            source_tree=repo,
+            running_from=repo,
         )
         is None
     )
@@ -212,7 +339,7 @@ def test_an_installed_cli_is_compared_with_the_checkout_found_from_the_working_d
         start=repo / "src",
         environ={},
         build_commit=_git(repo, "rev-parse", "HEAD")[:12],
-        source_tree=None,
+        running_from=None,
     )
     assert status is not None and status.path == repo
 
@@ -220,7 +347,7 @@ def test_an_installed_cli_is_compared_with_the_checkout_found_from_the_working_d
 def test_with_no_repository_around_there_is_nothing_to_say(tmp_path: Path) -> None:
     assert (
         current_status(
-            running_commands=[], start=tmp_path, environ={}, build_commit="abc", source_tree=None
+            running_commands=[], start=tmp_path, environ={}, build_commit="abc", running_from=None
         )
         is None
     )
@@ -246,7 +373,8 @@ def test_version_adds_one_line_when_the_install_is_behind_the_checkout(
     assert result.exit_code == EXIT_SUCCESS, result.output
     lines = result.output.strip().splitlines()
     assert len(lines) == 3
-    assert "behind" in lines[2] and "blumkin upgrade" in lines[2]
+    assert lines[2].startswith("note: ") and "lacks commands" in lines[2]
+    assert "blumkin upgrade" in lines[2]
 
 
 def test_version_stays_two_lines_when_the_install_is_current(
@@ -285,7 +413,7 @@ def test_doctor_json_carries_the_repository_block_and_a_warning(
     payload: dict[str, Any] = json.loads(result.output)
     assert payload["repository"]["relation"] == "behind"
     assert payload["repository"]["behind_by"] == 1
-    assert any("behind the checkout" in warning for warning in payload["warnings"])
+    assert any("lacks commands" in warning for warning in payload["warnings"])
 
 
 def test_doctor_json_has_a_null_repository_when_there_is_none(
@@ -306,3 +434,28 @@ def test_doctor_json_has_a_null_repository_when_there_is_none(
     payload = json.loads(CliRunner().invoke(main, ["doctor", "--json"]).output)
 
     assert payload["repository"] is None
+
+
+def test_doctor_reports_being_behind_without_a_warning_when_nothing_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _make_repo(tmp_path / "r")
+    old = _git(repo, "rev-parse", "HEAD")[:12]
+    _commit(repo, "second")
+    _installed_elsewhere(monkeypatch, repo, old)
+    monkeypatch.setattr(
+        "blumkin.repository_status.checkout_commands", lambda r: tuple(main.commands)
+    )
+    config = tmp_path / "config"
+    config.mkdir()
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(config))
+    (config / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "fake.apps.googleusercontent.com"\nprovider = "google"\n'
+        'default_tz = "UTC"\n',
+        encoding="utf-8",
+    )
+
+    payload = json.loads(CliRunner().invoke(main, ["doctor", "--json"]).output)
+
+    assert payload["repository"]["relation"] == "behind"
+    assert not any("checkout" in warning for warning in payload["warnings"])
