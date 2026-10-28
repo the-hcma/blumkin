@@ -267,21 +267,48 @@ def test_a_frame_read_waits_for_the_pane_to_attach_and_load(
     assert "Turn 0 point 0." in json.loads(read.output)["text"]
 
 
-@pytest.mark.xfail(
-    raises=AssertionError,
-    strict=True,
-    reason="a fresh attach cannot see a cross-origin frame that already exists (#551)",
-)
+def _settled(meeting_cli: Callable[..., Any]) -> None:
+    """Let the pane attach and load under one connection, then end it: the next command
+    attaches fresh, to a page whose pane already exists (#551)."""
+    primed = meeting_cli("read", "meeting", "--frame", "1", "--wait", "20")
+    assert primed.exit_code == EXIT_SUCCESS, primed.output
+
+
 def test_frames_on_a_page_that_has_settled_still_lists_the_pane(
     meeting_cli: Callable[..., Any],
 ) -> None:
-    primed = meeting_cli("read", "meeting", "--frame", "1", "--wait", "20")
-    if primed.exit_code != EXIT_SUCCESS:  # not the #551 symptom: a real regression
-        raise RuntimeError(primed.output)
+    _settled(meeting_cli)
 
     frames = json.loads(meeting_cli("frames", "meeting", "--wait", "3").output)["frames"]
 
     assert [(f["host"], f["allowed"]) for f in frames] == [("localhost", True)]
+
+
+def test_a_frame_of_a_settled_page_is_read_and_stays_under_the_host_policy(
+    meeting_cli: Callable[..., Any],
+) -> None:
+    _settled(meeting_cli)
+
+    read = meeting_cli("read", "meeting", "--frame", "1", "--host", "localhost")
+    wrong_host = meeting_cli("read", "meeting", "--frame", "1", "--host", "example.com")
+
+    assert read.exit_code == EXIT_SUCCESS, read.output
+    assert "Turn 0 point 0." in json.loads(read.output)["text"]
+    assert wrong_host.exit_code == EXIT_OTHER
+    assert "example.com" in json.loads(wrong_host.output)["message"]
+
+
+def test_the_transcript_of_a_settled_page_is_captured_whole(
+    meeting_cli: Callable[..., Any], tmp_path: Path
+) -> None:
+    _settled(meeting_cli)
+
+    result = meeting_cli("transcript", "meeting", "--duration", str(_TURNS * _SECONDS_PER_TURN))
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    coverage = json.loads(result.output)["coverage"]
+    assert coverage["entries"] == _TURNS
+    assert coverage["complete"] is True, coverage["problems"]
 
 
 def test_a_late_control_is_found_by_name_and_a_wrong_role_fails_fast(

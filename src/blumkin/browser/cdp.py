@@ -182,10 +182,19 @@ class PlaywrightDriver:
     and is the only object that implements `BrowserDriver`.
     """
 
-    def __init__(self, *, browser: Any, page: Any, playwright: Any, timeout_s: float) -> None:
+    def __init__(
+        self,
+        *,
+        browser: Any,
+        page: Any,
+        playwright: Any,
+        timeout_s: float,
+        existing_frames: Any = None,
+    ) -> None:
         self._browser = browser
         self._closed = False
         self._context = page.context
+        self._existing_frames = existing_frames
         self._net_installed = False
         self._navigation_handler: Any = None
         self._page = page
@@ -199,6 +208,9 @@ class PlaywrightDriver:
             return
         self._closed = True
         try:
+            if self._existing_frames is not None:
+                with contextlib.suppress(Exception):
+                    self._existing_frames.close()
             if self._navigation_handler is not None:
                 with contextlib.suppress(_playwright_error()):
                     self._context.unroute("**/*", self._navigation_handler)
@@ -591,7 +603,7 @@ class PlaywrightDriver:
         while True:
             try:
                 text = str(frame.evaluate("document.body.innerText"))
-            except _playwright_error() as exc:
+            except (_playwright_error(), _raw_frame_error()) as exc:
                 if wait <= 0.0 or time.monotonic() >= deadline:
                     raise self._action_error(f"read frame {index}", exc) from exc
                 self._pause()
@@ -626,17 +638,27 @@ class PlaywrightDriver:
         return len(frames) >= index and bool(_web_host(frames[index - 1].url))
 
     def _child_frames(self) -> list[Any]:
-        return [frame for frame in self._page.frames if frame != self._page.main_frame]
+        """Playwright's child frames, then any frame it cannot see that Chrome still lists.
+
+        A connection made after a cross-origin frame exists never hears of it from Playwright
+        (#551); those frames are reached over their own DevTools socket instead.
+        """
+        frames = [frame for frame in self._page.frames if frame != self._page.main_frame]
+        if self._existing_frames is not None:
+            known = {str(frame.url) for frame in self._page.frames}
+            try:
+                frames.extend(self._existing_frames.frames(known))
+            except OSError, ValueError, BrowserActionError:
+                pass
+        return frames
 
     def _ready_frame(self, is_allowed: Callable[[str], bool]) -> Any | None:
         """The first child frame on an allowed host whose transcript pane has loaded, else None."""
-        for frame in self._page.frames:
-            if frame == self._page.main_frame:
-                continue
-            host = urlsplit(frame.url).hostname or ""
+        for frame in self._child_frames():
+            host = _web_host(frame.url)
             if not host or not is_allowed(host):
                 continue
-            with contextlib.suppress(_playwright_error()):
+            with contextlib.suppress(_playwright_error(), _raw_frame_error()):
                 if bool(frame.evaluate(teams.FRAME_READY_JS)):
                     return frame
         return None
@@ -781,6 +803,7 @@ def open_driver(
     endpoint: str,
     *,
     attempts: int = ATTACH_ATTEMPTS,
+    existing_frames: Any = None,
     factory: Callable[[], Any] | None = None,
     fetch_version: Callable[[str, float], dict[str, Any]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -830,7 +853,14 @@ def open_driver(
             except _playwright_error() as exc:
                 last = exc
                 continue
-            return _driver_for(browser, playwright, endpoint=endpoint, timeout_s=timeout_s)
+            return _driver_for(
+                browser,
+                playwright,
+                endpoint=endpoint,
+                existing_frames=existing_frames,
+                read_existing_frames=factory is None,
+                timeout_s=timeout_s,
+            )
         detail = str(last).splitlines()[0] if last and str(last) else "no detail"
         raise BrowserAttachError(
             f"Expected to attach to {endpoint}, got {detail} after {attempts} attempts"
@@ -886,7 +916,13 @@ def _abort_non_get_navigation(route: Any) -> None:
 
 
 def _driver_for(
-    browser: Any, playwright: Any, *, endpoint: str, timeout_s: float
+    browser: Any,
+    playwright: Any,
+    *,
+    endpoint: str,
+    existing_frames: Any,
+    read_existing_frames: bool,
+    timeout_s: float,
 ) -> PlaywrightDriver:
     try:
         contexts = list(browser.contexts)
@@ -899,7 +935,50 @@ def _driver_for(
         with contextlib.suppress(_playwright_error()):
             browser.close()
         raise
-    return PlaywrightDriver(browser=browser, page=page, playwright=playwright, timeout_s=timeout_s)
+    if existing_frames is None and read_existing_frames:
+        existing_frames = _existing_frames_for(endpoint, page, timeout_s)
+    return PlaywrightDriver(
+        browser=browser,
+        page=page,
+        playwright=playwright,
+        timeout_s=timeout_s,
+        existing_frames=existing_frames,
+    )
+
+
+def _existing_frames_for(endpoint: str, page: Any, timeout_s: float) -> Any:
+    """The source of frames Playwright cannot see on `page`, read over their own sockets."""
+    from blumkin.browser.cdpws import CdpSocket, ExistingFrames
+
+    main_id: list[str] = []
+
+    def main_frame_id() -> str:
+        if not main_id:
+            session = page.context.new_cdp_session(page)
+            try:
+                tree = session.send("Page.getFrameTree")
+                main_id.append(str(tree["frameTree"]["frame"]["id"]))
+            finally:
+                with contextlib.suppress(_playwright_error()):
+                    session.detach()
+        return main_id[0]
+
+    return ExistingFrames(
+        endpoint_port=urlsplit(endpoint).port or 0,
+        fetch_targets=lambda: _fetch_targets(endpoint, timeout_s),
+        main_frame_id=main_frame_id,
+        open_socket=lambda ws_url: CdpSocket.connect(ws_url, timeout_s=timeout_s),
+    )
+
+
+def _fetch_targets(endpoint: str, timeout_s: float) -> list[dict[str, Any]]:
+    """Read `/json/list` from a loopback DevTools endpoint: every target Chrome knows."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirects)
+    with opener.open(f"{endpoint}/json/list", timeout=timeout_s) as response:
+        data = json.load(response)
+    if not isinstance(data, list):
+        raise ValueError(f"Expected a JSON list from /json/list, got {type(data).__name__}")
+    return [item for item in data if isinstance(item, dict)]
 
 
 def _fetch_version(endpoint: str, timeout_s: float) -> dict[str, Any]:
@@ -926,6 +1005,13 @@ def _playwright_error() -> type[Exception]:
     except Exception:
         return _NeverRaised
     return Error
+
+
+def _raw_frame_error() -> type[Exception]:
+    """The error a frame read over its own socket raises (imported on use: no import cycle)."""
+    from blumkin.browser.cdpws import RawFrameError
+
+    return RawFrameError
 
 
 def _require_loopback_endpoint(endpoint: str) -> None:
