@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import shlex
 import stat
@@ -25,7 +26,7 @@ _MESSAGE = "AAMkAGI2-message-one"
 # A stand-in agent: prints a banner, waits for the prompt, then drives the real CLI.
 _AGENT = textwrap.dedent(
     """
-    import subprocess, sys
+    import os, subprocess, sys, threading, time
     mode, item = sys.argv[1], sys.argv[2]
     print("\\x1b[1mready>\\x1b[0m", flush=True)
     if mode == "exit-early":
@@ -34,16 +35,26 @@ _AGENT = textwrap.dedent(
     print("got: " + prompt, flush=True)
     if mode == "hang":
         sys.stdin.readline()
-    if mode == "handback":
+    if mode == "term":
+        print("TERM=" + os.environ.get("TERM", "unset"), flush=True)
+    if mode == "binary":
+        sys.stdout.buffer.write(b"before \xff\xfe after\\n")
+        sys.stdout.flush()
+    if mode == "spinner":
+        def spin():
+            while True:
+                print(".", end="", flush=True)
+                time.sleep(0.05)
+        threading.Thread(target=spin, daemon=True).start()
+    if mode in ("handback", "term", "binary", "spinner"):
         subprocess.run(
             [sys.executable, "-m", "blumkin", "loop", "finish", item, "--needs-user", "unreadable"],
             check=True, capture_output=True,
         )
         print("handed back " + item, flush=True)
-    if mode == "idle":
-        pass
     line = sys.stdin.readline().strip()
     print("bye: " + line, flush=True)
+    os._exit(0)
     """
 )
 
@@ -306,3 +317,72 @@ def test_human_output_names_the_log(config: Path) -> None:
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "1 handled" in result.output
     assert "agent-logs" in result.output
+
+
+def test_invalid_utf8_from_the_agent_does_not_break_the_session(config: Path) -> None:
+    _write_config(config, "x")
+    item = _queue(config)
+    _write_config(config, _stand_in(config, "binary", item))
+    result = _run()
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert json.loads(result.output)["handled"] == [item]
+    assert "before" in _log_text(config)
+
+
+def test_a_steadily_printing_agent_is_not_reported_as_timed_out(config: Path) -> None:
+    _write_config(config, "x")
+    item = _queue(config)
+    _write_config(config, _stand_in(config, "spinner", item), timeout=30)
+    result = _run()
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["handled"] == [item]
+
+
+def test_a_second_session_is_refused_while_one_runs(config: Path) -> None:
+    _write_config(config, "x")
+    _queue(config)
+    lock_dir = config / "loop"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fd = (lock_dir / "agent.lock").open("w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = _run()
+    finally:
+        fd.close()
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert "already running" in json.loads(result.output)["message"]
+
+
+def test_a_default_terminal_type_is_set_when_missing(
+    config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("TERM", raising=False)
+    _write_config(config, "x")
+    item = _queue(config)
+    _write_config(config, _stand_in(config, "term", item))
+    assert _run().exit_code == EXIT_SUCCESS
+    assert "TERM=xterm-256color" in _log_text(config)
+
+
+def test_an_existing_log_directory_is_tightened(config: Path) -> None:
+    logs = config / "loop" / "agent-logs"
+    logs.mkdir(parents=True, mode=0o755)
+    logs.chmod(0o755)
+    _write_config(config, "x")
+    item = _queue(config)
+    _write_config(config, _stand_in(config, "handback", item))
+    _run()
+    assert stat.S_IMODE(logs.stat().st_mode) == 0o700
+
+
+def test_a_command_that_cannot_be_executed_is_a_clear_failure(config: Path) -> None:
+    _write_config(config, "x")
+    _queue(config)
+    plain = config / "not-executable"
+    plain.write_text("x", encoding="utf-8")
+    _write_config(config, str(plain))
+    result = _run()
+    assert result.exit_code in (EXIT_OTHER, EXIT_USAGE), result.output
+    assert "not-executable" in json.loads(result.output)["message"]
