@@ -1356,3 +1356,164 @@ def test_frame_list_waits_until_every_child_frame_has_an_address() -> None:
         "tenant.sharepoint.com",
         "tenant.sharepoint.com",
     ]
+
+
+class _Existing:
+    """Stands in for the frames a fresh connection cannot see through Playwright."""
+
+    def __init__(self, *frames: _PlainFrame) -> None:
+        self.found = list(frames)
+        self.seen_urls: set[str] | None = None
+        self.closed = 0
+
+    def frames(self, known_urls: set[str]) -> list[_PlainFrame]:
+        self.seen_urls = set(known_urls)
+        return list(self.found)
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def _existing_driver(existing: _Existing, *children: _PlainFrame):
+    page = _FramesPage(*children)
+    return _driver(_Playwright(page), existing_frames=existing)[1]
+
+
+def test_frames_playwright_cannot_see_are_listed_after_the_ones_it_can() -> None:
+    existing = _Existing(_PlainFrame("https://tenant.sharepoint.com/pane", text="pane rows"))
+    driver = _existing_driver(existing, _PlainFrame("https://tenant.sharepoint.com/seen"))
+    frames = driver.frame_list(_sharepoint)
+    assert [(f.index, f.host) for f in frames] == [
+        (1, "tenant.sharepoint.com"),
+        (2, "tenant.sharepoint.com"),
+    ]
+    assert "https://tenant.sharepoint.com/seen" in (existing.seen_urls or set())
+
+
+def test_a_frame_only_the_raw_socket_reaches_can_be_read() -> None:
+    existing = _Existing(_PlainFrame("https://tenant.sharepoint.com/pane", text="pane rows"))
+    driver = _existing_driver(existing)
+    assert driver.read_frame_text(1, _sharepoint).text == "pane rows"
+
+
+def test_the_host_policy_still_applies_to_a_raw_frame() -> None:
+    existing = _Existing(_PlainFrame("https://ads.example.net/x", text="buy now"))
+    driver = _existing_driver(existing)
+    with pytest.raises(BrowserActionError, match="allowed host"):
+        driver.read_frame_text(1, _sharepoint)
+
+
+def test_the_wait_applies_to_a_raw_frame_that_has_no_address_yet() -> None:
+    page = _FramesPage()
+    late = _AddressLateFrame(page, "rows")
+    driver = _driver(_Playwright(page), existing_frames=_Existing(late))[1]
+    assert driver.read_frame_text(1, _sharepoint, wait_s=5.0).text == "rows"
+
+
+class _FixedSocket:
+    """A DevTools socket that answers every evaluate with one value."""
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def call(
+        self, method: str, params: dict[str, Any] | None = None, *, timeout_s: float | None = None
+    ) -> dict[str, Any]:
+        return {"result": {"type": "string", "value": self._value}}
+
+    def close(self) -> None:
+        return None
+
+
+def test_a_raw_frame_has_no_aria_snapshot_and_the_error_says_what_to_do() -> None:
+    from blumkin.browser.cdpws import RawFrame
+
+    url = "https://tenant.sharepoint.com/pane"
+    existing = _Existing()
+    existing.found = [RawFrame(_FixedSocket(url), "F1", url)]  # type: ignore[list-item]
+    driver = _existing_driver(existing)
+    with pytest.raises(BrowserActionError, match="refresh-tab"):
+        driver.frame_aria_snapshot(1, _sharepoint)
+
+
+def test_closing_the_driver_closes_the_raw_frames() -> None:
+    existing = _Existing()
+    driver = _existing_driver(existing)
+    driver.close()
+    assert existing.closed == 1
+
+
+def test_a_source_that_fails_leaves_the_playwright_frames_usable() -> None:
+    class _Broken(_Existing):
+        def frames(self, known_urls: set[str]) -> list[_PlainFrame]:
+            raise OSError("devtools gone")
+
+    driver = _existing_driver(_Broken(), _PlainFrame("https://tenant.sharepoint.com/x", text="t"))
+    assert [f.host for f in driver.frame_list(_sharepoint)] == ["tenant.sharepoint.com"]
+
+
+@pytest.mark.parametrize(
+    "error", [KeyError("frameTree"), AttributeError("x"), PlaywrightError("closed")]
+)
+def test_a_source_that_raises_anything_leaves_the_playwright_frames_usable(
+    error: Exception,
+) -> None:
+    class _Odd(_Existing):
+        def frames(self, known_urls: set[str]) -> list[_PlainFrame]:
+            raise error
+
+    driver = _existing_driver(_Odd(), _PlainFrame("https://tenant.sharepoint.com/x", text="t"))
+    assert [f.host for f in driver.frame_list(_sharepoint)] == ["tenant.sharepoint.com"]
+
+
+def test_frame_discovery_uses_a_short_probe_timeout_not_the_action_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import cdpws
+    from blumkin.browser.cdp import _existing_frames_for
+
+    seen: list[float] = []
+
+    def connect(ws_url: str, *, timeout_s: float, **kwargs: Any) -> Any:
+        seen.append(timeout_s)
+        raise cdpws.RawFrameError("stop")
+
+    monkeypatch.setattr(cdpws.CdpSocket, "connect", staticmethod(connect))
+    source = _existing_frames_for("http://127.0.0.1:40123", _Page(), 30.0)
+    with pytest.raises(cdpws.RawFrameError):
+        source._open_socket("ws://127.0.0.1:40123/devtools/page/A")
+    assert seen == [3.0]
+
+
+def test_the_driver_gives_the_source_only_the_addresses_of_playwrights_child_frames() -> None:
+    existing = _Existing()
+    driver = _existing_driver(existing, _PlainFrame("https://tenant.sharepoint.com/seen"))
+    driver.frame_list(_sharepoint)
+    assert list(existing.seen_urls or []) == ["https://tenant.sharepoint.com/seen"]
+
+
+class _BlinkingAddressFrame(_PlainFrame):
+    """A frame whose address reads fine once and then fails, as a navigating page can."""
+
+    def __init__(self) -> None:
+        super().__init__("")
+        self.reads = 0
+
+    @property
+    def url(self) -> str:
+        self.reads += 1
+        return "https://tenant.sharepoint.com/x" if self.reads == 1 else ""
+
+    @url.setter
+    def url(self, _value: str) -> None:
+        return None
+
+
+def test_frame_list_reads_each_frames_address_once_per_listing() -> None:
+    flaky = _BlinkingAddressFrame()
+    driver = _existing_driver(_Existing(flaky))
+    listed = driver.frame_list(_sharepoint)
+    assert [(f.host, f.origin, f.allowed) for f in listed] == [
+        ("tenant.sharepoint.com", "https://tenant.sharepoint.com", True)
+    ]
+    assert flaky.reads == 1

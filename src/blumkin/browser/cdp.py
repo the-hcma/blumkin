@@ -21,7 +21,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -182,10 +182,19 @@ class PlaywrightDriver:
     and is the only object that implements `BrowserDriver`.
     """
 
-    def __init__(self, *, browser: Any, page: Any, playwright: Any, timeout_s: float) -> None:
+    def __init__(
+        self,
+        *,
+        browser: Any,
+        existing_frames: Any = None,
+        page: Any,
+        playwright: Any,
+        timeout_s: float,
+    ) -> None:
         self._browser = browser
         self._closed = False
         self._context = page.context
+        self._existing_frames = existing_frames
         self._net_installed = False
         self._navigation_handler: Any = None
         self._page = page
@@ -199,6 +208,9 @@ class PlaywrightDriver:
             return
         self._closed = True
         try:
+            if self._existing_frames is not None:
+                with contextlib.suppress(Exception):
+                    self._existing_frames.close()
             if self._navigation_handler is not None:
                 with contextlib.suppress(_playwright_error()):
                     self._context.unroute("**/*", self._navigation_handler)
@@ -305,22 +317,24 @@ class PlaywrightDriver:
         """
         self._require_open()
         deadline = time.monotonic() + clamp_wait(wait_s)
-        while not _all_addressed(self._child_frames()):
-            if time.monotonic() >= deadline:
+        while True:
+            # One read of each address per poll: a frame's address is a live read, and the
+            # listing must be built from the same values the wait judged.
+            addresses = [str(frame.url) for frame in self._child_frames()]
+            if _all_addressed(addresses) or time.monotonic() >= deadline:
                 break
             self._pause()
         found: list[FrameInfo] = []
-        for number, frame in enumerate(self._child_frames(), start=1):
-            host = _web_host(frame.url)
-            port = urlsplit(frame.url).port if host else None
+        for number, address in enumerate(addresses, start=1):
+            host = _web_host(address)
+            parts = urlsplit(address)
+            port = f":{parts.port}" if host and parts.port else ""
             found.append(
                 FrameInfo(
                     allowed=bool(host) and is_allowed(host),
                     host=host,
                     index=number,
-                    origin=f"{urlsplit(frame.url).scheme}://{host}{f':{port}' if port else ''}"
-                    if host
-                    else "",
+                    origin=f"{parts.scheme}://{host}{port}" if host else "",
                 )
             )
         return tuple(found)
@@ -591,7 +605,7 @@ class PlaywrightDriver:
         while True:
             try:
                 text = str(frame.evaluate("document.body.innerText"))
-            except _playwright_error() as exc:
+            except (_playwright_error(), _raw_frame_error()) as exc:
                 if wait <= 0.0 or time.monotonic() >= deadline:
                     raise self._action_error(f"read frame {index}", exc) from exc
                 self._pause()
@@ -626,17 +640,27 @@ class PlaywrightDriver:
         return len(frames) >= index and bool(_web_host(frames[index - 1].url))
 
     def _child_frames(self) -> list[Any]:
-        return [frame for frame in self._page.frames if frame != self._page.main_frame]
+        """Playwright's child frames, then any frame it cannot see that Chrome still lists.
+
+        A connection made after a cross-origin frame exists never hears of it from Playwright
+        (#551); those frames are reached over their own DevTools socket instead.
+        """
+        frames = [frame for frame in self._page.frames if frame != self._page.main_frame]
+        if self._existing_frames is not None:
+            known = [str(frame.url) for frame in frames]
+            try:
+                frames.extend(self._existing_frames.frames(known))
+            except Exception:  # noqa: BLE001 - a best-effort source must not hide Playwright's frames
+                pass
+        return frames
 
     def _ready_frame(self, is_allowed: Callable[[str], bool]) -> Any | None:
         """The first child frame on an allowed host whose transcript pane has loaded, else None."""
-        for frame in self._page.frames:
-            if frame == self._page.main_frame:
-                continue
-            host = urlsplit(frame.url).hostname or ""
+        for frame in self._child_frames():
+            host = _web_host(frame.url)
             if not host or not is_allowed(host):
                 continue
-            with contextlib.suppress(_playwright_error()):
+            with contextlib.suppress(_playwright_error(), _raw_frame_error()):
                 if bool(frame.evaluate(teams.FRAME_READY_JS)):
                     return frame
         return None
@@ -781,6 +805,7 @@ def open_driver(
     endpoint: str,
     *,
     attempts: int = ATTACH_ATTEMPTS,
+    existing_frames: Any = None,
     factory: Callable[[], Any] | None = None,
     fetch_version: Callable[[str, float], dict[str, Any]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -830,7 +855,14 @@ def open_driver(
             except _playwright_error() as exc:
                 last = exc
                 continue
-            return _driver_for(browser, playwright, endpoint=endpoint, timeout_s=timeout_s)
+            return _driver_for(
+                browser,
+                playwright,
+                endpoint=endpoint,
+                existing_frames=existing_frames,
+                read_existing_frames=factory is None,
+                timeout_s=timeout_s,
+            )
         detail = str(last).splitlines()[0] if last and str(last) else "no detail"
         raise BrowserAttachError(
             f"Expected to attach to {endpoint}, got {detail} after {attempts} attempts"
@@ -839,6 +871,9 @@ def open_driver(
         with contextlib.suppress(_playwright_error()):
             playwright.stop()
         raise
+
+
+_DISCOVERY_TIMEOUT_S = 3.0
 
 
 _POLL_MS = 250
@@ -886,7 +921,13 @@ def _abort_non_get_navigation(route: Any) -> None:
 
 
 def _driver_for(
-    browser: Any, playwright: Any, *, endpoint: str, timeout_s: float
+    browser: Any,
+    playwright: Any,
+    *,
+    endpoint: str,
+    existing_frames: Any,
+    read_existing_frames: bool,
+    timeout_s: float,
 ) -> PlaywrightDriver:
     try:
         contexts = list(browser.contexts)
@@ -899,7 +940,62 @@ def _driver_for(
         with contextlib.suppress(_playwright_error()):
             browser.close()
         raise
-    return PlaywrightDriver(browser=browser, page=page, playwright=playwright, timeout_s=timeout_s)
+    if existing_frames is None and read_existing_frames:
+        existing_frames = _existing_frames_for(endpoint, page, timeout_s)
+    return PlaywrightDriver(
+        browser=browser,
+        page=page,
+        playwright=playwright,
+        timeout_s=timeout_s,
+        existing_frames=existing_frames,
+    )
+
+
+def _existing_frames_for(endpoint: str, page: Any, timeout_s: float) -> Any:
+    """The source of frames Playwright cannot see on `page`, read over their own sockets."""
+    from blumkin.browser.cdpws import CdpSocket, ExistingFrames, RawFrameError
+
+    sessions: list[Any] = []
+
+    def frame_ids(tree: Mapping[str, Any]) -> set[str]:
+        ids = {str(tree["frame"]["id"])}
+        for child in tree.get("childFrames", []):
+            ids |= frame_ids(child)
+        return ids
+
+    def page_frame_ids() -> set[str]:
+        """The ids of the frames Playwright's own connection can name on the page."""
+        try:
+            if not sessions:
+                sessions.append(page.context.new_cdp_session(page))
+            return frame_ids(sessions[0].send("Page.getFrameTree")["frameTree"])
+        except (_playwright_error(), KeyError, TypeError) as exc:
+            raise RawFrameError(f"Expected the page's frame tree, got {exc}") from exc
+
+    def detach() -> None:
+        for session in sessions:
+            with contextlib.suppress(_playwright_error()):
+                session.detach()
+
+    probe_s = min(timeout_s, _DISCOVERY_TIMEOUT_S)
+    return ExistingFrames(
+        endpoint_port=urlsplit(endpoint).port or 0,
+        evaluate_timeout_s=timeout_s,
+        fetch_targets=lambda: _fetch_targets(endpoint, probe_s),
+        on_close=detach,
+        open_socket=lambda ws_url: CdpSocket.connect(ws_url, timeout_s=probe_s),
+        page_frame_ids=page_frame_ids,
+    )
+
+
+def _fetch_targets(endpoint: str, timeout_s: float) -> list[dict[str, Any]]:
+    """Read `/json/list` from a loopback DevTools endpoint: every target Chrome knows."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirects)
+    with opener.open(f"{endpoint}/json/list", timeout=timeout_s) as response:
+        data = json.load(response)
+    if not isinstance(data, list):
+        raise ValueError(f"Expected a JSON list from /json/list, got {type(data).__name__}")
+    return [item for item in data if isinstance(item, dict)]
 
 
 def _fetch_version(endpoint: str, timeout_s: float) -> dict[str, Any]:
@@ -926,6 +1022,13 @@ def _playwright_error() -> type[Exception]:
     except Exception:
         return _NeverRaised
     return Error
+
+
+def _raw_frame_error() -> type[Exception]:
+    """The error a frame read over its own socket raises (imported on use: no import cycle)."""
+    from blumkin.browser.cdpws import RawFrameError
+
+    return RawFrameError
 
 
 def _require_loopback_endpoint(endpoint: str) -> None:
@@ -990,6 +1093,6 @@ def _web_host(url: str) -> str:
     return (parts.hostname or "") if parts.scheme in ("http", "https") else ""
 
 
-def _all_addressed(frames: Sequence[Any]) -> bool:
+def _all_addressed(addresses: Sequence[str]) -> bool:
     """True when there is at least one frame and every frame has a web address."""
-    return bool(frames) and all(_web_host(frame.url) for frame in frames)
+    return bool(addresses) and all(_web_host(address) for address in addresses)
