@@ -23,6 +23,7 @@ from blumkin.loop.journal import list_runs, recent_by_trigger
 from blumkin.loop.kill_switch import is_engaged, kill_switch_path
 from blumkin.loop.mail_poll import poll_mail_triggers
 from blumkin.loop.mail_profiles import list_paused_profiles
+from blumkin.loop.mail_sync import list_sync_states
 from blumkin.loop.queue import drain_queue, requeue_front
 from blumkin.loop.runner import RunResult, run_trigger
 from blumkin.loop.state import is_paused, list_paused, pause_trigger, resume_trigger
@@ -146,6 +147,7 @@ def status(setup: LoopSetup) -> dict[str, Any]:
     return {
         "kill_switch": is_engaged(setup.config_dir, setup.loop),
         "kill_switch_path": str(kill_switch_path(setup.config_dir, setup.loop)),
+        "mail_sync": list_sync_states(setup.config_dir),
         "paused": paused,
         "paused_mail_profiles": sorted(list_paused_profiles(setup.config_dir)),
         "recent_runs": recent,

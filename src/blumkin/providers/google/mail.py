@@ -22,6 +22,7 @@ from blumkin.attachments import (
     unique_filename,
 )
 from blumkin.config import BlumkinConfig, load_config
+from blumkin.mail_sync import MailSyncResetError
 from blumkin.prompt_injection import scan_mail_message
 from blumkin.providers.google_auth import MAIL_READ_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
@@ -308,6 +309,80 @@ async def mail_list(
     }
 
 
+async def mail_new(
+    *,
+    state: str | None,
+    since: datetime,
+    top: int = 50,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Inbox messages added since `state` (a Gmail history id), and the id to use next.
+
+    With no `state` this only takes the mailbox's current history id: nothing is listed, since
+    the caller scans the newest messages itself right after. With a saved history id it reads
+    the `messageAdded` history of the INBOX label and fetches each new message once. A history
+    id Gmail no longer has (404) or a history that never ends raises `MailSyncResetError`; the
+    caller then rescans and takes a fresh id.
+    """
+    cfg = config or load_config()
+    service = _gmail_service(cfg)
+    if state is None:
+        profile = execute(service.users().getProfile(userId="me"))
+        history_id = str(profile.get("historyId") or "")
+        if not history_id:
+            raise MailSyncResetError("Expected Gmail to report a history id, got none")
+        return {"items": [], "state": history_id}
+    ids: list[str] = []
+    latest = state
+    page_token: str | None = None
+    try:
+        for _ in range(_HISTORY_MAX_PAGES):
+            kwargs: dict[str, Any] = {
+                "userId": "me",
+                "startHistoryId": state,
+                "historyTypes": ["messageAdded"],
+                "labelId": "INBOX",
+                "maxResults": 500,
+            }
+            if page_token:
+                kwargs["pageToken"] = page_token
+            page = execute(service.users().history().list(**kwargs))
+            for entry in page.get("history") or []:
+                for added in entry.get("messagesAdded") or []:
+                    message = added.get("message") or {}
+                    message_id = message.get("id")
+                    labels = message.get("labelIds")
+                    if not message_id or message_id in ids:
+                        continue
+                    if labels is not None and "INBOX" not in labels:
+                        continue
+                    ids.append(message_id)
+            latest = str(page.get("historyId") or latest)
+            page_token = page.get("nextPageToken")
+            if not page_token:
+                break
+        else:
+            raise MailSyncResetError("Expected Gmail to end the history read, got more pages")
+    except HttpError as exc:
+        if getattr(exc.resp, "status", None) == 404:
+            raise MailSyncResetError("Gmail no longer has the saved history id") from exc
+        raise
+    items: list[dict[str, Any]] = []
+    for message_id in ids:
+        try:
+            raw = execute(
+                service.users()
+                .messages()
+                .get(userId="me", id=message_id, format="metadata", metadataHeaders=_LIST_HEADERS)
+            )
+        except HttpError as exc:
+            if getattr(exc.resp, "status", None) == 404:
+                continue  # deleted before it could be read
+            raise
+        items.append(_message_to_dict(raw))
+    return {"items": items, "state": latest}
+
+
 async def mail_search(
     *,
     query: str,
@@ -423,6 +498,7 @@ _FOLDER_LABELS = {
     "sentitems": "SENT",
 }
 
+_HISTORY_MAX_PAGES = 20
 _LIST_HEADERS = ["From", "Subject", "To", "Date"]
 
 _OUTBOUND_FOLDERS = frozenset({"drafts", "outbox", "sentitems"})

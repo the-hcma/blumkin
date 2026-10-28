@@ -3237,6 +3237,11 @@ def loop_status(ctx: click.Context, as_json_flag: bool) -> None:
         lines.append("paused: " + ", ".join(payload["paused"]))
     else:
         lines.append("paused: (none)")
+    for sync_row in payload["mail_sync"]:
+        lines.append(
+            f"mail sync {sync_row['profile']}: {sync_row['mode']} "
+            f"(last poll {sync_row['last_poll']})"
+        )
     if not payload["triggers"]:
         lines.append("triggers: (none)")
     else:

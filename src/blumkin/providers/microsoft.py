@@ -55,6 +55,7 @@ from blumkin.skills.mail import (
     mail_list,
     mail_mark,
     mail_move,
+    mail_new,
     mail_reply,
     mail_search,
     mail_send_draft,
@@ -625,6 +626,11 @@ class MicrosoftWorkspaceProvider:
             until=until,
             config=self._config,
         )
+
+    async def mail_new(
+        self, *, state: str | None, since: datetime, top: int = 50
+    ) -> dict[str, Any]:
+        return await mail_new(state=state, since=since, top=top, config=self._config)
 
     async def mail_reply(
         self,
