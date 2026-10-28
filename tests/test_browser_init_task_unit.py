@@ -312,3 +312,34 @@ def test_the_profile_is_created_before_the_config_is_written(
 def test_the_output_tells_the_user_to_narrow_the_sharepoint_wildcard(config: Path) -> None:
     result = CliRunner().invoke(main, ["browser", "init-task", "--template", "teams-transcript"])
     assert "tenant" in result.output and "sharepoint" in result.output.lower()
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        'browser = "edge"\n',
+        "browser = 5\n",
+        "[[browser]]\nname = 1\n",
+        "[[browser.tasks]]\nname = 1\n",
+        "[browser]\ntasks = 5\n",
+        '[browser]\ntasks = "x"\n',
+    ],
+)
+@pytest.mark.parametrize("flag", [[], ["--yes"]])
+def test_a_browser_value_that_is_not_a_table_is_a_usage_error_and_the_file_is_unchanged(
+    config: Path, shape: str, flag: list[str]
+) -> None:
+    text = shape + _BASE
+    (config / "config.toml").write_text(text, encoding="utf-8")
+
+    result = _run("--template", "teams-transcript", *flag)
+
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert _payload(result)["error"] == "usage_error"
+    assert (config / "config.toml").read_text(encoding="utf-8") == text
+
+
+def test_the_next_steps_lead_to_an_open_transcript_view(config: Path) -> None:
+    steps = " ".join(_payload(_run("--template", "teams-transcript"))["next_steps"])
+    assert "Transcript view" in steps
+    assert "Notes or Transcript" not in steps

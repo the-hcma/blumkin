@@ -101,3 +101,9 @@ def test_the_skill_maps_an_existing_output_file_to_the_error_the_command_emits()
     )
     assert "--out" not in usage
     assert "--out" in action
+
+
+def test_the_skill_asks_for_the_transcript_view_not_the_notes_view() -> None:
+    text = _text()
+    assert "show its Transcript view" in text
+    assert "Notes or Transcript" not in text
