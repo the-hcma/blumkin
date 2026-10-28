@@ -59,7 +59,9 @@ class BrowserDriver(Protocol):
 
     def fill(self, label: str, value: str) -> None: ...
 
-    def frame_aria_snapshot(self, index: int, is_allowed: Callable[[str], bool]) -> str: ...
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str: ...
 
     def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]: ...
 
@@ -67,7 +69,9 @@ class BrowserDriver(Protocol):
 
     def press(self, label: str, key: str) -> None: ...
 
-    def read_frame_text(self, index: int, is_allowed: Callable[[str], bool]) -> PageText: ...
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText: ...
 
     def read_text(self) -> PageText: ...
 
@@ -248,9 +252,11 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error(f"fill the field labelled {label!r}", exc) from exc
 
-    def frame_aria_snapshot(self, index: int, is_allowed: Callable[[str], bool]) -> str:
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str:
         """A child frame's body as a Playwright ARIA snapshot, on an allowed host only."""
-        frame = self._child_frame(index, is_allowed)
+        frame = self._child_frame(index, is_allowed, expect_host)
         try:
             snapshot = str(frame.locator("body").aria_snapshot(timeout=self._timeout_ms))
         except _playwright_error() as exc:
@@ -263,16 +269,16 @@ class PlaywrightDriver:
         self._require_open()
         found: list[FrameInfo] = []
         for number, frame in enumerate(self._child_frames(), start=1):
-            parts = urlsplit(frame.url)
-            host = parts.hostname or ""
-            web = parts.scheme in ("http", "https") and bool(host)
-            port = f":{parts.port}" if web and parts.port else ""
+            host = _web_host(frame.url)
+            port = urlsplit(frame.url).port if host else None
             found.append(
                 FrameInfo(
-                    allowed=web and is_allowed(host),
+                    allowed=bool(host) and is_allowed(host),
                     host=host,
                     index=number,
-                    origin=f"{parts.scheme}://{host}{port}" if web else "",
+                    origin=f"{urlsplit(frame.url).scheme}://{host}{f':{port}' if port else ''}"
+                    if host
+                    else "",
                 )
             )
         return tuple(found)
@@ -292,9 +298,11 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error(f"press {key!r} in the field labelled {label!r}", exc) from exc
 
-    def read_frame_text(self, index: int, is_allowed: Callable[[str], bool]) -> PageText:
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText:
         """A child frame's visible text, on an allowed host only; untrusted data."""
-        frame = self._child_frame(index, is_allowed)
+        frame = self._child_frame(index, is_allowed, expect_host)
         try:
             text = str(frame.evaluate("document.body.innerText"))
         except _playwright_error() as exc:
@@ -472,8 +480,14 @@ class PlaywrightDriver:
             f"{str(exc).splitlines()[0] if str(exc) else type(exc).__name__}"
         )
 
-    def _child_frame(self, index: int, is_allowed: Callable[[str], bool]) -> Any:
-        """Child frame number `index` (1-based), refused unless its host is allowed."""
+    def _child_frame(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> Any:
+        """Child frame number `index` (1-based), refused unless its host is allowed.
+
+        `expect_host` pins the frame the caller meant: frame numbers shift when the page adds
+        or reloads a frame, so a different frame at that number is refused.
+        """
         self._require_open()
         frames = self._child_frames()
         if not frames:
@@ -484,6 +498,12 @@ class PlaywrightDriver:
             )
         frame = frames[index - 1]
         self._require_allowed_frame_host(frame, is_allowed)
+        host = _web_host(frame.url)
+        if expect_host is not None and host.lower() != expect_host.strip().lower():
+            raise BrowserActionError(
+                f"Expected frame {index} to be on {expect_host!r}, got {host!r}; "
+                "list the frames again"
+            )
         return frame
 
     def _child_frames(self) -> list[Any]:
@@ -503,9 +523,10 @@ class PlaywrightDriver:
         return None
 
     def _require_allowed_frame_host(self, frame: Any, is_allowed: Callable[[str], bool]) -> None:
-        host = urlsplit(frame.url).hostname or ""
+        host = _web_host(frame.url)
         if not host or not is_allowed(host):
-            detail = host or frame.url
+            # Never the frame's URL: a data: or blob: address can carry a payload or a token.
+            detail = host or f"no web host (scheme {urlsplit(frame.url).scheme or 'none'!r})"
             raise BrowserActionError(
                 f"Expected the frame to stay on an allowed host, got {detail!r}"
             )
@@ -530,7 +551,9 @@ class RawBrowserDriver(Protocol):
 
     def fill(self, label: str, value: str) -> None: ...
 
-    def frame_aria_snapshot(self, index: int, is_allowed: Callable[[str], bool]) -> str: ...
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str: ...
 
     def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]: ...
 
@@ -538,7 +561,9 @@ class RawBrowserDriver(Protocol):
 
     def raw_press(self, label: str, key: str) -> None: ...
 
-    def read_frame_text(self, index: int, is_allowed: Callable[[str], bool]) -> PageText: ...
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText: ...
 
     def read_text(self) -> PageText: ...
 
@@ -851,3 +876,9 @@ def _sync_playwright() -> Any:
             "to restore it, then retry the browser command"
         ) from exc
     return sync_playwright()
+
+
+def _web_host(url: str) -> str:
+    """The host of an http(s) address, else "" (about:, data:, blob:, ftp: and the like)."""
+    parts = urlsplit(url)
+    return (parts.hostname or "") if parts.scheme in ("http", "https") else ""

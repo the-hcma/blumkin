@@ -107,8 +107,10 @@ class GuardedDriver:
     def fill(self, label: str, value: str) -> None:
         self._raw.fill(label, value)
 
-    def frame_aria_snapshot(self, index: int, is_allowed: Callable[[str], bool]) -> str:
-        return self._raw.frame_aria_snapshot(index, is_allowed)
+    def frame_aria_snapshot(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> str:
+        return self._raw.frame_aria_snapshot(index, is_allowed, expect_host)
 
     def frame_list(self, is_allowed: Callable[[str], bool]) -> tuple[FrameInfo, ...]:
         return self._raw.frame_list(is_allowed)
@@ -125,8 +127,10 @@ class GuardedDriver:
             raise self._refuse(action, "the field is a button, not a text field")
         self._raw.raw_press(label, key)
 
-    def read_frame_text(self, index: int, is_allowed: Callable[[str], bool]) -> PageText:
-        return self._raw.read_frame_text(index, is_allowed)
+    def read_frame_text(
+        self, index: int, is_allowed: Callable[[str], bool], expect_host: str | None = None
+    ) -> PageText:
+        return self._raw.read_frame_text(index, is_allowed, expect_host)
 
     def read_text(self) -> PageText:
         return self._raw.read_text()

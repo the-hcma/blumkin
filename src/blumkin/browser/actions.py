@@ -37,6 +37,11 @@ from blumkin.config import BrowserSetup
 from blumkin.output import sanitize_terminal
 from blumkin.prompt_injection import scan_for_injection
 
+_ARIA_FIELD_VALUE = re.compile(
+    r'^(\s*- (?:combobox|searchbox|slider|spinbutton|textbox)(?: "(?:[^"\\]|\\.)*")?'
+    r"(?: \[[^\]]*\])*):\s.*$"
+)
+
 
 class HostBlockedError(BrowserActionError):
     """The page is on a host the task did not declare in `allowed_hosts`."""
@@ -167,13 +172,20 @@ def frames_task(config: BrowserSetup, task: str) -> dict[str, Any]:
 
 
 def read_task(
-    config: BrowserSetup, task: str, *, aria: bool = False, frame: int | None = None
+    config: BrowserSetup,
+    task: str,
+    *,
+    aria: bool = False,
+    frame: int | None = None,
+    host: str | None = None,
 ) -> dict[str, Any]:
     """Read the page's visible text, flagged when it looks like it is trying to instruct.
 
     `frame` reads a child frame instead (its number from `frames_task`), which needs the
     task to declare `allowed_hosts`; `aria` returns the ARIA snapshot (roles and accessible
-    names) of the page or that frame instead of its text.
+    names) of the page or that frame instead of its text, with link addresses and field
+    values removed. `host` pins the frame: one on another host is refused, since frame
+    numbers shift when the page adds or reloads a frame.
     """
     hosts = _declared_hosts(config, task)
     if frame is not None and not hosts:
@@ -183,22 +195,29 @@ def read_task(
         )
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        allowed = lambda host: host_allowed(host, hosts)  # noqa: E731
+        def allowed(name: str) -> bool:
+            return host_allowed(name, hosts)
+
         if aria:
-            snapshot = (
+            snapshot = _redact_aria(
                 driver.aria_snapshot()
                 if frame is None
-                else driver.frame_aria_snapshot(frame, allowed)
+                else driver.frame_aria_snapshot(frame, allowed, host)
             )
             page = PageText(
                 text=snapshot,
                 injection_warning=scan_for_injection(snapshot, location="page.aria").to_payload(),
             )
         else:
-            page = driver.read_text() if frame is None else driver.read_frame_text(frame, allowed)
+            page = (
+                driver.read_text()
+                if frame is None
+                else driver.read_frame_text(frame, allowed, host)
+            )
         return {
             "action": "read",
             "frame": frame,
+            "frame_host": host,
             "injection_warning": page.injection_warning,
             "mode": "aria" if aria else "text",
             "ok": True,
@@ -360,6 +379,21 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
         allowed_controls=frozenset(declared.allowed_controls),
         extra_deny_names=declared.extra_deny_names,
     )
+
+
+def _redact_aria(snapshot: str) -> str:
+    """Drop link addresses and the current value of fields from an ARIA snapshot.
+
+    Playwright lists `- /url: ...` under every link (paths, queries and signed tokens) and
+    `- textbox "Name": value` for a field's content; only roles and accessible names stay.
+    """
+    kept: list[str] = []
+    for line in snapshot.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("- /url:", "- /placeholder:")):
+            continue
+        kept.append(_ARIA_FIELD_VALUE.sub(r"\1", line))
+    return "\n".join(kept)
 
 
 def _require_allowed_page(

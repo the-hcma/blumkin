@@ -2896,15 +2896,28 @@ def browser_press(ctx: click.Context, task: str, label: str, key: str, as_json_f
     default=None,
     help="Read child frame N (see `browser frames`) instead of the page; needs allowed_hosts.",
 )
+@click.option(
+    "--host",
+    "host",
+    default=None,
+    help="With --frame: refuse unless that frame is on this host (numbers can shift).",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_read(
-    ctx: click.Context, task: str, aria: bool, frame: int | None, as_json_flag: bool
+    ctx: click.Context,
+    task: str,
+    aria: bool,
+    frame: int | None,
+    host: str | None,
+    as_json_flag: bool,
 ) -> None:
-    """Read the page title, URL and visible text (untrusted data)."""
+    """Read the page, or one child frame (`--frame`), as text or an ARIA snapshot (untrusted)."""
     as_json = _as_json(ctx, as_json_flag)
+    if host is not None and frame is None:
+        raise click.UsageError("--host needs --frame")
     try:
-        payload = read_task(load_browser_setup(), task, aria=aria, frame=frame)
+        payload = read_task(load_browser_setup(), task, aria=aria, frame=frame, host=host)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     if as_json:
