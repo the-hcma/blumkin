@@ -300,3 +300,29 @@ def test_a_folder_below_the_home_directory_is_still_a_valid_upload_dir(
         '[browser.tasks.expense-report]\nupload_dirs = ["~/receipts", "/srv/receipts/inbox"]\n\n',
     )
     load_config()
+
+
+def test_download_dirs_are_parsed_and_default_to_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.meeting]\ndownload_dirs = ["~/transcripts", "/srv/transcripts"]\n\n'
+        "[browser.tasks.other]\n\n",
+    )
+    tasks = load_config().browser.tasks
+    assert tasks["meeting"].download_dirs == ("~/transcripts", "/srv/transcripts")
+    assert tasks["other"].download_dirs == ()
+
+
+@pytest.mark.parametrize(
+    "entry", ["transcripts", "./t", "../x", "~other/t", "~", "~/", "~/..", "/", "//"]
+)
+def test_a_download_dir_follows_the_same_rules_as_an_upload_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    _config(tmp_path, monkeypatch, f'[browser.tasks.meeting]\ndownload_dirs = ["{entry}"]\n\n')
+    with pytest.raises(ProviderConfigError) as excinfo:
+        load_config()
+    assert "download_dirs" in str(excinfo.value)

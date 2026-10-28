@@ -11,6 +11,7 @@ import pytest
 from blumkin.browser.cdp import (
     BrowserActionError,
     ControlInfo,
+    DownloadedFile,
     FrameCapture,
     FrameInfo,
     PageText,
@@ -45,6 +46,19 @@ class _Raw:
         self.probes.append((name, tuple(roles), wait_s))
         present = self.present.get(name, tuple(roles) if len(roles) == 1 else ("button",))
         return tuple(role for role in roles if role in present)
+
+    def checked_download(
+        self,
+        name: str,
+        role: str,
+        vet: Callable[[ControlInfo], None],
+        *,
+        save_to: Path,
+        timeout_s: float,
+    ) -> DownloadedFile:
+        vet(self.controls.get(name, _PLAIN))
+        self.calls.append(("download", role, name, timeout_s))
+        return DownloadedFile(url="https://a.example.com/f", filename="f.vtt", path=save_to / "x")
 
     def aria_snapshot(self) -> str:
         self.calls.append(("aria",))
@@ -406,6 +420,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "aria_snapshot",
         "check_click",
         "click",
+        "download",
         "close",
         "fill",
         "frame_aria_snapshot",
@@ -525,3 +540,27 @@ def test_check_click_applies_the_policy_without_touching_the_page() -> None:
     with pytest.raises(SubmitBlockedError):
         driver.check_click("Notes", "heading")
     assert raw.calls == [] and raw.probes == []
+
+
+def test_download_applies_the_click_policy_before_the_page_is_probed(tmp_path: Path) -> None:
+    raw, driver = _guard("Download")
+    for bad in ("Submit", "Other"):
+        with pytest.raises(SubmitBlockedError):
+            driver.download(bad, save_to=tmp_path)
+    assert raw.calls == [] and raw.probes == []
+
+
+def test_download_finds_the_control_by_name_and_returns_the_file(tmp_path: Path) -> None:
+    raw, driver = _guard("Download")
+    raw.present["Download"] = ("button",)
+    got = driver.download("Download", save_to=tmp_path, wait_s=3.0)
+    assert got.filename == "f.vtt"
+    assert raw.probes[0][2] == 3.0
+    assert ("download", "button", "Download", 30.0) in raw.calls
+
+
+def test_download_refuses_a_control_that_submits(tmp_path: Path) -> None:
+    raw, driver = _guard("Download")
+    raw.controls["Download"] = ControlInfo(tag="button", input_type="submit", in_form=True)
+    with pytest.raises(SubmitBlockedError):
+        driver.download("Download", save_to=tmp_path)
