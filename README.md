@@ -22,6 +22,7 @@ One config file, one or more **named profiles** (Microsoft, Google, or both), se
 | `chat` (Teams / Google Chat) | `find`, `last`, `send`, `edit`, `delete`, `attachments` (+ `download`) |
 | `browser` | `profile` (`create`, `list`, `delete`), `launch`, `status`, `goto`, `read`, `fill`, `upload`, `click`, `press`, `handoff`, `explore` (`observe`, `click`, `show`, `save`, `discard`), `ledger` (`begin`, `stage`, `apply`, `verify`, `reconcile`, `handoff`, `record`, `status`, `list`, `submitted`, `discard`), `model` (`check`, `versions`, `diff`) - browser-assisted tasks that stop before the final submit |
 | `docs` | `create` (a Markdown subset → a real Google Doc, or a `.docx` in OneDrive) |
+| `drive` (Google Drive / OneDrive) | `list`, `get`, `read`, `download`, `export`, `mkdir`, `move`, `rename`, `upload` |
 | `meeting` (Microsoft) | `get`, `transcription` |
 | `people` | `resolve` |
 | `receipts` | `find`, `read` (OCR with confidence per field), `rehome` (move or copy a confirmed receipt into a managed instance folder) |
@@ -248,6 +249,8 @@ Once vaulted, it takes precedence over any `client_secret` still in the file, an
 - A returned draft `id` is the Gmail draft id; `attachments[].id` is `null` (Gmail carries attachments inside the raw message).
 
 **Token file** (written by `blumkin auth login`): `profiles/<name>/google_token.json`. `graph_timeout_seconds` in toml bounds Google HTTP and token-refresh calls too. Never commit any of these files.
+
+**Drive files.** `blumkin drive upload --file ./avatar.png --folder "Profile" --yes` puts a local file in your Google Drive or OneDrive as a new file (`--name`, `--folder-id` and `--mime-type` are optional); `drive download --id ID --out ./downloads/` and `drive export --id ID --to ./doc.pdf` bring files down. Uploads never replace a file or add a second one with the same name, notify no one, and refuse anything inside blumkin's own config directory (tokens); downloads and exports are saved as new files with mode 0600 and never overwrite. Large files use the service's resumable upload (Google) or an upload session (OneDrive). Microsoft needs the same `docs_scopes` grant (`Files.ReadWrite`) as the other `drive` verbs; Google needs no new consent. Tab completion covers the verbs, their options and common `--mime-type` values, and leaves paths to your shell.
 
 **Local document reads.** `blumkin docs read --path ./file.pdf --json` reads a local PDF/DOCX/XLSX/image already on disk (for example from `drive download`, `drive export`, `mail attachments download`, or `chat attachments download`). It refuses files larger than 25 MB. Install only the extras you need:
 

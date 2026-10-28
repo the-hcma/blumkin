@@ -30,7 +30,7 @@ from msgraph.generated.models.item_reference import ItemReference
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.upload_session import UploadSession
 
-from blumkin.attachments import resolve_single_download_dest
+from blumkin.attachments import resolve_single_download_dest, write_new_private_file
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client
 from blumkin.skills.drive import (
@@ -93,7 +93,7 @@ async def drive_download(
         )
     data = await _send_bytes(client, _CONTENT_URL, {"id": item_id}, missing=item_id)
     dest = resolve_single_download_dest(out, item.name or item_id)
-    dest.write_bytes(data)
+    write_new_private_file(dest, data)
     return {
         "id": item_id,
         "name": item.name,
@@ -125,7 +125,7 @@ async def drive_export(
         )
     data = await _send_bytes(client, _EXPORT_URL, {"id": item_id}, missing=item_id)
     dest = resolve_export_dest(to)
-    dest.write_bytes(data)
+    write_new_private_file(dest, data)
     return {
         "id": item_id,
         "name": item.name,

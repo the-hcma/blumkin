@@ -15,7 +15,7 @@ from typing import Any
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
-from blumkin.attachments import resolve_single_download_dest
+from blumkin.attachments import resolve_single_download_dest, write_new_private_file
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.google_auth import DRIVE_SCOPES, get_credentials
 from blumkin.providers.google_http import build_api_service, execute
@@ -89,7 +89,7 @@ async def drive_download(
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc
     dest = resolve_single_download_dest(out, meta.get("name") or item_id)
-    dest.write_bytes(data)
+    write_new_private_file(dest, data)
     return {
         "id": item_id,
         "name": meta.get("name"),
@@ -127,7 +127,7 @@ async def drive_export(
     except HttpError as exc:
         raise _translate(exc, item_id=item_id) from exc
     dest = resolve_export_dest(to)
-    dest.write_bytes(data)
+    write_new_private_file(dest, data)
     return {
         "id": item_id,
         "name": meta.get("name"),
