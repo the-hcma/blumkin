@@ -49,6 +49,10 @@ blumkin browser handoff expense-report --filled "1 line, 12.50 USD" --step "Revi
 
 Each command attaches to the running browser, does one thing and detaches; the browser stays open with your session. `blumkin browser click` defaults to a button; for a link, tab or menu item pass the role (`--role link`, `tab` or `menuitem`), for example `blumkin browser click expense-report "Help" --role link`. The two ready-made skills are [`expense-report`](../.agents/skills/expense-report/SKILL.md) and [`time-sheet`](../.agents/skills/time-sheet/SKILL.md).
 
+### Look inside a page: frames and the ARIA snapshot
+
+Some panes are not in the page text. `blumkin browser frames TASK` lists the page's child frames: a 1-based number, the host, the origin (never the path or query) and whether the task's `allowed_hosts` accept it. `blumkin browser read TASK --frame N` reads that frame's text (untrusted data, like any page text); it needs `allowed_hosts` and refuses a frame on any other host. `blumkin browser read TASK --aria` returns the ARIA snapshot (roles and accessible names, no field values) of the page, or of the frame with `--frame N`: use it to learn a control's name and role before declaring it in `allowed_controls`. Frame numbers change when the page reloads, so list them again before reading.
+
 ## Explore a site once
 
 A task can record the structure of its website once, so later runs do not have to explore it again. The record is a site model: the pages (a URL template and a fingerprint of their landmark controls), the controls on each page (a logical name, a kind, whether it looks finalizing and ordered ways to find it) and the flows that chain them. It holds structure only: nothing you type, no cookie and no personal data, and a label that looks like typed data is skipped and counted. Exploration needs the task to declare `allowed_hosts` and never leaves them.

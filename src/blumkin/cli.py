@@ -47,6 +47,7 @@ from blumkin.browser.actions import (
     UploadBlockedError,
     click_task,
     fill_task,
+    frames_task,
     goto_task,
     handoff_task,
     press_task,
@@ -2344,6 +2345,32 @@ def browser_fill(ctx: click.Context, task: str, label: str, value: str, as_json_
     )
 
 
+@browser.command("frames", epilog=help_text.BROWSER_FRAMES_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_frames(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """List the page's child frames (host only) and whether the task allows each."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = frames_task(load_browser_setup(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    if not payload["frames"]:
+        emit_lines(["no child frames on the page"])
+        return
+    emit_lines(
+        [
+            f"{frame['index']}  {sanitize_terminal(frame['host'] or '(no host)')}  "
+            + ("allowed" if frame["allowed"] else "not allowed")
+            for frame in payload["frames"]
+        ]
+    )
+
+
 @browser.command("goto", epilog=help_text.BROWSER_GOTO_EPILOG)
 @click.argument("task")
 @click.argument("url")
@@ -2861,13 +2888,23 @@ def browser_press(ctx: click.Context, task: str, label: str, key: str, as_json_f
 
 @browser.command("read", epilog=help_text.BROWSER_READ_EPILOG)
 @click.argument("task")
+@click.option("--aria", is_flag=True, help="Show the ARIA snapshot (roles and names), not text.")
+@click.option(
+    "--frame",
+    "frame",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Read child frame N (see `browser frames`) instead of the page; needs allowed_hosts.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
-def browser_read(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+def browser_read(
+    ctx: click.Context, task: str, aria: bool, frame: int | None, as_json_flag: bool
+) -> None:
     """Read the page title, URL and visible text (untrusted data)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = read_task(load_browser_setup(), task)
+        payload = read_task(load_browser_setup(), task, aria=aria, frame=frame)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     if as_json:

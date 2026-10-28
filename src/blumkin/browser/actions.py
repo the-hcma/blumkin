@@ -20,6 +20,7 @@ from blumkin.browser.cdp import (
     DEFAULT_FRAME_WAIT_S,
     DEFAULT_SCROLL_MAX_STEPS,
     BrowserActionError,
+    PageText,
     checked_http_url,
 )
 from blumkin.browser.commands import TaskNotFoundError
@@ -140,14 +141,66 @@ def press_task(config: BrowserSetup, task: str, label: str, key: str) -> dict[st
     return _with_driver(config, task, act)
 
 
-def read_task(config: BrowserSetup, task: str) -> dict[str, Any]:
-    """Read the page's visible text, flagged when it looks like it is trying to instruct."""
+def frames_task(config: BrowserSetup, task: str) -> dict[str, Any]:
+    """List the page's child frames: number, host, origin and whether the task allows them."""
+    hosts = _declared_hosts(config, task)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        page = driver.read_text()
+        frames = driver.frame_list(lambda host: host_allowed(host, hosts))
+        return {
+            "action": "frames",
+            "frames": [
+                {
+                    "allowed": frame.allowed,
+                    "host": frame.host,
+                    "index": frame.index,
+                    "origin": frame.origin,
+                }
+                for frame in frames
+            ],
+            "ok": True,
+            "task": task,
+            "url": driver.url,
+        }
+
+    return _with_driver(config, task, act)
+
+
+def read_task(
+    config: BrowserSetup, task: str, *, aria: bool = False, frame: int | None = None
+) -> dict[str, Any]:
+    """Read the page's visible text, flagged when it looks like it is trying to instruct.
+
+    `frame` reads a child frame instead (its number from `frames_task`), which needs the
+    task to declare `allowed_hosts`; `aria` returns the ARIA snapshot (roles and accessible
+    names) of the page or that frame instead of its text.
+    """
+    hosts = _declared_hosts(config, task)
+    if frame is not None and not hosts:
+        raise HostBlockedError(
+            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
+            "reading a frame, got none"
+        )
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        allowed = lambda host: host_allowed(host, hosts)  # noqa: E731
+        if aria:
+            snapshot = (
+                driver.aria_snapshot()
+                if frame is None
+                else driver.frame_aria_snapshot(frame, allowed)
+            )
+            page = PageText(
+                text=snapshot,
+                injection_warning=scan_for_injection(snapshot, location="page.aria").to_payload(),
+            )
+        else:
+            page = driver.read_text() if frame is None else driver.read_frame_text(frame, allowed)
         return {
             "action": "read",
+            "frame": frame,
             "injection_warning": page.injection_warning,
+            "mode": "aria" if aria else "text",
             "ok": True,
             "task": task,
             "text": page.text[:MAX_READ_CHARS],
@@ -279,6 +332,11 @@ def _checked_output(out: Path) -> Path:
             f"Expected an existing folder for the transcript, got {str(target.parent)!r}"
         )
     return target
+
+
+def _declared_hosts(config: BrowserSetup, task: str) -> tuple[str, ...]:
+    declared = config.browser.tasks.get(task)
+    return tuple(declared.allowed_hosts) if declared else ()
 
 
 def _expand_home(text: str) -> Path:
