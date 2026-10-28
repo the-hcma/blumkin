@@ -138,4 +138,5 @@ dev = [
     "keyring>=25.7.0",
     "hatchling>=1.32.4",
     "pytest-xdist>=3.8.0",
+    "pexpect>=4.9.0",
 ]

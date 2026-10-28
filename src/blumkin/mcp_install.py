@@ -95,6 +95,14 @@ def detect(clients: tuple[str, ...] = CLIENTS) -> set[str]:
     return {c for c in clients if c in found}
 
 
+def _dev_launcher() -> str | None:
+    """The dev launcher's path when this process was started by it, else None."""
+    if os.environ.get("BLUMKIN_DEV") != "1":
+        return None
+    launcher = os.environ.get("BLUMKIN_DEV_LAUNCHER", "").strip()
+    return launcher if launcher and Path(launcher).is_file() else None
+
+
 def _canonical(command: str) -> Path | None:
     """The real executable a registered ``command`` points at, or ``None``."""
     located = command if os.path.isabs(command) else shutil.which(command)
@@ -122,10 +130,15 @@ def command_is_current(registered: str, binary: str) -> bool:
 def resolve_binary() -> tuple[str, bool]:
     """``(command-to-register, is_on_PATH)``.
 
-    Prefer the bare name ``blumkin`` so the entry keeps working after a
+    A dev run (``scripts/dev/blumkin``) registers that launcher, so the client runs this
+    checkout with the dev marker even when a released ``blumkin`` is on ``PATH``. Otherwise
+    prefer the bare name ``blumkin`` so the entry keeps working after a
     reinstall; fall back to the absolute path of the running executable when
     ``blumkin`` is not on ``PATH`` (an editable/uv-run invocation).
     """
+    launcher = _dev_launcher()
+    if launcher is not None:
+        return launcher, False
     if shutil.which("blumkin"):
         return "blumkin", True
     return str(running_command_path()), False

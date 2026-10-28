@@ -13,6 +13,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 #: `_CS_DARWIN_USER_TEMP_DIR` from macOS's `<unistd.h>` - the per-user,
 #: per-boot temp directory the OS itself hands out (the same one `TMPDIR`
@@ -33,6 +34,29 @@ def binary_path() -> Path:
     (or leave, for editable) the file at this same path inside the package.
     """
     return Path(__file__).resolve().parent / "bin" / "blumkin-agent"
+
+
+def binary_status(source_tree: Path | None) -> dict[str, Any]:
+    """Whether the bundled binary is built here, and in a checkout whether it is out of date.
+
+    `stale` is None unless there is a binary and a source tree to compare with; it is True when
+    a `rust-agent` source or manifest file changed after the binary was built, which a plain
+    `git pull` does not fix (rebuild with `uv sync --reinstall-package blumkin`).
+    """
+    binary = binary_path()
+    present = binary.is_file()
+    stale: bool | None = None
+    if present and source_tree is not None:
+        root = source_tree / "rust-agent"
+        sources = [root / "Cargo.toml", root / "Cargo.lock", *sorted((root / "src").rglob("*.rs"))]
+        times = [path.stat().st_mtime for path in sources if path.is_file()]
+        stale = bool(times) and max(times) > binary.stat().st_mtime
+    return {
+        "path": str(binary),
+        "present": present,
+        "stale": stale,
+        "supported": is_supported_platform(),
+    }
 
 
 def is_supported_platform() -> bool:

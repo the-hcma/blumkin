@@ -54,7 +54,55 @@ def format_cli_version_line(*, prog: str) -> str:
 @lru_cache(maxsize=1)
 def get_build_info() -> tuple[str, str]:
     """Return ``(package_version, commit_short_or_unknown)`` once per process."""
-    return (package_version(), git_commit())
+    suffix = dev_version_suffix() if is_dev_run() else ""
+    return (package_version() + suffix, git_commit())
+
+
+def dev_version_suffix(*, repository: Path | None = None) -> str:
+    """``+dev.<short sha>.<commit date>`` (plus ``-dirty``) for a checkout.
+
+    ``get_build_info`` adds it only for a dev run (:func:`is_dev_run`). A release install
+    (a baked-in version, or no git checkout around the code) gets an empty string, so its
+    version is unchanged. Any git failure also gives an empty string: the marker is a
+    convenience and must never break ``--version``. Untracked files count as dirty (they
+    change what runs), ignored files do not.
+    """
+    embedded = getattr(_build_metadata, "EMBEDDED_VERSION", "")
+    if isinstance(embedded, str) and embedded.strip():
+        return ""
+    checkout = repository or _repository_root()
+    if not (checkout / ".git").exists():
+        return ""
+    try:
+        head = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "show",
+                "--no-patch",
+                "--format=%h %cd",
+                "--date=format:%Y%m%d",
+                "--abbrev=7",
+                "HEAD",
+            ],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=2,
+        ).stdout.split()
+        changes = subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(checkout), "status", "--porcelain"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+    except OSError, subprocess.SubprocessError:
+        return ""
+    if len(head) != 2:
+        return ""
+    return f"+dev.{head[0]}.{head[1]}" + ("-dirty" if changes else "")
 
 
 def git_commit(
@@ -94,6 +142,16 @@ def git_commit(
     except OSError, subprocess.SubprocessError:
         return "unknown"
     return result.stdout.strip() or "unknown"
+
+
+def is_dev_run() -> bool:
+    """Whether this process was started by the dev launcher (`scripts/dev/blumkin`).
+
+    Only a dev run reports the `+dev` marker. A plain editable install keeps its release
+    version, so editing the checkout never changes the version a long-running `mcp serve`
+    compares against (which would make it ask to be restarted on every edit).
+    """
+    return os.environ.get("BLUMKIN_DEV") == "1"
 
 
 def is_source_checkout(*, repository: Path | None = None) -> bool:
@@ -184,6 +242,12 @@ def running_command_path() -> Path:
         return argv0.absolute()
     except OSError:
         return argv0
+
+
+def source_tree(*, repository: Path | None = None) -> Path | None:
+    """The git checkout this code runs from, or None for an installed release."""
+    checkout = repository or _repository_root()
+    return checkout if (checkout / ".git").exists() else None
 
 
 def _normalize_commit(token: str) -> str:

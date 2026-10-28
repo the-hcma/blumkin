@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ from click.shell_completion import get_completion_class
 from blumkin import help_text, keychain_unlock
 from blumkin.agent import client as agent_client
 from blumkin.agent import processes as agent_processes
+from blumkin.agent.paths import binary_status
 from blumkin.app_secrets import (
     AppSecretKind,
     app_secret_backend,
@@ -30,12 +32,15 @@ from blumkin.app_secrets import (
 from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
 from blumkin.auth_setup import (
     ACCOUNT_TYPES,
+    FirstRunConfigError,
     GoogleSetupInput,
     MicrosoftSetupInput,
     apply_google_setup,
     apply_microsoft_setup,
     console_steps,
+    create_first_run_config,
     google_setup_from_client_json,
+    remove_first_run_config,
 )
 from blumkin.browser.actions import (
     HostBlockedError,
@@ -108,6 +113,7 @@ from blumkin.capabilities import capability_summary
 from blumkin.config import (
     BlumkinConfig,
     config_dir,
+    config_dir_source,
     google_oauth_installed_client,
     list_profiles,
     load_browser_setup,
@@ -261,6 +267,7 @@ from blumkin.version import (
     package_version,
     read_installed_version,
     running_command_path,
+    source_tree,
 )
 
 # Fallback next-step guidance per error slug, used when a call site does not pass
@@ -1773,6 +1780,13 @@ def _read_app_secret_value(
     help="Google only, without --from-file: read client_secret from stdin.",
 )
 @click.option("--client-id", "client_id", default=None, help="Google or Microsoft client id.")
+@click.option(
+    "--provider",
+    "provider_flag",
+    type=click.Choice(["microsoft", "google"]),
+    default=None,
+    help="First run only: the provider for the profile in a new config.toml.",
+)
 @click.option("--tenant-id", "tenant_id", default=None, help="Microsoft only.")
 @click.option(
     "--account-type",
@@ -1804,6 +1818,7 @@ def auth_setup(
     from_file: Path | None,
     from_stdin: bool,
     client_id: str | None,
+    provider_flag: str | None,
     tenant_id: str | None,
     account_type: str | None,
     auth_uri: str,
@@ -1821,75 +1836,100 @@ def auth_setup(
     config.toml. The `[profiles.<name>]` table must already exist.
     """
     as_json = _as_json(ctx, as_json_flag)
-    cfg = _load_config()
     tty = _stdio_is_tty()
-    interactive = tty and not yes
-    if not tty and not yes:
-        _emit_error(
-            error="usage_error",
-            message="`auth setup` needs a TTY for the interactive walkthrough; pass --yes "
-            "plus every required value's flag for a non-interactive run.",
-            as_json=as_json,
-        )
-        raise SystemExit(EXIT_USAGE)
-    provider = cfg.provider.value
-    steps = console_steps(provider)
-    if not as_json:
-        emit_lines(
-            [f"Console steps for {provider} (do these first, then come back here):"]
-            + [f"  {i}. {step}" for i, step in enumerate(steps, start=1)]
-        )
-    try:
-        if provider == "google":
-            data = _collect_google_setup(
-                from_file=from_file,
-                from_stdin=from_stdin,
-                client_id=client_id,
-                auth_uri=auth_uri,
-                token_uri=token_uri,
-                redirect_uris=redirect_uris,
-                interactive=interactive,
+    created = _create_first_run_config_if_missing(
+        ctx, provider_flag, tty=tty, yes=yes, as_json=as_json
+    )
+    created_config = created[0] if created is not None else None
+    with contextlib.ExitStack() as rollback:
+        if created is not None:
+            # A setup that does not finish (bad values, a refused secret write, Ctrl-C) must not
+            # leave a bare config behind that makes the next run look configured.
+            rollback.callback(remove_first_run_config, created[0], directory_was_new=created[1])
+        cfg = _load_config()
+        if provider_flag is not None and cfg.provider.value != provider_flag:
+            _emit_error(
+                error="usage_error",
+                message="Expected --provider to match the profile's provider, got "
+                f"{provider_flag!r} for profile {cfg.profile!r} which uses "
+                f"{cfg.provider.value!r}.",
                 as_json=as_json,
             )
-            apply_google_setup(cfg, data)
-            vaulted: bool | None = None
+            raise SystemExit(EXIT_USAGE)
+        interactive = tty and not yes
+        if not tty and not yes:
+            _emit_error(
+                error="usage_error",
+                message="`auth setup` needs a TTY for the interactive walkthrough; pass --yes "
+                "plus every required value's flag for a non-interactive run.",
+                as_json=as_json,
+            )
+            raise SystemExit(EXIT_USAGE)
+        provider = cfg.provider.value
+        steps = console_steps(provider)
+        if not as_json:
+            emit_lines(
+                [f"Console steps for {provider} (do these first, then come back here):"]
+                + [f"  {i}. {step}" for i, step in enumerate(steps, start=1)]
+            )
+        try:
+            if provider == "google":
+                data = _collect_google_setup(
+                    from_file=from_file,
+                    from_stdin=from_stdin,
+                    client_id=client_id,
+                    auth_uri=auth_uri,
+                    token_uri=token_uri,
+                    redirect_uris=redirect_uris,
+                    interactive=interactive,
+                    as_json=as_json,
+                )
+                apply_google_setup(cfg, data)
+                vaulted: bool | None = None
+            else:
+                ms_data = _collect_microsoft_setup(
+                    cfg,
+                    client_id=client_id,
+                    tenant_id=tenant_id,
+                    account_type=account_type,
+                    interactive=interactive,
+                    as_json=as_json,
+                )
+                vaulted = apply_microsoft_setup(cfg, ms_data)
+        except SecretWriteError as exc:
+            _emit_error(
+                error="secret_write_failed",
+                message=str(exc),
+                as_json=as_json,
+                hint=_APP_SECRET_WRITE_HINT,
+            )
+            raise SystemExit(EXIT_OTHER) from exc
+        except ProviderConfigError as exc:
+            _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+            raise SystemExit(EXIT_USAGE) from exc
+        if as_json:
+            payload: dict[str, object] = {"ok": True, "provider": provider, "profile": cfg.profile}
+            if vaulted is False:
+                payload["vaulted"] = False
+            if created_config is not None:
+                payload["created_config"] = str(created_config)
+            emit_json(payload)
         else:
-            ms_data = _collect_microsoft_setup(
-                cfg,
-                client_id=client_id,
-                tenant_id=tenant_id,
-                account_type=account_type,
-                interactive=interactive,
-                as_json=as_json,
-            )
-            vaulted = apply_microsoft_setup(cfg, ms_data)
-    except SecretWriteError as exc:
-        _emit_error(
-            error="secret_write_failed",
-            message=str(exc),
-            as_json=as_json,
-            hint=_APP_SECRET_WRITE_HINT,
-        )
-        raise SystemExit(EXIT_OTHER) from exc
-    except ProviderConfigError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    if as_json:
-        payload: dict[str, object] = {"ok": True, "provider": provider, "profile": cfg.profile}
-        if vaulted is False:
-            payload["vaulted"] = False
-        emit_json(payload)
-    else:
-        lines = [f"{provider} OAuth client configured for profile {cfg.profile!r}."]
-        if vaulted is False:
-            lines.append(
-                "Note: client_id was not vaulted in the OS keychain (no usable backend) - "
-                "it is saved in config.toml, so `auth login` still works; re-run "
-                "`blumkin auth set-app-secret --kind ms_client_id` once a keychain is "
-                "available to vault it too."
-            )
-        lines.append(f"Next: blumkin --profile {cfg.profile} auth login")
-        emit_lines(lines)
+            lines = [f"{provider} OAuth client configured for profile {cfg.profile!r}."]
+            if created_config is not None:
+                lines.insert(
+                    0, f"Created {created_config} (mode 0600) with profile {cfg.profile!r}."
+                )
+            if vaulted is False:
+                lines.append(
+                    "Note: client_id was not vaulted in the OS keychain (no usable backend) - "
+                    "it is saved in config.toml, so `auth login` still works; re-run "
+                    "`blumkin auth set-app-secret --kind ms_client_id` once a keychain is "
+                    "available to vault it too."
+                )
+            lines.append(f"Next: blumkin --profile {cfg.profile} auth login")
+            emit_lines(lines)
+        rollback.pop_all()
 
 
 def _collect_google_setup(
@@ -3861,10 +3901,31 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
             "the macOS login keychain is locked - run: blumkin auth unlock "
             f"(keychain_unlock = {cfg.keychain_unlock!r})"
         )
+    resolved_dir, selected_by = config_dir_source()
+    tree = source_tree()
+    agent_binary = binary_status(tree)
+    if tree is not None and agent_binary["supported"]:
+        if not agent_binary["present"]:
+            warnings.append(
+                f"the blumkin-agent binary is not built in this checkout ({agent_binary['path']}); "
+                "secrets are read straight from the keychain instead of the agent cache - build "
+                "it with a Rust toolchain: uv sync --reinstall-package blumkin"
+            )
+        elif agent_binary["stale"]:
+            warnings.append(
+                "the blumkin-agent binary is older than the rust-agent sources in this checkout; "
+                "rebuild it: uv sync --reinstall-package blumkin"
+            )
     payload = {
         "ok": not problems,
         "keychain": {"locked": keychain_locked, "unlock_mode": cfg.keychain_unlock},
         "build": build,
+        "agent_binary": agent_binary,
+        "config": {
+            "dir": str(resolved_dir),
+            "selected_by": selected_by,
+            "source_tree": str(tree) if tree is not None else None,
+        },
         "capabilities": capabilities,
         "account_type": cfg.account_type,
         "wo1162425_scopes": cfg.wo1162425_scopes,
@@ -3900,6 +3961,12 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"build: {build['build_version']} ({build['build_commit']})"])
         emit_lines([f"install: {install.method}"])
         emit_lines([f"running_from: {build['running_from']}"])
+        emit_lines(
+            [
+                f"config_dir: {resolved_dir} ({selected_by})",
+                f"source_tree: {tree if tree is not None else '(installed release)'}",
+            ]
+        )
         emit_lines([f"account_type: {cfg.account_type}"])
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
@@ -6373,6 +6440,66 @@ def mcp_serve_cmd(
         if isinstance(raw, str) and raw.strip():
             profile = raw.strip()
     mcp_server.serve(profile=profile, read_only=read_only, only=tuple(only))
+
+
+def _create_first_run_config_if_missing(
+    ctx: click.Context,
+    provider_flag: str | None,
+    *,
+    tty: bool,
+    yes: bool,
+    as_json: bool,
+) -> tuple[Path, bool] | None:
+    """Create a minimal `config.toml` when the resolved config directory has none.
+
+    Returns the created path and whether the directory was new too, or None when a config
+    already exists (nothing is touched).
+    """
+    directory = config_dir()
+    if (directory / "config.toml").exists():
+        return None
+    provider = _first_run_provider(provider_flag, tty=tty, yes=yes, prompt=click.prompt)
+    if provider is None:
+        _emit_error(
+            error="usage_error",
+            message=f"No config.toml in {directory}. Pass --provider google|microsoft (with "
+            "--yes and the value flags) or run `blumkin auth setup` on a terminal to be asked.",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    profile: str | None = None
+    if isinstance(ctx.obj, dict):
+        raw = ctx.obj.get("profile")
+        if isinstance(raw, str) and raw.strip():
+            profile = raw.strip()
+    if profile is None:
+        profile = os.environ.get("BLUMKIN_PROFILE", "").strip() or "default"
+    directory_was_new = not directory.exists()
+    try:
+        return (
+            create_first_run_config(directory, profile=profile, provider=provider),
+            directory_was_new,
+        )
+    except FirstRunConfigError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+
+
+def _first_run_provider(
+    flag: str | None, *, tty: bool, yes: bool, prompt: Callable[..., str]
+) -> str | None:
+    """The provider for a new config: the flag, else asked on a terminal, else None."""
+    if flag is not None:
+        return flag
+    if tty and not yes:
+        return str(
+            prompt(
+                "Which provider will this profile use?",
+                type=click.Choice(["microsoft", "google"]),
+                default="microsoft",
+            )
+        )
+    return None
 
 
 def _stdio_is_tty() -> bool:

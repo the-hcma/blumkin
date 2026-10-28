@@ -183,6 +183,11 @@ Examples:
 \b
   blumkin --profile personal auth setup
 \b
+  # First run in an empty config directory (creates config.toml, then sets up)
+  blumkin --profile work auth setup --yes --provider microsoft \\
+    --client-id 11111111-2222-3333-4444-555555555555 \\
+    --tenant-id contoso.onmicrosoft.com --account-type organizational
+\b
   # Non-interactive (agent-safe), ingesting a downloaded Desktop client JSON
   blumkin --profile personal auth setup --yes \\
     --from-file ~/path/to/google-oauth-desktop-client.json
@@ -198,8 +203,12 @@ validates and splits the values you provide: secrets go to the OS keychain
 (same as `auth set-app-secret`), non-secret fields (`client_id`, endpoint
 overrides, `tenant_id`, `account_type`) go to config.toml. The profile itself
 (`[profiles.<name>]` with at least `provider` set) must already exist in
-config.toml - this only fills in its OAuth client, it does not create a new
-profile section.
+config.toml - this only fills in its OAuth client, it does not add a profile
+to an existing config. The one exception is a first run: when the resolved
+config directory has no config.toml at all, setup first creates the directory
+(mode 0700) and a minimal config.toml (mode 0600) with the active profile and
+its provider (asked for on a terminal, or `--provider google|microsoft` with
+`--yes`). It never overwrites an existing config.toml.
 
 Requires a TTY for the interactive walkthrough; pass `--yes` plus every
 value's flag for a non-interactive/agent-driven run. Never accepts a secret

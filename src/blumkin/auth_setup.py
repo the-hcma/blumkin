@@ -18,6 +18,7 @@ with plain function calls in tests, no `CliRunner` needed.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ from blumkin.providers.kind import ProviderConfigError
 from blumkin.secret_store import SecretWriteError
 
 ACCOUNT_TYPES: frozenset[str] = frozenset({"organizational", "personal"})
+FIRST_RUN_PROVIDERS: tuple[str, ...] = ("microsoft", "google")
 
 GOOGLE_CONSOLE_STEPS: tuple[str, ...] = (
     "Open https://console.cloud.google.com/ and select (or create) a project.",
@@ -41,6 +43,10 @@ GOOGLE_CONSOLE_STEPS: tuple[str, ...] = (
     "re-downloaded later. If the download button is missing, copy the Client ID "
     "and Client secret from the creation dialog before closing it.",
 )
+
+
+class FirstRunConfigError(ValueError):
+    """The first-run config could not be created safely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +160,58 @@ def apply_microsoft_setup(cfg: BlumkinConfig, data: MicrosoftSetupInput) -> bool
     return True
 
 
+def create_first_run_config(directory: Path, *, profile: str, provider: str) -> Path:
+    """Create `directory` (mode 0700 when new) and a minimal `config.toml` (0600) in it.
+
+    The file holds one profile with its provider and nothing else; `auth setup` then fills in
+    the OAuth client. Never overwrites an existing `config.toml` and leaves an existing
+    directory's permissions alone. A directory that is a symlink to an existing directory
+    (a dotfiles layout) is used as it is; a dangling symlink, or a file where the directory
+    should be, is refused. Only the new leaf directory is made 0700; parents created on the
+    way get the default mode.
+    """
+    if not _FIRST_RUN_PROFILE.fullmatch(profile):
+        raise FirstRunConfigError(
+            f"Expected a profile name of letters, digits, '_' or '-', got {profile!r:.40}"
+        )
+    if provider not in FIRST_RUN_PROVIDERS:
+        raise FirstRunConfigError(
+            f"Expected a provider of {' or '.join(FIRST_RUN_PROVIDERS)}, got {provider!r:.40}"
+        )
+    if directory.is_symlink() and not directory.is_dir():
+        raise FirstRunConfigError(
+            f"Expected a symlink to an existing directory at {directory}, got a dangling one"
+        )
+    created_directory = not directory.exists()
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if created_directory:
+            directory.chmod(0o700)
+    except OSError as exc:
+        raise FirstRunConfigError(
+            f"Expected to create the directory {directory}, got {type(exc).__name__}"
+        ) from exc
+    path = directory / "config.toml"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError as exc:
+        raise FirstRunConfigError(
+            f"Expected no config at {path}, got one that already exists"
+        ) from exc
+    except OSError as exc:
+        raise FirstRunConfigError(f"Expected to create {path}, got {type(exc).__name__}") from exc
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(f'[profiles.{profile}]\nprovider = "{provider}"\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        path.unlink(missing_ok=True)
+        raise FirstRunConfigError(f"Expected to write {path}, got {type(exc).__name__}") from exc
+    return path
+
+
 def console_steps(provider: str) -> tuple[str, ...]:
     """Ordered console instructions for ``provider`` ('google' or 'microsoft')."""
     if provider == "google":
@@ -191,6 +249,20 @@ def google_setup_from_client_json(path: Path) -> GoogleSetupInput:
         ),
         token_uri=token_uri.strip() if isinstance(token_uri, str) else "",
     )
+
+
+def remove_first_run_config(path: Path, *, directory_was_new: bool) -> None:
+    """Undo `create_first_run_config` after a setup that did not finish.
+
+    Removes the config file it created, and the directory too when that was new and is now
+    empty. Best effort: a failure here must not hide the error that caused the rollback.
+    """
+    try:
+        path.unlink(missing_ok=True)
+        if directory_was_new:
+            path.parent.rmdir()
+    except OSError:
+        pass
 
 
 def validate_google_setup(data: GoogleSetupInput) -> None:
@@ -257,3 +329,5 @@ def validate_microsoft_setup(data: MicrosoftSetupInput) -> None:
 _GUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+
+_FIRST_RUN_PROFILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
