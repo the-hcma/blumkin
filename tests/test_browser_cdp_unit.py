@@ -1147,7 +1147,7 @@ def _driver_with_counts(counts: dict[tuple[str, str], list[int]]):
 
 
 def test_matching_roles_reports_every_role_that_has_a_control_of_that_name() -> None:
-    page, driver = _driver_with_counts({("tab", "Notes"): [1], ("link", "Notes"): [2]})
+    page, driver = _driver_with_counts({("tab", "Notes"): [1], ("link", "Notes"): [1]})
     found = driver.matching_roles("Notes", ("button", "link", "tab"), 0.0)
     assert found == ("link", "tab")
     assert page.waits == 0

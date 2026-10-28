@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 import re
 import shutil
@@ -57,7 +58,7 @@ from blumkin.browser.actions import (
     upload_task,
 )
 from blumkin.browser.cdp import (
-    DEFAULT_CLICK_WAIT_S,
+    MAX_WAIT_S,
     BrowserActionError,
     BrowserAttachError,
     BrowserDependencyError,
@@ -528,6 +529,13 @@ def _agent_version_skew(agent_version: object) -> dict[str, Any]:
             "run `blumkin agent stop` to retire the old agent"
         ),
     }
+
+
+def _finite_wait(ctx: click.Context, param: click.Parameter, value: float | None) -> float | None:
+    """Reject `nan`, which a numeric range check lets through."""
+    if value is not None and math.isnan(value):
+        raise click.BadParameter("must be a number of seconds, got nan")
+    return value
 
 
 def _browser_action(
@@ -2211,10 +2219,10 @@ def browser_launch(ctx: click.Context, task: str, as_json_flag: bool) -> None:
 @click.option(
     "--wait",
     "wait_s",
-    type=click.FloatRange(min=0.0),
-    default=DEFAULT_CLICK_WAIT_S,
-    show_default=True,
-    help="Seconds to wait for the control to appear before giving up.",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=None,
+    help="Seconds to wait for the control (default 5 by name, 30 with --role).",
 )
 @click.pass_context
 def browser_click(
@@ -2223,7 +2231,7 @@ def browser_click(
     name: str,
     as_json_flag: bool,
     role: str | None,
-    wait_s: float,
+    wait_s: float | None,
 ) -> None:
     """Click a control the task declared (never a submit or finalizing control)."""
     as_json = _as_json(ctx, as_json_flag)
@@ -2933,9 +2941,10 @@ def browser_press(ctx: click.Context, task: str, label: str, key: str, as_json_f
 @click.option(
     "--wait",
     "wait_s",
-    type=click.FloatRange(min=0.0),
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
     default=None,
-    help="With --frame: seconds to wait for the frame to attach and have text.",
+    help="With --frame: seconds to wait for the frame to attach (and, as text, have text).",
 )
 @click.pass_context
 def browser_read(
@@ -2980,17 +2989,19 @@ def browser_read(
 @click.option(
     "--wait",
     "wait_s",
-    type=click.FloatRange(min=0.0),
-    default=DEFAULT_CLICK_WAIT_S,
-    show_default=True,
-    help="Seconds to wait for each tab to appear.",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=None,
+    help="Seconds to wait for each tab to appear (default 30).",
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_refresh_tab(
-    ctx: click.Context, task: str, tab: str, via: str, wait_s: float, as_json_flag: bool
+    ctx: click.Context, task: str, tab: str, via: str, wait_s: float | None, as_json_flag: bool
 ) -> None:
     """Reload a tab's pane by selecting another tab and then this one again."""
+    if via == tab:
+        raise click.UsageError("--via must name a different tab than the one to refresh")
     _browser_action(
         ctx,
         as_json_flag,

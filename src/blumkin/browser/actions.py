@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from blumkin.browser.cdp import (
+    DEFAULT_ACTION_TIMEOUT_S,
     DEFAULT_CLICK_WAIT_S,
     DEFAULT_FRAME_WAIT_S,
     DEFAULT_SCROLL_MAX_STEPS,
@@ -75,17 +76,19 @@ def click_task(
     task: str,
     name: str,
     role: str | None = None,
-    wait_s: float = DEFAULT_CLICK_WAIT_S,
+    wait_s: float | None = None,
 ) -> dict[str, Any]:
     """Click a control the task declared (never a submit control or a finalizing name).
 
     Without `role` the control is found by name across the clickable roles and the role it
-    was found in is reported; `wait_s` is how long to wait for it to appear.
+    was found in is reported. `wait_s` is how long to wait for it to appear: a few seconds
+    when finding it by name, the full action timeout when the role is given.
     """
+    waited = wait_s if wait_s is not None else _default_wait(role)
     _require_declared_controls(config, task, name)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        found = driver.click(name, role, wait_s)
+        found = driver.click(name, role, waited)
         return {"action": "click", "name": name, "ok": True, "role": found, "task": task}
 
     return _with_driver(config, task, act, check_after=True)
@@ -247,18 +250,29 @@ def read_task(
 
 
 def refresh_tab_task(
-    config: BrowserSetup, task: str, tab: str, via: str, wait_s: float = DEFAULT_CLICK_WAIT_S
+    config: BrowserSetup, task: str, tab: str, via: str, wait_s: float | None = None
 ) -> dict[str, Any]:
     """Reload a tab's pane by selecting another tab (`via`) and then `tab` again.
 
     Some panes only reload when another tab is shown first; clicking the selected tab does
-    nothing. Both tabs must be declared controls of the task.
+    nothing. Both tabs must be declared controls of the task, which is checked before the
+    first click, and the page must still be on an allowed host between the two clicks.
     """
+    if tab == via:
+        raise BrowserActionError(f"Expected --via to name a different tab than {tab!r}, got it")
     _require_declared_controls(config, task, f"{via} / {tab}")
+    waited = wait_s if wait_s is not None else _default_wait("tab")
+    hosts = _declared_hosts(config, task)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        driver.click(via, "tab", wait_s)
-        driver.click(tab, "tab", wait_s)
+        driver.check_click(via, "tab")
+        driver.check_click(tab, "tab")
+        driver.click(via, "tab", waited)
+        _require_allowed_page(driver, task, hosts, f"selecting the {via!r} tab")
+        try:
+            driver.click(tab, "tab", waited)
+        except BrowserActionError as exc:
+            raise type(exc)(f"{exc}; the page was left on the {via!r} tab") from exc
         return {"action": "refresh-tab", "ok": True, "tab": tab, "task": task, "via": via}
 
     return _with_driver(config, task, act, check_after=True)
@@ -383,6 +397,10 @@ def _checked_output(out: Path) -> Path:
             f"Expected an existing folder for the transcript, got {str(target.parent)!r}"
         )
     return target
+
+
+def _default_wait(role: str | None) -> float:
+    return DEFAULT_CLICK_WAIT_S if role is None else DEFAULT_ACTION_TIMEOUT_S
 
 
 def _declared_hosts(config: BrowserSetup, task: str) -> tuple[str, ...]:

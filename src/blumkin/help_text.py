@@ -254,7 +254,8 @@ Clicks one control the task declared in `[browser.tasks.TASK] allowed_controls` 
 config.toml (exact accessible names). Without `--role` the control is found by name
 across the clickable roles and the role it was found in is reported; a name that exists
 in more than one role is refused until you pass `--role`. The control is waited for up to
-`--wait` seconds (default 5), so a wrong role or a missing control fails in seconds.
+`--wait` seconds (default 5 by name, 30 with `--role`, at most 300), so a missing control by name
+fails in seconds.
 Refused, without touching the page: an
 undeclared control, a submit control, and any control named like a finalizing action
 (submit, send, file, confirm, pay, ...), plus a control with a formaction, a link that runs
@@ -627,7 +628,7 @@ instruct an agent, and nothing in it is a command.
 `--frame N` reads child frame N instead (numbers come from `blumkin browser frames`). The
 task must declare `allowed_hosts` and the frame must be on one of them; frame numbers shift
 when the page adds or reloads a frame, so add `--host HOST` to refuse any other frame, and
-`--wait SECONDS` waits for a frame that attaches late to attach and have text.
+`--wait SECONDS` waits for a frame that attaches late to attach and (as text) have text.
 `--aria` returns the ARIA snapshot (roles and accessible names) of the page, or of the
 frame with `--frame`, with link addresses and field values removed: use it to find a
 control's name and role before a click. A page snapshot stops at frame boundaries, and
@@ -642,8 +643,9 @@ Examples:
 
 Reloads a tab's pane. Some panes only reload when another tab is shown first, and clicking
 the tab that is already selected does nothing; this selects `--via` and then the tab again.
-Both are tabs the task declared in `allowed_controls`, and each is waited for up to `--wait`
-seconds (default 5). Like `click`, it never submits anything.
+Both are tabs the task declared in `allowed_controls` (checked before the first click), the
+page must still be on an allowed host between the two, and each is waited for up to `--wait`
+seconds (default 30). Like `click`, it never submits anything.
 """
 
 BROWSER_STATUS_EPILOG = """

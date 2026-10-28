@@ -92,6 +92,16 @@ class GuardedDriver:
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()
 
+    def check_click(self, name: str, role: str | None = None) -> None:
+        """Raise `SubmitBlockedError` unless a click on `name` is allowed (no page access)."""
+        action = f"click {name!r}"
+        if role is not None and role not in _CLICKABLE_ROLES:
+            raise self._refuse(action, f"the role {role!r} is not one a task may click")
+        if _is_denied(name, self._deny):
+            raise self._refuse(action, "its name is a finalizing action")
+        if _exact(name) not in self._allowed:
+            raise self._refuse(action, "the control is not declared by the task")
+
     def click(
         self, name: str, role: str | None = None, wait_s: float = DEFAULT_CLICK_WAIT_S
     ) -> str:
@@ -102,12 +112,7 @@ class GuardedDriver:
         control is waited for up to `wait_s` seconds, so a wrong role fails in seconds.
         """
         action = f"click {name!r}"
-        if role is not None and role not in _CLICKABLE_ROLES:
-            raise self._refuse(action, f"the role {role!r} is not one a task may click")
-        if _is_denied(name, self._deny):
-            raise self._refuse(action, "its name is a finalizing action")
-        if _exact(name) not in self._allowed:
-            raise self._refuse(action, "the control is not declared by the task")
+        self.check_click(name, role)
         roles = (role,) if role is not None else tuple(sorted(_CLICKABLE_ROLES))
         found = self._raw.matching_roles(name, roles, wait_s)
         label = role if role is not None else "control"

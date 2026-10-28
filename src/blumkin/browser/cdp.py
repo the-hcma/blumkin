@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import time
 import unicodedata
 import urllib.error
@@ -36,8 +37,12 @@ from blumkin.prompt_injection import scan_for_injection
 ATTACH_ATTEMPTS = 3
 
 
-#: How long a click waits for its control to appear before reporting it missing.
+#: How long a role-less click waits for its control to appear before reporting it missing.
 DEFAULT_CLICK_WAIT_S = 5.0
+
+
+#: The longest any wait for the page may last, whatever was asked for.
+MAX_WAIT_S = 300.0
 
 
 class BrowserActionError(RuntimeError):
@@ -318,21 +323,26 @@ class PlaywrightDriver:
 
         Polls the page's own accessibility tree (a count, not a click), so a wrong role or a
         missing control is reported after `wait_s`, not after the 30 second action timeout.
+        Two controls with that name in one role are refused as ambiguous.
         """
         self._require_open()
-        deadline = time.monotonic() + max(wait_s, 0.0)
+        deadline = time.monotonic() + clamp_wait(wait_s)
         while True:
-            try:
-                found = tuple(
-                    role
-                    for role in roles
-                    if self._page.get_by_role(role, name=name, exact=True).count() > 0
-                )
-            except _playwright_error() as exc:
-                raise self._action_error(f"look for a control named {name!r}", exc) from exc
+            found: list[str] = []
+            for role in roles:
+                try:
+                    count = int(self._page.get_by_role(role, name=name, exact=True).count())
+                except _playwright_error() as exc:
+                    raise self._action_error(f"look for a control named {name!r}", exc) from exc
+                if count > 1:
+                    raise BrowserActionError(
+                        f"Expected one {role} named {name!r}, got {count} {role}s named {name!r}"
+                    )
+                if count == 1:
+                    found.append(role)
             if found or time.monotonic() >= deadline:
-                return found
-            self._page.wait_for_timeout(_POLL_MS)
+                return tuple(found)
+            self._pause()
 
     def raw_press(self, label: str, key: str) -> None:
         self._require_open()
@@ -557,26 +567,40 @@ class PlaywrightDriver:
         return frame
 
     def _frame_text(self, frame: Any, index: int, wait_s: float) -> str:
-        """The frame's text; with `wait_s`, waits for it to be non-blank."""
-        deadline = time.monotonic() + max(wait_s, 0.0)
+        """The frame's text; with `wait_s`, waits for it to be non-blank.
+
+        A read that fails while the frame is still navigating is retried until the deadline.
+        """
+        wait = clamp_wait(wait_s)
+        deadline = time.monotonic() + wait
         while True:
             try:
                 text = str(frame.evaluate("document.body.innerText"))
             except _playwright_error() as exc:
-                raise self._action_error(f"read frame {index}", exc) from exc
-            if text.strip() or wait_s <= 0.0:
+                if wait <= 0.0 or time.monotonic() >= deadline:
+                    raise self._action_error(f"read frame {index}", exc) from exc
+                self._pause()
+                continue
+            if text.strip() or wait <= 0.0:
                 return text
             if time.monotonic() >= deadline:
                 raise BrowserActionError(
-                    f"Expected text in frame {index} within {wait_s:g} seconds, got an empty frame"
+                    f"Expected text in frame {index} within {wait:g} seconds, got an empty frame"
                 )
+            self._pause()
+
+    def _pause(self) -> None:
+        """Let the page run for one poll interval, reporting a page that went away."""
+        try:
             self._page.wait_for_timeout(_POLL_MS)
+        except _playwright_error() as exc:
+            raise self._action_error("wait for the page", exc) from exc
 
     def _wait_for_frame(self, index: int, wait_s: float) -> None:
         """Wait up to `wait_s` for child frame number `index` to exist."""
-        deadline = time.monotonic() + max(wait_s, 0.0)
+        deadline = time.monotonic() + clamp_wait(wait_s)
         while len(self._child_frames()) < index and time.monotonic() < deadline:
-            self._page.wait_for_timeout(_POLL_MS)
+            self._pause()
 
     def _child_frames(self) -> list[Any]:
         return [frame for frame in self._page.frames if frame != self._page.main_frame]
@@ -689,6 +713,13 @@ def attach(
         sleep=sleep,
         timeout_s=timeout_s,
     )
+
+
+def clamp_wait(seconds: float) -> float:
+    """`seconds` as a wait that is finite and between 0 and `MAX_WAIT_S` (nan counts as 0)."""
+    if math.isnan(seconds) or seconds <= 0.0:
+        return 0.0
+    return min(seconds, MAX_WAIT_S)
 
 
 def checked_http_url(url: str) -> str:

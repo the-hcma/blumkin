@@ -402,6 +402,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
     public = {name for name in dir(driver) if not name.startswith("_")}
     assert public == {
         "aria_snapshot",
+        "check_click",
         "click",
         "close",
         "fill",
@@ -512,3 +513,13 @@ def test_the_policy_is_checked_before_the_page_is_probed() -> None:
         driver.click("Other")
     assert raw.calls == []
     assert raw.probes == []
+
+
+def test_check_click_applies_the_policy_without_touching_the_page() -> None:
+    raw, driver = _guard("Notes")
+    driver.check_click("Notes", "tab")
+    with pytest.raises(SubmitBlockedError):
+        driver.check_click("Other", "tab")
+    with pytest.raises(SubmitBlockedError):
+        driver.check_click("Notes", "heading")
+    assert raw.calls == [] and raw.probes == []

@@ -1139,3 +1139,12 @@ def test_refresh_tab_says_where_the_page_was_left_when_the_second_tab_is_missing
 def test_refresh_tab_via_the_same_tab_is_a_usage_error(raw: _Raw) -> None:
     result = _run("browser", "refresh-tab", "expense-report", "Notes", "--via", "Notes")
     assert result.exit_code == EXIT_USAGE, result.output
+
+
+def test_refresh_tab_checks_both_tabs_before_the_first_click(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Notes"]')
+    raw.roles_present.update({"Notes": ("tab",), "Transcript": ("tab",)})
+    result = _run("browser", "refresh-tab", "expense-report", "Transcript", "--via", "Notes")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "submit_blocked"
+    assert not any(call[0] == "click" for call in raw.calls)
