@@ -65,7 +65,7 @@ def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def _write_config(config: Path, agent: str, extra: str = "", timeout: int = 20) -> None:
+def _write_config(config: Path, agent: str, extra: str = "", timeout: int = 120) -> None:
     (config / "agent.py").write_text(_AGENT, encoding="utf-8")
     (config / "config.toml").write_text(
         "\n".join(

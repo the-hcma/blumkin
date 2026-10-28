@@ -121,7 +121,13 @@ def test_the_docs_explain_upload_dirs_and_the_limit_of_the_safety_net() -> None:
     assert "not a hard guarantee" in security
 
 
-_POLICY_KEYS = ("allowed_controls", "allowed_hosts", "extra_deny_names", "upload_dirs")
+_POLICY_KEYS = (
+    "allowed_controls",
+    "allowed_hosts",
+    "download_dirs",
+    "extra_deny_names",
+    "upload_dirs",
+)
 
 
 def test_the_documented_task_policy_keys_are_exactly_the_ones_the_config_accepts() -> None:

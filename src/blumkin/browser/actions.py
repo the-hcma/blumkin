@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import stat
+import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,15 @@ _ARIA_FIELD_VALUE = re.compile(
     + rf'|{_ARIA_FIELD_ROLES}(?: "(?:[^"\\]|\\.)*")?(?: \[[^\]]*\])*'
     + r")):\s.*$"
 )
+
+
+_DOWNLOAD_EXTENSIONS = frozenset({".csv", ".md", ".srt", ".txt", ".vtt"})
+_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
+_DOWNLOAD_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ ()-]{0,119}")
+
+
+class DownloadBlockedError(BrowserActionError):
+    """The download is not one the task may keep."""
 
 
 class HostBlockedError(BrowserActionError):
@@ -88,6 +99,87 @@ def click_task(
         return {"action": "click", "name": name, "ok": True, "role": found, "task": task}
 
     return _with_driver(config, task, act, check_after=True)
+
+
+def download_task(
+    config: BrowserSetup,
+    task: str,
+    control: str,
+    *,
+    into: Path,
+    name: str | None = None,
+    role: str | None = None,
+    wait_s: float | None = None,
+) -> dict[str, Any]:
+    """Click a declared control that starts a download and keep the file in a declared folder.
+
+    Default deny: the task must declare `download_dirs` and `allowed_hosts`, the folder must be
+    inside one of them (judged on the resolved path, before the browser is touched), and the
+    file must come from an allowed host and be a small text file. It is saved to a private
+    temporary folder first, then linked into place as a new file (mode 0600, never an
+    overwrite), and its text is scanned like `read`. The text is not returned.
+    """
+    declared = config.browser.tasks.get(task)
+    folders = declared.download_dirs if declared else ()
+    hosts = declared.allowed_hosts if declared else ()
+    if not folders:
+        raise DownloadBlockedError(
+            f"Expected [browser.tasks.{task}] to declare download_dirs in config.toml before "
+            "downloading, got none"
+        )
+    if not hosts:
+        raise DownloadBlockedError(
+            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
+            "downloading, got none"
+        )
+    folder = _expand_home(os.fspath(into), DownloadBlockedError).resolve()
+    roots = [_expand_home(entry, DownloadBlockedError).resolve() for entry in folders]
+    if not folder.is_dir() or not any(folder.is_relative_to(root) for root in roots):
+        raise DownloadBlockedError(
+            f"Expected an existing folder inside a download_dirs folder of task {task!r}, "
+            f"got {str(into)!r}"
+        )
+    chosen = _download_name(name) if name is not None else None
+    waited = wait_s if wait_s is not None else _default_wait(role)
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        staging = Path(tempfile.mkdtemp(prefix=".blumkin-download-", dir=folder))
+        kept: Path | None = None
+        try:
+            got = driver.download(control, role, save_to=staging, wait_s=waited)
+            host = _download_host(got.url)
+            if not host_allowed(host, hosts):
+                raise HostBlockedError(
+                    f"Expected the download to come from an allowed_hosts host of task "
+                    f"{task!r}, got {host or 'no host'!r}"
+                )
+            # Before the file is kept: a click that also navigated away must keep nothing.
+            _require_allowed_page(driver, task, hosts, "the download")
+            file_name = chosen or _download_name(_clean_download_name(got.filename))
+            kept = _keep_download(got.path, staging, folder / file_name)
+            text = kept.read_text(encoding="utf-8", errors="replace")
+            injection = scan_for_injection(text, location="download.text")
+            size = kept.stat().st_size
+        except BaseException:
+            if kept is not None:
+                kept.unlink(missing_ok=True)
+            raise
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        return {
+            "action": "download",
+            "bytes": size,
+            "file": kept.name,
+            "injection_warning": injection.to_payload(include_snippets=False),
+            "into": str(folder),
+            "ok": True,
+            "path": str(kept),
+            "task": task,
+            "untrusted": UNTRUSTED_NOTE,
+            "url_host": host,
+        }
+
+    return _with_driver(config, task, act)
 
 
 def fill_task(config: BrowserSetup, task: str, label: str, value: str) -> dict[str, Any]:
@@ -402,15 +494,88 @@ def _default_wait(role: str | None) -> float:
     return DEFAULT_CLICK_WAIT_S if role is None else DEFAULT_ACTION_TIMEOUT_S
 
 
+def _clean_download_name(suggested: str) -> str:
+    """A plain name from the one a page suggested: no folders, no odd or leading characters."""
+    base = suggested.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    stem, extension = os.path.splitext(base)
+    stem = re.sub(r"[^A-Za-z0-9._ ()-]", "_", stem).lstrip("._ ()-")
+    extension = re.sub(r"[^A-Za-z0-9.]", "_", extension)
+    return f"{stem or 'download'}{extension}" if extension else stem
+
+
+def _download_host(url: str) -> str:
+    """The host a download came from; a `blob:` URL is judged by the origin that made it."""
+    parts = urlsplit(url)
+    if parts.scheme == "blob":
+        return urlsplit(parts.path).hostname or ""
+    return parts.hostname or ""
+
+
+def _download_name(name: str) -> str:
+    """`name` if it is a plain text-file name (no folders, no leading dot), else refuse."""
+    if not _DOWNLOAD_NAME.fullmatch(name) or ".." in name:
+        raise DownloadBlockedError(f"Expected a plain file name for the download, got {name!r}")
+    if os.path.splitext(name)[1].lower() not in _DOWNLOAD_EXTENSIONS:
+        raise DownloadBlockedError(
+            f"Expected a {', '.join(sorted(_DOWNLOAD_EXTENSIONS))} file, got {name!r}"
+        )
+    return name
+
+
+def _keep_download(source: Path, staging: Path, target: Path) -> Path:
+    """Put a downloaded file in place as a new private file; never replace one.
+
+    A hard link when the folder allows it (no copy, and the staged file goes away on its own),
+    otherwise an exclusive 0600 copy.
+    """
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or source.resolve().parent != staging.resolve():
+        raise DownloadBlockedError(
+            "Expected the download to be a regular file in the staging folder"
+        )
+    if info.st_size > _DOWNLOAD_MAX_BYTES:
+        raise DownloadBlockedError(
+            f"Expected a download of at most {_DOWNLOAD_MAX_BYTES} bytes, got {info.st_size}"
+        )
+    source.chmod(0o600)
+    try:
+        os.link(source, target, follow_symlinks=False)
+    except FileExistsError as exc:
+        raise _exists(target) from exc
+    except OSError, NotImplementedError:
+        _copy_new(source, target)
+    return target
+
+
+def _copy_new(source: Path, target: Path) -> None:
+    """Copy `source` to a file that must not exist yet, mode 0600, never through a symlink."""
+    try:
+        out = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError as exc:
+        raise _exists(target) from exc
+    try:
+        with os.fdopen(out, "wb") as handle, source.open("rb") as read:
+            shutil.copyfileobj(read, handle)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+
+
+def _exists(target: Path) -> DownloadBlockedError:
+    return DownloadBlockedError(
+        f"Expected a new file for the download, got {target.name!r} already there"
+    )
+
+
 def _declared_hosts(config: BrowserSetup, task: str) -> tuple[str, ...]:
     declared = config.browser.tasks.get(task)
     return tuple(declared.allowed_hosts) if declared else ()
 
 
-def _expand_home(text: str) -> Path:
+def _expand_home(text: str, blocked: type[BrowserActionError] = UploadBlockedError) -> Path:
     """Expand a leading `~/` only; `~user` and a bare `~` are refused, never looked up."""
     if text.startswith("~") and not text.startswith("~/"):
-        raise UploadBlockedError(f"Expected an absolute path or one starting with ~/, got {text!r}")
+        raise blocked(f"Expected an absolute path or one starting with ~/, got {text!r}")
     return Path(text).expanduser()
 
 

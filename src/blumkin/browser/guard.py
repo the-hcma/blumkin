@@ -37,6 +37,7 @@ from blumkin.browser.cdp import (
     DEFAULT_CLICK_WAIT_S,
     BrowserActionError,
     ControlInfo,
+    DownloadedFile,
     FrameCapture,
     FrameInfo,
     PageText,
@@ -111,26 +112,34 @@ class GuardedDriver:
         be in exactly one of them. The policy is checked before the page is touched, and the
         control is waited for up to `wait_s` seconds, so a wrong role fails in seconds.
         """
-        action = f"click {name!r}"
-        self.check_click(name, role)
-        roles = (role,) if role is not None else tuple(sorted(_CLICKABLE_ROLES))
-        found = self._raw.matching_roles(name, roles, wait_s)
-        label = role if role is not None else "control"
-        if not found:
-            tried = "" if role is not None else f" in any of {', '.join(roles)}"
-            raise BrowserActionError(
-                f"Expected a {label} named {name!r} within {wait_s:g} seconds{tried}, got none"
-            )
-        if len(found) > 1:
-            raise BrowserActionError(
-                f"Expected {name!r} in one role, got {', '.join(found)}; pass --role to choose"
-            )
-        chosen = next(iter(found))
+        chosen, action = self._locate(name, role, wait_s)
         self._raw.checked_click(name, chosen, lambda info: self._vet_control(action, info))
         return chosen
 
     def close(self) -> None:
         self._raw.close()
+
+    def download(
+        self,
+        name: str,
+        role: str | None = None,
+        *,
+        save_to: Path,
+        wait_s: float = DEFAULT_CLICK_WAIT_S,
+    ) -> DownloadedFile:
+        """Click a declared control that starts a download and save the file to `save_to`.
+
+        The same policy as `click`, found and vetted the same way; where the file may go and
+        whether it may be kept are the caller's checks.
+        """
+        chosen, action = self._locate(name, role, wait_s)
+        return self._raw.checked_download(
+            name,
+            chosen,
+            lambda info: self._vet_control(action, info),
+            save_to=save_to,
+            timeout_s=DEFAULT_ACTION_TIMEOUT_S,
+        )
 
     def fill(self, label: str, value: str) -> None:
         self._raw.fill(label, value)
@@ -189,6 +198,24 @@ class GuardedDriver:
     @property
     def url(self) -> str:
         return self._raw.url
+
+    def _locate(self, name: str, role: str | None, wait_s: float) -> tuple[str, str]:
+        """Check the policy, then find `name` on the page: (the role it is in, the action)."""
+        action = f"click {name!r}"
+        self.check_click(name, role)
+        roles = (role,) if role is not None else tuple(sorted(_CLICKABLE_ROLES))
+        found = self._raw.matching_roles(name, roles, wait_s)
+        label = role if role is not None else "control"
+        if not found:
+            tried = "" if role is not None else f" in any of {', '.join(roles)}"
+            raise BrowserActionError(
+                f"Expected a {label} named {name!r} within {wait_s:g} seconds{tried}, got none"
+            )
+        if len(found) > 1:
+            raise BrowserActionError(
+                f"Expected {name!r} in one role, got {', '.join(found)}; pass --role to choose"
+            )
+        return next(iter(found)), action
 
     def _refuse(self, action: str, reason: str) -> SubmitBlockedError:
         _LOGGER.info("browser guard refused to %s: %s", action, reason)

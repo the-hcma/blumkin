@@ -145,6 +145,9 @@ class BrowserTaskPolicy:
     #: subdomain). Required for `upload`, so a receipt only ever goes to a declared site, and
     #: restricts `goto` once declared.
     allowed_hosts: tuple[str, ...] = ()
+    #: Folders `download` may save into (absolute, or starting with `~/`). Empty means no
+    #: download at all: the default is deny.
+    download_dirs: tuple[str, ...] = ()
     #: Added to the built-in finalizing words; the built-in list can never be shortened.
     extra_deny_names: tuple[str, ...] = ()
     #: Folders `upload` may read from (absolute, or starting with `~/`). Empty means no
@@ -568,7 +571,7 @@ _HOST_PATTERN = re.compile(
     r"(?:\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
 )
 _TASK_POLICY_KEYS = frozenset(
-    {"allowed_controls", "allowed_hosts", "extra_deny_names", "upload_dirs"}
+    {"allowed_controls", "allowed_hosts", "download_dirs", "extra_deny_names", "upload_dirs"}
 )
 
 
@@ -684,25 +687,8 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 f"{prefix} has unknown key(s) {', '.join(unknown)} in config.toml; "
                 f"expected {', '.join(sorted(_TASK_POLICY_KEYS))}"
             )
-        upload_dirs = _string_list(table.get("upload_dirs"), f"{prefix}.upload_dirs")
-        for entry in upload_dirs:
-            if not (entry.startswith("/") or entry.startswith("~/")):
-                raise ProviderConfigError(
-                    f"{prefix}.upload_dirs must hold absolute folders or folders starting "
-                    f"with ~/ in config.toml, got {entry!r}"
-                )
-            if entry.startswith("~/"):
-                below = posixpath.normpath(entry[2:].lstrip("/"))
-                if below == "." or below == ".." or below.startswith("../"):
-                    raise ProviderConfigError(
-                        f"{prefix}.upload_dirs must stay below the home directory (not the whole "
-                        f"home or outside it) in config.toml, got {entry!r}"
-                    )
-            elif posixpath.normpath(entry) in {"/", "//"}:
-                raise ProviderConfigError(
-                    f"{prefix}.upload_dirs must not be the filesystem root in config.toml, "
-                    f"got {entry!r}"
-                )
+        upload_dirs = _policy_folders(table, "upload_dirs", prefix)
+        download_dirs = _policy_folders(table, "download_dirs", prefix)
         hosts = tuple(
             host.strip().lower()
             for host in _string_list(table.get("allowed_hosts"), f"{prefix}.allowed_hosts")
@@ -727,6 +713,7 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 table.get("extra_deny_names"), f"{prefix}.extra_deny_names"
             ),
             upload_dirs=upload_dirs,
+            download_dirs=download_dirs,
         )
     return policies
 
@@ -1221,6 +1208,29 @@ def _resolve_profile_name(
         "multiple profiles configured; pass --profile / BLUMKIN_PROFILE, or set "
         f"default_profile; available: {available}"
     )
+
+
+def _policy_folders(table: dict[str, Any], key: str, prefix: str) -> tuple[str, ...]:
+    """The folders a task policy lists under `key`: absolute, or below `~/`, never the root."""
+    entries = _string_list(table.get(key), f"{prefix}.{key}")
+    for entry in entries:
+        if not (entry.startswith("/") or entry.startswith("~/")):
+            raise ProviderConfigError(
+                f"{prefix}.{key} must hold absolute folders or folders starting "
+                f"with ~/ in config.toml, got {entry!r}"
+            )
+        if entry.startswith("~/"):
+            below = posixpath.normpath(entry[2:].lstrip("/"))
+            if below == "." or below == ".." or below.startswith("../"):
+                raise ProviderConfigError(
+                    f"{prefix}.{key} must stay below the home directory (not the whole "
+                    f"home or outside it) in config.toml, got {entry!r}"
+                )
+        elif posixpath.normpath(entry) in {"/", "//"}:
+            raise ProviderConfigError(
+                f"{prefix}.{key} must not be the filesystem root in config.toml, got {entry!r}"
+            )
+    return entries
 
 
 def _string_list(value: Any, key: str) -> tuple[str, ...]:
