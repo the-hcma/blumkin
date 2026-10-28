@@ -108,7 +108,7 @@ def test_on_a_terminal_it_offers_the_guided_setup_and_a_no_leaves_everything_alo
     child.expect(pexpect.EOF)
     child.close()
     assert child.exitstatus == 2
-    assert "auth setup" in child.before
+    assert "auth setup" in str(child.before)
     assert not config.exists()
 
 

@@ -21,6 +21,7 @@ from click.shell_completion import get_completion_class
 from blumkin import help_text, keychain_unlock
 from blumkin.agent import client as agent_client
 from blumkin.agent import processes as agent_processes
+from blumkin.agent.paths import binary_status
 from blumkin.app_secrets import (
     AppSecretKind,
     app_secret_backend,
@@ -3885,10 +3886,24 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         )
     resolved_dir, selected_by = config_dir_source()
     tree = source_tree()
+    agent_binary = binary_status(tree)
+    if tree is not None and agent_binary["supported"]:
+        if not agent_binary["present"]:
+            warnings.append(
+                f"the blumkin-agent binary is not built in this checkout ({agent_binary['path']}); "
+                "secrets are read straight from the keychain instead of the agent cache - build "
+                "it with a Rust toolchain: uv sync --reinstall-package blumkin"
+            )
+        elif agent_binary["stale"]:
+            warnings.append(
+                "the blumkin-agent binary is older than the rust-agent sources in this checkout; "
+                "rebuild it: uv sync --reinstall-package blumkin"
+            )
     payload = {
         "ok": not problems,
         "keychain": {"locked": keychain_locked, "unlock_mode": cfg.keychain_unlock},
         "build": build,
+        "agent_binary": agent_binary,
         "config": {
             "dir": str(resolved_dir),
             "selected_by": selected_by,
