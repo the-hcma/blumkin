@@ -11,6 +11,10 @@
 # unless you say yes.
 set -euo pipefail
 
+# Tells blumkin this is a dev run: `--version`, `doctor` and the MCP server then carry the
+# `+dev.<sha>.<date>` marker. A plain editable install does not.
+export BLUMKIN_DEV=1
+
 resolve_path() {
   local path="$1" directory
   while [[ -L "${path}" ]]; do
@@ -35,16 +39,26 @@ run_blumkin() {
 }
 
 # Mirrors blumkin.config.config_dir(): BLUMKIN_CONFIG_DIR, then XDG_CONFIG_HOME, then ~/.config.
+# Blank values count as unset, and a leading ~ or ~/ is expanded (not ~user, like a plain ~/).
 config_dir() {
-  local chosen
-  if [[ -n "${BLUMKIN_CONFIG_DIR:-}" ]]; then
+  local chosen override xdg
+  override="${BLUMKIN_CONFIG_DIR:-}"
+  xdg="${XDG_CONFIG_HOME:-}"
+  override="$(printf '%s' "${override}" | tr -d '[:space:]')"
+  xdg="$(printf '%s' "${xdg}" | tr -d '[:space:]')"
+  if [[ -n "${override}" ]]; then
     chosen="${BLUMKIN_CONFIG_DIR}"
-  elif [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+  elif [[ -n "${xdg}" ]]; then
     chosen="${XDG_CONFIG_HOME}/blumkin"
   else
     chosen="${HOME}/.config/blumkin"
   fi
-  printf '%s\n' "${chosen/#\~/${HOME}}"
+  if [[ "${chosen}" == "~" ]]; then
+    chosen="${HOME}"
+  elif [[ "${chosen}" == \~/* ]]; then
+    chosen="${HOME}/${chosen:2}"
+  fi
+  printf '%s\n' "${chosen}"
 }
 
 # Whether the command can run without a config.toml: help, version and `auth setup` itself.
@@ -65,12 +79,17 @@ needs_config() {
   return 0
 }
 
-# The --profile option, if given, so the guided setup configures the profile being run.
+# The --profile option (either `--profile X` or `--profile=X`), so the guided setup configures
+# the profile being run.
 profile_arguments() {
   local arg previous=""
   for arg in "$@"; do
     if [[ "${previous}" == "--profile" ]]; then
       printf '%s\n' "--profile" "${arg}"
+      return
+    fi
+    if [[ "${arg}" == --profile=* ]]; then
+      printf '%s\n' "${arg}"
       return
     fi
     previous="${arg}"
@@ -82,7 +101,8 @@ if needs_config "$@"; then
   if [[ ! -f "${directory}/config.toml" ]]; then
     echo "blumkin (dev): no config.toml in ${directory}" >&2
     if [[ -t 0 && -t 1 ]]; then
-      read -r -p "Run the guided setup now (creates ${directory}/config.toml)? [y/N] " answer
+      answer=""
+      read -r -p "Run the guided setup now (creates ${directory}/config.toml)? [y/N] " answer || true
       if [[ "${answer}" =~ ^[Yy] ]]; then
         # Written for bash 3.2 (macOS): no mapfile, and an empty array needs the + guard.
         setup_profile=()

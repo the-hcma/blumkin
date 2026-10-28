@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -39,6 +40,7 @@ from blumkin.auth_setup import (
     console_steps,
     create_first_run_config,
     google_setup_from_client_json,
+    remove_first_run_config,
 )
 from blumkin.browser.actions import (
     HostBlockedError,
@@ -1835,89 +1837,99 @@ def auth_setup(
     """
     as_json = _as_json(ctx, as_json_flag)
     tty = _stdio_is_tty()
-    created_config = _create_first_run_config_if_missing(
+    created = _create_first_run_config_if_missing(
         ctx, provider_flag, tty=tty, yes=yes, as_json=as_json
     )
-    cfg = _load_config()
-    if provider_flag is not None and cfg.provider.value != provider_flag:
-        _emit_error(
-            error="usage_error",
-            message=f"Expected --provider to match the profile's provider, got {provider_flag!r} "
-            f"for profile {cfg.profile!r} which uses {cfg.provider.value!r}.",
-            as_json=as_json,
-        )
-        raise SystemExit(EXIT_USAGE)
-    interactive = tty and not yes
-    if not tty and not yes:
-        _emit_error(
-            error="usage_error",
-            message="`auth setup` needs a TTY for the interactive walkthrough; pass --yes "
-            "plus every required value's flag for a non-interactive run.",
-            as_json=as_json,
-        )
-        raise SystemExit(EXIT_USAGE)
-    provider = cfg.provider.value
-    steps = console_steps(provider)
-    if not as_json:
-        emit_lines(
-            [f"Console steps for {provider} (do these first, then come back here):"]
-            + [f"  {i}. {step}" for i, step in enumerate(steps, start=1)]
-        )
-    try:
-        if provider == "google":
-            data = _collect_google_setup(
-                from_file=from_file,
-                from_stdin=from_stdin,
-                client_id=client_id,
-                auth_uri=auth_uri,
-                token_uri=token_uri,
-                redirect_uris=redirect_uris,
-                interactive=interactive,
+    created_config = created[0] if created is not None else None
+    with contextlib.ExitStack() as rollback:
+        if created is not None:
+            # A setup that does not finish (bad values, a refused secret write, Ctrl-C) must not
+            # leave a bare config behind that makes the next run look configured.
+            rollback.callback(remove_first_run_config, created[0], directory_was_new=created[1])
+        cfg = _load_config()
+        if provider_flag is not None and cfg.provider.value != provider_flag:
+            _emit_error(
+                error="usage_error",
+                message="Expected --provider to match the profile's provider, got "
+                f"{provider_flag!r} for profile {cfg.profile!r} which uses "
+                f"{cfg.provider.value!r}.",
                 as_json=as_json,
             )
-            apply_google_setup(cfg, data)
-            vaulted: bool | None = None
+            raise SystemExit(EXIT_USAGE)
+        interactive = tty and not yes
+        if not tty and not yes:
+            _emit_error(
+                error="usage_error",
+                message="`auth setup` needs a TTY for the interactive walkthrough; pass --yes "
+                "plus every required value's flag for a non-interactive run.",
+                as_json=as_json,
+            )
+            raise SystemExit(EXIT_USAGE)
+        provider = cfg.provider.value
+        steps = console_steps(provider)
+        if not as_json:
+            emit_lines(
+                [f"Console steps for {provider} (do these first, then come back here):"]
+                + [f"  {i}. {step}" for i, step in enumerate(steps, start=1)]
+            )
+        try:
+            if provider == "google":
+                data = _collect_google_setup(
+                    from_file=from_file,
+                    from_stdin=from_stdin,
+                    client_id=client_id,
+                    auth_uri=auth_uri,
+                    token_uri=token_uri,
+                    redirect_uris=redirect_uris,
+                    interactive=interactive,
+                    as_json=as_json,
+                )
+                apply_google_setup(cfg, data)
+                vaulted: bool | None = None
+            else:
+                ms_data = _collect_microsoft_setup(
+                    cfg,
+                    client_id=client_id,
+                    tenant_id=tenant_id,
+                    account_type=account_type,
+                    interactive=interactive,
+                    as_json=as_json,
+                )
+                vaulted = apply_microsoft_setup(cfg, ms_data)
+        except SecretWriteError as exc:
+            _emit_error(
+                error="secret_write_failed",
+                message=str(exc),
+                as_json=as_json,
+                hint=_APP_SECRET_WRITE_HINT,
+            )
+            raise SystemExit(EXIT_OTHER) from exc
+        except ProviderConfigError as exc:
+            _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+            raise SystemExit(EXIT_USAGE) from exc
+        if as_json:
+            payload: dict[str, object] = {"ok": True, "provider": provider, "profile": cfg.profile}
+            if vaulted is False:
+                payload["vaulted"] = False
+            if created_config is not None:
+                payload["created_config"] = str(created_config)
+            emit_json(payload)
         else:
-            ms_data = _collect_microsoft_setup(
-                cfg,
-                client_id=client_id,
-                tenant_id=tenant_id,
-                account_type=account_type,
-                interactive=interactive,
-                as_json=as_json,
-            )
-            vaulted = apply_microsoft_setup(cfg, ms_data)
-    except SecretWriteError as exc:
-        _emit_error(
-            error="secret_write_failed",
-            message=str(exc),
-            as_json=as_json,
-            hint=_APP_SECRET_WRITE_HINT,
-        )
-        raise SystemExit(EXIT_OTHER) from exc
-    except ProviderConfigError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
-        raise SystemExit(EXIT_USAGE) from exc
-    if as_json:
-        payload: dict[str, object] = {"ok": True, "provider": provider, "profile": cfg.profile}
-        if vaulted is False:
-            payload["vaulted"] = False
-        if created_config is not None:
-            payload["created_config"] = str(created_config)
-        emit_json(payload)
-    else:
-        lines = [f"{provider} OAuth client configured for profile {cfg.profile!r}."]
-        if created_config is not None:
-            lines.insert(0, f"Created {created_config} (mode 0600) with profile {cfg.profile!r}.")
-        if vaulted is False:
-            lines.append(
-                "Note: client_id was not vaulted in the OS keychain (no usable backend) - "
-                "it is saved in config.toml, so `auth login` still works; re-run "
-                "`blumkin auth set-app-secret --kind ms_client_id` once a keychain is "
-                "available to vault it too."
-            )
-        lines.append(f"Next: blumkin --profile {cfg.profile} auth login")
-        emit_lines(lines)
+            lines = [f"{provider} OAuth client configured for profile {cfg.profile!r}."]
+            if created_config is not None:
+                lines.insert(
+                    0, f"Created {created_config} (mode 0600) with profile {cfg.profile!r}."
+                )
+            if vaulted is False:
+                lines.append(
+                    "Note: client_id was not vaulted in the OS keychain (no usable backend) - "
+                    "it is saved in config.toml, so `auth login` still works; re-run "
+                    "`blumkin auth set-app-secret --kind ms_client_id` once a keychain is "
+                    "available to vault it too."
+                )
+            lines.append(f"Next: blumkin --profile {cfg.profile} auth login")
+            emit_lines(lines)
+        rollback.pop_all()
 
 
 def _collect_google_setup(
@@ -6432,10 +6444,11 @@ def _create_first_run_config_if_missing(
     tty: bool,
     yes: bool,
     as_json: bool,
-) -> Path | None:
+) -> tuple[Path, bool] | None:
     """Create a minimal `config.toml` when the resolved config directory has none.
 
-    Returns the created path, or None when a config already exists (nothing is touched).
+    Returns the created path and whether the directory was new too, or None when a config
+    already exists (nothing is touched).
     """
     directory = config_dir()
     if (directory / "config.toml").exists():
@@ -6454,8 +6467,12 @@ def _create_first_run_config_if_missing(
         raw = ctx.obj.get("profile")
         if isinstance(raw, str) and raw.strip():
             profile = raw.strip()
+    directory_was_new = not directory.exists()
     try:
-        return create_first_run_config(directory, profile=profile, provider=provider)
+        return (
+            create_first_run_config(directory, profile=profile, provider=provider),
+            directory_was_new,
+        )
     except FirstRunConfigError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
