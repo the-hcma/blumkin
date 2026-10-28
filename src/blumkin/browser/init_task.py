@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
 import os
 import stat
 import tomllib
@@ -25,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.browser.profiles import BrowserProfileError, create_profile, validate_task_name
+from blumkin.config_lock import config_file_lock
 
 
 class InitTaskError(ValueError):
@@ -53,7 +53,7 @@ TEMPLATES: dict[str, TaskTemplate] = {
             "`yourtenant-my.sharepoint.com`) in config.toml once you know it: the wildcard "
             "covers every organization's SharePoint.",
             "Launch the browser: `blumkin browser launch {task}`, then sign in to Teams by hand "
-            "(SSO and MFA included) and open the meeting's Notes or Transcript view.",
+            "(SSO and MFA included), open the meeting and show its Transcript view.",
             "Check what the page shows: `blumkin browser frames {task}`.",
             "Capture it: `blumkin browser transcript {task} --duration 34m06s --out "
             "transcript.txt` (use the meeting's length so the coverage report can check the tail).",
@@ -99,9 +99,19 @@ def render_table(task: str, template: TaskTemplate) -> str:
     return f"[browser.tasks.{task}]\nallowed_hosts = [{hosts}]\nallowed_controls = [{controls}]\n"
 
 
-def _declared_tasks(parsed: dict[str, Any]) -> set[str]:
-    tasks = parsed.get("browser", {}).get("tasks", {})
-    return set(tasks) if isinstance(tasks, dict) else set()
+def _declared_tasks(parsed: dict[str, Any], path: Path) -> set[str]:
+    """The tasks `config.toml` already declares; `browser` and `browser.tasks` must be tables."""
+    browser = parsed.get("browser", {})
+    if not isinstance(browser, dict):
+        raise InitTaskError(
+            f"Expected [browser] in {path} to be a table, got {type(browser).__name__}"
+        )
+    tasks = browser.get("tasks", {})
+    if not isinstance(tasks, dict):
+        raise InitTaskError(
+            f"Expected [browser.tasks] in {path} to be a table, got {type(tasks).__name__}"
+        )
+    return set(tasks)
 
 
 def _parse(text: str, path: Path) -> dict[str, Any]:
@@ -129,9 +139,17 @@ def _read_all(fd: int, size: int) -> bytes:
 def _update_config(path: Path, task: str, table: str, *, write: bool) -> tuple[bool, bool]:
     """(already declared, written): check `config.toml` and, when asked, extend it.
 
-    Everything happens on one file descriptor under an exclusive lock, so two runs cannot both
-    append and an editor saving in between cannot be appended to unchecked.
+    A write holds the shared config lock for the whole read-to-write span, so two runs (or
+    another command that edits the file) cannot interleave, and all of it happens on one file
+    descriptor.
     """
+    if write:
+        with config_file_lock(path):
+            return _update_locked(path, task, table, write=True)
+    return _update_locked(path, task, table, write=False)
+
+
+def _update_locked(path: Path, task: str, table: str, *, write: bool) -> tuple[bool, bool]:
     flags = os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_RDWR | os.O_CREAT if write else os.O_RDONLY)
     try:
         fd = os.open(path, flags, 0o600)
@@ -145,15 +163,12 @@ def _update_config(path: Path, task: str, table: str, *, write: bool) -> tuple[b
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise InitTaskError(f"Expected {path} to be a regular file, got something else")
-        if write:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            info = os.fstat(fd)
         size = info.st_size
         try:
             text = _read_all(fd, size).decode("utf-8")
         except UnicodeDecodeError as exc:
             raise InitTaskError(f"Expected {path} to be UTF-8 text, got {exc.reason}") from exc
-        declared = task in _declared_tasks(_parse(text, path))
+        declared = task in _declared_tasks(_parse(text, path), path)
         if declared or not write:
             return declared, False
         addition = _separator(text) + table

@@ -7,10 +7,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from blumkin.config_lock import config_file_lock
 
 from blumkin.browser.init_task import init_task
 from blumkin.config import set_profile_email, set_profile_fields
+from blumkin.config_lock import config_file_lock
 
 _BASE = '[profiles.default]\nclient_id = "abc-123"\n'
 

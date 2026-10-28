@@ -7,7 +7,7 @@ description: >-
 
 Use when the user asks for the transcript of a Teams meeting, to save or summarize what was said, or to check a meeting's transcript for gaps.
 
-This skill drives a browser the user signs in to themselves through `blumkin browser`. It only reads: it opens the meeting's Notes or Transcript view and captures the transcript pane. It never submits, sends or changes anything in Teams.
+This skill drives a browser the user signs in to themselves through `blumkin browser`. It only reads: it opens the meeting's Transcript view and captures the transcript pane. It never submits, sends or changes anything in Teams.
 
 The values that belong to the user (which meeting, where to save the file, how long the meeting ran) come from the user or their task definition, not from this repository.
 
@@ -27,7 +27,7 @@ The values that belong to the user (which meeting, where to save the file, how l
 
 ## Procedure
 
-1. Launch the browser: `blumkin browser launch teams-transcript --json`. Tell the user to sign in to Teams by hand in the window that opens, open the meeting and show its Notes or Transcript view, and to say when that is done.
+1. Launch the browser: `blumkin browser launch teams-transcript --json`. Tell the user to sign in to Teams by hand in the window that opens, open the meeting and show its Transcript view (select the Transcript tab), and to say when that is done.
 2. Look at the page: `blumkin browser read teams-transcript --json`, and `blumkin browser frames teams-transcript` to see the frames it holds (the transcript pane is usually in a frame on another host; a frame that is not on `allowed_hosts` is listed as not allowed).
 3. If the Transcript tab is already selected but the pane is empty, reload it: `blumkin browser refresh-tab teams-transcript Transcript --via Notes`.
 4. Capture it: `blumkin browser transcript teams-transcript --duration <length> --out <file> --json`, where `<length>` is how long the meeting ran (`34m06s`, `1h05m`, `34:06` or seconds) and `<file>` is a new path the user chose.
