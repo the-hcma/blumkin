@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaIoBaseUpload
 
 from blumkin.attachments import resolve_single_download_dest, write_new_private_file
 from blumkin.config import BlumkinConfig, load_config
@@ -53,11 +53,11 @@ _LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLi
 _ORDER_BY = {"modified": "modifiedTime desc", "name": "name_natural"}
 # files.list caps pageSize at 1000; keep headroom under --top 0 (unbounded) walks.
 _PAGE_SIZE = 200
+_RESUMABLE_ABOVE = 5 * 1024 * 1024
+_UPLOAD_CHUNK = 8 * 1024 * 1024
 # Drive v3 hides Shared Drive items unless these are set. blumkin does not manage
 # Shared Drives (create *into* one - #212 non-goal), but read / move / rename of a
 # file the user already has in one should not silently 404.
-_RESUMABLE_ABOVE = 5 * 1024 * 1024
-_UPLOAD_CHUNK = 8 * 1024 * 1024
 _SHARED: dict[str, Any] = {"supportsAllDrives": True}
 _SHARED_LIST: dict[str, Any] = {"supportsAllDrives": True, "includeItemsFromAllDrives": True}
 
@@ -360,49 +360,66 @@ async def drive_upload(
     name: str | None = None,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
-    """Upload a local file as a new file; never replaces or duplicates one of the same name."""
+    """Upload a local file as a new file; refuses a name already taken in the folder.
+
+    Drive has no create-if-absent, so a concurrent upload of the same name between the check
+    and the create can still leave a duplicate.
+    """
     validate_folder_selector(folder, folder_id)
     cfg = config or load_config()
-    source = resolve_upload_source(file, name=name, mime_type=mime_type, config_dir=cfg.config_dir)
-    service = _drive_service(cfg)
-    parent = "root"
-    if folder_id is not None:
-        parent = _validate_dest_folder_id(service, folder_id, flag="--folder-id")
-    elif folder:
-        parent, _ = resolve_folder_path(service, folder)
-    clash = execute(
-        service.files().list(
-            q=f"name = {_quote(source.name)} and {_quote(parent)} in parents and trashed = false",
-            fields="files(id,name)",
-            pageSize=1,
-            **_SHARED_LIST,
-        )
+    denied = [cfg.google_oauth_client_file] if cfg.google_oauth_client_file else []
+    source = resolve_upload_source(
+        file, name=name, mime_type=mime_type, config_dir=cfg.config_dir, denied=denied
     )
-    if clash.get("files"):
-        raise DriveUploadError(
-            f"a file named {source.name!r} already exists in that folder - "
-            "pick another --name or folder (upload never replaces or duplicates)"
-        )
-    resumable = source.size > _RESUMABLE_ABOVE
-    media = MediaFileUpload(
-        str(source.path),
-        mimetype=source.mime_type,
-        resumable=resumable,
-        chunksize=_UPLOAD_CHUNK if resumable else -1,
-    )
-    request = service.files().create(
-        body={"name": source.name, "parents": [parent]},
-        media_body=media,
-        fields=_GET_FIELDS,
-        **_SHARED,
-    )
-    created: dict[str, Any] | None = None
-    if resumable:
-        while created is None:
-            _status, created = request.next_chunk(num_retries=3)
-    else:
-        created = execute(request)
-    return {"item": _to_item(created or {}), "bytes": source.size}
+    with source:
+        service = _drive_service(cfg)
+        parent = "root"
+        created: dict[str, Any] | None = None
+        try:
+            if folder_id is not None:
+                parent = _validate_dest_folder_id(service, folder_id, flag="--folder-id")
+            elif folder and split_path(folder):
+                parent, _ = resolve_folder_path(service, folder)
+            clash = execute(
+                service.files().list(
+                    q=(
+                        f"name = {_quote(source.name)} and {_quote(parent)} in parents "
+                        "and trashed = false"
+                    ),
+                    fields="files(id,name)",
+                    pageSize=1,
+                    **_SHARED_LIST,
+                )
+            )
+            if clash.get("files"):
+                raise DriveUploadError(
+                    f"a file named {source.name!r} already exists in that folder - pick another "
+                    "--name or folder (upload never replaces a file)"
+                )
+            resumable = source.size > _RESUMABLE_ABOVE
+            media = MediaIoBaseUpload(
+                source.handle,
+                mimetype=source.mime_type,
+                chunksize=_UPLOAD_CHUNK,
+                resumable=resumable,
+            )
+            request = service.files().create(
+                body={"name": source.name, "parents": [parent]},
+                media_body=media,
+                fields=_GET_FIELDS,
+                **_SHARED,
+            )
+            if resumable:
+                while created is None:
+                    _status, created = request.next_chunk(num_retries=3)
+            else:
+                created = execute(request)
+        except HttpError as exc:
+            raise _translate(exc, item_id=parent) from exc
+        source.ensure_unchanged()
+    if not created:
+        raise RuntimeError("Drive returned no file for the upload")
+    return {"item": _to_item(created), "bytes": source.size}
 
 
 def _drive_service(cfg: BlumkinConfig) -> Any:

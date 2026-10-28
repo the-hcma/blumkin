@@ -1460,16 +1460,23 @@ Examples:
 
 Uploads one local file to your drive as a new file: Google Drive on a Google profile,
 OneDrive on a Microsoft one (needs the same Files.ReadWrite grant as the other `drive`
-verbs). `--yes` is required. It never replaces a file, and never adds a second one with the
-same name in the folder: a name clash is an error (pick `--name` or another folder). It notifies
-no one and returns the id and web link like the other drive verbs.
+verbs). `--yes` is required. It never replaces a file, and it refuses a name that is already
+taken in the folder (pick `--name` or another folder); on Google Drive, which has no
+create-if-absent, a concurrent upload of the same name between the check and the create could
+still leave a duplicate. It notifies no one and returns the id and web link like the other
+drive verbs.
 
-The file must be a regular file of at most 2 GiB (a symlink is followed to one) and must not be
-inside blumkin's own config directory, where tokens and auth records live. `--folder` (a path)
-or `--folder-id` names an existing destination folder, else the drive root; nothing is
-created. `--name` defaults to the file's own name and `--mime-type` to the type detected from
+The file must be a regular file with a single link (a hard link can be a secret under another
+name), at most 2 GiB, and must not be inside blumkin's own config directory (tokens and auth
+records), ~/.ssh, ~/.aws, ~/.gnupg or ~/.config/gcloud, nor be ~/.netrc, an .env file or the
+Google OAuth client file. It is opened once and that open file is what is sent; a file that
+changes while it is sent is an error. `--folder` (a path; "/" is the root) or `--folder-id`
+names an existing destination folder, else the drive root; nothing is created. A missing
+`--folder` path exits 5 (not_found), as does a missing OneDrive `--folder-id`; a missing
+Google `--folder-id` exits 2. `--name` defaults to the file's own name (OneDrive also refuses
+names with " * : < > ? / \\ | or a trailing dot) and `--mime-type` to the type detected from
 it. Small files go in one request; larger ones use the service's resumable upload (Google) or
-an upload session in chunks (OneDrive).
+an upload session in chunks that are retried when the service is busy (OneDrive).
 """
 
 LOOP_EPILOG = """

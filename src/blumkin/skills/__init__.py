@@ -1160,8 +1160,8 @@ SKILLS: list[SkillSpec] = [
         id="drive.upload",
         cli=["blumkin", "drive", "upload"],
         summary=(
-            "Upload a local file to your drive (Google Drive or OneDrive). Never replaces or "
-            "duplicates a file with the same name; notifies no one."
+            "Upload a local file to your drive (Google Drive or OneDrive) as a new file. "
+            "Never replaces a file and refuses a name already taken in the folder; notifies no one."
         ),
         mutates=True,
         notifies_others=False,
@@ -1172,8 +1172,8 @@ SKILLS: list[SkillSpec] = [
                 "required": True,
                 "type": "string",
                 "note": (
-                    "local file to upload: a regular file, at most 2 GiB, never from "
-                    "blumkin's config directory"
+                    "local file to upload: a regular file with a single link, at most 2 GiB, "
+                    "never from blumkin's config directory or a credentials location"
                 ),
             },
             {

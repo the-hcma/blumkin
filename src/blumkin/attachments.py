@@ -101,12 +101,19 @@ def unique_filename(name: str, used: set[str]) -> str:
 
 def write_new_private_file(dest: Path, data: bytes) -> None:
     """Create `dest` (mode 0600, never via a symlink), write `data`; never replace a file."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        fd = os.open(dest, flags, 0o600)
     except FileExistsError as exc:
         raise ValueError(f"{dest} already exists, refusing to overwrite it") from exc
     try:
-        with os.fdopen(fd, "wb") as handle:
+        handle = os.fdopen(fd, "wb")
+    except BaseException:
+        os.close(fd)
+        dest.unlink(missing_ok=True)
+        raise
+    try:
+        with handle:
             handle.write(data)
     except BaseException:
         dest.unlink(missing_ok=True)

@@ -12,11 +12,13 @@ item shape so ``--json`` consumers do not branch on the provider::
 from __future__ import annotations
 
 import mimetypes
+import os
 import re
 import stat
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 
 from blumkin.output import hyperlink, sanitize_terminal
 
@@ -64,6 +66,10 @@ GOOGLE_NATIVE_MIMES: frozenset[str] = frozenset(
 #: The largest file `drive upload` will send (a sanity limit, not a service limit).
 UPLOAD_MAX_BYTES = 2 * 1024**3
 
+# Places that hold credentials, relative to the home directory (a file or a whole folder), and
+# file names that conventionally hold secrets. A guard rail for `drive upload`, not a guarantee.
+_SECRET_HOME_FILES = (".netrc",)
+_SECRET_HOME_FOLDERS = (".aws", ".config/gcloud", ".gnupg", ".ssh")
 _MIME_TYPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*")
 _ORDERS = ("modified", "name")
 
@@ -103,12 +109,29 @@ class DriveReadUnsupportedError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class UploadSource:
-    """A local file that passed the checks, and what it will be called and typed as."""
+    """A local file that passed the checks, open for reading, and what it will be called."""
 
+    handle: BinaryIO
     mime_type: str
+    mtime_ns: int
     name: str
     path: Path
     size: int
+
+    def __enter__(self) -> UploadSource:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.handle.close()
+
+    def ensure_unchanged(self) -> None:
+        """Refuse when the file grew, shrank or was rewritten since it was checked."""
+        info = os.fstat(self.handle.fileno())
+        if info.st_size != self.size or info.st_mtime_ns != self.mtime_ns:
+            raise DriveUploadError(f"{self.name!r} changed while it was being uploaded")
 
 
 def export_mime(to: str) -> tuple[str, str]:
@@ -132,45 +155,92 @@ def resolve_export_dest(to: str) -> Path:
     return path
 
 
+def path_is_inside(path: Path, directory: Path) -> bool:
+    """Whether `path` is in `directory`, judged by which directory it is, not how it is spelled.
+
+    A string comparison of resolved paths misses a case-insensitive filesystem (`.CONFIG` is
+    `.config`), so each parent is also compared with the directory by device and inode.
+    """
+    try:
+        if path.resolve().is_relative_to(directory.resolve()):
+            return True
+        target = directory.stat()
+    except OSError:
+        return False
+    for parent in (path, *path.parents):
+        try:
+            if os.path.samestat(parent.stat(), target):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def resolve_upload_source(
-    file: str, *, name: str | None, mime_type: str | None, config_dir: Path
+    file: str,
+    *,
+    name: str | None,
+    mime_type: str | None,
+    config_dir: Path,
+    denied: Sequence[Path] = (),
 ) -> UploadSource:
     """Check the local file `drive upload` was asked to send, before anything leaves the machine.
 
-    It must be a regular file (a symlink is followed to one), no larger than
-    `UPLOAD_MAX_BYTES`, and must not live in blumkin's own config directory, where the token
-    cache and auth records are kept. The name defaults to the file's own (as given, so a
-    symlink keeps its link's name) and must be a plain file name; the type is detected from it
-    unless given.
+    The file is opened once, without following a symlink in its final place, and every check
+    and every later read uses that open file, so it cannot be swapped for another after the
+    check. It must be a regular file with a single link (a hard link can be a secret under
+    another name), no larger than `UPLOAD_MAX_BYTES`, and must not be inside blumkin's own
+    config directory (tokens and auth records), one of the well-known credential places under
+    the home directory, an `.env` file, or one of the `denied` files (for example the Google
+    OAuth client file). The name defaults to the file's own (as given, so a symlink keeps its
+    link's name) and must be a plain file name; the type is detected from it unless given.
+    Close the result when done.
     """
     text = file.strip()
     if not text:
         raise DriveUploadError("--file must name a local file")
     given = Path(text).expanduser() if text.startswith("~/") else Path(text)
     resolved = given.resolve()
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
     try:
-        info = resolved.stat()
+        fd = os.open(resolved, flags)
     except OSError as exc:
         raise DriveUploadError(f"no such file to upload: {file!r}") from exc
-    if not stat.S_ISREG(info.st_mode):
-        raise DriveUploadError(f"{file!r} is not a regular file")
-    if resolved.is_relative_to(config_dir.resolve()):
-        raise DriveUploadError(
-            f"{file!r} is inside blumkin's config directory (tokens and auth records): "
-            "refusing to upload it"
-        )
-    if info.st_size > UPLOAD_MAX_BYTES:
-        raise DriveUploadError(
-            f"expected a file of at most {UPLOAD_MAX_BYTES} bytes, got {info.st_size}"
-        )
-    chosen = _upload_name(name if name is not None else given.name)
-    if mime_type is not None:
-        if not _MIME_TYPE.fullmatch(mime_type.strip()):
-            raise DriveUploadError(f"--mime-type must look like type/subtype, got {mime_type!r}")
-        kind = mime_type.strip()
-    else:
-        kind = mimetypes.guess_type(chosen)[0] or "application/octet-stream"
-    return UploadSource(mime_type=kind, name=chosen, path=resolved, size=info.st_size)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise DriveUploadError(f"{file!r} is not a regular file")
+        if info.st_nlink > 1:
+            raise DriveUploadError(
+                f"{file!r} has {info.st_nlink} hard links: refusing to upload it "
+                "(a link can be a secret under another name); copy it first"
+            )
+        _refuse_secrets(resolved, info, config_dir, denied)
+        if info.st_size > UPLOAD_MAX_BYTES:
+            raise DriveUploadError(
+                f"expected a file of at most {UPLOAD_MAX_BYTES} bytes, got {info.st_size}"
+            )
+        chosen = _upload_name(name if name is not None else given.name)
+        if mime_type is not None:
+            if not _MIME_TYPE.fullmatch(mime_type.strip()):
+                raise DriveUploadError(
+                    f"--mime-type must look like type/subtype, got {mime_type!r}"
+                )
+            kind = mime_type.strip()
+        else:
+            kind = mimetypes.guess_type(chosen)[0] or "application/octet-stream"
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    return UploadSource(
+        handle=handle,
+        mime_type=kind,
+        mtime_ns=info.st_mtime_ns,
+        name=chosen,
+        path=resolved,
+        size=info.st_size,
+    )
 
 
 def format_drive_download_human(payload: dict[str, Any]) -> list[str]:
@@ -357,6 +427,38 @@ _CODE_FONTS = frozenset({"Roboto Mono", "Consolas", "Courier New", "Source Code 
 def split_path(path: str) -> list[str]:
     """Split a drive path into its non-empty segments (``/A//B/`` -> ``['A', 'B']``)."""
     return [segment.strip() for segment in path.split("/") if segment.strip()]
+
+
+def _refuse_secrets(
+    resolved: Path, info: os.stat_result, config_dir: Path, denied: Sequence[Path]
+) -> None:
+    """Refuse a file that is, or sits in, a place that holds credentials."""
+    if path_is_inside(resolved, config_dir):
+        raise DriveUploadError(
+            f"{resolved.name!r} is inside blumkin's config directory (tokens and auth "
+            "records): refusing to upload it"
+        )
+    secret = f"{resolved.name!r} is a secret: refusing to upload it"
+    if resolved.name == ".env" or resolved.name.startswith(".env."):
+        raise DriveUploadError(secret + " (an .env file)")
+    home = Path.home()
+    for relative in _SECRET_HOME_FOLDERS:
+        if (home / relative).is_dir() and path_is_inside(resolved, home / relative):
+            raise DriveUploadError(secret + f" (~/{relative})")
+    for relative in _SECRET_HOME_FILES:
+        try:
+            if os.path.samestat(info, (home / relative).stat()):
+                raise DriveUploadError(secret + f" (~/{relative})")
+        except OSError:
+            continue
+    for entry in denied:
+        try:
+            if os.path.samestat(info, entry.stat()) or path_is_inside(resolved, entry):
+                raise DriveUploadError(
+                    secret + " (a credentials file blumkin is configured to use)"
+                )
+        except OSError:
+            continue
 
 
 def _upload_name(name: str) -> str:

@@ -13,7 +13,9 @@ Graph backend.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
+import time
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -68,7 +70,9 @@ _SESSION_PARENT_URL = (
 )
 _SESSION_ROOT_URL = "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}:/createUploadSession"
 # Graph's simple PUT takes at most 4 MB; a session takes chunks that are multiples of 320 KiB.
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _SIMPLE_UPLOAD_MAX = 4_000_000
+_UPLOAD_RETRIES = 3
 _UPLOAD_CHUNK = 320 * 1024 * 12
 # `fail` so an upload can never replace an existing file of that name (Graph's default is replace).
 _UPLOAD_PARENT_URL = (
@@ -293,28 +297,60 @@ async def drive_upload(
     validate_folder_selector(folder, folder_id)
     cfg = config or load_config()
     source = resolve_upload_source(file, name=name, mime_type=mime_type, config_dir=cfg.config_dir)
-    client = create_graph_client(cfg)
-    parent: str | None = None
-    if folder_id is not None:
-        found = await _send_item(client, _ITEM_BY_ID_URL, {"id": folder_id}, missing=folder_id)
-        parent = _require_folder(found, folder_id)
-    elif folder:
-        parent = _require_folder(await _resolve_folder(client, folder), folder)
-    params = {"path": _encoded_path([source.name])}
-    if parent is not None:
-        params["parent"] = parent
-    try:
-        if source.size <= _SIMPLE_UPLOAD_MAX:
-            url = _UPLOAD_ROOT_URL if parent is None else _UPLOAD_PARENT_URL
-            item = _to_item(await _put_small(client, source.path, source.mime_type, url, params))
-        else:
-            url = _SESSION_ROOT_URL if parent is None else _SESSION_PARENT_URL
-            item = await _put_in_session(client, source, url, params)
-    except ODataError as exc:
-        if _status(exc) == 409:
-            raise _exists(source.name) from exc
-        raise
+    with source:
+        _check_onedrive_name(source.name)
+        client = create_graph_client(cfg)
+        parent: str | None = None
+        if folder_id is not None:
+            found = await _send_item(client, _ITEM_BY_ID_URL, {"id": folder_id}, missing=folder_id)
+            parent = _require_folder(found, folder_id)
+        elif folder and split_path(folder):
+            parent = _require_folder(await _resolve_folder(client, folder), folder)
+        params = {"path": _encoded_path([source.name])}
+        if parent is not None:
+            params["parent"] = parent
+        try:
+            if source.size <= _SIMPLE_UPLOAD_MAX:
+                url = _UPLOAD_ROOT_URL if parent is None else _UPLOAD_PARENT_URL
+                data = source.handle.read()
+                source.ensure_unchanged()
+                item = _to_item(await _put_small(client, data, source.mime_type, url, params))
+            else:
+                url = _SESSION_ROOT_URL if parent is None else _SESSION_PARENT_URL
+                item = await _put_in_session(client, source, url, params)
+        except ODataError as exc:
+            if _status(exc) == 409:
+                raise _exists(source.name) from exc
+            raise
     return {"item": item, "bytes": source.size}
+
+
+def _cancel_session(http: httpx.Client, upload_url: str) -> None:
+    with contextlib.suppress(httpx.HTTPError):
+        http.delete(upload_url)
+
+
+def _check_onedrive_name(name: str) -> None:
+    """OneDrive refuses some names Google accepts; say so before anything is sent."""
+    if any(char in name for char in '"*:<>?/\\|') or name.endswith("."):
+        raise DriveUploadError(
+            f'OneDrive cannot hold the name {name!r}: names cannot contain " * : < > ? / \\ | '
+            "or end with a dot"
+        )
+
+
+def _check_session_url(url: str) -> None:
+    """The service's session URL must be a public https address (never a local one)."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    local = host == "localhost"
+    try:
+        ipaddress.ip_address(host)
+        local = True
+    except ValueError:
+        pass
+    if parts.scheme != "https" or not host or local:
+        raise DriveUploadError("expected a public https upload session URL from the service")
 
 
 def _encoded_path(segments: list[str]) -> str:
@@ -335,6 +371,16 @@ def _exists(name: str) -> DriveUploadError:
         f"a file named {name!r} already exists in that folder - pick another --name or folder "
         "(upload never replaces or duplicates)"
     )
+
+
+def _finished_item(response: httpx.Response) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise DriveUploadError("expected a JSON answer from the service, got another") from exc
+    if not isinstance(data, dict):
+        raise DriveUploadError("expected a JSON object from the service, got another")
+    return _item_from_json(data)
 
 
 def _item_from_json(data: dict[str, Any]) -> dict[str, Any]:
@@ -377,56 +423,83 @@ def _parent_id(entry: DriveItem) -> str | None:
     return entry.parent_reference.id if entry.parent_reference is not None else None
 
 
+def _pause(seconds: float) -> None:
+    time.sleep(seconds)
+
+
 def _require_folder(item: DriveItem | None, label: str) -> str:
     if item is None or item.folder is None or not item.id:
         raise DriveFolderNotFoundError(f"no folder at {label!r}")
     return item.id
 
 
-def _session_client() -> httpx.Client:
-    """The HTTP client for an upload session's pre-authorized URL (no token is ever sent)."""
-    return httpx.Client(timeout=httpx.Timeout(60.0), follow_redirects=False, trust_env=False)
-
-
-def _upload_chunks(upload_url: str, source: Any) -> dict[str, Any]:
-    """Send the file to an upload session in aligned chunks; cancel the session on failure."""
-    if urlsplit(upload_url).scheme != "https":
-        raise DriveUploadError("expected an https upload session URL from the service, got another")
-    with _session_client() as http, source.path.open("rb") as handle:
-        offset = 0
-        while True:
-            chunk = handle.read(_UPLOAD_CHUNK)
-            if not chunk:
-                break
-            end = offset + len(chunk) - 1
-            try:
-                response = http.put(
-                    upload_url,
-                    content=chunk,
-                    headers={"Content-Range": f"bytes {offset}-{end}/{source.size}"},
-                )
-            except httpx.HTTPError as exc:
-                _cancel_session(http, upload_url)
+def _send_chunk(
+    http: httpx.Client, upload_url: str, chunk: bytes, offset: int, end: int, total: int
+) -> httpx.Response:
+    """PUT one chunk, retrying a throttled or failing service a few times (Retry-After honoured)."""
+    headers = {"Content-Range": f"bytes {offset}-{end}/{total}"}
+    for attempt in range(_UPLOAD_RETRIES + 1):
+        last = attempt == _UPLOAD_RETRIES
+        try:
+            response = http.put(upload_url, content=chunk, headers=headers)
+        except httpx.TransportError as exc:
+            if last:
                 raise DriveUploadError(
                     f"expected the upload to continue, got {type(exc).__name__}"
                 ) from exc
-            if response.status_code in (200, 201):
-                return _item_from_json(response.json())
-            if response.status_code != 202:
-                _cancel_session(http, upload_url)
+            _pause(2.0**attempt)
+            continue
+        if response.status_code in _RETRY_STATUSES and not last:
+            _pause(_retry_delay(response, attempt))
+            continue
+        return response
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    """Seconds to wait before retrying: the service's Retry-After when it sent one."""
+    try:
+        return min(max(float(response.headers.get("Retry-After", "")), 0.0), 60.0)
+    except ValueError:
+        return 2.0**attempt
+
+
+def _session_client() -> httpx.Client:
+    """The HTTP client for an upload session's pre-authorized URL (no token is ever sent).
+
+    It honours the proxy and certificate environment, like the Graph client does.
+    """
+    return httpx.Client(timeout=httpx.Timeout(60.0), follow_redirects=False)
+
+
+def _upload_chunks(upload_url: str, source: Any) -> dict[str, Any]:
+    """Send the file to an upload session in aligned chunks; cancel the session on any failure."""
+    _check_session_url(upload_url)
+    with _session_client() as http:
+        try:
+            source.handle.seek(0)
+            offset = 0
+            while True:
+                chunk = source.handle.read(_UPLOAD_CHUNK)
+                if not chunk:
+                    raise DriveUploadError(
+                        "expected the upload to finish with the last chunk, got no answer"
+                    )
+                end = offset + len(chunk) - 1
+                response = _send_chunk(http, upload_url, chunk, offset, end, source.size)
+                source.ensure_unchanged()
+                if response.status_code in (200, 201):
+                    return _finished_item(response)
                 if response.status_code == 409:
                     raise _exists(source.name)
-                raise DriveUploadError(
-                    f"expected the upload to succeed, got HTTP {response.status_code}"
-                )
-            offset = end + 1
-        _cancel_session(http, upload_url)
-        raise DriveUploadError("expected the upload to finish with the last chunk, got no answer")
-
-
-def _cancel_session(http: httpx.Client, upload_url: str) -> None:
-    with contextlib.suppress(httpx.HTTPError):
-        http.delete(upload_url)
+                if response.status_code != 202:
+                    raise DriveUploadError(
+                        f"expected the upload to succeed, got HTTP {response.status_code}"
+                    )
+                offset = end + 1
+        except BaseException:
+            _cancel_session(http, upload_url)
+            raise
 
 
 async def _children(
@@ -539,11 +612,11 @@ async def _put_in_session(
 
 
 async def _put_small(
-    client: Any, path: Any, mime_type: str, url: str, params: dict[str, str]
+    client: Any, data: bytes, mime_type: str, url: str, params: dict[str, str]
 ) -> DriveItem:
     """One PUT of a small file; a name clash is a 409 (conflictBehavior=fail)."""
     info = RequestInformation(Method.PUT, url, params)
-    info.set_stream_content(path.read_bytes(), mime_type)
+    info.set_stream_content(data, mime_type)
     item = await client.request_adapter.send_async(info, DriveItem, _ERROR_MAP)
     if item is None:
         raise RuntimeError("Graph returned no DriveItem for the uploaded file")

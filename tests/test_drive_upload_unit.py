@@ -635,10 +635,17 @@ def test_the_google_upload_reads_from_the_checked_handle(source: Path, config_di
     service = MagicMock()
     files = service.files.return_value
     files.list.return_value.execute.return_value = {"files": []}
-    files.create.return_value.execute.return_value = _created()
+    request = MagicMock()
+    request.execute.return_value = _created()
+    sent: list[bytes] = []
+
+    def create(**kwargs: Any) -> MagicMock:
+        sent.append(kwargs["media_body"].getbytes(0, 100))
+        return request
+
+    files.create.side_effect = create
     _google_upload(service, config_dir, file=str(source))
-    media = files.create.call_args.kwargs["media_body"]
-    assert media.getbytes(0, 100) == b"\x89PNG-bytes"
+    assert sent == [b"\x89PNG-bytes"]
 
 
 def test_google_upload_that_the_service_rejects_is_translated_like_the_other_verbs(
@@ -666,7 +673,7 @@ def test_google_upload_with_no_file_in_the_answer_is_an_error_not_a_success(
 
 
 @pytest.mark.parametrize(
-    "name", ["a:b.txt", "a*b.txt", 'a"b.txt', "a<b.txt", "a|b.txt", "a?.txt", "ends.", "ends "]
+    "name", ["a:b.txt", "a*b.txt", 'a"b.txt', "a<b.txt", "a|b.txt", "a?.txt", "ends."]
 )
 def test_onedrive_names_it_cannot_hold_are_refused_before_anything_is_sent(
     source: Path, config_dir: Path, name: str
@@ -832,3 +839,44 @@ def test_a_file_that_changes_during_a_large_upload_cancels_the_session(
     with pytest.raises(DriveUploadError, match="changed"):
         _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
     assert methods[-1] == "DELETE"
+
+
+@pytest.mark.parametrize("folder", ["/", "//", " / "])
+def test_a_folder_with_no_name_in_it_means_the_drive_root_on_both_services(
+    source: Path, config_dir: Path, folder: str
+) -> None:
+    send = AsyncMock(return_value=_item())
+    resolve = AsyncMock()
+    with patch(f"{_MS_MOD}._resolve_folder", resolve):
+        _ms_upload(_ms_client(send), config_dir, file=str(source), folder=folder)
+    resolve.assert_not_called()
+    assert "root:" in send.call_args.args[0].url_template
+
+    service = MagicMock()
+    files = service.files.return_value
+    files.list.return_value.execute.return_value = {"files": []}
+    files.create.return_value.execute.return_value = _created()
+    _google_upload(service, config_dir, file=str(source), folder=folder)
+    assert files.create.call_args.kwargs["body"]["parents"] == ["root"]
+
+
+def test_a_missing_destination_has_the_exit_code_the_docs_name(
+    source: Path, config_dir: Path
+) -> None:
+    from blumkin.skills.drive import DriveFolderNotFoundError
+    from blumkin.skills.errors import classify_exception
+
+    # A missing folder path is not_found (exit 5) on both services.
+    assert classify_exception(DriveFolderNotFoundError("no folder at 'X'")).exit_code == 5
+    # A missing Microsoft --folder-id is not_found (5); a missing Google one is a usage error (2).
+    send = AsyncMock(side_effect=DriveItemNotFoundError("no drive item with id 'x'"))
+    with patch(f"{_MS_MOD}._send_item", send), pytest.raises(DriveItemNotFoundError) as ms:
+        _ms_upload(_ms_client(AsyncMock()), config_dir, file=str(source), folder_id="x")
+    assert classify_exception(ms.value).exit_code == 5
+    service = MagicMock()
+    service.files.return_value.get.return_value.execute.side_effect = HttpError(
+        SimpleNamespace(status=404, reason="nf"), b"{}"
+    )
+    with pytest.raises(ValueError, match="does not name a drive item") as google:
+        _google_upload(service, config_dir, file=str(source), folder_id="x")
+    assert classify_exception(google.value).exit_code == 2
