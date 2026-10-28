@@ -242,14 +242,22 @@ async def _poll_async(
         # The token moves forward only once every message of the batch was dealt with, so a
         # transient failure is read again on the next poll (handled ids make that safe).
         if token and not retry:
-            save_sync_state(
-                setup.config_dir,
-                profile_name,
-                provider=provider,
-                token=token,
-                mode="scan" if scan else "delta",
-                scope=scope,
-            )
+            try:
+                save_sync_state(
+                    setup.config_dir,
+                    profile_name,
+                    provider=provider,
+                    token=token,
+                    mode="scan" if scan else "delta",
+                    scope=scope,
+                )
+            except OSError as exc:
+                # The token only speeds listing up: mail is already enqueued, so keep going.
+                log.warning(
+                    "mail sync state for profile %s not saved (%s); the next poll rescans",
+                    profile_name,
+                    type(exc).__name__,
+                )
 
     return PollResult(
         enqueued=enqueued,

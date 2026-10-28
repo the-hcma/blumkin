@@ -377,3 +377,49 @@ def test_a_sync_that_cannot_run_is_logged_without_the_token(
     text = " ".join(r.getMessage() for r in caplog.records)
     assert "mail sync" in text and "OSError" in text
     assert "SENTINEL" not in text and "token-1" not in text
+
+
+def test_a_token_that_cannot_be_saved_does_not_stop_the_other_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("blumkin.loop.mail_poll.save_sync_state", boom)
+    setup = parse_loop_setup(
+        tmp_path,
+        {
+            "loop": {
+                "triggers": {
+                    "receipts": {
+                        "task": "expense-report",
+                        "instance": "trip-1",
+                        "kind": "loop",
+                        "allowlist": ["me@example.com"],
+                        "subject_tag": "[trip]",
+                    }
+                }
+            }
+        },
+    )
+    box = _Mailbox()
+    box.inbox_items = [_item(1)]
+    with caplog.at_level(logging.WARNING, logger="blumkin.loop"):
+        result = poll_mail_triggers(
+            setup,
+            inbox=box.inbox,
+            sync=box.sync,
+            message=box.message,
+            download=box.download,
+            refresh=lambda _cfg: {"ok": True},
+            load_config=lambda profile: type(
+                "Cfg", (), {"provider": "microsoft", "name": profile, "email": ""}
+            )(),
+            list_profiles=lambda: [{"name": "one"}, {"name": "two"}],
+        )
+    assert len(box.sync_calls) == 2
+    assert result.enqueued == 2
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "not saved" in text and "OSError" in text and "token-1" not in text
