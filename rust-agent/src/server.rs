@@ -421,7 +421,7 @@ fn presence_error_response(err: PresenceError) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::tests::ENV_LOCK;
+    use crate::paths::tests::lock_env;
 
     #[test]
     fn dispatch_accepts_a_matching_protocol_version() {
@@ -761,7 +761,7 @@ mod tests {
         // `env::temp_dir()` reads the same process-wide TMPDIR/TEMP/TMP
         // env vars `paths::tests` mutates; share its lock so this test never
         // observes a momentarily-swapped temp dir (see PR #329 review).
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = lock_env();
         let dir = std::env::temp_dir().join(format!("blumkin-agent-test-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         let sock_path = dir.join("stale.sock");
@@ -782,43 +782,66 @@ mod tests {
         // `env::temp_dir()` reads the same process-wide TMPDIR/TEMP/TMP
         // env vars `paths::tests` mutates; share its lock so this test never
         // observes a momentarily-swapped temp dir (see PR #329 review).
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = lock_env();
         let dir = std::env::temp_dir().join(format!("blumkin-agent-test2-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         let sock_path = dir.join("live.sock");
         let live_listener = UnixListener::bind(&sock_path).unwrap();
         live_listener.set_nonblocking(true).unwrap();
 
-        // Accept in the background so `agent_is_alive`'s connect+ping
-        // succeeds against a real (if minimal) peer.
-        let accept_sock_path = sock_path.clone();
-        let handle = thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline {
-                if let Ok((mut stream, _)) = live_listener.accept() {
-                    stream.set_nonblocking(false).unwrap();
-                    if let Ok(request) = protocol::recv_message(&mut stream, Some(REQUEST_TIMEOUT))
-                    {
-                        let shutdown_requested = AtomicBool::new(false);
-                        let cache = SecretCache::with_verifier(
-                            Duration::from_secs(60),
-                            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
-                        );
-                        let response = dispatch(&request, &shutdown_requested, &cache);
-                        let _ = protocol::send_message(&mut stream, &response);
+        // The peer answers the probe's ping like a live agent would. It waits
+        // for the real connection (there is no wall-clock deadline to miss on a
+        // loaded runner) and only gives up once `bind` has returned without ever
+        // connecting, so a failure reports what the peer saw instead of hanging
+        // or passing by luck (issue #464).
+        let bind_returned = std::sync::Arc::new(AtomicBool::new(false));
+        let peer_flag = std::sync::Arc::clone(&bind_returned);
+        let peer = thread::spawn(move || -> Result<(), String> {
+            let mut stream = loop {
+                match live_listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        if peer_flag.load(Ordering::SeqCst) {
+                            return Err("bind returned without ever connecting".to_string());
+                        }
+                        thread::sleep(Duration::from_millis(1));
                     }
-                    return;
+                    Err(err) => return Err(format!("accept failed: {err}")),
                 }
-                thread::sleep(Duration::from_millis(10));
-            }
+            };
+            stream
+                .set_nonblocking(false)
+                .map_err(|err| format!("could not make the stream blocking: {err}"))?;
+            let request = protocol::recv_message(&mut stream, Some(REQUEST_TIMEOUT))
+                .map_err(|err| format!("no request arrived: {err}"))?;
+            let shutdown_requested = AtomicBool::new(false);
+            let cache = SecretCache::with_verifier(
+                Duration::from_secs(60),
+                Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+            );
+            let response = dispatch(&request, &shutdown_requested, &cache);
+            protocol::send_message(&mut stream, &response)
+                .map_err(|err| format!("could not answer the probe: {err}"))
         });
 
         let result = bind(&sock_path);
+        bind_returned.store(true, Ordering::SeqCst);
+        let peer_outcome = peer.join().expect("the peer thread panicked");
 
-        assert!(matches!(result, Ok(None)));
-        handle.join().unwrap();
-        fs::remove_file(&accept_sock_path).ok();
+        let deferred = matches!(result, Ok(None));
+        let bind_summary = match &result {
+            Ok(None) => "Ok(None)".to_string(),
+            Ok(Some(_)) => "Ok(Some(listener))".to_string(),
+            Err(err) => format!("Err({err})"),
+        };
+        fs::remove_file(&sock_path).ok();
         fs::remove_dir_all(&dir).ok();
+        assert!(
+            deferred,
+            "expected bind to defer to the live agent (Ok(None)), got {bind_summary}; \
+             the peer reported {peer_outcome:?}"
+        );
+        assert_eq!(peer_outcome, Ok(()));
     }
 
     #[test]
@@ -826,7 +849,7 @@ mod tests {
         // `env::temp_dir()` reads the same process-wide TMPDIR/TEMP/TMP
         // env vars `paths::tests` mutates; share its lock so this test never
         // observes a momentarily-swapped temp dir (see PR #329 review).
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = lock_env();
         // An `AF_UNIX` path over the platform's `sun_path` limit (104 bytes
         // on macOS) makes the underlying `bind(2)` fail - this must surface
         // as `Err`, not the same `Ok(None)` used for "a live agent already
@@ -850,7 +873,7 @@ mod tests {
         // `env::temp_dir()` reads the same process-wide TMPDIR/TEMP/TMP
         // env vars `paths::tests` mutates; share its lock so this test never
         // observes a momentarily-swapped temp dir (see PR #329 review).
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = lock_env();
         // The `wait_for_path_gone` grace window's *success* case: a
         // not-alive-but-not-yet-dead agent unlinks the path itself while
         // this process is waiting. `remove_file` must then tolerate the

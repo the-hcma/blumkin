@@ -222,12 +222,24 @@ fn is_symlink(path: &Path) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, MutexGuard};
 
     // `base_dir` reads process-wide env vars; serialize the tests that
     // mutate them so they cannot race each other under `cargo test`'s
     // default parallel execution.
-    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Take the shared env lock, tolerating poison. One test panicking while it
+    /// holds the lock must report itself, not make every later test that takes
+    /// it fail with a `PoisonError` that hides the real failure (issue #464).
+    /// The protected data is `()`, so a poisoned lock is still safe to use; each
+    /// test restores the env vars it changes in an `EnvGuard` that drops during
+    /// unwinding.
+    pub(crate) fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     struct EnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
 
@@ -273,7 +285,7 @@ pub(crate) mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn base_dir_ignores_tmpdir_on_macos_matching_the_python_client() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _guard = EnvGuard::capture(&[
             "BLUMKIN_AGENT_RUNTIME_DIR",
             "XDG_RUNTIME_DIR",
@@ -298,7 +310,7 @@ pub(crate) mod tests {
 
     #[test]
     fn base_dir_override_wins_over_darwin_confstr() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _guard = EnvGuard::capture(&[
             "BLUMKIN_AGENT_RUNTIME_DIR",
             "XDG_RUNTIME_DIR",
@@ -323,7 +335,7 @@ pub(crate) mod tests {
     // PR #403 review).
     #[test]
     fn base_dir_prefers_tmpdir_over_temp_and_tmp() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _guard = EnvGuard::capture(&[
             "BLUMKIN_AGENT_RUNTIME_DIR",
             "XDG_RUNTIME_DIR",
@@ -349,7 +361,7 @@ pub(crate) mod tests {
     // client's own resolution.
     #[test]
     fn base_dir_prefers_xdg_runtime_dir_over_tmpdir_when_the_darwin_lookup_is_unavailable() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _guard = EnvGuard::capture(&[
             "BLUMKIN_AGENT_RUNTIME_DIR",
             "XDG_RUNTIME_DIR",
@@ -370,7 +382,7 @@ pub(crate) mod tests {
 
     #[test]
     fn base_dir_skips_a_nonexistent_tmpdir_and_falls_through_to_temp() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _guard = EnvGuard::capture(&[
             "BLUMKIN_AGENT_RUNTIME_DIR",
             "XDG_RUNTIME_DIR",
@@ -404,7 +416,7 @@ pub(crate) mod tests {
     // candidate.
     #[test]
     fn base_dir_treats_an_empty_override_as_unset() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _guard = EnvGuard::capture(&[
             "BLUMKIN_AGENT_RUNTIME_DIR",
             "XDG_RUNTIME_DIR",
@@ -425,7 +437,7 @@ pub(crate) mod tests {
     // `XDG_RUNTIME_DIR` (see PR #403 review).
     #[test]
     fn base_dir_treats_an_empty_xdg_runtime_dir_as_unset() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_env();
         let _guard = EnvGuard::capture(&[
             "BLUMKIN_AGENT_RUNTIME_DIR",
             "XDG_RUNTIME_DIR",
