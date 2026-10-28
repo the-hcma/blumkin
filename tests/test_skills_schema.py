@@ -522,6 +522,7 @@ _CONSENT = {
     "drive.move": (True, False),
     "drive.read": (False, False),
     "drive.rename": (True, False),
+    "drive.upload": (True, False),
     "mail.attachments": (False, False),
     "mail.attachments.download": (False, False),
     "mail.auto-reply": (True, False),

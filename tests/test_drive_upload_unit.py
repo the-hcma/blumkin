@@ -508,6 +508,9 @@ def test_the_cli_uploads_and_prints_the_link(
     source: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(config_dir))
+    (config_dir / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc-123"\nprovider = "microsoft"\n', encoding="utf-8"
+    )
     result_payload = {
         "item": {
             "id": "newid",

@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
 
 from blumkin.attachments import resolve_single_download_dest
 from blumkin.config import BlumkinConfig, load_config
@@ -26,10 +27,12 @@ from blumkin.skills.drive import (
     DriveFolderNotFoundError,
     DriveItemNotFoundError,
     DriveReadUnsupportedError,
+    DriveUploadError,
     export_mime,
     flatten_google_doc,
     normalize_order,
     resolve_export_dest,
+    resolve_upload_source,
     split_path,
     validate_folder_selector,
     validate_move_selector,
@@ -53,6 +56,8 @@ _PAGE_SIZE = 200
 # Drive v3 hides Shared Drive items unless these are set. blumkin does not manage
 # Shared Drives (create *into* one - #212 non-goal), but read / move / rename of a
 # file the user already has in one should not silently 404.
+_RESUMABLE_ABOVE = 5 * 1024 * 1024
+_UPLOAD_CHUNK = 8 * 1024 * 1024
 _SHARED: dict[str, Any] = {"supportsAllDrives": True}
 _SHARED_LIST: dict[str, Any] = {"supportsAllDrives": True, "includeItemsFromAllDrives": True}
 
@@ -346,6 +351,60 @@ _EXPORT_EXT = {
 }
 
 
+async def drive_upload(
+    *,
+    file: str,
+    folder: str | None = None,
+    folder_id: str | None = None,
+    mime_type: str | None = None,
+    name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Upload a local file as a new file; never replaces or duplicates one of the same name."""
+    validate_folder_selector(folder, folder_id)
+    cfg = config or load_config()
+    source = resolve_upload_source(file, name=name, mime_type=mime_type, config_dir=cfg.config_dir)
+    service = _drive_service(cfg)
+    parent = "root"
+    if folder_id is not None:
+        parent = _validate_dest_folder_id(service, folder_id, flag="--folder-id")
+    elif folder:
+        parent, _ = resolve_folder_path(service, folder)
+    clash = execute(
+        service.files().list(
+            q=f"name = {_quote(source.name)} and {_quote(parent)} in parents and trashed = false",
+            fields="files(id,name)",
+            pageSize=1,
+            **_SHARED_LIST,
+        )
+    )
+    if clash.get("files"):
+        raise DriveUploadError(
+            f"a file named {source.name!r} already exists in that folder - "
+            "pick another --name or folder (upload never replaces or duplicates)"
+        )
+    resumable = source.size > _RESUMABLE_ABOVE
+    media = MediaFileUpload(
+        str(source.path),
+        mimetype=source.mime_type,
+        resumable=resumable,
+        chunksize=_UPLOAD_CHUNK if resumable else -1,
+    )
+    request = service.files().create(
+        body={"name": source.name, "parents": [parent]},
+        media_body=media,
+        fields=_GET_FIELDS,
+        **_SHARED,
+    )
+    created: dict[str, Any] | None = None
+    if resumable:
+        while created is None:
+            _status, created = request.next_chunk(num_retries=3)
+    else:
+        created = execute(request)
+    return {"item": _to_item(created or {}), "bytes": source.size}
+
+
 def _drive_service(cfg: BlumkinConfig) -> Any:
     creds = get_credentials(cfg, allow_interactive=False, required_scopes=DRIVE_SCOPES)
     return build_api_service("drive", "v3", creds=creds, config=cfg)
@@ -388,18 +447,18 @@ def _quote(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def _validate_dest_folder_id(service: Any, folder_id: str) -> str:
-    """`--to-id` must name an existing folder; a missing / non-folder id is a usage
-    error (exit 2). A transient 429/5xx or a 403 propagates unchanged."""
+def _validate_dest_folder_id(service: Any, folder_id: str, *, flag: str = "--to-id") -> str:
+    """`flag` (`--to-id`, `--folder-id`) must name an existing folder; a missing / non-folder id
+    is a usage error (exit 2). A transient 429/5xx or a 403 propagates unchanged."""
     try:
         meta = execute(service.files().get(fileId=folder_id, fields="id,mimeType", **_SHARED))
     except HttpError as exc:
         translated = _translate(exc, item_id=folder_id)
         if isinstance(translated, DriveItemNotFoundError):
-            raise ValueError(f"--to-id {folder_id!r} does not name a drive item") from exc
+            raise ValueError(f"{flag} {folder_id!r} does not name a drive item") from exc
         raise translated from exc
     if meta.get("mimeType") != _FOLDER_MIME:
-        raise ValueError(f"--to-id {folder_id!r} is not a folder")
+        raise ValueError(f"{flag} {folder_id!r} is not a folder")
     return folder_id
 
 

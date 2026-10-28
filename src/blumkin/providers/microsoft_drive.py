@@ -12,17 +12,23 @@ Graph backend.
 
 from __future__ import annotations
 
+import contextlib
+import json
+from datetime import datetime
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
+import httpx
 from kiota_abstractions.method import Method
 from kiota_abstractions.request_information import RequestInformation
 from kiota_abstractions.serialization.parsable_factory import ParsableFactory
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.drive_item_collection_response import DriveItemCollectionResponse
+from msgraph.generated.models.file import File
 from msgraph.generated.models.folder import Folder
 from msgraph.generated.models.item_reference import ItemReference
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+from msgraph.generated.models.upload_session import UploadSession
 
 from blumkin.attachments import resolve_single_download_dest
 from blumkin.config import BlumkinConfig, load_config
@@ -33,9 +39,11 @@ from blumkin.skills.drive import (
     DriveFolderNotFoundError,
     DriveItemNotFoundError,
     DriveReadUnsupportedError,
+    DriveUploadError,
     export_mime,
     normalize_order,
     resolve_export_dest,
+    resolve_upload_source,
     split_path,
     validate_folder_selector,
     validate_move_selector,
@@ -55,6 +63,22 @@ _OFFICE_KIND = {"docx": "doc", "doc": "doc", "xlsx": "sheet", "xls": "sheet", "p
 _ORDER_FIELD = {"modified": "lastModifiedDateTime desc", "name": "name"}
 _PAGE = 200
 _SEARCH_BASE = "https://graph.microsoft.com/v1.0/me/drive/root/search(q='{+q}')"
+_SESSION_PARENT_URL = (
+    "https://graph.microsoft.com/v1.0/me/drive/items/{parent}:/{+path}:/createUploadSession"
+)
+_SESSION_ROOT_URL = "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}:/createUploadSession"
+# Graph's simple PUT takes at most 4 MB; a session takes chunks that are multiples of 320 KiB.
+_SIMPLE_UPLOAD_MAX = 4_000_000
+_UPLOAD_CHUNK = 320 * 1024 * 12
+# `fail` so an upload can never replace an existing file of that name (Graph's default is replace).
+_UPLOAD_PARENT_URL = (
+    "https://graph.microsoft.com/v1.0/me/drive/items/{parent}:/{+path}:/content"
+    "?%40microsoft.graph.conflictBehavior=fail"
+)
+_UPLOAD_ROOT_URL = (
+    "https://graph.microsoft.com/v1.0/me/drive/root:/{+path}:/content"
+    "?%40microsoft.graph.conflictBehavior=fail"
+)
 
 
 async def drive_download(
@@ -256,6 +280,43 @@ async def drive_rename(
     return {"ok": True, "item": _to_item(renamed)}
 
 
+async def drive_upload(
+    *,
+    file: str,
+    folder: str | None = None,
+    folder_id: str | None = None,
+    mime_type: str | None = None,
+    name: str | None = None,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Upload a local file as a new item; never replaces one of the same name."""
+    validate_folder_selector(folder, folder_id)
+    cfg = config or load_config()
+    source = resolve_upload_source(file, name=name, mime_type=mime_type, config_dir=cfg.config_dir)
+    client = create_graph_client(cfg)
+    parent: str | None = None
+    if folder_id is not None:
+        found = await _send_item(client, _ITEM_BY_ID_URL, {"id": folder_id}, missing=folder_id)
+        parent = _require_folder(found, folder_id)
+    elif folder:
+        parent = _require_folder(await _resolve_folder(client, folder), folder)
+    params = {"path": _encoded_path([source.name])}
+    if parent is not None:
+        params["parent"] = parent
+    try:
+        if source.size <= _SIMPLE_UPLOAD_MAX:
+            url = _UPLOAD_ROOT_URL if parent is None else _UPLOAD_PARENT_URL
+            item = _to_item(await _put_small(client, source.path, source.mime_type, url, params))
+        else:
+            url = _SESSION_ROOT_URL if parent is None else _SESSION_PARENT_URL
+            item = await _put_in_session(client, source, url, params)
+    except ODataError as exc:
+        if _status(exc) == 409:
+            raise _exists(source.name) from exc
+        raise
+    return {"item": item, "bytes": source.size}
+
+
 def _encoded_path(segments: list[str]) -> str:
     """Percent-encode each segment (so ``#`` / ``?`` cannot truncate) but keep ``/``."""
     return "/".join(quote(segment, safe="") for segment in segments)
@@ -267,6 +328,35 @@ def _entry_sort(order_key: str) -> Any:
     return lambda item: (
         item.last_modified_date_time.isoformat() if item.last_modified_date_time else ""
     )
+
+
+def _exists(name: str) -> DriveUploadError:
+    return DriveUploadError(
+        f"a file named {name!r} already exists in that folder - pick another --name or folder "
+        "(upload never replaces or duplicates)"
+    )
+
+
+def _item_from_json(data: dict[str, Any]) -> dict[str, Any]:
+    """The stable item shape for the DriveItem JSON an upload session ends with."""
+    item = DriveItem()
+    item.id = data.get("id")
+    item.name = data.get("name")
+    item.size = data.get("size")
+    item.web_url = data.get("webUrl")
+    mime = (data.get("file") or {}).get("mimeType")
+    if mime:
+        item.file = File()
+        item.file.mime_type = mime
+    parent = (data.get("parentReference") or {}).get("id")
+    if parent:
+        item.parent_reference = ItemReference()
+        item.parent_reference.id = parent
+    stamp = data.get("lastModifiedDateTime")
+    if isinstance(stamp, str):
+        with contextlib.suppress(ValueError):
+            item.last_modified_date_time = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    return _to_item(item)
 
 
 def _mkdir_payload(folder: DriveItem, segments: list[str], *, created: bool) -> dict[str, Any]:
@@ -291,6 +381,52 @@ def _require_folder(item: DriveItem | None, label: str) -> str:
     if item is None or item.folder is None or not item.id:
         raise DriveFolderNotFoundError(f"no folder at {label!r}")
     return item.id
+
+
+def _session_client() -> httpx.Client:
+    """The HTTP client for an upload session's pre-authorized URL (no token is ever sent)."""
+    return httpx.Client(timeout=httpx.Timeout(60.0), follow_redirects=False, trust_env=False)
+
+
+def _upload_chunks(upload_url: str, source: Any) -> dict[str, Any]:
+    """Send the file to an upload session in aligned chunks; cancel the session on failure."""
+    if urlsplit(upload_url).scheme != "https":
+        raise DriveUploadError("expected an https upload session URL from the service, got another")
+    with _session_client() as http, source.path.open("rb") as handle:
+        offset = 0
+        while True:
+            chunk = handle.read(_UPLOAD_CHUNK)
+            if not chunk:
+                break
+            end = offset + len(chunk) - 1
+            try:
+                response = http.put(
+                    upload_url,
+                    content=chunk,
+                    headers={"Content-Range": f"bytes {offset}-{end}/{source.size}"},
+                )
+            except httpx.HTTPError as exc:
+                _cancel_session(http, upload_url)
+                raise DriveUploadError(
+                    f"expected the upload to continue, got {type(exc).__name__}"
+                ) from exc
+            if response.status_code in (200, 201):
+                return _item_from_json(response.json())
+            if response.status_code != 202:
+                _cancel_session(http, upload_url)
+                if response.status_code == 409:
+                    raise _exists(source.name)
+                raise DriveUploadError(
+                    f"expected the upload to succeed, got HTTP {response.status_code}"
+                )
+            offset = end + 1
+        _cancel_session(http, upload_url)
+        raise DriveUploadError("expected the upload to finish with the last chunk, got no answer")
+
+
+def _cancel_session(http: httpx.Client, upload_url: str) -> None:
+    with contextlib.suppress(httpx.HTTPError):
+        http.delete(upload_url)
 
 
 async def _children(
@@ -385,6 +521,32 @@ async def _patch_item(client: Any, item_id: str, patch: DriveItem) -> DriveItem:
         raise
     if item is None:
         raise DriveItemNotFoundError(f"no drive item with id {item_id!r}")
+    return item
+
+
+async def _put_in_session(
+    client: Any, source: Any, url: str, params: dict[str, str]
+) -> dict[str, Any]:
+    """Create an upload session (failing on a name clash) and send the file through it."""
+    info = RequestInformation(Method.POST, url, params)
+    body = {"item": {"@microsoft.graph.conflictBehavior": "fail", "name": source.name}}
+    info.set_stream_content(json.dumps(body).encode(), "application/json")
+    session = await client.request_adapter.send_async(info, UploadSession, _ERROR_MAP)
+    upload_url = getattr(session, "upload_url", None)
+    if not upload_url:
+        raise DriveUploadError("expected an upload session from the service, got none")
+    return _upload_chunks(upload_url, source)
+
+
+async def _put_small(
+    client: Any, path: Any, mime_type: str, url: str, params: dict[str, str]
+) -> DriveItem:
+    """One PUT of a small file; a name clash is a 409 (conflictBehavior=fail)."""
+    info = RequestInformation(Method.PUT, url, params)
+    info.set_stream_content(path.read_bytes(), mime_type)
+    item = await client.request_adapter.send_async(info, DriveItem, _ERROR_MAP)
+    if item is None:
+        raise RuntimeError("Graph returned no DriveItem for the uploaded file")
     return item
 
 

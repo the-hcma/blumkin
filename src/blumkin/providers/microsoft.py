@@ -490,6 +490,24 @@ class MicrosoftWorkspaceProvider:
     async def drive_rename(self, *, item_id: str, name: str) -> dict[str, Any]:
         return await microsoft_drive.drive_rename(item_id=item_id, name=name, config=self._config)
 
+    async def drive_upload(
+        self,
+        *,
+        file: str,
+        folder: str | None = None,
+        folder_id: str | None = None,
+        mime_type: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        return await microsoft_drive.drive_upload(
+            file=file,
+            folder=folder,
+            folder_id=folder_id,
+            mime_type=mime_type,
+            name=name,
+            config=self._config,
+        )
+
     async def mail_attachments_download(
         self,
         *,

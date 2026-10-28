@@ -1338,6 +1338,12 @@ Read and organize your drive:
   blumkin drive read --id 1a2b3c... --json
   blumkin drive export --id 1a2b3c... --to ./doc.pdf
 
+Move files in and out of it:
+
+\b
+  blumkin drive download --id 1a2b3c... --out ./downloads/
+  blumkin drive upload --file ./avatar.png --folder "Profile" --yes
+
 A Google Doc reads back as Markdown; other files export to PDF (and more, on
 Google).
 
@@ -1443,6 +1449,27 @@ Examples:
   blumkin drive rename --id 1a2b3c... --name "Portuguese vocab - week 4" --yes
 
 Renames in place - id, URL, and sharing are unchanged. Requires `--yes`.
+"""
+
+DRIVE_UPLOAD_EPILOG = """
+Examples:
+
+\b
+  blumkin drive upload --file ~/Pictures/avatar.png --folder "Profile" --yes
+  blumkin drive upload --file report.pdf --folder-id 1AbC --name "Q3 report.pdf" --yes --json
+
+Uploads one local file to your drive as a new file: Google Drive on a Google profile,
+OneDrive on a Microsoft one (needs the same Files.ReadWrite grant as the other `drive`
+verbs). `--yes` is required. It never replaces a file, and never adds a second one with the
+same name in the folder: a name clash is an error (pick `--name` or another folder). It notifies
+no one and returns the id and web link like the other drive verbs.
+
+The file must be a regular file of at most 2 GiB (a symlink is followed to one) and must not be
+inside blumkin's own config directory, where tokens and auth records live. `--folder` (a path)
+or `--folder-id` names an existing destination folder, else the drive root; nothing is
+created. `--name` defaults to the file's own name and `--mime-type` to the type detected from
+it. Small files go in one request; larger ones use the service's resumable upload (Google) or
+an upload session in chunks (OneDrive).
 """
 
 LOOP_EPILOG = """

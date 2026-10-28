@@ -253,6 +253,16 @@ class WorkspaceProvider(Protocol):
 
     async def drive_rename(self, *, item_id: str, name: str) -> dict[str, Any]: ...
 
+    async def drive_upload(
+        self,
+        *,
+        file: str,
+        folder: str | None = None,
+        folder_id: str | None = None,
+        mime_type: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]: ...
+
     async def mail_attachments_download(
         self,
         *,

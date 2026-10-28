@@ -11,6 +11,10 @@ item shape so ``--json`` consumers do not branch on the provider::
 
 from __future__ import annotations
 
+import mimetypes
+import re
+import stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -29,6 +33,7 @@ DRIVE_SKILLS: frozenset[str] = frozenset(
         "drive.move",
         "drive.read",
         "drive.rename",
+        "drive.upload",
     }
 )
 
@@ -56,6 +61,10 @@ GOOGLE_NATIVE_MIMES: frozenset[str] = frozenset(
     }
 )
 
+#: The largest file `drive upload` will send (a sanity limit, not a service limit).
+UPLOAD_MAX_BYTES = 2 * 1024**3
+
+_MIME_TYPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*")
 _ORDERS = ("modified", "name")
 
 
@@ -84,8 +93,22 @@ class DriveDownloadError(ValueError):
     """``drive download`` was pointed at something with no byte stream (a Google-native doc)."""
 
 
+class DriveUploadError(ValueError):
+    """The file cannot be uploaded, or the name it would get is taken."""
+
+
 class DriveReadUnsupportedError(ValueError):
     """``drive read`` on a provider with no document-content API (Microsoft / Graph)."""
+
+
+@dataclass(frozen=True, slots=True)
+class UploadSource:
+    """A local file that passed the checks, and what it will be called and typed as."""
+
+    mime_type: str
+    name: str
+    path: Path
+    size: int
 
 
 def export_mime(to: str) -> tuple[str, str]:
@@ -107,6 +130,47 @@ def resolve_export_dest(to: str) -> Path:
         raise DriveExportError(f"--to already exists, refusing to overwrite: {to}")
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def resolve_upload_source(
+    file: str, *, name: str | None, mime_type: str | None, config_dir: Path
+) -> UploadSource:
+    """Check the local file `drive upload` was asked to send, before anything leaves the machine.
+
+    It must be a regular file (a symlink is followed to one), no larger than
+    `UPLOAD_MAX_BYTES`, and must not live in blumkin's own config directory, where the token
+    cache and auth records are kept. The name defaults to the file's own (as given, so a
+    symlink keeps its link's name) and must be a plain file name; the type is detected from it
+    unless given.
+    """
+    text = file.strip()
+    if not text:
+        raise DriveUploadError("--file must name a local file")
+    given = Path(text).expanduser() if text.startswith("~/") else Path(text)
+    resolved = given.resolve()
+    try:
+        info = resolved.stat()
+    except OSError as exc:
+        raise DriveUploadError(f"no such file to upload: {file!r}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise DriveUploadError(f"{file!r} is not a regular file")
+    if resolved.is_relative_to(config_dir.resolve()):
+        raise DriveUploadError(
+            f"{file!r} is inside blumkin's config directory (tokens and auth records): "
+            "refusing to upload it"
+        )
+    if info.st_size > UPLOAD_MAX_BYTES:
+        raise DriveUploadError(
+            f"expected a file of at most {UPLOAD_MAX_BYTES} bytes, got {info.st_size}"
+        )
+    chosen = _upload_name(name if name is not None else given.name)
+    if mime_type is not None:
+        if not _MIME_TYPE.fullmatch(mime_type.strip()):
+            raise DriveUploadError(f"--mime-type must look like type/subtype, got {mime_type!r}")
+        kind = mime_type.strip()
+    else:
+        kind = mimetypes.guess_type(chosen)[0] or "application/octet-stream"
+    return UploadSource(mime_type=kind, name=chosen, path=resolved, size=info.st_size)
 
 
 def format_drive_download_human(payload: dict[str, Any]) -> list[str]:
@@ -175,6 +239,15 @@ def format_drive_read_human(payload: dict[str, Any]) -> list[str]:
 def format_drive_rename_human(payload: dict[str, Any]) -> list[str]:
     item = payload.get("item") or {}
     return [f"Renamed to {item.get('name')!r} (id={item.get('id')}; url unchanged)"]
+
+
+def format_drive_upload_human(payload: dict[str, Any]) -> list[str]:
+    item = payload["item"]
+    size = f" ({payload['bytes']} bytes)" if payload.get("bytes") is not None else ""
+    lines = [f"uploaded {sanitize_terminal(str(item.get('name')))}{size} -> id {item.get('id')}"]
+    if item.get("web_url"):
+        lines.append(f"  {item['web_url']}")
+    return lines
 
 
 def flatten_google_doc(document: dict[str, Any]) -> str:
@@ -284,6 +357,21 @@ _CODE_FONTS = frozenset({"Roboto Mono", "Consolas", "Courier New", "Source Code 
 def split_path(path: str) -> list[str]:
     """Split a drive path into its non-empty segments (``/A//B/`` -> ``['A', 'B']``)."""
     return [segment.strip() for segment in path.split("/") if segment.strip()]
+
+
+def _upload_name(name: str) -> str:
+    """`name` if it is a plain file name for the drive, else refuse."""
+    cleaned = name.strip()
+    if (
+        not cleaned
+        or cleaned in {".", ".."}
+        or "/" in cleaned
+        or "\\" in cleaned
+        or any(ord(char) < 32 or ord(char) == 127 for char in cleaned)
+        or len(cleaned.encode("utf-8")) > 255
+    ):
+        raise DriveUploadError(f"expected a plain file name of at most 255 bytes, got {name!r}")
+    return cleaned
 
 
 def validate_folder_selector(folder: str | None, folder_id: str | None) -> None:
