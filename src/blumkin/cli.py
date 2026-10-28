@@ -140,6 +140,7 @@ from blumkin.install_method import (
 from blumkin.loop import commands as loop_commands
 from blumkin.loop.config import LoopConfigError, LoopTriggerNotFoundError
 from blumkin.loop.init import LoopInitError, init_profiles
+from blumkin.loop.lesson import LessonError, LessonNotFoundError, LessonReplyError
 from blumkin.loop.service import LoopServiceError, install_user_unit
 from blumkin.mail_signature_state import (
     clear_signature_state,
@@ -625,10 +626,20 @@ def _emit_ledger(payload: dict[str, Any], *, as_json: bool, items: bool = False)
 
 def _loop_fail(exc: BaseException, *, as_json: bool) -> NoReturn:
     """Map a loop-command failure onto the standard error envelope and exit code."""
-    if isinstance(exc, LoopTriggerNotFoundError):
+    if isinstance(exc, (LessonNotFoundError, LoopTriggerNotFoundError)):
         slug, code = "not_found", EXIT_NOT_FOUND
+    elif isinstance(exc, LessonReplyError):
+        slug, code = "reply_failed", EXIT_OTHER
     elif isinstance(
-        exc, (LoopConfigError, LoopInitError, LoopServiceError, OSError, ProviderConfigError)
+        exc,
+        (
+            LessonError,
+            LoopConfigError,
+            LoopInitError,
+            LoopServiceError,
+            OSError,
+            ProviderConfigError,
+        ),
     ):
         slug, code = "usage_error", EXIT_USAGE
     else:
@@ -2994,6 +3005,35 @@ def loop() -> None:
     """
 
 
+@loop.command("finish", epilog=help_text.LOOP_FINISH_EPILOG)
+@click.argument("item")
+@click.option("--doc", "docs", multiple=True, help="Google Docs/Drive link to reply with.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--needs-user", "needs_user", default=None, help="Hand the item back, with why.")
+@click.pass_context
+def loop_finish(
+    ctx: click.Context,
+    item: str,
+    docs: tuple[str, ...],
+    as_json_flag: bool,
+    needs_user: str | None,
+) -> None:
+    """Close a waiting lesson: reply with its link(s), or hand it back."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = loop_commands.finish(load_loop_setup(), item, docs=docs, needs_user=needs_user)
+    except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
+        _loop_fail(exc, as_json=as_json)
+    if as_json:
+        emit_json({"ok": True, **payload})
+        return
+    closed = payload["item"]
+    if closed["state"] == "done":
+        emit_lines([f"{closed['id']}: replied with {len(closed['docs'])} link(s), done"])
+        return
+    emit_lines([f"{closed['id']}: handed back (needs_user)"])
+
+
 @loop.command("init", epilog=help_text.LOOP_INIT_EPILOG)
 @click.option(
     "--profile",
@@ -3092,6 +3132,34 @@ def loop_pause(ctx: click.Context, trigger: str, as_json_flag: bool) -> None:
         emit_json({"ok": True, **payload})
         return
     emit_lines([f"{trigger}: paused" + ("" if payload["changed"] else " (already)")])
+
+
+@loop.command("pending", epilog=help_text.LOOP_PENDING_EPILOG)
+@click.option(
+    "--handed-back", "handed_back", is_flag=True, help="Also list items handed back, with why."
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def loop_pending(ctx: click.Context, as_json_flag: bool, handed_back: bool) -> None:
+    """List lessons waiting for an agent."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = loop_commands.pending(load_loop_setup(), handed_back=handed_back)
+    except Exception as exc:  # noqa: BLE001 - _loop_fail owns the mapping
+        _loop_fail(exc, as_json=as_json)
+    if as_json:
+        emit_json({"ok": True, **payload})
+        return
+    if not payload["items"]:
+        emit_lines(["no lessons waiting"])
+        return
+    lines = [payload["instructions"], ""]
+    for entry in payload["items"]:
+        lines.append(f"{entry['id']}: template {entry['template']} ({entry['state']})")
+        if entry["note"]:
+            lines.append(f"  handed back: {sanitize_terminal(entry['note'])}")
+        lines.extend(f"  page: {path}" for path in entry["files"])
+    emit_lines(lines)
 
 
 @loop.command("resume", epilog=help_text.LOOP_RESUME_EPILOG)

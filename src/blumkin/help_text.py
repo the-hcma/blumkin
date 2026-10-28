@@ -1350,6 +1350,7 @@ Examples:
   blumkin loop list
   blumkin loop status
   blumkin loop run-once probe-trigger
+  blumkin loop pending
   blumkin loop run
 
 One runner process owns loop (mail) and cron triggers that name a task and an
@@ -1358,6 +1359,25 @@ would ask becomes `needs_user` and stops. A kill switch in config or a
 `loop/KILL` file stops every run. Triggers live in `[loop.triggers.*]` and
 `[cron.*]` in config.toml. Mail triggers need `kind = "loop"`, an allowlist, and
 `blumkin loop init` once per mailbox profile.
+"""
+
+LOOP_FINISH_EPILOG = """
+Examples:
+
+\b
+  blumkin loop finish 0123456789abcdef --doc https://docs.google.com/document/d/ID/edit
+  blumkin loop finish 0123456789abcdef --needs-user "the photo is too blurry to read"
+
+Closes a lesson that `blumkin loop pending` listed. With `--doc` (repeat it per
+document) it replies to the original message, to its sender only, with the
+link(s) and marks the item done; only https Google Docs, Sheets, Slides and
+Drive document, file and folder links are accepted. The reply draft is checked
+first: it must go only to a sender on the trigger's allowlist (a Reply-To header
+cannot redirect it) or it is deleted and nothing is sent. With `--needs-user` it
+hands the item back with a reason (see `loop pending --handed-back`) and sends
+nothing. Repeating a finish never sends a second reply; if sending failed the
+draft and links are kept, so run it again. A finish already running (or started
+under two minutes ago) makes a second one wait: "in progress".
 """
 
 LOOP_INIT_EPILOG = """
@@ -1404,6 +1424,21 @@ Examples:
 
 Pauses a trigger. Missed due times are not caught up on resume unless a later
 command asks for catch-up.
+"""
+
+LOOP_PENDING_EPILOG = """
+Examples:
+
+\b
+  blumkin loop pending
+  blumkin loop pending --handed-back --json
+
+Lists lessons the loop queued from a mail (a page photo and a subject keyword)
+that are waiting for an agent: the template to follow and the saved page
+image(s). blumkin calls no model and the loop starts no agent, so run this from
+your own agent session ("run the blumkin loop"), follow each template, then
+close it with `blumkin loop finish`. `--handed-back` also lists items handed back, with
+the reason given; `finish` can still close those.
 """
 
 LOOP_RESUME_EPILOG = """

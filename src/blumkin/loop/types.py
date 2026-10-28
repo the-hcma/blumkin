@@ -7,6 +7,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+LESSON_TASK = "lesson"
+# Reason prefix of a run that queued a lesson page for the operator's agent (issue #506).
+LESSON_WAITING = "lesson waiting for an agent"
+
 
 class InstanceResolver(StrEnum):
     """How a trigger picks the task instance a run works on (issue #504)."""
@@ -92,6 +96,8 @@ class TriggerSpec:
     instance_resolver: InstanceResolver = InstanceResolver.STATIC
     profiles: tuple[str, ...] = ()
     subject_tag: str | None = None
+    # Lesson task only: (subject keyword, template name) pairs, keywords already folded (#506).
+    templates: tuple[tuple[str, str], ...] = ()
     # Cron-only: declared hours for the scheduled time-sheet entry (issue #502).
     default_hours: float | None = None
     schedule: str | None = None
@@ -111,6 +117,7 @@ class TriggerSpec:
             payload["instance_resolver"] = self.instance_resolver.value
             payload["profiles"] = list(self.profiles)
             payload["subject_tag"] = self.subject_tag
+            payload["templates"] = dict(self.templates)
         if self.kind is TriggerKind.CRON:
             payload["default_hours"] = self.default_hours
             payload["schedule"] = self.schedule
