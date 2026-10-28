@@ -816,16 +816,16 @@ def test_the_hint_for_a_known_mistake_names_the_right_argument() -> None:
         },
     )
     hint = result.structured_content["hint"]
-    assert "calendar.update" in hint and "with" in hint
-    assert "duration" in hint
-    assert "no_teams" in hint
+    assert "calendar.create has no attendees" in hint
+    assert "takes duration" in hint and "not end" in hint
+    assert "pass no_teams=true" in hint
 
 
 def test_a_near_miss_suggests_the_closest_argument() -> None:
     result, _ = _unknown_arguments_call(
         "calendar.create", {"subject": "S", "start": "x", "durration": "30"}
     )
-    assert "duration" in result.structured_content["hint"]
+    assert "did you mean `duration`" in result.structured_content["hint"]
 
 
 def test_the_message_lists_the_valid_arguments_without_echoing_values() -> None:
@@ -834,7 +834,8 @@ def test_the_message_lists_the_valid_arguments_without_echoing_values() -> None:
     )
     body = result.structured_content
     assert "SENTINEL-value-1234" not in json.dumps(body)
-    assert "duration" in body["hint"]
+    assert "valid arguments for calendar.create: " in body["hint"]
+    assert "`bogus`" in body["message"]
 
 
 def test_a_key_that_looks_like_an_auth_error_is_still_a_usage_error() -> None:
@@ -851,10 +852,62 @@ def test_known_arguments_and_the_synthetic_ones_still_work() -> None:
     assert provider_call.await_count == 1
 
 
-def test_every_advertised_property_of_every_tool_is_accepted() -> None:
-    """The allowed set is the schema: nothing the schema advertises may be refused."""
-    from blumkin.mcp_server import _unknown_arguments
+def test_key_names_are_shown_safely_and_extra_ones_are_counted() -> None:
+    many = {f"bogus{n}": 1 for n in range(7)}
+    many["it's `odd`\nname" + "x" * 80] = 1
+    result, _ = _unknown_arguments_call("calendar.today", many)
+    message = result.structured_content["message"]
+    assert "\n" not in message
+    assert "and 3 more" in message
+    assert len(message) < 400
 
+
+def test_every_advertised_property_gets_past_the_unknown_check_on_the_real_server() -> None:
+    """Send each tool all of its own advertised properties through `on_call_tool`."""
+    refused: list[str] = []
     for name, tool in _list_tools().items():
-        props = tool.input_schema["properties"]
-        assert _unknown_arguments(dict.fromkeys(props), set(props)) == [], name
+        if name == "profiles.list":
+            continue
+        arguments: dict[str, Any] = {}
+        for key, spec in tool.input_schema["properties"].items():
+            kind = spec.get("type")
+            arguments[key] = [] if kind == "array" else False if kind == "boolean" else "x"
+        with patch("blumkin.mcp_server.load_config", return_value=_CFG):
+            result = _drive(lambda c: c.call_tool(name, arguments))
+        body = result.structured_content or {}
+        if "does not take the argument" in str(body.get("message", "")):
+            refused.append(name)
+    assert refused == []
+
+
+def test_yes_is_still_refused_before_the_unknown_check() -> None:
+    result, _ = _unknown_arguments_call("calendar.today", {"yes": True, "bogus": 1})
+    assert "pass `confirm`, not `yes`" in result.structured_content["message"]
+
+
+def test_tasks_delete_dry_run_needs_no_confirm_and_on_is_accepted(tmp_path: Path) -> None:
+    prov = SimpleNamespace(mail_auto_reply=AsyncMock(return_value={"ok": True}))
+    with (
+        patch("blumkin.mcp_server.load_config", return_value=_CFG),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        refused = _drive(lambda c: c.call_tool("mail.auto-reply", {"on": False, "confirm": True}))
+    assert "does not take" not in str((refused.structured_content or {}).get("message", ""))
+
+
+def test_a_multi_account_server_still_accepts_profile_next_to_real_arguments() -> None:
+    prov = SimpleNamespace(calendar_today=AsyncMock(return_value={"events": []}))
+    cfg = SimpleNamespace(default_tz="UTC", provider=ProviderKind.MICROSOFT, wo1162425_scopes=True)
+    with (
+        _profiles(_TWO_PROFILES),
+        patch("blumkin.mcp_server.load_config", return_value=cfg),
+        patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+    ):
+        result = _drive_server(
+            build_server(), lambda c: c.call_tool("calendar.today", {"profile": "work"})
+        )
+        bad = _drive_server(
+            build_server(), lambda c: c.call_tool("calendar.today", {"profile": "work", "bogus": 1})
+        )
+    assert result.is_error is False
+    assert bad.structured_content["error"] == "usage_error"

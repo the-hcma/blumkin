@@ -518,9 +518,17 @@ def _tool_arg_key(name: str) -> str:
     return name.lstrip("-").replace("-", "_")
 
 
+def _show_name(name: str) -> str:
+    """An argument name made safe to echo: printable, no backticks, at most 40 characters."""
+    cleaned = "".join(ch if ch.isprintable() and ch != "`" else "?" for ch in name)
+    return cleaned if len(cleaned) <= 40 else cleaned[:40] + "..."
+
+
 def _unknown_argument_error(tool: str, unknown: list[str], known: set[str]) -> UnknownArgumentError:
     """The usage error for `unknown` argument names: specific hints, then near misses."""
-    shown = ", ".join(f"`{name!r:.40}`".replace("'", "") for name in unknown[:5])
+    shown = ", ".join(f"`{_show_name(name)}`" for name in unknown[:5])
+    if len(unknown) > 5:
+        shown += f" and {len(unknown) - 5} more"
     hints: list[str] = []
     for name in unknown[:5]:
         specific = _ARGUMENT_HINTS.get((tool, name))
@@ -529,7 +537,7 @@ def _unknown_argument_error(tool: str, unknown: list[str], known: set[str]) -> U
             continue
         close = difflib.get_close_matches(name, sorted(known), n=1, cutoff=0.6)
         if close:
-            hints.append(f"did you mean `{close[0]}` instead of `{name!r:.40}`?".replace("'", ""))
+            hints.append(f"did you mean `{close[0]}` instead of `{_show_name(name)}`?")
     hints.append(f"valid arguments for {tool}: {', '.join(sorted(known)) or '(none)'}")
     return UnknownArgumentError(
         f"{tool} does not take the argument(s) {shown}; nothing was done", hint="; ".join(hints)
