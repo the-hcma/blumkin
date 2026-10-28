@@ -173,21 +173,13 @@ def test_a_build_newer_than_the_checkout_points_at_the_checkout_not_the_install(
     first = _git(repo, "rev-parse", "HEAD")
     build = _commit(repo, "second")
     _git(repo, "checkout", "-q", first)
+
     status = repository_status(repo, build_commit=build[:12], running_commands=["auth"])
-    assert status.relation == "unknown"  # the build commit is not in this checkout's history now
-    repo2 = _make_repo(tmp_path / "r2")
-    head2 = _git(repo2, "rev-parse", "HEAD")
-    _commit(repo2, "second")
-    _git(repo2, "checkout", "-q", head2)
-    newer = (
-        _git(repo2, "rev-parse", "main")
-        if _git(repo2, "branch", "--list", "main")
-        else _git(repo2, "rev-parse", "master")
-    )
-    ahead = repository_status(repo2, build_commit=newer[:12], running_commands=["auth"])
-    assert ahead.relation == "ahead"
-    assert "git pull" in (ahead.note() or "")
-    assert "uv tool install" not in (ahead.note() or "")
+
+    assert status.relation == "ahead"
+    note = status.note() or ""
+    assert "git pull" in note
+    assert "uv tool install" not in note
 
 
 def test_diverged_history_is_reported_in_the_block_but_has_no_note_of_its_own(

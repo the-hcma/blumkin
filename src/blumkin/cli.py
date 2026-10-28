@@ -1340,7 +1340,10 @@ def _xdg_base(var: str, default: Path) -> Path:
     callback=_print_version,
     expose_value=False,
     is_eager=True,
-    help="Show the version, commit and binary path (and a note if behind the checkout), then exit.",
+    help=(
+        "Show the version, commit and binary path (and a note if a nearby checkout has "
+        "commands it lacks), then exit."
+    ),
 )
 @click.pass_context
 def main(

@@ -70,7 +70,7 @@ With `provider = "google"` in config, supported verbs are calendar (`today` / `v
 
 ## When a command is missing
 
-If a command or option this skill names does not exist, the installed blumkin may be older than the repository: `blumkin --version` prints a `note:` line when it is behind a checkout, and `blumkin doctor --json` has a `repository` block with `missing_commands`. Run `blumkin upgrade` (it prints the command for how blumkin was installed) and retry; do not work around a missing command.
+If a command or option this skill names does not exist, the installed blumkin may be older than the repository: `blumkin --version` prints a `note:` line when a checkout nearby has commands this build lacks, and `blumkin doctor --json` has a `repository` block with `missing_commands`. Run `blumkin upgrade` (it prints the command for how blumkin was installed) and retry. If the command is still missing it may be unreleased: tell the user to install the checkout (`uv tool install -e <path>`) and do not work around it.
 
 ## Browser-assisted tasks
 
