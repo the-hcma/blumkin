@@ -21,7 +21,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -186,10 +186,10 @@ class PlaywrightDriver:
         self,
         *,
         browser: Any,
+        existing_frames: Any = None,
         page: Any,
         playwright: Any,
         timeout_s: float,
-        existing_frames: Any = None,
     ) -> None:
         self._browser = browser
         self._closed = False
@@ -648,7 +648,7 @@ class PlaywrightDriver:
             known = {str(frame.url) for frame in self._page.frames}
             try:
                 frames.extend(self._existing_frames.frames(known))
-            except OSError, ValueError, BrowserActionError:
+            except Exception:  # noqa: BLE001 - a best-effort source must not hide Playwright's frames
                 pass
         return frames
 
@@ -948,26 +948,36 @@ def _driver_for(
 
 def _existing_frames_for(endpoint: str, page: Any, timeout_s: float) -> Any:
     """The source of frames Playwright cannot see on `page`, read over their own sockets."""
-    from blumkin.browser.cdpws import CdpSocket, ExistingFrames
+    from blumkin.browser.cdpws import CdpSocket, ExistingFrames, RawFrameError
 
-    main_id: list[str] = []
+    sessions: list[Any] = []
 
-    def main_frame_id() -> str:
-        if not main_id:
-            session = page.context.new_cdp_session(page)
-            try:
-                tree = session.send("Page.getFrameTree")
-                main_id.append(str(tree["frameTree"]["frame"]["id"]))
-            finally:
-                with contextlib.suppress(_playwright_error()):
-                    session.detach()
-        return main_id[0]
+    def frame_ids(tree: Mapping[str, Any]) -> set[str]:
+        ids = {str(tree["frame"]["id"])}
+        for child in tree.get("childFrames", []):
+            ids |= frame_ids(child)
+        return ids
+
+    def page_frame_ids() -> set[str]:
+        """The ids of the frames Playwright's own connection can name on the page."""
+        try:
+            if not sessions:
+                sessions.append(page.context.new_cdp_session(page))
+            return frame_ids(sessions[0].send("Page.getFrameTree")["frameTree"])
+        except (_playwright_error(), KeyError, TypeError) as exc:
+            raise RawFrameError(f"Expected the page's frame tree, got {exc}") from exc
+
+    def detach() -> None:
+        for session in sessions:
+            with contextlib.suppress(_playwright_error()):
+                session.detach()
 
     return ExistingFrames(
         endpoint_port=urlsplit(endpoint).port or 0,
         fetch_targets=lambda: _fetch_targets(endpoint, timeout_s),
-        main_frame_id=main_frame_id,
+        on_close=detach,
         open_socket=lambda ws_url: CdpSocket.connect(ws_url, timeout_s=timeout_s),
+        page_frame_ids=page_frame_ids,
     )
 
 

@@ -84,19 +84,23 @@ class _Server:
 
     @staticmethod
     def _read_frame(conn: socket.socket) -> dict[str, Any] | None:
-        header = _recv(conn, 2)
-        if header is None:
-            return None
-        length = header[1] & 0x7F
-        if length == 126:
-            length = struct.unpack(">H", _recv(conn, 2) or b"")[0]
-        elif length == 127:
-            length = struct.unpack(">Q", _recv(conn, 8) or b"")[0]
-        mask = _recv(conn, 4) or b""
-        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(_recv(conn, length) or b""))
-        if header[0] & 0x0F == 8:
-            return None
-        return json.loads(payload)
+        while True:
+            header = _recv(conn, 2)
+            if header is None:
+                return None
+            length = header[1] & 0x7F
+            if length == 126:
+                length = struct.unpack(">H", _recv(conn, 2) or b"")[0]
+            elif length == 127:
+                length = struct.unpack(">Q", _recv(conn, 8) or b"")[0]
+            mask = _recv(conn, 4) or b""
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(_recv(conn, length) or b""))
+            opcode = header[0] & 0x0F
+            if opcode == 8:
+                return None
+            if opcode in (9, 10):
+                continue
+            return json.loads(payload)
 
 
 def _recv(conn: socket.socket, count: int) -> bytes | None:
