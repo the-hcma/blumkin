@@ -415,7 +415,9 @@ async def drive_upload(
                 # does not stall other tool calls.
                 created = await asyncio.to_thread(_send_resumable, request)
             else:
-                created = execute(request)
+                # A create is not idempotent and has no preallocated id: a replay after a lost
+                # answer would leave a second copy under the same name.
+                created = execute(request, num_retries=0)
         except HttpError as exc:
             raise _translate(exc, item_id=parent) from exc
         try:

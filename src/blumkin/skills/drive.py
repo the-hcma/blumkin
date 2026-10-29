@@ -197,11 +197,12 @@ def resolve_upload_source(
     link's name) and must be a plain file name; the type is detected from it unless given.
     Close the result when done.
     """
-    text = file.strip()
-    if not text:
+    # Whitespace is part of a POSIX file name: only an empty argument is refused, never trimmed.
+    if not file.strip():
         raise DriveUploadError("--file must name a local file")
-    given = Path(text).expanduser() if text.startswith("~/") else Path(text)
+    given = Path(file).expanduser() if file.startswith("~/") else Path(file)
     resolved = given.resolve()
+    supplied = Path(os.path.abspath(given))
     flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(resolved, flags)
@@ -221,7 +222,7 @@ def resolve_upload_source(
                 f"{file!r} has {info.st_nlink} hard links: refusing to upload it "
                 "(a link can be a secret under another name); copy it first"
             )
-        _refuse_secrets(resolved, info, config_dir, denied)
+        _refuse_secrets(resolved, supplied, info, config_dir, denied)
         if info.st_size > UPLOAD_MAX_BYTES:
             raise DriveUploadError(
                 f"expected a file of at most {UPLOAD_MAX_BYTES} bytes, got {info.st_size}"
@@ -436,25 +437,44 @@ def split_path(path: str) -> list[str]:
 
 
 def _refuse_secrets(
-    resolved: Path, info: os.stat_result, config_dir: Path, denied: Sequence[Path]
+    resolved: Path,
+    supplied: Path,
+    info: os.stat_result,
+    config_dir: Path,
+    denied: Sequence[Path],
 ) -> None:
-    """Refuse a file that is, or sits in, a place that holds credentials."""
-    if path_is_inside(resolved, config_dir):
-        raise DriveUploadError(
-            f"{resolved.name!r} is inside blumkin's config directory (tokens and auth "
-            "records): refusing to upload it"
-        )
-    secret = f"{resolved.name!r} is a secret: refusing to upload it"
-    if resolved.name == ".env" or resolved.name.startswith(".env."):
-        raise DriveUploadError(secret + " (an .env file)")
+    """Refuse a file that is, or sits in, a place that holds credentials.
+
+    The path as given (a link's own place and name) is judged as well as the file it leads to,
+    so a link named `.env`, or one placed inside a credentials folder, does not get through.
+    """
     try:
         home = Path.home()
     except OSError, RuntimeError:  # no home directory known: no credential folders to find
         home = None
+    for candidate in dict.fromkeys((resolved, supplied)):
+        if path_is_inside(candidate, config_dir):
+            raise DriveUploadError(
+                f"{candidate.name!r} is inside blumkin's config directory (tokens and auth "
+                "records): refusing to upload it"
+            )
+        secret = f"{candidate.name!r} is a secret: refusing to upload it"
+        if candidate.name == ".env" or candidate.name.startswith(".env."):
+            raise DriveUploadError(secret + " (an .env file)")
+        if home is not None:
+            for relative in _SECRET_HOME_FOLDERS:
+                if (home / relative).is_dir() and path_is_inside(candidate, home / relative):
+                    raise DriveUploadError(secret + f" (~/{relative})")
+        for entry in denied:
+            try:
+                if path_is_inside(candidate, entry):
+                    raise DriveUploadError(
+                        secret + " (a credentials file blumkin is configured to use)"
+                    )
+            except OSError:
+                continue
+    secret = f"{resolved.name!r} is a secret: refusing to upload it"
     if home is not None:
-        for relative in _SECRET_HOME_FOLDERS:
-            if (home / relative).is_dir() and path_is_inside(resolved, home / relative):
-                raise DriveUploadError(secret + f" (~/{relative})")
         for relative in _SECRET_HOME_FILES:
             try:
                 if os.path.samestat(info, (home / relative).stat()):
@@ -463,7 +483,7 @@ def _refuse_secrets(
                 continue
     for entry in denied:
         try:
-            if os.path.samestat(info, entry.stat()) or path_is_inside(resolved, entry):
+            if os.path.samestat(info, entry.stat()):
                 raise DriveUploadError(
                     secret + " (a credentials file blumkin is configured to use)"
                 )

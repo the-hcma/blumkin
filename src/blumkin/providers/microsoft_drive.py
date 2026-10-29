@@ -305,7 +305,11 @@ async def drive_upload(
     """Upload a local file as a new item; never replaces one of the same name."""
     validate_folder_selector(folder, folder_id)
     cfg = config or load_config()
-    source = resolve_upload_source(file, name=name, mime_type=mime_type, config_dir=cfg.config_dir)
+    # The Google client file is judged too: the setting is kept whatever the provider.
+    denied = [cfg.google_oauth_client_file] if cfg.google_oauth_client_file else []
+    source = resolve_upload_source(
+        file, name=name, mime_type=mime_type, config_dir=cfg.config_dir, denied=denied
+    )
     with source:
         _check_onedrive_name(source.name)
         client = create_graph_client(cfg)
@@ -324,9 +328,10 @@ async def drive_upload(
                 data = source.handle.read()
                 source.ensure_unchanged()
                 item = _to_item(await _put_small(client, data, source.mime_type, url, params))
+                _ensure_unchanged_after(source, item)
             else:
                 url = _SESSION_ROOT_URL if parent is None else _SESSION_PARENT_URL
-                item = await _put_in_session(client, source, url, params)
+                item = await _put_in_session(client, source, url, params, cfg.graph_timeout_seconds)
         except ODataError as exc:
             if _status(exc) == 409:
                 raise _exists(source.name) from exc
@@ -507,18 +512,18 @@ def _retry_delay(response: httpx.Response, attempt: int) -> float:
     return min(max(wait, 0.0), 60.0) if math.isfinite(wait) else 2.0**attempt
 
 
-def _session_client() -> httpx.Client:
+def _session_client(timeout: float = 60.0) -> httpx.Client:
     """The HTTP client for an upload session's pre-authorized URL (no token is ever sent).
 
     It honours the proxy and certificate environment, like the Graph client does.
     """
-    return httpx.Client(timeout=httpx.Timeout(60.0), follow_redirects=False)
+    return httpx.Client(timeout=httpx.Timeout(timeout), follow_redirects=False)
 
 
-def _upload_chunks(upload_url: str, source: UploadSource) -> dict[str, Any]:
+def _upload_chunks(upload_url: str, source: UploadSource, timeout: float = 60.0) -> dict[str, Any]:
     """Send the file to an upload session in aligned chunks; cancel the session on any failure."""
     _check_session_url(upload_url)
-    with _session_client() as http:
+    with _session_client(timeout) as http:
         try:
             source.handle.seek(0)
             offset = 0
@@ -661,7 +666,7 @@ async def _patch_item(client: Any, item_id: str, patch: DriveItem) -> DriveItem:
 
 
 async def _put_in_session(
-    client: Any, source: UploadSource, url: str, params: dict[str, str]
+    client: Any, source: UploadSource, url: str, params: dict[str, str], timeout: float
 ) -> dict[str, Any]:
     """Create an upload session (failing on a name clash) and send the file through it."""
     info = RequestInformation(Method.POST, url, params)
@@ -672,7 +677,7 @@ async def _put_in_session(
     if not upload_url:
         raise DriveUploadError("expected an upload session from the service, got none")
     # Blocking HTTP and retry waits: off the event loop, so a large upload does not stall it.
-    return await asyncio.to_thread(_upload_chunks, upload_url, source)
+    return await asyncio.to_thread(_upload_chunks, upload_url, source, timeout)
 
 
 async def _put_small(
