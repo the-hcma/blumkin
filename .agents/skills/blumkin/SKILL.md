@@ -68,6 +68,10 @@ With `provider = "google"` in config, supported verbs are calendar (`today` / `v
 9. Chat write + meeting transcription need `Chat.ReadWrite` / `OnlineMeetings.ReadWrite` consented (re-login after Identity grant).
 10. Teams chat files live in SharePoint/OneDrive, so `blumkin chat attachments download` needs a delegated `Files.Read` scope, gated behind `files_scopes` (off by default). Without it, listing still works and download exits `4` / `missing_scope` with the share URL — hand that URL to the user to open in Teams/browser (or save into a local drop folder) instead of retrying. Do **not** spin up a second Graph client in the agent session to paper over that. Listing must not `$expand=attachments` (Graph 400).
 
+## When a command is missing
+
+If a command or option this skill names does not exist, the installed blumkin may be older than the repository: `blumkin --version` prints a `note:` line when a checkout nearby has commands this build lacks, and `blumkin doctor --json` has a `repository` block with `missing_commands`. Ask the user before upgrading: `blumkin upgrade` changes the installation (for a pipx or uv install it runs the package manager), so get their approval first, then retry. For an editable install, `blumkin upgrade` only lists the git pull and reinstall steps; `blumkin upgrade --yes` runs them. If the command is still missing it may be unreleased: tell the user to install the checkout (`uv tool install -e <path>`, or `pipx install --editable <path> --force` when blumkin was installed with pipx) and do not work around it.
+
 ## Browser-assisted tasks
 
 For work that has no API, such as filing an expense report or filling in a time sheet, use the skills in `.agents/skills/expense-report` and `.agents/skills/time-sheet`. To capture a Teams meeting transcript, use `.agents/skills/teams-transcript`.

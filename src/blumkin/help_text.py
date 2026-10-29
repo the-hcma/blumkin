@@ -1309,6 +1309,15 @@ fix (usually: run `blumkin auth login`).
 is behind the checkout's `pyproject.toml` - a `git pull` without a reinstall;
 `blumkin upgrade` prints the fix.
 
+`repository` (JSON) compares the running build with a blumkin git checkout, found through
+`BLUMKIN_REPOSITORY` or by walking up from the working directory (offline; nothing is
+fetched): the relation of the build's commit to the checkout's HEAD (same, behind, ahead,
+diverged or unknown) with how many commits behind, and the top-level commands the checkout
+has that this CLI lacks. Only missing commands raise a warning (a release is always some
+commits behind `main`); the fix is a newer release (`blumkin upgrade`) or installing the
+checkout (`uv tool install -e PATH`). It is `null` when there is no checkout around, or when
+the CLI runs from that checkout itself.
+
 `capabilities` (JSON) / `available:` (text) reports which service families
 (mail, calendar, chat, tasks, docs, drive, people, meeting) this profile's
 granted scopes actually unlock right now - `tasks` is always available (local
