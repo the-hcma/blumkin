@@ -1543,3 +1543,59 @@ def test_a_click_that_starts_no_download_is_a_clear_browser_action_error() -> No
             timeout_s=1.0,
         )
     assert Info is ControlInfo
+
+
+def _strict_outcome(method: str, *, navigation: bool) -> tuple[str, ...]:
+    pw, driver = _driver()
+    driver.block_form_submission(background_writes=True)
+    handler = pw.browser.contexts[0].routes[0][1]
+    route = _Route(_Request(method, navigation=navigation))
+    handler(route)
+    return route.outcome
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+@pytest.mark.parametrize("navigation", [True, False])
+def test_strict_mode_swallows_every_write_navigation_or_background(
+    method: str, navigation: bool
+) -> None:
+    assert _strict_outcome(method, navigation=navigation) == ("fulfill", "204")
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD", "OPTIONS"])
+@pytest.mark.parametrize("navigation", [True, False])
+def test_strict_mode_still_lets_reads_through(method: str, navigation: bool) -> None:
+    assert _strict_outcome(method, navigation=navigation) == ("continue",)
+
+
+def test_strict_mode_is_installed_once_and_released_on_detach() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission(background_writes=True)
+    driver.block_form_submission(background_writes=True)
+    context = pw.browser.contexts[0]
+    assert len(context.routes) == 1
+    driver.close()
+    assert context.unrouted == [context.routes[0]]
+
+
+def test_asking_for_strict_mode_after_the_lenient_net_replaces_it() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    driver.block_form_submission(background_writes=True)
+    context = pw.browser.contexts[0]
+    assert len(context.routes) == 2 and len(context.unrouted) == 1
+    live = [route for route in context.routes if route not in context.unrouted]
+    assert len(live) == 1
+    route = _Route(_Request("POST", navigation=False))
+    live[0][1](route)
+    assert route.outcome == ("fulfill", "204")
+
+
+def test_the_lenient_net_after_strict_mode_does_not_weaken_it() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission(background_writes=True)
+    driver.block_form_submission()
+    assert len(pw.browser.contexts[0].routes) == 1
+    route = _Route(_Request("POST", navigation=False))
+    pw.browser.contexts[0].routes[0][1](route)
+    assert route.outcome == ("fulfill", "204")

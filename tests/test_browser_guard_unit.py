@@ -64,8 +64,9 @@ class _Raw:
         self.calls.append(("aria",))
         return '- button "Go"'
 
-    def block_form_submission(self) -> None:
+    def block_form_submission(self, *, background_writes: bool = False) -> None:
         self.net_installed += 1
+        self.background_writes = background_writes
 
     def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None:
         vet(self.controls.get(name, _PLAIN))
@@ -463,7 +464,7 @@ def test_a_deny_word_with_punctuation_matches_the_same_way_a_name_is_read(
 
 def test_attach_guarded_closes_the_raw_driver_when_the_safety_net_cannot_be_installed() -> None:
     class _NetFails(_Raw):
-        def block_form_submission(self) -> None:
+        def block_form_submission(self, *, background_writes: bool = False) -> None:
             raise BrowserActionError("Expected the safety net, got an error")
 
     raw = _NetFails()
@@ -564,3 +565,12 @@ def test_download_refuses_a_control_that_submits(tmp_path: Path) -> None:
     raw.controls["Download"] = ControlInfo(tag="button", input_type="submit", in_form=True)
     with pytest.raises(SubmitBlockedError):
         driver.download("Download", save_to=tmp_path)
+
+
+def test_the_guard_asks_for_the_lenient_net_unless_the_policy_is_strict() -> None:
+    raw = _Raw()
+    GuardedDriver(raw, GuardPolicy())
+    assert raw.background_writes is False
+    strict = _Raw()
+    GuardedDriver(strict, GuardPolicy(block_background_writes=True))
+    assert strict.background_writes is True
