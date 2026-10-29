@@ -336,8 +336,13 @@ def test_the_task_guide_explains_the_flat_keys_error_that_1_13_0_prints_for_brow
     assert "cannot mix top-level flat keys (browser)" in guide
     assert "1.13.0 is such a build" in guide
     assert "`blumkin --version`" in guide and "`blumkin upgrade`" in guide
+    # `upgrade` cannot help until a newer release exists; say what works before that.
+    assert "until a release newer than 1.13.0 is published" in guide
+    assert "dev launcher" in guide
     # The same applies to the loop and cron tables.
     assert "`[loop]` and `[cron]`" in guide
     loop_guide = " ".join(_text("docs/loop.md").split())
     assert "cannot mix top-level flat keys (loop)" in loop_guide
     assert "`blumkin upgrade`" in loop_guide
+    assert "until a release newer than 1.13.0 is published" in loop_guide
+    assert "dev launcher" in loop_guide
