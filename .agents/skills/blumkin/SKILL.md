@@ -70,7 +70,7 @@ With `provider = "google"` in config, supported verbs are calendar (`today` / `v
 
 ## When a command is missing
 
-If a command or option this skill names does not exist, the installed blumkin may be older than the repository: `blumkin --version` prints a `note:` line when a checkout nearby has commands this build lacks, and `blumkin doctor --json` has a `repository` block with `missing_commands`. Ask the user before upgrading: `blumkin upgrade` changes the installation (for a pipx or uv install it runs the package manager), so get their approval first, then retry. If the command is still missing it may be unreleased: tell the user to install the checkout (`uv tool install -e <path>`, or `pipx install --editable <path> --force` when blumkin was installed with pipx) and do not work around it.
+If a command or option this skill names does not exist, the installed blumkin may be older than the repository: `blumkin --version` prints a `note:` line when a checkout nearby has commands this build lacks, and `blumkin doctor --json` has a `repository` block with `missing_commands`. Ask the user before upgrading: `blumkin upgrade` changes the installation (for a pipx or uv install it runs the package manager), so get their approval first, then retry. For an editable install, `blumkin upgrade` only lists the git pull and reinstall steps; `blumkin upgrade --yes` runs them. If the command is still missing it may be unreleased: tell the user to install the checkout (`uv tool install -e <path>`, or `pipx install --editable <path> --force` when blumkin was installed with pipx) and do not work around it.
 
 ## Browser-assisted tasks
 

@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import time
 import tomllib
 from collections.abc import Iterable, Mapping
@@ -97,7 +98,9 @@ class RepositoryStatus:
             return (
                 f"{lead} - the build is newer than the checkout; update the checkout (`git pull`)"
             )
-        path = shlex.quote(str(self.path))
+        # The quoting depends on the user's shell, which is not knowable here: POSIX quoting
+        # breaks cmd.exe, so on Windows the path (already named above) is left for them to quote.
+        path = "PATH" if _is_windows() else shlex.quote(str(self.path))
         return (
             f"{lead} - a newer release may add them (`blumkin upgrade`), or install the "
             f"checkout: `uv tool install -e {path}` "
@@ -283,6 +286,10 @@ def _is_repository(path: Path) -> bool:
     except OSError, ValueError:
         return False
     return project.get("project", {}).get("name") == PACKAGE_NAME and (path / ".git").exists()
+
+
+def _is_windows() -> bool:
+    return sys.platform == "win32"
 
 
 def _running_source_tree() -> Path | None:

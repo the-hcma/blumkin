@@ -571,3 +571,33 @@ def test_the_agent_guidance_says_upgrade_changes_the_install_and_needs_approval(
         line = next(item for item in text.splitlines() if "older than the repository" in item)
         assert "prints the" not in line, relative
         assert "approval" in line, relative
+
+
+def test_on_windows_the_note_does_not_apply_posix_quoting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _make_repo(tmp_path / "My Projects" / "r")
+    old = _git(repo, "rev-parse", "HEAD")[:12]
+    _commit(repo, "second")
+    monkeypatch.setattr("blumkin.repository_status._is_windows", lambda: True)
+    note = repository_status(repo, build_commit=old, running_commands=["auth"]).note() or ""
+    assert "'" not in note
+    assert f"at {repo} has" in note
+    assert "uv tool install -e PATH" in note
+
+
+def test_the_agent_skill_says_editable_installs_need_upgrade_yes() -> None:
+    text = (Path(__file__).parent.parent / ".agents/skills/blumkin/SKILL.md").read_text("utf-8")
+    line = next(item for item in text.splitlines() if "older than the repository" in item)
+    assert "upgrade --yes" in line and "editable" in line
+
+
+def test_the_agent_docs_make_only_the_warning_conditional_on_missing_commands() -> None:
+    text = (Path(__file__).parent.parent / "docs" / "agent-integration.md").read_text("utf-8")
+    line = next(item for item in text.splitlines() if item.startswith("- **A command is missing"))
+    assert "plus a warning when the checkout has commands" in line
+
+
+def test_the_readme_points_at_doctor_json_for_the_repository_block() -> None:
+    text = (Path(__file__).parent.parent / "README.md").read_text("utf-8")
+    assert "`blumkin doctor --json` reports the full comparison under `repository`" in text
