@@ -106,16 +106,27 @@ class GuardedDriver:
             raise self._refuse(action, "the control is not declared by the task")
 
     def click(
-        self, name: str, role: str | None = None, wait_s: float = DEFAULT_CLICK_WAIT_S
+        self,
+        name: str,
+        role: str | None = None,
+        wait_s: float = DEFAULT_CLICK_WAIT_S,
+        *,
+        nth: int | None = None,
     ) -> str:
         """Click a declared control and return the role it was found in.
 
         With no `role`, the control is looked up by name across the clickable roles and must
         be in exactly one of them. The policy is checked before the page is touched, and the
         control is waited for up to `wait_s` seconds, so a wrong role fails in seconds.
+
+        A name the page legitimately repeats is refused unless `nth` (1-based, DOM order) says
+        which match is meant. That narrows the lookup only: the name must still be declared,
+        a finalizing name is still refused, and the chosen element is vetted before the click.
         """
-        chosen, action = self._locate(name, role, wait_s)
-        self._raw.checked_click(name, chosen, lambda info: self._vet_control(action, info))
+        if nth is not None and (isinstance(nth, bool) or not isinstance(nth, int) or nth < 1):
+            raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
+        chosen, action = self._locate(name, role, wait_s, nth)
+        self._raw.checked_click(name, chosen, lambda info: self._vet_control(action, info), nth=nth)
         return chosen
 
     def close(self) -> None:
@@ -201,12 +212,14 @@ class GuardedDriver:
     def url(self) -> str:
         return self._raw.url
 
-    def _locate(self, name: str, role: str | None, wait_s: float) -> tuple[str, str]:
+    def _locate(
+        self, name: str, role: str | None, wait_s: float, nth: int | None = None
+    ) -> tuple[str, str]:
         """Check the policy, then find `name` on the page: (the role it is in, the action)."""
         action = f"click {name!r}"
         self.check_click(name, role)
         roles = (role,) if role is not None else tuple(sorted(_CLICKABLE_ROLES))
-        found = self._raw.matching_roles(name, roles, wait_s)
+        found = self._raw.matching_roles(name, roles, wait_s, nth=nth)
         label = role if role is not None else "control"
         if not found:
             tried = "" if role is not None else f" in any of {', '.join(roles)}"

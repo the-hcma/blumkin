@@ -249,6 +249,7 @@ Examples:
   blumkin browser click expense-report "Add line"
   blumkin browser click expense-report "Add line" --role button --json
   blumkin browser click meeting-notes Transcript --wait 15
+  blumkin browser click meeting-notes "More actions" --role button --nth 3
 
 Clicks one control the task declared in `[browser.tasks.TASK] allowed_controls` in
 config.toml (exact accessible names). Without `--role` the control is found by name
@@ -256,6 +257,9 @@ across the clickable roles and the role it was found in is reported; a name that
 in more than one role is refused until you pass `--role`. The control is waited for up to
 `--wait` seconds (default 5 by name, 30 with `--role`, at most 300), so a missing control by name
 fails in seconds.
+When the page legitimately repeats a name (a "More actions" button on every row), more than one
+match is refused until `--nth N` (1-based, in page order) says which one is meant; it narrows the
+lookup only, and the policy and the vetting of that element are unchanged.
 Refused, without touching the page: an
 undeclared control, a submit control, and any control named like a finalizing action
 (submit, send, file, confirm, pay, ...), plus a control with a formaction, a link that runs

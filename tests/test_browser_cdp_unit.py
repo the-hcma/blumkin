@@ -69,6 +69,10 @@ class _Locator:
             raise PlaywrightTimeout("no such element")
         return _Handle(self._page, self._page.element_info.get(self._label, _PLAIN_ELEMENT))
 
+    def nth(self, index: int) -> _Locator:
+        self._page.calls.append(("nth", self._role, self._label, index))
+        return self
+
     def press(self, key: str, *, timeout: float) -> None:
         self._page.calls.append(("press", self._label, key, timeout))
 
@@ -712,6 +716,31 @@ def test_checked_click_vets_the_element_it_then_clicks() -> None:
     assert ("handle-click", 30000.0, True) in pw.page.calls
 
 
+def test_checked_click_with_nth_clicks_that_match_in_dom_order() -> None:
+    """`--nth 3` is the third match, 1-based; Playwright's `nth` is 0-based (#573)."""
+    pw, driver = _driver()
+    driver.checked_click("More actions", "button", lambda info: None, nth=3)
+    assert ("nth", "button", "More actions", 2) in pw.page.calls
+    assert ("handle-click", 30000.0, True) in pw.page.calls
+
+
+def test_checked_click_with_nth_still_vets_that_very_element() -> None:
+    pw, driver = _driver()
+
+    def refuse(info: ControlInfo) -> None:
+        raise BrowserActionError("Expected a safe control, got a refusal")
+
+    with pytest.raises(BrowserActionError):
+        driver.checked_click("More actions", "button", refuse, nth=2)
+    assert not any(call[0] == "handle-click" for call in pw.page.calls)
+
+
+def test_checked_click_without_nth_never_narrows_the_match() -> None:
+    pw, driver = _driver()
+    driver.checked_click("Go", "button", lambda info: None)
+    assert not any(call[0] == "nth" for call in pw.page.calls)
+
+
 def test_checked_click_does_not_click_when_the_vet_refuses() -> None:
     pw, driver = _driver()
 
@@ -1249,6 +1278,24 @@ def test_two_controls_with_the_same_name_in_one_role_are_reported_as_ambiguous()
     _, driver = _driver_with_counts({("button", "Add"): [2]})
     with pytest.raises(BrowserActionError, match="2 buttons named 'Add'"):
         driver.matching_roles("Add", ("button",), 0.0)
+
+
+def test_nth_picks_one_of_many_identical_controls() -> None:
+    """The recommendations sidebar repeats 'More actions' 21 times (#573)."""
+    _, driver = _driver_with_counts({("button", "More actions"): [21]})
+    assert driver.matching_roles("More actions", ("button",), 0.0, nth=3) == ("button",)
+    assert driver.matching_roles("More actions", ("button",), 0.0, nth=21) == ("button",)
+
+
+def test_nth_beyond_the_matches_is_refused_with_the_real_count() -> None:
+    _, driver = _driver_with_counts({("button", "More actions"): [2]})
+    with pytest.raises(BrowserActionError, match="at least 3 buttons named 'More actions', got 2"):
+        driver.matching_roles("More actions", ("button",), 0.0, nth=3)
+
+
+def test_nth_on_a_missing_control_reports_nothing_found() -> None:
+    _, driver = _driver_with_counts({})
+    assert driver.matching_roles("Nope", ("button",), 0.0, nth=2) == ()
 
 
 class _FlakyFrame(_PlainFrame):

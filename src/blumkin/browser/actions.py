@@ -84,19 +84,31 @@ def click_task(
     name: str,
     role: str | None = None,
     wait_s: float | None = None,
+    nth: int | None = None,
 ) -> dict[str, Any]:
     """Click a control the task declared (never a submit control or a finalizing name).
 
     Without `role` the control is found by name across the clickable roles and the role it
     was found in is reported. `wait_s` is how long to wait for it to appear: a few seconds
-    when finding it by name, the full action timeout when the role is given.
+    when finding it by name, the full action timeout when the role is given. `nth` (1-based,
+    DOM order) picks one of several controls the page legitimately gives the same name; it
+    is reported back, and nothing else about the policy changes.
     """
     waited = wait_s if wait_s is not None else _default_wait(role)
     _require_declared_controls(config, task, name)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        found = driver.click(name, role, waited)
-        return {"action": "click", "name": name, "ok": True, "role": found, "task": task}
+        found = driver.click(name, role, waited, nth=nth)
+        payload: dict[str, Any] = {
+            "action": "click",
+            "name": name,
+            "ok": True,
+            "role": found,
+            "task": task,
+        }
+        if nth is not None:
+            payload["nth"] = nth
+        return payload
 
     return _with_driver(config, task, act, check_after=True)
 

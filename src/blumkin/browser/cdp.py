@@ -283,17 +283,26 @@ class PlaywrightDriver:
             with contextlib.suppress(_playwright_error()):
                 self._context.unroute("**/*", previous)
 
-    def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None:
+    def checked_click(
+        self,
+        name: str,
+        role: str,
+        vet: Callable[[ControlInfo], None],
+        nth: int | None = None,
+    ) -> None:
         """Resolve one element, let `vet` inspect that very element, then click it.
 
         Inspecting and clicking the same element handle leaves no window in which the page
-        could swap in a different element between the check and the click.
+        could swap in a different element between the check and the click. With `nth` (1-based,
+        DOM order) a name the page legitimately repeats is narrowed to that one match; without
+        it, more than one match is refused.
         """
         self._require_open()
         try:
-            handle = self._page.get_by_role(role, name=name, exact=True).element_handle(
-                timeout=self._timeout_ms
-            )
+            locator = self._page.get_by_role(role, name=name, exact=True)
+            if nth is not None:
+                locator = locator.nth(nth - 1)
+            handle = locator.element_handle(timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"find the {role} named {name!r}", exc) from exc
         try:
@@ -415,12 +424,16 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error(f"open {url!r}", exc) from exc
 
-    def matching_roles(self, name: str, roles: Sequence[str], wait_s: float) -> tuple[str, ...]:
+    def matching_roles(
+        self, name: str, roles: Sequence[str], wait_s: float, nth: int | None = None
+    ) -> tuple[str, ...]:
         """The roles in which a control named `name` exists, waiting up to `wait_s` for one.
 
         Polls the page's own accessibility tree (a count, not a click), so a wrong role or a
         missing control is reported after `wait_s`, not after the 30 second action timeout.
-        Two controls with that name in one role are refused as ambiguous.
+        Two controls with that name in one role are refused as ambiguous, unless `nth` (1-based,
+        DOM order) says which one is meant: then the role counts as found when it has at least
+        that many, and fewer is refused with the real count.
         """
         self._require_open()
         deadline = time.monotonic() + clamp_wait(wait_s)
@@ -431,6 +444,14 @@ class PlaywrightDriver:
                     count = int(self._page.get_by_role(role, name=name, exact=True).count())
                 except _playwright_error() as exc:
                     raise self._action_error(f"look for a control named {name!r}", exc) from exc
+                if nth is not None:
+                    if 0 < count < nth:
+                        raise BrowserActionError(
+                            f"Expected at least {nth} {role}s named {name!r}, got {count}"
+                        )
+                    if count >= nth:
+                        found.append(role)
+                    continue
                 if count > 1:
                     raise BrowserActionError(
                         f"Expected one {role} named {name!r}, got {count} {role}s named {name!r}"
@@ -754,7 +775,13 @@ class RawBrowserDriver(Protocol):
 
     def block_form_submission(self, *, background_writes: bool = False) -> None: ...
 
-    def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None: ...
+    def checked_click(
+        self,
+        name: str,
+        role: str,
+        vet: Callable[[ControlInfo], None],
+        nth: int | None = None,
+    ) -> None: ...
 
     def checked_download(
         self,
@@ -787,7 +814,9 @@ class RawBrowserDriver(Protocol):
 
     def goto(self, url: str) -> None: ...
 
-    def matching_roles(self, name: str, roles: Sequence[str], wait_s: float) -> tuple[str, ...]: ...
+    def matching_roles(
+        self, name: str, roles: Sequence[str], wait_s: float, nth: int | None = None
+    ) -> tuple[str, ...]: ...
 
     def raw_press(self, label: str, key: str) -> None: ...
 

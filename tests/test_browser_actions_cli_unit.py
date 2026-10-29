@@ -60,14 +60,18 @@ class _Raw:
     def block_form_submission(self, *, background_writes: bool = False) -> None:
         self.net_installed += 1
 
-    def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None:
+    def checked_click(
+        self, name: str, role: str, vet: Callable[[ControlInfo], None], nth: int | None = None
+    ) -> None:
         default = ControlInfo(tag="button", input_type="button", in_form=False)
         vet(self.controls.get(name, default))
-        self.calls.append(("click", role, name))
+        self.calls.append(("click", role, name) if nth is None else ("click", role, name, nth))
         if self.lands_on is not None:
             self.url = self.lands_on
 
-    def matching_roles(self, name: str, roles: Any, wait_s: float) -> tuple[str, ...]:
+    def matching_roles(
+        self, name: str, roles: Any, wait_s: float, nth: int | None = None
+    ) -> tuple[str, ...]:
         self.probes.append((name, wait_s))
         present = self.roles_present.get(name, tuple(roles) if len(roles) == 1 else ("button",))
         return tuple(role for role in roles if role in present)
@@ -300,6 +304,32 @@ def test_click_of_a_declared_control_goes_through(raw: _Raw) -> None:
     result = _run("browser", "click", "expense-report", "Add line")
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert raw.calls == [("click", "button", "Add line")]
+
+
+def test_click_with_nth_clicks_that_match_and_reports_it(raw: _Raw) -> None:
+    result = _run("--json", "browser", "click", "expense-report", "Add line", "--nth", "3")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.calls == [("click", "button", "Add line", 3)]
+    assert _json(result)["nth"] == 3
+
+
+def test_click_without_nth_reports_no_nth(raw: _Raw) -> None:
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert "nth" not in _json(result)
+
+
+@pytest.mark.parametrize("bad", ["0", "-2", "x"])
+def test_click_rejects_an_nth_that_is_not_a_positive_whole_number(raw: _Raw, bad: str) -> None:
+    result = _run("browser", "click", "expense-report", "Add line", "--nth", bad)
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert raw.calls == []
+
+
+def test_click_with_nth_on_an_undeclared_control_is_still_refused(raw: _Raw) -> None:
+    result = _run("browser", "click", "expense-report", "Delete everything", "--nth", "2")
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert raw.calls == []
 
 
 def test_click_of_an_undeclared_control_is_refused_and_never_reaches_the_page(raw: _Raw) -> None:
