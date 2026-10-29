@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import stat
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -73,6 +74,7 @@ def test_mail_attachments_download_single_writes_file(tmp_path: Path) -> None:
         )
     assert dest.read_bytes() == b"PDFDATA"
     assert payload["saved"][0]["name"] == "report.pdf"
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600
     assert payload["saved"][0]["size"] == len(b"PDFDATA")
     assert payload["skipped"] == []
 

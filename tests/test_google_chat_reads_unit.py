@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import stat
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httplib2
 import pytest
@@ -327,3 +328,37 @@ def test_chat_last_contains_matches_a_formatted_text_only_message(tmp_path: Path
         )
     assert [item["id"] for item in payload["items"]] == ["spaces/AAA/messages/card"]
     assert "Admin access" in payload["items"][0]["body_text"]
+
+
+def test_chat_attachment_download_writes_a_private_file(tmp_path: Path) -> None:
+    """A downloaded chat file is written 0600, like drive files (#565)."""
+    listing = {
+        "attachments": [
+            {
+                "content_type": "text/plain",
+                "content_url": None,
+                "downloadable": True,
+                "id": "att-1",
+                "name": "notes.txt",
+                "skip_reason": None,
+            }
+        ],
+        "chat": "spaces/s",
+        "chat_id": "spaces/s",
+        "message_id": "spaces/s/messages/m",
+    }
+    out = tmp_path / "notes.txt"
+    with (
+        patch(
+            "blumkin.providers.google.chat.chat_attachments_list", AsyncMock(return_value=listing)
+        ),
+        patch("blumkin.providers.google.chat._chat_service", MagicMock()),
+        patch("blumkin.providers.google.chat._download_attachment", MagicMock(return_value=b"hi")),
+    ):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).chat_attachments_download(
+                attachment_id="att-1", chat_id="spaces/s", message_id="m", out=str(out)
+            )
+        )
+    assert out.read_bytes() == b"hi"
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600

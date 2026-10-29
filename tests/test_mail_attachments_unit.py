@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -140,6 +141,8 @@ def test_mail_attachments_download_content_bytes(tmp_path, monkeypatch) -> None:
     )
     assert out.read_bytes() == b"hello"
     assert payload["saved"][0]["saved_path"] == str(out.resolve())
+    # Attachments are at least as sensitive as drive files, which are written 0600 (#565).
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
 
 
 def test_mail_attachments_download_content_bytes_base64_str(tmp_path, monkeypatch) -> None:
