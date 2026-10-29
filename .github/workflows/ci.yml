@@ -50,6 +50,7 @@ jobs:
     name: Guard
     runs-on: ubuntu-latest
     outputs:
+      rust_changed: ${{ steps.rust-scope.outputs.rust_changed }}
       skip: ${{ steps.set-skip.outputs.skip }}
     steps:
       - id: pr-state
@@ -112,6 +113,39 @@ jobs:
             fi
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      # The macOS Rust job is slow and its runner scarce, so it runs only when the change
+      # touches something that can affect it (issue #570): a pull request's files, or the
+      # merge queue entry's own diff. The schedule, a manual run and a push with no pull
+      # request always run it, and a failure to read the file list fails safe to running it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - id: rust-scope
+        env:
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [[ -n "$PR_NUMBER" ]]; then
+            endpoint="repos/$REPOSITORY/pulls/$PR_NUMBER/files"
+            filter='.[].filename'
+          elif [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]]; then
+            endpoint="repos/$REPOSITORY/compare/$BASE_SHA...$HEAD_SHA"
+            filter='.files[].filename'
+          else
+            echo "rust_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! files="$(gh api "$endpoint" --paginate --jq "$filter")"; then
+            files=""
+          fi
+          rust_changed="$(printf '%s\n' "$files" | bash .github/ci/rust-changed)"
+          echo "rust_changed=$rust_changed" >> "$GITHUB_OUTPUT"
+          echo "Rust job needed: $rust_changed"
 
   # Required status checks on `main` (branch protection): Scaffold checks,
   # Python lint & format checks, Pytest (hermetic), Packaging smoke, Shellcheck.
@@ -204,12 +238,15 @@ jobs:
       - name: Shellcheck
         run: bash .github/ci/shellcheck
 
-  # Not (yet) a required check - rust-agent/ is new (issue #328); add it to
-  # branch protection once it has proven stable on a few PRs.
+  # A required check on `main`. It runs only when `.github/ci/rust-changed` says the change
+  # (a pull request, or a merge queue entry) can affect the Rust build, and always for the
+  # schedule and manual runs; a job skipped by this `if` counts as passing for branch
+  # protection, which a workflow-level `paths:` filter would not (the check would never
+  # report).
   rust-static:
     name: Rust lint & test (blumkin-agent)
     needs: guard
-    if: needs.guard.outputs.skip != 'true'
+    if: needs.guard.outputs.skip != 'true' && needs.guard.outputs.rust_changed == 'true'
     # macOS, not ubuntu-latest: rust-agent/ only ever ships on macOS (see
     # hatch_build.py), and its host target here (aarch64-apple-darwin) is
     # one of the two the release wheel actually cross-compiles.
