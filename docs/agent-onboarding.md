@@ -30,17 +30,18 @@ A bare `blumkin` on `PATH` may be a different checkout's launcher or an installe
 ## 2. Find out which state you are in
 
 ```bash
-scripts/dev/blumkin profiles list --json
+scripts/dev/blumkin profiles list --json </dev/null
 ```
 
-`profiles list` is the cold-start check. Which state applies depends on the result:
+`profiles list` is the cold-start check. Detach stdin as shown: in a terminal session with no config the launcher would otherwise stop at its guided-setup prompt instead of exiting 2. Which state applies depends on the result:
 
 | Result | State | Go to |
 | --- | --- | --- |
 | The launcher exits 2 with "no config.toml in `<dir>`" | A. No config at all | section 3 |
 | `{"count": 0, ...}` | B. Config exists, no profiles | section 4 |
 | `count` is 1 or more, a profile has `auth_present` all `false` | C. Profile configured, never signed in | section 5 |
-| `count` is 1 or more, `auth_present` has a `true` for the profile you need | D. Ready | section 6 |
+| `count` is 1 or more, `auth_present` has a `true` for the profile you need, and `auth status --json` (see section 5) reports `ok: true`, `token_cache: true` and an empty `missing_scopes` | D. Ready | section 6 |
+| `auth_present` has a `true`, but `auth status --json` reports `ok: false`, a missing token cache or auth record, or a non-empty `missing_scopes` (an incomplete login, for example a partial Google consent) | C. Sign in again | section 5 |
 
 The launcher's refusal in state A is deliberate: it never creates or overwrites anything unless the user says yes. `scripts/dev/blumkin doctor` shows the source tree, the config directory and what selected it (`BLUMKIN_CONFIG_DIR`, `XDG_CONFIG_HOME` or the default `~/.config/blumkin`), and warns about running `mcp serve` processes. `doctor` itself needs at least one profile, so use it from state C onward.
 
@@ -62,7 +63,7 @@ On a terminal, the launcher offers the guided `auth setup` and creates the direc
 Microsoft (a public client, no secret):
 
 ```bash
-scripts/dev/blumkin --profile work auth setup --yes --provider microsoft \
+scripts/dev/blumkin --profile work auth setup --yes --json --provider microsoft \
   --client-id <entra-application-client-id> \
   --tenant-id <tenant, e.g. contoso.onmicrosoft.com> \
   --account-type organizational
@@ -71,11 +72,11 @@ scripts/dev/blumkin --profile work auth setup --yes --provider microsoft \
 Google (the downloaded Desktop client JSON; the secret goes to the keychain, never to the command line):
 
 ```bash
-scripts/dev/blumkin --profile personal auth setup --yes --provider google \
+scripts/dev/blumkin --profile personal auth setup --yes --json --provider google \
   --from-file <path to the downloaded Desktop client JSON>
 ```
 
-Expected: `{"created_config": "<dir>/config.toml", "ok": true, "profile": "<name>", "provider": "<provider>"}` and exit 0. Setup creates `[profiles.<name>]` with `provider`, `client_id` and, for Microsoft, `account_type` and `tenant_id`. It does not set `default_tz`, `tags` or `default_profile`; add those by hand if the user wants them (see `README.md`, "Config"). If setup does not finish, it removes the directory and file it created.
+Expected: `{"created_config": "<dir>/config.toml", "ok": true, "profile": "<name>", "provider": "<provider>"}` and exit 0 (a Microsoft run may add `"vaulted": false`). Setup creates `[profiles.<name>]` with `provider`, `client_id` and, for Microsoft, `account_type` and `tenant_id`. It does not set `default_tz`, `tags` or `default_profile`; add those by hand if the user wants them (see `README.md`, "Config"). If setup does not finish, it removes the directory and file it created.
 
 Then continue with section 5.
 
@@ -98,7 +99,7 @@ With more than one profile and no `default_profile`, a command without `--profil
 
 Optional capabilities need explicit config and a fresh sign-in, so `capabilities` reports them as `false` until then:
 
-- Microsoft `drive`, `docs` and `people` need `docs_scopes` and `wo1162425_scopes` set in the profile (see `README.md`), followed by `auth login` again.
+- Microsoft `drive` and `docs` need `docs_scopes = true` in the profile; `people` and `meeting` need `wo1162425_scopes = true` (work or school accounts only; see `README.md`). After changing either setting, run `auth login` again.
 - Google `people` and `chat` also need those APIs enabled in the user's Cloud project. `capabilities` can say `true` for a service whose API is disabled; the call then fails with `missing_scope` and a 403 "has not been used in project" message (tracked in #565).
 
 ## 5. State C: sign in
@@ -116,7 +117,7 @@ scripts/dev/blumkin --profile <name> auth status --json
 scripts/dev/blumkin doctor
 ```
 
-`auth status` takes `--profile` before the subcommand, not after it. `doctor` should end with the list of available services for the profile. A stale access token is renewed without a browser by `scripts/dev/blumkin --profile <name> auth refresh`, which is safe for an agent to run.
+In the `auth status --json` result, a complete login has `ok: true`, `token_cache: true` and an empty `missing_scopes`; anything else means sign in again. `auth status` takes `--profile` before the subcommand, not after it. `doctor` prints an `available:` line with the services for the profile, followed by any warnings and the `skills:` list. A stale access token is renewed without a browser by `scripts/dev/blumkin --profile <name> auth refresh`, which is safe for an agent to run.
 
 ## 6. State D: verify with reads
 
@@ -181,7 +182,8 @@ Every MCP call takes a `profile` argument when more than one profile is configur
 | Exit 2, `multiple profiles configured; pass --profile ...` | Two or more profiles and no `default_profile` | Pass `--profile`, or ask the user which account |
 | Exit 127, "uv is required" | `uv` is not on `PATH` | Ask the user to install `uv` |
 | `--version` has no `+dev` marker | An installed release answered | Run `scripts/dev/blumkin` by its explicit path |
-| The launcher refuses `completion`, `agent status` or `mcp install` | The launcher's config check is stricter than the CLI (#565) | Finish setup first, or run `BLUMKIN_DEV=1 .venv/bin/blumkin <args>` for that one command |
+| The launcher refuses `completion` or `agent status` | The launcher's config check is stricter than the CLI (#565) | Finish setup first, or run `BLUMKIN_DEV=1 .venv/bin/blumkin <args>` for that one command |
+| The launcher refuses `mcp install` | Same check (#565) | Finish sections 3 to 5 first. Do not run it through `.venv/bin/blumkin`: without `BLUMKIN_DEV_LAUNCHER` set to the launcher's absolute path it registers a bare `blumkin` instead of the checkout |
 | `missing_scope` with a 403 "has not been used in project" | The API is disabled in the Cloud project, not a scope problem | Ask the user to enable the API |
 | `usage_error` on `drive`, `docs` or `people` for a Microsoft profile | The optional scopes are off | Section 4 |
 | `too_soon` on `mail send-draft` | The send cooldown | Show the user the content and get their go-ahead before trying again |
