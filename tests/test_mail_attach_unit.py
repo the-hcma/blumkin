@@ -323,6 +323,40 @@ def test_mail_update_draft_accepts_attach_alone(tmp_path, monkeypatch) -> None:
     client.me.messages.by_message_id.return_value.patch.assert_not_awaited()
 
 
+def test_mail_update_draft_reports_the_attachments_the_draft_already_carries(
+    tmp_path, monkeypatch
+) -> None:
+    """A body-only update must not report `[]` for a draft that still has its file (#564)."""
+    old = SimpleNamespace(id="att-old", name="old.pdf", size=5, content_bytes=b"12345")
+    _draft_client(monkeypatch, existing_attachments=[old])
+    kept = asyncio.run(mail_update_draft(draft_id="draft-1", body="edited"))
+    assert [(a["id"], a["name"]) for a in kept["draft"]["attachments"]] == [("att-old", "old.pdf")]
+
+    source = tmp_path / "note.txt"
+    source.write_bytes(b"hi")
+    _draft_client(monkeypatch, existing_attachments=[old])
+    added = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
+    assert [a["name"] for a in added["draft"]["attachments"]] == ["old.pdf", "note.txt"]
+
+
+def test_a_failed_attachment_listing_after_update_falls_back_but_a_bug_is_not_hidden(
+    monkeypatch,
+) -> None:
+    """Only a Graph error is tolerated here; the update already succeeded (#564)."""
+    from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+
+    client = _draft_client(monkeypatch)
+    attachments = client.me.messages.by_message_id.return_value.attachments
+    attachments.get = AsyncMock(side_effect=ODataError())
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", body="edited"))
+    assert payload["draft"]["attachments"] == []
+    assert payload["draft"]["subject"] == "New"
+
+    attachments.get = AsyncMock(side_effect=RuntimeError("a programming error"))
+    with pytest.raises(RuntimeError, match="a programming error"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", body="edited"))
+
+
 def test_mail_update_draft_skips_reattaching_an_identical_file(tmp_path, monkeypatch) -> None:
     """Re-attaching the same file (same content) must reuse it, not duplicate it (#392/#394)."""
     source = tmp_path / "report.pdf"
@@ -368,7 +402,11 @@ def test_mail_update_draft_uploads_past_a_same_named_non_file_attachment(
         ],
     )
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
-    assert [item["name"] for item in payload["draft"]["attachments"]] == ["report.pdf"]
+    # The draft carries the old item attachment and the new file, same name.
+    assert [item["name"] for item in payload["draft"]["attachments"]] == [
+        "report.pdf",
+        "report.pdf",
+    ]
     client.me.messages.by_message_id.return_value.attachments.post.assert_awaited_once()
 
 
@@ -390,7 +428,11 @@ def test_mail_update_draft_reuploads_when_content_differs(tmp_path, monkeypatch)
         ],
     )
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
-    assert [item["name"] for item in payload["draft"]["attachments"]] == ["report.pdf"]
+    # The draft carries the old item attachment and the new file, same name.
+    assert [item["name"] for item in payload["draft"]["attachments"]] == [
+        "report.pdf",
+        "report.pdf",
+    ]
     client.me.messages.by_message_id.return_value.attachments.post.assert_awaited_once()
 
 
@@ -444,9 +486,10 @@ def test_mail_update_draft_dedups_against_a_later_page_of_existing_attachments(
     item.attachments.by_attachment_id.side_effect = _select_builder
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", attach=[str(source)]))
     assert payload["draft"]["attachments"] == [
-        {"id": "att-existing", "name": "report.pdf", "size": 3}
+        {"id": "att-other", "name": "other.txt", "size": 1},
+        {"id": "att-existing", "name": "report.pdf", "size": len(b"pdf-bytes")},
     ]
-    item.attachments.with_url.assert_called_once_with("https://graph.microsoft.com/v1.0/next")
+    item.attachments.with_url.assert_called_with("https://graph.microsoft.com/v1.0/next")
     item.attachments.post.assert_not_awaited()
 
 

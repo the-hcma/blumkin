@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -292,8 +293,8 @@ _DEFAULT_HINTS: dict[str, str] = {
         "expired access token), then retry. `blumkin auth status` shows the current state."
     ),
     "graph_error": (
-        "Retry once. If it persists, check `blumkin auth status` and Microsoft 365 "
-        "service health, and re-run with --json for the raw Graph error."
+        "Retry once. If it persists, check `blumkin auth status` and your provider's "
+        "service health, and re-run with --json for the raw error."
     ),
     "install_failed": (
         "Completion `--install` could not write the script. Ensure the target path is "
@@ -6839,8 +6840,8 @@ def mcp_install_cmd(
             error="usage_error",
             message="`mcp install` needs a TTY for the per-client prompt; pass --yes to skip it",
             as_json=as_json,
-            hint="Non-interactive: `blumkin mcp install --yes --scope user` "
-            "(also --client / --read-only / ...).",
+            hint=f"Non-interactive: `{shlex.quote(mi.dev_launcher() or 'blumkin')} mcp install "
+            "--yes --scope user` (also --client / --read-only / ...).",
         )
         raise SystemExit(EXIT_USAGE)
 
@@ -6885,8 +6886,11 @@ def mcp_install_cmd(
 
     serve = mi.ServeSpec(profile=profile, read_only=read_only, only=tuple(only))
     binary, on_path = mi.resolve_binary()
-    if not on_path and not as_json:
-        click.echo(f"note: `blumkin` is not on PATH - registering {binary}", err=True)
+    if not as_json:
+        if mi.dev_launcher() is not None:
+            click.echo(f"note: registering the dev launcher {binary}", err=True)
+        elif not on_path:
+            click.echo(f"note: `blumkin` is not on PATH - registering {binary}", err=True)
     scope_val: mi.Scope = "project" if scope == "project" else "user"
     plans = mi.build_plan(
         clients=targets, scope=scope_val, binary=binary, serve=serve, cwd=Path.cwd()

@@ -247,6 +247,7 @@ Once vaulted, it takes precedence over any `client_secret` still in the file, an
 - Mail writes need the `gmail.compose` scope — re-run `blumkin auth login` once after upgrading or those calls exit `4` (`missing_scope`).
 - Chat `attachments` are listed but Drive-backed files are not downloadable.
 - A returned draft `id` is the Gmail draft id; `attachments[].id` is `null` (Gmail carries attachments inside the raw message).
+- `mail attachments` and `mail get` list Gmail attachments by their stable MIME part id (Gmail's own attachment id changes on every fetch), so an id from one listing still downloads later; this holds when Gmail supplies a MIME part id, and a part without one is listed by Gmail's own id, which can change between fetches.
 
 **Token file** (written by `blumkin auth login`): `profiles/<name>/google_token.json`. `graph_timeout_seconds` in toml bounds Google HTTP and token-refresh calls too. Never commit any of these files.
 

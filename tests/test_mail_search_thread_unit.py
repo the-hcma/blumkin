@@ -149,6 +149,26 @@ def test_graph_thread_orders_the_conversation(monkeypatch) -> None:
     assert "conversationId eq 'c1'" in posted.query_parameters.filter
 
 
+def test_graph_thread_sorts_oldest_first_without_asking_graph_to_order(monkeypatch) -> None:
+    """`$filter=conversationId` plus `$orderby` is rejected as too complex by Graph (#564)."""
+    newer = _msg("newer", subject="Re: hi")
+    newer.received_date_time = datetime(2026, 8, 2, 9, 0, tzinfo=UTC)
+    older = _msg("older", subject="Re: hi")
+    older.received_date_time = datetime(2026, 8, 1, 9, 0, tzinfo=UTC)
+    draft = _msg("draft", subject="Re: hi")
+    draft.received_date_time = None
+    draft.created_date_time = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+    client = _graph(monkeypatch, messages_get_return=SimpleNamespace(value=[newer, draft, older]))
+    client.me.messages.by_message_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(conversation_id="c1")
+    )
+    payload = asyncio.run(mail_thread(message_id="older"))
+    # The draft has no receipt, so its creation time places it between the two received ones.
+    assert [i["id"] for i in payload["items"]] == ["older", "draft", "newer"]
+    posted = client.me.messages.get.await_args.args[0]
+    assert not posted.query_parameters.orderby
+
+
 def test_graph_thread_walks_pages(monkeypatch) -> None:
     p2 = SimpleNamespace(value=[_msg("c", subject="Re: hi")], odata_next_link=None)
     p1 = SimpleNamespace(value=[_msg("a", subject="Re: hi"), _msg("b", subject="Re: hi")])

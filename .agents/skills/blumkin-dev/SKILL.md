@@ -25,7 +25,9 @@ For a throwaway setup, point `BLUMKIN_CONFIG_DIR` at an empty directory for the 
 
 ## First run
 
-If the config directory has no `config.toml`, the launcher offers the guided `auth setup` on a terminal and fails with a hint without one. It never creates or overwrites anything unless the user says yes. Without a terminal, `scripts/dev/blumkin auth setup --yes --provider google|microsoft` plus the value flags (see `auth setup --help`) creates the minimal config (directory mode 0700, file mode 0600) and fills in the OAuth client. Do not paste secrets into command arguments; use the flags and prompts the command documents.
+If the config directory has no `config.toml`, the launcher offers the guided `auth setup` on a terminal and fails with a hint without one. It never creates or overwrites anything unless the user says yes. Without a terminal, `scripts/dev/blumkin auth setup --yes --provider google|microsoft` plus the value flags (see `auth setup --help`) creates the minimal config (directory mode 0700, file mode 0600) and fills in the OAuth client. Do not paste secrets into command arguments; use the flags and prompts the command documents. `profiles list` is the exception: it runs without a config and answers `count: 0`, which is the cold-start check the `blumkin` skill relies on.
+
+If `scripts/dev` is on `PATH`, a bare `blumkin` runs that launcher, and so the code of whichever checkout it belongs to, not the installed release. From a worktree it can even be the primary checkout's code. Check `blumkin --version` for the `+dev` marker before trusting what a bare `blumkin` did.
 
 ## MCP
 

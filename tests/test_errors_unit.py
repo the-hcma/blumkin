@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from zoneinfo import ZoneInfoNotFoundError
 
 import httpx
@@ -85,6 +86,52 @@ def test_calendar_resolution_classes() -> None:
 def test_chat_and_scope_classes() -> None:
     assert classify_exception(ChatAttachmentScopeError("needs Files.Read")).slug == "missing_scope"
     assert classify_exception(ChatAttachmentSkippedError("v1")).slug == "usage_error"
+
+
+def test_a_freebusy_failure_hints_at_the_addresses_not_at_a_microsoft_outage() -> None:
+    """A Google profile that passed its own address got a Microsoft 365 health hint (#564)."""
+    info = classify_exception(
+        ValueError("freebusy lookup failed for: primary: no schedule returned")
+    )
+    assert info.slug == "graph_error"
+    assert info.hint is not None
+    assert "calendar suggest" in info.hint and "already includes you" in info.hint
+    # `freebusy` queries exactly the addresses given, so it must not be told to omit yours.
+    assert "calendar freebusy" in info.hint and "including yours" in info.hint
+    assert "Microsoft 365" not in info.hint
+
+
+def test_a_google_api_that_is_not_enabled_is_not_reported_as_a_missing_scope() -> None:
+    """`chat find` said `missing_scope` when the Chat API was off in the Cloud project (#564)."""
+    import httplib2
+    from googleapiclient.errors import HttpError
+
+    content = json.dumps(
+        {
+            "error": {
+                "code": 403,
+                "message": (
+                    "Google Chat API has not been used in project 123 before or it is "
+                    "disabled. Enable it by visiting the console."
+                ),
+                "status": "PERMISSION_DENIED",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "SERVICE_DISABLED",
+                    }
+                ],
+            }
+        }
+    ).encode()
+    disabled = HttpError(httplib2.Response({"status": 403}), content, uri="https://chat")
+    info = classify_exception(disabled)
+    assert info.slug == "graph_error"
+    assert info.hint is not None and "Enable" in info.hint and "doctor" not in info.hint
+
+    denied = json.dumps({"error": {"code": 403, "message": "insufficient scope"}}).encode()
+    plain = HttpError(httplib2.Response({"status": 403}), denied, uri="https://chat")
+    assert classify_exception(plain).slug == "missing_scope"
 
 
 def test_auth_layer_value_errors() -> None:

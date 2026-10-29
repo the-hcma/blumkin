@@ -66,14 +66,17 @@ async def mail_attachments_download(
         raise ValueError("provide exactly one of --attachment-id or --all")
     cfg = config or load_config()
     service = _gmail_service(cfg)
-    attachments = _attachment_entries(_full_message(service, mid).get("payload") or {})
+    attachments = _attachment_parts(_full_message(service, mid).get("payload") or {})
     if download_all:
         out_path = prepare_download_directory(out)
         targets = list(attachments)
         used_names = existing_entry_names(out_path)
     else:
         aid = attachment_id.strip() if attachment_id else ""
-        match = next((item for item in attachments if item.get("id") == aid), None)
+        match = next(
+            (item for item in attachments if aid in (item.get("id"), item.get("_fetch_id"))),
+            None,
+        )
         if match is None:
             raise MailAttachmentNotFoundError(f"attachment not found: {aid}")
         targets = [match]
@@ -82,7 +85,7 @@ async def mail_attachments_download(
     saved: list[dict[str, Any]] = []
     for meta in targets:
         aid = str(meta["id"])
-        content = _attachment_bytes(_attachment_data(service, mid, aid))
+        content = _attachment_bytes(_attachment_data(service, mid, str(meta["_fetch_id"])))
         if download_all:
             filename = unique_filename(
                 sanitize_attachment_filename(meta.get("name") or aid), used_names
@@ -522,6 +525,20 @@ def _attachment_data(service: Any, message_id: str, attachment_id: str) -> str:
 
 
 def _attachment_entries(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """The attachments as callers see them: no private bookkeeping keys."""
+    return [
+        {key: value for key, value in entry.items() if not key.startswith("_")}
+        for entry in _attachment_parts(payload)
+    ]
+
+
+def _attachment_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every attachment part, with `_fetch_id` (Gmail's attachmentId for this fetch) kept.
+
+    Gmail issues a new `attachmentId` on every fetch of the same message, so the listed `id`
+    is the MIME `partId`, which is stable, and the raw id is only used to fetch the bytes
+    from the same response.
+    """
     out: list[dict[str, Any]] = []
     _collect_attachment_parts(payload, out)
     return out
@@ -584,12 +601,18 @@ def _collect_attachment_parts(part: dict[str, Any], out: list[dict[str, Any]]) -
         # filename is optional on Content-Disposition (RFC 2183); Gmail still
         # gives the part an attachmentId, so surface it under a fallback name
         # rather than dropping it silently.
-        filename = str(part.get("filename") or "").strip() or attachment_id
+        part_id = part.get("partId")
+        has_part_id = isinstance(part_id, str) and bool(part_id)
+        stable_id = part_id if has_part_id else attachment_id
+        filename = str(part.get("filename") or "").strip() or (
+            f"attachment-{part_id}" if has_part_id else attachment_id
+        )
         out.append(
             {
+                "_fetch_id": attachment_id,
                 "attachment_type": mime,
                 "content_type": mime,
-                "id": attachment_id,
+                "id": stable_id,
                 "is_inline": _is_inline_disposition(headers.get("content-disposition", ""))
                 or "content-id" in headers,
                 "name": filename,
@@ -893,7 +916,7 @@ def _message_detail(
     sent = _parse_date_header(headers.get("date")) or received
     subject = _decode_header_value(headers.get("subject"))
     return {
-        "attachments": [],
+        "attachments": _attachment_entries(payload),
         "body": body,
         "body_preview": msg.get("snippet"),
         "body_type": body_type,

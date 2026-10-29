@@ -88,6 +88,9 @@ def test_mail_update_draft_omitted_recipients_leave_lists_unchanged(monkeypatch)
     client = _client(monkeypatch)
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
 
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", subject="New"))
 
@@ -136,6 +139,9 @@ def test_mail_update_draft_replaces_bcc(monkeypatch) -> None:
     client = _client(monkeypatch)
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
 
     payload = asyncio.run(mail_update_draft(draft_id="draft-1", bcc="new@example.com"))
 
@@ -177,6 +183,9 @@ def test_mail_update_draft_replaces_multi_to_and_sets_cc(monkeypatch) -> None:
     client = _client(monkeypatch)
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
 
     payload = asyncio.run(
         mail_update_draft(

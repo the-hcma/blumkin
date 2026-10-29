@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
 
@@ -112,6 +113,9 @@ def _update_draft_via_cli(tmp_path: Path, monkeypatch, args: list[str]) -> Magic
 
         client.me.messages.by_message_id.return_value.get = _get
         client.me.messages.by_message_id.return_value.patch = _patch
+        client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+            return_value=SimpleNamespace(value=[])
+        )
         with (
             patch("blumkin.skills.mail.create_graph_client", return_value=client),
             patch("blumkin.skills.mail._upload_attachments", return_value=([], [])),

@@ -72,6 +72,17 @@ _MISSING_SCOPE_HINT = (
     '"Select all") on the consent screen - the message above lists exactly '
     "which scopes are missing."
 )
+_GOOGLE_API_DISABLED_HINT = (
+    "The API behind this command is not enabled in your Google Cloud project, which is not "
+    "a scope problem. Enable it (APIs & Services, Library, search for the API named in the "
+    "message above), wait a minute, then retry."
+)
+_FREEBUSY_HINT = (
+    "A requested calendar returned no schedule. For `calendar suggest`, do not pass your own "
+    "address with --with (it already includes you); for `calendar freebusy`, list every "
+    "address you want checked, including yours. Otherwise check that each address is a "
+    "calendar you can see, then retry."
+)
 _CALENDAR_AMBIGUOUS_HINT = (
     "Pass the calendar id (from `blumkin calendar list --json`), not the name."
 )
@@ -301,7 +312,7 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
     if isinstance(exc, ValueError):
         msg = str(exc)
         if msg.startswith("freebusy lookup failed"):
-            return ErrorInfo("graph_error", EXIT_OTHER, msg)
+            return ErrorInfo("graph_error", EXIT_OTHER, msg, _FREEBUSY_HINT)
         if (
             "client_id" in msg
             or "Missing" in msg
@@ -313,6 +324,8 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
 
     # 6. Graph HTTP status ladder
     status = graph_http_status(exc)
+    if status == 403 and _google_api_is_disabled(exc):
+        return ErrorInfo("graph_error", EXIT_OTHER, str(exc), _GOOGLE_API_DISABLED_HINT)
     if status == 401:
         return ErrorInfo("auth_required", EXIT_AUTH, str(exc))
     if status == 403:
@@ -320,3 +333,12 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
     if status == 404:
         return ErrorInfo("not_found", EXIT_NOT_FOUND, str(exc))
     return ErrorInfo("graph_error", EXIT_OTHER, str(exc))
+
+
+def _google_api_is_disabled(exc: BaseException) -> bool:
+    """A 403 from a Google API that is off in the Cloud project, not a scope problem."""
+    content = getattr(exc, "content", None)
+    if not isinstance(content, bytes | bytearray):
+        return False
+    text = bytes(content).decode("utf-8", errors="replace")
+    return "SERVICE_DISABLED" in text or "has not been used in project" in text
