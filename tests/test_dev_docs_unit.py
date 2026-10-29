@@ -53,7 +53,11 @@ def test_the_dev_skill_warns_that_a_launcher_on_path_shadows_the_installed_relea
 def test_the_dev_skill_says_only_provider_bound_commands_need_a_config() -> None:
     text = " ".join((_ROOT / ".agents/skills/blumkin-dev/SKILL.md").read_text().split())
     assert "`profiles list`" in text
-    assert "Only provider-bound commands need a config" in text
+    assert (
+        "Only provider-bound commands, and the ones that create state under the config directory, need a config"
+        in text
+    )
+    assert "`browser`" in text and "`loop`" in text and "`receipts`" in text
     assert "`completion`" in text and "`mcp install`" in text
 
 
