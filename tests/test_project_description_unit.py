@@ -96,3 +96,11 @@ def test_the_readme_tagline_uses_a_hyphen_not_a_dash() -> None:
         if "skills CLI" in line
     )
     assert "\u2014" not in tagline and "\u2013" not in tagline
+
+
+def test_the_copied_agent_instructions_require_choosing_a_profile_first() -> None:
+    text = (ROOT / "docs/agent-integration.md").read_text(encoding="utf-8")
+    block = text.split("```markdown", 1)[1].split("\n```\n", 1)[0]
+    assert "blumkin profiles list --json" in block
+    assert "--profile" in block
+    assert "default profile" in block and "ask" in block.lower()
