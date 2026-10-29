@@ -317,6 +317,51 @@ def _cfg(config_dir: Path) -> BlumkinConfig:
     )
 
 
+def test_an_attachment_id_from_one_listing_still_downloads_after_gmail_reissues_it(
+    tmp_path: Path,
+) -> None:
+    """Gmail hands out a new `attachmentId` on every fetch; the listed id must be stable (#564)."""
+
+    def message(attachment_id: str) -> dict:
+        built = _full_message(attachments=[("report.pdf", attachment_id, "application/pdf", 7)])
+        built["payload"]["parts"][1]["partId"] = "1"
+        return built
+
+    service = _service(message=message("first-fetch"), attachment_data=b"PDFDATA")
+    with _patched(service):
+        provider = GoogleWorkspaceProvider(_cfg(tmp_path))
+        listed = asyncio.run(provider.mail_attachments_list(message_id="m-1"))
+        stable_id = listed["attachments"][0]["id"]
+        service.users.return_value.messages.return_value.get.return_value.execute.return_value = (
+            message("second-fetch")
+        )
+        asyncio.run(
+            provider.mail_attachments_download(
+                message_id="m-1", attachment_id=stable_id, out=str(tmp_path / "saved.pdf")
+            )
+        )
+    assert (tmp_path / "saved.pdf").read_bytes() == b"PDFDATA"
+    assert "first-fetch" not in json.dumps(listed)
+    fetched = _attachments_get(service)
+    assert "second-fetch" in str(
+        service.users.return_value.messages.return_value.attachments.return_value.get.call_args
+    )
+    assert fetched is not None
+
+
+def test_mail_get_lists_the_attachments_it_reports_having(tmp_path: Path) -> None:
+    built = _full_message(attachments=[("report.pdf", "att-1", "application/pdf", 7)])
+    built["payload"]["headers"] = []
+    with _patched(_service(message=built)):
+        detail = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_get(message_id="m-1", body_type="text")
+        )
+    message = detail["message"] if "message" in detail else detail
+    assert message["has_attachments"] is True
+    assert [a["name"] for a in message["attachments"]] == ["report.pdf"]
+    assert message["attachments"][0]["size"] == 7
+
+
 def _full_message(
     *,
     attachments: list[tuple[str, str, str, int]] | None = None,

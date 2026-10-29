@@ -517,7 +517,8 @@ def test_mail_get_reports_has_attachments_from_parts(tmp_path: Path) -> None:
         provider = GoogleWorkspaceProvider(cfg)
         detail = asyncio.run(provider.mail_get(message_id="m2", body_type="text"))
     assert detail["message"]["has_attachments"] is True
-    assert detail["message"]["attachments"] == []
+    # The listing matches `mail attachments` (#564): same entries, same ids.
+    assert [a["id"] for a in detail["message"]["attachments"]] == ["ATT123"]
 
 
 def test_mail_inbox_and_get(tmp_path: Path) -> None:
