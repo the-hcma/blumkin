@@ -963,19 +963,23 @@ def test_a_client_that_probes_with_the_2026_envelope_can_still_initialize() -> N
                 if isinstance(reply, JSONRPCResponse | JSONRPCError) and reply.id == request_id:
                     return reply
 
-        with anyio.fail_after(15):
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(serve_streams, build_server(), to_server_recv, to_client_send)
-                probe = await _ask(1, "tools/list", envelope)
-                handshake = await _ask(2, "initialize", initialize)
-                await to_server_send.send(
-                    SessionMessage(
-                        JSONRPCNotification(jsonrpc="2.0", method="notifications/initialized")
+        async with to_server_send, to_client_recv:
+            with anyio.fail_after(15):
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(serve_streams, build_server(), to_server_recv, to_client_send)
+                    probe = await _ask(1, "tools/list", envelope)
+                    handshake = await _ask(2, "initialize", initialize)
+                    await to_server_send.send(
+                        SessionMessage(
+                            JSONRPCNotification(jsonrpc="2.0", method="notifications/initialized")
+                        )
                     )
-                )
-                listing = await _ask(3, "tools/list", {})
-                await to_server_send.aclose()
-                tg.cancel_scope.cancel()
+                    listing = await _ask(3, "tools/list", {})
+                    # The client leaves: the server must stop on its own (the task group only
+                    # exits once `serve_streams` returns) and close what it writes to.
+                    await to_server_send.aclose()
+                    with pytest.raises(anyio.EndOfStream):
+                        await to_client_recv.receive()
         return probe, handshake, listing
 
     probe, handshake, listing = asyncio.run(_run())
@@ -983,4 +987,4 @@ def test_a_client_that_probes_with_the_2026_envelope_can_still_initialize() -> N
     assert handshake.result["serverInfo"]["name"]
     assert isinstance(listing, JSONRPCResponse)
     assert listing.result["tools"]
-    assert probe is not None
+    assert isinstance(probe, JSONRPCError)

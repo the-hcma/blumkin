@@ -248,9 +248,13 @@ async def serve_streams(server: Server, read_stream: Any, write_stream: Any) -> 
     locks the connection to that era, and its fallback `initialize` is then refused with
     -32022 "the initialize handshake is not accepted"; over stdio there is no second
     connection to retry on, so Copilot CLI could never connect (issue #563). Serving the
-    handshake loop directly accepts that `initialize` and answers an enveloped request with an
-    error the client can recover from. This uses the SDK's public `serve_loop`, entered inside
-    the server lifespan exactly as `Server.run` does.
+    handshake loop directly accepts that `initialize` and answers an enveloped request that
+    arrives before it with an error the client can recover from. This uses the SDK's public
+    `serve_loop`, entered inside the server lifespan exactly as `Server.run` does.
+
+    The cost: a client that speaks only the 2026-07-28 era cannot use this stdio server, since
+    it never sends `initialize`. Revisit when `Server.run` lets a probe fall back to the
+    handshake.
     """
     try:
         async with server.lifespan(server) as lifespan_state:
