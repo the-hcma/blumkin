@@ -114,7 +114,12 @@ from blumkin.browser.model_commands import (
     model_diff,
     model_versions,
 )
-from blumkin.browser.profiles import BrowserProfileError, ProfileBusyError, ProfileInUseError
+from blumkin.browser.profiles import (
+    BrowserProfileError,
+    ProfileBrowserRunningError,
+    ProfileBusyError,
+    ProfileInUseError,
+)
 from blumkin.browser.receipt_rehome import (
     AlreadyFiledError,
     RehomeError,
@@ -625,7 +630,7 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "browser_launch_failed", EXIT_OTHER
     elif isinstance(exc, (ProfileBusyError, ProfileInUseError)):
         slug, code = "profile_in_use", EXIT_OTHER
-        if isinstance(exc, ProfileInUseError):
+        if isinstance(exc, ProfileBrowserRunningError):
             hint = f"Close its browser first: `blumkin browser close {task or 'TASK'}`."
 
     elif isinstance(exc, ProviderConfigError):
@@ -2253,43 +2258,6 @@ def browser_init_task(
     emit_lines(lines)
 
 
-@browser.command("close", epilog=help_text.BROWSER_CLOSE_EPILOG)
-@click.argument("task")
-@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
-@click.option(
-    "--force",
-    is_flag=True,
-    help="Kill the browser if it has not exited after --wait (its profile may need to recover).",
-)
-@click.option(
-    "--wait",
-    "wait_s",
-    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
-    callback=_finite_wait,
-    default=DEFAULT_CLOSE_TIMEOUT_S,
-    show_default=True,
-    help="Seconds to wait for the browser to exit after asking it to quit.",
-)
-@click.pass_context
-def browser_close(
-    ctx: click.Context, task: str, as_json_flag: bool, force: bool, wait_s: float
-) -> None:
-    """Close TASK's browser, keeping its profile (saved sign-in) for next time."""
-    as_json = _as_json(ctx, as_json_flag)
-    try:
-        payload = close_task_browser(config_dir(), task, force=force, timeout_s=wait_s)
-    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
-        _browser_fail(exc, as_json=as_json, task=task)
-    if as_json:
-        emit_json(payload)
-        return
-    if not payload["was_running"]:
-        emit_lines([f"{task}: no browser was running"])
-        return
-    how = "killed" if payload["forced"] else "closed"
-    emit_lines([f"{task}: browser {how} (profile kept; `browser launch {task}` opens it again)"])
-
-
 @browser.command("launch", epilog=help_text.BROWSER_LAUNCH_EPILOG)
 @click.argument("task")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
@@ -2361,6 +2329,43 @@ def browser_click(
         return
     which = f" (match {nth})" if nth is not None else ""
     emit_lines([f"{task}: clicked {payload['role']} {sanitize_terminal(name)!r}{which}"])
+
+
+@browser.command("close", epilog=help_text.BROWSER_CLOSE_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Kill the browser if it has not exited after --wait (its profile may need to recover).",
+)
+@click.option(
+    "--wait",
+    "wait_s",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=DEFAULT_CLOSE_TIMEOUT_S,
+    show_default=True,
+    help="Seconds to wait for the browser to exit after asking it to quit.",
+)
+@click.pass_context
+def browser_close(
+    ctx: click.Context, task: str, as_json_flag: bool, force: bool, wait_s: float
+) -> None:
+    """Close TASK's browser, keeping its profile (saved sign-in) for next time."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = close_task_browser(config_dir(), task, force=force, timeout_s=wait_s)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    if not payload["was_running"]:
+        emit_lines([f"{task}: no browser was running"])
+        return
+    how = "killed" if payload["forced"] else "closed"
+    emit_lines([f"{task}: browser {how} (profile kept; `browser launch {task}` opens it again)"])
 
 
 @browser.group("explore", epilog=help_text.BROWSER_EXPLORE_EPILOG)

@@ -546,3 +546,17 @@ def test_profile_delete_refusal_points_at_browser_close(_config_dir: Path) -> No
     write_session(profile.path, _SESSION)
     result = _run("browser", "profile", "delete", "expense-report", "--yes")
     assert "browser close expense-report" in (_json(result).get("hint") or "")
+
+
+def test_profile_delete_refused_for_a_launch_in_progress_does_not_say_to_close_a_browser(
+    _config_dir: Path,
+) -> None:
+    from blumkin.browser.profiles import profile_lock
+
+    profile = create_profile(_config_dir, "expense-report")
+    with profile_lock(profile):
+        result = _run("browser", "profile", "delete", "expense-report", "--yes")
+    assert result.exit_code == EXIT_OTHER
+    payload = _json(result)
+    assert payload["error"] == "profile_in_use"
+    assert "browser close" not in (payload.get("hint") or "")

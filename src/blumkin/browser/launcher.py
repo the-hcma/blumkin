@@ -111,50 +111,85 @@ def close_browser(
     to be a browser running on this very profile, so a stale session whose pid has since been
     reused is never touched. A browser that does not exit is reported; only `force` kills it.
     Nothing running is not an error: the answer is `was_running=False`.
+
+    "Cannot tell" is never "not running": when `ps` does not answer, a live process is treated
+    as still being the browser, so a close neither reports success for a browser that is still
+    up nor throws its session record away.
     """
     require_blumkin_profile(profile.path)
     sender = send_signal or _signal_process
-    check = is_browser or (
-        lambda pid, directory: process_is_browser_for(pid, directory, assume_on_unknown=False)
-    )
 
-    def running_pid() -> int | None:
-        session = read_session(
-            profile.path, pid_alive=lambda pid: check(pid, profile.path), strict=True
-        )
-        if session is not None:
-            return session.pid
-        return running_browser_pid(profile.path, is_browser=is_browser, strict=True)
+    def identity(pid: int) -> str:
+        """`browser`, `other` (confirmed not the browser, or gone) or `unknown` (`ps` silent)."""
+        if is_browser is not None:
+            return "browser" if is_browser(pid, profile.path) else "other"
+        if process_is_browser_for(pid, profile.path, assume_on_unknown=False):
+            return "browser"
+        if process_is_browser_for(pid, profile.path, assume_on_unknown=True):
+            return "unknown"
+        return "other"
+
+    def not_gone(pid: int) -> bool:
+        return identity(pid) != "other"
+
+    def signal_pid(pid: int, sig: int) -> None:
+        try:
+            sender(pid, sig)
+        except ProcessLookupError:
+            return
+        except PermissionError as exc:
+            raise BrowserCloseError(
+                f"Expected permission to signal the browser for task {profile.task!r}, got {exc}"
+            ) from exc
 
     with profile_lock(profile):
-        pid = running_pid()
+        session = read_session(profile.path, pid_alive=lambda pid: not_gone(pid), strict=True)
+        pid = (
+            session.pid
+            if session is not None
+            else running_browser_pid(
+                profile.path, is_browser=lambda pid, directory: not_gone(pid), strict=True
+            )
+        )
         if pid is None:
             remove_session(profile.path)
             return CloseResult(forced=False, was_running=False)
-        with contextlib.suppress(ProcessLookupError):
-            sender(pid, signal.SIGTERM)
+        if identity(pid) == "unknown":
+            raise BrowserCloseError(
+                f"Expected to confirm that process {pid} is the browser for task "
+                f"{profile.task!r}, but `ps` did not answer, so it could not confirm; "
+                "nothing was signalled. Try again, or close the browser window by hand"
+            )
+        signal_pid(pid, signal.SIGTERM)
         deadline = now() + timeout_s
-        while check(pid, profile.path) and now() < deadline:
+        while not_gone(pid) and now() < deadline:
             sleep(_CLOSE_POLL_S)
         forced = False
-        if check(pid, profile.path):
+        if not_gone(pid):
             if not force:
                 raise BrowserCloseError(
                     f"Expected the browser for task {profile.task!r} to close within "
                     f"{timeout_s:g} seconds, got it still running; close its window, or retry "
                     "with --force to kill it (its profile may need to recover)"
                 )
-            forced = True
-            with contextlib.suppress(ProcessLookupError):
-                sender(pid, signal.SIGKILL)
-            deadline = now() + _FORCE_WAIT_S
-            while check(pid, profile.path) and now() < deadline:
-                sleep(_CLOSE_POLL_S)
-            if check(pid, profile.path):
-                raise BrowserCloseError(
-                    f"Expected the browser for task {profile.task!r} to stop after being "
-                    "killed, got it still running"
-                )
+            # Look again right before the kill: it may have left while we were waiting, and the
+            # pid must still be the browser (or unconfirmable, which counts as still running).
+            if not_gone(pid):
+                forced = True
+                signal_pid(pid, signal.SIGKILL)
+                deadline = now() + _FORCE_WAIT_S
+                while not_gone(pid) and now() < deadline:
+                    sleep(_CLOSE_POLL_S)
+                if not_gone(pid):
+                    raise BrowserCloseError(
+                        f"Expected the browser for task {profile.task!r} to stop after being "
+                        "killed, got it still running"
+                    )
+                # A killed Chrome leaves its single-instance files behind; a graceful one
+                # removes them itself.
+                for name in _CHROME_SINGLETON_FILES:
+                    with contextlib.suppress(OSError):
+                        (profile.path / name).unlink()
         remove_session(profile.path)
         with contextlib.suppress(FileNotFoundError):
             (profile.path / PORT_FILENAME).unlink()
@@ -240,6 +275,7 @@ def read_devtools_port(profile_dir: Path) -> int | None:
     return port
 
 
+_CHROME_SINGLETON_FILES = ("SingletonCookie", "SingletonLock", "SingletonSocket")
 _CLOSE_POLL_S = 0.2
 _FORCE_WAIT_S = 5.0
 _STOP_WAIT_S = 5.0
@@ -250,8 +286,16 @@ def _signal_process(pid: int, sig: int) -> None:
 
     A graceful SIGTERM goes to the main process alone, which closes its children itself. The
     group is signalled for SIGKILL only when the pid leads it, so a browser started some other
-    way, inside the user's shell group, never takes the shell down with it.
+    way, inside the user's shell group, never takes the shell down with it. A target that is
+    this process, its parent, or the head of its process group or session is refused outright:
+    a wrapper such as `bash -c 'chrome --user-data-dir=...'` carries the profile on its command
+    line too, and signalling that would take blumkin's own caller down.
     """
+    if pid in (os.getpid(), os.getppid(), os.getpgrp(), os.getsid(0)):
+        raise BrowserCloseError(
+            f"Expected a browser to signal, got process {pid}, which is part of this command's "
+            "own process tree; refusing to signal it"
+        )
     if sig == signal.SIGKILL:
         with contextlib.suppress(OSError):
             if os.getpgid(pid) == pid:

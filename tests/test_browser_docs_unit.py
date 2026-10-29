@@ -324,3 +324,7 @@ def test_the_task_guide_explains_how_to_close_a_task_browser() -> None:
     assert "`browser_close_failed`" in guide
     # `profile delete` points at it instead of leaving a dead end.
     assert "close it first with `blumkin browser close" in guide
+    # Safety: what happens when the browser cannot be told apart, and what a kill leaves.
+    assert 'never as "no browser"' in guide
+    assert "refuses to signal" in guide and "own process tree" in guide
+    assert "single-instance files" in guide

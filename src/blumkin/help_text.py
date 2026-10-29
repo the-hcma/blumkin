@@ -267,6 +267,23 @@ undeclared control, a submit control, and any control named like a finalizing ac
 script and a click handler that submits. A browser task never submits; the user does.
 """
 
+BROWSER_CLOSE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser close youtube-transcript
+  blumkin browser close youtube-transcript --wait 30
+  blumkin browser close youtube-transcript --force --json
+
+Closes the browser blumkin launched for the task, so an agent can clean up after itself without
+asking you to close a window by hand. The browser is asked to quit and given `--wait` seconds
+(default 15) to exit, which lets it write its profile out. The profile, with its saved cookies
+and sign-in, is kept: `blumkin browser launch TASK` opens it again, and `profile delete` is the
+command that removes it. Only a process confirmed to be a browser on this task's profile is
+ever signalled. With no browser running it says so and exits 0. A browser that does not exit is
+reported; `--force` kills it, and its profile may then need to recover.
+"""
+
 BROWSER_EPILOG = """
 Examples:
 
@@ -450,23 +467,6 @@ already exists is never changed, and a config.toml that is not valid TOML, or is
 not a regular file, is left alone. The profile is created either way. TASK defaults to the
 template name. The Teams template's `*.sharepoint.com` covers every organization's SharePoint:
 narrow it to your tenant's host. Templates: teams-transcript.
-"""
-
-BROWSER_CLOSE_EPILOG = """
-Examples:
-
-\b
-  blumkin browser close youtube-transcript
-  blumkin browser close youtube-transcript --wait 30
-  blumkin browser close youtube-transcript --force --json
-
-Closes the browser blumkin launched for the task, so an agent can clean up after itself without
-asking you to close a window by hand. The browser is asked to quit and given `--wait` seconds
-(default 15) to exit, which lets it write its profile out. The profile, with its saved cookies
-and sign-in, is kept: `blumkin browser launch TASK` opens it again, and `profile delete` is the
-command that removes it. Only a process confirmed to be a browser on this task's profile is
-ever signalled. With no browser running it says so and exits 0. A browser that does not exit is
-reported; `--force` kills it, and its profile may then need to recover.
 """
 
 BROWSER_LAUNCH_EPILOG = """
