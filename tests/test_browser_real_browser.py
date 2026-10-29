@@ -162,6 +162,7 @@ _REPEATED_NAMES = b"""<!doctype html><title>Repeated</title>
 <li><button type="button" onclick="pick(2)">More actions</button></li>
 <li><button type="button" onclick="pick(3)">More actions</button></li>
 </ul>
+<form action="/submit" method="post"><button type="submit">More actions</button></form>
 <p id="picked">none</p>
 <script>
 function pick(n) { document.getElementById('picked').textContent = 'picked ' + n; }
@@ -659,15 +660,19 @@ def test_a_repeated_name_is_refused_unless_nth_says_which_one(
         )
         driver.goto(form_url + "repeated")
         # Default: refuse rather than guess, and click nothing.
-        with pytest.raises(Exception, match="got 3 buttons named 'More actions'"):
+        with pytest.raises(Exception, match="got 4 buttons named 'More actions'"):
             driver.click("More actions", "button", 1.0)
         assert "none" in driver.read_text().text
         # Explicit: the second match in page order is the one clicked (#573).
         driver.click("More actions", "button", 1.0, nth=2)
         assert _wait_for(lambda: "picked 2" in driver.read_text().text)
-        # Beyond the matches: refused with the real count.
-        with pytest.raises(Exception, match="at least 4 buttons named 'More actions', got 3"):
+        # The fourth match is a submit button in a form: --nth does not get past the vetting.
+        with pytest.raises(SubmitBlockedError):
             driver.click("More actions", "button", 1.0, nth=4)
+        assert _Handler.posts == []
+        # Beyond the matches: refused with the real count.
+        with pytest.raises(Exception, match="at least 5 buttons named 'More actions', got 4"):
+            driver.click("More actions", "button", 1.0, nth=5)
         driver.close()
     finally:
         os.kill(result.session.pid, signal.SIGTERM)

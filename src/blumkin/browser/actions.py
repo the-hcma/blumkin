@@ -91,8 +91,8 @@ def click_task(
     Without `role` the control is found by name across the clickable roles and the role it
     was found in is reported. `wait_s` is how long to wait for it to appear: a few seconds
     when finding it by name, the full action timeout when the role is given. `nth` (1-based,
-    DOM order) picks one of several controls the page legitimately gives the same name; it
-    is reported back, and nothing else about the policy changes.
+    DOM order) picks one of several controls the page legitimately gives the same name; it is
+    reported back, and nothing else about the policy changes.
     """
     waited = wait_s if wait_s is not None else _default_wait(role)
     _require_declared_controls(config, task, name)

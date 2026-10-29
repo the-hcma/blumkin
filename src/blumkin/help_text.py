@@ -258,8 +258,9 @@ in more than one role is refused until you pass `--role`. The control is waited 
 `--wait` seconds (default 5 by name, 30 with `--role`, at most 300), so a missing control by name
 fails in seconds.
 When the page legitimately repeats a name (a "More actions" button on every row), more than one
-match is refused until `--nth N` (1-based, in page order) says which one is meant; it narrows the
-lookup only, and the policy and the vetting of that element are unchanged.
+match is refused until `--nth N` (1-based, in DOM order, the order `browser read --aria` lists
+them) says which one is meant; it narrows the lookup only, and the policy and the vetting of
+that element are unchanged. `--nth` is for `click` only.
 Refused, without touching the page: an
 undeclared control, a submit control, and any control named like a finalizing action
 (submit, send, file, confirm, pay, ...), plus a control with a formaction, a link that runs

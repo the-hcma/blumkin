@@ -2290,8 +2290,8 @@ def browser_launch(ctx: click.Context, task: str, as_json_flag: bool) -> None:
     "--nth",
     type=click.IntRange(min=1),
     default=None,
-    help="Which match to click, 1-based in page order, when the page legitimately repeats "
-    "the name (default: refuse more than one).",
+    help="Which match to click, 1-based in DOM order (the order `browser read --aria` lists "
+    "them), when the page legitimately repeats the name (default: refuse more than one).",
 )
 @click.pass_context
 def browser_click(

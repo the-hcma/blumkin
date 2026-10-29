@@ -719,6 +719,7 @@ def test_checked_click_vets_the_element_it_then_clicks() -> None:
 def test_checked_click_with_nth_clicks_that_match_in_dom_order() -> None:
     """`--nth 3` is the third match, 1-based; Playwright's `nth` is 0-based (#573)."""
     pw, driver = _driver()
+    pw.page.role_counts[("button", "More actions")] = [21]
     driver.checked_click("More actions", "button", lambda info: None, nth=3)
     assert ("nth", "button", "More actions", 2) in pw.page.calls
     assert ("handle-click", 30000.0, True) in pw.page.calls
@@ -726,6 +727,7 @@ def test_checked_click_with_nth_clicks_that_match_in_dom_order() -> None:
 
 def test_checked_click_with_nth_still_vets_that_very_element() -> None:
     pw, driver = _driver()
+    pw.page.role_counts[("button", "More actions")] = [4]
 
     def refuse(info: ControlInfo) -> None:
         raise BrowserActionError("Expected a safe control, got a refusal")
@@ -1291,6 +1293,34 @@ def test_nth_beyond_the_matches_is_refused_with_the_real_count() -> None:
     _, driver = _driver_with_counts({("button", "More actions"): [2]})
     with pytest.raises(BrowserActionError, match="at least 3 buttons named 'More actions', got 2"):
         driver.matching_roles("More actions", ("button",), 0.0, nth=3)
+
+
+def test_nth_waits_for_a_list_that_is_still_rendering() -> None:
+    """Too few matches on the first poll is not a refusal while the wait is running."""
+    page, driver = _driver_with_counts({("button", "More actions"): [1, 3]})
+    assert driver.matching_roles("More actions", ("button",), 5.0, nth=3) == ("button",)
+    assert page.waits == 1
+
+
+def test_nth_uses_the_role_that_has_enough_matches_even_if_another_has_fewer() -> None:
+    _, driver = _driver_with_counts({("button", "X"): [2], ("link", "X"): [3]})
+    assert driver.matching_roles("X", ("button", "link"), 0.0, nth=3) == ("link",)
+
+
+def test_nth_refuses_only_at_the_deadline_with_the_largest_count_seen() -> None:
+    page, driver = _driver_with_counts({("button", "X"): [1, 2, 2], ("link", "X"): [1]})
+    with pytest.raises(BrowserActionError, match="at least 3 buttons named 'X', got 2"):
+        driver.matching_roles("X", ("button", "link"), 3.0, nth=3)
+    assert page.waits >= 1
+
+
+def test_checked_click_with_nth_rechecks_the_count_just_before_clicking() -> None:
+    """The page may have changed since the lookup; fewer than nth matches now means no click."""
+    pw, driver = _driver()
+    pw.page.role_counts[("button", "More actions")] = [2]
+    with pytest.raises(BrowserActionError, match="at least 3 buttons named 'More actions', got 2"):
+        driver.checked_click("More actions", "button", lambda info: None, nth=3)
+    assert not any(call[0] == "handle-click" for call in pw.page.calls)
 
 
 def test_nth_on_a_missing_control_reports_nothing_found() -> None:

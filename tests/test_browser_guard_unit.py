@@ -180,9 +180,9 @@ def test_nth_never_widens_what_a_task_may_click() -> None:
 
 def test_nth_must_be_a_positive_whole_number() -> None:
     _, driver = _guard("More actions")
-    for bad in (0, -1):
+    for bad in (0, -1, True, "2", 1.5):
         with pytest.raises(ValueError, match="nth"):
-            driver.click("More actions", "button", nth=bad)
+            driver.click("More actions", "button", nth=bad)  # type: ignore[arg-type]
 
 
 def test_a_declared_button_outside_any_form_is_clicked_even_with_the_default_submit_type() -> None:

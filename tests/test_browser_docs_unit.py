@@ -306,7 +306,8 @@ def test_the_task_guide_and_help_explain_nth_for_a_legitimately_repeated_name() 
 
     guide = " ".join(_text("docs/browser-tasks.md").split())
     assert "`--nth N`" in guide
-    assert "1-based" in guide and "page order" in guide
+    assert "1-based" in guide and "DOM order" in guide
+    assert "`nth` is for `click` only" in guide or "`--nth` is for `click` only" in guide
     # It narrows the lookup only; the policy and the per-element vetting are unchanged.
     assert "does not change what a task may click" in guide
     assert "refused with the real count" in guide
