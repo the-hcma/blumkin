@@ -101,6 +101,15 @@ def test_the_readme_tagline_uses_a_hyphen_not_a_dash() -> None:
 def test_the_copied_agent_instructions_require_choosing_a_profile_first() -> None:
     text = (ROOT / "docs/agent-integration.md").read_text(encoding="utf-8")
     block = text.split("```markdown", 1)[1].split("\n```\n", 1)[0]
-    assert "blumkin profiles list --json" in block
-    assert "--profile" in block
-    assert "default profile" in block and "ask" in block.lower()
+    rule = next(line for line in block.splitlines() if line.startswith("- With more than one"))
+    # The whole rule, in order: no silent default, list the profiles, an explicit selector when
+    # there is more than one, and a question when the account is ambiguous.
+    assert re.search(
+        r"never rely on the default profile.*"
+        r"`blumkin profiles list --json`.*"
+        r"`count` is greater than 1.*"
+        r"`--profile <name-or-tag>`.*"
+        r"ask which account when it is ambiguous",
+        rule,
+    )
+    assert rule.count("`--profile") == 1
