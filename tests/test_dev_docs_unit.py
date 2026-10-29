@@ -42,6 +42,19 @@ def test_the_dev_skill_tells_the_agent_to_use_the_launcher_and_report_the_versio
         assert rule in body
 
 
+def test_the_dev_skill_warns_that_a_launcher_on_path_shadows_the_installed_release() -> None:
+    """A bare `blumkin` can silently be a checkout's launcher, not the release (#564)."""
+    text = " ".join((_ROOT / ".agents/skills/blumkin-dev/SKILL.md").read_text().split())
+    assert "If `scripts/dev` is on `PATH`" in text
+    assert "a bare `blumkin` runs that launcher" in text
+    assert "`+dev` marker" in text
+
+
+def test_the_dev_skill_says_profiles_list_runs_without_a_config() -> None:
+    text = " ".join((_ROOT / ".agents/skills/blumkin-dev/SKILL.md").read_text().split())
+    assert "`profiles list`" in text
+
+
 def test_the_main_skill_points_to_the_dev_skill_so_only_one_fires() -> None:
     body = _MAIN_SKILL.read_text()
     assert "blumkin-dev" in body
