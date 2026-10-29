@@ -159,16 +159,27 @@ def _doc_text() -> str:
 
 
 def _mentions_command(text: str, path: list[str]) -> bool:
-    """Whether `text` names the command as a word, not as part of another word.
-
-    A one-word command (`uninstall`, `capabilities`) must be written as `blumkin uninstall` or
-    in backticks, since the bare word turns up in ordinary prose. A longer path (`agent stop`)
-    must not be glued to other words or hyphenated names.
+    """Whether `text` documents the command: `blumkin <path>` (global options may sit between)
+    or `<path>` in backticks. A bare occurrence in prose does not count, since words such as
+    `uninstall` or `agent stop` turn up in unrelated sentences, and a name glued to another
+    word or a hyphenated name does not count either.
     """
     name = re.escape(" ".join(path))
-    if len(path) == 1:
-        return re.search(rf"(?:blumkin |`){name}(?![\w-])", text) is not None
-    return re.search(rf"(?<![\w-]){name}(?![\w-])", text) is not None
+    pattern = rf"(?:blumkin (?:--?[\w-]+(?: [^\s`]+)? )*|`){name}(?![\w-])"
+    return re.search(pattern, text) is not None
+
+
+def test_the_command_matcher_needs_a_documentation_specific_form() -> None:
+    """Incidental prose must not hide a missing command doc (#567)."""
+    path = ["mail", "auto-reply"]
+    assert _mentions_command("run `blumkin mail auto-reply --enable`", path)
+    assert _mentions_command("blumkin --profile work mail auto-reply", path)
+    assert _mentions_command("the `mail auto-reply` verb", path)
+    assert not _mentions_command("Outlook's mail auto-reply setting is separate", path)
+    assert not _mentions_command("blumkin mail auto-reply-rules", path)
+    assert not _mentions_command("blumkin mail auto-replyx", path)
+    assert _mentions_command("run `blumkin uninstall`", ["uninstall"])
+    assert not _mentions_command("uninstalling and uninstall steps", ["uninstall"])
 
 
 def test_every_catalog_skill_is_in_the_blumkin_skill_or_left_out_on_purpose() -> None:
