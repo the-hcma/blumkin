@@ -89,6 +89,23 @@ def test_help_and_version_do_not_trigger_the_first_run_check(tmp_path: Path) -> 
     assert not config.exists()
 
 
+def test_profiles_list_runs_without_a_config_for_the_skill_cold_start(tmp_path: Path) -> None:
+    """The `blumkin` skill's first step reads `count: 0` from this command (#564)."""
+    config = tmp_path / "empty"
+    result = _run(["profiles", "list", "--json"], config, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["count"] == 0
+    assert "no config.toml" not in result.stderr
+    assert not config.exists()
+
+
+def test_a_short_h_is_not_help_because_blumkin_does_not_accept_it(tmp_path: Path) -> None:
+    config = tmp_path / "empty"
+    result = _run(["mail", "-h"], config, tmp_path)
+    assert result.returncode == 2
+    assert "no config.toml" in result.stderr
+
+
 def _session(args: list[str], config: Path, cwd: Path) -> pexpect.spawn:
     return pexpect.spawn(
         str(_SCRIPT),

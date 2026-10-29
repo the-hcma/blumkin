@@ -68,12 +68,14 @@ config_dir() {
   printf '%s\n' "${chosen}"
 }
 
-# Whether the command can run without a config.toml: help, version and `auth setup` itself.
+# Whether the command can run without a config.toml: help, version, `auth setup` itself, and
+# `profiles list` (which answers `count: 0`, the `blumkin` skill's cold-start check). `-h` is not
+# help: blumkin only accepts `--help`.
 needs_config() {
   local arg previous="" positional=()
   for arg in "$@"; do
     case "${arg}" in
-      --help | -h | --version) return 1 ;;
+      --help | --version) return 1 ;;
     esac
     if [[ "${arg}" != -* && "${previous}" != "--profile" && "${previous}" != "--tz" ]]; then
       positional+=("${arg}")
@@ -81,6 +83,7 @@ needs_config() {
     previous="${arg}"
   done
   [[ "${positional[0]:-}" == "auth" && "${positional[1]:-}" == "setup" ]] && return 1
+  [[ "${positional[0]:-}" == "profiles" && "${positional[1]:-}" == "list" ]] && return 1
   [[ "${positional[0]:-}" == "skills" ]] && return 1
   [[ ${#positional[@]} -eq 0 ]] && return 1
   return 0
