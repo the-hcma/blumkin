@@ -74,7 +74,7 @@ One markdown file per template under `tasks/`, so each is easy to diff and share
 
 ### Browser tasks keep your own values here
 
-A task that drives a browser (`expense-report`, `time-sheet`; see [`browser-tasks.md`](./browser-tasks.md)) keeps everything personal in its `tasks/<name>.md` file: the form URL, the receipts folder, expense categories, policy limits and default weekly hours. The `[browser]` and `[browser.tasks.<task>]` tables in `config.toml` hold the browser choice and each task's policy (`allowed_controls`, `allowed_hosts`, `extra_deny_names` and `upload_dirs`); everything personal stays in the task file.
+A task that drives a browser (`expense-report`, `time-sheet`; see [`browser-tasks.md`](./browser-tasks.md)) keeps everything personal in its `tasks/<name>.md` file: the form URL, the receipts folder, expense categories, policy limits and default weekly hours. The `[browser]` and `[browser.tasks.<task>]` tables in `config.toml` hold the browser choice and each task's policy (`allowed_controls`, `allowed_hosts`, `block_background_writes`, `extra_deny_names` and `upload_dirs`); everything personal stays in the task file.
 
 ### `Trigger:` is a hint, not a matcher
 

@@ -145,6 +145,9 @@ class BrowserTaskPolicy:
     #: subdomain). Required for `upload`, so a receipt only ever goes to a declared site, and
     #: restricts `goto` once declared.
     allowed_hosts: tuple[str, ...] = ()
+    #: Strict mode (off by default): also swallow background writes (`fetch`, `XMLHttpRequest`)
+    #: while a command is attached. Breaks pages that need them; for simple forms only.
+    block_background_writes: bool = False
     #: Folders `download` may save into (absolute, or starting with `~/`). Empty means no
     #: download at all: the default is deny.
     download_dirs: tuple[str, ...] = ()
@@ -571,7 +574,14 @@ _HOST_PATTERN = re.compile(
     r"(?:\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
 )
 _TASK_POLICY_KEYS = frozenset(
-    {"allowed_controls", "allowed_hosts", "download_dirs", "extra_deny_names", "upload_dirs"}
+    {
+        "allowed_controls",
+        "allowed_hosts",
+        "block_background_writes",
+        "download_dirs",
+        "extra_deny_names",
+        "upload_dirs",
+    }
 )
 
 
@@ -704,8 +714,15 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                     f"{prefix}.allowed_hosts must hold bare host names such as erp.example.com "
                     f"or *.example.com in config.toml, got {host!r}"
                 )
+        strict = table.get("block_background_writes", False)
+        if not isinstance(strict, bool):
+            raise ProviderConfigError(
+                f"{prefix}.block_background_writes must be true or false in config.toml, "
+                f"got {strict!r}"
+            )
         policies[str(name)] = BrowserTaskPolicy(
             allowed_hosts=hosts,
+            block_background_writes=strict,
             allowed_controls=_string_list(
                 table.get("allowed_controls"), f"{prefix}.allowed_controls"
             ),
