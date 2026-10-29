@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
+import click
 import pytest
+from click.shell_completion import BashComplete
 from click.testing import CliRunner
 
 from blumkin.cli import main
@@ -199,3 +202,108 @@ def test_the_browser_group_and_its_commands_complete() -> None:
 
 def test_the_browser_profile_subcommands_complete() -> None:
     assert {"create", "delete", "list"} <= set(_complete("blumkin browser profile "))
+
+
+# --------------------------------------------------------------------------- surface audit (#567)
+
+
+def _visible_commands(group: click.Group, ctx: click.Context) -> list[tuple[str, click.Command]]:
+    found = []
+    for name in group.list_commands(ctx):
+        sub = group.get_command(ctx, name)
+        if sub is not None and not getattr(sub, "hidden", False):
+            found.append((name, sub))
+    return found
+
+
+def _walk(command: click.Command, path: list[str]) -> list[tuple[list[str], click.Command]]:
+    """Every visible command under `command`, groups and leaves, with its path."""
+    found = [(path, command)]
+    if isinstance(command, click.Group):
+        ctx = click.Context(command, info_name=path[-1] if path else "blumkin")
+        for name, sub in _visible_commands(command, ctx):
+            found.extend(_walk(sub, [*path, name]))
+    return found
+
+
+def _completions(args: list[str], incomplete: str) -> set[str]:
+    completer = BashComplete(main, {}, "blumkin", "_BLUMKIN_COMPLETE")
+    return {item.value for item in completer.get_completions(args, incomplete)}
+
+
+def test_every_group_completes_exactly_its_subcommands() -> None:
+    for path, command in _walk(main, []):
+        if not isinstance(command, click.Group):
+            continue
+        ctx = click.Context(command, info_name="x")
+        expected = {name for name, _ in _visible_commands(command, ctx)}
+        assert _completions(path, "") == expected, " ".join(path) or "blumkin"
+
+
+def test_every_command_completes_all_of_its_long_options() -> None:
+    for path, command in _walk(main, []):
+        if isinstance(command, click.Group):
+            continue
+        expected = {
+            opt
+            for param in command.params
+            if isinstance(param, click.Option) and not param.hidden
+            for opt in (*param.opts, *param.secondary_opts)
+            if opt.startswith("--")
+        }
+        ctx = click.Context(command, info_name="x")
+        expected.update(opt for opt in command.get_help_option_names(ctx) if opt.startswith("--"))
+        assert _completions(path, "--") == expected, " ".join(path)
+
+
+def test_every_choice_option_completes_its_values() -> None:
+    checked = 0
+    for path, command in _walk(main, []):
+        for param in command.params:
+            if isinstance(param, click.Option) and isinstance(param.type, click.Choice):
+                option = next(opt for opt in param.opts if opt.startswith("--"))
+                values = _completions([*path, option], "")
+                assert values == set(param.type.choices), (" ".join(path), option)
+                checked += 1
+    assert checked > 0
+
+
+def test_the_bash_script_only_asks_for_nosort_where_bash_supports_it() -> None:
+    """Click's template runs `complete -o nosort` unconditionally; stock macOS bash 3.2 rejects
+    it with `invalid option name` and registers no completion at all (#567).
+    """
+    script = CliRunner().invoke(main, ["completion", "bash"]).output
+    assert "BASH_VERSINFO" in script
+    assert "complete -o nosort" not in script
+    assert "$nosort_option" in script
+
+
+def _register_with(script: str, version: tuple[int, int, int]) -> list[str]:
+    """Run the script in bash with a fake `complete` and a pretend bash version; return its args."""
+    pretend = script.replace("BASH_VERSINFO", "PRETEND_BASH_VERSINFO")
+    harness = (
+        f"PRETEND_BASH_VERSINFO=({version[0]} {version[1]} {version[2]})\n"
+        "complete() { printf '%s\\n' \"$@\"; }\n" + pretend
+    )
+    done = subprocess.run(
+        ["bash", "-c", harness], capture_output=True, check=False, text=True, timeout=30
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout.split()
+
+
+def test_the_bash_script_registers_without_nosort_on_bash_3_2_and_with_it_on_4_4() -> None:
+    script = CliRunner().invoke(main, ["completion", "bash"]).output
+    old = _register_with(script, (3, 2, 57))
+    assert "-F" in old and "nosort" not in old
+    assert "-o" in _register_with(script, (4, 4, 0))
+    assert "nosort" in _register_with(script, (5, 3, 0))
+    assert "nosort" not in _register_with(script, (4, 3, 48))
+
+
+def test_the_bash_script_is_valid_bash() -> None:
+    script = CliRunner().invoke(main, ["completion", "bash"]).output
+    done = subprocess.run(
+        ["bash", "-n"], input=script, capture_output=True, check=False, text=True, timeout=30
+    )
+    assert done.returncode == 0, done.stderr

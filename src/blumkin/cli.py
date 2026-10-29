@@ -3975,6 +3975,8 @@ def completion(
         raise SystemExit(EXIT_USAGE)
     completer = comp_cls(main, {}, "blumkin", "_BLUMKIN_COMPLETE")
     script = completer.source()
+    if shell == "bash":
+        script = _guard_bash_nosort(script)
     if not script.endswith("\n"):
         script += "\n"
 
@@ -4056,6 +4058,33 @@ def completion(
             lines.append("  open a new shell to pick it up")
         emit_lines(lines)
     raise SystemExit(EXIT_SUCCESS)
+
+
+_BASH_NOSORT_REGISTRATION = re.compile(
+    r"^(?P<indent>[ \t]*)complete -o nosort -F (?P<rest>.+)$", re.M
+)
+
+
+def _guard_bash_nosort(script: str) -> str:
+    """Ask bash for `-o nosort` only where it exists (bash 4.4 and later).
+
+    Click's template runs `complete -o nosort -F ...` unconditionally. Stock macOS bash 3.2
+    rejects it (`complete: nosort: invalid option name`) and registers no completion at all
+    (issue #567), so completion still works there, just with bash's own ordering.
+    """
+
+    def guarded(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        return (
+            f"{indent}local nosort_option=''\n"
+            f"{indent}if [[ ${{BASH_VERSINFO[0]}} -gt 4 ]] || "
+            f"[[ ${{BASH_VERSINFO[0]}} -eq 4 && ${{BASH_VERSINFO[1]}} -ge 4 ]]; then\n"
+            f"{indent}    nosort_option='-o nosort'\n"
+            f"{indent}fi\n"
+            f"{indent}complete $nosort_option -F {match.group('rest')}"
+        )
+
+    return _BASH_NOSORT_REGISTRATION.sub(guarded, script)
 
 
 def _vaulted_client_id_or_secret_present(cfg: BlumkinConfig) -> bool:
