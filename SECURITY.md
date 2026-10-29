@@ -1,28 +1,20 @@
 # Security policy
 
-blumkin is a personal Microsoft 365 / Google Workspace CLI that acts as the
-signed-in user over **delegated** OAuth. It holds no server, no shared secret,
-and no other person's data. For the short version see
-[`docs/SECURITY-AT-A-GLANCE.md`](docs/SECURITY-AT-A-GLANCE.md).
+blumkin is a Microsoft 365 / Google Workspace CLI (work or personal accounts) that acts as the signed-in user over **delegated** OAuth. It holds no server, no shared secret, and no other person's data. For the short version see [`docs/SECURITY-AT-A-GLANCE.md`](docs/SECURITY-AT-A-GLANCE.md).
 
 ## Reporting a vulnerability
 
 Report privately, not in a public issue or PR:
 
-- **GitHub private vulnerability reporting** — <https://github.com/the-hcma/blumkin/security/advisories/new>
-  (Security tab -> Report a vulnerability).
+- **GitHub private vulnerability reporting** — <https://github.com/the-hcma/blumkin/security/advisories/new> (Security tab -> Report a vulnerability).
 
-Include the version (`blumkin --version`), the platform, and the smallest
-reproduction you have. You will get an acknowledgement within **3 business
-days**.
+Include the version (`blumkin --version`), the platform, and the smallest reproduction you have. You will get an acknowledgement within **3 business days**.
 
-Please do not open a normal issue, post a PR, or disclose publicly until a fix
-is released or 90 days have passed, whichever comes first.
+Please do not open a normal issue, post a PR, or disclose publicly until a fix is released or 90 days have passed, whichever comes first.
 
 ## Supported versions
 
-blumkin ships from `main` only. Fixes go into the next release; there are no
-back-port branches.
+blumkin ships from `main` only. Fixes go into the next release; there are no back-port branches.
 
 | Version | Supported |
 |---------|-----------|
@@ -37,39 +29,23 @@ back-port branches.
 | High | 5 business days | 30 days |
 | Medium / Low | 10 business days | next routine release |
 
-A fix is a normal Conventional-Commit `fix:` PR; merging it and its release PR
-publishes a patched version through the pipeline in
-[`docs/RELEASING.md`](docs/RELEASING.md). If a published release must be pulled,
-follow the **Rollback** section there.
+A fix is a normal Conventional-Commit `fix:` PR; merging it and its release PR publishes a patched version through the pipeline in [`docs/RELEASING.md`](docs/RELEASING.md). If a published release must be pulled, follow the **Rollback** section there.
 
 ## What is in scope
 
 - The `blumkin` CLI and its packaged code.
-- The release pipeline
-  ([`.github/workflows/release-please.yml`](.github/workflows/release-please.yml),
-  trusted publishing, and the build scripts
-  [`scripts/embed_build_metadata`](scripts/embed_build_metadata) /
-  [`scripts/verify-pypi-release`](scripts/verify-pypi-release)).
-- Handling of the local token cache and config under `~/.config/blumkin/`
-  ([`src/blumkin/auth.py`](src/blumkin/auth.py),
-  [`src/blumkin/config.py`](src/blumkin/config.py),
-  [`src/blumkin/secret_store.py`](src/blumkin/secret_store.py),
-  [`src/blumkin/providers/google_auth.py`](src/blumkin/providers/google_auth.py)).
+- The release pipeline ([`.github/workflows/release-please.yml`](.github/workflows/release-please.yml), trusted publishing, and the build scripts [`scripts/embed_build_metadata`](scripts/embed_build_metadata) / [`scripts/verify-pypi-release`](scripts/verify-pypi-release)).
+- Handling of the local token cache and config under `~/.config/blumkin/` ([`src/blumkin/auth.py`](src/blumkin/auth.py), [`src/blumkin/config.py`](src/blumkin/config.py), [`src/blumkin/secret_store.py`](src/blumkin/secret_store.py), [`src/blumkin/providers/google_auth.py`](src/blumkin/providers/google_auth.py)).
 
 ## What is out of scope
 
-- Microsoft Graph / Google Workspace themselves, and the tenant's own consent
-  and conditional-access policies.
-- The security of a machine where an operator has run `blumkin auth login` -
-  the token cache is only as protected as `~/.config/blumkin/` on that host.
-- Social-engineering an operator into running a notifying skill (`--yes` is the
-  guard; see [`.agents/rules/no-third-party-side-effects.md`](.agents/rules/no-third-party-side-effects.md)).
+- Microsoft Graph / Google Workspace themselves, and the tenant's own consent and conditional-access policies.
+- The security of a machine where an operator has run `blumkin auth login` - the token cache is only as protected as `~/.config/blumkin/` on that host.
+- Social-engineering an operator into running a notifying skill (`--yes` is the guard; see [`.agents/rules/no-third-party-side-effects.md`](.agents/rules/no-third-party-side-effects.md)).
 
 ## Controls in place
 
-Every check links to the code that runs it. The **required status checks** on
-`main` are the hard merge gate; the rest are advisory and caught at code-owner
-review.
+Every check links to the code that runs it. The **required status checks** on `main` are the hard merge gate; the rest are advisory and caught at code-owner review.
 
 | Control | Where | Gate |
 |---------|-------|------|
@@ -91,11 +67,7 @@ review.
 
 ## Governance tooling (repository-helpers)
 
-The compliance and workflow tooling above is **not vendored into this repo**. It
-comes from
-[`the-hcma/repository-helpers`](https://github.com/the-hcma/repository-helpers)
-and is versioned there, re-synced into this repo per `AGENTS.md` ("Repository
-practices / lint" and "Formatting & linting").
+The compliance and workflow tooling above is **not vendored into this repo**. It comes from [`the-hcma/repository-helpers`](https://github.com/the-hcma/repository-helpers) and is versioned there, re-synced into this repo per `AGENTS.md` ("Repository practices / lint" and "Formatting & linting").
 
 | Tool | Purpose | Gate |
 |------|---------|------|
@@ -107,6 +79,4 @@ practices / lint" and "Formatting & linting").
 | [`wait-for-agent-review`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/wait-for-agent-review) | Drives the agent-review loop (reply-before-resolve, CI wait, operator email) | mandatory per PR |
 | [`ship-and-review`](https://github.com/the-hcma/repository-helpers/blob/main/.agents/skills/ship-and-review/SKILL.md) / [`gh-stack`](https://github.com/the-hcma/repository-helpers/blob/main/.agents/skills/gh-stack/SKILL.md) skills | The canonical submit + stacking playbooks | followed on every PR |
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full toolchain and the review
-model, and [`docs/DECISIONS.md`](docs/DECISIONS.md) for why the repo is public
-and in a personal org.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full toolchain and the review model, and [`docs/DECISIONS.md`](docs/DECISIONS.md) for why the repo is public and in a personal org.

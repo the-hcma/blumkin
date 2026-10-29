@@ -1,4 +1,4 @@
-"""blumkin — personal Microsoft Graph skills CLI."""
+"""blumkin - Microsoft 365 and Google Workspace skills CLI."""
 
 from __future__ import annotations
 

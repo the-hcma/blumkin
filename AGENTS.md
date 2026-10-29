@@ -6,7 +6,7 @@ Non-negotiable standards for humans and AI working in this repo.
 
 ## What this repo is
 
-**blumkin** is a personal Microsoft 365 / Graph **skills CLI** (delegated “as me”). See `README.md` and `PLAN.md`.
+**blumkin** is a Microsoft 365 and Google Workspace **skills CLI** (delegated “as me”, for work or personal accounts). See `README.md` and `PLAN.md`.
 
 When writing mail or Teams chat bodies on the user's behalf (via blumkin skills), follow `.agents/skills/blumkin/SKILL.md` authoring style: hyphens, not em/en dashes.
 

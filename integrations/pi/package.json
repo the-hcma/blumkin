@@ -1,7 +1,7 @@
 {
   "name": "@the-hcma/blumkin-pi-skill",
   "version": "1.1.0",
-  "description": "Pi package exposing the blumkin Agent Skill (personal Microsoft 365 via the blumkin CLI: calendar, mail, Teams chat, free/busy). Requires the separately installed `blumkin` binary on PATH.",
+  "description": "Pi package exposing the blumkin Agent Skill (Microsoft 365 and Google Workspace via the blumkin CLI: calendar, mail, chat, free/busy, docs). Requires the separately installed `blumkin` binary on PATH.",
   "keywords": [
     "pi-package",
     "pi-skill",

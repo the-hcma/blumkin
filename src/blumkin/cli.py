@@ -1353,9 +1353,9 @@ def main(
     profile: str | None,
     tz_name: str | None,
 ) -> None:
-    """Personal Microsoft 365 / Google Workspace skills CLI, acting as you.
+    """Microsoft 365 and Google Workspace skills CLI, acting as you (work or personal accounts).
 
-    blumkin turns calendar, mail, Teams chat, and free/busy flows into small
+    blumkin turns calendar, mail, chat (Teams or Google Chat), and free/busy flows into small
     commands a coding agent (or a human) can run over the shell, using delegated
     OAuth - it acts as the signed-in user, never as an app.
 

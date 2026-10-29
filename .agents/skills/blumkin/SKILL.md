@@ -1,8 +1,8 @@
 ---
 name: blumkin
 description: >-
-  Personal Microsoft 365 via the blumkin CLI (calendar, mail, Teams chat,
-  free/busy). Use when the user asks about their Outlook/Teams as themselves.
+  Microsoft 365 and Google Workspace via the blumkin CLI (calendar, mail, chat,
+  free/busy, docs). Use when the user asks about their Outlook/Teams/Gmail/Google as themselves.
 ---
 # Blumkin
 

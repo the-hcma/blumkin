@@ -1,16 +1,10 @@
 # Blumkin — CLI plan (review)
 
-> **Historical v1 design doc.** The command tree and phase list below predate
-> Google Workspace support, `docs create`, `mcp serve`, `people resolve`,
-> `profiles`, and other post-v1 features. For the current command surface see
-> `README.md`; for ongoing design decisions see `docs/DECISIONS.md`. Kept here
-> for the original rationale (§1–§10) and because `docs/agent-integration.md`
-> cites §6.1's skill-vs-MCP tradeoff.
+> **Historical v1 design doc.** The command tree and phase list below predate Google Workspace support, `docs create`, `mcp serve`, `people resolve`, `profiles`, and other post-v1 features. For the current command surface see `README.md`; for ongoing design decisions see `docs/DECISIONS.md`. Kept here for the original rationale (§1–§10) and because `docs/agent-integration.md` cites §6.1's skill-vs-MCP tradeoff.
 
-Personal Microsoft 365 / Graph **skills CLI**. Named after
-[Rose "Mrs. B" Blumkin](https://en.wikipedia.org/wiki/Rose_Blumkin).
+Microsoft 365 and Google Workspace **skills CLI** (work or personal accounts). Named after [Rose "Mrs. B" Blumkin](https://en.wikipedia.org/wiki/Rose_Blumkin).
 
-**Language decision:** **Python 3.14+** with **`uv`** for packaging and local gates (Blumkin is a Graph skills CLI, not a Bot Framework host). End users and agents invoke **`blumkin` on `PATH`**, not `uv run blumkin`.
+**Language decision:** **Python 3.14+** with **`uv`** for packaging and local gates (Blumkin is a Microsoft 365 and Google Workspace skills CLI, not a Bot Framework host). End users and agents invoke **`blumkin` on `PATH`**, not `uv run blumkin`.
 
 Blumkin = delegated Graph access **as the signed-in user**.
 
@@ -320,16 +314,7 @@ Full integration guidance (skill vs MCP, Cursor / Copilot CLIs): **§6**.
 
 **Decision (issue #113): ship both — the Agent Skill *and* a thin stdio MCP adapter.**
 
-The MCP adapter is not a second surface: `blumkin mcp serve` derives its tools
-1:1 from `skills_catalog()` and calls the same `run_skill` / `classify_exception`
-seam the CLI callbacks call, so there is no second Graph implementation and
-nothing to drift. It is an ephemeral stdio process the host spawns and reaps per
-session (Claude Code, Cursor CLI, GitHub Copilot CLI are all MCP-native stdio
-clients now) — not a daemon — and it reuses the CLI's on-disk token cache, so
-there is no new auth surface. The CLI-only verbs (`auth *`, `doctor`, `skills *`,
-`mail signature`, `mcp serve`) are not exposed; every tool whose CLI form needs
-`--yes` requires a server-enforced `confirm: true` argument (the MCP mirror of
-`--yes`). `--read-only` / `--only <prefix>` narrow the tool set.
+The MCP adapter is not a second surface: `blumkin mcp serve` derives its tools 1:1 from `skills_catalog()` and calls the same `run_skill` / `classify_exception` seam the CLI callbacks call, so there is no second Graph implementation and nothing to drift. It is an ephemeral stdio process the host spawns and reaps per session (Claude Code, Cursor CLI, GitHub Copilot CLI are all MCP-native stdio clients now) — not a daemon — and it reuses the CLI's on-disk token cache, so there is no new auth surface. The CLI-only verbs (`auth *`, `doctor`, `skills *`, `mail signature`, `mcp serve`) are not exposed; every tool whose CLI form needs `--yes` requires a server-enforced `confirm: true` argument (the MCP mirror of `--yes`). `--read-only` / `--only <prefix>` narrow the tool set.
 
 ```text
   Claude Code / Cursor CLI / Copilot CLI
@@ -357,8 +342,8 @@ Example skill outline (to author in Phase 5 — not code yet):
 ---
 name: blumkin
 description: >-
-  Personal Microsoft 365 via the blumkin CLI (calendar, mail, Teams chat,
-  free/busy). Use when the user asks about their Outlook/Teams as themselves.
+  Microsoft 365 and Google Workspace via the blumkin CLI (calendar, mail, chat,
+  free/busy, docs). Use when the user asks about their Outlook/Teams/Gmail/Google as themselves.
 ---
 # Blumkin
 
@@ -371,7 +356,7 @@ description: >-
 
 Cursor Agent CLI then uses its normal **shell tool** — no MCP required.
 
-Also useful: a short note in **user rules** or repo `AGENTS.md`: “For personal M365 actions on this machine, use Blumkin.”
+Also useful: a short note in **user rules** or repo `AGENTS.md`: “For M365 and Google Workspace actions on this machine, use Blumkin.”
 
 ### 6.3 GitHub Copilot CLI
 
@@ -380,7 +365,7 @@ Same pattern:
 | Piece | Role |
 |-------|------|
 | **CLI on PATH** | Identical `blumkin` binary |
-| **Instructions** | Copilot custom instructions / local guidance: prefer Blumkin for M365 personal tasks |
+| **Instructions** | Copilot custom instructions / local guidance: prefer Blumkin for M365 and Google Workspace tasks |
 | **Skill (if Copilot skills supported in your setup)** | Same `SKILL.md` content, or a Copilot-oriented copy under `.github/` / docs that points at the CLI |
 | **Execution** | Copilot CLI runs `blumkin … --json` via its shell/command capability |
 
@@ -442,9 +427,7 @@ Dev: `ruff`, `pyright`, `pytest`.
 
 ## 8. Repository-helpers / `github-repo-lint` readiness
 
-Blumkin ([the-hcma/blumkin](https://github.com/the-hcma/blumkin)) should comply with
-[repository-helpers](https://github.com/the-hcma/repository-helpers) **github-repo-lint**
-like `bunnify` / `domesti-bot`.
+Blumkin ([the-hcma/blumkin](https://github.com/the-hcma/blumkin)) should comply with [repository-helpers](https://github.com/the-hcma/repository-helpers) **github-repo-lint** like `bunnify` / `domesti-bot`.
 
 ### Already seeded in this repo
 | Artifact | Purpose |
@@ -543,8 +526,7 @@ No separate required checks named only `Ruff` / `Pyright` / `Backend Lint`.
 
 ## 11. Open questions (v1 design review — resolved; kept for history)
 
-All six v1 open questions are resolved by shipped behavior; see the code /
-docs cited below rather than treating any of this as still open.
+All six v1 open questions are resolved by shipped behavior; see the code / docs cited below rather than treating any of this as still open.
 
 1. ~~**Config path:** XDG only, or also repo-local `.blumkin.toml`?~~ Resolved: XDG (`~/.config/blumkin/`, or `BLUMKIN_CONFIG_DIR`) only — see `config.py`.
 2. ~~**People resolve:** fuzzy `--with` match, or require email?~~ Resolved (issue #79): `people resolve` ships fail-closed on ambiguous matches.

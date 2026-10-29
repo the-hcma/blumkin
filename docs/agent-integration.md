@@ -121,14 +121,15 @@ Copilot CLI has no skills directory; it reads Markdown instruction files. For a 
 Append this to `~/.copilot/copilot-instructions.md`:
 
 ```markdown
-## Personal Microsoft 365 (blumkin)
+## Microsoft 365 and Google Workspace (blumkin)
 
-For the user's own Outlook calendar, mail, Teams chat, or free/busy, shell out to
-`blumkin` instead of writing Microsoft Graph or Azure SDK code. Never invent a
-client id or call Graph directly when a blumkin skill covers the job.
+For the user's own Outlook or Gmail calendar, mail, Teams or Google Chat, or free/busy,
+shell out to `blumkin` instead of writing Microsoft Graph, Google API or Azure SDK code.
+Never invent a client id or call Graph or Google directly when a blumkin skill covers the job.
 
 - Discover commands with `blumkin skills list --json`; describe one with
   `blumkin skills describe <id> --json`.
+- With more than one account, never rely on the default profile for a request about a specific account: run `blumkin profiles list --json` first, and when `count` is greater than 1 pass `--profile <name-or-tag>` for the account the user named, or ask which account when it is ambiguous.
 - Always pass `--json` when parsing output.
 - Writes that notify other people require `--yes`. Never add `--yes` to satisfy a
   failed command — only when the user asked for that action.
