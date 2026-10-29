@@ -21,7 +21,12 @@ import pytest
 from click.testing import CliRunner
 
 from blumkin.browser.cdp import attach
-from blumkin.browser.discovery import BrowserNotFoundError, resolve_browser
+from blumkin.browser.discovery import (
+    BrowserKind,
+    BrowserNotFoundError,
+    ResolvedBrowser,
+    resolve_browser,
+)
 from blumkin.browser.drift import Grade, check_page
 from blumkin.browser.explore import (
     Explorer,
@@ -212,10 +217,7 @@ def test_launch_attach_fill_upload_read_and_detach_leaves_the_browser_running(
 ) -> None:
     if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
         pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
-    try:
-        browser = resolve_browser(None)
-    except BrowserNotFoundError:
-        pytest.skip("no Chrome, Edge or Chromium installed")
+    browser = _installed_browser()
     profile = create_profile(tmp_path, "expense-report")
     receipt = tmp_path / "receipt.png"
     receipt.write_bytes(b"not really a png")
@@ -244,10 +246,7 @@ def test_launch_attach_fill_upload_read_and_detach_leaves_the_browser_running(
 def test_the_guard_stops_every_way_of_submitting_a_real_form(tmp_path: Path, form_url: str) -> None:
     if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
         pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
-    try:
-        browser = resolve_browser(None)
-    except BrowserNotFoundError:
-        pytest.skip("no Chrome, Edge or Chromium installed")
+    browser = _installed_browser()
     profile = create_profile(tmp_path, "expense-report")
     result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
     try:
@@ -275,10 +274,7 @@ def test_the_guard_stops_the_known_bypasses_and_the_net_is_gone_after_detaching(
 ) -> None:
     if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
         pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
-    try:
-        browser = resolve_browser(None)
-    except BrowserNotFoundError:
-        pytest.skip("no Chrome, Edge or Chromium installed")
+    browser = _installed_browser()
     profile = create_profile(tmp_path, "expense-report")
     result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
     allowed = frozenset({"Next", "Alt", "Tidy", "Continue", "Plain", "Go now"})
@@ -323,6 +319,16 @@ def test_the_guard_stops_the_known_bypasses_and_the_net_is_gone_after_detaching(
         os.kill(result.session.pid, signal.SIGTERM)
 
 
+def _installed_browser() -> ResolvedBrowser:
+    """The first installed browser of any supported kind; skip the test when there is none."""
+    for kind in BrowserKind:
+        try:
+            return resolve_browser(kind.value)
+        except BrowserNotFoundError:
+            continue
+    pytest.skip("no Chrome, Edge or Chromium installed")
+
+
 def _wait_for(condition: Callable[[], bool], *, timeout_s: float = 10.0) -> bool:
     """Poll a condition against a deadline (the real browser's request is asynchronous)."""
     deadline = time.monotonic() + timeout_s
@@ -338,10 +344,7 @@ def test_the_cli_commands_fill_a_real_form_and_never_submit_it(
 ) -> None:
     if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
         pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
-    try:
-        browser = resolve_browser(None)
-    except BrowserNotFoundError:
-        pytest.skip("no Chrome, Edge or Chromium installed")
+    browser = _installed_browser()
     config = tmp_path / "config"
     config.mkdir()
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(config))
@@ -379,10 +382,7 @@ def _launched_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task: str, policy: str
 ) -> tuple[Any, Any, Any]:
     """A throwaway config with one task policy, its profile and a headless browser on it."""
-    try:
-        browser = resolve_browser(None)
-    except BrowserNotFoundError:
-        pytest.skip("no Chrome, Edge or Chromium installed")
+    browser = _installed_browser()
     config = tmp_path / "config"
     config.mkdir()
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(config))
@@ -479,10 +479,7 @@ def test_exploration_reads_a_real_page_inspects_without_clicking_and_stays_on_th
 ) -> None:
     if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
         pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
-    try:
-        browser = resolve_browser(None)
-    except BrowserNotFoundError:
-        pytest.skip("no Chrome, Edge or Chromium installed")
+    browser = _installed_browser()
     profile = create_profile(tmp_path, "expense-report")
     result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
     try:
@@ -533,10 +530,7 @@ def test_drift_is_graded_against_a_real_site_that_is_then_edited(
 ) -> None:
     if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
         pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
-    try:
-        browser = resolve_browser(None)
-    except BrowserNotFoundError:
-        pytest.skip("no Chrome, Edge or Chromium installed")
+    browser = _installed_browser()
     profile = create_profile(tmp_path, "expense-report")
     result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
     try:
@@ -576,10 +570,7 @@ def test_a_background_write_goes_through_by_default_and_not_in_strict_mode(
 ) -> None:
     if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
         pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
-    try:
-        browser = resolve_browser(None)
-    except BrowserNotFoundError:
-        pytest.skip("no Chrome, Edge or Chromium installed")
+    browser = _installed_browser()
     profile = create_profile(tmp_path, "expense-report")
     result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
     allowed = frozenset({"Save line"})
@@ -617,10 +608,7 @@ def test_a_script_submitted_get_form_reaches_the_server_with_the_net_installed(
 ) -> None:
     if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
         pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
-    try:
-        browser = resolve_browser(None)
-    except BrowserNotFoundError:
-        pytest.skip("no Chrome, Edge or Chromium installed")
+    browser = _installed_browser()
     profile = create_profile(tmp_path, "expense-report")
     result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
     allowed = frozenset({"Search now"})
@@ -637,7 +625,7 @@ def test_a_script_submitted_get_form_reaches_the_server_with_the_net_installed(
             driver.click("Search now")
             # The server answers /search with the generic form page; reading the page on each
             # poll also keeps Playwright servicing the route while the navigation happens.
-            assert _wait_for(lambda: "Total due" in driver.read_text().text)
+            assert _wait_for(lambda: "Total due" in driver.read_text().text), _Handler.hosts
             assert any(h.endswith("/search?q=rent") for h in _Handler.hosts), _Handler.hosts
             driver.close()
     finally:
