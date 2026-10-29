@@ -3,7 +3,8 @@ name: CI
 # Job structure and the .github/ci/* gate scripts follow the-hcma/repository-helpers
 # conventions, enforced by github-repo-lint. Required checks on `main`: Scaffold
 # checks, Python lint & format checks, Pytest (hermetic), Packaging smoke,
-# Shellcheck. See CONTRIBUTING.md and SECURITY.md.
+# Shellcheck, Rust lint & test (blumkin-agent; skipped, and so passing, when a change cannot
+# affect it). See CONTRIBUTING.md and SECURITY.md.
 
 on:
   pull_request:
@@ -131,11 +132,11 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           if [[ -n "$PR_NUMBER" ]]; then
-            endpoint="repos/$REPOSITORY/pulls/$PR_NUMBER/files"
-            filter='.[].filename'
+            endpoint="repos/$REPOSITORY/pulls/$PR_NUMBER/files?per_page=100"
+            filter='.[] | .filename, (.previous_filename // empty)'
           elif [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]]; then
-            endpoint="repos/$REPOSITORY/compare/$BASE_SHA...$HEAD_SHA"
-            filter='.files[].filename'
+            endpoint="repos/$REPOSITORY/compare/$BASE_SHA...$HEAD_SHA?per_page=100"
+            filter='.files[] | .filename, (.previous_filename // empty)'
           else
             echo "rust_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -143,12 +144,15 @@ jobs:
           if ! files="$(gh api "$endpoint" --paginate --jq "$filter")"; then
             files=""
           fi
-          rust_changed="$(printf '%s\n' "$files" | bash .github/ci/rust-changed)"
+          if ! rust_changed="$(printf '%s\n' "$files" | bash .github/ci/rust-changed)"; then
+            rust_changed=true
+          fi
           echo "rust_changed=$rust_changed" >> "$GITHUB_OUTPUT"
           echo "Rust job needed: $rust_changed"
 
   # Required status checks on `main` (branch protection): Scaffold checks,
-  # Python lint & format checks, Pytest (hermetic), Packaging smoke, Shellcheck.
+  # Python lint & format checks, Pytest (hermetic), Packaging smoke, Shellcheck, and
+  # Rust lint & test (blumkin-agent), which a change that cannot affect it skips.
   # Guard, Secret Scan, and workflow-lint run on every PR but are advisory
   # (not required) - see CONTRIBUTING.md and SECURITY.md.
   scaffold:
@@ -242,11 +246,12 @@ jobs:
   # (a pull request, or a merge queue entry) can affect the Rust build, and always for the
   # schedule and manual runs; a job skipped by this `if` counts as passing for branch
   # protection, which a workflow-level `paths:` filter would not (the check would never
-  # report).
+  # report). `always()` and the `guard.result` test make a failed guard run the job instead
+  # of skipping it: a skipped required check would otherwise pass without being run.
   rust-static:
     name: Rust lint & test (blumkin-agent)
     needs: guard
-    if: needs.guard.outputs.skip != 'true' && needs.guard.outputs.rust_changed == 'true'
+    if: always() && needs.guard.outputs.skip != 'true' && (needs.guard.result != 'success' || needs.guard.outputs.rust_changed == 'true')
     # macOS, not ubuntu-latest: rust-agent/ only ever ships on macOS (see
     # hatch_build.py), and its host target here (aarch64-apple-darwin) is
     # one of the two the release wheel actually cross-compiles.

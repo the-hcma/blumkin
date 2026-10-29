@@ -3,22 +3,25 @@
 # Reads the changed file names (one per line) on stdin and prints `true` or `false`. ci.yml
 # runs the macOS Rust job only on `true`, since that runner is scarce and slow and a docs or
 # Python change cannot affect it (issue #570). An empty list means the changed files could
-# not be read, so it fails safe to `true`.
+# not be read, so it fails safe to `true`; so does a list long enough to have been truncated.
 set -euo pipefail
 
-relevant='^(rust-agent/|hatch_build\.py$|pyproject\.toml$|\.github/ci/rust-(static|changed)$|\.github/workflows/ci\.yml$)'
+relevant='^(rust-agent/|rust-toolchain(\.toml)?$|\.cargo/|hatch_build\.py$|pyproject\.toml$|\.github/ci/rust-(static|changed)$|\.github/workflows/ci\.yml$)'
+# GitHub caps a pull request's or a comparison's file list at 3000 without an error, so a list
+# this long may have lost a Rust file from its tail: run the job.
+max_trusted=2800
 
 seen=0
 while IFS= read -r file; do
   [[ -n "${file}" ]] || continue
-  seen=1
+  seen=$((seen + 1))
   if [[ "${file}" =~ ${relevant} ]]; then
     echo true
     exit 0
   fi
 done
 
-if [[ "${seen}" -eq 0 ]]; then
+if [[ "${seen}" -eq 0 || "${seen}" -ge "${max_trusted}" ]]; then
   echo true
 else
   echo false
