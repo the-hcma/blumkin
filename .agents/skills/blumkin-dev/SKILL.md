@@ -11,6 +11,8 @@ Run **`scripts/dev/blumkin <args>`** (from the checkout root, or by its absolute
 
 ## Before anything else
 
+Setting up from scratch (no config, no profiles, MCP registration)? Follow [`docs/agent-onboarding.md`](../../../docs/agent-onboarding.md); this skill covers the rules once it works.
+
 1. Run `scripts/dev/blumkin --version`. The first line must contain a dev marker: `+dev.<short sha>.<commit date>`, with `-dirty` after it when the checkout has uncommitted or untracked changes. Report that exact line to the user, so they know which code ran.
 2. If the marker is missing you are not running the checkout (for example an installed release answered). Stop and tell the user instead of continuing.
 3. `scripts/dev/blumkin doctor` shows the source tree path, the resolved config directory and what selected it (`BLUMKIN_CONFIG_DIR`, `XDG_CONFIG_HOME` or the default). Use it to confirm which state you are about to touch.
