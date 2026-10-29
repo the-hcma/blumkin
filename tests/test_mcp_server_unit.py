@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import tempfile
+import threading
 import tomllib
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -29,7 +31,7 @@ pytest.importorskip("mcp")
 
 from mcp.client import Client  # noqa: E402  (after importorskip)
 
-from blumkin.mcp_server import build_server, build_tools  # noqa: E402
+from blumkin.mcp_server import build_server, build_tools, serve_streams  # noqa: E402
 
 _CFG = SimpleNamespace(
     account_type="organizational",
@@ -931,3 +933,125 @@ def test_the_teams_hint_says_which_provider_attaches_a_meeting() -> None:
     hint = result.structured_content["hint"]
     assert "Microsoft" in hint and "pass no_teams=true" in hint
     assert "Google" in hint
+
+
+def test_a_client_that_probes_with_the_2026_envelope_can_still_initialize() -> None:
+    """Copilot CLI sends an enveloped request first, then falls back to `initialize` (#563).
+
+    The SDK's dual-era loop locks the connection to the 2026-07-28 era on that first request
+    and then refuses `initialize` with -32022. Over stdio there is no second connection to
+    retry on, so blumkin serves the handshake era only.
+    """
+    import anyio
+    from mcp.shared.message import SessionMessage
+    from mcp.types import JSONRPCError, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse
+
+    envelope = {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}
+    initialize = {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "probe-client", "version": "1"},
+    }
+
+    async def _run() -> tuple[Any, Any, Any]:
+        to_server_send, to_server_recv = anyio.create_memory_object_stream[SessionMessage](8)
+        to_client_send, to_client_recv = anyio.create_memory_object_stream[SessionMessage](8)
+
+        async def _ask(request_id: int, method: str, params: dict[str, Any]) -> Any:
+            request = JSONRPCRequest(jsonrpc="2.0", id=request_id, method=method, params=params)
+            await to_server_send.send(SessionMessage(request))
+            while True:
+                reply = (await to_client_recv.receive()).message
+                if isinstance(reply, JSONRPCResponse | JSONRPCError) and reply.id == request_id:
+                    return reply
+
+        async with to_server_send, to_client_recv:
+            with anyio.fail_after(15):
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(serve_streams, build_server(), to_server_recv, to_client_send)
+                    probe = await _ask(1, "tools/list", envelope)
+                    handshake = await _ask(2, "initialize", initialize)
+                    await to_server_send.send(
+                        SessionMessage(
+                            JSONRPCNotification(jsonrpc="2.0", method="notifications/initialized")
+                        )
+                    )
+                    listing = await _ask(3, "tools/list", {})
+                    # The client leaves: the server must stop on its own (the task group only
+                    # exits once `serve_streams` returns) and close what it writes to.
+                    await to_server_send.aclose()
+                    with pytest.raises(anyio.EndOfStream):
+                        await to_client_recv.receive()
+        return probe, handshake, listing
+
+    probe, handshake, listing = asyncio.run(_run())
+    assert not isinstance(handshake, JSONRPCError), handshake
+    assert handshake.result["serverInfo"]["name"]
+    assert isinstance(listing, JSONRPCResponse)
+    assert listing.result["tools"]
+    assert isinstance(probe, JSONRPCError)
+
+
+def test_blumkin_mcp_serve_over_stdio_accepts_initialize_after_an_enveloped_probe(
+    tmp_path: Path,
+) -> None:
+    """The same sequence through the real `blumkin mcp serve` process, stdin to stdout (#563)."""
+    import subprocess
+
+    envelope = {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}
+    initialize = {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "probe-client", "version": "1"},
+    }
+    frames = [
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": envelope},
+        {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": initialize},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}},
+    ]
+    env = {
+        "BLUMKIN_CONFIG_DIR": str(tmp_path),
+        "HOME": str(tmp_path),
+        "PATH": os.environ.get("PATH", ""),
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "blumkin", "mcp", "serve"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    watchdog = threading.Timer(60, proc.kill)
+    watchdog.start()
+    replies: dict[int, dict[str, Any]] = {}
+    try:
+        for frame in frames:
+            proc.stdin.write(json.dumps(frame) + "\n")
+            proc.stdin.flush()
+        # A real client keeps the pipe open until it has its answers.
+        while 3 not in replies:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            reply = json.loads(line)
+            if "id" in reply:
+                replies[reply["id"]] = reply
+        proc.stdin.close()
+        returncode = proc.wait(timeout=30)
+        stderr = proc.stderr.read() if proc.stderr else ""
+    finally:
+        watchdog.cancel()
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe:
+                pipe.close()
+    assert returncode == 0, stderr
+    assert "error" in replies[1]
+    assert "error" not in replies[2], replies[2]
+    assert replies[2]["result"]["serverInfo"]["name"]
+    assert replies[3]["result"]["tools"]

@@ -430,6 +430,8 @@ Add blumkin for GitHub Copilot CLI -> copilot mcp add (scope: user) [Y/n]:
 
 It uses each client's own `mcp add` where it has one — `claude mcp add` at either scope, `copilot mcp add` at user scope — and merges the entry into the JSON config otherwise (Cursor at either scope; Copilot at project scope → `.mcp.json`), leaving any other servers alone. **Re-running is safe** — an entry that already matches is reported "already current", a stale one (say, after the `blumkin` binary moved) is updated. Non-interactive: `blumkin mcp install --yes --scope user` (or `--client cursor`, `--read-only`, `--profile work`, `--only calendar --only mail`, `--force`).
 
+The server speaks the MCP handshake protocol (`initialize`) only (issue #563). A client that opens with a request carrying the newer 2026-07-28 per-request envelope is answered with an error it can recover from, and its `initialize` is then accepted on the same connection; this is what lets GitHub Copilot CLI connect. The cost is that a client which speaks only the 2026-07-28 era and never sends `initialize` cannot use the stdio server until the SDK lets a probe fall back to the handshake.
+
 `blumkin mcp status` shows where blumkin is registered and with which command.
 
 ### Register it by hand

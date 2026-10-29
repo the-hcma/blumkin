@@ -33,6 +33,7 @@ from blumkin.version import build_version, read_installed_version, running_comma
 try:
     import mcp.types as types
     from mcp.server.lowlevel import Server
+    from mcp.server.runner import serve_loop
     from mcp.server.stdio import stdio_server
 except ModuleNotFoundError as exc:  # pragma: no cover - the CLI wrapper re-raises with a hint
     # `mcp` is a core dependency since 1.4.0; reaching here means this install is
@@ -239,6 +240,35 @@ def serve(
     anyio.run(lambda: _serve_async(profile=profile, read_only=read_only, only=only))
 
 
+async def serve_streams(server: Server, read_stream: Any, write_stream: Any) -> None:
+    """Serve one connection in the handshake era only, until the client disconnects.
+
+    `Server.run` drives the SDK's dual-era loop, where the client's first request decides the
+    era. A client that opens with a request carrying the 2026-07-28 `_meta` envelope (a probe)
+    locks the connection to that era, and its fallback `initialize` is then refused with
+    -32022 "the initialize handshake is not accepted"; over stdio there is no second
+    connection to retry on, so Copilot CLI could never connect (issue #563). Serving the
+    handshake loop directly accepts that `initialize` and answers an enveloped request that
+    arrives before it with an error the client can recover from. This uses the SDK's public
+    `serve_loop`, entered inside the server lifespan exactly as `Server.run` does.
+
+    The cost: a client that speaks only the 2026-07-28 era cannot use this stdio server, since
+    it never sends `initialize`. Revisit when `Server.run` lets a probe fall back to the
+    handshake.
+    """
+    try:
+        async with server.lifespan(server) as lifespan_state:
+            await serve_loop(
+                server,
+                read_stream,
+                write_stream,
+                lifespan_state=lifespan_state,
+                init_options=server.create_initialization_options(),
+            )
+    finally:
+        await write_stream.aclose()
+
+
 def _annotations(skill: dict[str, Any]) -> types.ToolAnnotations:
     return types.ToolAnnotations(
         read_only_hint=not skill["mutates"],
@@ -426,7 +456,7 @@ async def _serve_async(*, profile: str | None, read_only: bool, only: tuple[str,
     stale_check = _stale_server_checker(running_build)
     server = build_server(profile=profile, read_only=read_only, only=only, stale_check=stale_check)
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+        await serve_streams(server, read_stream, write_stream)
 
 
 def _server_instructions(profiles: list[dict[str, Any]], *, pinned_name: str | None) -> str | None:
