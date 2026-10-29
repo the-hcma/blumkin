@@ -312,3 +312,19 @@ def test_the_task_guide_and_help_explain_nth_for_a_legitimately_repeated_name() 
     assert "does not change what a task may click" in guide
     assert "refused with the real count" in guide
     assert "--nth" in help_text.BROWSER_CLICK_EPILOG
+
+
+def test_the_task_guide_explains_how_to_close_a_task_browser() -> None:
+    """An agent that launched a task browser must be able to clean up after itself (#574)."""
+    guide = " ".join(_text("docs/browser-tasks.md").split())
+    assert "`blumkin browser close TASK`" in guide
+    assert "keeps the profile" in guide and "saved sign-in" in guide
+    assert "`--force`" in guide and "`--wait`" in guide
+    # The two errors a close can end in are in the error table.
+    assert "`browser_close_failed`" in guide
+    # `profile delete` points at it instead of leaving a dead end.
+    assert "close it first with `blumkin browser close" in guide
+    # Safety: what happens when the browser cannot be told apart, and what a kill leaves.
+    assert 'never as "no browser"' in guide
+    assert "refuses to signal" in guide and "own process tree" in guide
+    assert "single-instance files" in guide

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.browser.discovery import resolve_browser
-from blumkin.browser.launcher import launch
+from blumkin.browser.launcher import DEFAULT_CLOSE_TIMEOUT_S, close_browser, launch
 from blumkin.browser.profiles import (
     BrowserProfile,
     BrowserSession,
@@ -33,6 +33,24 @@ SIGN_IN_GUIDANCE = (
 
 class TaskNotFoundError(LookupError):
     """No browser profile exists for the task."""
+
+
+def close_task_browser(
+    config_dir: Path,
+    task: str,
+    *,
+    force: bool = False,
+    timeout_s: float = DEFAULT_CLOSE_TIMEOUT_S,
+) -> dict[str, Any]:
+    """Close the task's browser, keeping its profile (cookies, saved sign-in) for next time."""
+    profile = require_profile(config_dir, task)
+    result = close_browser(profile, force=force, timeout_s=timeout_s)
+    return {
+        "forced": result.forced,
+        "ok": True,
+        "task": task,
+        "was_running": result.was_running,
+    }
 
 
 def create_task_profile(config_dir: Path, task: str) -> dict[str, Any]:

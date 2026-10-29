@@ -13,8 +13,11 @@ import pytest
 
 from blumkin.browser.discovery import BrowserKind, ResolvedBrowser
 from blumkin.browser.launcher import (
+    BrowserCloseError,
     BrowserLaunchError,
+    _signal_process,
     build_launch_args,
+    close_browser,
     launch,
 )
 from blumkin.browser.profiles import (
@@ -465,3 +468,358 @@ def test_ordinary_switches_and_a_start_url_are_still_accepted() -> None:
     )
     assert "--headless=new" in args
     assert "https://example.com/start" in args
+
+
+# --------------------------------------------------------------------------- close (issue #574)
+
+
+class _RunningBrowser:
+    """A pretend browser: alive until it is told to stop, and it records every signal."""
+
+    def __init__(self, pid: int = 4242, *, stops_on_term: bool = True) -> None:
+        self.pid = pid
+        self.alive = True
+        self.stops_on_term = stops_on_term
+        self.signals: list[tuple[int, int]] = []
+
+    def is_browser(self, pid: int, directory: Path) -> bool:
+        return self.alive and pid == self.pid
+
+    def send(self, pid: int, sig: int) -> None:
+        self.signals.append((pid, sig))
+        if sig == signal.SIGKILL or (sig == signal.SIGTERM and self.stops_on_term):
+            self.alive = False
+
+
+def _running_profile(tmp_path: Path, browser: _RunningBrowser) -> BrowserProfile:
+    profile = create_profile(tmp_path, "youtube-transcript")
+    write_session(
+        profile.path,
+        BrowserSession(browser="chrome", pid=browser.pid, port=41000, started_at="x"),
+    )
+    (profile.path / "DevToolsActivePort").write_text("41000\n/x\n", encoding="utf-8")
+    (profile.path / "Cookies").write_text("saved sign-in", encoding="utf-8")
+    return profile
+
+
+def _close(profile: BrowserProfile, browser: _RunningBrowser, **kwargs: Any) -> Any:
+    clock = _Clock()
+    return close_browser(
+        profile,
+        is_browser=browser.is_browser,
+        send_signal=browser.send,
+        now=clock.monotonic,
+        sleep=clock.sleep,
+        **kwargs,
+    )
+
+
+def test_close_stops_the_browser_gracefully_and_keeps_the_profile(tmp_path: Path) -> None:
+    browser = _RunningBrowser()
+    profile = _running_profile(tmp_path, browser)
+
+    result = _close(profile, browser)
+
+    assert result.was_running is True and result.forced is False
+    assert browser.signals == [(4242, signal.SIGTERM)]
+    assert read_session(profile.path, pid_alive=lambda pid: True) is None
+    assert not (profile.path / "DevToolsActivePort").exists()
+    # The saved sign-in survives: closing is not deleting.
+    assert (profile.path / "Cookies").read_text(encoding="utf-8") == "saved sign-in"
+
+
+def test_close_with_no_browser_running_signals_nothing(tmp_path: Path) -> None:
+    browser = _RunningBrowser()
+    browser.alive = False
+    profile = _running_profile(tmp_path, browser)
+
+    result = _close(profile, browser)
+
+    assert result.was_running is False and result.forced is False
+    assert browser.signals == []
+    assert read_session(profile.path, pid_alive=lambda pid: True) is None
+
+
+def test_close_never_signals_a_pid_that_is_not_the_browser_on_this_profile(
+    tmp_path: Path,
+) -> None:
+    """A stale session whose pid was reused by an unrelated process must be left alone."""
+    browser = _RunningBrowser()
+    profile = _running_profile(tmp_path, browser)
+    unrelated = _RunningBrowser(pid=9999)
+
+    result = close_browser(
+        profile,
+        is_browser=lambda pid, directory: False,
+        send_signal=unrelated.send,
+    )
+
+    assert result.was_running is False
+    assert unrelated.signals == []
+
+
+def test_close_finds_a_browser_that_has_no_session_record(tmp_path: Path) -> None:
+    browser = _RunningBrowser()
+    profile = create_profile(tmp_path, "youtube-transcript")
+    (profile.path / "SingletonLock").symlink_to("host-4242")
+
+    result = _close(profile, browser)
+
+    assert result.was_running is True
+    assert browser.signals == [(4242, signal.SIGTERM)]
+
+
+def test_close_reports_a_browser_that_will_not_stop_and_does_not_kill_it(
+    tmp_path: Path,
+) -> None:
+    browser = _RunningBrowser(stops_on_term=False)
+    profile = _running_profile(tmp_path, browser)
+
+    with pytest.raises(BrowserCloseError) as excinfo:
+        _close(profile, browser, timeout_s=3.0)
+
+    assert "--force" in str(excinfo.value)
+    assert browser.signals == [(4242, signal.SIGTERM)]
+    # Still recorded: it is still running, so it can be closed later.
+    assert read_session(profile.path, pid_alive=lambda pid: True) is not None
+
+
+def test_close_force_kills_a_browser_that_will_not_stop(tmp_path: Path) -> None:
+    browser = _RunningBrowser(stops_on_term=False)
+    profile = _running_profile(tmp_path, browser)
+
+    result = _close(profile, browser, timeout_s=3.0, force=True)
+
+    assert result.was_running is True and result.forced is True
+    assert browser.signals == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+    assert read_session(profile.path, pid_alive=lambda pid: True) is None
+
+
+def test_close_waits_for_a_slow_browser_to_exit(tmp_path: Path) -> None:
+    browser = _RunningBrowser(stops_on_term=False)
+    profile = _running_profile(tmp_path, browser)
+    clock = _Clock()
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        if clock.now >= 2.0:
+            browser.alive = False
+
+    result = close_browser(
+        profile,
+        is_browser=browser.is_browser,
+        send_signal=browser.send,
+        now=clock.monotonic,
+        sleep=sleep,
+        timeout_s=10.0,
+    )
+
+    assert result.was_running is True and result.forced is False
+    assert browser.signals == [(4242, signal.SIGTERM)]
+
+
+def test_close_refuses_a_profile_blumkin_did_not_create(tmp_path: Path) -> None:
+    foreign = BrowserProfile(task="x", path=tmp_path)
+    with pytest.raises(NotBlumkinProfileError):
+        close_browser(
+            foreign, is_browser=lambda pid, directory: True, send_signal=lambda p, s: None
+        )
+
+
+def test_close_fails_fast_while_a_launch_holds_the_profile(tmp_path: Path) -> None:
+    from blumkin.browser.profiles import ProfileBusyError, profile_lock
+
+    browser = _RunningBrowser()
+    profile = _running_profile(tmp_path, browser)
+    with profile_lock(profile), pytest.raises(ProfileBusyError):
+        _close(profile, browser)
+    assert browser.signals == []
+
+
+class _Ps:
+    """A stand-in for `process_is_browser_for` that can lose `ps` part-way through."""
+
+    def __init__(self, pid: int = 4242) -> None:
+        self.pid = pid
+        self.alive = True
+        self.ps_works = True
+
+    def __call__(self, pid: int, directory: Path, *, assume_on_unknown: bool = True) -> bool:
+        if pid != self.pid or not self.alive:
+            return False
+        if not self.ps_works:
+            return assume_on_unknown
+        return True
+
+
+def _with_ps(monkeypatch: pytest.MonkeyPatch, ps: _Ps) -> None:
+    monkeypatch.setattr("blumkin.browser.launcher.process_is_browser_for", ps)
+    monkeypatch.setattr("blumkin.browser.profiles.process_is_browser_for", ps)
+
+
+def test_close_does_not_report_no_browser_when_ps_cannot_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live browser must not read as 'not running' just because `ps` timed out."""
+    ps = _Ps()
+    ps.ps_works = False
+    _with_ps(monkeypatch, ps)
+    browser = _RunningBrowser()
+    profile = _running_profile(tmp_path, browser)
+
+    with pytest.raises(BrowserCloseError, match="could not confirm"):
+        close_browser(profile, send_signal=browser.send)
+
+    assert browser.signals == []
+    # The live browser's record is not thrown away.
+    assert read_session(profile.path, pid_alive=lambda pid: True) is not None
+
+
+def test_close_keeps_waiting_when_ps_stops_answering_mid_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ps = _Ps()
+    _with_ps(monkeypatch, ps)
+    browser = _RunningBrowser(stops_on_term=False)
+    profile = _running_profile(tmp_path, browser)
+    clock = _Clock()
+
+    def sleep(seconds: float) -> None:
+        clock.sleep(seconds)
+        ps.ps_works = False
+
+    with pytest.raises(BrowserCloseError, match="still running"):
+        close_browser(
+            profile,
+            send_signal=browser.send,
+            now=clock.monotonic,
+            sleep=sleep,
+            timeout_s=2.0,
+        )
+
+    # It was not declared closed, and its record and port file were not removed.
+    assert read_session(profile.path, pid_alive=lambda pid: True) is not None
+    assert (profile.path / "DevToolsActivePort").exists()
+
+
+def test_close_a_singleton_lock_pointing_at_another_program_signals_nothing(
+    tmp_path: Path,
+) -> None:
+    profile = create_profile(tmp_path, "youtube-transcript")
+    (profile.path / "SingletonLock").symlink_to("host-777")
+    unrelated = _RunningBrowser(pid=777)
+
+    result = close_browser(
+        profile,
+        is_browser=lambda pid, directory: False,
+        send_signal=unrelated.send,
+    )
+
+    assert result.was_running is False
+    assert unrelated.signals == []
+
+
+def test_close_rechecks_just_before_a_kill_and_never_kills_a_process_that_already_left(
+    tmp_path: Path,
+) -> None:
+    browser = _RunningBrowser(stops_on_term=False)
+    profile = _running_profile(tmp_path, browser)
+    clock = _Clock()
+    seen = {"checks": 0}
+
+    def is_browser(pid: int, directory: Path) -> bool:
+        seen["checks"] += 1
+        # Alive for the identification and the wait, gone by the re-check before the kill.
+        return seen["checks"] < 5 and browser.is_browser(pid, directory)
+
+    result = close_browser(
+        profile,
+        force=True,
+        is_browser=is_browser,
+        send_signal=browser.send,
+        now=clock.monotonic,
+        sleep=clock.sleep,
+        timeout_s=0.4,
+    )
+
+    assert (4242, signal.SIGKILL) not in browser.signals
+    assert result.was_running is True
+
+
+def test_close_clears_chromes_stale_singleton_files_after_a_forced_kill(tmp_path: Path) -> None:
+    browser = _RunningBrowser(stops_on_term=False)
+    profile = _running_profile(tmp_path, browser)
+    (profile.path / "SingletonLock").symlink_to("host-4242")
+    (profile.path / "SingletonSocket").symlink_to("/tmp/x/SingletonSocket")
+    (profile.path / "SingletonCookie").symlink_to("12345")
+
+    _close(profile, browser, timeout_s=1.0, force=True)
+
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        assert not (profile.path / name).is_symlink(), name
+    assert (profile.path / "Cookies").exists()
+
+
+def test_close_leaves_the_singleton_files_to_chrome_after_a_graceful_stop(
+    tmp_path: Path,
+) -> None:
+    browser = _RunningBrowser()
+    profile = _running_profile(tmp_path, browser)
+    (profile.path / "SingletonCookie").symlink_to("12345")
+
+    _close(profile, browser)
+
+    assert (profile.path / "SingletonCookie").is_symlink()
+
+
+def test_a_permission_error_while_signalling_is_a_clear_close_error(tmp_path: Path) -> None:
+    browser = _RunningBrowser()
+    profile = _running_profile(tmp_path, browser)
+
+    def deny(pid: int, sig: int) -> None:
+        raise PermissionError("not permitted")
+
+    with pytest.raises(BrowserCloseError, match="not permitted"):
+        close_browser(profile, is_browser=browser.is_browser, send_signal=deny)
+
+
+@pytest.mark.parametrize("which", ["pid", "parent", "group", "session"])
+def test_the_default_signaller_refuses_to_signal_the_callers_own_process_tree(
+    monkeypatch: pytest.MonkeyPatch, which: str
+) -> None:
+    def never(*args: Any) -> None:
+        raise AssertionError("must not signal")
+
+    monkeypatch.setattr("blumkin.browser.launcher.os.kill", never)
+    monkeypatch.setattr("blumkin.browser.launcher.os.killpg", never)
+    target = {
+        "pid": os.getpid(),
+        "parent": os.getppid(),
+        "group": os.getpgrp(),
+        "session": os.getsid(0),
+    }[which]
+    with pytest.raises(BrowserCloseError, match="refusing"):
+        _signal_process(target, signal.SIGTERM)
+
+
+def test_the_default_signaller_kills_the_group_only_when_the_pid_leads_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, int, int]] = []
+    monkeypatch.setattr("blumkin.browser.launcher.os.kill", lambda p, s: calls.append(("k", p, s)))
+    monkeypatch.setattr(
+        "blumkin.browser.launcher.os.killpg", lambda p, s: calls.append(("g", p, s))
+    )
+    monkeypatch.setattr("blumkin.browser.launcher.os.getpgrp", lambda: 1)
+    monkeypatch.setattr("blumkin.browser.launcher.os.getsid", lambda _x: 1)
+    monkeypatch.setattr("blumkin.browser.launcher.os.getppid", lambda: 1)
+    monkeypatch.setattr("blumkin.browser.launcher.os.getpgid", lambda p: p)  # leads its group
+    _signal_process(5000, signal.SIGKILL)
+    monkeypatch.setattr("blumkin.browser.launcher.os.getpgid", lambda p: 1234)  # does not
+    _signal_process(5000, signal.SIGKILL)
+    _signal_process(5000, signal.SIGTERM)
+    assert calls == [
+        ("g", 5000, signal.SIGKILL),
+        ("k", 5000, signal.SIGKILL),
+        ("k", 5000, signal.SIGTERM),
+    ]

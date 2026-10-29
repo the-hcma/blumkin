@@ -67,7 +67,11 @@ class ProfileBusyError(BrowserProfileError):
 
 
 class ProfileInUseError(BrowserProfileError):
-    """The profile's browser is still running."""
+    """The profile is busy: its browser is running, or a launch for it is in progress."""
+
+
+class ProfileBrowserRunningError(ProfileInUseError):
+    """The profile's browser is still running (and can be closed)."""
 
 
 SESSION_FILENAME = ".blumkin-session.json"
@@ -121,7 +125,7 @@ def delete_profile(
                 read_session(profile.path, pid_alive=pid_alive) is not None
                 or running_browser_pid(profile.path, is_browser=is_browser) is not None
             ):
-                raise ProfileInUseError(
+                raise ProfileBrowserRunningError(
                     f"Expected the browser for task {task!r} to be closed before deleting its "
                     "profile, got a running browser"
                 )

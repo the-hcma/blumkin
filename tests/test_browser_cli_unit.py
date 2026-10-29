@@ -11,7 +11,12 @@ import pytest
 from click.testing import CliRunner
 
 from blumkin.browser.discovery import BrowserKind, BrowserNotFoundError, ResolvedBrowser
-from blumkin.browser.launcher import BrowserLaunchError, LaunchResult
+from blumkin.browser.launcher import (
+    BrowserCloseError,
+    BrowserLaunchError,
+    CloseResult,
+    LaunchResult,
+)
 from blumkin.browser.profiles import BrowserSession, create_profile, write_session
 from blumkin.cli import main
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_OTHER, EXIT_SUCCESS, EXIT_USAGE
@@ -422,3 +427,136 @@ def test_launch_with_an_invalid_browser_default_is_a_usage_error(_config_dir: Pa
     assert result.exit_code == EXIT_USAGE, result.output
     assert _json(result)["error"] == "usage_error"
     assert "browser.default" in _json(result)["message"]
+
+
+# --------------------------------------------------------------------------- close (issue #574)
+
+
+class _Closer:
+    """Stands in for `close_browser`: records how it was called and returns or raises."""
+
+    def __init__(self, result: CloseResult | Exception) -> None:
+        self.result = result
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, profile: Any, **kwargs: Any) -> CloseResult:
+        self.calls.append({"task": profile.task, **kwargs})
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def _closer(monkeypatch: pytest.MonkeyPatch, result: CloseResult | Exception) -> _Closer:
+    closer = _Closer(result)
+    monkeypatch.setattr("blumkin.browser.commands.close_browser", closer)
+    return closer
+
+
+def test_close_stops_the_task_browser_and_reports_it(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_profile(_config_dir, "youtube-transcript")
+    closer = _closer(monkeypatch, CloseResult(forced=False, was_running=True))
+    result = _run("browser", "close", "youtube-transcript")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result) == {
+        "forced": False,
+        "ok": True,
+        "task": "youtube-transcript",
+        "was_running": True,
+    }
+    assert closer.calls[0]["task"] == "youtube-transcript"
+    assert closer.calls[0]["force"] is False
+
+
+def test_close_human_output_says_the_profile_is_kept(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_profile(_config_dir, "youtube-transcript")
+    _closer(monkeypatch, CloseResult(forced=False, was_running=True))
+    out = CliRunner().invoke(main, ["browser", "close", "youtube-transcript"]).output
+    assert "youtube-transcript: browser closed" in out and "profile kept" in out
+
+
+def test_close_with_nothing_running_is_a_calm_no_op(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_profile(_config_dir, "youtube-transcript")
+    _closer(monkeypatch, CloseResult(forced=False, was_running=False))
+    result = _run("browser", "close", "youtube-transcript")
+    assert result.exit_code == EXIT_SUCCESS
+    assert _json(result)["was_running"] is False
+    out = CliRunner().invoke(main, ["browser", "close", "youtube-transcript"]).output
+    assert "no browser was running" in out
+
+
+def test_close_passes_force_and_the_wait_through(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_profile(_config_dir, "youtube-transcript")
+    closer = _closer(monkeypatch, CloseResult(forced=True, was_running=True))
+    result = _run("browser", "close", "youtube-transcript", "--force", "--wait", "40")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["forced"] is True
+    assert closer.calls[0]["force"] is True
+    assert closer.calls[0]["timeout_s"] == 40.0
+
+
+@pytest.mark.parametrize("bad", ["-1", "nan", "99999"])
+def test_close_rejects_a_wait_that_is_not_a_sensible_number_of_seconds(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    create_profile(_config_dir, "youtube-transcript")
+    closer = _closer(monkeypatch, CloseResult(forced=False, was_running=True))
+    result = _run("browser", "close", "youtube-transcript", "--wait", bad)
+    assert result.exit_code == EXIT_USAGE, result.output
+    assert closer.calls == []
+
+
+def test_close_of_an_unknown_task_is_not_found_and_says_how_to_create_it() -> None:
+    result = _run("browser", "close", "nope")
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert _json(result)["error"] == "not_found"
+    assert "browser profile create" in _json(result)["hint"]
+
+
+def test_close_rejects_a_bad_task_name_as_a_usage_error() -> None:
+    result = _run("browser", "close", "../x")
+    assert result.exit_code == EXIT_USAGE
+    assert _json(result)["error"] == "usage_error"
+
+
+def test_a_browser_that_will_not_stop_is_reported_with_the_force_hint(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_profile(_config_dir, "youtube-transcript")
+    _closer(
+        monkeypatch,
+        BrowserCloseError("Expected the browser for task 'youtube-transcript' to close, got it"),
+    )
+    result = _run("browser", "close", "youtube-transcript")
+    assert result.exit_code == EXIT_OTHER
+    payload = _json(result)
+    assert payload["error"] == "browser_close_failed"
+    assert "--force" in payload["hint"]
+
+
+def test_profile_delete_refusal_points_at_browser_close(_config_dir: Path) -> None:
+    profile = create_profile(_config_dir, "expense-report")
+    write_session(profile.path, _SESSION)
+    result = _run("browser", "profile", "delete", "expense-report", "--yes")
+    assert "browser close expense-report" in (_json(result).get("hint") or "")
+
+
+def test_profile_delete_refused_for_a_launch_in_progress_does_not_say_to_close_a_browser(
+    _config_dir: Path,
+) -> None:
+    from blumkin.browser.profiles import profile_lock
+
+    profile = create_profile(_config_dir, "expense-report")
+    with profile_lock(profile):
+        result = _run("browser", "profile", "delete", "expense-report", "--yes")
+    assert result.exit_code == EXIT_OTHER
+    payload = _json(result)
+    assert payload["error"] == "profile_in_use"
+    assert "browser close" not in (payload.get("hint") or "")

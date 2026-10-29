@@ -154,7 +154,9 @@ Every capture carries a coverage report, so a gap is reported instead of silentl
 
 ## Housekeeping
 
-`blumkin browser status` shows each task profile, whether its browser is running and the loopback DevTools endpoint. `blumkin browser profile list` lists the profiles, and `blumkin browser profile delete expense-report --yes` removes one, saved sign-in and cookies included; it refuses while that task's browser is still open. Only profiles blumkin created are listed, attached to or deleted.
+`blumkin browser status` shows each task profile, whether its browser is running and the loopback DevTools endpoint. `blumkin browser profile list` lists the profiles, and `blumkin browser profile delete expense-report --yes` removes one, saved sign-in and cookies included; it refuses while that task's browser is still open: close it first with `blumkin browser close expense-report`. Only profiles blumkin created are listed, attached to, closed or deleted.
+
+`blumkin browser close TASK` ends the browser `browser launch` opened, so an agent can clean up after itself without asking you to close a window by hand. It asks the browser to quit and waits up to `--wait` seconds (15 by default, at most 300) for it to exit, which lets it write its profile out, and it keeps the profile: the saved sign-in and cookies are there the next time you `browser launch TASK`. It signals only a process that is confirmed, by its command line, to be a browser running on that task's profile, so a stale session whose pid has been reused is never touched. With no browser running it says so and exits 0. When `ps` cannot answer, nothing is signalled and the close is reported as `browser_close_failed`, never as "no browser", and the session record is kept. `browser close` refuses to signal any process in its own process tree (itself, its parent, or the head of its process group or session), even one whose command line names the profile. A browser that does not exit is reported as `browser_close_failed`; `--force` then kills it (its process group, only when the browser leads it), clears Chrome's stale single-instance files, and its profile may need to recover. Closing never deletes anything: `profile delete` is the command that does.
 
 ## Errors
 
@@ -170,6 +172,7 @@ Every capture carries a coverage report, so a gap is reported instead of silentl
 | `upload_blocked` | 1 | The file is not a regular file with a single link inside one of the task's `upload_dirs` folders, the page is not on one of its `allowed_hosts`, or the task declares neither. |
 | `download_blocked` | 1 | The task declares no `download_dirs` or `allowed_hosts`, the folder is not an existing folder inside a `download_dirs` folder, the file name is not a plain text-file name, the file is too large or not a regular file, or a file of that name already exists. |
 | `host_blocked` | 1 | `goto` was asked for a host outside the task's `allowed_hosts`, or a page the task is on or ended up on is outside them. |
+| `browser_close_failed` | 1 | `browser close` asked the browser to quit and it was still running after `--wait`. Close its window by hand, or retry with `--force` to kill it. |
 | `profile_in_use` | 1 | Raised when the task's browser is running or a launch for it is in progress; close it or wait, then try again. |
 | `explore_refused` | 1 | Exploration needs `allowed_hosts` for the task, or the page is (or a click led) outside them. |
 | `model_invalid` | 1 | The draft or the stored model was rejected: a field outside the schema, a value that looks like typed data, a symlink or a file that is too large. |
