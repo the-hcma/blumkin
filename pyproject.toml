@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "blumkin"
 version = "1.13.0"
-description = "Personal Microsoft 365 / Graph skills CLI (delegated as me)"
+description = "Microsoft 365 and Google Workspace skills CLI for calendar, mail, chat, and docs (delegated, as me)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -16,6 +16,9 @@ authors = [
 keywords = [
     "blumkin",
     "cli",
+    "gmail",
+    "google-workspace",
+    "microsoft-365",
     "microsoft-graph",
     "outlook",
     "teams",

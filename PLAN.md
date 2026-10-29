@@ -7,7 +7,7 @@
 > for the original rationale (§1–§10) and because `docs/agent-integration.md`
 > cites §6.1's skill-vs-MCP tradeoff.
 
-Personal Microsoft 365 / Graph **skills CLI**. Named after
+Microsoft 365 and Google Workspace **skills CLI** (work or personal accounts). Named after
 [Rose "Mrs. B" Blumkin](https://en.wikipedia.org/wiki/Rose_Blumkin).
 
 **Language decision:** **Python 3.14+** with **`uv`** for packaging and local gates (Blumkin is a Graph skills CLI, not a Bot Framework host). End users and agents invoke **`blumkin` on `PATH`**, not `uv run blumkin`.
@@ -357,8 +357,8 @@ Example skill outline (to author in Phase 5 — not code yet):
 ---
 name: blumkin
 description: >-
-  Personal Microsoft 365 via the blumkin CLI (calendar, mail, Teams chat,
-  free/busy). Use when the user asks about their Outlook/Teams as themselves.
+  Microsoft 365 and Google Workspace via the blumkin CLI (calendar, mail, chat,
+  free/busy, docs). Use when the user asks about their Outlook/Teams/Gmail/Google as themselves.
 ---
 # Blumkin
 
@@ -371,7 +371,7 @@ description: >-
 
 Cursor Agent CLI then uses its normal **shell tool** — no MCP required.
 
-Also useful: a short note in **user rules** or repo `AGENTS.md`: “For personal M365 actions on this machine, use Blumkin.”
+Also useful: a short note in **user rules** or repo `AGENTS.md`: “For M365 and Google Workspace actions on this machine, use Blumkin.”
 
 ### 6.3 GitHub Copilot CLI
 
@@ -380,7 +380,7 @@ Same pattern:
 | Piece | Role |
 |-------|------|
 | **CLI on PATH** | Identical `blumkin` binary |
-| **Instructions** | Copilot custom instructions / local guidance: prefer Blumkin for M365 personal tasks |
+| **Instructions** | Copilot custom instructions / local guidance: prefer Blumkin for M365 and Google Workspace tasks |
 | **Skill (if Copilot skills supported in your setup)** | Same `SKILL.md` content, or a Copilot-oriented copy under `.github/` / docs that points at the CLI |
 | **Execution** | Copilot CLI runs `blumkin … --json` via its shell/command capability |
 

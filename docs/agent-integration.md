@@ -121,7 +121,7 @@ Copilot CLI has no skills directory; it reads Markdown instruction files. For a 
 Append this to `~/.copilot/copilot-instructions.md`:
 
 ```markdown
-## Personal Microsoft 365 (blumkin)
+## Microsoft 365 and Google Workspace (blumkin)
 
 For the user's own Outlook calendar, mail, Teams chat, or free/busy, shell out to
 `blumkin` instead of writing Microsoft Graph or Azure SDK code. Never invent a

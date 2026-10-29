@@ -1,6 +1,6 @@
 # Security policy
 
-blumkin is a personal Microsoft 365 / Google Workspace CLI that acts as the
+blumkin is a Microsoft 365 / Google Workspace CLI (work or personal accounts) that acts as the
 signed-in user over **delegated** OAuth. It holds no server, no shared secret,
 and no other person's data. For the short version see
 [`docs/SECURITY-AT-A-GLANCE.md`](docs/SECURITY-AT-A-GLANCE.md).
