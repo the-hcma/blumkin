@@ -68,9 +68,13 @@ config_dir() {
   printf '%s\n' "${chosen}"
 }
 
-# Whether the command can run without a config.toml: help, version, `auth setup` itself, and
-# `profiles list` (which answers `count: 0`, the `blumkin` skill's cold-start check). `-h` is not
-# help: blumkin only accepts `--help`.
+# Whether the command needs a config.toml: only the provider-bound ones do (mail, calendar,
+# chat, drive, docs, people, meeting, tasks, capabilities, doctor, `auth` apart from `auth
+# setup`, and `mcp serve`). Everything else answers for itself without one, so it is not
+# gated: help, version, `profiles list` (`count: 0`, the `blumkin` skill's cold-start check),
+# `completion`, `agent`, `mcp install`, `skills`. `-h` is not help: blumkin only accepts
+# `--help`. Naming the gated commands, not the exempt ones, means a new command needs no
+# launcher change (issue #565).
 needs_config() {
   local arg previous="" positional=()
   for arg in "$@"; do
@@ -82,11 +86,20 @@ needs_config() {
     fi
     previous="${arg}"
   done
-  [[ "${positional[0]:-}" == "auth" && "${positional[1]:-}" == "setup" ]] && return 1
-  [[ "${positional[0]:-}" == "profiles" && "${positional[1]:-}" == "list" ]] && return 1
-  [[ "${positional[0]:-}" == "skills" ]] && return 1
-  [[ ${#positional[@]} -eq 0 ]] && return 1
-  return 0
+  case "${positional[0]:-}" in
+    calendar | capabilities | chat | doctor | docs | drive | mail | meeting | people | tasks)
+      return 0
+      ;;
+    auth)
+      [[ "${positional[1]:-}" == "setup" ]] && return 1
+      return 0
+      ;;
+    mcp)
+      [[ "${positional[1]:-}" == "serve" ]] && return 0
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 # The --profile option (either `--profile X` or `--profile=X`), so the guided setup configures

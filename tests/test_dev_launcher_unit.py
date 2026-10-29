@@ -106,6 +106,40 @@ def test_a_short_h_is_not_help_because_blumkin_does_not_accept_it(tmp_path: Path
     assert "no config.toml" in result.stderr
 
 
+def test_commands_that_need_no_profile_run_without_a_config(tmp_path: Path) -> None:
+    """Only provider-bound commands are gated; the rest answer for themselves (#565)."""
+    config = tmp_path / "empty"
+    completion = _run(["completion", "zsh"], config, tmp_path)
+    assert completion.returncode == 0, completion.stderr
+    assert "no config.toml" not in completion.stderr
+    agent = _run(["agent", "status"], config, tmp_path)
+    assert "no config.toml" not in agent.stderr
+    assert not config.exists()
+
+
+def test_mcp_install_runs_without_a_config_because_registering_needs_no_credentials(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "empty"
+    project = tmp_path / "project"
+    project.mkdir()
+    done = _run(
+        ["mcp", "install", "--client", "claude", "--scope", "project", "--yes", "--json"],
+        config,
+        project,
+    )
+    assert "no config.toml" not in done.stderr
+    assert done.returncode == 0, done.stderr
+    assert (project / ".mcp.json").is_file()
+
+
+def test_provider_bound_commands_are_still_refused_with_the_setup_hint(tmp_path: Path) -> None:
+    for args in (["mail", "inbox"], ["doctor"], ["auth", "status"], ["capabilities"]):
+        result = _run(args, tmp_path / "empty", tmp_path)
+        assert result.returncode == 2, args
+        assert "no config.toml" in result.stderr, args
+
+
 def _session(args: list[str], config: Path, cwd: Path) -> pexpect.spawn:
     return pexpect.spawn(
         str(_SCRIPT),

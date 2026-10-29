@@ -50,9 +50,17 @@ def test_the_dev_skill_warns_that_a_launcher_on_path_shadows_the_installed_relea
     assert "`+dev` marker" in text
 
 
-def test_the_dev_skill_says_profiles_list_runs_without_a_config() -> None:
+def test_the_dev_skill_says_only_provider_bound_commands_need_a_config() -> None:
     text = " ".join((_ROOT / ".agents/skills/blumkin-dev/SKILL.md").read_text().split())
     assert "`profiles list`" in text
+    assert "Only provider-bound commands need a config" in text
+    assert "`completion`" in text and "`mcp install`" in text
+
+
+def test_the_onboarding_guide_no_longer_says_the_launcher_refuses_mcp_install() -> None:
+    text = " ".join((_ROOT / "docs/agent-onboarding.md").read_text().split())
+    assert "the launcher refuses `mcp install`" not in text
+    assert "`mcp install` runs without a config" in text
 
 
 def test_the_onboarding_troubleshooting_table_has_no_rows_for_fixed_problems() -> None:
