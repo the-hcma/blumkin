@@ -8,7 +8,7 @@ Read [`AGENTS.md`](AGENTS.md) first - it is the contract for humans and agents a
 
 Every change to `main` goes through a pull request. No direct pushes, no force pushes, and a PR must be up to date with `main` before it merges.
 
-- **Required status checks must be green** — `Scaffold checks`, `Python lint & format checks`, `Pytest (hermetic)`, `Packaging smoke`, `Shellcheck` (see the table below). This is the hard merge gate; `enforce_admins` is off so a green run is the only thing routinely bypassed.
+- **Required status checks must be green** — `Scaffold checks`, `Python lint & format checks`, `Pytest (hermetic)`, `Packaging smoke`, `Shellcheck`, `Rust lint & test (blumkin-agent)` (see the table below). This is the hard merge gate; `enforce_admins` is off so a green run is the only thing routinely bypassed.
 - **Agent review runs on every PR head.** `mergestorm-vortex` reviews each push; [`.agents/rules/pr-ship-and-review.md`](.agents/rules/pr-ship-and-review.md) requires an on-thread human reply before any review thread is resolved. Threads are addressed before merge.
 - **Code-owner review.** [`.github/CODEOWNERS`](.github/CODEOWNERS) is `* @thehcma` with `require_code_owner_reviews` on, so GitHub requests @thehcma on every PR and records who reviewed. `required_approving_review_count` is `0` — a solo maintainer cannot approve their own PR, and a block nobody can clear only forces admin-override merges. External contributions get @thehcma's review by practice; only collaborators can merge, and the checks gate it. Rationale and the "second contributor" trigger to raise it back to 1: [`docs/DECISIONS.md`](docs/DECISIONS.md) (D2).
 
@@ -27,7 +27,7 @@ uv run pytest -m 'not live' -n 0
 
 Run locally with [`pre-pr-checks`](https://github.com/the-hcma/repository-helpers/blob/main/scripts/dev/pre-pr-checks) (or the individual [`.github/ci/*`](.github/ci) scripts). CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same gates.
 
-The **required status checks** on `main` are `Scaffold checks`, `Python lint & format checks`, `Pytest (hermetic)`, `Packaging smoke`, and `Shellcheck` - a red one of those blocks the merge. `Secret Scan`, `Guard`, and workflow-lint run on every PR but are advisory; a code owner still reviews the diff before merge, so a real finding is caught there.
+The **required status checks** on `main` are `Scaffold checks`, `Python lint & format checks`, `Pytest (hermetic)`, `Packaging smoke`, `Shellcheck`, and `Rust lint & test (blumkin-agent)` - a red one of those blocks the merge. The Rust job runs only when a change can affect it (`.github/ci/rust-changed`); a change that cannot skips it, and a skipped job counts as passing. `Secret Scan`, `Guard`, and workflow-lint run on every PR but are advisory; a code owner still reviews the diff before merge, so a real finding is caught there.
 
 | Tool | What it catches | Where it runs | Required on `main`? |
 |------|-----------------|---------------|---------------------|
