@@ -297,3 +297,4 @@ def test_the_task_guide_explains_strict_mode_and_why_form_gets_are_not_blockable
     assert "breaks pages that need background writes" in guide
     assert "cannot tell a form GET from a link" in guide
     assert "service worker" in guide
+    assert "WebSocket" in guide and "hyperlink pings" in guide

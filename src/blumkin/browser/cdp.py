@@ -215,8 +215,8 @@ class PlaywrightDriver:
         self._closed = False
         self._context = page.context
         self._existing_frames = existing_frames
-        self._net_handler: Any = None
         self._navigation_handler: Any = None
+        self._net_handler: Any = None
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -264,7 +264,8 @@ class PlaywrightDriver:
         (`fetch`, `XMLHttpRequest`, a beacon), so a registered click handler cannot post form
         data in the background. That breaks pages that need background writes to work, which
         is why it is opt-in. Strict mode, once installed, is never weakened by a later lenient
-        request.
+        request. Install the net before restricting hosts: both routes end by continuing the
+        request, so a net registered after the host route would run first and skip it.
         """
         self._require_open()
         handler = _abort_every_write if background_writes else _abort_non_get_navigation
@@ -272,13 +273,15 @@ class PlaywrightDriver:
             return
         previous = self._net_handler
         try:
-            # The new route goes in before the old one comes out, so there is no gap.
             self._context.route("**/*", handler)
-            if previous is not None:
-                self._context.unroute("**/*", previous)
         except _playwright_error() as exc:
             raise self._action_error("install the form-submission safety net", exc) from exc
         self._net_handler = handler
+        if previous is not None:
+            # The new route went in before the old one comes out, so there is no gap. If the
+            # old one cannot be removed it stays behind the stricter one, which is harmless.
+            with contextlib.suppress(_playwright_error()):
+                self._context.unroute("**/*", previous)
 
     def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None:
         """Resolve one element, let `vet` inspect that very element, then click it.

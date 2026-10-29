@@ -1554,7 +1554,7 @@ def _strict_outcome(method: str, *, navigation: bool) -> tuple[str, ...]:
     return route.outcome
 
 
-@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE", "patch", "FOO"])
 @pytest.mark.parametrize("navigation", [True, False])
 def test_strict_mode_swallows_every_write_navigation_or_background(
     method: str, navigation: bool
@@ -1599,3 +1599,43 @@ def test_the_lenient_net_after_strict_mode_does_not_weaken_it() -> None:
     route = _Route(_Request("POST", navigation=False))
     pw.browser.contexts[0].routes[0][1](route)
     assert route.outcome == ("fulfill", "204")
+
+
+def test_a_failed_removal_of_the_lenient_net_leaves_strict_mode_recorded_and_closable() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+
+    def failing_unroute(pattern: str, handler: Any) -> None:
+        raise PlaywrightError("route is gone")
+
+    context.unroute = failing_unroute  # type: ignore[method-assign]
+    driver.block_form_submission(background_writes=True)
+    live = context.routes[-1][1]
+    route = _Route(_Request("POST", navigation=False))
+    live(route)
+    assert route.outcome == ("fulfill", "204")
+    unrouted: list[Any] = []
+    context.unroute = lambda pattern, handler: unrouted.append(handler)  # type: ignore[method-assign]
+    driver.block_form_submission(background_writes=True)
+    assert len(context.routes) == 2
+    driver.close()
+    assert unrouted == [live]
+
+
+def test_a_failed_install_of_the_strict_net_keeps_the_lenient_one_and_says_so() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    kept = context.routes[0][1]
+
+    def failing_route(pattern: str, handler: Any) -> None:
+        raise PlaywrightError("page closed")
+
+    context.route = failing_route  # type: ignore[method-assign]
+    with pytest.raises(BrowserActionError, match="safety net"):
+        driver.block_form_submission(background_writes=True)
+    unrouted: list[Any] = []
+    context.unroute = lambda pattern, handler: unrouted.append(handler)  # type: ignore[method-assign]
+    driver.close()
+    assert unrouted == [kept]
