@@ -25,6 +25,7 @@ from blumkin.browser.profiles import (
     BrowserProfile,
     BrowserSession,
     ProfileBusyError,
+    process_is_browser_for,
     profile_lock,
     read_session,
     remove_session,
@@ -34,11 +35,22 @@ from blumkin.browser.profiles import (
 )
 
 
+class BrowserCloseError(RuntimeError):
+    """The browser did not stop when asked."""
+
+
 class BrowserLaunchError(RuntimeError):
     """The browser did not open a DevTools port."""
 
 
+DEFAULT_CLOSE_TIMEOUT_S = 15.0
 DEFAULT_LAUNCH_TIMEOUT_S = 30.0
+
+
+@dataclass(frozen=True, slots=True)
+class CloseResult:
+    forced: bool
+    was_running: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +92,73 @@ def build_launch_args(
         "--no-first-run",
         "--no-default-browser-check",
     ]
+
+
+def close_browser(
+    profile: BrowserProfile,
+    *,
+    force: bool = False,
+    is_browser: Callable[[int, Path], bool] | None = None,
+    now: Callable[[], float] = time.monotonic,
+    send_signal: Callable[[int, int], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    timeout_s: float = DEFAULT_CLOSE_TIMEOUT_S,
+) -> CloseResult:
+    """Stop the task's browser, leaving its profile (cookies, saved sign-in) in place.
+
+    The browser is asked to quit with SIGTERM, which lets it write its profile out, and given
+    `timeout_s` to exit. It is signalled only if its process is confirmed, by its command line,
+    to be a browser running on this very profile, so a stale session whose pid has since been
+    reused is never touched. A browser that does not exit is reported; only `force` kills it.
+    Nothing running is not an error: the answer is `was_running=False`.
+    """
+    require_blumkin_profile(profile.path)
+    sender = send_signal or _signal_process
+    check = is_browser or (
+        lambda pid, directory: process_is_browser_for(pid, directory, assume_on_unknown=False)
+    )
+
+    def running_pid() -> int | None:
+        session = read_session(
+            profile.path, pid_alive=lambda pid: check(pid, profile.path), strict=True
+        )
+        if session is not None:
+            return session.pid
+        return running_browser_pid(profile.path, is_browser=is_browser, strict=True)
+
+    with profile_lock(profile):
+        pid = running_pid()
+        if pid is None:
+            remove_session(profile.path)
+            return CloseResult(forced=False, was_running=False)
+        with contextlib.suppress(ProcessLookupError):
+            sender(pid, signal.SIGTERM)
+        deadline = now() + timeout_s
+        while check(pid, profile.path) and now() < deadline:
+            sleep(_CLOSE_POLL_S)
+        forced = False
+        if check(pid, profile.path):
+            if not force:
+                raise BrowserCloseError(
+                    f"Expected the browser for task {profile.task!r} to close within "
+                    f"{timeout_s:g} seconds, got it still running; close its window, or retry "
+                    "with --force to kill it (its profile may need to recover)"
+                )
+            forced = True
+            with contextlib.suppress(ProcessLookupError):
+                sender(pid, signal.SIGKILL)
+            deadline = now() + _FORCE_WAIT_S
+            while check(pid, profile.path) and now() < deadline:
+                sleep(_CLOSE_POLL_S)
+            if check(pid, profile.path):
+                raise BrowserCloseError(
+                    f"Expected the browser for task {profile.task!r} to stop after being "
+                    "killed, got it still running"
+                )
+        remove_session(profile.path)
+        with contextlib.suppress(FileNotFoundError):
+            (profile.path / PORT_FILENAME).unlink()
+        return CloseResult(forced=forced, was_running=True)
 
 
 def launch(
@@ -161,7 +240,24 @@ def read_devtools_port(profile_dir: Path) -> int | None:
     return port
 
 
+_CLOSE_POLL_S = 0.2
+_FORCE_WAIT_S = 5.0
 _STOP_WAIT_S = 5.0
+
+
+def _signal_process(pid: int, sig: int) -> None:
+    """Signal the browser: its whole group for a kill (it leads its own session), else the pid.
+
+    A graceful SIGTERM goes to the main process alone, which closes its children itself. The
+    group is signalled for SIGKILL only when the pid leads it, so a browser started some other
+    way, inside the user's shell group, never takes the shell down with it.
+    """
+    if sig == signal.SIGKILL:
+        with contextlib.suppress(OSError):
+            if os.getpgid(pid) == pid:
+                os.killpg(pid, sig)
+                return
+    os.kill(pid, sig)
 
 
 def _stop_browser(proc: Any, stop: Callable[[int, int], None]) -> None:
