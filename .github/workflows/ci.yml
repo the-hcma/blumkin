@@ -135,6 +135,9 @@ jobs:
             endpoint="repos/$REPOSITORY/pulls/$PR_NUMBER/files?per_page=100"
             filter='.[] | .filename, (.previous_filename // empty)'
           elif [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]]; then
+            # A comparison lists at most 300 files however it is paged, and a rename counts
+            # twice here, so trust only a short list.
+            export RUST_CHANGED_MAX_FILES=250
             endpoint="repos/$REPOSITORY/compare/$BASE_SHA...$HEAD_SHA?per_page=100"
             filter='.files[] | .filename, (.previous_filename // empty)'
           else

@@ -8,8 +8,9 @@ set -euo pipefail
 
 relevant='^(rust-agent/|rust-toolchain(\.toml)?$|\.cargo/|hatch_build\.py$|pyproject\.toml$|\.github/ci/rust-(static|changed)$|\.github/workflows/ci\.yml$)'
 # GitHub caps a pull request's or a comparison's file list at 3000 without an error, so a list
-# this long may have lost a Rust file from its tail: run the job.
-max_trusted=2800
+# this long may have lost a Rust file from its tail: run the job. A caller whose source has a
+# lower cap (a comparison returns at most 300 files) sets RUST_CHANGED_MAX_FILES.
+max_trusted="${RUST_CHANGED_MAX_FILES:-2800}"
 
 seen=0
 while IFS= read -r file; do

@@ -7,6 +7,7 @@ schedule, manual run, a push with no pull request) always run it.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -18,12 +19,16 @@ _SCRIPT = _ROOT / ".github" / "ci" / "rust-changed"
 _WORKFLOW = (_ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
 
-def _decide(files: list[str]) -> str:
+def _decide(files: list[str], *, max_files: int | None = None) -> str:
+    env = {"PATH": os.environ.get("PATH", "")}
+    if max_files is not None:
+        env["RUST_CHANGED_MAX_FILES"] = str(max_files)
     done = subprocess.run(
         ["bash", str(_SCRIPT)],
         input="\n".join(files) + ("\n" if files else ""),
         capture_output=True,
         check=False,
+        env=env,
         text=True,
         timeout=30,
     )
@@ -83,6 +88,22 @@ def test_a_list_near_the_api_cap_fails_safe_because_it_may_be_truncated() -> Non
     big = [f"docs/page-{n}.md" for n in range(2900)]
     assert _decide(big) == "true"
     assert _decide(big[:2000]) == "false"
+
+
+def test_the_caller_can_lower_the_trusted_list_length() -> None:
+    """A comparison returns at most 300 files, so the merge queue sets a lower bound (#570)."""
+    files = [f"docs/page-{n}.md" for n in range(260)]
+    assert _decide(files) == "false"
+    assert _decide(files, max_files=250) == "true"
+    assert _decide(files[:100], max_files=250) == "false"
+
+
+def test_the_merge_queue_comparison_uses_the_lower_bound() -> None:
+    guard = _job("guard")
+    step = guard.split("id: rust-scope", 1)[1]
+    assert "RUST_CHANGED_MAX_FILES=250" in step
+    # The pull-request listing keeps the script's default (its cap is 3000 files).
+    assert step.count("RUST_CHANGED_MAX_FILES") == 1
 
 
 def test_a_failing_or_skipped_guard_runs_the_rust_job_instead_of_skipping_it() -> None:
