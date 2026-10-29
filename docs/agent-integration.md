@@ -129,6 +129,7 @@ Never invent a client id or call Graph or Google directly when a blumkin skill c
 
 - Discover commands with `blumkin skills list --json`; describe one with
   `blumkin skills describe <id> --json`.
+- With more than one account, never rely on the default profile for a request about a specific account: run `blumkin profiles list --json` first, and when `count` is greater than 1 pass `--profile <name-or-tag>` for the account the user named, or ask which account when it is ambiguous.
 - Always pass `--json` when parsing output.
 - Writes that notify other people require `--yes`. Never add `--yes` to satisfy a
   failed command — only when the user asked for that action.
