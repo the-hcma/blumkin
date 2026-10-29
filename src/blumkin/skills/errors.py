@@ -72,6 +72,11 @@ _MISSING_SCOPE_HINT = (
     '"Select all") on the consent screen - the message above lists exactly '
     "which scopes are missing."
 )
+_FREEBUSY_HINT = (
+    "A requested calendar returned no schedule. Do not pass your own address with --with "
+    "(freebusy and suggest already include you); otherwise check that each address is a "
+    "calendar you can see, then retry."
+)
 _CALENDAR_AMBIGUOUS_HINT = (
     "Pass the calendar id (from `blumkin calendar list --json`), not the name."
 )
@@ -301,7 +306,7 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
     if isinstance(exc, ValueError):
         msg = str(exc)
         if msg.startswith("freebusy lookup failed"):
-            return ErrorInfo("graph_error", EXIT_OTHER, msg)
+            return ErrorInfo("graph_error", EXIT_OTHER, msg, _FREEBUSY_HINT)
         if (
             "client_id" in msg
             or "Missing" in msg

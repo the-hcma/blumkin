@@ -292,8 +292,8 @@ _DEFAULT_HINTS: dict[str, str] = {
         "expired access token), then retry. `blumkin auth status` shows the current state."
     ),
     "graph_error": (
-        "Retry once. If it persists, check `blumkin auth status` and Microsoft 365 "
-        "service health, and re-run with --json for the raw Graph error."
+        "Retry once. If it persists, check `blumkin auth status` and your provider's "
+        "service health, and re-run with --json for the raw error."
     ),
     "install_failed": (
         "Completion `--install` could not write the script. Ensure the target path is "

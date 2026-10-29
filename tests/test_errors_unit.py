@@ -87,6 +87,17 @@ def test_chat_and_scope_classes() -> None:
     assert classify_exception(ChatAttachmentSkippedError("v1")).slug == "usage_error"
 
 
+def test_a_freebusy_failure_hints_at_the_addresses_not_at_a_microsoft_outage() -> None:
+    """A Google profile that passed its own address got a Microsoft 365 health hint (#564)."""
+    info = classify_exception(
+        ValueError("freebusy lookup failed for: primary: no schedule returned")
+    )
+    assert info.slug == "graph_error"
+    assert info.hint is not None
+    assert "own address" in info.hint
+    assert "Microsoft 365" not in info.hint
+
+
 def test_auth_layer_value_errors() -> None:
     assert classify_exception(ProviderConfigError("no client_id")).slug == "usage_error"
     missing = classify_exception(MissingScopeError("gap", current=frozenset(), missing=frozenset()))
