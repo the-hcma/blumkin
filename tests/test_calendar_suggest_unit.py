@@ -545,3 +545,19 @@ def test_calendar_freebusy_batches_over_twenty_schedules(monkeypatch) -> None:
     calls = client.me.calendar.get_schedule.post.await_args_list
     assert [len(c.args[0].schedules) for c in calls] == [20, 1]
     assert [item["schedule"] for item in payload["items"]] == emails
+
+
+def test_a_busy_slot_reports_the_plain_status_word_not_the_enum_repr() -> None:
+    """Microsoft freebusy said `FreeBusyStatus.Busy`; Google says `busy` (#564)."""
+    from msgraph.generated.models.free_busy_status import FreeBusyStatus
+
+    from blumkin.skills.calendar import _busy_slot_to_dict
+
+    slot = SimpleNamespace(
+        start=SimpleNamespace(date_time="2026-08-01T09:00:00.0000000", time_zone="UTC"),
+        end=SimpleNamespace(date_time="2026-08-01T10:00:00.0000000", time_zone="UTC"),
+        status=FreeBusyStatus.Busy,
+    )
+    assert _busy_slot_to_dict(slot, ZoneInfo("UTC"))["status"] == "busy"
+    plain = SimpleNamespace(start=slot.start, end=slot.end, status="tentative")
+    assert _busy_slot_to_dict(plain, ZoneInfo("UTC"))["status"] == "tentative"

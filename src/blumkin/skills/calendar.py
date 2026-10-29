@@ -759,13 +759,10 @@ async def _resolve_graph_calendar_id(client: Any, calendar: str | None) -> str |
 
 
 def _busy_slot_to_dict(item: Any, display_tz: ZoneInfo) -> dict[str, Any]:
-    status = None
-    if getattr(item, "status", None) is not None:
-        status = str(item.status)
     return {
         "end": _graph_dt_to_iso(item.end, display_tz),
         "start": _graph_dt_to_iso(item.start, display_tz),
-        "status": status,
+        "status": _enum_value(getattr(item, "status", None)),
     }
 
 
