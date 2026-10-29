@@ -10,7 +10,7 @@
 Microsoft 365 and Google Workspace **skills CLI** (work or personal accounts). Named after
 [Rose "Mrs. B" Blumkin](https://en.wikipedia.org/wiki/Rose_Blumkin).
 
-**Language decision:** **Python 3.14+** with **`uv`** for packaging and local gates (Blumkin is a Graph skills CLI, not a Bot Framework host). End users and agents invoke **`blumkin` on `PATH`**, not `uv run blumkin`.
+**Language decision:** **Python 3.14+** with **`uv`** for packaging and local gates (Blumkin is a Microsoft 365 and Google Workspace skills CLI, not a Bot Framework host). End users and agents invoke **`blumkin` on `PATH`**, not `uv run blumkin`.
 
 Blumkin = delegated Graph access **as the signed-in user**.
 

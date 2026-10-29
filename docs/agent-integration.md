@@ -123,9 +123,9 @@ Append this to `~/.copilot/copilot-instructions.md`:
 ```markdown
 ## Microsoft 365 and Google Workspace (blumkin)
 
-For the user's own Outlook calendar, mail, Teams chat, or free/busy, shell out to
-`blumkin` instead of writing Microsoft Graph or Azure SDK code. Never invent a
-client id or call Graph directly when a blumkin skill covers the job.
+For the user's own Outlook or Gmail calendar, mail, Teams or Google Chat, or free/busy,
+shell out to `blumkin` instead of writing Microsoft Graph, Google API or Azure SDK code.
+Never invent a client id or call Graph or Google directly when a blumkin skill covers the job.
 
 - Discover commands with `blumkin skills list --json`; describe one with
   `blumkin skills describe <id> --json`.
