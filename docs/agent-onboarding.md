@@ -40,12 +40,12 @@ scripts/dev/blumkin profiles list --json </dev/null
 | The launcher exits 2 with "no config.toml in `<dir>`" | A. No config at all | section 3 |
 | `{"count": 0, ...}` | B. Config exists, no profiles | section 4 |
 | `count` is 1 or more, but the profile you need is not listed | B. Profile missing | section 4 |
-| The profile is listed but `auth status --json` reports `client_id_configured: false` | B. OAuth client missing | section 3 (run `auth setup` for that profile) |
+| The profile is listed but `auth status --json` reports `client_id_configured: false` (`profiles list` does not show this, so run `auth status` for the profile before reading the next rows) | B. OAuth client missing | section 3 (run `auth setup` for that profile) |
 | `count` is 1 or more, the profile has `auth_present` all `false` | C. Profile configured, never signed in | section 5 |
 | `count` is 1 or more, `auth_present` has a `true` for the profile you need, and `auth status --json` (see section 5) reports `ok: true`, `token_cache: true` and an empty `missing_scopes` | D. Ready | section 6 |
 | `auth_present` has a `true`, but `auth status --json` reports `ok: false`, a missing token cache or auth record, or a non-empty `missing_scopes` (an incomplete login, for example a partial Google consent) | C. Sign in again | section 5 |
 
-The launcher's refusal in state A is deliberate: it never creates or overwrites anything unless the user says yes. `scripts/dev/blumkin doctor` shows the source tree, the config directory and what selected it (`BLUMKIN_CONFIG_DIR`, `XDG_CONFIG_HOME` or the default `~/.config/blumkin`), and warns about running `mcp serve` processes. `doctor` itself needs at least one profile, so use it from state C onward, and pass `--profile <name>` so it checks the account you mean (with several profiles and no default it exits 2, and with a default it may report a different account).
+The launcher's refusal in state A is deliberate: it never creates or overwrites anything unless the user says yes. `scripts/dev/blumkin doctor` shows the source tree, the config directory and what selected it (`BLUMKIN_CONFIG_DIR`, `XDG_CONFIG_HOME` or the default `~/.config/blumkin`), and warns about running `mcp serve` processes (that warning is machine-wide and unrelated to `BLUMKIN_CONFIG_DIR`; leave those processes alone). `doctor` itself needs at least one profile, so use it from state C onward, and pass `--profile <name>` so it checks the account you mean (with several profiles and no default it exits 2, and with a default it may report a different account).
 
 ### Throwaway state instead of the real one
 
@@ -78,7 +78,7 @@ scripts/dev/blumkin --profile personal auth setup --yes --json --provider google
   --from-file <path to the downloaded Desktop client JSON>
 ```
 
-Expected: `{"created_config": "<dir>/config.toml", "ok": true, "profile": "<name>", "provider": "<provider>"}` and exit 0 (a Microsoft run may add `"vaulted": false`). Setup creates `[profiles.<name>]` with `provider`, `client_id` and, for Microsoft, `account_type` and `tenant_id`. It does not set `default_tz`, `tags` or `default_profile`; add those by hand if the user wants them (see `README.md`, "Config"). If setup does not finish, it removes the directory and file it created.
+Expected: `{"created_config": "<dir>/config.toml", "ok": true, "profile": "<name>", "provider": "<provider>"}` and exit 0 when it created the config (a Microsoft run may add `"vaulted": false`). Against an existing config, for example to fill in the OAuth client of a profile you added in section 4, `--provider` is not needed (it is for the first run only) and the output has no `created_config`. Setup creates `[profiles.<name>]` with `provider`, `client_id` and, for Microsoft, `account_type` and `tenant_id`. It does not set `default_tz`, `tags` or `default_profile`; add those by hand if the user wants them (see `README.md`, "Config"). If setup does not finish, it removes the directory and file it created.
 
 Then continue with section 5.
 
@@ -110,7 +110,7 @@ Optional capabilities need explicit config and a fresh sign-in, so `capabilities
 scripts/dev/blumkin --profile <name> auth login
 ```
 
-This opens the system browser for a delegated (public client) sign-in and writes the token cache and auth record under the config directory. It needs a human at a browser, and it does not fail fast without one, so wrap it in a timeout if you run it at all. **STOP: ask the user** to run it, for example by typing `! scripts/dev/blumkin --profile <name> auth login` in the agent prompt. On Google, tell them to tick every box on the consent screen (or "Select all"), otherwise the grant stays partial and the next `auth login` reopens the consent screen.
+This opens the system browser for a delegated (public client) sign-in and writes the token cache and auth record under the config directory. It needs a human at a browser, so do not run it yourself. **STOP: ask the user** to run it, for example by typing `! <absolute path to the checkout>/scripts/dev/blumkin --profile <name> auth login` in the agent prompt (a relative path only works if their prompt is in the checkout root). On Google, tell them to tick every box on the consent screen (or "Select all"), otherwise the grant stays partial and the next `auth login` reopens the consent screen.
 
 Afterwards:
 
@@ -119,7 +119,7 @@ scripts/dev/blumkin --profile <name> auth status --json
 scripts/dev/blumkin --profile <name> doctor
 ```
 
-In the `auth status --json` result, a complete login has `ok: true`, `token_cache: true` and an empty `missing_scopes`; anything else means sign in again. `auth status` takes `--profile` before the subcommand, not after it. `doctor` prints an `available:` line with the services for the profile, followed by any warnings and the `skills:` list. A stale access token is renewed without a browser by `scripts/dev/blumkin --profile <name> auth refresh`, which is safe for an agent to run.
+In the `auth status --json` result, `ok` is `true` even before any sign-in, so do not rely on it: a complete login has `token_cache: true` and `auth_record: true` and an empty `missing_scopes`, and `next_steps` says what is missing (for example "no token cache / auth record yet - run: blumkin auth login"). Anything else means sign in again. `auth status` takes `--profile` before the subcommand, not after it. `doctor` prints `ok: ...`, any `problem:` lines, an `available:` line with the services for the profile, any warnings and the `skills:` list. It exits 3 when there is a problem, for example `auth cache incomplete` before the first sign-in or `client_id missing` before `auth setup`; exit 3 is expected in state C and is not a crash. Use `doctor --json` and read `problems` if you need them as data. A stale access token is renewed without a browser by `scripts/dev/blumkin --profile <name> auth refresh`, which is safe for an agent to run.
 
 ## 6. State D: verify with reads
 
@@ -156,9 +156,9 @@ Register the launcher with the agent's client:
 scripts/dev/blumkin mcp install --client claude --scope user --yes      # or cursor, copilot; --scope project for this directory
 ```
 
-**STOP: ask the user** to approve changing their client registration first. Without a terminal the command needs `--scope` and `--yes`; on a terminal it prompts per client. Options: `--profile <name>` pins the account, `--read-only` registers a server with no mutating tools, `--only <prefix>` limits the tool families, and `--json` gives machine-readable output. Re-running is safe; an entry that already matches is left alone. Without a config directory the launcher refuses `mcp install` (tracked in #565), so finish sections 3 to 5 first.
+**STOP: ask the user** to approve changing their client registration first. Without a terminal the command needs `--scope` and `--yes`; on a terminal it prompts per client. With no `--client`, every detected client is written; name the one you mean. Options: `--profile <name>` pins the account (the global `--profile <name>` before `mcp install` does the same), `--read-only` registers a server with no mutating tools, `--only <prefix>` limits the tool families, and `--json` gives machine-readable output. Re-running is safe; an entry that already matches is left alone. Without a config directory the launcher refuses `mcp install` (tracked in #565), so finish sections 3 to 5 first.
 
-Know what path it records. The launcher registers **itself by absolute path**, so the client runs the checkout it was installed from. If that checkout is a short-lived worktree, the registration breaks when the worktree is removed. Register from a persistent worktree, or re-run `mcp install` from the next worktree after removing the old one. Do not register from the primary clone just for durability: the launcher's first run there would create or update its `.venv`, and agents must not write to the primary clone (`AGENTS.md`). A `--scope project` install writes that absolute path into `.mcp.json`, which is normally committed: do not commit it.
+Know what path it records. The launcher registers **itself by absolute path**, so the client runs the checkout it was installed from. If that checkout is a short-lived worktree, the registration breaks when the worktree is removed. Register from a persistent worktree, or re-run `mcp install` from the next worktree after removing the old one. Do not register from the primary clone just for durability: the launcher's first run there would create or update its `.venv`, and agents must not write to the primary clone (`AGENTS.md`). A `--scope project` install writes that absolute path into the project file of the client (`.mcp.json` for Claude Code, `.cursor/mcp.json` for Cursor), which is normally committed: do not commit it.
 
 `mcp install` records the launcher and its arguments, not environment variables. For a throwaway config directory, set `BLUMKIN_CONFIG_DIR` (as an absolute path) in the client's server environment as well, and check `profiles.list` through the client before making account-scoped calls.
 
