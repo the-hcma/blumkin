@@ -37,7 +37,7 @@ from blumkin.browser.explore import (
     parse_aria_snapshot,
 )
 from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError
-from blumkin.browser.launcher import launch
+from blumkin.browser.launcher import close_browser, launch
 from blumkin.browser.profiles import create_profile, read_session
 from blumkin.cli import main
 from blumkin.exit_codes import EXIT_OTHER, EXIT_SUCCESS
@@ -676,3 +676,46 @@ def test_a_repeated_name_is_refused_unless_nth_says_which_one(
         driver.close()
     finally:
         os.kill(result.session.pid, signal.SIGTERM)
+
+
+def test_close_ends_a_real_browser_and_keeps_the_profile_for_the_next_launch(
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    browser = _installed_browser()
+    profile = create_profile(tmp_path, "youtube-transcript")
+    extra = ("--headless=new", "--no-sandbox")
+    first = launch(profile, browser, extra_args=extra)
+    pid = first.session.pid
+    try:
+        # A file in the profile stands for the saved sign-in: closing must not touch it.
+        (profile.path / "Saved sign-in").write_text("kept", encoding="utf-8")
+        closed = close_browser(profile)
+        assert closed.was_running is True and closed.forced is False
+        assert read_session(profile.path) is None
+        assert not _process_is_running(pid)
+        assert (profile.path / "Saved sign-in").read_text(encoding="utf-8") == "kept"
+        # Closing again is a calm no-op, and the profile launches again.
+        assert close_browser(profile).was_running is False
+        second = launch(profile, browser, extra_args=extra)
+        assert second.already_running is False
+        pid = second.session.pid
+    finally:
+        close_browser(profile, force=True)
+    assert not _process_is_running(pid)
+
+
+def _process_is_running(pid: int) -> bool:
+    """Alive and not a zombie: the launched browser is a child of this test process."""
+    try:
+        done, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        done = 0
+    if done == pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True

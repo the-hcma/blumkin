@@ -68,6 +68,7 @@ from blumkin.browser.cdp import (
 )
 from blumkin.browser.commands import (
     TaskNotFoundError,
+    close_task_browser,
     create_task_profile,
     delete_task_profile,
     launch_task_browser,
@@ -91,7 +92,7 @@ from blumkin.browser.explore_commands import (
 from blumkin.browser.guard import SubmitBlockedError
 from blumkin.browser.handoff import HandoffError, format_handoff_human
 from blumkin.browser.init_task import TEMPLATES, InitTaskError, init_task
-from blumkin.browser.launcher import BrowserLaunchError
+from blumkin.browser.launcher import DEFAULT_CLOSE_TIMEOUT_S, BrowserCloseError, BrowserLaunchError
 from blumkin.browser.ledger import LedgerError, LedgerJournalError, LedgerNotFoundError
 from blumkin.browser.ledger_commands import (
     ledger_apply,
@@ -614,10 +615,19 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "usage_error", EXIT_USAGE
     elif isinstance(exc, BrowserNotFoundError):
         slug, code = "browser_not_found", EXIT_NOT_FOUND
+    elif isinstance(exc, BrowserCloseError):
+        slug, code = "browser_close_failed", EXIT_OTHER
+        hint = (
+            f"Close its window by hand, or retry with `blumkin browser close {task or 'TASK'} "
+            "--force` to kill it."
+        )
     elif isinstance(exc, BrowserLaunchError):
         slug, code = "browser_launch_failed", EXIT_OTHER
     elif isinstance(exc, (ProfileBusyError, ProfileInUseError)):
         slug, code = "profile_in_use", EXIT_OTHER
+        if isinstance(exc, ProfileInUseError):
+            hint = f"Close its browser first: `blumkin browser close {task or 'TASK'}`."
+
     elif isinstance(exc, ProviderConfigError):
         slug, code = "usage_error", EXIT_USAGE
     elif isinstance(exc, (BrowserConfigError, BrowserProfileError)):
@@ -2241,6 +2251,43 @@ def browser_init_task(
     lines.extend(["", "Next:"])
     lines.extend(f"  {number}. {step}" for number, step in enumerate(payload["next_steps"], 1))
     emit_lines(lines)
+
+
+@browser.command("close", epilog=help_text.BROWSER_CLOSE_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Kill the browser if it has not exited after --wait (its profile may need to recover).",
+)
+@click.option(
+    "--wait",
+    "wait_s",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=DEFAULT_CLOSE_TIMEOUT_S,
+    show_default=True,
+    help="Seconds to wait for the browser to exit after asking it to quit.",
+)
+@click.pass_context
+def browser_close(
+    ctx: click.Context, task: str, as_json_flag: bool, force: bool, wait_s: float
+) -> None:
+    """Close TASK's browser, keeping its profile (saved sign-in) for next time."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = close_task_browser(config_dir(), task, force=force, timeout_s=wait_s)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    if not payload["was_running"]:
+        emit_lines([f"{task}: no browser was running"])
+        return
+    how = "killed" if payload["forced"] else "closed"
+    emit_lines([f"{task}: browser {how} (profile kept; `browser launch {task}` opens it again)"])
 
 
 @browser.command("launch", epilog=help_text.BROWSER_LAUNCH_EPILOG)
