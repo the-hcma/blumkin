@@ -126,3 +126,12 @@ def test_claude_code_can_discover_every_repo_skill() -> None:
         assert shim.is_symlink(), name
         assert shim.resolve() == (source / name).resolve(), name
         assert (shim / "SKILL.md").is_file(), name
+
+
+def test_the_readme_explains_the_send_as_address_and_the_send_draft_ids() -> None:
+    text = " ".join((_ROOT / "README.md").read_text().split())
+    assert "default send-as address" in text
+    assert (
+        "`mail send-draft` returns `sent` (the draft id), `message_id` and `conversation_id`"
+        in text
+    )

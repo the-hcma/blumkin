@@ -613,12 +613,19 @@ async def mail_send_draft(
     cfg = config or load_config()
     service = _gmail_service(cfg)
     # Let an HttpError propagate: the CLI maps 404 -> not_found, 403 -> missing_scope.
-    execute(
+    sent = execute(
         service.users().drafts().send(userId="me", body={"id": mid}),
         # send is non-idempotent — a retry could deliver the mail twice.
         num_retries=0,
     )
-    return {"sent": mid}
+    # `sent` is the draft id (what the caller passed); the delivered message has its own id and
+    # thread, which is what to look up in the mailbox afterwards.
+    message = sent if isinstance(sent, dict) else {}
+    return {
+        "conversation_id": message.get("threadId"),
+        "message_id": message.get("id"),
+        "sent": mid,
+    }
 
 
 async def mail_update_draft(
