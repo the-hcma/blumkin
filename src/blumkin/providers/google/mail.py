@@ -20,6 +20,7 @@ from blumkin.attachments import (
     resolve_single_download_dest,
     sanitize_attachment_filename,
     unique_filename,
+    write_new_private_file,
 )
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.mail_sync import MailSyncResetError
@@ -93,7 +94,7 @@ async def mail_attachments_download(
             dest = resolve_attachment_dest(out_path, filename)
         else:
             dest = out_path
-        dest.write_bytes(content)
+        write_new_private_file(dest, content)
         saved.append(
             {
                 "attachment_id": aid,

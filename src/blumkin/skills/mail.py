@@ -73,6 +73,7 @@ from blumkin.attachments import (
     resolve_single_download_dest,
     sanitize_attachment_filename,
     unique_filename,
+    write_new_private_file,
 )
 from blumkin.config import BlumkinConfig, MailSignatureConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
@@ -624,7 +625,7 @@ async def mail_attachments_download(
             dest = resolve_attachment_dest(out_path, filename)
         else:
             dest = out_path
-        dest.write_bytes(content)
+        write_new_private_file(dest, content)
         saved.append(
             {
                 "attachment_id": aid,

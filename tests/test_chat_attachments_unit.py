@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import stat
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -49,6 +50,7 @@ def test_chat_attachments_download_all_writes_files(monkeypatch, tmp_path) -> No
     assert saved_names == ["report.docx", "report.docx"]
     written = sorted(path.name for path in out_dir.iterdir())
     assert written == ["report.docx", "report_2.docx"]
+    assert {stat.S_IMODE((out_dir / name).stat().st_mode) for name in written} == {0o600}
     assert len(payload["skipped"]) == 1
     assert any("skipped" in line for line in format_attachments_download_human(payload))
 

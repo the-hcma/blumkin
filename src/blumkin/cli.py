@@ -6939,12 +6939,17 @@ def mcp_install_cmd(
         "binary": binary,
         "on_path": on_path,
         "scope": scope_val,
-        "serve": ["blumkin", *serve.args()],
+        "serve": [binary, *serve.args()],
         "clients": results,
+        "warnings": [warning]
+        if (warning := mi.launcher_worktree_warning(mi.dev_launcher()))
+        else [],
     }
     if as_json:
         emit_json(payload)
     else:
+        for warning in payload["warnings"]:
+            click.echo(f"warning: {warning}", err=True)
         emit_lines(_format_mcp_install_human(payload))
     raise SystemExit(EXIT_OTHER if any_failed else EXIT_SUCCESS)
 
@@ -6993,7 +6998,7 @@ def mcp_status_cmd(ctx: click.Context, as_json_flag: bool) -> None:
 
 
 def _format_mcp_install_human(payload: dict[str, Any]) -> list[str]:
-    lines = [f"server: {' '.join(payload['serve'])}  (scope: {payload['scope']})"]
+    lines = [f"server: {shlex.join(payload['serve'])}  (scope: {payload['scope']})"]
     for row in payload["clients"]:
         mark = {
             "added": "added",

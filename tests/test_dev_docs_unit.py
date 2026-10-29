@@ -50,9 +50,19 @@ def test_the_dev_skill_warns_that_a_launcher_on_path_shadows_the_installed_relea
     assert "`+dev` marker" in text
 
 
-def test_the_dev_skill_says_profiles_list_runs_without_a_config() -> None:
+def test_the_dev_skill_says_only_provider_bound_commands_need_a_config() -> None:
     text = " ".join((_ROOT / ".agents/skills/blumkin-dev/SKILL.md").read_text().split())
     assert "`profiles list`" in text
+    assert "Only provider-bound commands, and the ones that create state" in text
+    assert "under the config directory, need a config" in text
+    assert "`browser`" in text and "`loop`" in text and "`receipts`" in text
+    assert "`completion`" in text and "`mcp install`" in text
+
+
+def test_the_onboarding_guide_no_longer_says_the_launcher_refuses_mcp_install() -> None:
+    text = " ".join((_ROOT / "docs/agent-onboarding.md").read_text().split()).lower()
+    assert "the launcher refuses `mcp install`" not in text
+    assert "`mcp install` runs without a config" in text
 
 
 def test_the_onboarding_troubleshooting_table_has_no_rows_for_fixed_problems() -> None:
@@ -105,3 +115,28 @@ def test_agents_md_still_bans_uv_run_blumkin_except_for_the_launcher() -> None:
     text = (_ROOT / "AGENTS.md").read_text()
     assert "not `uv run blumkin`" in text
     assert "scripts/dev/blumkin" in text
+
+
+def test_claude_code_can_discover_every_repo_skill() -> None:
+    """Claude Code reads `.claude/skills/`; the skills live in `.agents/skills/` (#565)."""
+    source = _ROOT / ".agents" / "skills"
+    shims = _ROOT / ".claude" / "skills"
+    names = sorted(path.name for path in source.iterdir() if (path / "SKILL.md").is_file())
+    assert names, "no skills found"
+    for name in names:
+        shim = shims / name
+        assert shim.is_symlink(), name
+        assert shim.resolve() == (source / name).resolve(), name
+        assert (shim / "SKILL.md").is_file(), name
+
+
+def test_the_readme_explains_the_send_as_address_and_the_send_draft_ids() -> None:
+    text = " ".join((_ROOT / "README.md").read_text().split())
+    assert "default send-as address" in text
+    # A draft that already names another From or a Reply-To is sent as it is.
+    assert "unless the draft already names" in text
+    assert "a reply goes to that alias" not in text
+    assert (
+        "`mail send-draft` returns `sent` (the draft id), `message_id` and `conversation_id`"
+        in text
+    )

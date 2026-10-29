@@ -68,9 +68,15 @@ config_dir() {
   printf '%s\n' "${chosen}"
 }
 
-# Whether the command can run without a config.toml: help, version, `auth setup` itself, and
-# `profiles list` (which answers `count: 0`, the `blumkin` skill's cold-start check). `-h` is not
-# help: blumkin only accepts `--help`.
+# Whether the command needs a config.toml. The provider-bound commands do (mail, calendar,
+# chat, drive, docs, people, meeting, tasks, capabilities, doctor, `auth` apart from `auth
+# setup`, and `mcp serve`), and so do the ones that create state under the config directory
+# or act on a profile (`browser`, `loop`, `receipts`): they keep the friendly setup hint, and
+# the launcher never creates anything unless the user says yes. The rest answer for
+# themselves without one: help, version, `profiles`, `completion`, `agent`, `mcp install` and
+# `mcp status`, `skills`, `upgrade`. `-h` is not help: blumkin only accepts `--help`. A new
+# command that is exempt by default and needs a profile fails with Python's own error, not
+# this hint, so add it to the list below.
 needs_config() {
   local arg previous="" positional=()
   for arg in "$@"; do
@@ -82,11 +88,21 @@ needs_config() {
     fi
     previous="${arg}"
   done
-  [[ "${positional[0]:-}" == "auth" && "${positional[1]:-}" == "setup" ]] && return 1
-  [[ "${positional[0]:-}" == "profiles" && "${positional[1]:-}" == "list" ]] && return 1
-  [[ "${positional[0]:-}" == "skills" ]] && return 1
-  [[ ${#positional[@]} -eq 0 ]] && return 1
-  return 0
+  case "${positional[0]:-}" in
+    browser | calendar | capabilities | chat | doctor | docs | drive | loop | mail | meeting | \
+      people | receipts | tasks)
+      return 0
+      ;;
+    auth)
+      [[ "${positional[1]:-}" == "setup" ]] && return 1
+      return 0
+      ;;
+    mcp)
+      [[ "${positional[1]:-}" == "serve" ]] && return 0
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 # The --profile option (either `--profile X` or `--profile=X`), so the guided setup configures

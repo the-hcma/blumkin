@@ -2077,6 +2077,11 @@ scope it merges the entry into the JSON config, leaving any other servers alone.
 Re-running is safe: an entry that already matches is reported "already current",
 a stale one is updated. `--force` rewrites even a matching entry.
 
+`--json` reports `serve` (the real command and arguments this run offers to register; each
+client's `action` says whether it was applied, declined or failed) and a `warnings` array.
+A dev run registers the launcher, and when that launcher lives in a linked git worktree
+the entry stops working once the worktree is removed, so a warning says so.
+
 Auth is unchanged - run `blumkin auth login` on a TTY once; every registered
 server shares that token cache. `mcp` is a core `blumkin` dependency - no
 extra install step needed to run the server.

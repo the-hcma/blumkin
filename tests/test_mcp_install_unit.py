@@ -527,6 +527,132 @@ def test_the_launcher_hint_quotes_a_path_with_spaces(
     assert f"`'{launcher}' mcp install --yes --scope user`" in hint
 
 
+def _worktree_launcher(tmp_path: Path, *, linked: bool) -> Path:
+    root = tmp_path / ("linked" if linked else "primary")
+    (root / "scripts" / "dev").mkdir(parents=True)
+    # A linked worktree has a `.git` file pointing at a per-worktree folder in the main
+    # repository, and that folder holds a `commondir` file; a clone has a `.git` directory.
+    if linked:
+        per_worktree = tmp_path / "main" / ".git" / "worktrees" / "x"
+        per_worktree.mkdir(parents=True)
+        (per_worktree / "commondir").write_text("../..\n")
+        (root / ".git").write_text(f"gitdir: {per_worktree}\n")
+    else:
+        (root / ".git").mkdir()
+    launcher = root / "scripts" / "dev" / "blumkin"
+    launcher.write_text("#!/bin/sh\n")
+    return launcher
+
+
+def test_installing_from_a_linked_worktree_warns_and_reports_the_real_command(
+    home: Path,
+    all_clients: None,
+    fake_subprocess: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A worktree is short-lived: the entry breaks once it is removed (#565)."""
+    launcher = _worktree_launcher(tmp_path, linked=True)
+    monkeypatch.chdir(home)
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
+    monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(launcher))
+    payload = json.loads(_invoke([*_CURSOR_PROJECT, "--json"]).output)
+    assert payload["serve"][0] == str(launcher)
+    assert payload["serve"][1:] == ["mcp", "serve"]
+    (warning,) = payload["warnings"]
+    assert "worktree" in warning and "removed" in warning
+    human = _invoke(_CURSOR_PROJECT).output
+    assert "warning:" in human and "worktree" in human
+
+
+def test_only_a_real_linked_worktree_triggers_the_warning(tmp_path: Path) -> None:
+    """Judged by git's own metadata, not by whether a path happens to contain `/worktrees/`."""
+
+    def launcher_with_git_file(name: str, gitdir: Path, *, commondir: bool) -> Path:
+        gitdir.mkdir(parents=True, exist_ok=True)
+        if commondir:
+            (gitdir / "commondir").write_text("../..\n")
+        root = tmp_path / name
+        (root / "scripts" / "dev").mkdir(parents=True)
+        (root / ".git").write_text(f"gitdir: {gitdir}\n")
+        launcher = root / "scripts" / "dev" / "blumkin"
+        launcher.write_text("#!/bin/sh\n")
+        return launcher
+
+    submodule = launcher_with_git_file(
+        "sub", tmp_path / "super" / ".git" / "modules" / "sub", commondir=False
+    )
+    # A primary clone whose git directory merely lives under a folder named `worktrees`.
+    separate = launcher_with_git_file(
+        "sep", tmp_path / "data" / "worktrees" / "repo.git", commondir=False
+    )
+    linked = launcher_with_git_file(
+        "lnk", tmp_path / "main" / ".git" / "worktrees" / "x", commondir=True
+    )
+    assert mi.launcher_worktree_warning(str(submodule)) is None
+    assert mi.launcher_worktree_warning(str(separate)) is None
+    assert mi.launcher_worktree_warning(str(linked)) is not None
+    # A relative `gitdir:` resolves from the `.git` file's own folder.
+    relative_root = tmp_path / "rel"
+    (relative_root / "scripts" / "dev").mkdir(parents=True)
+    (relative_root.parent / "rel-main" / ".git" / "worktrees" / "r").mkdir(parents=True)
+    (relative_root.parent / "rel-main" / ".git" / "worktrees" / "r" / "commondir").write_text(
+        "../..\n"
+    )
+    (relative_root / ".git").write_text("gitdir: ../rel-main/.git/worktrees/r\n")
+    relative = relative_root / "scripts" / "dev" / "blumkin"
+    relative.write_text("#!/bin/sh\n")
+    assert mi.launcher_worktree_warning(str(relative)) is not None
+    # A symlink to a launcher inside a worktree (say, in ~/bin) is still that launcher.
+    link = tmp_path / "bin-blumkin"
+    link.symlink_to(linked)
+    assert mi.launcher_worktree_warning(str(link)) is not None
+
+
+def test_the_human_server_line_quotes_a_launcher_path_with_spaces(
+    home: Path,
+    all_clients: None,
+    fake_subprocess: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "work tree"
+    (root / "scripts" / "dev").mkdir(parents=True)
+    launcher = root / "scripts" / "dev" / "blumkin"
+    launcher.write_text("#!/bin/sh\n")
+    monkeypatch.chdir(home)
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
+    monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(launcher))
+    out = _invoke(_CURSOR_PROJECT).output
+    assert f"server: '{launcher}' mcp serve" in out
+
+
+def test_the_install_help_describes_the_warnings_field() -> None:
+    from blumkin import help_text
+
+    assert "`warnings`" in help_text.MCP_INSTALL_EPILOG
+    assert "worktree" in help_text.MCP_INSTALL_EPILOG
+    # `serve` is what this run offers to register; each client's action says what happened.
+    assert "offers to register" in help_text.MCP_INSTALL_EPILOG
+
+
+def test_installing_from_a_plain_clone_or_a_release_does_not_warn(
+    home: Path,
+    all_clients: None,
+    fake_subprocess: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(home)
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
+    monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(_worktree_launcher(tmp_path, linked=False)))
+    assert json.loads(_invoke([*_CURSOR_PROJECT, "--json"]).output)["warnings"] == []
+    monkeypatch.delenv("BLUMKIN_DEV")
+    monkeypatch.delenv("BLUMKIN_DEV_LAUNCHER")
+    released = json.loads(_invoke([*_CURSOR_PROJECT, "--json"]).output)
+    assert released["warnings"] == [] and released["serve"][:1] == ["blumkin"]
+
+
 def test_cli_install_no_client_detected_is_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
     monkeypatch.setattr(mi, "detect", lambda clients=mi.CLIENTS: set())

@@ -26,6 +26,7 @@ from blumkin.attachments import (
     resolve_single_download_dest,
     sanitize_attachment_filename,
     unique_filename,
+    write_new_private_file,
 )
 from blumkin.compose_state import record_composed
 from blumkin.config import BlumkinConfig, load_config
@@ -258,7 +259,7 @@ async def chat_attachments_download(
             dest = resolve_attachment_dest(out_path, filename)
         else:
             dest = out_path
-        dest.write_bytes(content)
+        write_new_private_file(dest, content)
         saved.append(
             {
                 "attachment_id": meta["id"],

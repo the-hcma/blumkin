@@ -405,12 +405,13 @@ def test_mail_draft_appends_configured_signature(tmp_path: Path) -> None:
 
 
 def test_mail_send_draft_calls_drafts_send(tmp_path: Path) -> None:
-    service = _service(send_result={"id": "m", "labelIds": ["SENT"]})
+    service = _service(send_result={"id": "m", "threadId": "t-1", "labelIds": ["SENT"]})
     with _patched(service):
         payload = asyncio.run(
             GoogleWorkspaceProvider(_cfg(tmp_path)).mail_send_draft(draft_id=" draft-9 ")
         )
-    assert payload == {"sent": "draft-9"}
+    # `sent` stays the draft id; the delivered message has its own id (#565).
+    assert payload == {"conversation_id": "t-1", "message_id": "m", "sent": "draft-9"}
     service.users.return_value.drafts.return_value.send.assert_called_once_with(
         userId="me", body={"id": "draft-9"}
     )
