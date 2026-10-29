@@ -638,7 +638,7 @@ def test_a_script_submitted_get_form_reaches_the_server_with_the_net_installed(
             # The server answers /search with the generic form page; reading the page on each
             # poll also keeps Playwright servicing the route while the navigation happens.
             assert _wait_for(lambda: "Total due" in driver.read_text().text)
-            assert any(h.endswith("/search?q=rent") for h in _Handler.hosts)
+            assert any(h.endswith("/search?q=rent") for h in _Handler.hosts), _Handler.hosts
             driver.close()
     finally:
         os.kill(result.session.pid, signal.SIGTERM)
