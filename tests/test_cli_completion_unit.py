@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -257,11 +258,13 @@ def test_every_command_completes_all_of_its_long_options() -> None:
 
 
 def test_every_choice_option_completes_its_values() -> None:
+    """Options only: positional Choice arguments such as `day|receipt` are not walked here."""
     checked = 0
     for path, command in _walk(main, []):
         for param in command.params:
             if isinstance(param, click.Option) and isinstance(param.type, click.Choice):
-                option = next(opt for opt in param.opts if opt.startswith("--"))
+                option = next((opt for opt in param.opts if opt.startswith("-")), None)
+                assert option is not None, (" ".join(path), param.name)
                 values = _completions([*path, option], "")
                 assert values == set(param.type.choices), (" ".join(path), option)
                 checked += 1
@@ -276,6 +279,9 @@ def test_the_bash_script_only_asks_for_nosort_where_bash_supports_it() -> None:
     assert "BASH_VERSINFO" in script
     assert "complete -o nosort" not in script
     assert "$nosort_option" in script
+    # Whatever order click puts its flags in, `nosort` may only appear inside our own guard.
+    outside_guard = "\n".join(line for line in script.splitlines() if "nosort_option" not in line)
+    assert "nosort" not in outside_guard
 
 
 def _register_with(script: str, version: tuple[int, int, int]) -> list[str]:
@@ -296,7 +302,7 @@ def test_the_bash_script_registers_without_nosort_on_bash_3_2_and_with_it_on_4_4
     script = CliRunner().invoke(main, ["completion", "bash"]).output
     old = _register_with(script, (3, 2, 57))
     assert "-F" in old and "nosort" not in old
-    assert "-o" in _register_with(script, (4, 4, 0))
+    assert "nosort" in _register_with(script, (4, 4, 0))
     assert "nosort" in _register_with(script, (5, 3, 0))
     assert "nosort" not in _register_with(script, (4, 3, 48))
 
@@ -318,8 +324,9 @@ def test_every_command_has_help_an_examples_section_and_help_on_every_option() -
         name = " ".join(path)
         if not (command.help or "").strip():
             problems.append(f"{name}: no help text")
-        if "xample" not in (command.epilog or ""):
-            problems.append(f"{name}: no Examples section")
+        epilog = command.epilog or ""
+        if "xample" not in epilog or not re.search(r"^\s*blumkin ", epilog, re.M):
+            problems.append(f"{name}: no Examples section with a `blumkin ...` line")
         problems.extend(
             f"{name} {param.opts[0]}: no help text"
             for param in command.params

@@ -158,6 +158,19 @@ def _doc_text() -> str:
     return " ".join("\n".join(path.read_text() for path in paths).split())
 
 
+def _mentions_command(text: str, path: list[str]) -> bool:
+    """Whether `text` names the command as a word, not as part of another word.
+
+    A one-word command (`uninstall`, `capabilities`) must be written as `blumkin uninstall` or
+    in backticks, since the bare word turns up in ordinary prose. A longer path (`agent stop`)
+    must not be glued to other words or hyphenated names.
+    """
+    name = re.escape(" ".join(path))
+    if len(path) == 1:
+        return re.search(rf"(?:blumkin |`){name}(?![\w-])", text) is not None
+    return re.search(rf"(?<![\w-]){name}(?![\w-])", text) is not None
+
+
 def test_every_catalog_skill_is_in_the_blumkin_skill_or_left_out_on_purpose() -> None:
     from blumkin.skills import skills_catalog
 
@@ -188,7 +201,7 @@ def test_every_leaf_command_is_documented_or_left_out_on_purpose() -> None:
                 sub = command.get_command(ctx, name)
                 if sub is not None and not getattr(sub, "hidden", False):
                     walk(sub, [*path, name])
-        elif " ".join(path) not in text and " ".join(path) not in _COMMANDS_LEFT_OUT:
+        elif not _mentions_command(text, path) and " ".join(path) not in _COMMANDS_LEFT_OUT:
             missing.append(" ".join(path))
 
     walk(main, [])
