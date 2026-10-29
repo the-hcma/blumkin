@@ -39,22 +39,24 @@ scripts/dev/blumkin profiles list --json </dev/null
 | --- | --- | --- |
 | The launcher exits 2 with "no config.toml in `<dir>`" | A. No config at all | section 3 |
 | `{"count": 0, ...}` | B. Config exists, no profiles | section 4 |
-| `count` is 1 or more, a profile has `auth_present` all `false` | C. Profile configured, never signed in | section 5 |
+| `count` is 1 or more, but the profile you need is not listed | B. Profile missing | section 4 |
+| The profile is listed but `auth status --json` reports `client_id_configured: false` | B. OAuth client missing | section 3 (run `auth setup` for that profile) |
+| `count` is 1 or more, the profile has `auth_present` all `false` | C. Profile configured, never signed in | section 5 |
 | `count` is 1 or more, `auth_present` has a `true` for the profile you need, and `auth status --json` (see section 5) reports `ok: true`, `token_cache: true` and an empty `missing_scopes` | D. Ready | section 6 |
 | `auth_present` has a `true`, but `auth status --json` reports `ok: false`, a missing token cache or auth record, or a non-empty `missing_scopes` (an incomplete login, for example a partial Google consent) | C. Sign in again | section 5 |
 
-The launcher's refusal in state A is deliberate: it never creates or overwrites anything unless the user says yes. `scripts/dev/blumkin doctor` shows the source tree, the config directory and what selected it (`BLUMKIN_CONFIG_DIR`, `XDG_CONFIG_HOME` or the default `~/.config/blumkin`), and warns about running `mcp serve` processes. `doctor` itself needs at least one profile, so use it from state C onward.
+The launcher's refusal in state A is deliberate: it never creates or overwrites anything unless the user says yes. `scripts/dev/blumkin doctor` shows the source tree, the config directory and what selected it (`BLUMKIN_CONFIG_DIR`, `XDG_CONFIG_HOME` or the default `~/.config/blumkin`), and warns about running `mcp serve` processes. `doctor` itself needs at least one profile, so use it from state C onward, and pass `--profile <name>` so it checks the account you mean (with several profiles and no default it exits 2, and with a default it may report a different account).
 
 ### Throwaway state instead of the real one
 
-To try the checkout without touching the user's real setup, point the config directory at an empty directory for every command you run:
+To try the checkout without touching the user's real setup, point the config directory at an empty directory for every command you run. The variable only lives in the shell that exports it: carry it into every new shell, into any command you ask the user to run (for example `! BLUMKIN_CONFIG_DIR=<that directory> scripts/dev/blumkin ... auth login`), and into any MCP client you register (see section 7), otherwise those commands act on the real configuration or a same-named real profile:
 
 ```bash
 export BLUMKIN_CONFIG_DIR="$(mktemp -d)/blumkin"
-scripts/dev/blumkin profiles list --json    # exit 2: no config.toml, as in state A
+scripts/dev/blumkin profiles list --json </dev/null    # exit 2: no config.toml, as in state A
 ```
 
-The macOS keychain is not namespaced by this variable, so a Google profile set up in a throwaway directory still writes its client secret to the real keychain. Prefer a Microsoft profile (a public client with no secret) for throwaway work, or ask the user first.
+The OS keychain is shared: secrets and tokens for a throwaway directory are stored in the real keychain (keyed by the config directory and profile), so deleting the directory does not remove them. A Google profile stores its client secret there, a Microsoft setup may vault its client id (`"vaulted"` in the `auth setup` output), and a login stores tokens there. Prefer a Microsoft profile for throwaway work, ask the user first, and run `auth logout` for the profile before deleting the directory.
 
 ## 3. State A: no config.toml
 
@@ -114,19 +116,20 @@ Afterwards:
 
 ```bash
 scripts/dev/blumkin --profile <name> auth status --json
-scripts/dev/blumkin doctor
+scripts/dev/blumkin --profile <name> doctor
 ```
 
 In the `auth status --json` result, a complete login has `ok: true`, `token_cache: true` and an empty `missing_scopes`; anything else means sign in again. `auth status` takes `--profile` before the subcommand, not after it. `doctor` prints an `available:` line with the services for the profile, followed by any warnings and the `skills:` list. A stale access token is renewed without a browser by `scripts/dev/blumkin --profile <name> auth refresh`, which is safe for an agent to run.
 
 ## 6. State D: verify with reads
 
-Run these on each profile you will use, and report the exit code and the first lines to the user:
+Run these on each profile you will use, and report the exit code and the first lines to the user. Set `BLUMKIN_NONINTERACTIVE=1` for your commands so a stale token produces an `auth_required` error instead of opening a browser; if you get one, **STOP: ask the user** to run `auth login` (section 5). `calendar today` needs a timezone, and a profile created by `auth setup` has no `default_tz`, so either ask the user for their IANA timezone and add `default_tz` to the profile (section 4 shows the key), or pass `--tz <IANA timezone>`:
 
 ```bash
+export BLUMKIN_NONINTERACTIVE=1
 scripts/dev/blumkin --profile <name> capabilities --json
 scripts/dev/blumkin --profile <name> mail inbox --top 3 --json
-scripts/dev/blumkin --profile <name> calendar today --json
+scripts/dev/blumkin --profile <name> --tz <IANA timezone> calendar today --json
 scripts/dev/blumkin --profile <name> mail folders --json
 ```
 
@@ -150,19 +153,21 @@ scripts/dev/blumkin --profile <name> mail delete-draft --id <draft id from the o
 Register the launcher with the agent's client:
 
 ```bash
-scripts/dev/blumkin mcp install --client claude --scope user      # or cursor, copilot; --scope project for this directory
+scripts/dev/blumkin mcp install --client claude --scope user --yes      # or cursor, copilot; --scope project for this directory
 ```
 
-Options: `--profile <name>` pins the account, `--read-only` registers a server with no mutating tools, `--only <prefix>` limits the tool families, and `--json` gives machine-readable output. Re-running is safe; an entry that already matches is left alone. Without a config directory the launcher refuses `mcp install` (tracked in #565), so finish sections 3 to 5 first.
+**STOP: ask the user** to approve changing their client registration first. Without a terminal the command needs `--scope` and `--yes`; on a terminal it prompts per client. Options: `--profile <name>` pins the account, `--read-only` registers a server with no mutating tools, `--only <prefix>` limits the tool families, and `--json` gives machine-readable output. Re-running is safe; an entry that already matches is left alone. Without a config directory the launcher refuses `mcp install` (tracked in #565), so finish sections 3 to 5 first.
 
-Know what path it records. The launcher registers **itself by absolute path**, so the client runs the checkout it was installed from. If that checkout is a short-lived worktree, the registration breaks when the worktree is removed. Register from the primary clone (or a worktree you will keep), or re-run `mcp install` from the next worktree. A `--scope project` install writes that absolute path into `.mcp.json`, which is normally committed: do not commit it.
+Know what path it records. The launcher registers **itself by absolute path**, so the client runs the checkout it was installed from. If that checkout is a short-lived worktree, the registration breaks when the worktree is removed. Register from a persistent worktree, or re-run `mcp install` from the next worktree after removing the old one. Do not register from the primary clone just for durability: the launcher's first run there would create or update its `.venv`, and agents must not write to the primary clone (`AGENTS.md`). A `--scope project` install writes that absolute path into `.mcp.json`, which is normally committed: do not commit it.
+
+`mcp install` records the launcher and its arguments, not environment variables. For a throwaway config directory, set `BLUMKIN_CONFIG_DIR` (as an absolute path) in the client's server environment as well, and check `profiles.list` through the client before making account-scoped calls.
 
 To register by hand, set the client's `command` to the absolute path of `scripts/dev/blumkin` and its `args` to `["mcp", "serve"]`; for Claude Code that is `claude mcp add --transport stdio blumkin -- <absolute path>/scripts/dev/blumkin mcp serve`.
 
 Confirm the client really runs the checkout:
 
 - The server's version string carries the same `+dev.<sha>.<date>` marker as `--version`.
-- `scripts/dev/blumkin doctor` warns when `blumkin mcp serve` processes from an older build are still running; restart the client to pick up a new checkout state. The marker includes `-dirty`, and the server asks to be restarted when the checkout changes under it.
+- `scripts/dev/blumkin doctor` warns when `blumkin mcp serve` processes from an older build are still running; it does not compare builds, and the `-dirty` marker does not change when an already-dirty checkout is edited further. Restart the client after any change to the checkout rather than relying on detection.
 - A client registered as a bare `blumkin` runs whichever `blumkin` comes first on `PATH`, which may be another checkout (`which -a blumkin`).
 
 Per client:
@@ -171,7 +176,7 @@ Per client:
 - **Copilot CLI** has a known connection problem with the MCP server (#563).
 - **Cursor** reads `.agents/skills/` and `.cursor/rules/`.
 
-Every MCP call takes a `profile` argument when more than one profile is configured.
+On a server that is not pinned with `--profile`, every account-scoped tool takes a `profile` argument when more than one profile is configured (`profiles.list` takes none). A server registered with `--profile` omits the argument and rejects an explicit one.
 
 ## 8. Troubleshooting
 
