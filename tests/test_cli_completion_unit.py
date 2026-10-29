@@ -307,3 +307,22 @@ def test_the_bash_script_is_valid_bash() -> None:
         ["bash", "-n"], input=script, capture_output=True, check=False, text=True, timeout=30
     )
     assert done.returncode == 0, done.stderr
+
+
+def test_every_command_has_help_an_examples_section_and_help_on_every_option() -> None:
+    """New commands must come with help (#567); nothing is exempt on purpose today."""
+    problems = []
+    for path, command in _walk(main, []):
+        if isinstance(command, click.Group) or not path:
+            continue
+        name = " ".join(path)
+        if not (command.help or "").strip():
+            problems.append(f"{name}: no help text")
+        if "xample" not in (command.epilog or ""):
+            problems.append(f"{name}: no Examples section")
+        problems.extend(
+            f"{name} {param.opts[0]}: no help text"
+            for param in command.params
+            if isinstance(param, click.Option) and not (param.help or "").strip()
+        )
+    assert not problems, "\n".join(problems)

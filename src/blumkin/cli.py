@@ -2575,7 +2575,7 @@ def browser_ledger() -> None:
     """Remember what has been filed for one instance of a task."""
 
 
-@browser_ledger.command("apply")
+@browser_ledger.command("apply", epilog=help_text.BROWSER_LEDGER_APPLY_EPILOG)
 @click.argument("task")
 @click.argument("instance")
 @click.argument("kind", type=click.Choice(["day", "receipt"]))
@@ -2662,7 +2662,7 @@ def browser_ledger_discard(
     _emit_ledger(payload, as_json=as_json)
 
 
-@browser_ledger.command("handoff")
+@browser_ledger.command("handoff", epilog=help_text.BROWSER_LEDGER_HANDOFF_EPILOG)
 @click.argument("task")
 @click.argument("instance")
 @click.option(
@@ -2723,7 +2723,7 @@ def browser_ledger_list(ctx: click.Context, task: str, as_json_flag: bool) -> No
     emit_lines([f"{entry['instance']}: {entry['phase']}" for entry in payload["instances"]])
 
 
-@browser_ledger.command("reconcile")
+@browser_ledger.command("reconcile", epilog=help_text.BROWSER_LEDGER_RECONCILE_EPILOG)
 @click.argument("task")
 @click.argument("instance")
 @click.argument("kind", type=click.Choice(["day", "receipt"]))
@@ -2813,7 +2813,7 @@ def browser_ledger_record(
     )
 
 
-@browser_ledger.command("stage")
+@browser_ledger.command("stage", epilog=help_text.BROWSER_LEDGER_STAGE_EPILOG)
 @click.argument("task")
 @click.argument("instance")
 @click.argument("kind", type=click.Choice(["day", "receipt"]))
@@ -2891,7 +2891,7 @@ def browser_ledger_submitted(
     _emit_ledger(payload, as_json=as_json)
 
 
-@browser_ledger.command("verify")
+@browser_ledger.command("verify", epilog=help_text.BROWSER_LEDGER_VERIFY_EPILOG)
 @click.argument("task")
 @click.argument("instance")
 @click.argument("kind", type=click.Choice(["day", "receipt"]))
@@ -3584,7 +3584,13 @@ def receipts() -> None:
     help="Directory holding receipt images and PDFs (not searched recursively).",
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
-@click.option("--limit", default=DEFAULT_FIND_LIMIT, show_default=True, type=click.IntRange(1, 500))
+@click.option(
+    "--limit",
+    default=DEFAULT_FIND_LIMIT,
+    show_default=True,
+    type=click.IntRange(1, 500),
+    help="Most receipts to return (1 to 500).",
+)
 @click.option(
     "--since",
     default=None,

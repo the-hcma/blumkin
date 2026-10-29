@@ -341,3 +341,28 @@ def test_the_launcher_tells_blumkin_where_it_is_so_mcp_install_can_register_it()
     text = _SCRIPT.read_text()
     assert "export BLUMKIN_DEV=1" in text
     assert "export BLUMKIN_DEV_LAUNCHER=" in text
+
+
+def test_completion_install_and_profiles_list_work_with_an_empty_config_dir(
+    tmp_path: Path,
+) -> None:
+    """Both run with no `config.toml`; `completion --install` writes only under XDG_DATA_HOME."""
+    config = tmp_path / "empty"
+    data = tmp_path / "data"
+    env = {**_env(config), "XDG_DATA_HOME": str(data)}
+    installed = subprocess.run(
+        [str(_SCRIPT), "completion", "bash", "--install", "--json"],
+        capture_output=True,
+        check=False,
+        cwd=tmp_path,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        timeout=180,
+    )
+    assert installed.returncode == 0, installed.stderr
+    assert (data / "bash-completion" / "completions").is_dir()
+    assert not config.exists()
+    listed = _run(["profiles", "list", "--json"], config, tmp_path)
+    assert listed.returncode == 0, listed.stderr
+    assert json.loads(listed.stdout)["count"] == 0

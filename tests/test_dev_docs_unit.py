@@ -140,3 +140,57 @@ def test_the_readme_explains_the_send_as_address_and_the_send_draft_ids() -> Non
         "`mail send-draft` returns `sent` (the draft id), `message_id` and `conversation_id`"
         in text
     )
+
+
+# --------------------------------------------------------------------------- surface audit (#567)
+
+# Skills deliberately left out of `.agents/skills/blumkin/SKILL.md`, with the reason. A new
+# skill must be documented there or added here on purpose.
+_SKILLS_LEFT_OUT: dict[str, str] = {}
+
+# Commands deliberately not mentioned in the README, `docs/` or any SKILL.md.
+_COMMANDS_LEFT_OUT: dict[str, str] = {}
+
+
+def _doc_text() -> str:
+    paths = [_ROOT / "README.md", *sorted((_ROOT / "docs").glob("*.md"))]
+    paths += sorted((_ROOT / ".agents" / "skills").glob("*/SKILL.md"))
+    return " ".join("\n".join(path.read_text() for path in paths).split())
+
+
+def test_every_catalog_skill_is_in_the_blumkin_skill_or_left_out_on_purpose() -> None:
+    from blumkin.skills import skills_catalog
+
+    skill = " ".join(_MAIN_SKILL.read_text().split())
+    missing = []
+    for entry in skills_catalog()["skills"]:
+        words = [word for word in entry["cli"] if word != "blumkin"]
+        if " ".join(words) in skill or entry["id"] in skill:
+            continue
+        if entry["id"] not in _SKILLS_LEFT_OUT:
+            missing.append(entry["id"])
+    assert not missing, f"document in .agents/skills/blumkin/SKILL.md or allowlist: {missing}"
+    assert all(reason.strip() for reason in _SKILLS_LEFT_OUT.values())
+
+
+def test_every_leaf_command_is_documented_or_left_out_on_purpose() -> None:
+    import click
+
+    from blumkin.cli import main
+
+    text = _doc_text()
+    missing = []
+
+    def walk(command: click.Command, path: list[str]) -> None:
+        if isinstance(command, click.Group):
+            ctx = click.Context(command, info_name="x")
+            for name in command.list_commands(ctx):
+                sub = command.get_command(ctx, name)
+                if sub is not None and not getattr(sub, "hidden", False):
+                    walk(sub, [*path, name])
+        elif " ".join(path) not in text and " ".join(path) not in _COMMANDS_LEFT_OUT:
+            missing.append(" ".join(path))
+
+    walk(main, [])
+    assert not missing, f"mention in README.md, docs/ or a SKILL.md, or allowlist: {missing}"
+    assert all(reason.strip() for reason in _COMMANDS_LEFT_OUT.values())
