@@ -188,7 +188,6 @@ On a server that is not pinned with `--profile`, every account-scoped tool takes
 | Exit 127, "uv is required" | `uv` is not on `PATH` | Ask the user to install `uv` |
 | `--version` has no `+dev` marker | An installed release answered | Run `scripts/dev/blumkin` by its explicit path |
 | The launcher refuses `completion` or `agent status` | The launcher's config check is stricter than the CLI (#565) | Finish setup first, or run `BLUMKIN_DEV=1 .venv/bin/blumkin <args>` for that one command |
-| The launcher refuses `mcp install` | Same check (#565) | Finish sections 3 to 5 first. Do not run it through `.venv/bin/blumkin`: without `BLUMKIN_DEV_LAUNCHER` set to the launcher's absolute path it registers a bare `blumkin` instead of the checkout |
 | `graph_error` with a 403 "has not been used in project" | The API is disabled in the Cloud project, not a scope problem | Ask the user to enable the API |
 | `usage_error` on `drive`, `docs` or `people` for a Microsoft profile | The optional scopes are off | Section 4 |
 | `too_soon` on `mail send-draft` | The send cooldown | Show the user the content and get their go-ahead before trying again |

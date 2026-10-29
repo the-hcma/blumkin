@@ -60,7 +60,7 @@ def test_the_dev_skill_says_only_provider_bound_commands_need_a_config() -> None
 
 
 def test_the_onboarding_guide_no_longer_says_the_launcher_refuses_mcp_install() -> None:
-    text = " ".join((_ROOT / "docs/agent-onboarding.md").read_text().split())
+    text = " ".join((_ROOT / "docs/agent-onboarding.md").read_text().split()).lower()
     assert "the launcher refuses `mcp install`" not in text
     assert "`mcp install` runs without a config" in text
 
@@ -133,6 +133,9 @@ def test_claude_code_can_discover_every_repo_skill() -> None:
 def test_the_readme_explains_the_send_as_address_and_the_send_draft_ids() -> None:
     text = " ".join((_ROOT / "README.md").read_text().split())
     assert "default send-as address" in text
+    # A draft that already names another From or a Reply-To is sent as it is.
+    assert "unless the draft already names" in text
+    assert "a reply goes to that alias" not in text
     assert (
         "`mail send-draft` returns `sent` (the draft id), `message_id` and `conversation_id`"
         in text

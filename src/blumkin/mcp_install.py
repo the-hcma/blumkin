@@ -108,9 +108,7 @@ def launcher_worktree_warning(launcher: str | None) -> str | None:
 
     Worktrees are short-lived (one per stack, removed once it merges), so an entry that points
     into one stops working then, and a project-scope entry carries this machine-specific
-    absolute path into a file that is normally committed (issue #565). A linked worktree has a
-    `.git` file whose `gitdir:` points into the main repository's `worktrees/` folder; a
-    submodule or a `--separate-git-dir` clone also has a `.git` file, but is not one.
+    absolute path into a file that is normally committed (issue #565).
     """
     if launcher is None:
         return None
@@ -121,11 +119,7 @@ def launcher_worktree_warning(launcher: str | None) -> str | None:
     for folder in resolved.parents:
         marker = folder / ".git"
         if marker.is_file():
-            try:
-                pointer = marker.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                return None
-            if "/worktrees/" not in pointer.replace("\\", "/"):
+            if not _is_linked_worktree_marker(marker):
                 return None
             return (
                 f"the dev launcher lives in a linked git worktree ({folder}); this registration "
@@ -135,6 +129,28 @@ def launcher_worktree_warning(launcher: str | None) -> str | None:
         if marker.exists():
             return None
     return None
+
+
+def _is_linked_worktree_marker(marker: Path) -> bool:
+    """Whether a `.git` file belongs to a linked worktree, judged by git's own metadata.
+
+    Its `gitdir:` points at a per-worktree folder in the main repository, and that folder holds
+    a `commondir` file. A submodule or a `--separate-git-dir` clone has a `.git` file too, but
+    its git directory has no `commondir`, whatever the folder is called. A relative `gitdir:`
+    resolves from the `.git` file's own folder.
+    """
+    try:
+        text = marker.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() == "gitdir" and value.strip():
+            gitdir = Path(value.strip())
+            if not gitdir.is_absolute():
+                gitdir = marker.parent / gitdir
+            return (gitdir / "commondir").is_file()
+    return False
 
 
 def _canonical(command: str) -> Path | None:

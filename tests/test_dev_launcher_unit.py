@@ -125,13 +125,14 @@ def test_mcp_install_runs_without_a_config_because_registering_needs_no_credenti
     project = tmp_path / "project"
     project.mkdir()
     done = _run(
-        ["mcp", "install", "--client", "claude", "--scope", "project", "--yes", "--json"],
+        # Cursor's config is merged as a file, so the test needs no external client CLI.
+        ["mcp", "install", "--client", "cursor", "--scope", "project", "--yes", "--json"],
         config,
         project,
     )
     assert "no config.toml" not in done.stderr
     assert done.returncode == 0, done.stderr
-    assert (project / ".mcp.json").is_file()
+    assert (project / ".cursor" / "mcp.json").is_file()
 
 
 def _needs_config(*args: str) -> bool:

@@ -248,7 +248,7 @@ Once vaulted, it takes precedence over any `client_secret` still in the file, an
 - Chat `attachments` are listed but Drive-backed files are not downloadable.
 - A returned draft `id` is the Gmail draft id; `attachments[].id` is `null` (Gmail carries attachments inside the raw message).
 - `mail attachments` and `mail get` list Gmail attachments by their stable MIME part id (Gmail's own attachment id changes on every fetch), so an id from one listing still downloads later; this holds when Gmail supplies a MIME part id, and a part without one is listed by Gmail's own id, which can change between fetches.
-- A message sent from a Google profile goes out from the Gmail account's default send-as address, which can be an alias rather than the address you signed in with, and a reply goes to that alias. On Google, `mail send-draft` returns `sent` (the draft id), `message_id` and `conversation_id` (the delivered message and its thread), so the sent message can be found afterwards.
+- A message sent from a Google profile goes out from the Gmail account's default send-as address, which can be an alias rather than the address you signed in with, unless the draft already names another From or a Reply-To (Gmail sends an existing draft as it is). On Google, `mail send-draft` returns `sent` (the draft id), `message_id` and `conversation_id` (the delivered message and its thread), so the sent message can be found afterwards.
 
 **Token file** (written by `blumkin auth login`): `profiles/<name>/google_token.json`. `graph_timeout_seconds` in toml bounds Google HTTP and token-refresh calls too. Never commit any of these files.
 
