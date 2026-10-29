@@ -95,7 +95,7 @@ def detect(clients: tuple[str, ...] = CLIENTS) -> set[str]:
     return {c for c in clients if c in found}
 
 
-def _dev_launcher() -> str | None:
+def dev_launcher() -> str | None:
     """The dev launcher's path when this process was started by it, else None."""
     if os.environ.get("BLUMKIN_DEV") != "1":
         return None
@@ -136,7 +136,7 @@ def resolve_binary() -> tuple[str, bool]:
     reinstall; fall back to the absolute path of the running executable when
     ``blumkin`` is not on ``PATH`` (an editable/uv-run invocation).
     """
-    launcher = _dev_launcher()
+    launcher = dev_launcher()
     if launcher is not None:
         return launcher, False
     if shutil.which("blumkin"):

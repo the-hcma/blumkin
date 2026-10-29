@@ -480,6 +480,38 @@ def test_cli_install_writes_and_is_idempotent(
     assert json.loads(again.output)["clients"][0]["action"] == "unchanged"
 
 
+def test_a_dev_run_does_not_claim_blumkin_is_missing_from_path(
+    home: Path,
+    all_clients: None,
+    fake_subprocess: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Registering the launcher is a choice, not a missing binary (#564)."""
+    launcher = tmp_path / "blumkin-launcher"
+    launcher.write_text("#!/bin/sh\n")
+    monkeypatch.chdir(home)
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
+    monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(launcher))
+    result = _invoke(_CURSOR_PROJECT)
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "is not on PATH" not in result.output
+    assert f"registering the dev launcher {launcher}" in result.output
+
+
+def test_a_dev_run_hints_at_the_launcher_not_a_bare_blumkin(
+    all_clients: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    launcher = tmp_path / "blumkin-launcher"
+    launcher.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
+    monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(launcher))
+    result = _invoke(["mcp", "install", "--client", "cursor", "--scope", "user", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    hint = json.loads(result.output)["hint"]
+    assert f"`{launcher} mcp install --yes --scope user`" in hint
+
+
 def test_cli_install_no_client_detected_is_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
     monkeypatch.setattr(mi, "detect", lambda clients=mi.CLIENTS: set())
