@@ -1553,8 +1553,9 @@ async def mail_thread(
     escaped = str(conversation_id).replace("'", "''")
     list_query = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
         top=100,
+        # No `$orderby`: Graph rejects a `conversationId` filter combined with a sort as
+        # "too complex" (400), so the thread is sorted here, oldest first.
         filter=f"conversationId eq '{escaped}'",
-        orderby=["receivedDateTime"],
         select=list(_MESSAGE_LIST_SELECT_FIELDS),
     )
     try:
@@ -1573,6 +1574,7 @@ async def mail_thread(
         if not link or len(messages) >= _MAX_THREAD_MESSAGES:
             break
         page = await client.me.messages.with_url(str(link)).get()
+    messages.sort(key=_thread_sort_key)
     items: list[dict[str, Any]] = []
     for msg in messages:
         item = _message_to_dict(msg)
@@ -2855,6 +2857,14 @@ async def _delete_uploaded_attachments(
             await builder.by_attachment_id(aid).delete()
         except Exception:
             pass
+
+
+def _thread_sort_key(msg: Any) -> str:
+    """When a thread message arrived, as sortable text; a draft has no receipt, so its creation."""
+    moment = getattr(msg, "received_date_time", None) or getattr(msg, "created_date_time", None)
+    if moment is None:
+        return ""
+    return moment.isoformat() if hasattr(moment, "isoformat") else str(moment)
 
 
 async def _draft_attachments(
