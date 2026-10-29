@@ -189,11 +189,9 @@ On a server that is not pinned with `--profile`, every account-scoped tool takes
 | `--version` has no `+dev` marker | An installed release answered | Run `scripts/dev/blumkin` by its explicit path |
 | The launcher refuses `completion` or `agent status` | The launcher's config check is stricter than the CLI (#565) | Finish setup first, or run `BLUMKIN_DEV=1 .venv/bin/blumkin <args>` for that one command |
 | The launcher refuses `mcp install` | Same check (#565) | Finish sections 3 to 5 first. Do not run it through `.venv/bin/blumkin`: without `BLUMKIN_DEV_LAUNCHER` set to the launcher's absolute path it registers a bare `blumkin` instead of the checkout |
-| `missing_scope` with a 403 "has not been used in project" | The API is disabled in the Cloud project, not a scope problem | Ask the user to enable the API |
+| `graph_error` with a 403 "has not been used in project" | The API is disabled in the Cloud project, not a scope problem | Ask the user to enable the API |
 | `usage_error` on `drive`, `docs` or `people` for a Microsoft profile | The optional scopes are off | Section 4 |
 | `too_soon` on `mail send-draft` | The send cooldown | Show the user the content and get their go-ahead before trying again |
-| `mail attachments download --attachment-id` fails with `not_found` on Google | Gmail attachment ids change on every fetch (#564) | Use `--all` |
-| `mail thread` fails with a 400 on Microsoft | Known (#564) | Use `mail get` and `mail search` |
 | First run is slow and prints uv messages | Building the worktree's `.venv` | Wait; it is a one-time cost per worktree |
 
 ## See also

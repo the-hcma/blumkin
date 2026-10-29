@@ -602,8 +602,11 @@ def _collect_attachment_parts(part: dict[str, Any], out: list[dict[str, Any]]) -
         # gives the part an attachmentId, so surface it under a fallback name
         # rather than dropping it silently.
         part_id = part.get("partId")
-        stable_id = part_id if isinstance(part_id, str) and part_id else attachment_id
-        filename = str(part.get("filename") or "").strip() or stable_id
+        has_part_id = isinstance(part_id, str) and bool(part_id)
+        stable_id = part_id if has_part_id else attachment_id
+        filename = str(part.get("filename") or "").strip() or (
+            f"attachment-{part_id}" if has_part_id else attachment_id
+        )
         out.append(
             {
                 "_fetch_id": attachment_id,

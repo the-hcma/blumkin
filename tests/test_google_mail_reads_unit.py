@@ -343,9 +343,92 @@ def test_an_attachment_id_from_one_listing_still_downloads_after_gmail_reissues_
     assert (tmp_path / "saved.pdf").read_bytes() == b"PDFDATA"
     assert "first-fetch" not in json.dumps(listed)
     # The bytes were fetched with the id Gmail issued on the second fetch.
-    assert _attachments_get(service) is not None
     fetch_kwargs = service.users.return_value.messages.return_value.attachments.return_value.get
     assert fetch_kwargs.call_args.kwargs["id"] == "second-fetch"
+
+
+def _part_with(part_id: str | None, name: str, attachment_id: str, size: int = 5) -> dict:
+    part = {
+        "mimeType": "application/pdf",
+        "filename": name,
+        "body": {"attachmentId": attachment_id, "size": size},
+    }
+    if part_id is not None:
+        part["partId"] = part_id
+    return part
+
+
+def test_attachment_ids_use_the_part_id_even_when_nested_and_fall_back_without_one(
+    tmp_path: Path,
+) -> None:
+    built = _full_message()
+    built["payload"]["parts"] = [
+        {"mimeType": "text/plain", "body": {"data": ""}},
+        {
+            "mimeType": "multipart/mixed",
+            "parts": [_part_with("1.2", "deep.pdf", "raw-deep")],
+        },
+        _part_with(None, "bare.pdf", "raw-bare"),
+    ]
+    with _patched(_service(message=built)):
+        listed = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_attachments_list(message_id="m-1")
+        )
+    assert {a["name"]: a["id"] for a in listed["attachments"]} == {
+        "deep.pdf": "1.2",
+        "bare.pdf": "raw-bare",
+    }
+    # Private bookkeeping stays out of every response.
+    assert "_fetch_id" not in json.dumps(listed)
+    assert "raw-deep" not in json.dumps(listed)
+
+
+def test_a_download_still_accepts_the_raw_gmail_attachment_id(tmp_path: Path) -> None:
+    built = _full_message()
+    built["payload"]["parts"].append(_part_with("1", "report.pdf", "raw-1"))
+    service = _service(message=built, attachment_data=b"PDF")
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_attachments_download(
+                message_id="m-1", attachment_id="raw-1", out=str(tmp_path / "a.pdf")
+            )
+        )
+    assert (tmp_path / "a.pdf").read_bytes() == b"PDF"
+
+
+def test_download_all_fetches_each_part_with_its_current_gmail_id(tmp_path: Path) -> None:
+    built = _full_message()
+    built["payload"]["parts"].extend(
+        [_part_with("1", "one.pdf", "raw-one"), _part_with("2", "two.pdf", "raw-two")]
+    )
+    service = _service(message=built, attachment_data=b"X")
+    out = tmp_path / "all"
+    with _patched(service):
+        saved = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_attachments_download(
+                message_id="m-1", download_all=True, out=str(out)
+            )
+        )
+    assert sorted(item["name"] for item in saved["saved"]) == ["one.pdf", "two.pdf"]
+    assert sorted(item["attachment_id"] for item in saved["saved"]) == ["1", "2"]
+    get_double = service.users.return_value.messages.return_value.attachments.return_value.get
+    fetched = [call.kwargs["id"] for call in get_double.call_args_list]
+    assert sorted(fetched) == ["raw-one", "raw-two"]
+
+
+def test_an_unnamed_attachment_gets_a_readable_name_not_a_bare_part_number(
+    tmp_path: Path,
+) -> None:
+    built = _full_message()
+    built["payload"]["parts"].append(
+        {"mimeType": "application/pdf", "partId": "3", "body": {"attachmentId": "raw-3", "size": 4}}
+    )
+    with _patched(_service(message=built)):
+        listed = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_attachments_list(message_id="m-1")
+        )
+    assert listed["attachments"][0]["id"] == "3"
+    assert listed["attachments"][0]["name"] == "attachment-3"
 
 
 def test_mail_get_lists_the_attachments_it_reports_having(tmp_path: Path) -> None:

@@ -2859,21 +2859,13 @@ async def _delete_uploaded_attachments(
             pass
 
 
-def _thread_sort_key(msg: Any) -> str:
-    """When a thread message arrived, as sortable text; a draft has no receipt, so its creation."""
-    moment = getattr(msg, "received_date_time", None) or getattr(msg, "created_date_time", None)
-    if moment is None:
-        return ""
-    return moment.isoformat() if hasattr(moment, "isoformat") else str(moment)
-
-
 async def _draft_attachments(
     client: Any, message_id: str, uploaded: Sequence[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """Every attachment the draft carries: what it already had, then what this call added.
 
     The response of `update-draft` reports the draft, not only the files this call attached
-    (#564). A listing that fails leaves just the uploaded ones, since the update itself has
+    (#564). A Graph error while listing leaves just the uploaded ones, since the update itself has
     already succeeded.
     """
     report: list[dict[str, Any]] = []
@@ -2898,11 +2890,34 @@ async def _draft_attachments(
             if not link:
                 break
             page = await builder.with_url(link).get()
-    except Exception:
+    except ODataError:
+        # The update itself succeeded; only this extra read failed. Anything that is not a
+        # Graph error (auth, a bug) is not swallowed.
         return list(uploaded)
     known = {item["id"] for item in report}
     report.extend(item for item in uploaded if item.get("id") not in known)
     return report
+
+
+def _thread_sort_key(msg: Any) -> tuple[bool, datetime]:
+    """Oldest first by arrival (a draft has no receipt, so its creation); undated last.
+
+    Compared as aware datetimes, not text, so a mixed offset or a naive fixture still orders
+    correctly. Graph is asked for the first page of the conversation and the rest are
+    followed up to `_MAX_THREAD_MESSAGES`, then sorted: with no `$orderby`, a thread longer
+    than that limit keeps the first messages Graph returns, not necessarily the oldest.
+    """
+    moment = getattr(msg, "received_date_time", None) or getattr(msg, "created_date_time", None)
+    if isinstance(moment, str):
+        try:
+            moment = datetime.fromisoformat(moment)
+        except ValueError:
+            moment = None
+    if not isinstance(moment, datetime):
+        return True, datetime.max.replace(tzinfo=UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return False, moment.astimezone(UTC)
 
 
 async def _upload_attachments(

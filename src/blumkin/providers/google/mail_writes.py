@@ -778,19 +778,6 @@ def _addresses_from(message: EmailMessage, header: str) -> list[str]:
     return [addr for _, addr in getaddresses(message.get_all(header, [])) if addr]
 
 
-def _attachment_summaries(message: EmailMessage) -> list[dict[str, Any]]:
-    """What the draft carries: `id` (none until Gmail stores it), `name` and `size` of each file."""
-    summaries: list[dict[str, Any]] = []
-    for part in message.iter_attachments():
-        payload = part.get_payload(decode=True)
-        if not isinstance(payload, bytes | bytearray):
-            continue
-        summaries.append(
-            {"id": None, "name": part.get_filename() or "attachment", "size": len(payload)}
-        )
-    return summaries
-
-
 def _attachment_refs(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
     """(filename, attachmentId) for every part with fetchable bytes, filename or not."""
     refs: list[tuple[str, str]] = []
@@ -802,6 +789,19 @@ def _attachment_refs(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
         if isinstance(part, Mapping):
             refs.extend(_attachment_refs(part))
     return refs
+
+
+def _attachment_summaries(message: EmailMessage) -> list[dict[str, Any]]:
+    """What the draft carries: `id` (none until Gmail stores it), `name` and `size` of each file."""
+    summaries: list[dict[str, Any]] = []
+    for part in message.iter_attachments():
+        payload = part.get_payload(decode=True)
+        if not isinstance(payload, bytes | bytearray):
+            continue
+        summaries.append(
+            {"id": None, "name": part.get_filename() or "attachment", "size": len(payload)}
+        )
+    return summaries
 
 
 def _body_label(raw: str | None, config: BlumkinConfig | None = None) -> str:

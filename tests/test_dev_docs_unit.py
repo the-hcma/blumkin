@@ -55,6 +55,24 @@ def test_the_dev_skill_says_profiles_list_runs_without_a_config() -> None:
     assert "`profiles list`" in text
 
 
+def test_the_onboarding_troubleshooting_table_has_no_rows_for_fixed_problems() -> None:
+    """These rows described bugs fixed in #564 and would now send an agent the wrong way."""
+    text = " ".join((_ROOT / "docs/agent-onboarding.md").read_text().split())
+    assert "attachment ids change on every fetch" not in text
+    assert "`mail thread` fails with a 400 on Microsoft" not in text
+    assert "`missing_scope` with a 403" not in text
+    assert '`graph_error` with a 403 "has not been used in project"' in text
+
+
+def test_the_readme_separates_draft_attachment_ids_from_listed_part_ids() -> None:
+    text = " ".join((_ROOT / "README.md").read_text().split())
+    assert "`attachments[].id` is `null`" in text
+    assert (
+        "`mail attachments` and `mail get` list Gmail attachments by their stable MIME part id"
+        in text
+    )
+
+
 def test_the_main_skill_points_to_the_dev_skill_so_only_one_fires() -> None:
     body = _MAIN_SKILL.read_text()
     assert "blumkin-dev" in body

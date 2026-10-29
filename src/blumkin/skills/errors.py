@@ -203,15 +203,6 @@ def graph_http_status(exc: BaseException) -> int | None:
     return None
 
 
-def _google_api_is_disabled(exc: BaseException) -> bool:
-    """A 403 from a Google API that is off in the Cloud project, not a scope problem."""
-    content = getattr(exc, "content", None)
-    if not isinstance(content, bytes | bytearray):
-        return False
-    text = bytes(content).decode("utf-8", errors="replace")
-    return "SERVICE_DISABLED" in text or "has not been used in project" in text
-
-
 def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a flat ladder
     """Map any blumkin exception to its ``(slug, exit_code, message, hint)``."""
     # 0. typed gate exceptions from the dispatch layer
@@ -341,3 +332,12 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
     if status == 404:
         return ErrorInfo("not_found", EXIT_NOT_FOUND, str(exc))
     return ErrorInfo("graph_error", EXIT_OTHER, str(exc))
+
+
+def _google_api_is_disabled(exc: BaseException) -> bool:
+    """A 403 from a Google API that is off in the Cloud project, not a scope problem."""
+    content = getattr(exc, "content", None)
+    if not isinstance(content, bytes | bytearray):
+        return False
+    text = bytes(content).decode("utf-8", errors="replace")
+    return "SERVICE_DISABLED" in text or "has not been used in project" in text

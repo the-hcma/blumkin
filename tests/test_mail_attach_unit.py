@@ -339,6 +339,24 @@ def test_mail_update_draft_reports_the_attachments_the_draft_already_carries(
     assert [a["name"] for a in added["draft"]["attachments"]] == ["old.pdf", "note.txt"]
 
 
+def test_a_failed_attachment_listing_after_update_falls_back_but_a_bug_is_not_hidden(
+    monkeypatch,
+) -> None:
+    """Only a Graph error is tolerated here; the update already succeeded (#564)."""
+    from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+
+    client = _draft_client(monkeypatch)
+    attachments = client.me.messages.by_message_id.return_value.attachments
+    attachments.get = AsyncMock(side_effect=ODataError())
+    payload = asyncio.run(mail_update_draft(draft_id="draft-1", body="edited"))
+    assert payload["draft"]["attachments"] == []
+    assert payload["draft"]["subject"] == "New"
+
+    attachments.get = AsyncMock(side_effect=RuntimeError("a programming error"))
+    with pytest.raises(RuntimeError, match="a programming error"):
+        asyncio.run(mail_update_draft(draft_id="draft-1", body="edited"))
+
+
 def test_mail_update_draft_skips_reattaching_an_identical_file(tmp_path, monkeypatch) -> None:
     """Re-attaching the same file (same content) must reuse it, not duplicate it (#392/#394)."""
     source = tmp_path / "report.pdf"
