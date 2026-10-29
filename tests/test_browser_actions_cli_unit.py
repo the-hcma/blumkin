@@ -57,7 +57,7 @@ class _Raw:
     def close(self) -> None:
         self.closed += 1
 
-    def block_form_submission(self) -> None:
+    def block_form_submission(self, *, background_writes: bool = False) -> None:
         self.net_installed += 1
 
     def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None:
@@ -1484,3 +1484,18 @@ def test_a_download_folder_entry_that_is_itself_a_symlink_is_followed_to_its_tar
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert [path.name for path in real.iterdir()] == ["meeting.vtt"]
+
+
+def test_the_guard_policy_carries_the_tasks_strict_mode() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.actions import _policy_for
+    from blumkin.config import BrowserTaskPolicy
+
+    def setup(policy: BrowserTaskPolicy) -> Any:
+        return SimpleNamespace(browser=SimpleNamespace(tasks={"t": policy}))
+
+    assert _policy_for(setup(BrowserTaskPolicy()), "t").block_background_writes is False
+    strict = BrowserTaskPolicy(block_background_writes=True)
+    assert _policy_for(setup(strict), "t").block_background_writes is True
+    assert _policy_for(setup(strict), "other").block_background_writes is False

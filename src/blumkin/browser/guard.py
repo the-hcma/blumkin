@@ -78,6 +78,8 @@ class GuardPolicy:
     """What a task may touch. `allowed_controls` are exact accessible names."""
 
     allowed_controls: frozenset[str] = frozenset()
+    #: Strict mode: also swallow background writes (see `block_form_submission`).
+    block_background_writes: bool = False
     extra_deny_names: tuple[str, ...] = field(default=())
 
 
@@ -88,7 +90,7 @@ class GuardedDriver:
         self._allowed = frozenset(_exact(name) for name in policy.allowed_controls)
         self._deny = _deny_stems((*DEFAULT_DENY_NAMES, *policy.extra_deny_names))
         self._raw = raw
-        raw.block_form_submission()
+        raw.block_form_submission(background_writes=policy.block_background_writes)
 
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()

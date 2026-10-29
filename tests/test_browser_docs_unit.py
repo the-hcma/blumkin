@@ -124,6 +124,7 @@ def test_the_docs_explain_upload_dirs_and_the_limit_of_the_safety_net() -> None:
 _POLICY_KEYS = (
     "allowed_controls",
     "allowed_hosts",
+    "block_background_writes",
     "download_dirs",
     "extra_deny_names",
     "upload_dirs",
@@ -287,3 +288,14 @@ def test_the_operator_notes_list_every_browser_policy_key() -> None:
 def test_the_decision_record_does_not_title_the_design_as_a_guarantee() -> None:
     decisions = _text("docs/DECISIONS.md")
     assert "guarded and never submitting" not in decisions
+
+
+def test_the_task_guide_explains_strict_mode_and_why_form_gets_are_not_blockable() -> None:
+    guide = " ".join(_text("docs/browser-tasks.md").split())
+    assert "`block_background_writes`" in guide
+    assert "off by default" in guide
+    assert "breaks pages that need background writes" in guide
+    assert "cannot tell a form GET from a link" in guide
+    assert "a request a service worker makes itself is routed" in guide
+    assert "a page request that a service worker answers is not" in guide
+    assert "WebSocket" in guide and "hyperlink pings" in guide

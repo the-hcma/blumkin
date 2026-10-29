@@ -215,8 +215,8 @@ class PlaywrightDriver:
         self._closed = False
         self._context = page.context
         self._existing_frames = existing_frames
-        self._net_installed = False
         self._navigation_handler: Any = None
+        self._net_handler: Any = None
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -234,9 +234,9 @@ class PlaywrightDriver:
             if self._navigation_handler is not None:
                 with contextlib.suppress(_playwright_error()):
                     self._context.unroute("**/*", self._navigation_handler)
-            if self._net_installed:
+            if self._net_handler is not None:
                 with contextlib.suppress(_playwright_error()):
-                    self._context.unroute("**/*", _abort_non_get_navigation)
+                    self._context.unroute("**/*", self._net_handler)
             with contextlib.suppress(_playwright_error()):
                 self._browser.close()
         finally:
@@ -251,7 +251,7 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error("describe the page", exc) from exc
 
-    def block_form_submission(self) -> None:
+    def block_form_submission(self, *, background_writes: bool = False) -> None:
         """Swallow every non-GET navigation while attached (a form POST), whatever triggers it.
 
         This is the backstop behind the guard's checks: a form can also be submitted by a
@@ -259,15 +259,29 @@ class PlaywrightDriver:
         static look at one control can rule out. The route lives only on this connection, so
         it is gone once the driver detaches and never gets in the way of the user's own
         final click.
+
+        With `background_writes` (a task's strict mode) it also swallows every other write
+        (`fetch`, `XMLHttpRequest`, a beacon), so a registered click handler cannot post form
+        data in the background. That breaks pages that need background writes to work, which
+        is why it is opt-in. Strict mode, once installed, is never weakened by a later lenient
+        request. Install the net before restricting hosts: both routes end by continuing the
+        request, so a net registered after the host route would run first and skip it.
         """
         self._require_open()
-        if self._net_installed:
+        handler = _abort_every_write if background_writes else _abort_non_get_navigation
+        if self._net_handler is handler or self._net_handler is _abort_every_write:
             return
+        previous = self._net_handler
         try:
-            self._context.route("**/*", _abort_non_get_navigation)
+            self._context.route("**/*", handler)
         except _playwright_error() as exc:
             raise self._action_error("install the form-submission safety net", exc) from exc
-        self._net_installed = True
+        self._net_handler = handler
+        if previous is not None:
+            # The new route went in before the old one comes out, so there is no gap. If the
+            # old one cannot be removed it stays behind the stricter one, which is harmless.
+            with contextlib.suppress(_playwright_error()):
+                self._context.unroute("**/*", previous)
 
     def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None:
         """Resolve one element, let `vet` inspect that very element, then click it.
@@ -738,7 +752,7 @@ class RawBrowserDriver(Protocol):
 
     def aria_snapshot(self) -> str: ...
 
-    def block_form_submission(self) -> None: ...
+    def block_form_submission(self, *, background_writes: bool = False) -> None: ...
 
     def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None: ...
 
@@ -941,6 +955,7 @@ _DISCOVERY_TIMEOUT_S = 3.0
 
 
 _POLL_MS = 250
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 _SCROLL_SETTLE_MS = 250
@@ -968,6 +983,19 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
         self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
     ) -> None:
         return None
+
+
+def _abort_every_write(route: Any) -> None:
+    """Strict mode: swallow any request that writes, navigation or background; pass the rest.
+
+    Reads (GET, HEAD) and the OPTIONS preflight carry no form data and go through; the write
+    that follows a preflight is the one answered with an empty `204`, so the server never
+    receives it. The page may think it succeeded, which is why this is for simple forms only.
+    """
+    if route.request.method in _READ_METHODS:
+        route.continue_()
+    else:
+        route.fulfill(status=204)
 
 
 def _abort_non_get_navigation(route: Any) -> None:

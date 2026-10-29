@@ -326,3 +326,36 @@ def test_a_download_dir_follows_the_same_rules_as_an_upload_dir(
     with pytest.raises(ProviderConfigError) as excinfo:
         load_config()
     assert "download_dirs" in str(excinfo.value)
+
+
+def test_strict_mode_is_off_by_default_and_read_when_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        "[browser.tasks.plain]\n\n[browser.tasks.simple-form]\nblock_background_writes = true\n\n",
+    )
+    tasks = load_config().browser.tasks
+    assert tasks["plain"].block_background_writes is False
+    assert tasks["simple-form"].block_background_writes is True
+
+
+@pytest.mark.parametrize("value", ['"yes"', "1", "[true]"])
+def test_strict_mode_must_be_a_real_boolean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    _config(
+        tmp_path, monkeypatch, f"[browser.tasks.simple-form]\nblock_background_writes = {value}\n\n"
+    )
+    with pytest.raises(ProviderConfigError, match="block_background_writes"):
+        load_config()
+
+
+def test_there_is_no_form_get_setting_and_the_error_lists_what_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(tmp_path, monkeypatch, "[browser.tasks.simple-form]\nblock_form_gets = true\n\n")
+    with pytest.raises(ProviderConfigError, match="block_form_gets") as excinfo:
+        load_config()
+    assert "block_background_writes" in str(excinfo.value)

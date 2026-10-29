@@ -591,6 +591,7 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
         return GuardPolicy()
     return GuardPolicy(
         allowed_controls=frozenset(declared.allowed_controls),
+        block_background_writes=declared.block_background_writes,
         extra_deny_names=declared.extra_deny_names,
     )
 

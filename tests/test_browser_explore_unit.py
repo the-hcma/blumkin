@@ -356,7 +356,7 @@ class _Raw:
         self.settled = 0
         self.settled_from = ""
 
-    def block_form_submission(self) -> None:
+    def block_form_submission(self, *, background_writes: bool = False) -> None:
         self.net += 1
 
     def aria_snapshot(self) -> str:
@@ -409,7 +409,7 @@ def test_the_exploring_driver_refuses_what_the_guard_refuses(info_kwargs: dict[s
 
 def test_attach_exploring_closes_the_raw_driver_when_wrapping_fails() -> None:
     class _Broken(_Raw):
-        def block_form_submission(self) -> None:
+        def block_form_submission(self, *, background_writes: bool = False) -> None:
             raise RuntimeError("no route")
 
     raw = _Broken()
