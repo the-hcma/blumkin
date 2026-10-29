@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from zoneinfo import ZoneInfoNotFoundError
 
 import httpx
@@ -96,6 +97,39 @@ def test_a_freebusy_failure_hints_at_the_addresses_not_at_a_microsoft_outage() -
     assert info.hint is not None
     assert "own address" in info.hint
     assert "Microsoft 365" not in info.hint
+
+
+def test_a_google_api_that_is_not_enabled_is_not_reported_as_a_missing_scope() -> None:
+    """`chat find` said `missing_scope` when the Chat API was off in the Cloud project (#564)."""
+    import httplib2
+    from googleapiclient.errors import HttpError
+
+    content = json.dumps(
+        {
+            "error": {
+                "code": 403,
+                "message": (
+                    "Google Chat API has not been used in project 123 before or it is "
+                    "disabled. Enable it by visiting the console."
+                ),
+                "status": "PERMISSION_DENIED",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "SERVICE_DISABLED",
+                    }
+                ],
+            }
+        }
+    ).encode()
+    disabled = HttpError(httplib2.Response({"status": 403}), content, uri="https://chat")
+    info = classify_exception(disabled)
+    assert info.slug == "graph_error"
+    assert info.hint is not None and "Enable" in info.hint and "doctor" not in info.hint
+
+    denied = json.dumps({"error": {"code": 403, "message": "insufficient scope"}}).encode()
+    plain = HttpError(httplib2.Response({"status": 403}), denied, uri="https://chat")
+    assert classify_exception(plain).slug == "missing_scope"
 
 
 def test_auth_layer_value_errors() -> None:

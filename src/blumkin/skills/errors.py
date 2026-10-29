@@ -72,6 +72,11 @@ _MISSING_SCOPE_HINT = (
     '"Select all") on the consent screen - the message above lists exactly '
     "which scopes are missing."
 )
+_GOOGLE_API_DISABLED_HINT = (
+    "The API behind this command is not enabled in your Google Cloud project, which is not "
+    "a scope problem. Enable it (APIs & Services, Library, search for the API named in the "
+    "message above), wait a minute, then retry."
+)
 _FREEBUSY_HINT = (
     "A requested calendar returned no schedule. Do not pass your own address with --with "
     "(freebusy and suggest already include you); otherwise check that each address is a "
@@ -198,6 +203,15 @@ def graph_http_status(exc: BaseException) -> int | None:
     return None
 
 
+def _google_api_is_disabled(exc: BaseException) -> bool:
+    """A 403 from a Google API that is off in the Cloud project, not a scope problem."""
+    content = getattr(exc, "content", None)
+    if not isinstance(content, bytes | bytearray):
+        return False
+    text = bytes(content).decode("utf-8", errors="replace")
+    return "SERVICE_DISABLED" in text or "has not been used in project" in text
+
+
 def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a flat ladder
     """Map any blumkin exception to its ``(slug, exit_code, message, hint)``."""
     # 0. typed gate exceptions from the dispatch layer
@@ -318,6 +332,8 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
 
     # 6. Graph HTTP status ladder
     status = graph_http_status(exc)
+    if status == 403 and _google_api_is_disabled(exc):
+        return ErrorInfo("graph_error", EXIT_OTHER, str(exc), _GOOGLE_API_DISABLED_HINT)
     if status == 401:
         return ErrorInfo("auth_required", EXIT_AUTH, str(exc))
     if status == 403:
