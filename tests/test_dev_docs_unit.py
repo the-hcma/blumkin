@@ -62,6 +62,21 @@ def test_the_onboarding_troubleshooting_table_has_no_rows_for_fixed_problems() -
     assert "`mail thread` fails with a 400 on Microsoft" not in text
     assert "`missing_scope` with a 403" not in text
     assert '`graph_error` with a 403 "has not been used in project"' in text
+    # The prose elsewhere in the guide must agree with the table.
+    assert "fails with `missing_scope` and a 403" not in text
+    assert "fails with `graph_error` and a 403" in text
+
+
+def test_the_onboarding_guide_tells_a_missing_config_from_an_empty_one() -> None:
+    """`profiles list` runs without a config now, so `count: 0` alone cannot mean state B (#564)."""
+    text = (_ROOT / "docs/agent-onboarding.md").read_text()
+    assert 'The launcher exits 2 with "no config.toml in' not in text
+    assert "launcher would otherwise stop at its guided-setup prompt" not in text
+    rows = [line for line in text.splitlines() if line.startswith("| `") and "count" in line]
+    no_config = next(line for line in rows if "no `config.toml`" in line.split("|")[1])
+    assert "A. No config at all" in no_config
+    empty = next(line for line in rows if "`config.toml` exists" in line.split("|")[1])
+    assert "B. Config exists, no profiles" in empty
 
 
 def test_the_readme_separates_draft_attachment_ids_from_listed_part_ids() -> None:
@@ -71,6 +86,8 @@ def test_the_readme_separates_draft_attachment_ids_from_listed_part_ids() -> Non
         "`mail attachments` and `mail get` list Gmail attachments by their stable MIME part id"
         in text
     )
+    # The guarantee holds only when Gmail supplies a part id.
+    assert "when Gmail supplies a MIME part id" in text
 
 
 def test_the_main_skill_points_to_the_dev_skill_so_only_one_fires() -> None:

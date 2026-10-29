@@ -33,12 +33,12 @@ A bare `blumkin` on `PATH` may be a different checkout's launcher or an installe
 scripts/dev/blumkin profiles list --json </dev/null
 ```
 
-`profiles list` is the cold-start check. Detach stdin as shown: in a terminal session with no config the launcher would otherwise stop at its guided-setup prompt instead of exiting 2. Which state applies depends on the result:
+`profiles list` is the cold-start check and runs even without a `config.toml`, answering `count: 0`, so a zero count alone does not tell you whether the config file exists: check for it. Detach stdin as shown so no command waits on a prompt. Which state applies depends on the result:
 
 | Result | State | Go to |
 | --- | --- | --- |
-| The launcher exits 2 with "no config.toml in `<dir>`" | A. No config at all | section 3 |
-| `{"count": 0, ...}` | B. Config exists, no profiles | section 4 |
+| `{"count": 0, ...}` and no `config.toml` in the config directory (the directory is `BLUMKIN_CONFIG_DIR`, else `XDG_CONFIG_HOME/blumkin`, else `~/.config/blumkin`) | A. No config at all | section 3 |
+| `{"count": 0, ...}` and a `config.toml` exists in the config directory | B. Config exists, no profiles | section 4 |
 | `count` is 1 or more, but the profile you need is not listed | B. Profile missing | section 4 |
 | The profile is listed but `auth status --json` reports `client_id_configured: false` (`profiles list` does not show this, so run `auth status` for the profile before reading the next rows) | B. OAuth client missing | section 3 (run `auth setup` for that profile) |
 | `count` is 1 or more, the profile has `auth_present` all `false` | C. Profile configured, never signed in | section 5 |
@@ -102,7 +102,7 @@ With more than one profile and no `default_profile`, a command without `--profil
 Optional capabilities need explicit config and a fresh sign-in, so `capabilities` reports them as `false` until then:
 
 - Microsoft `drive` and `docs` need `docs_scopes = true` in the profile; `people` and `meeting` need `wo1162425_scopes = true` (work or school accounts only; see `README.md`). After changing either setting, run `auth login` again.
-- Google `people` and `chat` also need those APIs enabled in the user's Cloud project. `capabilities` can say `true` for a service whose API is disabled; the call then fails with `missing_scope` and a 403 "has not been used in project" message (tracked in #565).
+- Google `people` and `chat` also need those APIs enabled in the user's Cloud project. `capabilities` can say `true` for a service whose API is disabled; the call then fails with `graph_error` and a 403 "has not been used in project" message, with a hint to enable the API (tracked in #565).
 
 ## 5. State C: sign in
 

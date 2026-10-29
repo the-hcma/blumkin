@@ -157,13 +157,14 @@ def test_graph_thread_sorts_oldest_first_without_asking_graph_to_order(monkeypat
     older.received_date_time = datetime(2026, 8, 1, 9, 0, tzinfo=UTC)
     draft = _msg("draft", subject="Re: hi")
     draft.received_date_time = None
-    draft.created_date_time = datetime(2026, 8, 3, 9, 0, tzinfo=UTC)
+    draft.created_date_time = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
     client = _graph(monkeypatch, messages_get_return=SimpleNamespace(value=[newer, draft, older]))
     client.me.messages.by_message_id.return_value.get = AsyncMock(
         return_value=SimpleNamespace(conversation_id="c1")
     )
     payload = asyncio.run(mail_thread(message_id="older"))
-    assert [i["id"] for i in payload["items"]] == ["older", "newer", "draft"]
+    # The draft has no receipt, so its creation time places it between the two received ones.
+    assert [i["id"] for i in payload["items"]] == ["older", "draft", "newer"]
     posted = client.me.messages.get.await_args.args[0]
     assert not posted.query_parameters.orderby
 
