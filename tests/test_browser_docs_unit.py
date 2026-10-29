@@ -299,3 +299,16 @@ def test_the_task_guide_explains_strict_mode_and_why_form_gets_are_not_blockable
     assert "a request a service worker makes itself is routed" in guide
     assert "a page request that a service worker answers is not" in guide
     assert "WebSocket" in guide and "hyperlink pings" in guide
+
+
+def test_the_task_guide_and_help_explain_nth_for_a_legitimately_repeated_name() -> None:
+    from blumkin import help_text
+
+    guide = " ".join(_text("docs/browser-tasks.md").split())
+    assert "`--nth N`" in guide
+    assert "1-based" in guide and "DOM order" in guide
+    assert "`nth` is for `click` only" in guide or "`--nth` is for `click` only" in guide
+    # It narrows the lookup only; the policy and the per-element vetting are unchanged.
+    assert "does not change what a task may click" in guide
+    assert "refused with the real count" in guide
+    assert "--nth" in help_text.BROWSER_CLICK_EPILOG

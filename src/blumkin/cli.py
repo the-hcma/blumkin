@@ -2286,6 +2286,13 @@ def browser_launch(ctx: click.Context, task: str, as_json_flag: bool) -> None:
     default=None,
     help="Seconds to wait for the control (default 5 by name, 30 with --role).",
 )
+@click.option(
+    "--nth",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Which match to click, 1-based in DOM order (the order `browser read --aria` lists "
+    "them), when the page legitimately repeats the name (default: refuse more than one).",
+)
 @click.pass_context
 def browser_click(
     ctx: click.Context,
@@ -2294,17 +2301,19 @@ def browser_click(
     as_json_flag: bool,
     role: str | None,
     wait_s: float | None,
+    nth: int | None,
 ) -> None:
     """Click a control the task declared (never a submit or finalizing control)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = click_task(load_browser_setup(), task, name, role, wait_s)
+        payload = click_task(load_browser_setup(), task, name, role, wait_s, nth)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     if as_json:
         emit_json(payload)
         return
-    emit_lines([f"{task}: clicked {payload['role']} {sanitize_terminal(name)!r}"])
+    which = f" (match {nth})" if nth is not None else ""
+    emit_lines([f"{task}: clicked {payload['role']} {sanitize_terminal(name)!r}{which}"])
 
 
 @browser.group("explore", epilog=help_text.BROWSER_EXPLORE_EPILOG)

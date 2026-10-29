@@ -156,6 +156,19 @@ document.getElementById('go').addEventListener('click', () => {
 </script>"""
 
 
+_REPEATED_NAMES = b"""<!doctype html><title>Repeated</title>
+<ul>
+<li><button type="button" onclick="pick(1)">More actions</button></li>
+<li><button type="button" onclick="pick(2)">More actions</button></li>
+<li><button type="button" onclick="pick(3)">More actions</button></li>
+</ul>
+<form action="/submit" method="post"><button type="submit">More actions</button></form>
+<p id="picked">none</p>
+<script>
+function pick(n) { document.getElementById('picked').textContent = 'picked ' + n; }
+</script>"""
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     posts: list[str] = []
     hosts: list[str] = []
@@ -182,6 +195,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             "/explore": _explore_page(port),
             "/expense": _EXPENSE_FORM,
             "/getform": _GET_FORM,
+            "/repeated": _REPEATED_NAMES,
             "/report": _SUBMIT_FORM,
             "/timesheet": _TIMESHEET_FORM,
         }
@@ -628,5 +642,37 @@ def test_a_script_submitted_get_form_reaches_the_server_with_the_net_installed(
             assert _wait_for(lambda: "Total due" in driver.read_text().text), _Handler.hosts
             assert any(h.endswith("/search?q=rent") for h in _Handler.hosts), _Handler.hosts
             driver.close()
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+def test_a_repeated_name_is_refused_unless_nth_says_which_one(
+    tmp_path: Path, form_url: str
+) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    browser = _installed_browser()
+    profile = create_profile(tmp_path, "expense-report")
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    try:
+        driver = GuardedDriver(
+            attach(profile), GuardPolicy(allowed_controls=frozenset({"More actions"}))
+        )
+        driver.goto(form_url + "repeated")
+        # Default: refuse rather than guess, and click nothing.
+        with pytest.raises(Exception, match="got 4 buttons named 'More actions'"):
+            driver.click("More actions", "button", 1.0)
+        assert "none" in driver.read_text().text
+        # Explicit: the second match in page order is the one clicked (#573).
+        driver.click("More actions", "button", 1.0, nth=2)
+        assert _wait_for(lambda: "picked 2" in driver.read_text().text)
+        # The fourth match is a submit button in a form: --nth does not get past the vetting.
+        with pytest.raises(SubmitBlockedError):
+            driver.click("More actions", "button", 1.0, nth=4)
+        assert _Handler.posts == []
+        # Beyond the matches: refused with the real count.
+        with pytest.raises(Exception, match="at least 5 buttons named 'More actions', got 4"):
+            driver.click("More actions", "button", 1.0, nth=5)
+        driver.close()
     finally:
         os.kill(result.session.pid, signal.SIGTERM)

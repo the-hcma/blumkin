@@ -40,10 +40,15 @@ class _Raw:
         #: name -> roles a control of that name exists in.
         self.present: dict[str, tuple[str, ...]] = {}
         self.probes: list[tuple[str, tuple[str, ...], float]] = []
+        #: The `nth` each lookup and each click was given.
+        self.nths: list[int | None] = []
         self.url = "https://erp.example.com/expenses"
 
-    def matching_roles(self, name: str, roles: Sequence[str], wait_s: float) -> tuple[str, ...]:
+    def matching_roles(
+        self, name: str, roles: Sequence[str], wait_s: float, nth: int | None = None
+    ) -> tuple[str, ...]:
         self.probes.append((name, tuple(roles), wait_s))
+        self.nths.append(nth)
         present = self.present.get(name, tuple(roles) if len(roles) == 1 else ("button",))
         return tuple(role for role in roles if role in present)
 
@@ -68,8 +73,11 @@ class _Raw:
         self.net_installed += 1
         self.background_writes = background_writes
 
-    def checked_click(self, name: str, role: str, vet: Callable[[ControlInfo], None]) -> None:
+    def checked_click(
+        self, name: str, role: str, vet: Callable[[ControlInfo], None], nth: int | None = None
+    ) -> None:
         vet(self.controls.get(name, _PLAIN))
+        self.nths.append(nth)
         self.calls.append(("click", role, name))
 
     def close(self) -> None:
@@ -150,6 +158,39 @@ def test_a_declared_ordinary_button_is_clicked() -> None:
     raw, driver = _guard("Add line")
     driver.click("Add line")
     assert raw.calls == [("click", "button", "Add line")]
+
+
+def test_nth_reaches_the_lookup_and_the_click() -> None:
+    raw, driver = _guard("More actions")
+    driver.click("More actions", "button", nth=3)
+    assert raw.nths == [3, 3]
+    assert raw.calls == [("click", "button", "More actions")]
+
+
+def test_nth_never_widens_what_a_task_may_click() -> None:
+    """The name must still be declared, and a finalizing name is still refused (#573)."""
+    raw, driver = _guard("Add line")
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("More actions", "button", nth=2)
+    raw2, driver2 = _guard("Submit report")
+    with pytest.raises(SubmitBlockedError, match="finalizing"):
+        driver2.click("Submit report", "button", nth=1)
+    assert raw.calls == [] and raw2.calls == []
+
+
+def test_nth_without_a_role_still_asks_for_one_when_the_name_is_in_two_roles() -> None:
+    raw, driver = _guard("More actions")
+    raw.present["More actions"] = ("button", "link")
+    with pytest.raises(BrowserActionError, match="pass --role"):
+        driver.click("More actions", nth=2)
+    assert raw.calls == []
+
+
+def test_nth_must_be_a_positive_whole_number() -> None:
+    _, driver = _guard("More actions")
+    for bad in (0, -1, True, "2", 1.5):
+        with pytest.raises(ValueError, match="nth"):
+            driver.click("More actions", "button", nth=bad)  # type: ignore[arg-type]
 
 
 def test_a_declared_button_outside_any_form_is_clicked_even_with_the_default_submit_type() -> None:
