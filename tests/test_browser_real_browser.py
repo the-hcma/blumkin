@@ -127,6 +127,18 @@ def _drift_page(button: str = "Add line", extra: str = "", reverse: bool = False
     return page.encode()
 
 
+_BACKGROUND_FORM = b"""<!doctype html><title>Background</title>
+<label for="amount">Amount</label><input id="amount" name="amount">
+<button type="button" id="save">Save line</button>
+<p id="state">idle</p>
+<script>
+document.getElementById('save').addEventListener('click', () => {
+  fetch('/save', {method: 'POST', body: document.getElementById('amount').value})
+    .then((r) => { document.getElementById('state').textContent = 'saved ' + r.status; });
+});
+</script>"""
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     posts: list[str] = []
     hosts: list[str] = []
@@ -143,6 +155,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html")
         self.end_headers()
         pages = {
+            "/background": _BACKGROUND_FORM,
             "/bypass": _BYPASS_FORM,
             "/drift-a": _drift_page(),
             "/drift-b": _drift_page(button="Add row"),
@@ -159,6 +172,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         type(self).posts.append(self.path)
         self.send_response(200)
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:
@@ -540,5 +554,46 @@ def test_drift_is_graded_against_a_real_site_that_is_then_edited(
         assert "new_field" in [f.kind.value for f in added.findings]
         assert _Handler.posts == []
         driver.close()
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+def test_a_background_write_goes_through_by_default_and_not_in_strict_mode(
+    tmp_path: Path, form_url: str
+) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    try:
+        browser = resolve_browser(None)
+    except BrowserNotFoundError:
+        pytest.skip("no Chrome, Edge or Chromium installed")
+    profile = create_profile(tmp_path, "expense-report")
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    allowed = frozenset({"Save line"})
+    try:
+        # Default mode: the declared button's handler posts with fetch and the server gets it
+        # (documented: the net only stops navigations).
+        driver = GuardedDriver(attach(profile), GuardPolicy(allowed_controls=allowed))
+        driver.goto(form_url + "background")
+        driver.fill("Amount", "12.50")
+        driver.click("Save line")
+        assert _wait_for(lambda: "saved 200" in driver.read_text().text)
+        assert _Handler.posts == ["/save"]
+        driver.close()
+
+        # Strict mode: the same click is answered with an empty 204 and the server receives
+        # nothing, while the page keeps what the user typed.
+        _Handler.posts = []
+        strict = GuardedDriver(
+            attach(profile),
+            GuardPolicy(allowed_controls=allowed, block_background_writes=True),
+        )
+        strict.goto(form_url + "background")
+        strict.fill("Amount", "99.00")
+        strict.click("Save line")
+        assert _wait_for(lambda: "saved 204" in strict.read_text().text)
+        assert _Handler.posts == []
+
+        strict.close()
     finally:
         os.kill(result.session.pid, signal.SIGTERM)
