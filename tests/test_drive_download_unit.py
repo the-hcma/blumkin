@@ -426,3 +426,99 @@ def test_ms_drive_export_refuses_a_non_office_file(
 def test_ms_drive_read_unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(DriveReadUnsupportedError):
         _ms_run(_ms_client(item=None), monkeypatch, "drive_read", item_id="d1")
+
+
+# --------------------------------------------------------------------------- saved files (#555)
+
+
+def _mode(path: Path) -> int:
+    return path.stat().st_mode & 0o777
+
+
+def test_google_downloaded_and_exported_files_are_private(tmp_path: Path) -> None:
+    provider = GoogleWorkspaceProvider(_google_cfg(tmp_path))
+    with _google_patched(_google_service(mime="application/pdf")):
+        asyncio.run(provider.drive_download(item_id="d1", out=str(tmp_path / "got.pdf")))
+    assert _mode(tmp_path / "got.pdf") == 0o600
+    svc = _google_service(
+        mime="application/vnd.google-apps.document", export_links=_DOC_EXPORT_LINKS
+    )
+    with _google_patched(svc):
+        asyncio.run(provider.drive_export(item_id="d1", to=str(tmp_path / "out.pdf")))
+    assert _mode(tmp_path / "out.pdf") == 0o600
+
+
+def test_ms_downloaded_and_exported_files_are_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = SimpleNamespace(name="Report.docx", folder=None)
+    _ms_run(_ms_client(item=item), monkeypatch, "drive_download", item_id="d1", out=str(tmp_path))
+    assert _mode(tmp_path / "Report.docx") == 0o600
+    _ms_run(
+        _ms_client(item=item), monkeypatch, "drive_export", item_id="d1", to=str(tmp_path / "r.pdf")
+    )
+    assert _mode(tmp_path / "r.pdf") == 0o600
+
+
+def test_a_file_that_appears_before_the_write_is_never_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    taken = tmp_path / "taken.pdf"
+    taken.write_bytes(b"MINE")
+    monkeypatch.setattr(f"{_GOOGLE_MOD}.resolve_single_download_dest", lambda out, name: taken)
+    with (
+        _google_patched(_google_service(mime="application/pdf")),
+        pytest.raises(ValueError, match="already exists"),
+    ):
+        asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).drive_download(
+                item_id="d1", out=str(taken)
+            )
+        )
+    assert taken.read_bytes() == b"MINE"
+
+
+def test_a_dangling_symlink_as_the_destination_is_not_written_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "elsewhere.txt"
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    item = SimpleNamespace(name="Report.docx", folder=None)
+    with pytest.raises(ValueError, match="already exists"):
+        _ms_run(_ms_client(item=item), monkeypatch, "drive_download", item_id="d1", out=str(link))
+    assert not target.exists()
+
+
+def test_the_private_writer_creates_a_new_file_and_refuses_an_existing_one(
+    tmp_path: Path,
+) -> None:
+    from blumkin.attachments import write_new_private_file
+
+    dest = tmp_path / "x.bin"
+    write_new_private_file(dest, b"data")
+    assert dest.read_bytes() == b"data" and _mode(dest) == 0o600
+    with pytest.raises(ValueError, match="already exists"):
+        write_new_private_file(dest, b"other")
+    assert dest.read_bytes() == b"data"
+
+
+def test_the_private_writer_closes_the_descriptor_when_it_cannot_wrap_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from blumkin.attachments import write_new_private_file
+
+    closed: list[int] = []
+    real_close = os.close
+    monkeypatch.setattr(
+        "blumkin.attachments.os.close", lambda fd: (closed.append(fd), real_close(fd))
+    )
+    monkeypatch.setattr(
+        "blumkin.attachments.os.fdopen", lambda *a, **k: (_ for _ in ()).throw(OSError("no"))
+    )
+    dest = tmp_path / "x.bin"
+    with pytest.raises(OSError, match="no"):
+        write_new_private_file(dest, b"data")
+    assert closed and not dest.exists()

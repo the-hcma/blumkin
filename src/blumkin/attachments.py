@@ -7,6 +7,7 @@ existing entry.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -96,3 +97,24 @@ def unique_filename(name: str, used: set[str]) -> str:
             folded_used.add(candidate.casefold())
             return candidate
         index += 1
+
+
+def write_new_private_file(dest: Path, data: bytes) -> None:
+    """Create `dest` (mode 0600, never via a symlink), write `data`; never replace a file."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(dest, flags, 0o600)
+    except FileExistsError as exc:
+        raise ValueError(f"{dest} already exists, refusing to overwrite it") from exc
+    try:
+        handle = os.fdopen(fd, "wb")
+    except BaseException:
+        os.close(fd)
+        dest.unlink(missing_ok=True)
+        raise
+    try:
+        with handle:
+            handle.write(data)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise

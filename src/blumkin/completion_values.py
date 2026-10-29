@@ -45,6 +45,31 @@ def task_names(ctx: click.Context, param: click.Parameter, incomplete: str) -> l
     ]
 
 
+#: The types people give `drive upload --mime-type`; anything type/subtype is still accepted.
+_COMMON_MIME_TYPES = (
+    "application/json",
+    "application/msword",
+    "application/octet-stream",
+    "application/pdf",
+    "application/zip",
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/svg+xml",
+    "image/webp",
+    "text/csv",
+    "text/html",
+    "text/markdown",
+    "text/plain",
+    "video/mp4",
+)
+
+
+def mime_types(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+    """Common MIME types for `--mime-type` (static: nothing is read or fetched)."""
+    return [CompletionItem(kind) for kind in _COMMON_MIME_TYPES if kind.startswith(incomplete)]
+
+
 def waiting_item_ids(
     ctx: click.Context, param: click.Parameter, incomplete: str
 ) -> list[CompletionItem]:

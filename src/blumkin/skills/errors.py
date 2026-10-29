@@ -41,6 +41,14 @@ from blumkin.skills.chat import (
     ChatMessageNotFoundError,
 )
 from blumkin.skills.docs_read import DocsReadFileNotFoundError
+from blumkin.skills.drive import (
+    DriveDownloadError,
+    DriveExportError,
+    DriveFolderAmbiguousError,
+    DriveReadUnsupportedError,
+    DriveSelectorError,
+    DriveUploadError,
+)
 from blumkin.skills.mail import (
     MailAttachError,
     MailAttachmentNotFoundError,
@@ -213,6 +221,19 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
     # could re-read that text as `auth_required`.
     if isinstance(
         exc, TaskAmbiguousError | TaskConflictError | TaskExistsError | TaskValidationError
+    ):
+        return ErrorInfo("usage_error", EXIT_USAGE, str(exc))
+
+    # Drive input errors quote file and folder names the same way, so they too are classified by
+    # type: a name like "Missing_Q3.docx" must not read as `auth_required`.
+    if isinstance(
+        exc,
+        DriveDownloadError
+        | DriveExportError
+        | DriveFolderAmbiguousError
+        | DriveReadUnsupportedError
+        | DriveSelectorError
+        | DriveUploadError,
     ):
         return ErrorInfo("usage_error", EXIT_USAGE, str(exc))
 

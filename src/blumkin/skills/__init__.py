@@ -1157,6 +1157,53 @@ SKILLS: list[SkillSpec] = [
         ],
     ),
     SkillSpec(
+        id="drive.upload",
+        cli=["blumkin", "drive", "upload"],
+        summary=(
+            "Upload a local file to your drive (Google Drive or OneDrive) as a new file. "
+            "Never replaces a file and refuses a name already taken in the folder; notifies no one."
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=["Files.ReadWrite"],
+        args=[
+            {
+                "name": "--file",
+                "required": True,
+                "type": "string",
+                "note": (
+                    "local file to upload: a regular file with a single link, at most 2 GiB, "
+                    "never from blumkin's config directory or a credentials location"
+                ),
+            },
+            {
+                "name": "--folder",
+                "required": False,
+                "type": "string",
+                "note": "destination folder path (must exist); default the drive root",
+            },
+            {
+                "name": "--folder-id",
+                "required": False,
+                "type": "string",
+                "note": "destination folder id (one of --folder / --folder-id)",
+            },
+            {
+                "name": "--mime-type",
+                "required": False,
+                "type": "string",
+                "note": "override the type detected from the file name",
+            },
+            {
+                "name": "--name",
+                "required": False,
+                "type": "string",
+                "note": "name in the drive; default the local file's name",
+            },
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
         id="mail.attachments",
         cli=["blumkin", "mail", "attachments"],
         summary="List attachments on a message",

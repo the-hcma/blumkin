@@ -229,6 +229,7 @@ from blumkin.skills.drive import (
     format_drive_move_human,
     format_drive_read_human,
     format_drive_rename_human,
+    format_drive_upload_human,
 )
 from blumkin.skills.errors import ErrorInfo, classify_exception
 from blumkin.skills.mail import (
@@ -7415,6 +7416,54 @@ def drive_rename_cmd(
         "drive.rename",
         {"id": item_id, "name": name, "yes": yes},
         human=format_drive_rename_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@drive.command("upload", epilog=help_text.DRIVE_UPLOAD_EPILOG)
+@click.option(
+    "--file",
+    "file",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=str),
+    help="Local file to upload (a regular file).",
+)
+@click.option("--folder", default=None, help="Destination folder path (must exist); default root.")
+@click.option("--folder-id", "folder_id", default=None, help="Destination folder id.")
+@click.option(
+    "--mime-type",
+    "mime_type",
+    default=None,
+    shell_complete=completion_values.mime_types,
+    help="Override the type detected from the file name.",
+)
+@click.option("--name", default=None, help="Name in the drive; default the local file's name.")
+@click.option("--yes", "yes", is_flag=True, help="Required: this adds a file to your drive.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def drive_upload_cmd(
+    ctx: click.Context,
+    file: str,
+    folder: str | None,
+    folder_id: str | None,
+    mime_type: str | None,
+    name: str | None,
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Upload a local file to Google Drive or OneDrive (never replaces a file)."""
+    _dispatch(
+        ctx,
+        "drive.upload",
+        {
+            "file": file,
+            "folder": folder,
+            "folder_id": folder_id,
+            "mime_type": mime_type,
+            "name": name,
+            "yes": yes,
+        },
+        human=format_drive_upload_human,
         as_json_flag=as_json_flag,
     )
 
