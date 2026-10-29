@@ -1047,9 +1047,7 @@ def _profile_tables(
             raise ProviderConfigError(
                 "named [profiles.*] layout cannot mix top-level flat keys "
                 f"({shown}); move them under [profiles.<name>] or remove [profiles]. "
-                f"Top-level keys allowed next to [profiles.*]: {allowed}. If one of those is "
-                "the one named, this blumkin build is older than the config: "
-                "`blumkin --version`, then `blumkin upgrade`"
+                f"Top-level keys allowed next to [profiles.*]: {allowed}"
             )
         tables: dict[str, dict[str, Any]] = {}
         seen_lower: dict[str, str] = {}

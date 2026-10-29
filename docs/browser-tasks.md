@@ -20,8 +20,6 @@ blumkin browser profile create expense-report
 
 Then add the task's policy to `~/.config/blumkin/config.toml`.
 
-The `[browser]` and `[browser.tasks.*]` tables sit next to your `[profiles.*]` tables, anywhere in `config.toml`. They need a blumkin build newer than 1.13.0, which does not accept them next to named profiles. On 1.13.0 every command fails with `named [profiles.*] layout cannot mix top-level flat keys (browser)`, even though the file is valid TOML: check `blumkin --version`, then `blumkin upgrade`, or run the checkout with the dev launcher. A build that has them names the keys it allows in that error.
-
 ```toml
 [browser]
 default = "edge"          # chrome | edge | chromium; Chrome is used when unset or not installed
@@ -34,6 +32,8 @@ download_dirs = ["~/transcripts"]                  # folders `download` may save
 allowed_hosts = ["erp.example.com"]                # sites `upload` may send to; also limits `goto`
 block_background_writes = false                    # optional strict mode, off by default; see below
 ```
+
+The `[browser]` and `[browser.tasks.*]` tables go anywhere in `config.toml`, next to your `[profiles.*]` tables. If every command instead fails with `named [profiles.*] layout cannot mix top-level flat keys (browser)` although the file is valid TOML, your blumkin build predates that support (release 1.13.0 is such a build, and so are the `[loop]` and `[cron]` tables on it): check `blumkin --version`, then `blumkin upgrade`, or run the checkout with the dev launcher.
 
 `allowed_controls` is what makes `blumkin browser click` work for the task: a control that is not listed is refused. `extra_deny_names` can only add to the built-in list of finalizing words, never shorten it. `upload_dirs` is where the task may upload files from (absolute folders, or folders starting with `~/`, but never `/`, the whole home directory or a path that climbs out of it; `~user` paths are refused) and `allowed_hosts` is where it may send them (`erp.example.com`, or `*.example.com` for any subdomain, which needs a dot after the star, though public suffixes such as `co.uk` are not checked); with either missing `blumkin browser upload` refuses every file, so a page cannot make an agent upload an arbitrary file such as a key or a token, or send a receipt to another site. `download_dirs` is the same for `blumkin browser download`: where a file the page offers may be saved (default deny). Once a task declares hosts, `blumkin browser goto` refuses any other host too and every other command refuses to act on a page outside them; with no `allowed_hosts`, `goto` is not limited at all, so declare them. An unknown key in a task table is an error, so a typo such as `allowed_control` does not silently leave the task with an empty allow list. Everything that belongs to you personally (the form URL, your receipts folder, your categories, your default weekly hours) lives in your own task definition, not in blumkin; see [`operator-config.md`](./operator-config.md).
 

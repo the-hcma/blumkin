@@ -330,9 +330,14 @@ def test_the_task_guide_explains_how_to_close_a_task_browser() -> None:
     assert "single-instance files" in guide
 
 
-def test_the_task_guide_warns_that_the_browser_tables_need_a_build_newer_than_1_13_0() -> None:
-    """Docs on `main` run ahead of a release: 1.13.0 rejects `[browser]` next to profiles (#575)."""
+def test_the_task_guide_explains_the_flat_keys_error_that_1_13_0_prints_for_browser() -> None:
+    """Docs on `main` run ahead of a release: 1.13.0 rejects `[browser]` beside profiles (#575)."""
     guide = " ".join(_text("docs/browser-tasks.md").split())
-    assert "newer than 1.13.0" in guide
     assert "cannot mix top-level flat keys (browser)" in guide
+    assert "1.13.0 is such a build" in guide
     assert "`blumkin --version`" in guide and "`blumkin upgrade`" in guide
+    # The same applies to the loop and cron tables.
+    assert "`[loop]` and `[cron]`" in guide
+    loop_guide = " ".join(_text("docs/loop.md").split())
+    assert "cannot mix top-level flat keys (loop)" in loop_guide
+    assert "`blumkin upgrade`" in loop_guide

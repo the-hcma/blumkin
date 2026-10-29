@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import stat
 import sys
 from pathlib import Path
@@ -1094,12 +1095,24 @@ def test_a_browser_table_with_tasks_sits_next_to_named_profiles(
 
 def test_the_browser_table_can_come_before_the_profiles_too(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
-    body = _ISSUE_575_CONFIG.split("[profiles.personal]", 1)
-    browser_first = (
-        '[browser]\ndefault = "chrome"\n\n[profiles.personal]' + body[1].split("[browser]", 1)[0]
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "personal"\n'
+        "\n"
+        "[browser]\n"
+        'default = "chrome"\n'
+        "\n"
+        "[browser.tasks.youtube-transcript]\n"
+        'allowed_hosts = ["youtube.com"]\n'
+        'allowed_controls = ["More actions"]\n'
+        "\n"
+        "[profiles.personal]\n"
+        'provider = "google"\n'
+        'client_id = "abc.apps.googleusercontent.com"\n'
     )
-    (tmp_path / "config.toml").write_text(browser_first)
-    assert load_config(profile="personal").provider.value == "google"
+    assert load_config().provider.value == "google"
+    setup = load_browser_setup()
+    assert setup.browser.default == "chrome"
+    assert "youtube-transcript" in setup.browser.tasks
 
 
 @pytest.mark.parametrize("table", sorted(NAMED_LAYOUT_TOP_LEVEL_TABLES - {"profiles"}))
@@ -1114,13 +1127,11 @@ def test_every_top_level_table_the_docs_show_beside_profiles_is_allowed() -> Non
     Reads every fenced `toml` example in the README and `docs/`, so a newly documented
     top-level table fails here until the loader allows it next to `[profiles.*]`.
     """
-    import re
-
     root = Path(__file__).resolve().parent.parent
     documented: set[str] = set()
-    for path in [root / "README.md", *sorted((root / "docs").glob("*.md"))]:
-        for block in re.findall(r"```toml\n(.*?)```", path.read_text(), re.S):
-            documented.update(re.findall(r"^\[([A-Za-z_]+)[.\]]", block, re.M))
+    for path in [root / "README.md", *sorted((root / "docs").rglob("*.md"))]:
+        for block in re.findall(r"```toml\r?\n(.*?)```", path.read_text(), re.S):
+            documented.update(re.findall(r"^\[\[?([A-Za-z0-9_-]+)[.\]]", block, re.M))
     assert {"browser", "profiles"} <= documented, "the docs should show [browser] and profiles"
     assert documented <= NAMED_LAYOUT_TOP_LEVEL_TABLES, sorted(
         documented - NAMED_LAYOUT_TOP_LEVEL_TABLES
@@ -1137,3 +1148,6 @@ def test_an_unknown_top_level_key_is_still_rejected_and_the_error_lists_the_allo
     assert "allowed next to [profiles.*]: browser, cron, default_profile, loop, preferences" in (
         message
     )
+    # Only an old build rejects an allowed key, and an old build prints its own message, so
+    # an "upgrade" hint here could never reach the person it was written for.
+    assert "upgrade" not in message and "older than" not in message
