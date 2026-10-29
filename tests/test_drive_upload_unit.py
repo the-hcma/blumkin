@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 import threading
@@ -424,7 +425,7 @@ def test_onedrive_large_upload_uses_a_session_in_aligned_chunks_without_a_token(
 
     monkeypatch.setattr(
         f"{_MS_MOD}._session_client",
-        lambda: httpx.Client(transport=httpx.MockTransport(handler)),
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     send = AsyncMock(return_value=SimpleNamespace(upload_url="https://upload.example/session/1"))
 
@@ -459,7 +460,7 @@ def test_onedrive_large_upload_cancels_the_session_when_a_chunk_fails(
 
     monkeypatch.setattr(
         f"{_MS_MOD}._session_client",
-        lambda: httpx.Client(transport=httpx.MockTransport(handler)),
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     monkeypatch.setattr(f"{_MS_MOD}._pause", lambda seconds: None)
     send = AsyncMock(return_value=SimpleNamespace(upload_url="https://upload.example/session/1"))
@@ -721,7 +722,8 @@ def test_a_chunk_that_gets_a_server_error_is_retried_and_the_upload_still_comple
         return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
 
     monkeypatch.setattr(
-        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+        f"{_MS_MOD}._session_client",
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     monkeypatch.setattr(f"{_MS_MOD}._pause", pauses.append)
 
@@ -748,7 +750,8 @@ def test_a_timeout_on_a_chunk_is_retried_too(
         return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
 
     monkeypatch.setattr(
-        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+        f"{_MS_MOD}._session_client",
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     monkeypatch.setattr(f"{_MS_MOD}._pause", lambda seconds: None)
 
@@ -768,7 +771,8 @@ def test_a_chunk_that_keeps_failing_gives_up_after_a_few_tries_and_cancels(
         return httpx.Response(204) if request.method == "DELETE" else httpx.Response(503)
 
     monkeypatch.setattr(
-        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+        f"{_MS_MOD}._session_client",
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     monkeypatch.setattr(f"{_MS_MOD}._pause", lambda seconds: None)
 
@@ -815,7 +819,8 @@ def test_a_final_answer_that_is_not_json_is_an_upload_error_and_cancels_the_sess
         )
 
     monkeypatch.setattr(
-        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+        f"{_MS_MOD}._session_client",
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     with pytest.raises(DriveUploadError, match="answer"):
         _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
@@ -836,7 +841,8 @@ def test_a_file_that_changes_during_a_large_upload_cancels_the_session(
         return httpx.Response(204) if request.method == "DELETE" else httpx.Response(202)
 
     monkeypatch.setattr(
-        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+        f"{_MS_MOD}._session_client",
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     with pytest.raises(DriveUploadError, match="changed"):
         _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
@@ -909,7 +915,8 @@ def test_a_chunk_whose_answer_was_lost_resumes_from_where_the_session_says_it_is
         return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
 
     monkeypatch.setattr(
-        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+        f"{_MS_MOD}._session_client",
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     monkeypatch.setattr(f"{_MS_MOD}._pause", lambda seconds: None)
 
@@ -942,7 +949,8 @@ def test_a_final_chunk_whose_answer_was_lost_is_not_reported_as_a_name_clash(
         return httpx.Response(409)
 
     monkeypatch.setattr(
-        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+        f"{_MS_MOD}._session_client",
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     monkeypatch.setattr(f"{_MS_MOD}._pause", lambda seconds: None)
 
@@ -971,7 +979,8 @@ def test_a_retry_after_that_is_not_a_finite_number_falls_back_to_the_backoff(
         return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
 
     monkeypatch.setattr(
-        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+        f"{_MS_MOD}._session_client",
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     monkeypatch.setattr(f"{_MS_MOD}._pause", pauses.append)
 
@@ -1120,7 +1129,132 @@ def test_a_large_onedrive_upload_does_not_run_on_the_event_loop_thread(
         return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
 
     monkeypatch.setattr(
-        f"{_MS_MOD}._session_client", lambda: httpx.Client(transport=httpx.MockTransport(handler))
+        f"{_MS_MOD}._session_client",
+        lambda *_a, **_k: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     _ms_upload(_ms_client(_session_send()), config_dir, file=str(big))
     assert seen and threading.get_ident() not in seen
+
+
+# ------------------------------------------------------------------ review round 1
+
+
+def test_google_small_create_is_never_retried(source: Path, config_dir: Path) -> None:
+    service = MagicMock()
+    files = service.files.return_value
+    files.list.return_value.execute.return_value = {"files": []}
+    files.create.return_value.execute.return_value = _created()
+    seen: list[dict[str, Any]] = []
+
+    def run(request: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        return request.execute()
+
+    with patch.multiple(
+        _GOOGLE_MOD,
+        get_credentials=MagicMock(return_value=MagicMock()),
+        build_api_service=MagicMock(return_value=service),
+        execute=MagicMock(side_effect=run),
+    ):
+        asyncio.run(GoogleWorkspaceProvider(_google_cfg(config_dir)).drive_upload(file=str(source)))
+
+    assert seen[-1] == {"num_retries": 0}
+
+
+def test_onedrive_refuses_the_google_oauth_client_file_too(
+    tmp_path: Path, config_dir: Path
+) -> None:
+    client = tmp_path / "downloads" / "client_secret.json"
+    client.parent.mkdir()
+    client.write_text("{}")
+    cfg = dataclasses.replace(_ms_cfg(config_dir), google_oauth_client_file=client)
+    send = AsyncMock()
+    with patch(f"{_MS_MOD}.create_graph_client", return_value=_ms_client(send)):
+        with pytest.raises(DriveUploadError, match="secret"):
+            asyncio.run(MicrosoftWorkspaceProvider(cfg).drive_upload(file=str(client)))
+    send.assert_not_called()
+
+
+def test_an_env_name_is_refused_even_when_it_is_a_link_to_something_else(
+    tmp_path: Path, config_dir: Path
+) -> None:
+    target = tmp_path / "credential-values"
+    target.write_text("KEY=1")
+    link = tmp_path / "project" / ".env"
+    link.parent.mkdir()
+    link.symlink_to(target)
+    with pytest.raises(DriveUploadError, match="secret"):
+        resolve_upload_source(str(link), name=None, mime_type=None, config_dir=config_dir)
+
+
+def test_a_link_into_a_credentials_folder_by_its_given_path_is_refused(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    key = tmp_path / "elsewhere" / "id"
+    key.parent.mkdir()
+    key.write_text("key")
+    (home / ".ssh" / "id_link").symlink_to(key)
+    monkeypatch.setenv("HOME", str(home))
+    with pytest.raises(DriveUploadError, match="secret"):
+        resolve_upload_source(
+            str(home / ".ssh" / "id_link"), name=None, mime_type=None, config_dir=config_dir
+        )
+
+
+def test_onedrive_small_upload_of_a_file_that_changed_names_the_copy_left(
+    source: Path, config_dir: Path
+) -> None:
+    async def put(*_args: Any, **_kwargs: Any) -> DriveItem:
+        with source.open("ab") as handle:
+            handle.write(b"changed")
+        return _item(id="leftid")
+
+    with pytest.raises(DriveUploadError, match="changed") as caught:
+        _ms_upload(_ms_client(AsyncMock(side_effect=put)), config_dir, file=str(source))
+    assert "leftid" in str(caught.value)
+
+
+def test_onedrive_session_uploads_use_the_configured_graph_timeout(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    big = tmp_path / "big.bin"
+    big.write_bytes(os.urandom(5 * 1024 * 1024))
+    timeouts: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        total = int(request.headers["Content-Range"].split("/")[1])
+        end = int(request.headers["Content-Range"].split("-")[1].split("/")[0])
+        if end + 1 < total:
+            return httpx.Response(202, json={"nextExpectedRanges": [f"{end + 1}-"]})
+        return httpx.Response(201, json={"id": "bigid", "name": "big.bin", "size": total})
+
+    def client(timeout: float = 60.0) -> httpx.Client:
+        timeouts.append(timeout)
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(f"{_MS_MOD}._session_client", client)
+    cfg = dataclasses.replace(_ms_cfg(config_dir), graph_timeout_seconds=7.0)
+    send = AsyncMock(return_value=SimpleNamespace(upload_url="https://upload.example/session/1"))
+    with patch(f"{_MS_MOD}.create_graph_client", return_value=_ms_client(send)):
+        asyncio.run(MicrosoftWorkspaceProvider(cfg).drive_upload(file=str(big)))
+    assert timeouts == [7.0]
+
+
+def test_a_path_with_trailing_whitespace_is_not_silently_trimmed(
+    tmp_path: Path, config_dir: Path
+) -> None:
+    plain = tmp_path / "report.pdf"
+    plain.write_bytes(b"the other file")
+    with pytest.raises(DriveUploadError, match="no such file"):
+        resolve_upload_source(str(plain) + " ", name=None, mime_type=None, config_dir=config_dir)
+    spaced = tmp_path / "report.pdf "
+    spaced.write_bytes(b"this one")
+    found = resolve_upload_source(str(spaced), name=None, mime_type=None, config_dir=config_dir)
+    assert found.size == len(b"this one")
+
+
+def test_a_blank_file_argument_is_still_refused(config_dir: Path) -> None:
+    with pytest.raises(DriveUploadError, match="--file"):
+        resolve_upload_source("   ", name=None, mime_type=None, config_dir=config_dir)
