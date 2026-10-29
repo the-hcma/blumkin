@@ -328,3 +328,11 @@ def test_the_task_guide_explains_how_to_close_a_task_browser() -> None:
     assert 'never as "no browser"' in guide
     assert "refuses to signal" in guide and "own process tree" in guide
     assert "single-instance files" in guide
+
+
+def test_the_task_guide_warns_that_the_browser_tables_need_a_build_newer_than_1_13_0() -> None:
+    """Docs on `main` run ahead of a release: 1.13.0 rejects `[browser]` next to profiles (#575)."""
+    guide = " ".join(_text("docs/browser-tasks.md").split())
+    assert "newer than 1.13.0" in guide
+    assert "cannot mix top-level flat keys (browser)" in guide
+    assert "`blumkin --version`" in guide and "`blumkin upgrade`" in guide

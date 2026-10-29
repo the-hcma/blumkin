@@ -20,6 +20,8 @@ blumkin browser profile create expense-report
 
 Then add the task's policy to `~/.config/blumkin/config.toml`.
 
+The `[browser]` and `[browser.tasks.*]` tables sit next to your `[profiles.*]` tables, anywhere in `config.toml`. They need a blumkin build newer than 1.13.0, which does not accept them next to named profiles. On 1.13.0 every command fails with `named [profiles.*] layout cannot mix top-level flat keys (browser)`, even though the file is valid TOML: check `blumkin --version`, then `blumkin upgrade`, or run the checkout with the dev launcher. A build that has them names the keys it allows in that error.
+
 ```toml
 [browser]
 default = "edge"          # chrome | edge | chromium; Chrome is used when unset or not installed
