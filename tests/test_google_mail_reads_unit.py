@@ -342,11 +342,10 @@ def test_an_attachment_id_from_one_listing_still_downloads_after_gmail_reissues_
         )
     assert (tmp_path / "saved.pdf").read_bytes() == b"PDFDATA"
     assert "first-fetch" not in json.dumps(listed)
-    fetched = _attachments_get(service)
-    assert "second-fetch" in str(
-        service.users.return_value.messages.return_value.attachments.return_value.get.call_args
-    )
-    assert fetched is not None
+    # The bytes were fetched with the id Gmail issued on the second fetch.
+    assert _attachments_get(service) is not None
+    fetch_kwargs = service.users.return_value.messages.return_value.attachments.return_value.get
+    assert fetch_kwargs.call_args.kwargs["id"] == "second-fetch"
 
 
 def test_mail_get_lists_the_attachments_it_reports_having(tmp_path: Path) -> None:

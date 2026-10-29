@@ -504,9 +504,8 @@ def test_mail_update_draft_appends_attachment_to_existing(tmp_path: Path) -> Non
                 draft_id="d-3", attach=[str(new_file)]
             )
         )
-    # Payload lists only the newly added attachment (Microsoft-parity); the sent
-    # message keeps both.
-    assert [a["name"] for a in payload["draft"]["attachments"]] == ["second.txt"]
+    # The response reports everything the draft carries, not only what this call added (#564).
+    assert [a["name"] for a in payload["draft"]["attachments"]] == ["first.txt", "second.txt"]
     names = [p.get_filename() for p in _sent_message(service, "update").iter_attachments()]
     assert names == ["first.txt", "second.txt"]
 
@@ -564,7 +563,10 @@ def test_mail_update_draft_reattaches_when_same_name_but_different_size(
                 draft_id="d-5", attach=[str(changed_file)]
             )
         )
-    assert [a["name"] for a in payload["draft"]["attachments"]] == ["report.pdf"]
+    assert [(a["name"], a["size"]) for a in payload["draft"]["attachments"]] == [
+        ("report.pdf", 3),
+        ("report.pdf", 22),
+    ]
     sent = _sent_message(service, "update")
     parts = [
         (p.get_filename(), p.get_payload(decode=True))
@@ -839,6 +841,7 @@ def test_mail_reply_threads_with_original_and_sets_headers(tmp_path: Path) -> No
     assert draft["to"] == "ada@example.com"
     assert draft["subject"] == "Re: Renewal"
     assert draft["conversation_id"] == "thread-1"
+    assert draft["attachments"] == []
     create_body = service.users.return_value.drafts.return_value.create.call_args.kwargs["body"]
     assert create_body["message"]["threadId"] == "thread-1"
     sent = _sent_message(service, "create")
@@ -902,6 +905,7 @@ def test_mail_forward_prefixes_subject_and_carries_attachment(tmp_path: Path) ->
     assert draft["subject"] == "Fwd: Contract"
     assert draft["to"] == "dana@example.com"
     assert draft["conversation_id"] == "thread-9"
+    assert [a["name"] for a in draft["attachments"]] == ["contract.pdf"]
     sent = _sent_message(service, "create")
     assert "In-Reply-To" not in sent
     names = [part.get_filename() for part in sent.iter_attachments()]

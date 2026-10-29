@@ -488,6 +488,7 @@ async def mail_forward(
     )
     return {
         "draft": _reply_forward_summary(
+            attachments=_attachment_summaries(message),
             created=created,
             # drafts.create returns threadId on the nested message, not the draft.
             thread_id=(created.get("message") or {}).get("threadId"),
@@ -587,6 +588,7 @@ async def mail_reply(
     )
     return {
         "draft": _reply_forward_summary(
+            attachments=_attachment_summaries(message),
             created=created,
             thread_id=detail.get("conversation_id"),
             kind="reply-all" if reply_all else "reply",
@@ -728,13 +730,8 @@ async def mail_update_draft(
         filename = part.get_filename()
         if filename is not None:
             seen.add((filename, len(payload)))
-    reported_attachments: list[tuple[str, bytes]] = []
-    reported_seen: set[tuple[str, int]] = set()
     for name, data in pending:
         key = (name, len(data))
-        if key not in reported_seen:
-            reported_seen.add(key)
-            reported_attachments.append((name, data))
         if key in seen:
             # Already attached (same name and size) - reuse it instead of duplicating (#392).
             continue
@@ -765,9 +762,7 @@ async def mail_update_draft(
     )
     return {
         "draft": {
-            "attachments": [
-                {"id": None, "name": name, "size": len(data)} for name, data in reported_attachments
-            ],
+            "attachments": _attachment_summaries(message),
             "bcc": ", ".join(_addresses_from(message, "Bcc")) or None,
             "body_type": body_type_out,
             "cc": ", ".join(_addresses_from(message, "Cc")) or None,
@@ -781,6 +776,19 @@ async def mail_update_draft(
 def _addresses_from(message: EmailMessage, header: str) -> list[str]:
     """Bare addresses on ``header``, RFC-parsed so quoted display names with commas survive."""
     return [addr for _, addr in getaddresses(message.get_all(header, [])) if addr]
+
+
+def _attachment_summaries(message: EmailMessage) -> list[dict[str, Any]]:
+    """What the draft carries: `id` (none until Gmail stores it), `name` and `size` of each file."""
+    summaries: list[dict[str, Any]] = []
+    for part in message.iter_attachments():
+        payload = part.get_payload(decode=True)
+        if not isinstance(payload, bytes | bytearray):
+            continue
+        summaries.append(
+            {"id": None, "name": part.get_filename() or "attachment", "size": len(payload)}
+        )
+    return summaries
 
 
 def _attachment_refs(payload: Mapping[str, Any]) -> list[tuple[str, str]]:
@@ -1094,6 +1102,7 @@ def _replace_body(
 
 def _reply_forward_summary(
     *,
+    attachments: list[dict[str, Any]],
     created: Mapping[str, Any],
     thread_id: Any,
     kind: str,
@@ -1105,6 +1114,7 @@ def _reply_forward_summary(
     label: str,
 ) -> dict[str, Any]:
     return {
+        "attachments": attachments,
         "bcc": ", ".join(bcc) or None,
         "body_type": label,
         "cc": ", ".join(cc) or None,
