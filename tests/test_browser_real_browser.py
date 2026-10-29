@@ -139,6 +139,18 @@ document.getElementById('save').addEventListener('click', () => {
 </script>"""
 
 
+_GET_FORM = b"""<!doctype html><title>Search</title>
+<form id="search" action="/search" method="get">
+<label for="q">Query</label><input id="q" name="q">
+<button type="button" id="go">Search now</button>
+</form>
+<script>
+document.getElementById('go').addEventListener('click', () => {
+  document.getElementById('search').submit();
+});
+</script>"""
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     posts: list[str] = []
     hosts: list[str] = []
@@ -164,6 +176,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             "/drift-e": _drift_page(extra='<button type="button">Export</button>'),
             "/explore": _explore_page(port),
             "/expense": _EXPENSE_FORM,
+            "/getform": _GET_FORM,
             "/report": _SUBMIT_FORM,
             "/timesheet": _TIMESHEET_FORM,
         }
@@ -595,5 +608,37 @@ def test_a_background_write_goes_through_by_default_and_not_in_strict_mode(
         assert _Handler.posts == []
 
         strict.close()
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+def test_a_script_submitted_get_form_reaches_the_server_with_the_net_installed(
+    tmp_path: Path, form_url: str
+) -> None:
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    try:
+        browser = resolve_browser(None)
+    except BrowserNotFoundError:
+        pytest.skip("no Chrome, Edge or Chromium installed")
+    profile = create_profile(tmp_path, "expense-report")
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    allowed = frozenset({"Search now"})
+    try:
+        # A GET form is a GET navigation, which the net lets through in both modes (#562).
+        for strict in (False, True):
+            _Handler.hosts = []
+            driver = GuardedDriver(
+                attach(profile),
+                GuardPolicy(allowed_controls=allowed, block_background_writes=strict),
+            )
+            driver.goto(form_url + "getform")
+            driver.fill("Query", "rent")
+            driver.click("Search now")
+            # The server answers /search with the generic form page; reading the page on each
+            # poll also keeps Playwright servicing the route while the navigation happens.
+            assert _wait_for(lambda: "Total due" in driver.read_text().text)
+            assert any(h.endswith("/search?q=rent") for h in _Handler.hosts)
+            driver.close()
     finally:
         os.kill(result.session.pid, signal.SIGTERM)
