@@ -29,7 +29,7 @@ pytest.importorskip("mcp")
 
 from mcp.client import Client  # noqa: E402  (after importorskip)
 
-from blumkin.mcp_server import build_server, build_tools  # noqa: E402
+from blumkin.mcp_server import build_server, build_tools, serve_streams  # noqa: E402
 
 _CFG = SimpleNamespace(
     account_type="organizational",
@@ -931,3 +931,56 @@ def test_the_teams_hint_says_which_provider_attaches_a_meeting() -> None:
     hint = result.structured_content["hint"]
     assert "Microsoft" in hint and "pass no_teams=true" in hint
     assert "Google" in hint
+
+
+def test_a_client_that_probes_with_the_2026_envelope_can_still_initialize() -> None:
+    """Copilot CLI sends an enveloped request first, then falls back to `initialize` (#563).
+
+    The SDK's dual-era loop locks the connection to the 2026-07-28 era on that first request
+    and then refuses `initialize` with -32022. Over stdio there is no second connection to
+    retry on, so blumkin serves the handshake era only.
+    """
+    import anyio
+    from mcp.shared.message import SessionMessage
+    from mcp.types import JSONRPCError, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse
+
+    envelope = {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}
+    initialize = {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "probe-client", "version": "1"},
+    }
+
+    async def _run() -> tuple[Any, Any, Any]:
+        to_server_send, to_server_recv = anyio.create_memory_object_stream[SessionMessage](8)
+        to_client_send, to_client_recv = anyio.create_memory_object_stream[SessionMessage](8)
+
+        async def _ask(request_id: int, method: str, params: dict[str, Any]) -> Any:
+            request = JSONRPCRequest(jsonrpc="2.0", id=request_id, method=method, params=params)
+            await to_server_send.send(SessionMessage(request))
+            while True:
+                reply = (await to_client_recv.receive()).message
+                if isinstance(reply, JSONRPCResponse | JSONRPCError) and reply.id == request_id:
+                    return reply
+
+        with anyio.fail_after(15):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(serve_streams, build_server(), to_server_recv, to_client_send)
+                probe = await _ask(1, "tools/list", envelope)
+                handshake = await _ask(2, "initialize", initialize)
+                await to_server_send.send(
+                    SessionMessage(
+                        JSONRPCNotification(jsonrpc="2.0", method="notifications/initialized")
+                    )
+                )
+                listing = await _ask(3, "tools/list", {})
+                await to_server_send.aclose()
+                tg.cancel_scope.cancel()
+        return probe, handshake, listing
+
+    probe, handshake, listing = asyncio.run(_run())
+    assert not isinstance(handshake, JSONRPCError), handshake
+    assert handshake.result["serverInfo"]["name"]
+    assert isinstance(listing, JSONRPCResponse)
+    assert listing.result["tools"]
+    assert probe is not None
