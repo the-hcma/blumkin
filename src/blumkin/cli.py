@@ -6939,12 +6939,19 @@ def mcp_install_cmd(
         "binary": binary,
         "on_path": on_path,
         "scope": scope_val,
-        "serve": ["blumkin", *serve.args()],
+        "serve": [binary, *serve.args()],
         "clients": results,
+        "warnings": [
+            warning
+            for warning in (mi.launcher_worktree_warning(mi.dev_launcher()),)
+            if warning is not None
+        ],
     }
     if as_json:
         emit_json(payload)
     else:
+        for warning in payload["warnings"]:
+            click.echo(f"warning: {warning}", err=True)
         emit_lines(_format_mcp_install_human(payload))
     raise SystemExit(EXIT_OTHER if any_failed else EXIT_SUCCESS)
 

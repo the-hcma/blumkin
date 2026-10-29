@@ -527,6 +527,57 @@ def test_the_launcher_hint_quotes_a_path_with_spaces(
     assert f"`'{launcher}' mcp install --yes --scope user`" in hint
 
 
+def _worktree_launcher(tmp_path: Path, *, linked: bool) -> Path:
+    root = tmp_path / ("linked" if linked else "primary")
+    (root / "scripts" / "dev").mkdir(parents=True)
+    # A linked worktree has a `.git` file pointing at the main repository; a clone has a directory.
+    if linked:
+        (root / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+    else:
+        (root / ".git").mkdir()
+    launcher = root / "scripts" / "dev" / "blumkin"
+    launcher.write_text("#!/bin/sh\n")
+    return launcher
+
+
+def test_installing_from_a_linked_worktree_warns_and_reports_the_real_command(
+    home: Path,
+    all_clients: None,
+    fake_subprocess: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A worktree is short-lived: the entry breaks once it is removed (#565)."""
+    launcher = _worktree_launcher(tmp_path, linked=True)
+    monkeypatch.chdir(home)
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
+    monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(launcher))
+    payload = json.loads(_invoke([*_CURSOR_PROJECT, "--json"]).output)
+    assert payload["serve"][0] == str(launcher)
+    assert payload["serve"][1:] == ["mcp", "serve"]
+    (warning,) = payload["warnings"]
+    assert "worktree" in warning and "removed" in warning
+    human = _invoke(_CURSOR_PROJECT).output
+    assert "warning:" in human and "worktree" in human
+
+
+def test_installing_from_a_plain_clone_or_a_release_does_not_warn(
+    home: Path,
+    all_clients: None,
+    fake_subprocess: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(home)
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
+    monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(_worktree_launcher(tmp_path, linked=False)))
+    assert json.loads(_invoke([*_CURSOR_PROJECT, "--json"]).output)["warnings"] == []
+    monkeypatch.delenv("BLUMKIN_DEV")
+    monkeypatch.delenv("BLUMKIN_DEV_LAUNCHER")
+    released = json.loads(_invoke([*_CURSOR_PROJECT, "--json"]).output)
+    assert released["warnings"] == [] and released["serve"][:1] == ["blumkin"]
+
+
 def test_cli_install_no_client_detected_is_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
     monkeypatch.setattr(mi, "detect", lambda clients=mi.CLIENTS: set())
