@@ -1302,13 +1302,25 @@ def test_nth_waits_for_a_list_that_is_still_rendering() -> None:
     assert page.waits == 1
 
 
-def test_nth_uses_the_role_that_has_enough_matches_even_if_another_has_fewer() -> None:
+def test_nth_does_not_hide_that_the_name_exists_in_another_role() -> None:
+    """Two buttons and three links named X: `--nth 3` must not quietly pick the third link.
+
+    Every role the name exists in is reported, so the guard asks for `--role`, exactly as it
+    does without `--nth` (#573).
+    """
     _, driver = _driver_with_counts({("button", "X"): [2], ("link", "X"): [3]})
+    assert driver.matching_roles("X", ("button", "link"), 0.0, nth=3) == ("button", "link")
+
+
+def test_nth_with_one_role_present_still_needs_enough_matches() -> None:
+    _, driver = _driver_with_counts({("link", "X"): [3]})
     assert driver.matching_roles("X", ("button", "link"), 0.0, nth=3) == ("link",)
+    with pytest.raises(BrowserActionError, match="at least 4 links named 'X', got 3"):
+        driver.matching_roles("X", ("button", "link"), 0.0, nth=4)
 
 
 def test_nth_refuses_only_at_the_deadline_with_the_largest_count_seen() -> None:
-    page, driver = _driver_with_counts({("button", "X"): [1, 2, 2], ("link", "X"): [1]})
+    page, driver = _driver_with_counts({("button", "X"): [1, 2, 2]})
     with pytest.raises(BrowserActionError, match="at least 3 buttons named 'X', got 2"):
         driver.matching_roles("X", ("button", "link"), 3.0, nth=3)
     assert page.waits >= 1

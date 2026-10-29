@@ -178,6 +178,14 @@ def test_nth_never_widens_what_a_task_may_click() -> None:
     assert raw.calls == [] and raw2.calls == []
 
 
+def test_nth_without_a_role_still_asks_for_one_when_the_name_is_in_two_roles() -> None:
+    raw, driver = _guard("More actions")
+    raw.present["More actions"] = ("button", "link")
+    with pytest.raises(BrowserActionError, match="pass --role"):
+        driver.click("More actions", nth=2)
+    assert raw.calls == []
+
+
 def test_nth_must_be_a_positive_whole_number() -> None:
     _, driver = _guard("More actions")
     for bad in (0, -1, True, "2", 1.5):

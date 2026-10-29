@@ -439,26 +439,25 @@ class PlaywrightDriver:
         Polls the page's own accessibility tree (a count, not a click), so a wrong role or a
         missing control is reported after `wait_s`, not after the 30 second action timeout.
         Two controls with that name in one role are refused as ambiguous, unless `nth` (1-based,
-        DOM order) says which one is meant: then a role counts as found when it has at least
-        that many, and if none ever does within the wait, the largest count seen is reported.
+        DOM order) says which one is meant. That never hides a second role: a name that exists in
+        more than one role is returned as such, so the caller still has to choose. With one role,
+        it counts as found once it has at least that many; if it never does within the wait, the
+        largest count seen is reported.
         """
         self._require_open()
         deadline = time.monotonic() + clamp_wait(wait_s)
         short: tuple[int, str] | None = None
         while True:
             found: list[str] = []
+            present: list[tuple[str, int]] = []
             for role in roles:
                 try:
                     count = int(self._page.get_by_role(role, name=name, exact=True).count())
                 except _playwright_error() as exc:
                     raise self._action_error(f"look for a control named {name!r}", exc) from exc
                 if nth is not None:
-                    # Fewer than `nth` is not final while the wait runs: a list may still be
-                    # rendering. The largest count seen is reported if it never gets there.
-                    if count >= nth:
-                        found.append(role)
-                    elif count > 0 and (short is None or count >= short[0]):
-                        short = (count, role)
+                    if count > 0:
+                        present.append((role, count))
                     continue
                 if count > 1:
                     raise BrowserActionError(
@@ -466,8 +465,21 @@ class PlaywrightDriver:
                     )
                 if count == 1:
                     found.append(role)
+            if nth is not None:
+                if len(present) > 1:
+                    # The name exists in more than one role, however many matches each has:
+                    # `nth` must not hide that, so the caller still has to choose a role.
+                    return tuple(role for role, _ in present)
+                if present:
+                    role, count = present[0]
+                    if count >= nth:
+                        found.append(role)
+                    elif short is None or count >= short[0]:
+                        # Fewer than `nth` is not final while the wait runs: a list may still
+                        # be rendering. The largest count seen is reported if it never grows.
+                        short = (count, role)
             if found or time.monotonic() >= deadline:
-                if not found and short is not None and nth is not None:
+                if not found and short is not None:
                     raise BrowserActionError(
                         f"Expected at least {nth} {short[1]}s named {name!r}, got {short[0]}"
                     )
