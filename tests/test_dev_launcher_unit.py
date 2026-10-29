@@ -113,6 +113,7 @@ def test_commands_that_need_no_profile_run_without_a_config(tmp_path: Path) -> N
     assert completion.returncode == 0, completion.stderr
     assert "no config.toml" not in completion.stderr
     agent = _run(["agent", "status"], config, tmp_path)
+    assert agent.returncode in (0, 1), agent.stderr
     assert "no config.toml" not in agent.stderr
     assert not config.exists()
 
@@ -131,6 +132,75 @@ def test_mcp_install_runs_without_a_config_because_registering_needs_no_credenti
     assert "no config.toml" not in done.stderr
     assert done.returncode == 0, done.stderr
     assert (project / ".mcp.json").is_file()
+
+
+def _needs_config(*args: str) -> bool:
+    """Run the launcher's own `needs_config` function on `args` (exit 0 means it needs one)."""
+    text = _SCRIPT.read_text()
+    function = text[
+        text.index("needs_config() {") : text.index("\n}\n", text.index("needs_config() {")) + 3
+    ]
+    done = subprocess.run(
+        ["bash", "-c", function + '\nneeds_config "$@"', "needs-config", *args],
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert done.returncode in (0, 1), done.stderr
+    return done.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["mail", "inbox"],
+        ["calendar", "today"],
+        ["chat", "find"],
+        ["drive", "list"],
+        ["docs", "list"],
+        ["people", "resolve"],
+        ["meeting", "find"],
+        ["tasks", "list"],
+        ["capabilities"],
+        ["doctor"],
+        ["auth", "status"],
+        ["auth", "login"],
+        ["mcp", "serve"],
+        # These create state or act on a profile, so they keep the friendly setup hint.
+        ["browser", "launch"],
+        ["loop", "status"],
+        ["receipts", "find"],
+        # A global option's value is not the command.
+        ["--profile", "work", "mail", "inbox"],
+        ["--profile=work", "mail", "inbox"],
+        ["--tz", "UTC", "mail", "inbox"],
+    ],
+)
+def test_the_launcher_gates_every_provider_bound_command(args: list[str]) -> None:
+    assert _needs_config(*args) is True
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        ["--help"],
+        ["--version"],
+        ["mail", "--help"],
+        ["auth", "setup"],
+        ["profiles", "list"],
+        ["completion", "bash"],
+        ["agent", "status"],
+        ["mcp", "install"],
+        ["mcp", "status"],
+        ["skills", "list"],
+        ["upgrade"],
+        ["--profile", "work", "completion", "bash"],
+        ["--tz", "UTC", "completion", "bash"],
+    ],
+)
+def test_the_launcher_does_not_gate_commands_that_answer_for_themselves(args: list[str]) -> None:
+    assert _needs_config(*args) is False
 
 
 def test_provider_bound_commands_are_still_refused_with_the_setup_hint(tmp_path: Path) -> None:

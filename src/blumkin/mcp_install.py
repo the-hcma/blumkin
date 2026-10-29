@@ -108,13 +108,25 @@ def launcher_worktree_warning(launcher: str | None) -> str | None:
 
     Worktrees are short-lived (one per stack, removed once it merges), so an entry that points
     into one stops working then, and a project-scope entry carries this machine-specific
-    absolute path into a file that is normally committed (issue #565).
+    absolute path into a file that is normally committed (issue #565). A linked worktree has a
+    `.git` file whose `gitdir:` points into the main repository's `worktrees/` folder; a
+    submodule or a `--separate-git-dir` clone also has a `.git` file, but is not one.
     """
     if launcher is None:
         return None
-    for folder in Path(launcher).parents:
+    try:
+        resolved = Path(launcher).resolve()
+    except OSError:
+        return None
+    for folder in resolved.parents:
         marker = folder / ".git"
         if marker.is_file():
+            try:
+                pointer = marker.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return None
+            if "/worktrees/" not in pointer.replace("\\", "/"):
+                return None
             return (
                 f"the dev launcher lives in a linked git worktree ({folder}); this registration "
                 "stops working when that worktree is removed, and a project-scope entry carries "

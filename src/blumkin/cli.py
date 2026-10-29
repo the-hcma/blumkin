@@ -6941,11 +6941,9 @@ def mcp_install_cmd(
         "scope": scope_val,
         "serve": [binary, *serve.args()],
         "clients": results,
-        "warnings": [
-            warning
-            for warning in (mi.launcher_worktree_warning(mi.dev_launcher()),)
-            if warning is not None
-        ],
+        "warnings": [warning]
+        if (warning := mi.launcher_worktree_warning(mi.dev_launcher()))
+        else [],
     }
     if as_json:
         emit_json(payload)
@@ -7000,7 +6998,7 @@ def mcp_status_cmd(ctx: click.Context, as_json_flag: bool) -> None:
 
 
 def _format_mcp_install_human(payload: dict[str, Any]) -> list[str]:
-    lines = [f"server: {' '.join(payload['serve'])}  (scope: {payload['scope']})"]
+    lines = [f"server: {shlex.join(payload['serve'])}  (scope: {payload['scope']})"]
     for row in payload["clients"]:
         mark = {
             "added": "added",

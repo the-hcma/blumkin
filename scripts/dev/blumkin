@@ -68,13 +68,15 @@ config_dir() {
   printf '%s\n' "${chosen}"
 }
 
-# Whether the command needs a config.toml: only the provider-bound ones do (mail, calendar,
+# Whether the command needs a config.toml. The provider-bound commands do (mail, calendar,
 # chat, drive, docs, people, meeting, tasks, capabilities, doctor, `auth` apart from `auth
-# setup`, and `mcp serve`). Everything else answers for itself without one, so it is not
-# gated: help, version, `profiles list` (`count: 0`, the `blumkin` skill's cold-start check),
-# `completion`, `agent`, `mcp install`, `skills`. `-h` is not help: blumkin only accepts
-# `--help`. Naming the gated commands, not the exempt ones, means a new command needs no
-# launcher change (issue #565).
+# setup`, and `mcp serve`), and so do the ones that create state under the config directory
+# or act on a profile (`browser`, `loop`, `receipts`): they keep the friendly setup hint, and
+# the launcher never creates anything unless the user says yes. The rest answer for
+# themselves without one: help, version, `profiles`, `completion`, `agent`, `mcp install` and
+# `mcp status`, `skills`, `upgrade`. `-h` is not help: blumkin only accepts `--help`. A new
+# command that is exempt by default and needs a profile fails with Python's own error, not
+# this hint, so add it to the list below.
 needs_config() {
   local arg previous="" positional=()
   for arg in "$@"; do
@@ -87,7 +89,8 @@ needs_config() {
     previous="${arg}"
   done
   case "${positional[0]:-}" in
-    calendar | capabilities | chat | doctor | docs | drive | mail | meeting | people | tasks)
+    browser | calendar | capabilities | chat | doctor | docs | drive | loop | mail | meeting | \
+      people | receipts | tasks)
       return 0
       ;;
     auth)

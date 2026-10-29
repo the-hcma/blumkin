@@ -561,6 +561,54 @@ def test_installing_from_a_linked_worktree_warns_and_reports_the_real_command(
     assert "warning:" in human and "worktree" in human
 
 
+def test_only_a_real_linked_worktree_triggers_the_warning(tmp_path: Path) -> None:
+    """A submodule or a `--separate-git-dir` clone also has a `.git` file, but is not one."""
+
+    def launcher_with_git_file(name: str, content: str) -> Path:
+        root = tmp_path / name
+        (root / "scripts" / "dev").mkdir(parents=True)
+        (root / ".git").write_text(content)
+        launcher = root / "scripts" / "dev" / "blumkin"
+        launcher.write_text("#!/bin/sh\n")
+        return launcher
+
+    submodule = launcher_with_git_file("sub", "gitdir: ../.git/modules/sub\n")
+    separate = launcher_with_git_file("sep", "gitdir: /data/repo.git\n")
+    linked = launcher_with_git_file("lnk", "gitdir: /data/repo/.git/worktrees/stack-wt\n")
+    assert mi.launcher_worktree_warning(str(submodule)) is None
+    assert mi.launcher_worktree_warning(str(separate)) is None
+    assert mi.launcher_worktree_warning(str(linked)) is not None
+    # A symlink to a launcher inside a worktree (say, in ~/bin) is still that launcher.
+    link = tmp_path / "bin-blumkin"
+    link.symlink_to(linked)
+    assert mi.launcher_worktree_warning(str(link)) is not None
+
+
+def test_the_human_server_line_quotes_a_launcher_path_with_spaces(
+    home: Path,
+    all_clients: None,
+    fake_subprocess: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "work tree"
+    (root / "scripts" / "dev").mkdir(parents=True)
+    launcher = root / "scripts" / "dev" / "blumkin"
+    launcher.write_text("#!/bin/sh\n")
+    monkeypatch.chdir(home)
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
+    monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(launcher))
+    out = _invoke(_CURSOR_PROJECT).output
+    assert f"server: '{launcher}' mcp serve" in out
+
+
+def test_the_install_help_describes_the_warnings_field() -> None:
+    from blumkin import help_text
+
+    assert "`warnings`" in help_text.MCP_INSTALL_EPILOG
+    assert "worktree" in help_text.MCP_INSTALL_EPILOG
+
+
 def test_installing_from_a_plain_clone_or_a_release_does_not_warn(
     home: Path,
     all_clients: None,
