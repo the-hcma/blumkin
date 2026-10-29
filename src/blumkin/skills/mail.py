@@ -1708,7 +1708,7 @@ async def mail_update_draft(
         body_out = "html" if updated.body.content_type == BodyType.Html else "text"
     return {
         "draft": {
-            "attachments": uploaded,
+            "attachments": await _draft_attachments(client, mid, uploaded),
             "bcc": _recipient_field(bcc_addrs, getattr(updated, "bcc_recipients", None)),
             "body_type": body_out or "text",
             "cc": _recipient_field(cc_addrs, getattr(updated, "cc_recipients", None)),
@@ -2855,6 +2855,44 @@ async def _delete_uploaded_attachments(
             await builder.by_attachment_id(aid).delete()
         except Exception:
             pass
+
+
+async def _draft_attachments(
+    client: Any, message_id: str, uploaded: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Every attachment the draft carries: what it already had, then what this call added.
+
+    The response of `update-draft` reports the draft, not only the files this call attached
+    (#564). A listing that fails leaves just the uploaded ones, since the update itself has
+    already succeeded.
+    """
+    report: list[dict[str, Any]] = []
+    try:
+        builder = client.me.messages.by_message_id(message_id).attachments
+        query = AttachmentsRequestBuilder.AttachmentsRequestBuilderGetQueryParameters(
+            select=["id", "name", "size"],
+        )
+        page = await builder.get(request_config(query))
+        while page is not None:
+            for att in getattr(page, "value", None) or []:
+                att_id = getattr(att, "id", None)
+                if att_id is not None:
+                    report.append(
+                        {
+                            "id": att_id,
+                            "name": getattr(att, "name", None),
+                            "size": getattr(att, "size", None),
+                        }
+                    )
+            link = getattr(page, "odata_next_link", None)
+            if not link:
+                break
+            page = await builder.with_url(link).get()
+    except Exception:
+        return list(uploaded)
+    known = {item["id"] for item in report}
+    report.extend(item for item in uploaded if item.get("id") not in known)
+    return report
 
 
 async def _upload_attachments(
