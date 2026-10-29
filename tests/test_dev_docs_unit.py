@@ -140,3 +140,81 @@ def test_the_readme_explains_the_send_as_address_and_the_send_draft_ids() -> Non
         "`mail send-draft` returns `sent` (the draft id), `message_id` and `conversation_id`"
         in text
     )
+
+
+# --------------------------------------------------------------------------- surface audit (#567)
+
+# Skills deliberately left out of `.agents/skills/blumkin/SKILL.md`, with the reason. A new
+# skill must be documented there or added here on purpose.
+_SKILLS_LEFT_OUT: dict[str, str] = {}
+
+# Commands deliberately not mentioned in the README, `docs/` or any SKILL.md.
+_COMMANDS_LEFT_OUT: dict[str, str] = {}
+
+
+def _doc_text() -> str:
+    paths = [_ROOT / "README.md", *sorted((_ROOT / "docs").glob("*.md"))]
+    paths += sorted((_ROOT / ".agents" / "skills").glob("*/SKILL.md"))
+    return " ".join("\n".join(path.read_text() for path in paths).split())
+
+
+def _mentions_command(text: str, path: list[str]) -> bool:
+    """Whether `text` documents the command: `blumkin <path>` (global options may sit between)
+    or `<path>` in backticks. A bare occurrence in prose does not count, since words such as
+    `uninstall` or `agent stop` turn up in unrelated sentences, and a name glued to another
+    word or a hyphenated name does not count either.
+    """
+    name = re.escape(" ".join(path))
+    pattern = rf"(?:blumkin (?:--?[\w-]+(?: [^\s`]+)? )*|`){name}(?![\w-])"
+    return re.search(pattern, text) is not None
+
+
+def test_the_command_matcher_needs_a_documentation_specific_form() -> None:
+    """Incidental prose must not hide a missing command doc (#567)."""
+    path = ["mail", "auto-reply"]
+    assert _mentions_command("run `blumkin mail auto-reply --enable`", path)
+    assert _mentions_command("blumkin --profile work mail auto-reply", path)
+    assert _mentions_command("the `mail auto-reply` verb", path)
+    assert not _mentions_command("Outlook's mail auto-reply setting is separate", path)
+    assert not _mentions_command("blumkin mail auto-reply-rules", path)
+    assert not _mentions_command("blumkin mail auto-replyx", path)
+    assert _mentions_command("run `blumkin uninstall`", ["uninstall"])
+    assert not _mentions_command("uninstalling and uninstall steps", ["uninstall"])
+
+
+def test_every_catalog_skill_is_in_the_blumkin_skill_or_left_out_on_purpose() -> None:
+    from blumkin.skills import skills_catalog
+
+    skill = " ".join(_MAIN_SKILL.read_text().split())
+    missing = []
+    for entry in skills_catalog()["skills"]:
+        words = [word for word in entry["cli"] if word != "blumkin"]
+        if " ".join(words) in skill or entry["id"] in skill:
+            continue
+        if entry["id"] not in _SKILLS_LEFT_OUT:
+            missing.append(entry["id"])
+    assert not missing, f"document in .agents/skills/blumkin/SKILL.md or allowlist: {missing}"
+    assert all(reason.strip() for reason in _SKILLS_LEFT_OUT.values())
+
+
+def test_every_leaf_command_is_documented_or_left_out_on_purpose() -> None:
+    import click
+
+    from blumkin.cli import main
+
+    text = _doc_text()
+    missing = []
+
+    def walk(command: click.Command, path: list[str]) -> None:
+        if isinstance(command, click.Group):
+            ctx = click.Context(command, info_name="x")
+            for name in command.list_commands(ctx):
+                sub = command.get_command(ctx, name)
+                if sub is not None and not getattr(sub, "hidden", False):
+                    walk(sub, [*path, name])
+        elif not _mentions_command(text, path) and " ".join(path) not in _COMMANDS_LEFT_OUT:
+            missing.append(" ".join(path))
+
+    walk(main, [])
+    assert not missing, f"mention in README.md, docs/ or a SKILL.md, or allowlist: {missing}"
+    assert all(reason.strip() for reason in _COMMANDS_LEFT_OUT.values())

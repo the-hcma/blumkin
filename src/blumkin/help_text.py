@@ -461,6 +461,17 @@ it again while the browser is open reports `already_running` and changes nothing
 Uses `[browser] default` from config.toml, falling back to Chrome.
 """
 
+BROWSER_LEDGER_APPLY_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger apply timesheet 2026-p21 day 2026-10-19 --flow fill-day --value hours=8
+  blumkin browser ledger apply expense-report trip-lisbon receipt r1 --flow attach --sha256 HEX
+
+Runs one recorded site-model flow for one ledger item, binding values with --value KEY=VALUE
+(repeatable). It fills and uploads; it never submits. A receipt needs the SHA-256 of its file.
+"""
+
 BROWSER_LEDGER_BEGIN_EPILOG = """
 Examples:
 
@@ -500,6 +511,18 @@ from the page) or failed. It holds identifiers, states, model versions and file 
 never a value from the form. blumkin has no submit command: `submitted` records that you did.
 """
 
+BROWSER_LEDGER_HANDOFF_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger handoff timesheet 2026-p21 --step "Review week 2" --step "Click Submit"
+  blumkin browser ledger handoff expense-report trip-lisbon --step "Click Submit report" \\
+    --decision "Confirm the taxi receipt category"
+
+Records the last clicks left for the user (--step, repeatable, at least one) and any open
+decisions (--decision, repeatable). The user makes the final submit; blumkin never does.
+"""
+
 BROWSER_LEDGER_LIST_EPILOG = """
 Examples:
 
@@ -508,6 +531,18 @@ Examples:
   blumkin browser ledger list timesheet --json
 
 Lists the task's instances and whether each is open, submitted or discarded.
+"""
+
+BROWSER_LEDGER_RECONCILE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger reconcile timesheet 2026-p21 day \\
+    --page-item 2026-10-19 --page-item 2026-10-20
+  blumkin browser ledger reconcile expense-report trip-lisbon receipt --page-item r1
+
+Compares the ledger with the item ids seen on the live page (--page-item, repeatable). It only
+reads: it reports what differs and never re-adds an item.
 """
 
 BROWSER_LEDGER_RECORD_EPILOG = """
@@ -521,6 +556,17 @@ Examples:
 Moves one item to a new state: staged, then filled, then verified or failed (a failed item
 can be staged again). A receipt needs the SHA-256 of its file when it is first staged. The
 item id is a short word such as a date; do not put amounts, vendors or paths in it.
+"""
+
+BROWSER_LEDGER_STAGE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger stage timesheet 2026-p21 day 2026-10-19
+  blumkin browser ledger stage expense-report trip-lisbon receipt r1 --sha256 HEX --model-version 3
+
+Stages one item so it can be filled. An item that is already verified is left alone, so
+running it again is safe. A receipt needs the SHA-256 of its file.
 """
 
 BROWSER_LEDGER_STATUS_EPILOG = """
@@ -543,6 +589,18 @@ Examples:
 Records that you submitted the real form. Nothing else records it, and blumkin has no
 submit command. Needs `--yes`; say yes only if you pressed the button yourself. A closed
 instance accepts no more items.
+"""
+
+BROWSER_LEDGER_VERIFY_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger verify timesheet 2026-p21 day 2026-10-19
+  blumkin browser ledger verify timesheet 2026-p21 day 2026-10-20 --missing
+  blumkin browser ledger verify expense-report trip-lisbon receipt r1 --sha256 HEX
+
+Records whether the item was found on the live page: --present (the default) marks it
+verified, --missing marks it failed so it can be staged again.
 """
 
 BROWSER_MODEL_CHECK_EPILOG = """
@@ -1169,6 +1227,8 @@ Stored drafts are checked again before send/edit. See
 """
 
 COMPLETION_EPILOG = """
+Examples:
+
 Easiest: let blumkin write the file to the per-user completion dir for your
 shell (idempotent; --force overwrites a differing file; --json reports the path):
 

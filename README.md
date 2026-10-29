@@ -57,6 +57,8 @@ blumkin chat last --with "Sam Rivera" --n 3 --json
 
 On macOS, the wheel also bundles a small compiled `blumkin-agent` daemon (issue #328/#339 - an `ssh-agent`-style background process that can cache decrypted Microsoft/Google credentials behind a local presence check so re-verification happens roughly once per `token_reverify_after` window (default 24h) instead of on every command). The cache is best-effort and macOS-only: non-macOS platforms, `token_reverify_after = 0` / `"never"`, or an unavailable agent all fall back to the direct keychain/file backend. It ships as a prebuilt universal2 binary; installing from PyPI needs no Rust toolchain. Building from a clone does (see "From a clone" below) - without one, or on non-macOS platforms, `blumkin` still works fully, just without that feature (`blumkin agent status` reports it as unavailable).
 
+`blumkin agent stop` shuts that agent down entirely (unlike `agent lock`, which only wipes its cached secrets and leaves it running); it respawns on next use, so run it after `blumkin upgrade` to retire an agent still running the previous build. `--all` also stops orphaned agents on legacy socket paths, and a stop with no agent running is a no-op, not an error.
+
 ### Upgrade
 
 ```bash
@@ -64,6 +66,8 @@ blumkin upgrade
 ```
 
 Detects how `blumkin` is installed and acts to match: `pipx upgrade blumkin` for a pipx app, `uv tool upgrade blumkin` for a uv tool, and for an editable `-e <path>` install (or a bare source checkout) the `git pull --ff-only` plus `--force` reinstall a package upgrade cannot do — printed to run yourself, or run for you with `blumkin upgrade --yes`. `from:` / `to:` are the on-disk `blumkin --version` before and after; an unmanaged install is reported, not touched.
+
+`blumkin uninstall` tears blumkin down in independent categories, each with its own confirm: `--agent`, `--mcp` (or one client at a time with `--mcp-claude`, `--mcp-cursor`, `--mcp-copilot`), `--package`, `--config` and `--keyring`. `--dry-run` lists what would be removed and removes nothing, and `--yes` only skips the prompts, it never implies removing everything.
 
 ### From a clone (developing blumkin)
 
@@ -219,6 +223,8 @@ tags = ["@personal", "personal", "google", "gmail"]
 ```
 
 `blumkin auth login` records the signed-in address as `email = "..."` in that profile the first time (display only - it is never used to pick a profile, and never rewritten afterwards). `blumkin profiles list` shows it, so two profiles are tellable apart at a glance; `blumkin doctor` warns if the profile is later signed in as a different account.
+
+`blumkin --profile NAME profiles set-email [--email ADDRESS]` records or corrects that address explicitly. Unlike the automatic fill, it overwrites an existing value, and with no `--email` it resolves the signed-in address; it is the way to fix the drift `blumkin doctor` reports.
 
 Optional: set `client_id` in toml as well; when omitted it is read from the JSON. Keep the client JSON mode `0600` and outside the repo.
 

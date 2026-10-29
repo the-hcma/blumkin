@@ -2575,7 +2575,7 @@ def browser_ledger() -> None:
     """Remember what has been filed for one instance of a task."""
 
 
-@browser_ledger.command("apply")
+@browser_ledger.command("apply", epilog=help_text.BROWSER_LEDGER_APPLY_EPILOG)
 @click.argument("task")
 @click.argument("instance")
 @click.argument("kind", type=click.Choice(["day", "receipt"]))
@@ -2662,7 +2662,7 @@ def browser_ledger_discard(
     _emit_ledger(payload, as_json=as_json)
 
 
-@browser_ledger.command("handoff")
+@browser_ledger.command("handoff", epilog=help_text.BROWSER_LEDGER_HANDOFF_EPILOG)
 @click.argument("task")
 @click.argument("instance")
 @click.option(
@@ -2723,7 +2723,7 @@ def browser_ledger_list(ctx: click.Context, task: str, as_json_flag: bool) -> No
     emit_lines([f"{entry['instance']}: {entry['phase']}" for entry in payload["instances"]])
 
 
-@browser_ledger.command("reconcile")
+@browser_ledger.command("reconcile", epilog=help_text.BROWSER_LEDGER_RECONCILE_EPILOG)
 @click.argument("task")
 @click.argument("instance")
 @click.argument("kind", type=click.Choice(["day", "receipt"]))
@@ -2813,7 +2813,7 @@ def browser_ledger_record(
     )
 
 
-@browser_ledger.command("stage")
+@browser_ledger.command("stage", epilog=help_text.BROWSER_LEDGER_STAGE_EPILOG)
 @click.argument("task")
 @click.argument("instance")
 @click.argument("kind", type=click.Choice(["day", "receipt"]))
@@ -2891,7 +2891,7 @@ def browser_ledger_submitted(
     _emit_ledger(payload, as_json=as_json)
 
 
-@browser_ledger.command("verify")
+@browser_ledger.command("verify", epilog=help_text.BROWSER_LEDGER_VERIFY_EPILOG)
 @click.argument("task")
 @click.argument("instance")
 @click.argument("kind", type=click.Choice(["day", "receipt"]))
@@ -3584,7 +3584,13 @@ def receipts() -> None:
     help="Directory holding receipt images and PDFs (not searched recursively).",
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
-@click.option("--limit", default=DEFAULT_FIND_LIMIT, show_default=True, type=click.IntRange(1, 500))
+@click.option(
+    "--limit",
+    default=DEFAULT_FIND_LIMIT,
+    show_default=True,
+    type=click.IntRange(1, 500),
+    help="Most receipts to return (1 to 500).",
+)
 @click.option(
     "--since",
     default=None,
@@ -3975,6 +3981,8 @@ def completion(
         raise SystemExit(EXIT_USAGE)
     completer = comp_cls(main, {}, "blumkin", "_BLUMKIN_COMPLETE")
     script = completer.source()
+    if shell == "bash":
+        script = _guard_bash_nosort(script)
     if not script.endswith("\n"):
         script += "\n"
 
@@ -4056,6 +4064,33 @@ def completion(
             lines.append("  open a new shell to pick it up")
         emit_lines(lines)
     raise SystemExit(EXIT_SUCCESS)
+
+
+_BASH_NOSORT_REGISTRATION = re.compile(
+    r"^(?P<indent>[ \t]*)complete -o nosort -F (?P<rest>.+)$", re.M
+)
+
+
+def _guard_bash_nosort(script: str) -> str:
+    """Ask bash for `-o nosort` only where it exists (bash 4.4 and later).
+
+    Click's template runs `complete -o nosort -F ...` unconditionally. Stock macOS bash 3.2
+    rejects it (`complete: nosort: invalid option name`) and registers no completion at all
+    (issue #567), so completion still works there, just with bash's own ordering.
+    """
+
+    def guarded(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        return (
+            f"{indent}local nosort_option=''\n"
+            f"{indent}if [[ ${{BASH_VERSINFO[0]}} -gt 4 ]] || "
+            f"[[ ${{BASH_VERSINFO[0]}} -eq 4 && ${{BASH_VERSINFO[1]}} -ge 4 ]]; then\n"
+            f"{indent}    nosort_option='-o nosort'\n"
+            f"{indent}fi\n"
+            f"{indent}complete $nosort_option -F {match.group('rest')}"
+        )
+
+    return _BASH_NOSORT_REGISTRATION.sub(guarded, script)
 
 
 def _vaulted_client_id_or_secret_present(cfg: BlumkinConfig) -> bool:
