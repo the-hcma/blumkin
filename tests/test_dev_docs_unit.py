@@ -113,3 +113,16 @@ def test_agents_md_still_bans_uv_run_blumkin_except_for_the_launcher() -> None:
     text = (_ROOT / "AGENTS.md").read_text()
     assert "not `uv run blumkin`" in text
     assert "scripts/dev/blumkin" in text
+
+
+def test_claude_code_can_discover_every_repo_skill() -> None:
+    """Claude Code reads `.claude/skills/`; the skills live in `.agents/skills/` (#565)."""
+    source = _ROOT / ".agents" / "skills"
+    shims = _ROOT / ".claude" / "skills"
+    names = sorted(path.name for path in source.iterdir() if (path / "SKILL.md").is_file())
+    assert names, "no skills found"
+    for name in names:
+        shim = shims / name
+        assert shim.is_symlink(), name
+        assert shim.resolve() == (source / name).resolve(), name
+        assert (shim / "SKILL.md").is_file(), name
