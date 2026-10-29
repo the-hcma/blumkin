@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import stat
 import sys
 from pathlib import Path
@@ -15,8 +16,11 @@ from blumkin.config import (
     DEFAULT_CONFIRM_COOLDOWN_SECONDS,
     DEFAULT_RSVP_FRESHNESS_SECONDS,
     DEFAULT_TOKEN_REVERIFY_AFTER,
+    NAMED_LAYOUT_TOP_LEVEL_TABLES,
     RSVP_FRESHNESS_FLOOR_SECONDS,
+    _profile_tables,
     list_profiles,
+    load_browser_setup,
     load_config,
 )
 from blumkin.providers import google_auth
@@ -1016,7 +1020,7 @@ def test_preferences_profile_override_wins_without_a_conflicting_value(
 def test_preferences_top_level_alongside_profiles_does_not_trip_stray_key_check(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """[preferences] is the one top-level table allowed next to [profiles.*]."""
+    """[preferences] sits next to [profiles.*] (so do browser, cron and loop; see below)."""
     (tmp_path / "config.toml").write_text(
         '[preferences]\nfont_name = "Calibri"\n\n[profiles.work]\nclient_id = "a"\n'
     )
@@ -1052,3 +1056,98 @@ def test_preferences_top_level_non_table_raises(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     with pytest.raises(ProviderConfigError, match="preferences must be a table"):
         load_config()
+
+
+# --------------------------------------------------------------------------- issue #575
+
+_ISSUE_575_CONFIG = """\
+default_profile = "personal"
+
+[profiles.personal]
+provider = "google"
+client_id = "abc.apps.googleusercontent.com"
+
+[profiles.work]
+provider = "microsoft"
+client_id = "abc-123"
+tenant_id = "00000000-0000-0000-0000-000000000000"
+
+[browser]
+default = "chrome"
+
+[browser.tasks.youtube-transcript]
+allowed_hosts = ["youtube.com", "*.youtube.com", "youtu.be"]
+allowed_controls = ["More actions", "Show transcript"]
+"""
+
+
+def test_a_browser_table_with_tasks_sits_next_to_named_profiles(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Exactly the layout `docs/browser-tasks.md` tells you to build (#575)."""
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(_ISSUE_575_CONFIG)
+    assert load_config(profile="personal").provider.value == "google"
+    assert load_config(profile="work").provider.value == "microsoft"
+    assert load_browser_setup().browser.default == "chrome"
+    assert "youtube-transcript" in load_browser_setup().browser.tasks
+
+
+def test_the_browser_table_can_come_before_the_profiles_too(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        'default_profile = "personal"\n'
+        "\n"
+        "[browser]\n"
+        'default = "chrome"\n'
+        "\n"
+        "[browser.tasks.youtube-transcript]\n"
+        'allowed_hosts = ["youtube.com"]\n'
+        'allowed_controls = ["More actions"]\n'
+        "\n"
+        "[profiles.personal]\n"
+        'provider = "google"\n'
+        'client_id = "abc.apps.googleusercontent.com"\n'
+    )
+    assert load_config().provider.value == "google"
+    setup = load_browser_setup()
+    assert setup.browser.default == "chrome"
+    assert "youtube-transcript" in setup.browser.tasks
+
+
+@pytest.mark.parametrize("table", sorted(NAMED_LAYOUT_TOP_LEVEL_TABLES - {"profiles"}))
+def test_every_allowed_top_level_table_sits_next_to_named_profiles(table: str) -> None:
+    value: object = "a" if table == "default_profile" else {}
+    assert _profile_tables({"profiles": {"a": {}}, table: value})[0] == {"a": {}}
+
+
+def test_every_top_level_table_the_docs_show_beside_profiles_is_allowed() -> None:
+    """A table the docs tell you to add must not be one the loader rejects (#575).
+
+    Reads every fenced `toml` example in the README and `docs/`, so a newly documented
+    top-level table fails here until the loader allows it next to `[profiles.*]`.
+    """
+    root = Path(__file__).resolve().parent.parent
+    documented: set[str] = set()
+    for path in [root / "README.md", *sorted((root / "docs").rglob("*.md"))]:
+        for block in re.findall(r"```toml\r?\n(.*?)```", path.read_text(), re.S):
+            documented.update(re.findall(r"^\[\[?([A-Za-z0-9_-]+)[.\]]", block, re.M))
+    assert {"browser", "profiles"} <= documented, "the docs should show [browser] and profiles"
+    assert documented <= NAMED_LAYOUT_TOP_LEVEL_TABLES, sorted(
+        documented - NAMED_LAYOUT_TOP_LEVEL_TABLES
+    )
+
+
+def test_an_unknown_top_level_key_is_still_rejected_and_the_error_lists_the_allowed_tables() -> (
+    None
+):
+    with pytest.raises(ProviderConfigError) as excinfo:
+        _profile_tables({"profiles": {"a": {}}, "browsr": {}, "client_id": "x"})
+    message = str(excinfo.value)
+    assert "(browsr, client_id)" in message
+    assert "allowed next to [profiles.*]: browser, cron, default_profile, loop, preferences" in (
+        message
+    )
+    # Only an old build rejects an allowed key, and an old build prints its own message, so
+    # an "upgrade" hint here could never reach the person it was written for.
+    assert "upgrade" not in message and "older than" not in message

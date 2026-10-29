@@ -27,6 +27,11 @@ DEFAULT_CONFIRM_COOLDOWN_SECONDS = 20
 DEFAULT_GRAPH_TIMEOUT_SECONDS = 60.0
 DEFAULT_RSVP_FRESHNESS_SECONDS = 300
 DEFAULT_TOKEN_REVERIFY_AFTER = timedelta(hours=24)
+# The top-level keys a named `[profiles.*]` file may carry next to the profiles. Anything else
+# at the top level is a flat key (`client_id`, ...) that does not belong beside named profiles.
+NAMED_LAYOUT_TOP_LEVEL_TABLES = frozenset(
+    {"browser", "cron", "default_profile", "loop", "preferences", "profiles"}
+)
 RSVP_FRESHNESS_FLOOR_SECONDS = 30
 
 
@@ -1035,16 +1040,14 @@ def _profile_tables(
             raise ProviderConfigError(
                 "profiles table is empty; add [profiles.<name>] entries or remove the key"
             )
-        stray = sorted(
-            key
-            for key in file_data
-            if key not in {"browser", "cron", "default_profile", "loop", "preferences", "profiles"}
-        )
+        stray = sorted(key for key in file_data if key not in NAMED_LAYOUT_TOP_LEVEL_TABLES)
         if stray:
             shown = ", ".join(stray)
+            allowed = ", ".join(sorted(NAMED_LAYOUT_TOP_LEVEL_TABLES - {"profiles"}))
             raise ProviderConfigError(
                 "named [profiles.*] layout cannot mix top-level flat keys "
-                f"({shown}); move them under [profiles.<name>] or remove [profiles]"
+                f"({shown}); move them under [profiles.<name>] or remove [profiles]. "
+                f"Top-level keys allowed next to [profiles.*]: {allowed}"
             )
         tables: dict[str, dict[str, Any]] = {}
         seen_lower: dict[str, str] = {}
