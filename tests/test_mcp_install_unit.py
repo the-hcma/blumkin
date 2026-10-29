@@ -512,6 +512,21 @@ def test_a_dev_run_hints_at_the_launcher_not_a_bare_blumkin(
     assert f"`{launcher} mcp install --yes --scope user`" in hint
 
 
+def test_the_launcher_hint_quotes_a_path_with_spaces(
+    all_clients: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A checkout under `work tree` would otherwise copy as two shell words (#564)."""
+    folder = tmp_path / "work tree"
+    folder.mkdir()
+    launcher = folder / "blumkin-launcher"
+    launcher.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("BLUMKIN_DEV", "1")
+    monkeypatch.setenv("BLUMKIN_DEV_LAUNCHER", str(launcher))
+    result = _invoke(["mcp", "install", "--client", "cursor", "--scope", "user", "--json"])
+    hint = json.loads(result.output)["hint"]
+    assert f"`'{launcher}' mcp install --yes --scope user`" in hint
+
+
 def test_cli_install_no_client_detected_is_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mi.shutil, "which", lambda _n: None)
     monkeypatch.setattr(mi, "detect", lambda clients=mi.CLIENTS: set())

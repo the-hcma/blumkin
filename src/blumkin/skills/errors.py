@@ -78,8 +78,9 @@ _GOOGLE_API_DISABLED_HINT = (
     "message above), wait a minute, then retry."
 )
 _FREEBUSY_HINT = (
-    "A requested calendar returned no schedule. Do not pass your own address with --with "
-    "(freebusy and suggest already include you); otherwise check that each address is a "
+    "A requested calendar returned no schedule. For `calendar suggest`, do not pass your own "
+    "address with --with (it already includes you); for `calendar freebusy`, list every "
+    "address you want checked, including yours. Otherwise check that each address is a "
     "calendar you can see, then retry."
 )
 _CALENDAR_AMBIGUOUS_HINT = (

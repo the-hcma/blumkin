@@ -717,6 +717,28 @@ def test_mail_update_draft_body_replace_keeps_rfc822_attachment(tmp_path: Path) 
     assert "inner" in nested.get_content()
 
 
+def test_update_draft_reports_an_attached_email_as_an_attachment(tmp_path: Path) -> None:
+    """A message/rfc822 part has no decodable payload; it must not vanish from the response."""
+    forwarded = EmailMessage()
+    forwarded["Subject"] = "Original"
+    forwarded["From"] = "x@example.com"
+    forwarded.set_content("inner")
+    outer = EmailMessage()
+    outer["Subject"] = "Draft"
+    outer["To"] = "a@example.com"
+    outer.set_content("old")
+    outer.add_attachment(forwarded)
+    stored = {"id": "d", "message": {"raw": base64.urlsafe_b64encode(outer.as_bytes()).decode()}}
+    service = _service(get_result=stored, update_result={"id": "d-r9"})
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(draft_id="d-r9", body="new")
+        )
+    (reported,) = payload["draft"]["attachments"]
+    assert reported["name"] == "Original.eml"
+    assert reported["size"] > len("inner")
+
+
 def test_mail_update_draft_body_replace_allowed_with_forwarded_inline_image(
     tmp_path: Path,
 ) -> None:

@@ -82,6 +82,7 @@ def test_mail_update_draft_text_body_patched_with_crlf(monkeypatch) -> None:
     item = client.me.messages.by_message_id.return_value
     item.get = AsyncMock(return_value=existing)
     item.patch = AsyncMock(return_value=existing)
+    item.attachments.get = AsyncMock(return_value=SimpleNamespace(value=[]))
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",

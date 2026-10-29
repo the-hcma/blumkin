@@ -22,7 +22,7 @@ import mimetypes
 import pathlib
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
-from email.message import EmailMessage
+from email.message import EmailMessage, Message
 from email.parser import BytesParser
 from email.policy import SMTP as _smtp_policy
 from email.policy import default as _default_policy
@@ -795,6 +795,17 @@ def _attachment_summaries(message: EmailMessage) -> list[dict[str, Any]]:
     """What the draft carries: `id` (none until Gmail stores it), `name` and `size` of each file."""
     summaries: list[dict[str, Any]] = []
     for part in message.iter_attachments():
+        if part.get_content_type() == "message/rfc822":
+            # An attached email has no decodable payload; it holds the nested message.
+            nested = part.get_payload()
+            inner = nested[0] if isinstance(nested, list) and nested else None
+            if not isinstance(inner, Message):
+                inner = None
+            subject = str(inner.get("Subject") or "").strip() if inner is not None else ""
+            name = part.get_filename() or (f"{subject}.eml" if subject else "attached-message.eml")
+            size = len(inner.as_bytes()) if inner is not None else 0
+            summaries.append({"id": None, "name": name, "size": size})
+            continue
         payload = part.get_payload(decode=True)
         if not isinstance(payload, bytes | bytearray):
             continue

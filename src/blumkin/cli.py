@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -6839,8 +6840,8 @@ def mcp_install_cmd(
             error="usage_error",
             message="`mcp install` needs a TTY for the per-client prompt; pass --yes to skip it",
             as_json=as_json,
-            hint=f"Non-interactive: `{mi.dev_launcher() or 'blumkin'} mcp install --yes "
-            "--scope user` (also --client / --read-only / ...).",
+            hint=f"Non-interactive: `{shlex.quote(mi.dev_launcher() or 'blumkin')} mcp install "
+            "--yes --scope user` (also --client / --read-only / ...).",
         )
         raise SystemExit(EXIT_USAGE)
 

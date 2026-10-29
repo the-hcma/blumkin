@@ -745,6 +745,9 @@ def test_mail_send_draft_holds_deferred_delivery_when_cooldown_positive(monkeypa
 
     client = MagicMock()
     client.me.messages.by_message_id.return_value.patch = AsyncMock(side_effect=_patch)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
     client.me.messages.by_message_id.return_value.send.post = AsyncMock(side_effect=_send_post)
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
@@ -781,6 +784,9 @@ def test_mail_send_draft_sends_anyway_when_deferred_delivery_patch_fails(monkeyp
     # send, it just means there is nothing for mail.cancel-send to undo.
     client = MagicMock()
     client.me.messages.by_message_id.return_value.patch = AsyncMock(side_effect=ODataError())
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
     client.me.messages.by_message_id.return_value.send.post = AsyncMock(return_value=None)
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
@@ -1046,6 +1052,9 @@ def test_mail_update_draft_mocked(monkeypatch) -> None:
     client = MagicMock()
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
@@ -1121,6 +1130,9 @@ def test_mail_update_draft_subject_only(monkeypatch) -> None:
     client = MagicMock()
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
@@ -1161,6 +1173,9 @@ def test_mail_update_draft_unescapes_html_entities_in_subject(monkeypatch) -> No
     client = MagicMock()
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
@@ -1211,6 +1226,9 @@ def test_mail_update_draft_body_file(tmp_path, monkeypatch) -> None:
     client = MagicMock()
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
@@ -1249,6 +1267,9 @@ def test_mail_update_draft_refetches_when_patch_returns_none(monkeypatch) -> Non
     client = MagicMock()
     client.me.messages.by_message_id.return_value.get = AsyncMock(side_effect=[existing, after])
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=None)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
@@ -1270,6 +1291,9 @@ def test_mail_update_draft_errors_when_patch_and_refetch_empty(monkeypatch) -> N
     client = MagicMock()
     client.me.messages.by_message_id.return_value.get = AsyncMock(side_effect=[existing, None])
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=None)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
@@ -1297,6 +1321,9 @@ def test_mail_update_draft_to_only(monkeypatch) -> None:
     client = MagicMock()
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",
@@ -1338,6 +1365,9 @@ def test_mail_update_draft_replaces_to_when_multiple_recipients(monkeypatch) -> 
     client = MagicMock()
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=existing)
     client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=patched)
+    client.me.messages.by_message_id.return_value.attachments.get = AsyncMock(
+        return_value=SimpleNamespace(value=[])
+    )
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
         "blumkin.skills.mail.load_config",

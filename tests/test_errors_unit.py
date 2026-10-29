@@ -95,7 +95,9 @@ def test_a_freebusy_failure_hints_at_the_addresses_not_at_a_microsoft_outage() -
     )
     assert info.slug == "graph_error"
     assert info.hint is not None
-    assert "own address" in info.hint
+    assert "calendar suggest" in info.hint and "already includes you" in info.hint
+    # `freebusy` queries exactly the addresses given, so it must not be told to omit yours.
+    assert "calendar freebusy" in info.hint and "including yours" in info.hint
     assert "Microsoft 365" not in info.hint
 
 
