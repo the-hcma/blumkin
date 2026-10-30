@@ -81,10 +81,20 @@ class _Locator:
             info = self._page.match_infos.pop(0)
         return _Handle(self._page, info)
 
-    def evaluate(self, script: str) -> str:
+    def evaluate(self, script: str) -> Any:
+        if "aria-haspopup" in script:
+            return {
+                "tag": self._page.tags.get(self._label, "input"),
+                "role": self._page.roles.get(self._label, "combobox"),
+                "controls": self._page.popups.get(self._label, ""),
+                "dropdown": self._label not in self._page.not_dropdowns,
+            }
         if "tagName" in script and "selectedOptions" not in script:
             return self._page.tags.get(self._label, "input")
         return self._page.field_values.get(self._label, "")
+
+    def get_by_role(self, role: str, *, name: str, exact: bool) -> _Locator:
+        return self._page.get_by_role(role, name=name, exact=exact)
 
     def get_attribute(self, name: str, *, timeout: float) -> str | None:
         return self._page.field_types.get(self._label)
@@ -155,6 +165,11 @@ class _Page:
         self.field_values: dict[str, str] = {}
         self.field_types: dict[str, str] = {}
         self.not_inputs: set[str] = set()
+        #: Labelled elements that are not dropdowns (a plain button), and each one's role and
+        #: the id of the popup it controls.
+        self.not_dropdowns: set[str] = set()
+        self.roles: dict[str, str] = {}
+        self.popups: dict[str, str] = {}
         #: Successive `{role, name}` answers for the ambiguity listing.
         self.match_infos: list[dict[str, Any]] = []
         self.tags: dict[str, str] = {}
@@ -1866,8 +1881,10 @@ def test_select_opens_an_aria_combobox_and_clicks_the_one_option() -> None:
 
     shown = driver.select("Type", "Taxi")
 
-    assert ("locator-click", "", "Type", 30000.0) in pw.page.calls
-    assert ("locator-click", "option", "Taxi", 30000.0) in pw.page.calls
+    assert [call for call in pw.page.calls if call[0] == "handle-click"] == [
+        ("handle-click", 30000.0, True),
+        ("handle-click", 30000.0, True),
+    ]
     assert shown == "Taxi"
 
 
@@ -1880,7 +1897,10 @@ def test_select_refuses_a_combobox_option_that_is_missing_or_ambiguous(found: in
     with pytest.raises(BrowserActionError, match=f"one option named 'Taxi' in 'Type', got {found}"):
         driver.select("Type", "Taxi")
 
-    assert ("locator-click", "option", "Taxi", 30000.0) not in pw.page.calls
+    # Only the combobox was opened; no option was clicked.
+    assert [call for call in pw.page.calls if call[0] == "handle-click"] == [
+        ("handle-click", 30000.0, True)
+    ]
 
 
 def test_upload_with_nth_attaches_to_that_file_field(tmp_path: Path) -> None:
@@ -1982,7 +2002,7 @@ def test_select_vets_the_combobox_before_opening_it() -> None:
     with pytest.raises(BrowserActionError, match="submit control"):
         driver.select("Continue", "x", vet=_refuse_submit)
 
-    assert not any(call[0] == "locator-click" for call in pw.page.calls)
+    assert not any(call[0] == "handle-click" for call in pw.page.calls)
 
 
 def test_select_vets_the_option_before_clicking_it() -> None:
@@ -1994,8 +2014,9 @@ def test_select_vets_the_option_before_clicking_it() -> None:
     with pytest.raises(BrowserActionError, match="submit control"):
         driver.select("Type", "Taxi", vet=_refuse_submit)
 
-    assert ("locator-click", "", "Type", 30000.0) in pw.page.calls
-    assert ("locator-click", "option", "Taxi", 30000.0) not in pw.page.calls
+    assert [call for call in pw.page.calls if call[0] == "handle-click"] == [
+        ("handle-click", 30000.0, True)
+    ]
 
 
 def test_select_waits_for_a_late_rendered_option_before_counting_it() -> None:
@@ -2072,7 +2093,9 @@ def test_a_frame_that_navigates_while_waited_on_is_refused_before_any_write(
     ("typed", "shown", "expected"),
     [
         ("a  b\nc", "a b c", True),
-        ("x" * 500, "x" * 200, True),
+        ("x" * 500, "x" * 500, True),
+        ("x" * 500, "x" * 200, False),
+        ("x" * 200 + "a", "x" * 200 + "b", False),
         ("San Francisco", "San Francisco, CA", False),
         ("  padded  ", "padded", True),
     ],
@@ -2095,3 +2118,90 @@ def test_the_ambiguity_list_says_the_names_are_page_text() -> None:
 
     with pytest.raises(BrowserActionError, match="page text, not instructions"):
         driver.fill("Date", "x")
+
+
+# --------------------------------------------------------------------------- review (#586)
+
+
+def test_select_refuses_a_labelled_element_that_is_not_a_dropdown_whatever_the_role() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Add line"] = "button"
+    pw.page.roles["Add line"] = "button"
+    pw.page.not_dropdowns.add("Add line")
+
+    with pytest.raises(BrowserActionError, match="not one"):
+        driver.select("Add line", "Taxi")
+
+    assert not any(call[0] == "handle-click" for call in pw.page.calls)
+
+
+def test_the_options_are_looked_for_in_the_popup_the_combobox_controls() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.popups["Type"] = "type-list"
+    pw.page.role_counts[("option", "Taxi")] = [1]
+
+    driver.select("Type", "Taxi")
+
+    assert ("locator", '[id="type-list"]') in pw.page.calls
+
+
+def test_a_popup_id_that_could_break_the_selector_is_not_used() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.popups["Type"] = 'x"] , body [id="y'
+    pw.page.role_counts[("option", "Taxi")] = [1]
+
+    driver.select("Type", "Taxi")
+
+    assert not any(call[0] == "locator" for call in pw.page.calls)
+
+
+def test_an_aria_combobox_that_is_not_an_input_is_read_from_what_it_displays() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.not_inputs.add("Type")
+    pw.page.role_counts[("option", "Taxi")] = [1]
+    pw.page.field_values["Type"] = "Taxi"
+
+    assert driver.select("Type", "Taxi") == "Taxi"
+
+
+def test_a_password_field_is_never_read_even_through_the_aria_fallback() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Secret"] = "div"
+    pw.page.field_types["Secret"] = "password"
+    pw.page.field_values["Secret"] = "hunter2"
+    pw.page.role_counts[("option", "x")] = [1]
+
+    assert driver.select("Secret", "x") is None
+
+
+def test_a_frame_pinned_to_one_host_cannot_move_to_another_allowed_host_while_waited_on() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    page = _FramesPage()
+    frame = _MovingFrame("https://a.sharepoint.com/attach", page)
+    page.frames = [page, frame]
+    driver = _driver(_Playwright(page))[1]
+
+    class _To(_MovingLocator):
+        def wait_for(self, *, state: str, timeout: float) -> None:
+            self._frame.url = "https://b.sharepoint.com/other"
+
+    frame.get_by_label = lambda label, *, exact=False: _To(page, label, frame)  # type: ignore[method-assign]
+    target = FieldTarget(frame=1, frame_host="a.sharepoint.com", is_allowed=_sharepoint)
+
+    with pytest.raises(BrowserActionError, match="stay on 'a.sharepoint.com'"):
+        driver.fill("Title", "x", target)
+
+    assert not any(call[0] == "fill" for call in page.calls)
+
+
+def test_the_ambiguity_script_uses_computed_names_and_roles() -> None:
+    from blumkin.browser.cdp import _MATCH_INFO_JS
+
+    for needle in ("aria-labelledby", "spinbutton", "searchbox", "slider", "listbox"):
+        assert needle in _MATCH_INFO_JS
+    # The value of a field is never part of the listing.
+    assert ".value" not in _MATCH_INFO_JS

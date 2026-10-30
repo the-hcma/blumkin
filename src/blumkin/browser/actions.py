@@ -28,6 +28,7 @@ from blumkin.browser.cdp import (
     FieldTarget,
     PageText,
     checked_http_url,
+    field_display,
     field_matches,
 )
 from blumkin.browser.commands import TaskNotFoundError
@@ -593,8 +594,8 @@ def _field_payload(
         # `matches` is null when the field cannot be read (a password, rich text).
         matches = None if read_back is None else field_matches(read_back, wanted or "")
         payload["matches"] = matches
-        if matches is False:
-            payload["read_back"] = read_back
+        if matches is False and read_back is not None:
+            payload["read_back"] = field_display(read_back)
             payload["untrusted"] = UNTRUSTED_NOTE
     return payload
 

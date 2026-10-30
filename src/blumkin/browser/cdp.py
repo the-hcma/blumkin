@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import re
 import time
 import unicodedata
 import urllib.error
@@ -166,6 +167,9 @@ FIELD_ROLES = frozenset(
         "textbox",
     }
 )
+
+#: Most characters of a field's value read back for comparing (the rest is not looked at).
+_MAX_READ_BACK = 100_000
 
 #: Most matches listed when a label is ambiguous.
 MAX_LISTED_MATCHES = 12
@@ -713,16 +717,28 @@ class PlaywrightDriver:
         try:
             scope = self._scope(target)
             locator = self._field(scope, label, target)
-            if str(locator.evaluate("(e) => e.tagName.toLowerCase()")) == "select":
+            kind = locator.evaluate(_DROPDOWN_INFO_JS)
+            if str(kind.get("tag")) == "select":
                 self._still_allowed(scope, target)
                 locator.select_option(label=option, timeout=self._timeout_ms)
                 return self._selected_text(locator)
-            # An ARIA combobox: open it, then pick the one option with exactly that name.
+            if not kind.get("dropdown"):
+                # Whatever the lookup role, only a dropdown is opened: a labelled button or link
+                # is for `click`, which has its own allow list.
+                role = _clean(str(kind.get("role")), 30)
+                raise BrowserActionError(
+                    f"Expected a dropdown labelled {label!r}, got a {role} that is not one"
+                )
+            # An ARIA combobox: open it, then pick the one option with exactly that name. The
+            # elements that were inspected are the elements that are clicked.
+            opener = locator.element_handle(timeout=self._timeout_ms)
             if vet is not None:
-                vet(self._describe(locator.element_handle(timeout=self._timeout_ms)))
+                vet(self._describe(opener))
             self._still_allowed(scope, target)
-            locator.click(timeout=self._timeout_ms)
-            choices = scope.get_by_role("option", name=option, exact=True)
+            opener.click(timeout=self._timeout_ms, no_wait_after=True)
+            choices = self._popup(scope, str(kind.get("controls", ""))).get_by_role(
+                "option", name=option, exact=True
+            )
             with contextlib.suppress(_playwright_error()):
                 # The list may render a moment after the click; the count below reports none.
                 choices.first.wait_for(state="visible", timeout=self._timeout_ms)
@@ -731,11 +747,12 @@ class PlaywrightDriver:
                 raise BrowserActionError(
                     f"Expected one option named {option!r} in {label!r}, got {count}"
                 )
+            chosen = choices.element_handle(timeout=self._timeout_ms)
             if vet is not None:
-                vet(self._describe(choices.element_handle(timeout=self._timeout_ms)))
+                vet(self._describe(chosen))
             self._still_allowed(scope, target)
-            choices.click(timeout=self._timeout_ms)
-            return self._read_back(locator)
+            chosen.click(timeout=self._timeout_ms, no_wait_after=True)
+            return self._read_back(locator, aria=True)
         except _playwright_error() as exc:
             raise self._action_error(
                 f"select {option!r} in the field labelled {label!r}", exc
@@ -828,14 +845,23 @@ class PlaywrightDriver:
         more = f" (and {count - MAX_LISTED_MATCHES} more)" if count > MAX_LISTED_MATCHES else ""
         return "; ".join(parts) + more
 
-    def _read_back(self, locator: Any) -> str | None:
-        """The value a field holds now, one line and capped; never a password's."""
+    def _read_back(self, locator: Any, *, aria: bool = False) -> str | None:
+        """The value a field holds now (whole, up to a large cap); never a password's.
+
+        Callers compare it whole and show only a cleaned, shortened form. `aria` also reads a
+        widget that is not an `<input>` (a `div` or `button` combobox) from what it displays.
+        """
         try:
             if str(locator.get_attribute("type", timeout=self._timeout_ms) or "").lower() == (
                 "password"
             ):
                 return None
-            return _clean(str(locator.input_value(timeout=self._timeout_ms)), 200)
+            return str(locator.input_value(timeout=self._timeout_ms))[:_MAX_READ_BACK]
+        except _playwright_error():
+            if not aria:
+                return None
+        try:
+            return str(locator.evaluate(_ARIA_VALUE_JS))[:_MAX_READ_BACK]
         except _playwright_error():
             return None
 
@@ -853,9 +879,16 @@ class PlaywrightDriver:
             )
         return frame
 
+    def _popup(self, scope: Any, controls: str) -> Any:
+        """Where a combobox's options live: the element it controls, else the whole scope."""
+        popup_id = controls.split()[0] if controls.split() else ""
+        if popup_id and re.fullmatch(r"[A-Za-z0-9_.:\-]+", popup_id):
+            return scope.locator(f'[id="{popup_id}"]')
+        return scope
+
     def _selected_text(self, locator: Any) -> str | None:
         try:
-            return _clean(str(locator.evaluate(_SELECTED_TEXT_JS)), 200)
+            return str(locator.evaluate(_SELECTED_TEXT_JS))[:_MAX_READ_BACK]
         except _playwright_error():
             return None
 
@@ -863,6 +896,13 @@ class PlaywrightDriver:
         """Check a frame's host again right before a write: a frame can navigate while waited on."""
         if target.frame is not None and target.is_allowed is not None:
             self._require_allowed_frame_host(scope, target.is_allowed)
+            pinned = target.frame_host
+            host = _web_host(scope.url)
+            if pinned is not None and host.lower() != pinned.strip().lower():
+                raise BrowserActionError(
+                    f"Expected frame {target.frame} to stay on {pinned!r}, got {host!r}; "
+                    "list the frames again"
+                )
 
     def _action_error(self, what: str, exc: Exception) -> BrowserActionError:
         return BrowserActionError(
@@ -1210,14 +1250,34 @@ _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SCROLL_SETTLE_MS = 250
 
 
+_ARIA_VALUE_JS = (
+    "(e) => (e.value !== undefined && e.value !== '') ? String(e.value) : "
+    "String(e.getAttribute('aria-valuetext') || e.innerText || e.textContent || '')"
+)
+
+_DROPDOWN_INFO_JS = (
+    "(e) => { const role = e.getAttribute('role') || ''; "
+    "const popup = e.getAttribute('aria-haspopup') || ''; "
+    "return {tag: e.tagName.toLowerCase(), role: role || e.tagName.toLowerCase(), "
+    "controls: e.getAttribute('aria-controls') || e.getAttribute('aria-owns') || '', "
+    "dropdown: role === 'combobox' || role === 'listbox' || popup === 'listbox'}; }"
+)
+
 _MATCH_INFO_JS = (
-    "(e) => { const l = e.labels && e.labels[0] ? e.labels[0].innerText : ''; "
-    "const name = l || e.getAttribute('aria-label') || e.getAttribute('placeholder') "
+    "(e) => { const text = (n) => (n ? (n.innerText || n.textContent || '').trim() : ''); "
+    "const by = (e.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean)"
+    ".map((id) => text(document.getElementById(id))).join(' '); "
+    "const l = e.labels && e.labels[0] ? text(e.labels[0]) : ''; "
+    "const name = by || e.getAttribute('aria-label') || l || e.getAttribute('placeholder') "
     "|| e.getAttribute('name') || ''; "
-    "const kinds = {INPUT: e.type === 'checkbox' ? 'checkbox' : e.type === 'file' ? 'file' "
-    ": 'textbox', SELECT: 'combobox', TEXTAREA: 'textbox', BUTTON: 'button'}; "
-    "return {role: e.getAttribute('role') || kinds[e.tagName] || e.tagName.toLowerCase(), "
-    "name: name.trim()}; }"
+    "const t = String(e.type || '').toLowerCase(); "
+    "const inputs = {checkbox: 'checkbox', radio: 'radio', range: 'slider', "
+    "number: 'spinbutton', search: 'searchbox', file: 'file'}; "
+    "const tags = {SELECT: (e.multiple || e.size > 1) ? 'listbox' : 'combobox', "
+    "TEXTAREA: 'textbox', BUTTON: 'button'}; "
+    "const role = e.getAttribute('role') || "
+    "(e.tagName === 'INPUT' ? (inputs[t] || 'textbox') : tags[e.tagName]) "
+    "|| e.tagName.toLowerCase(); return {role: role, name: name.trim()}; }"
 )
 
 _SELECTED_TEXT_JS = (
@@ -1365,9 +1425,14 @@ def _fetch_version(endpoint: str, timeout_s: float) -> dict[str, Any]:
     return data
 
 
+def field_display(read_back: str) -> str:
+    """A field's value as one cleaned, shortened line, for showing the caller."""
+    return _clean(read_back, 200)
+
+
 def field_matches(read_back: str, wanted: str) -> bool:
-    """Whether a field's read-back is what was set, compared the way the read-back is cleaned."""
-    return _clean(wanted, 200) == read_back
+    """Whether a field holds what was set: the whole values, with whitespace collapsed."""
+    return " ".join(read_back.split()) == " ".join(wanted.split())
 
 
 def _clean(text: str, limit: int) -> str:
