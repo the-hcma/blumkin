@@ -23,7 +23,7 @@ INDICATOR_ID = "blumkin-controlled"
 INDICATOR_JS = (
     "(args) => { const id = args.id; if (document.getElementById(id)) return; "
     "if (location.protocol !== 'https:' && location.protocol !== 'http:') return; "
-    "const h = location.hostname.toLowerCase(); "
+    "const h = location.hostname.toLowerCase().replace(/\\.+$/, ''); "
     "const match = (p) => p.startsWith('*.') ? (h.endsWith(p.slice(1)) && h.length > p.length - 1)"
     " : h === p; "
     "if (args.blocked.some(match)) return; "

@@ -167,6 +167,12 @@ def test_in_a_real_browser_the_marker_is_added_once_hidden_from_text_and_inert()
             page.goto("about:blank")
             page.evaluate(INDICATOR_JS, indicator_args("t"))
             assert count() == 0
+            page.goto("https://login.example.net./")  # a trailing dot is the same host
+            page.evaluate(INDICATOR_JS, indicator_args("t", (), ("login.example.net",)))
+            assert count() == 0
+            page.goto("https://erp.example.com./")
+            page.evaluate(INDICATOR_JS, indicator_args("t", ("erp.example.com",)))
+            assert count() == 1
 
             page.goto("https://erp.example.com/")
             before = page.evaluate("document.body.innerText")
