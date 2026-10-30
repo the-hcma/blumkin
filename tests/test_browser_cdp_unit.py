@@ -2385,3 +2385,47 @@ def test_the_describe_script_looks_for_dialog_ancestors_and_the_form_owner() -> 
         assert needle in _DESCRIBE_CONTROL_JS
     # A page can set aria-modal on any wrapper, so it does not make something a dialog.
     assert "aria-modal" not in _DESCRIBE_CONTROL_JS
+
+
+def test_the_dialog_inventory_comes_with_whether_it_is_complete() -> None:
+    pw, driver = _driver()
+    pw.page.element_info["OK"] = {
+        "tag": "button",
+        "type": "submit",
+        "form": True,
+        "formaction": False,
+        "href": "",
+        "onclick": "",
+        "dialog": True,
+        "formInDialog": True,
+        "dialogControls": ["OK", "Submit"],
+        "dialogComplete": False,
+    }
+    pw.page.role_counts[("button", "OK")] = [1]
+    seen: list[Any] = []
+
+    driver.checked_click("OK", "button", seen.append)
+
+    assert seen[0].dialog_controls == ("OK", "Submit")
+    assert seen[0].dialog_controls_complete is False
+
+
+def test_a_probe_that_does_not_say_is_treated_as_complete_only_when_it_has_no_dialog() -> None:
+    pw, driver = _driver()
+    seen: list[Any] = []
+
+    driver.checked_click("Go", "button", seen.append)
+
+    assert seen[0].dialog_controls == ()
+    assert seen[0].dialog_controls_complete is True
+
+
+def test_the_describe_script_gathers_every_name_source_and_limits_nothing_silently() -> None:
+    from blumkin.browser.cdp import _DESCRIBE_CONTROL_JS
+
+    for needle in ("aria-labelledby", "aria-label", "innerText", "b.value", "b.title", "b.id"):
+        assert needle in _DESCRIBE_CONTROL_JS
+    # Too many controls, or a name cut short, is reported instead of hidden.
+    assert "complete = false" in _DESCRIBE_CONTROL_JS
+    assert "dialogComplete" in _DESCRIBE_CONTROL_JS
+    assert ".slice(0, 100)" not in _DESCRIBE_CONTROL_JS

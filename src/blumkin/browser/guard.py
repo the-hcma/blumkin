@@ -304,10 +304,20 @@ class GuardedDriver:
         confirm = False
         if name is not None and _exact(name) in self._confirm:
             confirm = True
-            if _exact(name) not in self._allowed and not info.in_dialog:
-                raise self._refuse(
-                    action, "it is declared as a dialog confirm and is not in a dialog"
-                )
+            if _exact(name) not in self._allowed:
+                # Declared only as a dialog confirm: valid in a dialog whose form is its own,
+                # whatever type of button it is.
+                if not info.in_dialog:
+                    raise self._refuse(
+                        action, "it is declared as a dialog confirm and is not in a dialog"
+                    )
+                if not info.form_in_dialog:
+                    raise self._refuse(
+                        action,
+                        "it is declared as a dialog confirm and its form is not the dialog's",
+                    )
+            if info.in_dialog and not info.dialog_controls_complete:
+                raise self._refuse(action, "the dialog holds more controls than can be checked")
             held = [text for text in info.dialog_controls if _is_denied(text, self._deny)]
             if info.in_dialog and held:
                 # A dialog that also holds the report's own Submit is the whole report in a

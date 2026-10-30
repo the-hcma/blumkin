@@ -739,16 +739,19 @@ def _ok_button(
     has_formaction: bool = False,
     inline_handler: str = "",
     dialog_controls: tuple[str, ...] = (),
+    complete: bool = True,
+    input_type: str = "submit",
 ) -> ControlInfo:
     return ControlInfo(
         tag="button",
-        input_type="submit",
+        input_type=input_type,
         in_form=True,
         in_dialog=in_dialog,
         form_in_dialog=form_in_dialog,
         has_formaction=has_formaction,
         inline_handler=inline_handler,
         dialog_controls=dialog_controls,
+        dialog_controls_complete=complete,
     )
 
 
@@ -775,7 +778,7 @@ def test_a_dialog_nested_in_the_page_form_is_not_a_safe_place_to_confirm() -> No
     raw, driver = _guard(confirm=("OK",))
     raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=False)
 
-    with pytest.raises(SubmitBlockedError, match="submit control"):
+    with pytest.raises(SubmitBlockedError, match="its form is not the dialog's"):
         driver.click("OK")
 
     assert raw.calls == []
@@ -906,3 +909,67 @@ def test_nth_picks_a_match_but_each_match_is_vetted_on_its_own() -> None:
         driver.click("OK", nth=2)
 
     assert not any(call[0] == "click" for call in raw.calls)
+
+
+# --------------------------------------------------------------------------- review (#587)
+
+
+def test_a_confirm_only_ok_that_is_a_plain_button_still_needs_the_dialogs_own_form() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=False, input_type="button")
+
+    with pytest.raises(SubmitBlockedError, match="its form is not the dialog's"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+def test_a_name_that_is_also_a_plain_control_keeps_the_ordinary_rules_for_a_plain_button() -> None:
+    raw, driver = _guard("OK", confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=False, input_type="button")
+
+    driver.click("OK")
+
+    assert raw.calls == [("click", "button", "OK")]
+
+
+def test_a_dialog_with_more_controls_than_could_be_collected_does_not_qualify() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(
+        in_dialog=True, form_in_dialog=True, dialog_controls=("Add", "OK"), complete=False
+    )
+
+    with pytest.raises(SubmitBlockedError, match="more controls than can be checked"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("OK", "Submit report"),
+        ("OK", "\u2713", "Submit"),  # an icon button whose aria-label is the finalizing word
+        ("OK", "pay-button"),  # an id or name that says what the button does
+        ("OK", "Cancel", "Send for approval"),
+    ],
+)
+def test_any_name_a_dialog_control_goes_by_that_is_finalizing_disqualifies_the_dialog(
+    names: tuple[str, ...],
+) -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=True, dialog_controls=names)
+
+    with pytest.raises(SubmitBlockedError, match="finalizing control"):
+        driver.click("OK")
+
+
+def test_an_icon_only_control_with_no_finalizing_name_does_not_disqualify_the_dialog() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(
+        in_dialog=True, form_in_dialog=True, dialog_controls=("OK", "\u00d7", "Close", "close-x")
+    )
+
+    driver.click("OK")
+
+    assert raw.calls == [("click", "button", "OK")]
