@@ -2428,7 +2428,14 @@ def test_the_describe_script_gathers_every_name_source_and_limits_nothing_silent
         assert needle in _DESCRIBE_CONTROL_JS
     # Image inputs are named by alt, links and menu items count as controls, and a
     # shadow-local label is looked up in its own root.
-    for needle in ("'alt'", "a, summary", "[role=link]", "[role=menuitem]", "getRootNode"):
+    for needle in (
+        "'alt'",
+        "a, summary",
+        "[role=link]",
+        "[role=menuitem]",
+        "getRootNode",
+        "[aria-label], [alt], [title], svg title",
+    ):
         assert needle in _DESCRIBE_CONTROL_JS
     # Too many controls, or a name cut short, is reported instead of hidden.
     assert "complete = false" in _DESCRIBE_CONTROL_JS
