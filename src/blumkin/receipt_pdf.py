@@ -14,7 +14,7 @@ from blumkin.attachments import write_new_private_file
 MAX_SIDE_PIXELS = 3000
 #: Photos bigger than this are refused before they are decoded (a decompression-bomb guard).
 MAX_SOURCE_BYTES = 50 * 1024 * 1024
-MAX_SOURCE_PIXELS = 64_000_000
+MAX_SOURCE_PIXELS = 50_000_000
 
 
 class ReceiptPdfError(ValueError):
@@ -61,7 +61,10 @@ def _flat_rgb(source: Path) -> Image.Image:
                         f"Expected an image of at most {MAX_SOURCE_PIXELS:,} pixels, "
                         f"got {width * height:,}"
                     )
+                # Shrink before anything copies the frame (turning it upright, converting its
+                # mode): the draft only helps JPEG, the thumbnail covers every format.
                 opened.draft("RGB", (MAX_SIDE_PIXELS, MAX_SIDE_PIXELS))
+                opened.thumbnail((MAX_SIDE_PIXELS, MAX_SIDE_PIXELS))
                 upright = ImageOps.exif_transpose(opened)
                 if upright.mode in {"RGBA", "LA", "PA"} or "transparency" in upright.info:
                     rgba = upright.convert("RGBA")

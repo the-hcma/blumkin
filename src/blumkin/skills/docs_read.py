@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,7 @@ _IMAGE_EXTENSIONS = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff",
 _MAX_EXTRACTED_BYTES = 1_000_000
 _MAX_FILE_BYTES = 25_000_000
 _OCR_EXTRA_HINT = "docs read --ocr needs the ocr extra: uv tool install -e '.[pdf,ocr]'"
+_OCR_MAX_PIXELS = 25_000_000
 _OCR_MIN_WIDTH = 1500
 _POPPLER_HINT = "poppler not found on PATH, install via `brew install tesseract poppler`"
 _TESSERACT_HINT = "tesseract not found on PATH, install via `brew install tesseract poppler`"
@@ -278,13 +280,32 @@ def _read_docx(path: Path) -> list[dict[str, Any]]:
 
 
 def _best_ocr_text(image: Any, pytesseract: Any) -> str:
-    """OCR a photo twice (cleaned up for a till receipt, then as it is) and keep the fuller read."""
-    candidates = [
-        str(pytesseract.image_to_string(_prepare_for_ocr(image), config="--psm 6")).strip(),
-        str(pytesseract.image_to_string(image)).strip(),
-    ]
+    """OCR a photo twice (cleaned up for a till receipt, then as it is) and keep the fuller read.
+
+    A failure of the cleaned-up pass (other than tesseract being missing) leaves the plain read.
+    When the two reads disagree about a minus sign, brackets or CR near an amount, both are
+    kept: the receipt parser then sees two different totals and asks instead of guessing.
+    """
+    candidates = []
+    not_found = getattr(pytesseract, "TesseractNotFoundError", RuntimeError)
+    try:
+        candidates.append(
+            str(pytesseract.image_to_string(_prepare_for_ocr(image), config="--psm 6")).strip()
+        )
+    except not_found:
+        raise
+    except Exception:  # noqa: BLE001 - the plain read below still stands
+        pass
+    candidates.append(str(pytesseract.image_to_string(image)).strip())
+    if len(candidates) == 2 and _sign_marks(candidates[0]) != _sign_marks(candidates[1]):
+        return "\n".join(candidates)
     # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
     return max(candidates, key=lambda text: sum(char.isalnum() for char in text))
+
+
+def _sign_marks(text: str) -> int:
+    """How many amounts carry a minus sign, brackets or CR/credit: what turns a total negative."""
+    return len(re.findall(r"(?:-|\(|\bCR\b|\bcredit\b)\s*[$€£]?\s*\d", text, re.IGNORECASE))
 
 
 def _prepare_for_ocr(image: Any) -> Any:
@@ -294,7 +315,10 @@ def _prepare_for_ocr(image: Any) -> Any:
     grey = ImageOps.autocontrast(ImageOps.exif_transpose(image).convert("L"))
     if grey.width < _OCR_MIN_WIDTH:
         scale = _OCR_MIN_WIDTH / grey.width
-        grey = grey.resize((_OCR_MIN_WIDTH, round(grey.height * scale)))
+        height = round(grey.height * scale)
+        # A very tall, thin image would blow up to millions of pixels: leave it as it is.
+        if _OCR_MIN_WIDTH * height <= _OCR_MAX_PIXELS:
+            grey = grey.resize((_OCR_MIN_WIDTH, height))
     return grey
 
 

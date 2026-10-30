@@ -171,9 +171,11 @@ async def read_receipt(
         )
     sidecar = read_bound_text(path) if suffix == ".pdf" else None
     if sidecar is not None:
-        scan = scan_for_injection(sidecar, location="body")
+        sender = _sender_name(read_export_meta(path))
+        # The sender's display name is chosen by the sender, so it is scanned with the body.
+        scan = scan_for_injection(f"{sidecar}\n{sender}" if sender else sidecar, location="body")
         return ReceiptReading(
-            fields=parse_receipt_text(sidecar, sender=_sender_name(read_export_meta(path))),
+            fields=parse_receipt_text(sidecar, sender=sender),
             injection_warning=scan.to_payload() if scan.matched else None,
             message="Read from the text file next to the PDF (no OCR needed).",
             ocr_used=False,

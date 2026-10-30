@@ -41,6 +41,7 @@ class _Provider:
                 "body": self.body,
                 "body_type": self.body_type,
                 "from_email": "receipts@ride.example",
+                "from_name": "Ride Co",
                 "id": message_id,
                 "injection_warning": None,
                 "received": "2026-10-23T09:15:00Z",
@@ -110,6 +111,7 @@ def test_export_writes_pdf_text_and_json_side_by_side(tmp_path: Path) -> None:
     meta = json.loads(sidecar.read_text())
     assert meta["message_id"] == "AAMk1"
     assert meta["from"] == "receipts@ride.example"
+    assert meta["from_name"] == "Ride Co"
     assert meta["received"] == "2026-10-23T09:15:00Z"
     assert meta["subject"] == "Your Tuesday ride / receipt"
     assert meta["expected_images"] == 1
