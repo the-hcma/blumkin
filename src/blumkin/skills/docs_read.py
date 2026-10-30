@@ -112,6 +112,11 @@ def format_docs_read_human(payload: dict[str, Any]) -> list[str]:
 _IMAGE_EXTENSIONS = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
 _MAX_EXTRACTED_BYTES = 1_000_000
 _MAX_FILE_BYTES = 25_000_000
+_NEGATIVE_EVIDENCE = re.compile(
+    r"(?<![\d/])[-\u2212\u2013]\s*[$\u20ac\u00a3]?\s*\d|\d\s*[-\u2212\u2013]\s*(?:$|\s)|"
+    r"\(\s*[$\u20ac\u00a3]?\s*\d|\bCR\b|\bcredit\b|\brefund",
+    re.IGNORECASE | re.MULTILINE,
+)
 _OCR_EXTRA_HINT = "docs read --ocr needs the ocr extra: uv tool install -e '.[pdf,ocr]'"
 _OCR_MAX_PIXELS = 25_000_000
 _OCR_MIN_WIDTH = 1500
@@ -283,8 +288,9 @@ def _best_ocr_text(image: Any, pytesseract: Any) -> str:
     """OCR a photo twice (cleaned up for a till receipt, then as it is) and keep the fuller read.
 
     A failure of the cleaned-up pass (other than tesseract being missing) leaves the plain read.
-    When the two reads disagree about a minus sign, brackets or CR near an amount, both are
-    kept: the receipt parser then sees two different totals and asks instead of guessing.
+    When either read shows negative evidence (a minus sign, brackets, CR or a credit near an
+    amount), both are kept: the receipt parser then sees any disagreement between the two as
+    different totals and asks instead of guessing.
     """
     candidates = []
     not_found = getattr(pytesseract, "TesseractNotFoundError", RuntimeError)
@@ -297,15 +303,16 @@ def _best_ocr_text(image: Any, pytesseract: Any) -> str:
     except Exception:  # noqa: BLE001 - the plain read below still stands
         pass
     candidates.append(str(pytesseract.image_to_string(image)).strip())
-    if len(candidates) == 2 and _sign_marks(candidates[0]) != _sign_marks(candidates[1]):
+    if len(candidates) == 2 and any(_has_negative_evidence(text) for text in candidates):
         return "\n".join(candidates)
     # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
     return max(candidates, key=lambda text: sum(char.isalnum() for char in text))
 
 
-def _sign_marks(text: str) -> int:
-    """How many amounts carry a minus sign, brackets or CR/credit: what turns a total negative."""
-    return len(re.findall(r"(?:-|\(|\bCR\b|\bcredit\b)\s*[$€£]?\s*\d", text, re.IGNORECASE))
+def _has_negative_evidence(text: str) -> bool:
+    """Whether an amount looks negative: a leading or trailing minus (also the Unicode one),
+    brackets, CR, or the words credit and refund."""
+    return bool(_NEGATIVE_EVIDENCE.search(text))
 
 
 def _prepare_for_ocr(image: Any) -> Any:

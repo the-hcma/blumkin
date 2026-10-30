@@ -465,3 +465,74 @@ def test_to_pdf_shrinks_a_large_photo_before_converting_it(tmp_path: Path) -> No
     with pdfplumber.open(str(dest)) as document:
         page = document.pages[0]
         assert max(page.width, page.height) <= 3000 * 72 / 150 + 1
+
+
+@pytest.mark.parametrize(
+    ("heading", "expected"),
+    [
+        ("Bolt Coffee", "Bolt Coffee"),
+        ("Grab a coffee", "Grab a coffee"),
+        ("Uber Receipt", "Uber"),
+        ("Free Now", "Free Now"),
+        ("LYFT", "Lyft"),
+    ],
+)
+def test_a_brand_counts_only_as_an_exact_letterhead(heading: str, expected: str) -> None:
+    assert parse_receipt_text(f"{heading}\nTotal $4.00\n").vendor.value == expected
+
+
+@pytest.mark.parametrize(
+    "plain",
+    ["TOTAL USD \u221212.50", "TOTAL USD 12.50-", "TOTAL USD (12.50)", "TOTAL USD 12.50 CR"],
+)
+def test_any_negative_evidence_in_either_read_keeps_both_reads(plain: str) -> None:
+    from types import SimpleNamespace
+
+    def image_to_string(image: object, config: str | None = None) -> str:
+        return "TOTAL USD 12.50" if config else plain
+
+    text = docs_read._best_ocr_text(
+        Image.new("RGB", (100, 100)), SimpleNamespace(image_to_string=image_to_string)
+    )
+
+    assert plain in text
+    assert "TOTAL USD 12.50" in text
+
+
+def test_a_receipt_with_no_negative_evidence_keeps_only_the_fuller_read() -> None:
+    from types import SimpleNamespace
+
+    def image_to_string(image: object, config: str | None = None) -> str:
+        return "ACME 2026-10-23 TOTAL $12.50" if config else "ACME TOTAL 12"
+
+    text = docs_read._best_ocr_text(
+        Image.new("RGB", (100, 100)), SimpleNamespace(image_to_string=image_to_string)
+    )
+
+    assert text == "ACME 2026-10-23 TOTAL $12.50"
+
+
+def test_new_since_looks_at_arrival_alone_not_at_a_later_modification() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.receipts import _receipt_file
+
+    month_ago = time.time() - 30 * 24 * 3600
+
+    class Entry:
+        name = "edited.jpg"
+        path = "/d/edited.jpg"
+
+        def is_symlink(self) -> bool:
+            return False
+
+        def is_file(self) -> bool:
+            return True
+
+        def stat(self) -> SimpleNamespace:
+            # Arrived a month ago, edited just now.
+            return SimpleNamespace(
+                st_mtime=time.time(), st_ctime=month_ago, st_birthtime=month_ago, st_size=1
+            )
+
+    assert _receipt_file(Entry(), None, time.time() - 1800) is None  # type: ignore[arg-type]

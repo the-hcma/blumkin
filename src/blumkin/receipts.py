@@ -331,6 +331,11 @@ _KNOWN_VENDOR_LINES = 15
 _KNOWN_VENDORS = ("Bolt", "Careem", "DiDi", "Free Now", "Grab", "Lyft", "Uber")
 #: Other products from the same company (food, bikes, freight) are not the ride.
 _KNOWN_VENDOR_OTHER_PRODUCTS = re.compile(r"\b(?:eats|bikes?|freight|food|market)\b", re.IGNORECASE)
+#: Words that may follow a brand in its letterhead ("Uber Receipt", "Lyft Ride"); anything else
+#: after the name is another business ("Bolt Coffee") or an incidental phrase ("Grab a coffee").
+_KNOWN_VENDOR_SUFFIXES = frozenset(
+    {"inc", "llc", "ltd", "receipt", "ride", "rides", "technologies", "trip", "trips"}
+)
 _TOTAL_LINE = re.compile(
     r"\b(?:amount\s+due|balance\s+due|grand\s+total|total\s+amount|total(?:\s+due)?)\b"
 )
@@ -648,12 +653,13 @@ def _known_vendor_lines(text: str) -> list[str]:
     found = []
     for raw in text.splitlines()[:_KNOWN_VENDOR_LINES]:
         line = raw.strip()
-        words = line.split()
+        words = line.rstrip(".,:;").split()
         if not words or len(words) > 3 or "&" in line or _KNOWN_VENDOR_OTHER_PRODUCTS.search(line):
             continue
         for known in _KNOWN_VENDORS:
-            if line.startswith((known, known.upper())) and re.match(
-                rf"(?:{re.escape(known)}|{re.escape(known.upper())})\b", line
+            brand = known.split()
+            if words[: len(brand)] in (brand, [word.upper() for word in brand]) and all(
+                word.lower().rstrip(".,") in _KNOWN_VENDOR_SUFFIXES for word in words[len(brand) :]
             ):
                 found.append(known)
     return found
@@ -744,7 +750,7 @@ def _receipt_file(
     if since_epoch is not None and info.st_mtime < since_epoch:
         return None
     added = float(getattr(info, "st_birthtime", info.st_ctime))
-    if new_since_epoch is not None and max(info.st_mtime, added) < new_since_epoch:
+    if new_since_epoch is not None and added < new_since_epoch:
         return None
     return ReceiptFile(
         added_epoch=added,

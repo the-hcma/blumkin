@@ -3746,7 +3746,7 @@ def receipts() -> None:
     "--new-since",
     default=None,
     help=(
-        "Only files that arrived (saved or modified) within a duration such as 30m or 2h, or "
+        "Only files that arrived (were saved here) within a duration such as 30m or 2h, or "
         "since a UTC time like 2026-10-30T14:00:00Z."
     ),
 )
