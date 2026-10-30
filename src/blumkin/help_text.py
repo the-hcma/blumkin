@@ -1797,6 +1797,32 @@ All drafting verbs stay in your mailbox until `mail send-draft --yes`. `--from` 
 Graph server-side and cannot combine with those filters.
 """
 
+MAIL_EXPORT_EPILOG = """
+Examples:
+
+\b
+  blumkin mail export --id AAMk... --out ./receipts-to-upload
+  blumkin mail export --id AAMk... --out ./receipts-to-upload --name 2026-10-23_ride --json
+
+Renders the message body (HTML, or plain text wrapped in a page) to `<name>.pdf` with a
+headless browser, and writes `<name>.txt` (the same content as text) and `<name>.json`
+(message id, sender, received time, subject) beside it. Use it for receipts that arrive as
+HTML mail with no attachment. Images are loaded so the logo and the route map survive.
+Scripts, frames, linked resources, meta tags and some elements hidden by supported inline
+styles are removed (text hidden by a stylesheet can be absent from the PDF yet remain in the
+`.txt` file, so check amounts visually), and images declared as one pixel or smaller are
+dropped; an image with no declared size can
+still load, and its address may tell the sender the message was opened. The browser runs in
+a throwaway profile, so nothing is fetched with your cookies or mailbox identity. The PDF is
+then checked against the message (images present, no blank pages, text layer matches the
+text file); a failed check exits 1, lists the problems and writes nothing, so fix the cause
+and re-run with the same names before rehoming or uploading. Never writes
+into the receipts archive: `--out` is the folder you name, and an existing export is never
+overwritten. A prompt-injection warning on the message is reported and recorded in the JSON,
+and does not stop the export. Needs Chrome (or Chromium or Edge) and the pdf extra
+(`uv tool install -e '.[pdf]'`) for the check.
+"""
+
 MAIL_FOLDERS_EPILOG = """
 Example:
 
@@ -2280,12 +2306,29 @@ existing profile, or to resolve the drift `blumkin doctor` reports after a
 profile is re-authenticated as somebody else.
 """
 
+RECEIPTS_CHECK_EPILOG = """
+Examples:
+
+\b
+  blumkin receipts check ./receipts-to-upload/2026-10-23_ride.pdf
+  blumkin receipts check ./receipts-to-upload/2026-10-23_ride.pdf --json
+
+Checks a PDF written by `blumkin mail export`: pages exist and none is blank, the images the
+message carried are in the PDF, and the PDF text layer matches the `.txt` file beside it. It
+reads the `.txt` and `.json` next to the PDF when they exist; without them the text and
+image comparisons are skipped. The text comparison accepts 80% word overlap, so a pass does
+not prove the whole receipt survived: read the amounts yourself. Exits 1 with the problems listed
+when the render is broken, so run it before `receipts rehome` or any upload. Needs the pdf
+extra (`uv tool install -e '.[pdf]'`).
+"""
+
 RECEIPTS_EPILOG = """
 Examples:
 
 \b
   blumkin receipts find --dir ~/Documents/receipts --since 2026-10-01 --json
   blumkin receipts read ~/Documents/receipts/taxi.jpg --json
+  blumkin receipts check ./receipts-to-upload/2026-10-23_ride.pdf --json
   blumkin receipts rehome ~/Downloads/scan.jpg --task expense-report --instance trip-lisbon \\
     --date 2026-10-20 --vendor "Taxi Co" --total 18.50 --currency USD --json
 
@@ -2294,7 +2337,8 @@ files in a directory, newest first; `read` runs the file through `docs read` (im
 always OCR'd, PDFs only when they have no text layer) and reports vendor, date, total and
 currency, each with a confidence, so a task asks you about anything doubtful instead of
 guessing; `rehome` moves a confirmed receipt into the managed instance folder under a
-canonical name. Receipt contents stay on this machine.
+canonical name; `check` verifies a PDF rendered from mail by `mail export`. Receipt contents
+stay on this machine.
 """
 
 RECEIPTS_FIND_EPILOG = """
@@ -2322,8 +2366,9 @@ Examples:
   blumkin receipts read ~/Documents/receipts/hotel.pdf --json
 
 Prints vendor, date, total and currency with a confidence for each (high, low or
-none). It is conservative on purpose: a field is `high` only when the receipt says it
-unambiguously. Several different total lines, an amount that could be thousands or
+none). A PDF with a `.txt` file of the same name beside it (written by `mail export`) is read
+from that text, with no OCR. It is conservative on purpose: a field is `high` only when the
+receipt says it unambiguously. Several different total lines, an amount that could be thousands or
 decimals (1.234), an unrecognised grouping, a total with no decimals, a two-digit year,
 several dates or currencies, and a `$` alone all come back `low` or without a value, with
 a note saying why; the vendor is always `low`. Ask the user about anything that is not

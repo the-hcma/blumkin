@@ -218,3 +218,35 @@ def test_find_defaults_to_the_shared_limit(tmp_path: Path) -> None:
         _touch(tmp_path / f"r{index}.jpg", 1_000 + index)
     payload = json.loads(_run("receipts", "find", "--dir", str(tmp_path)).output)
     assert len(payload["receipts"]) == DEFAULT_FIND_LIMIT
+
+
+def test_receipts_check_exits_1_and_lists_problems_for_a_blank_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin import cli
+
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"%PDF")
+    monkeypatch.setattr(
+        cli,
+        "check_exported_pdf",
+        lambda _: {
+            "blank_pages": [2],
+            "images": 0,
+            "ok": False,
+            "pages": 2,
+            "problems": ["blank pages: 2"],
+            "text_overlap": None,
+        },
+    )
+
+    result = CliRunner().invoke(main, ["receipts", "check", str(pdf), "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.output)["problems"] == ["blank pages: 2"]
+
+
+def test_receipts_check_needs_an_existing_pdf(tmp_path: Path) -> None:
+    result = CliRunner().invoke(main, ["receipts", "check", str(tmp_path / "gone.pdf")])
+
+    assert result.exit_code == 5

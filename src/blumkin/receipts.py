@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.config import BlumkinConfig
+from blumkin.mail_export import read_bound_text
+from blumkin.prompt_injection import scan_for_injection
 from blumkin.skills.docs_read import (
     DocsReadExtraMissingError,
     DocsReadOcrUnavailableError,
@@ -157,6 +159,17 @@ async def read_receipt(
             path,
             ReceiptStatus.UNSUPPORTED,
             f"Expected an image or PDF receipt, got {suffix or 'no extension'!r}",
+        )
+    sidecar = read_bound_text(path) if suffix == ".pdf" else None
+    if sidecar is not None:
+        scan = scan_for_injection(sidecar, location="body")
+        return ReceiptReading(
+            fields=parse_receipt_text(sidecar),
+            injection_warning=scan.to_payload() if scan.matched else None,
+            message="Read from the text file next to the PDF (no OCR needed).",
+            ocr_used=False,
+            path=str(path),
+            status=ReceiptStatus.OK,
         )
     try:
         payload = await reader(config=config, path=str(path), ocr=False)
