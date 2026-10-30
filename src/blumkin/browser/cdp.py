@@ -149,6 +149,14 @@ class ControlInfo:
     inline_handler: str = ""
     #: Where a link opens: empty or `_self` stays in the window, anything else opens another.
     target: str = ""
+    #: The element sits inside a dialog (`<dialog>`, `role=dialog`, `alertdialog` or a modal).
+    in_dialog: bool = False
+    #: Inside a dialog, and its form (if it has one) lies inside that same dialog: the click
+    #: can only submit the dialog's own form, never a page-level one the dialog sits in.
+    form_in_dialog: bool = False
+    #: The names of the button-like controls inside that dialog (capped), so the guard can tell
+    #: a small dialog from a modal wrapped around the whole report and its own Submit.
+    dialog_controls: tuple[str, ...] = ()
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
@@ -807,6 +815,9 @@ class PlaywrightDriver:
             href=str(raw["href"]),
             inline_handler=str(raw["onclick"]),
             target=str(raw.get("target", "")),
+            in_dialog=bool(raw.get("dialog", False)),
+            form_in_dialog=bool(raw.get("formInDialog", False)),
+            dialog_controls=tuple(str(text) for text in raw.get("dialogControls", ()) or ()),
         )
 
     def _field(self, scope: Any, label: str, target: FieldTarget) -> Any:
@@ -1314,7 +1325,15 @@ _DESCRIBE_CONTROL_JS = (
     "formaction: e.hasAttribute('formaction') || e.hasAttribute('formmethod'), "
     "href: String(e.getAttribute('href') || ''), "
     "onclick: String(e.getAttribute('onclick') || ''), "
-    "target: String(e.getAttribute('target') || '')})"
+    "target: String(e.getAttribute('target') || ''), "
+    "dialog: !!e.closest('dialog, [role=dialog], [role=alertdialog]'), "
+    "formInDialog: (() => { const d = e.closest('dialog, [role=dialog], [role=alertdialog]'); "
+    "return !!d && (!e.form || d.contains(e.form)); })(), "
+    "dialogControls: (() => { const d = e.closest('dialog, [role=dialog], [role=alertdialog]'); "
+    'if (!d) return []; return Array.from(d.querySelectorAll("button, [role=button], '
+    'input[type=submit], input[type=button], input[type=image]")).slice(0, 100).map('
+    "(b) => String(b.innerText || b.value || b.getAttribute('aria-label') || b.title || '')"
+    ".trim().slice(0, 80)); })()})"
 )
 
 

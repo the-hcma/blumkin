@@ -1714,3 +1714,41 @@ def test_the_host_without_a_frame_error_is_a_usage_error_with_exit_2(raw: _Raw) 
 
     assert result.exit_code == 2
     assert "--host needs --frame" in result.output
+
+
+def test_a_declared_dialog_confirm_is_clicked_through_the_cli(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Add line"]\ndialog_confirm = ["OK"]')
+    raw.controls["OK"] = ControlInfo(
+        tag="button", input_type="submit", in_form=True, in_dialog=True, form_in_dialog=True
+    )
+
+    result = _run("browser", "click", "expense-report", "OK")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert ("click", "button", "OK") in raw.calls
+
+
+def test_the_same_button_outside_a_dialog_is_refused_through_the_cli(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'dialog_confirm = ["OK"]')
+    raw.controls["OK"] = ControlInfo(tag="button", input_type="submit", in_form=True)
+
+    result = _run("browser", "click", "expense-report", "OK")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert raw.calls == []
+
+
+def test_a_finalizing_dialog_confirm_is_refused_before_a_browser_is_attached(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'dialog_confirm = ["Submit report"]')
+
+    result = _run("browser", "click", "expense-report", "Submit report")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert "not finalizing" in _json(result)["message"]
+    assert raw.net_installed == 0

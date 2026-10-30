@@ -125,6 +125,7 @@ _POLICY_KEYS = (
     "allowed_controls",
     "allowed_hosts",
     "block_background_writes",
+    "dialog_confirm",
     "download_dirs",
     "extra_deny_names",
     "upload_dirs",
