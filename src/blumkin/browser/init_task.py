@@ -218,7 +218,8 @@ def _toml_string(value: str) -> str:
         elif 0x20 <= code < 0x7F:
             out.append(char)
         elif 0xD800 <= code <= 0xDFFF:
-            raise InitTaskError(f"Expected text without a lone surrogate, got {value!r}")
+            # The value is not echoed: it can be an address with a password in it.
+            raise InitTaskError("Expected text without a lone surrogate, got an invalid character")
         elif code <= 0xFFFF:
             out.append(f"\\u{code:04x}")
         else:

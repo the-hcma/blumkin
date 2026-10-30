@@ -535,3 +535,14 @@ def test_hosts_are_lowercased_and_a_second_run_never_overwrites_the_table(config
     )
     assert (config / "config.toml").read_text() == first
     assert _payload(second)["already_declared"] is True
+
+
+def test_a_form_url_with_a_password_and_a_lone_surrogate_is_refused_without_echoing_it(
+    config: Path,
+) -> None:
+    result = _run("--template", "expense-report", "--host", "erp.example.com",
+                  "--form-url", "https://me:hunter2@erp.example.com/\udcff", "--yes")  # fmt: skip
+
+    assert result.exit_code == EXIT_USAGE
+    assert "hunter2" not in result.output
+    assert "expense-report" not in (config / "config.toml").read_text()
