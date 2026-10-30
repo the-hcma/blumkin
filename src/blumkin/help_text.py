@@ -2322,6 +2322,19 @@ when the render is broken, so run it before `receipts rehome` or any upload. Nee
 extra (`uv tool install -e '.[pdf]'`).
 """
 
+RECEIPTS_TO_PDF_EPILOG = """
+Examples:
+
+\b
+  blumkin receipts to-pdf ~/Downloads/till.jpg --out ./receipts-to-upload/till.pdf
+  blumkin receipts to-pdf ~/Downloads/till.jpg --out ./receipts-to-upload/ --json
+
+Converts a receipt photo (JPEG, PNG, WebP, ...) to a one-page PDF for expense sites that only
+take PDFs. The photo is turned upright using its EXIF orientation and scaled down to at most
+3000 pixels a side. `--out` is a PDF file, or a folder (with a trailing slash) to get
+`<photo name>.pdf`. It never overwrites a file and the original photo is left alone.
+"""
+
 RECEIPTS_EPILOG = """
 Examples:
 
@@ -2347,10 +2360,15 @@ Examples:
 \b
   blumkin receipts find --dir ~/Documents/receipts
   blumkin receipts find --dir ~/Documents/receipts --since 2026-10-01 --limit 20 --json
+  blumkin receipts find --dir ~/Downloads --new-since 30m --json
 
 Lists the image and PDF files directly inside `--dir` (no subfolders, no symlinks,
 no hidden files), newest first. `--since YYYY-MM-DD` keeps files modified on or
-after that UTC date (the same zone as the printed times). For receipts attached to
+after that UTC date (the same zone as the printed times). `--new-since 30m` (or `2h`, or a
+UTC time such as 2026-10-30T14:00:00Z) keeps only files that arrived within that window,
+which finds the photo the user just downloaded: phone photos are named after when the
+picture was taken, so each entry also shows `arrived` (the birth time where the system
+has one, else the last change). For receipts attached to
 mail, list the message's attachments with
 `blumkin mail attachments --id ... --json` and download the ones you want with:
 
@@ -2366,7 +2384,9 @@ Examples:
   blumkin receipts read ~/Documents/receipts/hotel.pdf --json
 
 Prints vendor, date, total and currency with a confidence for each (high, low or
-none). A PDF with a `.txt` file of the same name beside it (written by `mail export`) is read
+none). The vendor is a known ride-hail name near the top of the text, else the first line
+that looks like a name, else the sender of the mail (for a `mail export` PDF), and is always
+`low`. A PDF with a `.txt` file of the same name beside it (written by `mail export`) is read
 from that text, with no OCR. It is conservative on purpose: a field is `high` only when the
 receipt says it unambiguously. Several different total lines, an amount that could be thousands or
 decimals (1.234), an unrecognised grouping, a total with no decimals, a two-digit year,

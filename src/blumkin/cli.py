@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -184,6 +185,7 @@ from blumkin.prompt_injection import format_injection_warning_banner
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
+from blumkin.receipt_pdf import ReceiptPdfError, image_to_pdf
 from blumkin.receipt_summary import SummaryInput, summarize_receipts
 from blumkin.receipts import (
     DEFAULT_FIND_LIMIT,
@@ -753,6 +755,23 @@ def _export_lines(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _parse_new_since(text: str) -> float:
+    """Epoch seconds for `--new-since`: now minus a duration, or an ISO UTC time."""
+    value = text.strip()
+    try:
+        return time.time() - parse_duration(value)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(
+            f"Expected --new-since as a duration like 30m or 2h, or a UTC time like "
+            f"2026-10-30T14:00:00Z, got {text!r}"
+        ) from None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).timestamp()
+
+
 def _summary_lines(summary: dict[str, Any]) -> list[str]:
     lines = []
     for row in summary["rows"]:
@@ -784,7 +803,7 @@ def _receipt_field_line(name: str, field: dict[str, Any]) -> str:
 def _receipt_file_line(entry: dict[str, Any]) -> str:
     # Spaces are kept as they are: the printed name is the one a user copies into `receipts read`.
     name = sanitize_terminal(_strip_bidi(entry["name"]))
-    return f"{name} ({entry['size']} bytes, {entry['modified']})"
+    return f"{name} ({entry['size']} bytes, {entry['modified']}, arrived {entry['added']})"
 
 
 def _shutdown_confirmed(response: dict[str, Any] | None) -> bool:
@@ -3718,9 +3737,22 @@ def receipts() -> None:
     default=None,
     help="Only files modified on or after YYYY-MM-DD (UTC, like the times printed).",
 )
+@click.option(
+    "--new-since",
+    default=None,
+    help=(
+        "Only files that arrived (saved or modified) within a duration such as 30m or 2h, or "
+        "since a UTC time like 2026-10-30T14:00:00Z."
+    ),
+)
 @click.pass_context
 def receipts_find(
-    ctx: click.Context, directory: Path, as_json_flag: bool, limit: int, since: str | None
+    ctx: click.Context,
+    directory: Path,
+    as_json_flag: bool,
+    limit: int,
+    since: str | None,
+    new_since: str | None,
 ) -> None:
     """List receipt files in a directory, newest first."""
     as_json = _as_json(ctx, as_json_flag)
@@ -3735,8 +3767,17 @@ def receipts_find(
                 as_json=as_json,
             )
             raise SystemExit(EXIT_USAGE) from None
+    new_since_epoch: float | None = None
+    if new_since is not None:
+        try:
+            new_since_epoch = _parse_new_since(new_since)
+        except ValueError as exc:
+            _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+            raise SystemExit(EXIT_USAGE) from None
     try:
-        found = find_local_receipts(directory, limit=limit, since_epoch=since_epoch)
+        found = find_local_receipts(
+            directory, limit=limit, new_since_epoch=new_since_epoch, since_epoch=since_epoch
+        )
     except ReceiptsDirError as exc:
         _emit_error(error="not_found", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_NOT_FOUND) from exc
@@ -3745,6 +3786,9 @@ def receipts_find(
         "ok": True,
         "receipts": [
             {
+                "added": datetime.fromtimestamp(item.added_epoch, UTC).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
                 "modified": datetime.fromtimestamp(item.modified_epoch, UTC).strftime(
                     "%Y-%m-%dT%H:%M:%SZ"
                 ),
@@ -3828,6 +3872,42 @@ def receipts_read(ctx: click.Context, path: Path, as_json_flag: bool) -> None:
         lines.append(_clean_line(reading.message))
     lines.extend(format_injection_warning_banner(reading.injection_warning))
     emit_lines(lines)
+
+
+@receipts.command("to-pdf", epilog=help_text.RECEIPTS_TO_PDF_EPILOG)
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option(
+    "--out",
+    required=True,
+    type=click.Path(),
+    help="PDF file to write, or a folder (trailing slash) to get <photo name>.pdf in.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def receipts_to_pdf(ctx: click.Context, path: Path, out: str, as_json_flag: bool) -> None:
+    """Convert a receipt photo (JPEG, PNG, ...) to a one-page PDF; never overwrites."""
+    as_json = _as_json(ctx, as_json_flag)
+    photo = path.expanduser()
+    if not photo.is_file() or photo.is_symlink():
+        _emit_error(
+            error="not_found",
+            message=f"Expected an existing photo file, got {str(path)!r}",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_NOT_FOUND)
+    dest = Path(out).expanduser()
+    if out.endswith(("/", "\\")) or dest.is_dir():
+        dest = dest / f"{photo.stem}.pdf"
+    try:
+        written = image_to_pdf(photo, dest)
+    except ReceiptPdfError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    payload = {"ok": True, "pdf": str(written), "source": str(photo.resolve())}
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([f"wrote {sanitize_terminal(str(written))}"])
 
 
 @receipts.command("summarize", epilog=help_text.RECEIPTS_SUMMARIZE_EPILOG)

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.config import BlumkinConfig
-from blumkin.mail_export import read_bound_text
+from blumkin.mail_export import read_bound_text, read_export_meta
 from blumkin.prompt_injection import scan_for_injection
 from blumkin.skills.docs_read import (
     DocsReadExtraMissingError,
@@ -83,6 +83,8 @@ class ReceiptFields:
 
 @dataclass(frozen=True, slots=True)
 class ReceiptFile:
+    #: When the file arrived here (birth time where the system has one, else last change).
+    added_epoch: float
     modified_epoch: float
     name: str
     path: Path
@@ -114,6 +116,7 @@ def find_local_receipts(
     directory: Path,
     *,
     limit: int = DEFAULT_FIND_LIMIT,
+    new_since_epoch: float | None = None,
     since_epoch: float | None = None,
 ) -> list[ReceiptFile]:
     """Receipt files directly inside `directory`, newest first (no recursion, no symlinks)."""
@@ -124,7 +127,7 @@ def find_local_receipts(
     try:
         with os.scandir(folder) as entries:
             for entry in entries:
-                receipt = _receipt_file(entry, since_epoch)
+                receipt = _receipt_file(entry, since_epoch, new_since_epoch)
                 if receipt is not None:
                     found.append(receipt)
     except OSError as exc:
@@ -135,14 +138,20 @@ def find_local_receipts(
     return found[:limit]
 
 
-def parse_receipt_text(text: str, *, today: date | None = None) -> ReceiptFields:
-    """Parse vendor, date, currency and total out of OCR or PDF text."""
+def parse_receipt_text(
+    text: str, *, sender: str | None = None, today: date | None = None
+) -> ReceiptFields:
+    """Parse vendor, date, currency and total out of OCR or PDF text.
+
+    `sender` is the display name or domain the message came from; it names the vendor only when
+    the text itself does not.
+    """
     clean = _ascii_digits(text)
     return ReceiptFields(
         currency=_parse_currency(clean),
         date=_parse_date(clean, today or date.today()),
         total=_parse_total(clean),
-        vendor=_parse_vendor(clean),
+        vendor=_parse_vendor(clean, sender),
     )
 
 
@@ -164,7 +173,7 @@ async def read_receipt(
     if sidecar is not None:
         scan = scan_for_injection(sidecar, location="body")
         return ReceiptReading(
-            fields=parse_receipt_text(sidecar),
+            fields=parse_receipt_text(sidecar, sender=_sender_name(read_export_meta(path))),
             injection_warning=scan.to_payload() if scan.matched else None,
             message="Read from the text file next to the PDF (no OCR needed).",
             ocr_used=False,
@@ -318,8 +327,20 @@ _TAX_WORDS = re.compile(r"\b(?:gst|hst|tax|vat)\b")
 _TOTAL_LINE = re.compile(
     r"\b(?:amount\s+due|balance\s+due|grand\s+total|total\s+amount|total(?:\s+due)?)\b"
 )
+#: A vendor name counts only near the top, where a receipt prints its letterhead.
+_KNOWN_VENDOR_LINES = 15
+_KNOWN_VENDORS = (
+    "Bolt",
+    "Careem",
+    "DiDi",
+    "Free Now",
+    "Grab",
+    "Lyft",
+    "Uber",
+)
 _VENDOR_SKIP = re.compile(
     r"receipt|invoice|order|tel\b|phone|www\.|http|@|thank|welcome|\d{3}[-. ]\d{3,4}|"
+    r"^\s*tip\b|this is your|charge summary|^\s*your\b|^\s*(?:hi|hello|dear)\b|summary|"
     r"^\s*(?:amex|cash|change|mastercard|sub\s*-?\s*total|tax|total|visa)\b|\d[.,]\d{2}\b",
     re.IGNORECASE,
 )
@@ -350,6 +371,16 @@ def _manual(path: Path, status: ReceiptStatus, message: str) -> ReceiptReading:
         path=str(path),
         status=status,
     )
+
+
+def _sender_name(meta: dict[str, str | None]) -> str | None:
+    """A vendor name from a message's sender: its display name, else the domain's main label."""
+    name = (meta.get("from_name") or "").strip()
+    if name:
+        return name
+    domain = (meta.get("from") or "").rpartition("@")[2].lower()
+    labels = [label for label in domain.split(".") if label]
+    return labels[-2].capitalize() if len(labels) >= 2 else None
 
 
 def _joined_text(payload: dict[str, Any]) -> str:
@@ -582,7 +613,13 @@ def _guess_total(text: str) -> ReceiptField:
     )
 
 
-def _parse_vendor(text: str) -> ReceiptField:
+def _parse_vendor(text: str, sender: str | None = None) -> ReceiptField:
+    head = "\n".join(text.splitlines()[:_KNOWN_VENDOR_LINES])
+    for known in _KNOWN_VENDORS:
+        if re.search(rf"\b(?:{re.escape(known)}|{re.escape(known.upper())})\b", head):
+            return ReceiptField(
+                confidence=Confidence.LOW, value=known, note="a vendor name seen in the text"
+            )
     for raw in text.splitlines():
         line = raw.strip()
         letters = sum(char.isalpha() for char in line)
@@ -591,6 +628,10 @@ def _parse_vendor(text: str) -> ReceiptField:
         if _VENDOR_SKIP.search(line):
             continue
         return ReceiptField(confidence=Confidence.LOW, value=line)
+    if sender:
+        return ReceiptField(
+            confidence=Confidence.LOW, value=sender, note="taken from the sender of the message"
+        )
     return ReceiptField(confidence=Confidence.NONE, value=None)
 
 
@@ -664,7 +705,9 @@ def _distrust(fields: ReceiptFields, note: str) -> ReceiptFields:
     )
 
 
-def _receipt_file(entry: os.DirEntry[str], since_epoch: float | None) -> ReceiptFile | None:
+def _receipt_file(
+    entry: os.DirEntry[str], since_epoch: float | None, new_since_epoch: float | None
+) -> ReceiptFile | None:
     """One directory entry as a receipt file, or None when it is not one (or cannot be read)."""
     try:
         if entry.name.startswith(".") or entry.is_symlink() or not entry.is_file():
@@ -676,6 +719,13 @@ def _receipt_file(entry: os.DirEntry[str], since_epoch: float | None) -> Receipt
         return None  # removed or unreadable while scanning
     if since_epoch is not None and info.st_mtime < since_epoch:
         return None
+    added = float(getattr(info, "st_birthtime", info.st_ctime))
+    if new_since_epoch is not None and max(info.st_mtime, added) < new_since_epoch:
+        return None
     return ReceiptFile(
-        modified_epoch=info.st_mtime, name=entry.name, path=Path(entry.path), size=info.st_size
+        added_epoch=added,
+        modified_epoch=info.st_mtime,
+        name=entry.name,
+        path=Path(entry.path),
+        size=info.st_size,
     )

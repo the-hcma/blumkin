@@ -183,7 +183,7 @@ def test_docs_read_ocr_falls_back_for_empty_pdf_pages(tmp_path: Path, monkeypatc
         lambda: (
             SimpleNamespace(convert_from_path=lambda *_args, **_kwargs: ["image"]),
             SimpleNamespace(),
-            SimpleNamespace(image_to_string=lambda _image: "Scanned agenda"),
+            SimpleNamespace(image_to_string=lambda _image, **_kw: "Scanned agenda"),
         ),
     )
 
@@ -216,7 +216,7 @@ def test_docs_read_ocr_passes_the_requested_page_to_pdf2image(tmp_path: Path, mo
         lambda: (
             SimpleNamespace(convert_from_path=_convert_from_path),
             SimpleNamespace(),
-            SimpleNamespace(image_to_string=lambda image: f"OCR text for {image}"),
+            SimpleNamespace(image_to_string=lambda image, **_kw: f"OCR text for {image}"),
         ),
     )
 
@@ -248,7 +248,7 @@ def test_docs_read_ocr_maps_poppler_failure_to_actionable_error(
         lambda: (
             SimpleNamespace(convert_from_path=_convert_from_path),
             SimpleNamespace(PDFInfoNotInstalledError=_PDFInfoNotInstalledError),
-            SimpleNamespace(image_to_string=lambda _image: "unused"),
+            SimpleNamespace(image_to_string=lambda _image, **_kw: "unused"),
         ),
     )
 
@@ -270,7 +270,7 @@ def test_docs_read_ocr_maps_tesseract_failure_to_actionable_error(
     class _TesseractNotFoundError(Exception):
         pass
 
-    def _image_to_string(_image: object) -> str:
+    def _image_to_string(_image: object, **_kw: object) -> str:
         raise _TesseractNotFoundError("tesseract missing at runtime")
 
     monkeypatch.setattr(
@@ -534,7 +534,7 @@ def test_docs_read_image_ocrs_a_png(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("blumkin.skills.docs_read._require_tesseract_binary", lambda: None)
     monkeypatch.setattr(
         "blumkin.skills.docs_read._import_image_ocr_modules",
-        lambda: (pil_image, SimpleNamespace(image_to_string=lambda _image: "Roadmap Q3")),
+        lambda: (pil_image, SimpleNamespace(image_to_string=lambda _image, **_kw: "Roadmap Q3")),
     )
 
     payload = asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path)))
@@ -557,7 +557,7 @@ def test_docs_read_image_accepts_every_supported_extension(
     monkeypatch.setattr("blumkin.skills.docs_read._require_tesseract_binary", lambda: None)
     monkeypatch.setattr(
         "blumkin.skills.docs_read._import_image_ocr_modules",
-        lambda: (pil_image, SimpleNamespace(image_to_string=lambda _image: "text")),
+        lambda: (pil_image, SimpleNamespace(image_to_string=lambda _image, **_kw: "text")),
     )
 
     payload = asyncio.run(docs_read(config=_cfg(tmp_path), path=str(path)))
@@ -624,7 +624,7 @@ def test_docs_read_rejects_oversize_extracted_output_for_image(tmp_path: Path, m
     monkeypatch.setattr("blumkin.skills.docs_read._require_tesseract_binary", lambda: None)
     monkeypatch.setattr(
         "blumkin.skills.docs_read._import_image_ocr_modules",
-        lambda: (pil_image, SimpleNamespace(image_to_string=lambda _image: "x" * 2_000_000)),
+        lambda: (pil_image, SimpleNamespace(image_to_string=lambda _image, **_kw: "x" * 2_000_000)),
     )
 
     with pytest.raises(ValueError, match="extracted content exceeds"):
