@@ -498,6 +498,21 @@ def test_non_ascii_names_are_written_as_escapes_that_load_back_unchanged(config:
     )
 
 
+def test_a_character_beyond_the_first_plane_is_written_as_one_escape_and_loads_back(
+    config: Path,
+) -> None:
+    folder = "~/receipts/\U0001f9fe"
+
+    result = _run("--template", "expense-report", "--host", "erp.example.com",
+                  "--upload-dir", folder, "--yes")  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    text = (config / "config.toml").read_text()
+    assert "\\U0001f9fe" in text
+    assert "\\ud83e" not in text
+    assert load_browser_setup().browser.tasks["expense-report"].upload_dirs == (folder,)
+
+
 def test_upload_and_form_url_options_are_refused_for_a_template_that_uploads_nothing(
     config: Path,
 ) -> None:

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import json
 import os
 import stat
 import tomllib
@@ -205,8 +204,27 @@ def _toml_list(values: Sequence[str]) -> str:
 
 
 def _toml_string(value: str) -> str:
-    """A TOML basic string: a JSON string, with every non-ASCII character escaped."""
-    return json.dumps(value, ensure_ascii=True)
+    """A TOML basic string with every character outside printable ASCII escaped.
+
+    Not `json.dumps`: JSON writes a character beyond the first plane as a surrogate pair, which
+    TOML forbids; TOML wants one eight-digit `\\U` escape. A lone surrogate is refused.
+    """
+    escapes = {'"': '\\"', "\\": "\\\\", "\n": "\\n", "\t": "\\t", "\r": "\\r"}
+    out = ['"']
+    for char in value:
+        code = ord(char)
+        if char in escapes:
+            out.append(escapes[char])
+        elif 0x20 <= code < 0x7F:
+            out.append(char)
+        elif 0xD800 <= code <= 0xDFFF:
+            raise InitTaskError(f"Expected text without a lone surrogate, got {value!r}")
+        elif code <= 0xFFFF:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(f"\\U{code:08x}")
+    out.append('"')
+    return "".join(out)
 
 
 def _declared_tasks(parsed: dict[str, Any], path: Path) -> set[str]:
