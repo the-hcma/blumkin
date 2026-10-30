@@ -250,3 +250,83 @@ def test_receipts_check_needs_an_existing_pdf(tmp_path: Path) -> None:
     result = CliRunner().invoke(main, ["receipts", "check", str(tmp_path / "gone.pdf")])
 
     assert result.exit_code == 5
+
+
+def _mail_export(folder: Path, name: str, text: str, subject: str = "Your ride") -> Path:
+    """A PDF with the text and JSON files `mail export` writes for it."""
+    import hashlib
+
+    pdf = folder / f"{name}.pdf"
+    pdf.write_bytes(f"%PDF-{name}".encode())
+    pdf.with_suffix(".txt").write_text(text)
+    pdf.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "message_id": f"id-{name}",
+                "pdf_sha256": hashlib.sha256(pdf.read_bytes()).hexdigest(),
+                "received": "2026-10-24T01:15:00Z",
+                "subject": subject,
+                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            }
+        )
+    )
+    return pdf
+
+
+_RIDE = "Ride Co\nDate: 2026-10-23\nTOTAL USD {total}\n"
+
+
+def test_summarize_drops_the_without_tip_copy_and_totals_the_rest(tmp_path: Path) -> None:
+    _mail_export(tmp_path, "before", _RIDE.format(total="18.50"))
+    _mail_export(tmp_path, "after", _RIDE.format(total="21.00"))
+
+    result = CliRunner().invoke(main, ["receipts", "summarize", "--dir", str(tmp_path), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    actions = {row["path"].rsplit("/", 1)[-1]: row["action"] for row in payload["rows"]}
+    assert actions == {"after.pdf": "file", "before.pdf": "drop"}
+    assert payload["grand_totals"] == {"USD": "21.00"}
+    assert {row["message_id"] for row in payload["rows"]} == {"id-before", "id-after"}
+
+
+def test_summarize_prints_a_table_and_the_grand_total(tmp_path: Path) -> None:
+    pdf = _mail_export(tmp_path, "ride", _RIDE.format(total="18.50"))
+
+    result = CliRunner().invoke(main, ["receipts", "summarize", str(pdf)])
+
+    assert result.exit_code == 0, result.output
+    assert "Grand total to file: 18.50 USD (1 receipts)" in result.output
+    assert "file" in result.output
+
+
+def test_summarize_exits_1_when_a_receipt_needs_review(tmp_path: Path) -> None:
+    pdf = _mail_export(tmp_path, "odd", "Some text without a total\n")
+
+    result = CliRunner().invoke(main, ["receipts", "summarize", str(pdf), "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.output)["needs_review"] == 1
+
+
+def test_summarize_needs_files_or_a_directory() -> None:
+    result = CliRunner().invoke(main, ["receipts", "summarize"])
+
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_rehome_refuses_without_yes_and_says_what_to_do(tmp_path: Path) -> None:
+    photo = tmp_path / "till.jpg"
+    photo.write_bytes(b"\xff\xd8")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "receipts", "rehome", str(photo), "--task", "expense-report", "--instance", "trip",
+            "--date", "2026-10-20", "--vendor", "Taxi", "--total", "5.00", "--currency", "USD",
+        ],
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_USAGE
+    assert "--yes" in result.output
+    assert photo.is_file()

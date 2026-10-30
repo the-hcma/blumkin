@@ -254,6 +254,28 @@ def read_bound_text(pdf_path: Path) -> str | None:
     return text if text.strip() else None
 
 
+def read_export_meta(pdf_path: Path) -> dict[str, str | None]:
+    """Message id, subject and received time from the `.json` beside a PDF, if it has one."""
+    sidecar_path = pdf_path.with_suffix(".json")
+    empty: dict[str, str | None] = {"message_id": None, "received": None, "subject": None}
+    try:
+        if sidecar_path.is_symlink() or sidecar_path.stat().st_size > MAX_TEXT_BYTES:
+            return empty
+        recorded = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except OSError, UnicodeDecodeError, ValueError:
+        return empty
+    if not isinstance(recorded, dict):
+        return empty
+    return {
+        key: value if isinstance(value, str) else None
+        for key, value in (
+            ("message_id", recorded.get("message_id")),
+            ("received", recorded.get("received")),
+            ("subject", recorded.get("subject")),
+        )
+    }
+
+
 def read_pdf_layers(pdf_path: Path) -> dict[str, Any]:
     """Per-page text and the number of images in a PDF (needs the pdf extra)."""
     try:

@@ -495,3 +495,123 @@ def test_discard_restores_intent_only_half_finished_move(tmp_path: Path) -> None
     assert source.read_bytes() == b"intent-only"
     assert not dest.exists()
     assert payload["receipts_restored"][0]["restored"] is True
+
+
+def _file(tmp_path: Path, name: str, data: bytes) -> Path:
+    path = tmp_path / name
+    path.write_bytes(data)
+    return path
+
+
+def test_replace_files_the_new_receipt_and_sets_the_old_one_aside(tmp_path: Path) -> None:
+    config, uploads, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "a.pdf", b"bad-render"),
+        fields=_fields(),
+        upload_dirs=dirs,
+        message_id="m1",
+    )
+
+    new = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "b.pdf", b"good-render"),
+        fields=_fields(),
+        upload_dirs=dirs,
+        message_id="m1",
+        replace=old.sha256[:8],
+    )
+
+    assert new.replaced == old.name
+    assert not old.dest.exists()
+    assert new.dest.is_file()
+    aside = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "superseded" / old.name
+    assert aside.read_bytes() == b"bad-render"
+    assert sorted(path.name for path in managed_instance_dir(dirs, "trip-lisbon").iterdir()) == [
+        new.name
+    ]
+
+
+def test_replace_by_file_name_works_and_the_old_bytes_can_be_filed_again(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(),
+        upload_dirs=dirs,
+        message_id="m1",
+    )
+    rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "b.pdf", b"two"),
+        fields=_fields(total="20.00"),
+        upload_dirs=dirs,
+        message_id="m1",
+        replace=old.name,
+    )
+
+    again = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "c.pdf", b"one"),
+        fields=_fields(),
+        upload_dirs=dirs,
+        message_id="m1",
+    )
+
+    assert again.sha256 == old.sha256
+
+
+def test_replace_with_an_unknown_receipt_changes_nothing(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    source = _file(tmp_path, "b.pdf", b"two")
+
+    with pytest.raises(RehomeError, match="one filed receipt"):
+        rehome_receipt(
+            config,
+            "expense-report",
+            "trip-lisbon",
+            source,
+            fields=_fields(),
+            upload_dirs=dirs,
+            replace="deadbeef",
+        )
+
+    assert source.is_file()
+
+
+def test_discard_leaves_a_superseded_receipt_where_it_was_set_aside(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(),
+        upload_dirs=dirs,
+    )
+    rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "b.pdf", b"two"),
+        fields=_fields(total="20.00"),
+        upload_dirs=dirs,
+        replace=old.name,
+    )
+
+    restored = restore_rehomed(config, "expense-report", "trip-lisbon", yes=True)
+
+    assert [item.sha256 for item in restored] == [file_sha256(tmp_path / "b.pdf")]
+    assert (
+        config / "browser-tasks" / "expense-report" / "trip-lisbon" / "superseded" / old.name
+    ).is_file()
