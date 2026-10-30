@@ -4,7 +4,7 @@ Some chores have no API: filing an expense report, filling in a weekly time shee
 
 ## How it works
 
-1. You create a dedicated browser profile for the task and launch it. You sign in by hand, SSO and MFA included. blumkin never sees, types or stores your credentials; the session cookies live only in that profile directory.
+1. You create a dedicated browser profile for the task and launch it. You sign in by hand, SSO and MFA included. If your task definition authorizes it, an agent may click one thing for you on the identity provider's account picker: the tile of the one account the task names, with the sign-in host and that tile added to the task's policy only for that click and removed right after; it never types a username and hands any password, MFA or consent prompt back to you. blumkin never sees, types or stores your credentials; the session cookies live only in that profile directory.
 2. An agent (or you) runs the task's skill, which attaches to that browser over the Chrome DevTools Protocol (CDP) with [Playwright](https://playwright.dev/python/), reads the page, fills in fields and uploads files.
 3. The task ends with a handoff: what was filled in, what still needs your decision, and numbered steps for the final click. The result always says `submitted: false`.
 
