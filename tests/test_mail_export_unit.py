@@ -1,0 +1,329 @@
+"""Render a mail body to a verified PDF plus text and JSON sidecars (issue #583)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from blumkin.mail_export import (
+    MailExportError,
+    check_pdf,
+    export_message,
+    html_to_text,
+    render_pdf_command,
+    strip_tracking_pixels,
+)
+
+_PIXEL = '<img src="https://t.example/p.gif" width="1" height="1">'
+_LOGO = '<img src="https://cdn.example/logo.png" width="120">'
+_HTML = f"<html><body><h1>Ride receipt</h1><p>Total $18.50</p>{_LOGO}{_PIXEL}</body></html>"
+
+
+class _Provider:
+    def __init__(self, body: str = _HTML, body_type: str = "html") -> None:
+        self.body = body
+        self.body_type = body_type
+        self.asked: list[str] = []
+
+    async def mail_get(self, *, message_id: str, body_type: str = "text") -> dict[str, Any]:
+        self.asked.append(body_type)
+        return {
+            "message": {
+                "body": self.body,
+                "body_type": self.body_type,
+                "from_email": "receipts@ride.example",
+                "id": message_id,
+                "injection_warning": None,
+                "received": "2026-10-23T09:15:00Z",
+                "subject": "Your Tuesday ride / receipt",
+            }
+        }
+
+
+def _fake_renderer(text_layer: str, *, images: int = 1, pages: int = 1):
+    def render(html_path: Path, pdf_path: Path) -> None:
+        pdf_path.write_bytes(b"%PDF-fake")
+
+    def read(pdf_path: Path) -> dict[str, Any]:
+        return {"images": images, "page_texts": [text_layer, *([""] * (pages - 1))]}
+
+    return render, read
+
+
+def test_strip_tracking_pixels_drops_one_pixel_images_and_keeps_real_ones() -> None:
+    cleaned, removed = strip_tracking_pixels(_HTML)
+
+    assert removed == 1
+    assert "p.gif" not in cleaned
+    assert "logo.png" in cleaned
+
+
+def test_strip_tracking_pixels_handles_style_sized_pixels() -> None:
+    html = '<img src="https://t.example/x" style="width:1px;height:1px">'
+
+    assert strip_tracking_pixels(html) == ("", 1)
+
+
+def test_html_to_text_keeps_line_structure_and_decodes_entities() -> None:
+    text = html_to_text("<p>Fare&nbsp;&amp; tip</p><p>Total<br>$18.50</p><style>x{}</style>")
+
+    assert text.splitlines() == ["Fare & tip", "Total", "$18.50"]
+
+
+def test_render_command_keeps_images_on_and_isolates_the_profile(tmp_path: Path) -> None:
+    command = render_pdf_command(
+        Path("/usr/bin/chrome"), tmp_path / "a.html", tmp_path / "a.pdf", tmp_path / "profile"
+    )
+
+    assert "--headless=new" in command
+    assert any(arg.startswith("--virtual-time-budget=") for arg in command)
+    assert any(arg.startswith("--user-data-dir=") for arg in command)
+    assert not any("blink-settings=imagesEnabled=false" in arg for arg in command)
+    assert any(arg.startswith("--print-to-pdf=") for arg in command)
+
+
+def test_export_writes_pdf_text_and_json_side_by_side(tmp_path: Path) -> None:
+    render, read = _fake_renderer("Ride receipt\nTotal $18.50")
+    out = tmp_path / "mail-out"
+
+    payload = asyncio.run(
+        export_message(
+            _Provider(), message_id="AAMk1", out_dir=out, renderer=render, pdf_reader=read
+        )
+    )
+
+    pdf = Path(payload["pdf"])
+    txt = Path(payload["text"])
+    sidecar = Path(payload["json"])
+    assert pdf.parent == txt.parent == sidecar.parent == out.resolve()
+    assert pdf.stem == txt.stem == sidecar.stem == "2026-10-23_your-tuesday-ride-receipt"
+    assert txt.read_text().splitlines() == ["Ride receipt", "Total $18.50"]
+    meta = json.loads(sidecar.read_text())
+    assert meta["message_id"] == "AAMk1"
+    assert meta["from"] == "receipts@ride.example"
+    assert meta["received"] == "2026-10-23T09:15:00Z"
+    assert meta["subject"] == "Your Tuesday ride / receipt"
+    assert meta["expected_images"] == 1
+    assert meta["tracking_pixels_removed"] == 1
+    assert payload["check"]["ok"] is True
+    assert oct(pdf.stat().st_mode & 0o777) == "0o600"
+
+
+def test_export_fails_loudly_when_the_images_are_missing(tmp_path: Path) -> None:
+    render, read = _fake_renderer("Ride receipt\nTotal $18.50", images=0)
+
+    payload = asyncio.run(
+        export_message(
+            _Provider(), message_id="m", out_dir=tmp_path, renderer=render, pdf_reader=read
+        )
+    )
+
+    assert payload["check"]["ok"] is False
+    assert any("image" in problem for problem in payload["check"]["problems"])
+
+
+def test_export_refuses_to_overwrite_an_existing_export(tmp_path: Path) -> None:
+    render, read = _fake_renderer("Ride receipt Total $18.50")
+    kwargs: dict[str, Any] = {
+        "message_id": "m",
+        "out_dir": tmp_path,
+        "pdf_reader": read,
+        "renderer": render,
+    }
+    asyncio.run(export_message(_Provider(), **kwargs))
+
+    with pytest.raises(MailExportError, match="already exists"):
+        asyncio.run(export_message(_Provider(), **kwargs))
+
+
+def test_export_wraps_a_plain_text_body_so_it_still_renders(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def render(html_path: Path, pdf_path: Path) -> None:
+        seen.append(html_path.read_text())
+        pdf_path.write_bytes(b"%PDF")
+
+    _, read = _fake_renderer("Total 5.00")
+
+    asyncio.run(
+        export_message(
+            _Provider(body="Total 5.00 <b>", body_type="text"),
+            message_id="m",
+            out_dir=tmp_path,
+            renderer=render,
+            pdf_reader=read,
+        )
+    )
+
+    assert "&lt;b&gt;" in seen[0]
+    assert "<pre" in seen[0]
+
+
+def test_export_carries_an_injection_warning_without_stopping(tmp_path: Path) -> None:
+    provider = _Provider()
+    original = provider.mail_get
+
+    async def with_warning(**kwargs: Any) -> dict[str, Any]:
+        result = await original(**kwargs)
+        result["message"]["injection_warning"] = {"matched": True, "findings": []}
+        return result
+
+    provider.mail_get = with_warning  # type: ignore[method-assign]
+    render, read = _fake_renderer("Ride receipt Total $18.50")
+
+    payload = asyncio.run(
+        export_message(provider, message_id="m", out_dir=tmp_path, renderer=render, pdf_reader=read)
+    )
+
+    assert payload["injection_warning"]["matched"] is True
+    assert json.loads(Path(payload["json"]).read_text())["injection_warning"]["matched"] is True
+
+
+def test_export_with_a_message_without_a_body_is_an_error(tmp_path: Path) -> None:
+    render, read = _fake_renderer("")
+
+    with pytest.raises(MailExportError, match="no body"):
+        asyncio.run(
+            export_message(
+                _Provider(body=""),
+                message_id="m",
+                out_dir=tmp_path,
+                renderer=render,
+                pdf_reader=read,
+            )
+        )
+
+
+def test_check_pdf_flags_blank_pages_and_missing_text(tmp_path: Path) -> None:
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"%PDF")
+    txt = tmp_path / "r.txt"
+    txt.write_text("Ride receipt\nTotal $18.50\nThank you for riding\n")
+
+    def read(_: Path) -> dict[str, Any]:
+        return {"images": 0, "page_texts": ["Ride receipt", ""]}
+
+    result = check_pdf(pdf, text_path=txt, expected_images=0, pdf_reader=read)
+
+    assert result["ok"] is False
+    assert result["pages"] == 2
+    assert result["blank_pages"] == [2]
+    assert any("text" in problem for problem in result["problems"])
+
+
+def test_check_pdf_passes_when_the_text_layer_matches(tmp_path: Path) -> None:
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"%PDF")
+    txt = tmp_path / "r.txt"
+    txt.write_text("Ride receipt\nTotal $18.50\n")
+
+    def read(_: Path) -> dict[str, Any]:
+        return {"images": 2, "page_texts": ["Ride receipt Total $18.50"]}
+
+    result = check_pdf(pdf, text_path=txt, expected_images=2, pdf_reader=read)
+
+    assert result == {
+        "blank_pages": [],
+        "images": 2,
+        "ok": True,
+        "pages": 1,
+        "problems": [],
+        "text_overlap": 1.0,
+    }
+
+
+def test_check_pdf_reports_an_unreadable_pdf_as_a_problem(tmp_path: Path) -> None:
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"not a pdf")
+
+    def read(_: Path) -> dict[str, Any]:
+        raise ValueError("cannot read")
+
+    result = check_pdf(pdf, text_path=None, expected_images=None, pdf_reader=read)
+
+    assert result["ok"] is False
+    assert "cannot read" in result["problems"][0]
+
+
+@pytest.mark.skipif(shutil.which("google-chrome") is None, reason="needs Chrome")
+def test_real_chrome_renders_a_text_layer_pdf(tmp_path: Path) -> None:
+    pytest.importorskip("pdfplumber")
+    out = tmp_path / "out"
+    payload = asyncio.run(
+        export_message(
+            _Provider(body="<html><body><h1>Ride receipt</h1><p>Total $18.50</p></body></html>"),
+            message_id="m",
+            out_dir=out,
+        )
+    )
+
+    assert payload["check"]["ok"], payload["check"]
+    assert (
+        subprocess.run(["head", "-c", "4", payload["pdf"]], capture_output=True).stdout == b"%PDF"
+    )
+
+
+def _cli_payload(ok: bool) -> dict[str, Any]:
+    return {
+        "check": {
+            "blank_pages": [],
+            "images": 1,
+            "ok": ok,
+            "pages": 1,
+            "problems": [] if ok else ["blank pages: 1"],
+            "text_overlap": 1.0,
+        },
+        "injection_warning": None,
+        "json": "/o/r.json",
+        "message_id": "m",
+        "pdf": "/o/r.pdf",
+        "text": "/o/r.txt",
+        "tracking_pixels_removed": 1,
+    }
+
+
+@pytest.mark.parametrize(("ok", "code"), [(True, 0), (False, 1)])
+def test_mail_export_command_exits_1_when_the_check_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ok: bool, code: int
+) -> None:
+    from click.testing import CliRunner
+
+    from blumkin import cli
+
+    async def fake_export(*_: Any, **__: Any) -> dict[str, Any]:
+        return _cli_payload(ok)
+
+    monkeypatch.setattr(cli, "export_message", fake_export)
+    monkeypatch.setattr(cli, "_workspace", lambda *_: object())
+
+    result = CliRunner().invoke(
+        cli.main, ["mail", "export", "--id", "m", "--out", str(tmp_path), "--json"]
+    )
+
+    assert result.exit_code == code, result.output
+    assert json.loads(result.output)["ok"] is ok
+
+
+def test_mail_export_command_reports_an_export_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from click.testing import CliRunner
+
+    from blumkin import cli
+
+    async def fake_export(*_: Any, **__: Any) -> dict[str, Any]:
+        raise MailExportError("r.pdf already exists")
+
+    monkeypatch.setattr(cli, "export_message", fake_export)
+    monkeypatch.setattr(cli, "_workspace", lambda *_: object())
+
+    result = CliRunner().invoke(cli.main, ["mail", "export", "--id", "m", "--out", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "already exists" in result.output

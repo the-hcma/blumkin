@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.config import BlumkinConfig
+from blumkin.prompt_injection import scan_for_injection
 from blumkin.skills.docs_read import (
     DocsReadExtraMissingError,
     DocsReadOcrUnavailableError,
@@ -157,6 +158,17 @@ async def read_receipt(
             path,
             ReceiptStatus.UNSUPPORTED,
             f"Expected an image or PDF receipt, got {suffix or 'no extension'!r}",
+        )
+    sidecar = _text_sidecar(path)
+    if sidecar is not None:
+        scan = scan_for_injection(sidecar, location="body")
+        return ReceiptReading(
+            fields=parse_receipt_text(sidecar),
+            injection_warning=scan.to_payload() if scan.matched else None,
+            message="Read from the text file next to the PDF (no OCR needed).",
+            ocr_used=False,
+            path=str(path),
+            status=ReceiptStatus.OK,
         )
     try:
         payload = await reader(config=config, path=str(path), ocr=False)
@@ -337,6 +349,20 @@ def _manual(path: Path, status: ReceiptStatus, message: str) -> ReceiptReading:
         path=str(path),
         status=status,
     )
+
+
+def _text_sidecar(path: Path) -> str | None:
+    """Text of the `.txt` file `mail export` wrote next to a PDF, when there is one."""
+    if path.suffix.lower() != ".pdf":
+        return None
+    candidate = path.with_suffix(".txt")
+    if candidate.is_symlink() or not candidate.is_file():
+        return None
+    try:
+        text = candidate.read_text(encoding="utf-8")
+    except OSError, UnicodeDecodeError:
+        return None
+    return text if text.strip() else None
 
 
 def _joined_text(payload: dict[str, Any]) -> str:

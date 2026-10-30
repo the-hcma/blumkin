@@ -167,6 +167,7 @@ from blumkin.loop.agent_task import AgentItemNotFoundError, AgentReplyError, Age
 from blumkin.loop.config import LoopConfigError, LoopTriggerNotFoundError
 from blumkin.loop.init import LoopInitError, init_profiles
 from blumkin.loop.service import LoopServiceError, install_user_unit
+from blumkin.mail_export import MailExportError, check_exported_pdf, export_message
 from blumkin.mail_signature_state import (
     clear_signature_state,
     load_signature_state,
@@ -709,6 +710,29 @@ def _orphaned_agent_lines(payload: dict[str, Any]) -> list[str]:
         f"socket={item.get('socket_path')}"
         for item in orphaned
     )
+    return lines
+
+
+def _check_lines(path: str, result: dict[str, Any]) -> list[str]:
+    verdict = "ok" if result["ok"] else "FAILED"
+    lines = [
+        f"PDF check {verdict}: {sanitize_terminal(path)} "
+        f"({result['pages']} pages, {result['images']} images)"
+    ]
+    lines.extend(f"  problem: {_clean_line(problem)}" for problem in result["problems"])
+    return lines
+
+
+def _export_lines(payload: dict[str, Any]) -> list[str]:
+    lines = [
+        f"PDF:  {sanitize_terminal(payload['pdf'])}",
+        f"text: {sanitize_terminal(payload['text'])}",
+        f"json: {sanitize_terminal(payload['json'])}",
+    ]
+    if payload["tracking_pixels_removed"]:
+        lines.append(f"  removed {payload['tracking_pixels_removed']} tracking pixel(s)")
+    lines.extend(_check_lines(payload["pdf"], payload["check"]))
+    lines.extend(format_injection_warning_banner(payload["injection_warning"]))
     return lines
 
 
@@ -3703,6 +3727,29 @@ def receipts_find(
     emit_lines([_receipt_file_line(entry) for entry in payload["receipts"]])
 
 
+@receipts.command("check", epilog=help_text.RECEIPTS_CHECK_EPILOG)
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def receipts_check(ctx: click.Context, path: Path, as_json_flag: bool) -> None:
+    """Check a PDF rendered from mail: images present, no blank pages, text matches."""
+    as_json = _as_json(ctx, as_json_flag)
+    pdf = path.expanduser()
+    if not pdf.is_file() or pdf.suffix.lower() != ".pdf":
+        _emit_error(
+            error="not_found",
+            message=f"Expected an existing PDF file, got {str(path)!r}",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_NOT_FOUND)
+    result = check_exported_pdf(pdf)
+    if as_json:
+        emit_json({**result, "path": str(pdf)})
+    else:
+        emit_lines(_check_lines(str(pdf), result))
+    raise SystemExit(EXIT_SUCCESS if result["ok"] else EXIT_OTHER)
+
+
 @receipts.command("read", epilog=help_text.RECEIPTS_READ_EPILOG)
 @click.argument("path", type=click.Path(path_type=Path))
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
@@ -6156,6 +6203,46 @@ def mail_attachments_download_cmd(
         human=format_attachments_download_human,
         as_json_flag=as_json_flag,
     )
+
+
+@mail.command("export", epilog=help_text.MAIL_EXPORT_EPILOG)
+@click.option("--id", "message_id", required=True, help="Message id (from a listing).")
+@click.option(
+    "--out",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Folder for the PDF, text and JSON files (created if missing; not the receipts archive).",
+)
+@click.option(
+    "--name",
+    default=None,
+    help="File name without extension; default is the received date and the subject.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def mail_export_cmd(
+    ctx: click.Context, message_id: str, out: Path, name: str | None, as_json_flag: bool
+) -> None:
+    """Render a message body to a verified PDF, with a text and a JSON file beside it.
+
+    Meant for receipts that arrive as HTML mail with no attachment.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = asyncio.run(
+            export_message(_workspace(), message_id=message_id, out_dir=out, name=name)
+        )
+    except MailExportError as exc:
+        _emit_error(error="export_failed", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_OTHER) from exc
+    except Exception as exc:  # noqa: BLE001 - classify_exception owns the taxonomy
+        _fail(exc, as_json=as_json)
+    ok = bool(payload["check"]["ok"])
+    if as_json:
+        emit_json({**payload, "ok": ok})
+    else:
+        emit_lines(_export_lines(payload))
+    raise SystemExit(EXIT_SUCCESS if ok else EXIT_OTHER)
 
 
 def _run_mail_triage(

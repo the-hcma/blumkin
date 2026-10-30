@@ -479,3 +479,35 @@ def test_the_default_find_limit_matches_what_the_command_uses(tmp_path: Path) ->
     for index in range(60):
         _touch(tmp_path / f"r{index}.jpg", 1_000 + index)
     assert len(find_local_receipts(tmp_path)) == DEFAULT_FIND_LIMIT == 50
+
+
+def test_a_pdf_with_a_text_sidecar_is_read_from_the_text_without_ocr(tmp_path: Path) -> None:
+    pdf = tmp_path / "ride.pdf"
+    pdf.write_bytes(b"%PDF")
+    pdf.with_suffix(".txt").write_text(_COFFEE)
+
+    async def reader(**_: Any) -> dict[str, Any]:
+        raise AssertionError("the PDF must not be opened when a text sidecar exists")
+
+    reading = asyncio.run(read_receipt(pdf, config=None, reader=reader))
+
+    assert reading.status is ReceiptStatus.OK
+    assert reading.ocr_used is False
+    assert reading.fields.total.value == "10.80"
+    assert reading.fields.total.confidence is Confidence.HIGH
+    assert "text file" in reading.message
+
+
+def test_an_image_ignores_a_same_named_text_file(tmp_path: Path) -> None:
+    photo = tmp_path / "till.jpg"
+    photo.write_bytes(b"\xff\xd8")
+    photo.with_suffix(".txt").write_text(_COFFEE)
+    calls: list[str] = []
+
+    async def reader(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["path"])
+        return {"ocr_used": True, "pages": [{"text": "TOTAL $3.00"}]}
+
+    asyncio.run(read_receipt(photo, config=None, reader=reader))
+
+    assert calls == [str(photo)]
