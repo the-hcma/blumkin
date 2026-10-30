@@ -156,6 +156,12 @@ class BrowserTaskPolicy:
     #: Folders `download` may save into (absolute, or starting with `~/`). Empty means no
     #: download at all: the default is deny.
     download_dirs: tuple[str, ...] = ()
+    #: The page the task works on (an https address on an `allowed_hosts` host): `browser goto`
+    #: without an address and `browser launch --open` open it.
+    form_url: str = ""
+    #: Extra identity-provider hosts `goto` waits through while the user signs in (the common
+    #: ones are built in): never acted on, only waited out until the page reaches an allowed host.
+    sign_in_hosts: tuple[str, ...] = ()
     #: Exact accessible names of buttons that confirm a dialog's own rows (an attachments
     #: dialog's `OK`). Such a button may be clicked only inside a dialog whose form, if it has
     #: one, lies inside that dialog; the same name anywhere else is refused. A finalizing name
@@ -591,6 +597,8 @@ _TASK_POLICY_KEYS = frozenset(
         "dialog_confirm",
         "download_dirs",
         "extra_deny_names",
+        "form_url",
+        "sign_in_hosts",
         "upload_dirs",
     }
 )
@@ -710,21 +718,13 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
             )
         upload_dirs = _policy_folders(table, "upload_dirs", prefix)
         download_dirs = _policy_folders(table, "download_dirs", prefix)
-        hosts = tuple(
-            host.strip().lower()
-            for host in _string_list(table.get("allowed_hosts"), f"{prefix}.allowed_hosts")
-        )
-        for host in hosts:
-            if host.startswith("*.") and "." not in host[2:]:
-                raise ProviderConfigError(
-                    f"{prefix}.allowed_hosts wildcard must sit under a registrable domain such "
-                    f"as *.example.com in config.toml, got {host!r}"
-                )
-            if not _HOST_PATTERN.fullmatch(host):
-                raise ProviderConfigError(
-                    f"{prefix}.allowed_hosts must hold bare host names such as erp.example.com "
-                    f"or *.example.com in config.toml, got {host!r}"
-                )
+        hosts = _host_list(table, "allowed_hosts", prefix)
+        sign_in_hosts = _host_list(table, "sign_in_hosts", prefix)
+        form_url = table.get("form_url", "")
+        if not isinstance(form_url, str):
+            raise ProviderConfigError(
+                f"{prefix}.form_url must be a string in config.toml, got {form_url!r}"
+            )
         strict = table.get("block_background_writes", False)
         if not isinstance(strict, bool):
             raise ProviderConfigError(
@@ -738,6 +738,8 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 table.get("allowed_controls"), f"{prefix}.allowed_controls"
             ),
             dialog_confirm=_string_list(table.get("dialog_confirm"), f"{prefix}.dialog_confirm"),
+            form_url=form_url.strip(),
+            sign_in_hosts=sign_in_hosts,
             extra_deny_names=_string_list(
                 table.get("extra_deny_names"), f"{prefix}.extra_deny_names"
             ),
@@ -745,6 +747,23 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
             download_dirs=download_dirs,
         )
     return policies
+
+
+def _host_list(table: dict[str, Any], key: str, prefix: str) -> tuple[str, ...]:
+    """A list of bare host names (`erp.example.com`, `*.example.com`) from a task table."""
+    hosts = tuple(host.strip().lower() for host in _string_list(table.get(key), f"{prefix}.{key}"))
+    for host in hosts:
+        if host.startswith("*.") and "." not in host[2:]:
+            raise ProviderConfigError(
+                f"{prefix}.{key} wildcard must sit under a registrable domain such "
+                f"as *.example.com in config.toml, got {host!r}"
+            )
+        if not _HOST_PATTERN.fullmatch(host):
+            raise ProviderConfigError(
+                f"{prefix}.{key} must hold bare host names such as erp.example.com "
+                f"or *.example.com in config.toml, got {host!r}"
+            )
+    return hosts
 
 
 def _client_id_from_google_oauth_file(path: Path) -> str:

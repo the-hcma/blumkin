@@ -55,6 +55,18 @@ class BrowserAttachError(RuntimeError):
     """The task browser could not be attached to."""
 
 
+class BrowserNoPageError(BrowserAttachError):
+    """The browser is running but has no open page, and none could be opened."""
+
+
+class BrowserNotRunningError(BrowserAttachError):
+    """No browser was launched for the task, or it has exited."""
+
+
+class BrowserProtocolError(BrowserAttachError):
+    """The browser is running but the DevTools attach to it failed."""
+
+
 class BrowserDependencyError(BrowserAttachError):
     """Playwright (or another browser-driver dependency) is missing or broken."""
 
@@ -1156,7 +1168,7 @@ def attach(
     require_blumkin_profile(profile.path)
     session = read_session(profile.path, pid_alive=pid_alive)
     if session is None:
-        raise BrowserAttachError(
+        raise BrowserNotRunningError(
             f"Expected a running browser for task {profile.task!r}, got none; "
             f"run `blumkin browser launch {profile.task}` and sign in first"
         )
@@ -1168,6 +1180,21 @@ def attach(
         sleep=sleep,
         timeout_s=timeout_s,
     )
+
+
+def count_page_targets(
+    endpoint: str,
+    timeout_s: float | None = None,
+    fetch: Callable[[str, float], list[dict[str, Any]]] | None = None,
+) -> int | None:
+    """How many open pages (tabs) the browser at a loopback `endpoint` has; None if unknown."""
+    try:
+        _require_loopback_endpoint(endpoint)
+        wait = _DISCOVERY_TIMEOUT_S if timeout_s is None else timeout_s
+        targets = (fetch or _fetch_targets)(endpoint, wait)
+    except BrowserAttachError, OSError, ValueError:
+        return None
+    return sum(1 for target in targets if target.get("type") == "page")
 
 
 def clamp_wait(seconds: float) -> float:
@@ -1249,7 +1276,7 @@ def open_driver(
             try:
                 version = fetch(endpoint, timeout_s)
             except urllib.error.HTTPError as exc:
-                raise BrowserAttachError(
+                raise BrowserProtocolError(
                     f"Expected {endpoint}/json/version to answer directly, got HTTP {exc.code}"
                 ) from exc
             except (OSError, ValueError) as exc:
@@ -1270,7 +1297,7 @@ def open_driver(
                 timeout_s=timeout_s,
             )
         detail = str(last).splitlines()[0] if last and str(last) else "no detail"
-        raise BrowserAttachError(
+        raise BrowserProtocolError(
             f"Expected to attach to {endpoint}, got {detail} after {attempts} attempts"
         )
     except BaseException:
@@ -1412,9 +1439,8 @@ def _driver_for(
     try:
         contexts = list(browser.contexts)
         if not contexts:
-            raise BrowserAttachError(f"Expected a browser context at {endpoint}, got none")
-        pages = list(contexts[0].pages)
-        page = pages[0] if pages else contexts[0].new_page()
+            raise BrowserProtocolError(f"Expected a browser context at {endpoint}, got none")
+        page = _first_page(contexts[0], endpoint, timeout_s)
         page.set_default_timeout(timeout_s * 1000)
     except BaseException:
         with contextlib.suppress(_playwright_error()):
@@ -1428,6 +1454,34 @@ def _driver_for(
         playwright=playwright,
         timeout_s=timeout_s,
         existing_frames=existing_frames,
+    )
+
+
+def _first_page(context: Any, endpoint: str, timeout_s: float) -> Any:
+    """The first open page, opening a blank one when the browser has none.
+
+    A browser started with no page (or whose last tab was closed) cannot always make one
+    through the attached context ("Browser context management is not supported"); DevTools can,
+    over its own loopback endpoint, so that is tried next before giving up with a clear error.
+    """
+    pages = list(context.pages)
+    if pages:
+        return pages[0]
+    try:
+        return context.new_page()
+    except _playwright_error():
+        pass
+    probe_s = min(timeout_s, _DISCOVERY_TIMEOUT_S)
+    with contextlib.suppress(OSError, ValueError):
+        _open_blank_target(endpoint, probe_s)
+    deadline = time.monotonic() + probe_s
+    while time.monotonic() < deadline:
+        pages = list(context.pages)
+        if pages:
+            return pages[0]
+        time.sleep(0.1)
+    raise BrowserNoPageError(
+        f"Expected an open page in the browser at {endpoint}, got none and could not open one"
     )
 
 
@@ -1476,6 +1530,14 @@ def _fetch_targets(endpoint: str, timeout_s: float) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError(f"Expected a JSON list from /json/list, got {type(data).__name__}")
     return [item for item in data if isinstance(item, dict)]
+
+
+def _open_blank_target(endpoint: str, timeout_s: float) -> None:
+    """Ask a loopback DevTools endpoint to open a blank tab (`PUT /json/new`)."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirects)
+    request = urllib.request.Request(f"{endpoint}/json/new?about:blank", method="PUT")
+    with opener.open(request, timeout=timeout_s):
+        pass
 
 
 def _fetch_version(endpoint: str, timeout_s: float) -> dict[str, Any]:

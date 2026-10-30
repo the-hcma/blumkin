@@ -128,6 +128,8 @@ _POLICY_KEYS = (
     "dialog_confirm",
     "download_dirs",
     "extra_deny_names",
+    "form_url",
+    "sign_in_hosts",
     "upload_dirs",
 )
 
