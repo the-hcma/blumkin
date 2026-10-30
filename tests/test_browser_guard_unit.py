@@ -1043,7 +1043,10 @@ def test_a_matched_control_is_still_vetted_like_any_other() -> None:
     assert raw.calls == []
 
 
-@pytest.mark.parametrize("pattern", ["*", "**", "a*", "* *", "Submit *", "* Pay", "Send * now"])
+@pytest.mark.parametrize(
+    "pattern",
+    ["*", "**", "a*", "* *", "Submit *", "* Pay", "Send * now", "*Report", "* Report"],
+)
 def test_a_pattern_that_is_too_loose_or_finalizing_is_refused_up_front(pattern: str) -> None:
     with pytest.raises(SubmitBlockedError, match="control pattern"):
         _guard(pattern)
@@ -1087,3 +1090,77 @@ def test_a_pattern_does_not_make_a_download_or_a_confirm_easier() -> None:
 
     with pytest.raises(SubmitBlockedError, match="not declared"):
         driver.download("OK", save_to=Path("/tmp"))
+
+
+def test_a_pattern_may_hold_at_most_two_stars() -> None:
+    _guard("Actions for * Report *")
+    with pytest.raises(SubmitBlockedError, match="at most 2"):
+        _guard("Actions * for * Report *")
+
+
+def test_a_pattern_with_many_stars_cannot_hang_on_a_long_hostile_name() -> None:
+    import time
+
+    _, driver = _guard("aaaa*a*a")
+    started = time.monotonic()
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("a" * 5000 + "b")
+
+    assert time.monotonic() - started < 1.0
+
+
+def test_consecutive_stars_count_as_one() -> None:
+    raw, driver = _guard("Actions for ** Report")
+
+    driver.click("Actions for Trip Report")
+
+    assert [call[2] for call in raw.calls] == ["Actions for Trip Report"]
+
+
+def test_a_name_longer_than_the_cap_is_never_matched_by_a_pattern() -> None:
+    _, driver = _guard("Actions for * Report")
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Actions for " + "x" * 400 + " Report")
+
+
+def test_a_fullwidth_star_is_not_a_wildcard() -> None:
+    raw, driver = _guard("Actions for \uff0a Report")
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Actions for Trip Report")
+
+
+def test_dialog_confirm_names_are_listed_apart_and_a_star_in_one_is_literal() -> None:
+    raw, driver = _guard("Add line", confirm=("OK *",))
+
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click("Other")
+
+    message = str(excinfo.value)
+    assert "dialog confirms: 'OK *'" in message
+    assert "a `*` stands for any text" not in message
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("OK whatever")
+
+
+def test_the_star_note_appears_only_when_a_pattern_is_declared() -> None:
+    _, plain = _guard("Add line")
+    _, patterned = _guard("Actions for * Report")
+
+    with pytest.raises(SubmitBlockedError) as plain_error:
+        plain.click("Other")
+    with pytest.raises(SubmitBlockedError) as patterned_error:
+        patterned.click("Other")
+
+    assert "stands for any text" not in str(plain_error.value)
+    assert "stands for any text" in str(patterned_error.value)
+
+
+def test_a_pattern_can_have_a_leading_and_trailing_fixed_part() -> None:
+    raw, driver = _guard("Actions for * Report (draft)")
+
+    driver.click("Actions for Trip Report (draft)")
+
+    assert [call[2] for call in raw.calls] == ["Actions for Trip Report (draft)"]

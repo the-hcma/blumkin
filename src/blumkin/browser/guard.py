@@ -50,12 +50,6 @@ from blumkin.browser.profiles import BrowserProfile
 
 _LOGGER = logging.getLogger(__name__)
 
-#: Fixed letters or digits a control pattern must keep (a bare `*` would declare everything).
-MIN_PATTERN_LITERAL = 4
-
-#: Most declared names listed in a "not declared" refusal.
-_HINT_NAMES = 10
-
 DEFAULT_DENY_NAMES: tuple[str, ...] = (
     "approve",
     "authorize",
@@ -75,6 +69,12 @@ DEFAULT_DENY_NAMES: tuple[str, ...] = (
     "submit",
     "transmit",
 )
+
+#: Fixed letters or digits a control pattern must keep (a bare `*` would declare everything).
+MIN_PATTERN_LITERAL = 4
+
+#: Most `*` a control pattern may hold; every one is a place the page chooses the text.
+MAX_PATTERN_STARS = 2
 
 
 class SubmitBlockedError(BrowserActionError):
@@ -104,7 +104,8 @@ class GuardedDriver:
         self._patterns = tuple(
             _pattern_regex(name) for name in sorted(policy.allowed_controls) if "*" in name
         )
-        self._declared = tuple(sorted({*policy.allowed_controls, *policy.dialog_confirm}))
+        self._declared = tuple(sorted(set(policy.allowed_controls)))
+        self._confirm_names = tuple(sorted(set(policy.dialog_confirm)))
         self._deny = _deny_stems((*DEFAULT_DENY_NAMES, *policy.extra_deny_names))
         validate_dialog_confirm(policy.dialog_confirm, policy.extra_deny_names)
         self._confirm = frozenset(_exact(name) for name in policy.dialog_confirm)
@@ -300,7 +301,7 @@ class GuardedDriver:
 
     def _declared_hint(self) -> str:
         """The task's declared control names and patterns, for a refusal that lists them."""
-        if not self._declared:
+        if not self._declared and not self._confirm_names:
             return " (the task declares no controls)"
         shown = ", ".join(repr(name) for name in self._declared[:_HINT_NAMES])
         more = (
@@ -308,12 +309,24 @@ class GuardedDriver:
             if len(self._declared) > _HINT_NAMES
             else ""
         )
-        return f" (declared: {shown}{more}; a `*` stands for any text)"
+        parts = []
+        if self._declared:
+            star = "; a `*` stands for any text" if self._patterns else ""
+            parts.append(f"declared: {shown}{more}{star}")
+        if self._confirm_names:
+            parts.append(
+                "dialog confirms: " + ", ".join(repr(name) for name in self._confirm_names)
+            )
+        return f" ({'; '.join(parts)})"
 
     def _is_declared(self, name: str) -> bool:
         """Whether `name` is one of the declared controls, exactly or by a declared pattern."""
         folded = _exact(name)
-        return folded in self._allowed or any(rule.fullmatch(folded) for rule in self._patterns)
+        if folded in self._allowed:
+            return True
+        return len(folded) <= _MAX_PATTERN_NAME and any(
+            rule.fullmatch(folded) for rule in self._patterns
+        )
 
     def _vet_field_name(self, action: str, name: str) -> None:
         """Refuse a field whose own accessible name is a finalizing action."""
@@ -377,6 +390,10 @@ def attach_guarded(
         raise
 
 
+#: Most declared names listed in a "not declared" refusal.
+_HINT_NAMES = 10
+#: Longest name a pattern is tried against (page-supplied names can be arbitrarily long).
+_MAX_PATTERN_NAME = 300
 _BUTTON_LIKE_INPUT_TYPES = frozenset({"button", "image", "reset", "submit"})
 #: Roles a dropdown has; `select` never goes through a button, link or other clickable role.
 _SELECT_ROLES = frozenset({"combobox", "listbox", "searchbox", "textbox"})
@@ -425,16 +442,29 @@ def is_finalizing_name(name: str, extra_deny: Sequence[str] = ()) -> bool:
 def validate_control_patterns(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
     """Refuse a declared control pattern that is too loose or could name a finalizing action.
 
-    A pattern is a declared name with `*` standing for any text (`Actions for *`). It must keep
-    at least `MIN_PATTERN_LITERAL` letters or digits of fixed text, and that fixed text must not
-    itself be a finalizing word: `Submit *` is refused. The name actually clicked is still
-    checked against the finalizing words, so a pattern can never reach one.
+    A pattern is a declared name with `*` standing for any text (`Actions for *`). It must start
+    with fixed text, hold at most `MAX_PATTERN_STARS` stars and keep at least
+    `MIN_PATTERN_LITERAL` letters or digits of fixed text, and that fixed text must not itself
+    be a finalizing word: `Submit *` is refused. Only an ASCII `*` is a wildcard. The name
+    actually clicked is still checked against the finalizing words, so a pattern can never
+    reach one.
     """
     deny = _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny_names))
     for name in names:
         if "*" not in name:
             continue
-        literal = _exact(name).replace("*", " ")
+        folded = _exact(name)
+        if folded.startswith("*"):
+            raise SubmitBlockedError(
+                f"Expected a control pattern that starts with fixed text, got {name!r}: the "
+                "page would choose how the name begins. A browser task never submits"
+            )
+        if len(re.findall(r"\*+", folded)) > MAX_PATTERN_STARS:
+            raise SubmitBlockedError(
+                f"Expected a control pattern with at most {MAX_PATTERN_STARS} `*`, got {name!r}. "
+                "A browser task never submits"
+            )
+        literal = folded.replace("*", " ")
         solid = sum(char.isalnum() for char in literal)
         if solid < MIN_PATTERN_LITERAL:
             raise SubmitBlockedError(
@@ -483,12 +513,6 @@ def _deny_stems(words: tuple[str, ...]) -> tuple[str, ...]:
     single spaces with punctuation removed, so `e-mail` matches the name `E-mail it`."""
     stems = (" ".join(re.findall(r"[^\W_]+", _folded(word))) for word in words)
     return tuple(stem for stem in stems if stem)
-
-
-def _pattern_regex(pattern: str) -> re.Pattern[str]:
-    """A declared pattern as a regex: `*` is any text, everything else is exact."""
-    parts = (re.escape(part) for part in _exact(pattern).split("*"))
-    return re.compile(".*".join(parts), re.DOTALL)
 
 
 def _exact(text: str) -> str:
@@ -540,6 +564,13 @@ def _key_is_safe(key: str) -> bool:
     if key in _NAVIGATION_KEYS:
         return True
     return len(key) == 1 and key.isprintable() and not key.isspace()
+
+
+def _pattern_regex(pattern: str) -> re.Pattern[str]:
+    """A declared pattern as a regex: `*` is any text, everything else is exact."""
+    collapsed = re.sub(r"\*+", "*", _exact(pattern))
+    parts = (re.escape(part) for part in collapsed.split("*"))
+    return re.compile(".*".join(parts), re.DOTALL)
 
 
 def _runs_script(href: str) -> bool:
