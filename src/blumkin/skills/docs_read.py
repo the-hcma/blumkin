@@ -111,8 +111,8 @@ def format_docs_read_human(payload: dict[str, Any]) -> list[str]:
 _IMAGE_EXTENSIONS = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
 _MAX_EXTRACTED_BYTES = 1_000_000
 _MAX_FILE_BYTES = 25_000_000
-_OCR_MIN_WIDTH = 1500
 _OCR_EXTRA_HINT = "docs read --ocr needs the ocr extra: uv tool install -e '.[pdf,ocr]'"
+_OCR_MIN_WIDTH = 1500
 _POPPLER_HINT = "poppler not found on PATH, install via `brew install tesseract poppler`"
 _TESSERACT_HINT = "tesseract not found on PATH, install via `brew install tesseract poppler`"
 
@@ -277,6 +277,27 @@ def _read_docx(path: Path) -> list[dict[str, Any]]:
     return [page]
 
 
+def _best_ocr_text(image: Any, pytesseract: Any) -> str:
+    """OCR a photo twice (cleaned up for a till receipt, then as it is) and keep the fuller read."""
+    candidates = [
+        str(pytesseract.image_to_string(_prepare_for_ocr(image), config="--psm 6")).strip(),
+        str(pytesseract.image_to_string(image)).strip(),
+    ]
+    # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
+    return max(candidates, key=lambda text: sum(char.isalnum() for char in text))
+
+
+def _prepare_for_ocr(image: Any) -> Any:
+    """Greyscale, stretch the contrast and enlarge a small photo so thin print is readable."""
+    from PIL import ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
+
+    grey = ImageOps.autocontrast(ImageOps.exif_transpose(image).convert("L"))
+    if grey.width < _OCR_MIN_WIDTH:
+        scale = _OCR_MIN_WIDTH / grey.width
+        grey = grey.resize((_OCR_MIN_WIDTH, round(grey.height * scale)))
+    return grey
+
+
 def _read_image(path: Path) -> list[dict[str, Any]]:
     _require_tesseract_binary()
     pil_image, pytesseract = _import_image_ocr_modules()
@@ -295,26 +316,6 @@ def _read_image(path: Path) -> list[dict[str, Any]]:
     budget.add(text)
     page = {"index": 1, "tables": [], "text": text}
     return [page]
-
-
-def _best_ocr_text(image: Any, pytesseract: Any) -> str:
-    """OCR a photo twice (cleaned up for a till receipt, then as it is) and keep the fuller read."""
-    candidates = [
-        str(pytesseract.image_to_string(_prepare_for_ocr(image), config="--psm 6")).strip(),
-        str(pytesseract.image_to_string(image)).strip(),
-    ]
-    return max(candidates, key=len)
-
-
-def _prepare_for_ocr(image: Any) -> Any:
-    """Greyscale, stretch the contrast and enlarge a small photo so thin print is readable."""
-    from PIL import ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
-
-    grey = ImageOps.autocontrast(ImageOps.exif_transpose(image).convert("L"))
-    if grey.width < _OCR_MIN_WIDTH:
-        scale = _OCR_MIN_WIDTH / grey.width
-        grey = grey.resize((_OCR_MIN_WIDTH, round(grey.height * scale)))
-    return grey
 
 
 def _read_pdf(path: Path, *, ocr: bool, pages: str | None) -> tuple[list[dict[str, Any]], bool]:

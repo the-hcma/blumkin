@@ -2322,19 +2322,6 @@ when the render is broken, so run it before `receipts rehome` or any upload. Nee
 extra (`uv tool install -e '.[pdf]'`).
 """
 
-RECEIPTS_TO_PDF_EPILOG = """
-Examples:
-
-\b
-  blumkin receipts to-pdf ~/Downloads/till.jpg --out ./receipts-to-upload/till.pdf
-  blumkin receipts to-pdf ~/Downloads/till.jpg --out ./receipts-to-upload/ --json
-
-Converts a receipt photo (JPEG, PNG, WebP, ...) to a one-page PDF for expense sites that only
-take PDFs. The photo is turned upright using its EXIF orientation and scaled down to at most
-3000 pixels a side. `--out` is a PDF file, or a folder (with a trailing slash) to get
-`<photo name>.pdf`. It never overwrites a file and the original photo is left alone.
-"""
-
 RECEIPTS_EPILOG = """
 Examples:
 
@@ -2364,11 +2351,11 @@ Examples:
 
 Lists the image and PDF files directly inside `--dir` (no subfolders, no symlinks,
 no hidden files), newest first. `--since YYYY-MM-DD` keeps files modified on or
-after that UTC date (the same zone as the printed times). `--new-since 30m` (or `2h`, or a
+after that UTC date (the same zone as the printed times). `--new-since 30m` (or `2h`, `1d`, or a
 UTC time such as 2026-10-30T14:00:00Z) keeps only files that arrived within that window,
 which finds the photo the user just downloaded: phone photos are named after when the
 picture was taken, so each entry also shows `arrived` (the birth time where the system
-has one, else the last change). For receipts attached to
+has one, else the last change, which a rename or chmod also updates). For receipts attached to
 mail, list the message's attachments with
 `blumkin mail attachments --id ... --json` and download the ones you want with:
 
@@ -2442,6 +2429,19 @@ date comes from the receipt text, then the subject; the email arrival time is a 
 and is flagged `review` (a late ride arrives the next UTC day). The grand total is per
 currency and counts only `file` rows. Nothing is moved or deleted; show the table to the
 user and rehome the `file` rows with `--yes` once they confirm. Exits 1 when any row needs review.
+"""
+
+RECEIPTS_TO_PDF_EPILOG = """
+Examples:
+
+\b
+  blumkin receipts to-pdf ~/Downloads/till.jpg --out ./receipts-to-upload/till.pdf
+  blumkin receipts to-pdf ~/Downloads/till.jpg --out ./receipts-to-upload/ --json
+
+Converts a receipt photo (JPEG, PNG, WebP, ...) to a one-page PDF for expense sites that only
+take PDFs. The photo is turned upright using its EXIF orientation and scaled down to at most
+3000 pixels a side. `--out` is a PDF file, or a folder (with a trailing slash) to get
+`<photo name>.pdf`. It never overwrites a file and the original photo is left alone.
 """
 
 SKILLS_DESCRIBE_EPILOG = """

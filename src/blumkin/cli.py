@@ -399,6 +399,9 @@ _UPGRADE_STEP_TIMEOUT_S = 300
 # Most receipts `receipts summarize --dir` reads at once; more is an error, not a quiet cut-off.
 _SUMMARIZE_MAX_FILES = 500
 
+# `receipts find --new-since`: weeks, days, hours, minutes, seconds, e.g. 1d, 2h30m, 45s.
+_NEW_SINCE_SPAN = re.compile(r"(?:(\d+)w)?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?")
+
 
 def _agent_lock_payload() -> dict[str, Any]:
     """Ask the agent to wipe its cached secrets now; a no-op if none is running.
@@ -758,15 +761,17 @@ def _export_lines(payload: dict[str, Any]) -> list[str]:
 def _parse_new_since(text: str) -> float:
     """Epoch seconds for `--new-since`: now minus a duration, or an ISO UTC time."""
     value = text.strip()
+    span = _NEW_SINCE_SPAN.fullmatch(value)
+    if span and any(span.groups()):
+        weeks, days, hours, minutes, seconds = (int(part or 0) for part in span.groups())
+        total = ((weeks * 7 + days) * 24 + hours) * 3600 + minutes * 60 + seconds
+        if total > 0:
+            return time.time() - total
     try:
-        return time.time() - parse_duration(value)
-    except ValueError:
-        pass
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         raise ValueError(
-            f"Expected --new-since as a duration like 30m or 2h, or a UTC time like "
+            "Expected --new-since as a duration like 30m, 2h or 1d, or a UTC time like "
             f"2026-10-30T14:00:00Z, got {text!r}"
         ) from None
     return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).timestamp()
@@ -3897,7 +3902,7 @@ def receipts_to_pdf(ctx: click.Context, path: Path, out: str, as_json_flag: bool
         raise SystemExit(EXIT_NOT_FOUND)
     dest = Path(out).expanduser()
     if out.endswith(("/", "\\")) or dest.is_dir():
-        dest = dest / f"{photo.stem}.pdf"
+        dest = dest / f"{photo.stem or 'receipt'}.pdf"
     try:
         written = image_to_pdf(photo, dest)
     except ReceiptPdfError as exc:

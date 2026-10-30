@@ -324,23 +324,18 @@ _NOT_A_TOTAL = re.compile(
 )
 _SEPARATORS = " .,'\u2019\u00a0\u202f"
 _TAX_WORDS = re.compile(r"\b(?:gst|hst|tax|vat)\b")
+#: A vendor name counts only near the top, where a receipt prints its letterhead.
+_KNOWN_VENDOR_LINES = 15
+_KNOWN_VENDORS = ("Bolt", "Careem", "DiDi", "Free Now", "Grab", "Lyft", "Uber")
+#: Other products from the same company (food, bikes, freight) are not the ride.
+_KNOWN_VENDOR_OTHER_PRODUCTS = re.compile(r"\b(?:eats|bikes?|freight|food|market)\b", re.IGNORECASE)
 _TOTAL_LINE = re.compile(
     r"\b(?:amount\s+due|balance\s+due|grand\s+total|total\s+amount|total(?:\s+due)?)\b"
 )
-#: A vendor name counts only near the top, where a receipt prints its letterhead.
-_KNOWN_VENDOR_LINES = 15
-_KNOWN_VENDORS = (
-    "Bolt",
-    "Careem",
-    "DiDi",
-    "Free Now",
-    "Grab",
-    "Lyft",
-    "Uber",
-)
 _VENDOR_SKIP = re.compile(
     r"receipt|invoice|order|tel\b|phone|www\.|http|@|thank|welcome|\d{3}[-. ]\d{3,4}|"
-    r"^\s*tip\b|this is your|charge summary|^\s*your\b|^\s*(?:hi|hello|dear)\b|summary|"
+    r"^\s*tip\b|this is your|charge summary|^\s*your\s+(?:charge|ride|total|trip)\b|"
+    r"^\s*(?:hi|hello|dear)\b|"
     r"^\s*(?:amex|cash|change|mastercard|sub\s*-?\s*total|tax|total|visa)\b|\d[.,]\d{2}\b",
     re.IGNORECASE,
 )
@@ -373,14 +368,27 @@ def _manual(path: Path, status: ReceiptStatus, message: str) -> ReceiptReading:
     )
 
 
+#: Second-level labels that go with a two-letter country code (uber.co.uk, ride.com.au).
+_SECOND_LEVEL_LABELS = frozenset({"ac", "co", "com", "edu", "gov", "net", "or", "org"})
+#: Longest sender-derived vendor name kept; a display name is chosen by the sender.
+_SENDER_NAME_MAX = 60
+
+
 def _sender_name(meta: dict[str, str | None]) -> str | None:
     """A vendor name from a message's sender: its display name, else the domain's main label."""
-    name = (meta.get("from_name") or "").strip()
+    name = " ".join("".join(c for c in (meta.get("from_name") or "") if c.isprintable()).split())
     if name:
-        return name
+        return name[:_SENDER_NAME_MAX]
     domain = (meta.get("from") or "").rpartition("@")[2].lower()
     labels = [label for label in domain.split(".") if label]
-    return labels[-2].capitalize() if len(labels) >= 2 else None
+    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in _SECOND_LEVEL_LABELS:
+        label = labels[-3]
+    elif len(labels) >= 2:
+        label = labels[-2]
+    else:
+        return None
+    known = {vendor.lower(): vendor for vendor in _KNOWN_VENDORS}
+    return known.get(label, label.capitalize())[:_SENDER_NAME_MAX]
 
 
 def _joined_text(payload: dict[str, Any]) -> str:
@@ -614,12 +622,10 @@ def _guess_total(text: str) -> ReceiptField:
 
 
 def _parse_vendor(text: str, sender: str | None = None) -> ReceiptField:
-    head = "\n".join(text.splitlines()[:_KNOWN_VENDOR_LINES])
-    for known in _KNOWN_VENDORS:
-        if re.search(rf"\b(?:{re.escape(known)}|{re.escape(known.upper())})\b", head):
-            return ReceiptField(
-                confidence=Confidence.LOW, value=known, note="a vendor name seen in the text"
-            )
+    for known in _known_vendor_lines(text):
+        return ReceiptField(
+            confidence=Confidence.LOW, value=known, note="a vendor name seen in the text"
+        )
     for raw in text.splitlines():
         line = raw.strip()
         letters = sum(char.isalpha() for char in line)
@@ -633,6 +639,22 @@ def _parse_vendor(text: str, sender: str | None = None) -> ReceiptField:
             confidence=Confidence.LOW, value=sender, note="taken from the sender of the message"
         )
     return ReceiptField(confidence=Confidence.NONE, value=None)
+
+
+def _known_vendor_lines(text: str) -> list[str]:
+    """Known vendors printed as a letterhead: a short line that starts with the name."""
+    found = []
+    for raw in text.splitlines()[:_KNOWN_VENDOR_LINES]:
+        line = raw.strip()
+        words = line.split()
+        if not words or len(words) > 3 or "&" in line or _KNOWN_VENDOR_OTHER_PRODUCTS.search(line):
+            continue
+        for known in _KNOWN_VENDORS:
+            if line.startswith((known, known.upper())) and re.match(
+                rf"(?:{re.escape(known)}|{re.escape(known.upper())})\b", line
+            ):
+                found.append(known)
+    return found
 
 
 def _refund_check(field: ReceiptField, refund: bool) -> ReceiptField:

@@ -48,6 +48,8 @@ def test_the_text_still_wins_over_the_sender_when_it_names_a_vendor() -> None:
 
 
 def test_pdfminer_font_warnings_are_silenced_for_pdf_reads() -> None:
+    logging.getLogger("pdfminer").setLevel(logging.NOTSET)
+
     docs_read._import_pdfplumber()
 
     assert logging.getLogger("pdfminer").getEffectiveLevel() >= logging.ERROR
@@ -179,3 +181,191 @@ def test_a_mail_export_text_read_uses_the_sender_as_a_fallback_vendor(tmp_path: 
     reading = asyncio.run(read_receipt(pdf, config=None))
 
     assert reading.fields.vendor.value == "Ride Co"
+
+
+def test_sender_names_handle_country_domains_and_known_vendors() -> None:
+    from blumkin.receipts import _sender_name
+
+    assert _sender_name({"from": "receipts@uber.co.uk", "from_name": None}) == "Uber"
+    assert _sender_name({"from": "x@mail.ride.com.au", "from_name": None}) == "Ride"
+    assert _sender_name({"from": "no-reply@didi.com", "from_name": None}) == "DiDi"
+    assert _sender_name({"from": "x@example.com", "from_name": None}) == "Example"
+    assert _sender_name({"from": "", "from_name": None}) is None
+
+
+def test_a_sender_display_name_is_cleaned_and_capped() -> None:
+    from blumkin.receipts import _sender_name
+
+    name = _sender_name({"from": "x@y.com", "from_name": "Ride\x1b[31m  Co\n" + "z" * 200})
+
+    assert name is not None
+    assert "\x1b" not in name
+    assert "\n" not in name
+    assert len(name) <= 60
+
+
+@pytest.mark.parametrize(
+    "heading",
+    ["Grab & Go Deli", "Bolt & Nut Hardware", "Uber Eats", "Lyft Bikes", "Free Now Cafe Bistro"],
+)
+def test_a_known_vendor_name_inside_another_business_is_not_taken(heading: str) -> None:
+    fields = parse_receipt_text(f"{heading}\nTotal $4.00\n")
+
+    assert fields.vendor.value == heading or fields.vendor.value is None
+
+
+def test_a_known_vendor_letterhead_is_taken_in_either_case() -> None:
+    assert parse_receipt_text("UBER\nTotal $4.00\n").vendor.value == "Uber"
+    assert parse_receipt_text("Lyft Ride\nTotal $4.00\n").vendor.value == "Lyft"
+
+
+def test_summary_and_your_local_names_are_not_skipped_as_headings() -> None:
+    assert parse_receipt_text("Summary Street Cafe\nTotal $4.00\n").vendor.value == (
+        "Summary Street Cafe"
+    )
+    assert parse_receipt_text("Your Local Bakery\nTotal $4.00\n").vendor.value == (
+        "Your Local Bakery"
+    )
+
+
+@pytest.mark.parametrize(
+    "value", ["1h05m", "1d", "2w", "45s", "2026-10-30T14:00:00", "2026-10-30T14:00:00Z"]
+)
+def test_new_since_accepts_spans_and_times(value: str) -> None:
+    from blumkin.cli import _parse_new_since
+
+    assert _parse_new_since(value) > 0
+
+
+@pytest.mark.parametrize("value", ["0", "2026", "30", "0m", "34:06", "soon", ""])
+def test_new_since_rejects_bare_numbers_zero_and_clock_forms(value: str) -> None:
+    from blumkin.cli import _parse_new_since
+
+    with pytest.raises(ValueError, match="--new-since"):
+        _parse_new_since(value)
+
+
+def test_an_old_file_is_excluded_by_new_since_using_its_arrival_time() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.receipts import _receipt_file
+
+    week_ago = time.time() - 7 * 24 * 3600
+
+    class Entry:
+        name = "old.jpg"
+        path = "/d/old.jpg"
+
+        def is_symlink(self) -> bool:
+            return False
+
+        def is_file(self) -> bool:
+            return True
+
+        def stat(self) -> SimpleNamespace:
+            return SimpleNamespace(st_mtime=week_ago, st_ctime=week_ago, st_size=1)
+
+    assert _receipt_file(Entry(), None, time.time() - 3600) is None  # type: ignore[arg-type]
+    assert _receipt_file(Entry(), None, week_ago - 10) is not None  # type: ignore[arg-type]
+
+
+def test_to_pdf_puts_a_transparent_png_on_white(tmp_path: Path) -> None:
+    pytest.importorskip("pdfplumber")
+    photo = tmp_path / "t.png"
+    Image.new("RGBA", (120, 80), (0, 0, 0, 0)).save(photo)
+
+    dest = image_to_pdf(photo, tmp_path / "t.pdf")
+
+    import pdfplumber
+
+    with pdfplumber.open(str(dest)) as document:
+        pixels = document.pages[0].to_image(resolution=36).original.convert("RGB")
+    assert pixels.getpixel((5, 5)) == (255, 255, 255)
+
+
+def test_to_pdf_turns_an_exif_rotated_photo_upright(tmp_path: Path) -> None:
+    pytest.importorskip("pdfplumber")
+    photo = tmp_path / "r.jpg"
+    image = Image.new("RGB", (300, 100), (255, 255, 255))
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90 degrees clockwise to display
+    image.save(photo, exif=exif)
+
+    dest = image_to_pdf(photo, tmp_path / "r.pdf")
+
+    import pdfplumber
+
+    with pdfplumber.open(str(dest)) as document:
+        page = document.pages[0]
+        assert page.height > page.width
+
+
+def test_to_pdf_refuses_a_huge_image_before_decoding_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin import receipt_pdf
+
+    photo = _photo(tmp_path / "big.png", size=(400, 400))
+    monkeypatch.setattr(receipt_pdf, "MAX_SOURCE_PIXELS", 1000)
+
+    with pytest.raises(ReceiptPdfError, match="pixels"):
+        image_to_pdf(photo, tmp_path / "big.pdf")
+
+    assert not (tmp_path / "big.pdf").exists()
+
+
+def test_to_pdf_refuses_an_oversized_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from blumkin import receipt_pdf
+
+    photo = _photo(tmp_path / "f.png")
+    monkeypatch.setattr(receipt_pdf, "MAX_SOURCE_BYTES", 10)
+
+    with pytest.raises(ReceiptPdfError, match="at most"):
+        image_to_pdf(photo, tmp_path / "f.pdf")
+
+
+def test_to_pdf_maps_a_decompression_bomb_to_a_clean_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    photo = _photo(tmp_path / "b.png", size=(400, 400))
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+
+    with pytest.raises(ReceiptPdfError):
+        image_to_pdf(photo, tmp_path / "b.pdf")
+
+
+def test_to_pdf_does_not_follow_a_symlinked_destination(tmp_path: Path) -> None:
+    photo = _photo(tmp_path / "s.png")
+    target = tmp_path / "elsewhere.pdf"
+    (tmp_path / "s.pdf").symlink_to(target)
+
+    with pytest.raises(ReceiptPdfError):
+        image_to_pdf(photo, tmp_path / "s.pdf")
+
+    assert not target.exists()
+
+
+def test_to_pdf_reports_an_unwritable_destination_instead_of_crashing(tmp_path: Path) -> None:
+    photo = _photo(tmp_path / "w.png")
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+
+    with pytest.raises(ReceiptPdfError, match="writable"):
+        image_to_pdf(photo, blocker / "w.pdf")
+
+
+def test_the_fuller_ocr_read_is_kept_by_letters_and_digits_not_by_length() -> None:
+    from types import SimpleNamespace
+
+    calls: list[object] = []
+
+    def image_to_string(image: object, config: str | None = None) -> str:
+        calls.append(config)
+        return "~~ .. ~~ ,, ^^ ~~ .. ~~" if config else "ACME 12.50 TOTAL"
+
+    text = docs_read._best_ocr_text(
+        Image.new("RGB", (100, 100)), SimpleNamespace(image_to_string=image_to_string)
+    )
+
+    assert text == "ACME 12.50 TOTAL"
+    assert calls == ["--psm 6", None]
