@@ -1807,11 +1807,14 @@ Examples:
 Renders the message body (HTML, or plain text wrapped in a page) to `<name>.pdf` with a
 headless browser, and writes `<name>.txt` (the same content as text) and `<name>.json`
 (message id, sender, received time, subject) beside it. Use it for receipts that arrive as
-HTML mail with no attachment. Images are loaded so the logo and the route map survive;
-one-pixel tracking images are removed first and the browser runs in a throwaway profile, so
-nothing is fetched with your cookies or mailbox identity. The PDF is then checked against the
-message (images present, no blank pages, text layer matches the text file); a failed check
-exits 1 and lists the problems, so fix or re-render before rehoming or uploading. Never writes
+HTML mail with no attachment. Images are loaded so the logo and the route map survive.
+Scripts, frames, linked resources and elements hidden by an inline style are removed, and
+images declared as one pixel or smaller are dropped; an image with no declared size can
+still load, and its address may tell the sender the message was opened. The browser runs in
+a throwaway profile, so nothing is fetched with your cookies or mailbox identity. The PDF is
+then checked against the message (images present, no blank pages, text layer matches the
+text file); a failed check exits 1, lists the problems and writes nothing, so fix the cause
+and re-run with the same names before rehoming or uploading. Never writes
 into the receipts archive: `--out` is the folder you name, and an existing export is never
 overwritten. A prompt-injection warning on the message is reported and recorded in the JSON,
 and does not stop the export. Needs Chrome (or Chromium or Edge) and the pdf extra
@@ -2310,7 +2313,9 @@ Examples:
 
 Checks a PDF written by `blumkin mail export`: pages exist and none is blank, the images the
 message carried are in the PDF, and the PDF text layer matches the `.txt` file beside it. It
-reads the `.txt` and `.json` next to the PDF when they exist. Exits 1 with the problems listed
+reads the `.txt` and `.json` next to the PDF when they exist; without them the text and
+image comparisons are skipped. The text comparison accepts 80% word overlap, so a pass does
+not prove the whole receipt survived: read the amounts yourself. Exits 1 with the problems listed
 when the render is broken, so run it before `receipts rehome` or any upload. Needs the pdf
 extra (`uv tool install -e '.[pdf]'`).
 """

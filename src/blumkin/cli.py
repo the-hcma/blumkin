@@ -728,14 +728,17 @@ def _check_lines(path: str, result: dict[str, Any]) -> list[str]:
 
 
 def _export_lines(payload: dict[str, Any]) -> list[str]:
-    lines = [
-        f"PDF:  {sanitize_terminal(payload['pdf'])}",
-        f"text: {sanitize_terminal(payload['text'])}",
-        f"json: {sanitize_terminal(payload['json'])}",
-    ]
+    if payload["pdf"] is None:
+        lines = ["Nothing was written: the rendered PDF failed its check."]
+    else:
+        lines = [
+            f"PDF:  {sanitize_terminal(payload['pdf'])}",
+            f"text: {sanitize_terminal(payload['text'])}",
+            f"json: {sanitize_terminal(payload['json'])}",
+        ]
     if payload["tracking_pixels_removed"]:
         lines.append(f"  removed {payload['tracking_pixels_removed']} tracking pixel(s)")
-    lines.extend(_check_lines(payload["pdf"], payload["check"]))
+    lines.extend(_check_lines(payload["pdf"] or "(rendered PDF)", payload["check"]))
     lines.extend(format_injection_warning_banner(payload["injection_warning"]))
     return lines
 
@@ -6234,7 +6237,13 @@ def mail_export_cmd(
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = asyncio.run(
-            export_message(_workspace(), message_id=message_id, out_dir=out, name=name)
+            export_message(
+                _workspace(),
+                message_id=message_id,
+                out_dir=out,
+                name=name,
+                browser=_load_config().browser.default,
+            )
         )
     except MailExportError as exc:
         _emit_error(error="export_failed", message=str(exc), as_json=as_json)

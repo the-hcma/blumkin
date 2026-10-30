@@ -14,6 +14,7 @@ Receipt contents are private: nothing here logs a body, a vendor or an amount.
 
 from __future__ import annotations
 
+import hashlib
 import html as html_lib
 import json
 import re
@@ -28,6 +29,8 @@ from blumkin.browser.discovery import resolve_browser
 
 #: Share of the `.txt` words that must show up in the PDF text layer.
 MIN_TEXT_OVERLAP = 0.8
+#: Largest text file `receipts read` trusts next to a PDF (the `docs read` text limit).
+MAX_TEXT_BYTES = 1_000_000
 #: How long the browser may spend loading images and settling, in virtual milliseconds.
 RENDER_TIME_BUDGET_MS = 15000
 RENDER_TIMEOUT_SECONDS = 90
@@ -122,6 +125,7 @@ async def export_message(
     message_id: str,
     out_dir: Path,
     name: str | None = None,
+    browser: str | None = None,
     pdf_reader: PdfReader | None = None,
     renderer: Renderer | None = None,
 ) -> dict[str, Any]:
@@ -151,7 +155,7 @@ async def export_message(
         )
     text = html_to_text(cleaned)
     expected_images = count_loadable_images(cleaned)
-    render = renderer or _chrome_renderer()
+    render = renderer or _chrome_renderer(browser)
     sidecar = {
         "expected_images": expected_images,
         "from": message.get("from_email"),
@@ -186,6 +190,8 @@ async def export_message(
             # Nothing is left behind, so the same --out and --name can be retried.
             return payload
         pdf_bytes = pdf_path.read_bytes()
+    sidecar["pdf_sha256"] = hashlib.sha256(pdf_bytes).hexdigest()
+    sidecar["text_sha256"] = hashlib.sha256((text + "\n").encode("utf-8")).hexdigest()
     written: list[Path] = []
     try:
         for suffix, data in (
@@ -217,6 +223,32 @@ def html_to_text(raw: str) -> str:
     text = html_lib.unescape(text).replace("\u00a0", " ")
     lines = (re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in text.split("\n"))
     return "\n".join(line for line in lines if line)
+
+
+def read_bound_text(pdf_path: Path) -> str | None:
+    """The `.txt` beside a PDF, only when `mail export` recorded it as this PDF's text.
+
+    The `.json` beside them carries both SHA-256 hashes; a missing or different hash, a
+    symlink, an oversized or unreadable file all mean "do not trust it" (None).
+    """
+    text_path = pdf_path.with_suffix(".txt")
+    sidecar_path = pdf_path.with_suffix(".json")
+    for path in (pdf_path, text_path, sidecar_path):
+        if path.is_symlink() or not path.is_file():
+            return None
+    try:
+        if text_path.stat().st_size > MAX_TEXT_BYTES:
+            return None
+        recorded = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        text_bytes = text_path.read_bytes()
+        text = text_bytes.decode("utf-8")
+        if recorded["text_sha256"] != hashlib.sha256(text_bytes).hexdigest() or recorded[
+            "pdf_sha256"
+        ] != _file_sha256(pdf_path):
+            return None
+    except OSError, UnicodeDecodeError, ValueError, KeyError, TypeError:
+        return None
+    return text if text.strip() else None
 
 
 def read_pdf_layers(pdf_path: Path) -> dict[str, Any]:
@@ -258,6 +290,7 @@ def sanitize_html(html: str) -> str:
     """Remove comments, scripts, frames, embeds and linked resources before rendering."""
     cleaned = _COMMENT.sub(" ", html)
     cleaned = _ACTIVE_BLOCKS.sub(" ", cleaned)
+    cleaned = _HIDDEN_ELEMENTS.sub(" ", cleaned)
     return _LINKED_TAGS.sub(" ", cleaned)
 
 
@@ -284,6 +317,13 @@ _CONTENT_SECURITY_POLICY = (
     "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; font-src data:"
 )
 _DROPPED_BLOCKS = re.compile(r"<(script|style|head)\b.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
+_HIDDEN_ELEMENTS = re.compile(
+    r"<(div|span|p|td|font|a)\b[^>]*\bstyle\s*=\s*[\"'][^\"']*"
+    r"(?:display\s*:\s*none|visibility\s*:\s*hidden|mso-hide\s*:\s*all|font-size\s*:\s*0(?![.\d])"
+    r"|max-height\s*:\s*0(?![.\d])|opacity\s*:\s*0(?![.\d]))"
+    r"[^\"']*[\"'][^>]*>.*?</\1\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
 _HEAD_BLOCK = re.compile(r"<head\b.*?</head\s*>", re.DOTALL | re.IGNORECASE)
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
 _LINKED_TAGS = re.compile(r"<(?:link|base)\b[^>]*>", re.IGNORECASE)
@@ -301,8 +341,8 @@ def _as_document(fragment: str) -> str:
     return f'<!doctype html><meta charset="utf-8">{policy}{fragment}'
 
 
-def _chrome_renderer() -> Renderer:
-    browser = resolve_browser(None).path
+def _chrome_renderer(preferred: str | None) -> Renderer:
+    browser = resolve_browser(preferred).path
 
     def render(html_path: Path, pdf_path: Path) -> None:
         with tempfile.TemporaryDirectory(prefix="blumkin-mail-profile-") as profile:
@@ -329,6 +369,14 @@ def _default_stem(message: dict[str, Any]) -> str:
     day = received if re.fullmatch(r"\d{4}-\d{2}-\d{2}", received) else "undated"
     slug = re.sub(r"[^a-z0-9]+", "-", str(message.get("subject") or "").lower()).strip("-")[:60]
     return f"{day}_{slug.strip('-') or 'message'}"
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _is_pixel(tag: str) -> bool:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 from datetime import date
 from pathlib import Path
@@ -481,10 +483,72 @@ def test_the_default_find_limit_matches_what_the_command_uses(tmp_path: Path) ->
     assert len(find_local_receipts(tmp_path)) == DEFAULT_FIND_LIMIT == 50
 
 
-def test_a_pdf_with_a_text_sidecar_is_read_from_the_text_without_ocr(tmp_path: Path) -> None:
+def _bound_export(tmp_path: Path, text: str = _COFFEE) -> Path:
+    """A PDF with the `.txt` and `.json` that `mail export` would write for it."""
     pdf = tmp_path / "ride.pdf"
     pdf.write_bytes(b"%PDF")
-    pdf.with_suffix(".txt").write_text(_COFFEE)
+    pdf.with_suffix(".txt").write_text(text)
+    pdf.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "pdf_sha256": hashlib.sha256(b"%PDF").hexdigest(),
+                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            }
+        )
+    )
+    return pdf
+
+
+def _pdf_reader_calls(calls: list[str]):
+    async def reader(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["path"])
+        return {"ocr_used": False, "pages": [{"text": "TOTAL $3.00"}]}
+
+    return reader
+
+
+def test_a_text_file_that_was_edited_after_the_export_is_not_trusted(tmp_path: Path) -> None:
+    pdf = _bound_export(tmp_path)
+    pdf.with_suffix(".txt").write_text(_COFFEE + "TOTAL $999.00\n")
+    calls: list[str] = []
+
+    reading = asyncio.run(read_receipt(pdf, config=None, reader=_pdf_reader_calls(calls)))
+
+    assert calls == [str(pdf)]
+    assert reading.fields.total.value == "3.00"
+
+
+def test_a_text_file_without_a_matching_json_is_not_trusted(tmp_path: Path) -> None:
+    pdf = _bound_export(tmp_path)
+    pdf.with_suffix(".json").unlink()
+    calls: list[str] = []
+
+    asyncio.run(read_receipt(pdf, config=None, reader=_pdf_reader_calls(calls)))
+
+    assert calls == [str(pdf)]
+
+
+def test_a_text_file_bound_to_a_different_pdf_is_not_trusted(tmp_path: Path) -> None:
+    pdf = _bound_export(tmp_path)
+    pdf.write_bytes(b"%PDF-replaced")
+    calls: list[str] = []
+
+    asyncio.run(read_receipt(pdf, config=None, reader=_pdf_reader_calls(calls)))
+
+    assert calls == [str(pdf)]
+
+
+def test_an_oversized_text_file_is_not_read(tmp_path: Path) -> None:
+    pdf = _bound_export(tmp_path, text="TOTAL $1.00\n" + "x" * 1_100_000)
+    calls: list[str] = []
+
+    asyncio.run(read_receipt(pdf, config=None, reader=_pdf_reader_calls(calls)))
+
+    assert calls == [str(pdf)]
+
+
+def test_a_pdf_with_a_text_sidecar_is_read_from_the_text_without_ocr(tmp_path: Path) -> None:
+    pdf = _bound_export(tmp_path)
 
     async def reader(**_: Any) -> dict[str, Any]:
         raise AssertionError("the PDF must not be opened when a text sidecar exists")

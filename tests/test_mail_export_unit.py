@@ -17,6 +17,7 @@ from blumkin.mail_export import (
     count_loadable_images,
     export_message,
     html_to_text,
+    read_bound_text,
     render_pdf_command,
     sanitize_html,
     strip_tracking_pixels,
@@ -414,3 +415,73 @@ def test_mail_export_command_reports_an_export_error(
 
     assert result.exit_code == 1
     assert "already exists" in result.output
+
+
+def test_export_records_hashes_that_bind_the_text_to_the_pdf(tmp_path: Path) -> None:
+    render, read = _fake_renderer("Ride receipt Total $18.50")
+
+    payload = asyncio.run(
+        export_message(
+            _Provider(), message_id="m", out_dir=tmp_path, renderer=render, pdf_reader=read
+        )
+    )
+
+    pdf = Path(payload["pdf"])
+    assert read_bound_text(pdf) == "Ride receipt\nTotal $18.50\n"
+    pdf.with_suffix(".txt").write_text("TOTAL $999.00\n")
+    assert read_bound_text(pdf) is None
+
+
+def test_elements_hidden_by_an_inline_style_leave_neither_the_page_nor_the_text() -> None:
+    html = (
+        '<div style="display:none;max-height:0">TOTAL $999.00</div>'
+        '<span style="mso-hide: all">preheader</span><p>Total $18.50</p>'
+        '<p style="font-size:0.9em">kept</p>'
+    )
+
+    cleaned = sanitize_html(html)
+
+    assert html_to_text(cleaned).splitlines() == ["Total $18.50", "kept"]
+
+
+def test_the_configured_browser_is_the_one_the_renderer_resolves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from blumkin import mail_export
+
+    asked: list[str | None] = []
+
+    def fake_resolve(preferred: str | None) -> Any:
+        asked.append(preferred)
+        raise MailExportError("stop here")
+
+    monkeypatch.setattr(mail_export, "resolve_browser", fake_resolve)
+
+    with pytest.raises(MailExportError):
+        asyncio.run(export_message(_Provider(), message_id="m", out_dir=tmp_path, browser="edge"))
+
+    assert asked == ["edge"]
+
+
+def test_mail_export_human_output_for_a_failed_check_says_nothing_was_written(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from click.testing import CliRunner
+
+    from blumkin import cli
+
+    failed = _cli_payload(False)
+    failed.update(json=None, pdf=None, text=None)
+
+    async def fake_export(*_: Any, **__: Any) -> dict[str, Any]:
+        return failed
+
+    monkeypatch.setattr(cli, "export_message", fake_export)
+    monkeypatch.setattr(cli, "_workspace", lambda *_: object())
+
+    result = CliRunner().invoke(cli.main, ["mail", "export", "--id", "m", "--out", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "Nothing was written" in result.output
+    assert "problem: blank pages: 1" in result.output
+    assert "Traceback" not in result.output
