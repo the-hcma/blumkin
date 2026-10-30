@@ -973,3 +973,255 @@ def test_an_icon_only_control_with_no_finalizing_name_does_not_disqualify_the_di
     driver.click("OK")
 
     assert raw.calls == [("click", "button", "OK")]
+
+
+# --------------------------------------------------------------------------- patterns (#588)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Actions for Trip to Lisbon Report", "Actions for Q3 Offsite Report", "Actions for A Report"],
+)
+def test_a_declared_pattern_matches_any_trip_name(name: str) -> None:
+    raw, driver = _guard("Actions for * Report")
+
+    driver.click(name)
+
+    assert [call[2] for call in raw.calls] == [name]
+
+
+def test_a_pattern_matches_the_whole_name_and_keeps_its_fixed_text_and_case() -> None:
+    _, driver = _guard("Actions for * Report")
+
+    for bad in (
+        "Actions for Trip",
+        "actions for Trip Report",
+        "Trip Actions for X Report",
+        "Actions for Report",
+        "Open",
+    ):
+        with pytest.raises(SubmitBlockedError, match="not declared"):
+            driver.click(bad)
+
+
+def test_pattern_characters_other_than_the_star_are_literal() -> None:
+    raw, driver = _guard("Row (1) *")
+
+    driver.click("Row (1) details")
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Row 1 details")
+
+
+def test_a_pattern_never_reaches_a_finalizing_name() -> None:
+    raw, driver = _guard("Actions for *")
+
+    for name in ("Actions for Submit Report", "Actions for Payment Report"):
+        with pytest.raises(SubmitBlockedError, match="finalizing"):
+            driver.click(name)
+
+    assert raw.calls == []
+
+
+def test_menu_items_stay_individually_declared() -> None:
+    raw, driver = _guard("Actions for * Report", "Open")
+
+    driver.click("Open")
+    for item in ("Submit", "Delete", "Duplicate"):
+        with pytest.raises(SubmitBlockedError):
+            driver.click(item)
+
+
+def test_a_matched_control_is_still_vetted_like_any_other() -> None:
+    raw, driver = _guard("Actions for * Report")
+    raw.controls["Actions for Trip Report"] = ControlInfo(
+        tag="button", input_type="submit", in_form=True
+    )
+
+    with pytest.raises(SubmitBlockedError, match="submit control"):
+        driver.click("Actions for Trip Report")
+
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    ["*", "**", "a*", "* *", "Submit *", "* Pay", "Send * now", "*Report", "* Report"],
+)
+def test_a_pattern_that_is_too_loose_or_finalizing_is_refused_up_front(pattern: str) -> None:
+    with pytest.raises(SubmitBlockedError, match="control pattern"):
+        _guard(pattern)
+
+
+def test_a_task_extra_deny_word_cannot_hide_in_a_pattern() -> None:
+    with pytest.raises(SubmitBlockedError, match="finalizing"):
+        _guard("Release *", deny=("release",))
+
+
+def test_the_refusal_lists_what_the_task_declares() -> None:
+    _, driver = _guard("Add line", "Actions for * Report")
+
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click("Delete everything")
+
+    message = str(excinfo.value)
+    assert "'Add line'" in message
+    assert "'Actions for * Report'" in message
+    assert "`*` stands for any text" in message
+
+
+def test_the_refusal_says_so_when_nothing_is_declared() -> None:
+    _, driver = _guard()
+
+    with pytest.raises(SubmitBlockedError, match="declares no controls"):
+        driver.click("Anything")
+
+
+def test_a_long_declared_list_is_cut_short_in_the_refusal() -> None:
+    names = tuple(f"Control {number:02d}" for number in range(15))
+    _, driver = _guard(*names)
+
+    with pytest.raises(SubmitBlockedError, match="and 5 more"):
+        driver.click("Other")
+
+
+def test_a_pattern_does_not_make_a_download_or_a_confirm_easier() -> None:
+    raw, driver = _guard("Actions for * Report", confirm=("OK",))
+    raw.controls["OK"] = ControlInfo(tag="button", input_type="button", in_form=False)
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.download("OK", save_to=Path("/tmp"))
+
+
+def test_a_pattern_may_hold_at_most_two_stars() -> None:
+    _guard("Actions for * Report *")
+    with pytest.raises(SubmitBlockedError, match="at most 2"):
+        _guard("Actions * for * Report *")
+
+
+def test_a_pattern_with_many_stars_cannot_hang_on_a_long_hostile_name() -> None:
+    import time
+
+    _, driver = _guard("aaaa*a*a")
+    started = time.monotonic()
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("a" * 5000 + "b")
+
+    assert time.monotonic() - started < 1.0
+
+
+def test_consecutive_stars_count_as_one() -> None:
+    raw, driver = _guard("Actions for ** Report")
+
+    driver.click("Actions for Trip Report")
+
+    assert [call[2] for call in raw.calls] == ["Actions for Trip Report"]
+
+
+def test_a_name_longer_than_the_cap_is_never_matched_by_a_pattern() -> None:
+    _, driver = _guard("Actions for * Report")
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Actions for " + "x" * 400 + " Report")
+
+
+def test_a_fullwidth_star_is_not_a_wildcard() -> None:
+    raw, driver = _guard("Actions for \uff0a Report")
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Actions for Trip Report")
+
+
+def test_dialog_confirm_names_are_listed_apart_and_a_star_in_one_is_literal() -> None:
+    raw, driver = _guard("Add line", confirm=("OK *",))
+
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click("Other")
+
+    message = str(excinfo.value)
+    assert "dialog confirms: 'OK *'" in message
+    assert "a `*` stands for any text" not in message
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("OK whatever")
+
+
+def test_the_star_note_appears_only_when_a_pattern_is_declared() -> None:
+    _, plain = _guard("Add line")
+    _, patterned = _guard("Actions for * Report")
+
+    with pytest.raises(SubmitBlockedError) as plain_error:
+        plain.click("Other")
+    with pytest.raises(SubmitBlockedError) as patterned_error:
+        patterned.click("Other")
+
+    assert "stands for any text" not in str(plain_error.value)
+    assert "stands for any text" in str(patterned_error.value)
+
+
+def test_a_pattern_can_have_a_leading_and_trailing_fixed_part() -> None:
+    raw, driver = _guard("Actions for * Report (draft)")
+
+    driver.click("Actions for Trip Report (draft)")
+
+    assert [call[2] for call in raw.calls] == ["Actions for Trip Report (draft)"]
+
+
+@pytest.mark.parametrize("role", ["menuitem", "menuitemcheckbox", "menuitemradio"])
+def test_a_pattern_never_authorizes_a_menu_item(role: str) -> None:
+    raw, driver = _guard("Dupl*")
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Duplicate", role)
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_pattern_does_not_authorize_a_menu_item_found_when_no_role_is_given() -> None:
+    raw, driver = _guard("Dupl*")
+    raw.present["Duplicate"] = ("menuitem",)
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Duplicate")
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_menu_item_declared_by_its_exact_name_is_still_clicked() -> None:
+    raw, driver = _guard("Open", "Actions for * Report")
+    raw.present["Open"] = ("menuitem",)
+
+    assert driver.click("Open") == "menuitem"
+
+
+def test_a_fullwidth_star_in_a_pattern_is_literal_text_not_a_wildcard() -> None:
+    raw, driver = _guard("Item * (＊)")
+
+    driver.click("Item row (*)")
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Item row (unrelated)")
+
+    assert [call[2] for call in raw.calls] == ["Item row (*)"]
+
+
+def test_only_ascii_stars_count_against_the_star_limit() -> None:
+    from blumkin.browser.guard import validate_control_patterns
+
+    validate_control_patterns(["Actions for * Report ＊＊＊"])
+
+
+def test_a_pattern_cannot_open_a_confirm_only_name_outside_a_dialog() -> None:
+    raw, driver = _guard("Clos*", confirm=("Close",))
+    raw.present["Close"] = ("menuitem",)
+    raw.controls["Close"] = ControlInfo(tag="div", input_type="", in_form=False)
+
+    with pytest.raises(SubmitBlockedError, match="not in a dialog"):
+        driver.click("Close")
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_private_use_character_in_a_pattern_is_refused() -> None:
+    from blumkin.browser.guard import validate_control_patterns
+
+    with pytest.raises(SubmitBlockedError, match="private-use"):
+        validate_control_patterns(["Item * ()"])

@@ -261,6 +261,11 @@ When the page legitimately repeats a name (a "More actions" button on every row)
 match is refused until `--nth N` (1-based, in DOM order, the order `browser read --aria` lists
 them) says which one is meant; it narrows the lookup only, and the policy and the vetting of
 that element are unchanged. `--nth` is for `click` only.
+A declared name may contain `*` for any text (`"Actions for * Report"` covers a saved report's
+actions link whatever the trip is called); a pattern needs at least four letters or digits of
+fixed text that is not a finalizing word, and the clicked name is still checked against the
+finalizing words. A refusal for an undeclared control lists the names and patterns the task
+declares.
 A button that confirms a dialog's own rows (an attachments dialog's `OK`) can be declared in
 `dialog_confirm` instead of `allowed_controls` (such a button is usually submit-type, which is
 why it is refused otherwise): it is clicked only inside a dialog whose form, if it has one,

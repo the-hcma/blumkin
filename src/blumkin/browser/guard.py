@@ -70,6 +70,12 @@ DEFAULT_DENY_NAMES: tuple[str, ...] = (
     "transmit",
 )
 
+#: Fixed letters or digits a control pattern must keep (a bare `*` would declare everything).
+MIN_PATTERN_LITERAL = 4
+
+#: Most `*` a control pattern may hold; every one is a place the page chooses the text.
+MAX_PATTERN_STARS = 2
+
 
 class SubmitBlockedError(BrowserActionError):
     """The guard refused an action that could finalize the task's form."""
@@ -91,7 +97,15 @@ class GuardedDriver:
     """The `BrowserDriver` a task uses; wraps the raw driver with the submit guard."""
 
     def __init__(self, raw: RawBrowserDriver, policy: GuardPolicy) -> None:
-        self._allowed = frozenset(_exact(name) for name in policy.allowed_controls)
+        validate_control_patterns(policy.allowed_controls, policy.extra_deny_names)
+        self._allowed = frozenset(
+            _exact(name) for name in policy.allowed_controls if "*" not in name
+        )
+        self._patterns = tuple(
+            _pattern_regex(name) for name in sorted(policy.allowed_controls) if "*" in name
+        )
+        self._declared = tuple(sorted(set(policy.allowed_controls)))
+        self._confirm_names = tuple(sorted(set(policy.dialog_confirm)))
         self._deny = _deny_stems((*DEFAULT_DENY_NAMES, *policy.extra_deny_names))
         validate_dialog_confirm(policy.dialog_confirm, policy.extra_deny_names)
         self._confirm = frozenset(_exact(name) for name in policy.dialog_confirm)
@@ -112,8 +126,10 @@ class GuardedDriver:
             raise self._refuse(action, f"the role {role!r} is not one a task may click")
         if _is_denied(name, self._deny):
             raise self._refuse(action, "its name is a finalizing action")
-        if _exact(name) not in self._allowed and not (confirm_ok and _exact(name) in self._confirm):
-            raise self._refuse(action, "the control is not declared by the task")
+        if not self._is_declared(name, role) and not (confirm_ok and _exact(name) in self._confirm):
+            raise self._refuse(
+                action, f"the control is not declared by the task{self._declared_hint()}"
+            )
 
     def click(
         self,
@@ -137,7 +153,7 @@ class GuardedDriver:
             raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
         chosen, action = self._locate(name, role, wait_s, nth)
         self._raw.checked_click(
-            name, chosen, lambda info: self._vet_control(action, info, name), nth=nth
+            name, chosen, lambda info: self._vet_control(action, info, name, chosen), nth=nth
         )
         return chosen
 
@@ -281,7 +297,45 @@ class GuardedDriver:
             raise BrowserActionError(
                 f"Expected {name!r} in one role, got {', '.join(found)}; pass --role to choose"
             )
-        return next(iter(found)), action
+        resolved = next(iter(found))
+        if role is None:
+            self.check_click(name, resolved, confirm_ok=confirm_ok)
+        return resolved, action
+
+    def _declared_hint(self) -> str:
+        """The task's declared control names and patterns, for a refusal that lists them."""
+        if not self._declared and not self._confirm_names:
+            return " (the task declares no controls)"
+        shown = ", ".join(repr(name) for name in self._declared[:_HINT_NAMES])
+        more = (
+            f" and {len(self._declared) - _HINT_NAMES} more"
+            if len(self._declared) > _HINT_NAMES
+            else ""
+        )
+        parts = []
+        if self._declared:
+            star = "; a `*` stands for any text" if self._patterns else ""
+            parts.append(f"declared: {shown}{more}{star}")
+        if self._confirm_names:
+            parts.append(
+                "dialog confirms: " + ", ".join(repr(name) for name in self._confirm_names)
+            )
+        return f" ({'; '.join(parts)})"
+
+    def _is_declared(self, name: str, role: str | None = None) -> bool:
+        """Whether `name` is one of the declared controls, exactly or by a declared pattern.
+
+        A menu item is never reached by a pattern: each one stays individually declared, so
+        `Dupl*` cannot authorize `Duplicate`.
+        """
+        folded = _exact(name)
+        if folded in self._allowed:
+            return True
+        if role in _MENU_ROLES:
+            return False
+        return len(folded) <= _MAX_PATTERN_NAME and any(
+            rule.fullmatch(folded) for rule in self._patterns
+        )
 
     def _vet_field_name(self, action: str, name: str) -> None:
         """Refuse a field whose own accessible name is a finalizing action."""
@@ -295,7 +349,9 @@ class GuardedDriver:
             "stop and hand the final step to the user"
         )
 
-    def _vet_control(self, action: str, info: ControlInfo, name: str | None = None) -> None:
+    def _vet_control(
+        self, action: str, info: ControlInfo, name: str | None = None, role: str | None = None
+    ) -> None:
         """Raise if the element about to be clicked could finalize a form.
 
         A name declared as a dialog confirm (and not as a plain control) is valid only inside a
@@ -304,7 +360,7 @@ class GuardedDriver:
         confirm = False
         if name is not None and _exact(name) in self._confirm:
             confirm = True
-            if _exact(name) not in self._allowed:
+            if not self._is_declared(name, role):
                 # Declared only as a dialog confirm: valid in a dialog whose form is its own,
                 # whatever type of button it is.
                 if not info.in_dialog:
@@ -345,6 +401,15 @@ def attach_guarded(
         raise
 
 
+#: Most declared names listed in a "not declared" refusal.
+_HINT_NAMES = 10
+#: Longest name a pattern is tried against (page-supplied names can be arbitrarily long).
+_MAX_PATTERN_NAME = 300
+#: Menu items are never reached by a pattern: each stays individually declared.
+_MENU_ROLES = frozenset({"menuitem", "menuitemcheckbox", "menuitemradio"})
+#: Stands in for an ASCII `*` while a pattern is normalized, so a fullwidth `＊` (which NFKC turns
+#: into `*`) stays literal text.
+_WILDCARD = "\ue000"
 _BUTTON_LIKE_INPUT_TYPES = frozenset({"button", "image", "reset", "submit"})
 #: Roles a dropdown has; `select` never goes through a button, link or other clickable role.
 _SELECT_ROLES = frozenset({"combobox", "listbox", "searchbox", "textbox"})
@@ -390,6 +455,50 @@ def is_finalizing_name(name: str, extra_deny: Sequence[str] = ()) -> bool:
     return _is_denied(name, _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny)))
 
 
+def validate_control_patterns(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
+    """Refuse a declared control pattern that is too loose or could name a finalizing action.
+
+    A pattern is a declared name with `*` standing for any text (`Actions for *`). It must start
+    with fixed text, hold at most `MAX_PATTERN_STARS` stars and keep at least
+    `MIN_PATTERN_LITERAL` letters or digits of fixed text, and that fixed text must not itself
+    be a finalizing word: `Submit *` is refused. Only an ASCII `*` is a wildcard. The name
+    actually clicked is still checked against the finalizing words, so a pattern can never
+    reach one.
+    """
+    deny = _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny_names))
+    for name in names:
+        if "*" not in name:
+            continue
+        if _WILDCARD in name:
+            raise SubmitBlockedError(
+                f"Expected a control pattern without private-use characters, got {name!r}. "
+                "A browser task never submits"
+            )
+        folded = _wild(name)
+        if folded.startswith(_WILDCARD):
+            raise SubmitBlockedError(
+                f"Expected a control pattern that starts with fixed text, got {name!r}: the "
+                "page would choose how the name begins. A browser task never submits"
+            )
+        if len(re.findall(f"{_WILDCARD}+", folded)) > MAX_PATTERN_STARS:
+            raise SubmitBlockedError(
+                f"Expected a control pattern with at most {MAX_PATTERN_STARS} `*`, got {name!r}. "
+                "A browser task never submits"
+            )
+        literal = folded.replace(_WILDCARD, " ")
+        solid = sum(char.isalnum() for char in literal)
+        if solid < MIN_PATTERN_LITERAL:
+            raise SubmitBlockedError(
+                f"Expected a control pattern with at least {MIN_PATTERN_LITERAL} letters or "
+                f"digits of fixed text, got {name!r}. A browser task never submits"
+            )
+        if _is_denied(literal, deny):
+            raise SubmitBlockedError(
+                f"Expected a control pattern that is not a finalizing action, got {name!r}. "
+                "A browser task never submits"
+            )
+
+
 def validate_dialog_confirm(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
     """Refuse a `dialog_confirm` that names a finalizing action (`Submit`, `Pay`, ...)."""
     deny = _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny_names))
@@ -431,6 +540,11 @@ def _exact(text: str) -> str:
     """Normalize for the allow list: NFKC, no zero-width characters, collapsed spaces; the
     case is kept because the browser matches an accessible name exactly."""
     return " ".join(unicodedata.normalize("NFKC", text).translate(_ZERO_WIDTH).split())
+
+
+def _wild(pattern: str) -> str:
+    """`_exact` for a declared pattern: each ASCII `*` becomes `_WILDCARD`, all else is text."""
+    return _exact(pattern.replace("*", _WILDCARD))
 
 
 def _folded(text: str) -> str:
@@ -476,6 +590,13 @@ def _key_is_safe(key: str) -> bool:
     if key in _NAVIGATION_KEYS:
         return True
     return len(key) == 1 and key.isprintable() and not key.isspace()
+
+
+def _pattern_regex(pattern: str) -> re.Pattern[str]:
+    """A declared pattern as a regex: `*` is any text, everything else is exact."""
+    collapsed = re.sub(f"{_WILDCARD}+", _WILDCARD, _wild(pattern))
+    parts = (re.escape(part) for part in collapsed.split(_WILDCARD))
+    return re.compile(".*".join(parts), re.DOTALL)
 
 
 def _runs_script(href: str) -> bool:
