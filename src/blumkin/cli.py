@@ -299,6 +299,10 @@ _DEFAULT_HINTS: dict[str, str] = {
         "Run `blumkin auth login` on this machine (or `blumkin auth refresh` for an "
         "expired access token), then retry. `blumkin auth status` shows the current state."
     ),
+    "export_failed": (
+        "The message could not be exported. Pick a different --out or --name if a file "
+        "already exists, make sure Chrome (or Chromium or Edge) is installed, then retry."
+    ),
     "graph_error": (
         "Retry once. If it persists, check `blumkin auth status` and your provider's "
         "service health, and re-run with --json for the raw error."

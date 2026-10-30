@@ -461,6 +461,7 @@ _ERROR_KEYS = {"error", "message", "ok"}
 
 _ERROR_VALUES = {
     "auth_required",
+    "export_failed",
     "graph_error",
     "install_failed",
     "missing_scope",
