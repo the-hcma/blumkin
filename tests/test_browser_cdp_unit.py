@@ -2326,8 +2326,6 @@ def test_a_popup_link_that_appears_only_when_the_combobox_is_open_is_used() -> N
 
 
 def test_only_visible_lists_count_when_the_dropdown_names_none() -> None:
-    from blumkin.browser import cdp
-
     pw, driver = _driver()
     pw.page.tags["Type"] = "div"
     pw.page.label_counts['[role="listbox"]:visible'] = 1
@@ -2336,4 +2334,5 @@ def test_only_visible_lists_count_when_the_dropdown_names_none() -> None:
 
     driver.select("Type", "Taxi")
 
-    assert '[role="listbox"]:visible' in cdp.PlaywrightDriver._popup.__code__.co_consts
+    # Counting the hidden lists too (4) would have refused the select.
+    assert len([call for call in pw.page.calls if call[0] == "handle-click"]) == 2
