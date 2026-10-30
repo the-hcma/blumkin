@@ -1519,6 +1519,9 @@ def _dispatch_soft(
     raise SystemExit(fail_exit if failed else EXIT_SUCCESS)
 
 
+_GLOBAL_ONLY_OPTIONS = frozenset({"--profile", "--tz"})
+
+
 def _xdg_base(var: str, default: Path) -> Path:
     """XDG base dir from ``$var``, honoring the spec: a relative value is ignored."""
     value = os.environ.get(var, "")
@@ -1526,7 +1529,34 @@ def _xdg_base(var: str, default: Path) -> Path:
     return candidate if candidate.is_absolute() else default
 
 
-@click.group(epilog=help_text.MAIN_EPILOG)
+class _BlumkinGroup(click.Group):
+    """The top-level group: a global option typed after a subcommand gets a placement hint."""
+
+    def invoke(self, ctx: click.Context) -> Any:
+        try:
+            return super().invoke(ctx)
+        except click.NoSuchOption as exc:
+            if exc.option_name not in _GLOBAL_ONLY_OPTIONS:
+                raise
+            raise click.UsageError(
+                f"{exc.option_name} is a global option: put it before the subcommand, as in "
+                f"`blumkin {exc.option_name} VALUE {' '.join(_subcommand_path(exc.ctx))}`",
+                ctx=exc.ctx,
+            ) from exc
+
+
+def _subcommand_path(ctx: click.Context | None) -> list[str]:
+    """The subcommand words typed so far (`mail inbox`), for an example in a hint."""
+    if ctx is None:
+        return []
+    path: list[str] = []
+    while ctx.parent is not None:  # the root is the program, whatever its name has in it
+        path.append(ctx.info_name or "")
+        ctx = ctx.parent
+    return path[::-1]
+
+
+@click.group(cls=_BlumkinGroup, epilog=help_text.MAIN_EPILOG)
 @click.option(
     "--profile",
     default=None,

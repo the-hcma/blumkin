@@ -10,6 +10,7 @@ Exceptions propagate unchanged - callers classify them with
 
 from __future__ import annotations
 
+import difflib
 from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any
@@ -615,6 +616,21 @@ async def run_skill(
 # --------------------------------------------------------------------------- postprocessing
 
 
+def _suggest_fields(unknown: list[str], valid: set[str]) -> str:
+    """` (did you mean 'x'?)` for names close to a valid field, or nothing."""
+    close: list[str] = []
+    for name in unknown:
+        folded = name.casefold()
+        pool = {field.casefold(): field for field in valid}
+        matches = [pool[key] for key in pool if key.startswith(folded + "_")] + [
+            pool[key] for key in difflib.get_close_matches(folded, list(pool), n=2, cutoff=0.7)
+        ]
+        close.extend(match for match in matches if match not in close)
+    if not close:
+        return ""
+    return " (did you mean " + " or ".join(repr(name) for name in sorted(close)) + "?)"
+
+
 def _filter_fields(payload: dict[str, Any], fields: list[str]) -> dict[str, Any]:
     """Narrow each ``payload["items"]`` dict to just ``fields``, in request order.
 
@@ -635,7 +651,10 @@ def _filter_fields(payload: dict[str, Any], fields: list[str]) -> dict[str, Any]
         valid.update(item)
     unknown = [name for name in fields if name not in valid]
     if unknown:
-        raise ValueError(f"unknown --fields value(s) {unknown!r}; valid fields are {sorted(valid)}")
+        raise ValueError(
+            f"unknown --fields value(s) {unknown!r}{_suggest_fields(unknown, valid)}; "
+            f"valid fields are {sorted(valid)}"
+        )
     narrowed = [{name: item.get(name) for name in fields} for item in items]
     return {**payload, "items": narrowed}
 

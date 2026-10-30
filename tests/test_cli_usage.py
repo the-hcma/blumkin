@@ -1892,3 +1892,19 @@ def test_wo1162425_gate_does_not_apply_to_a_google_profile(tmp_path, monkeypatch
         result = CliRunner().invoke(main, ["people", "resolve", "--name", "Ada", "--json"])
     assert result.exit_code == 0, result.stderr
     assert json.loads(result.stdout)["person"]["email"] == "a@b.com"
+
+
+def test_the_profile_option_after_the_subcommand_says_where_it_goes() -> None:
+    option = "--profile"
+    result = CliRunner().invoke(main, ["mail", "inbox", option, "x"])
+
+    assert result.exit_code == EXIT_USAGE
+    assert f"{option} is a global option: put it before the subcommand" in result.output
+    assert f"blumkin {option} VALUE mail inbox" in result.output
+
+
+def test_an_option_that_is_simply_unknown_gets_no_placement_hint() -> None:
+    result = CliRunner().invoke(main, ["mail", "inbox", "--no-such-flag"])
+
+    assert result.exit_code == EXIT_USAGE
+    assert "before the subcommand" not in result.output
