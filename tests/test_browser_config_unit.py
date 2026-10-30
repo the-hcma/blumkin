@@ -456,3 +456,27 @@ def test_a_form_url_the_parser_chokes_on_is_refused_without_echoing_it(
 
     assert "hunter2" not in str(caught.value)
     assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.example.net\\\\.erp.example.com/x",
+        "https://erp.example.com:bad/x",
+        "https://erp.example.com/a b",
+        "https://erp.example.com/a\\u0000b",
+        "https://erp\\u202e.example.com/x",
+    ],
+)
+def test_a_form_url_a_browser_would_read_differently_from_python_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nallowed_hosts = ["*.example.com"]\n'
+        f'form_url = "{url}"\n\n',
+    )
+
+    with pytest.raises(ProviderConfigError, match="form_url"):
+        load_config()

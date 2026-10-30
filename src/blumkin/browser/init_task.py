@@ -19,31 +19,76 @@ import errno
 import os
 import stat
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from blumkin.browser.profiles import BrowserProfileError, create_profile, validate_task_name
+from blumkin.config import validate_browser_task_table
 from blumkin.config_lock import config_file_lock
+from blumkin.providers.kind import ProviderConfigError
 
 
 class InitTaskError(ValueError):
     """The template or the task name is unknown, or `config.toml` cannot take the policy."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TaskTemplate:
     """The policy and the first steps for one known site."""
 
     allowed_controls: tuple[str, ...]
     allowed_hosts: tuple[str, ...]
+    #: Buttons that confirm a dialog's own rows (valid only inside a dialog).
+    dialog_confirm: tuple[str, ...] = ()
     name: str
+    #: The site's host differs per organization, so the caller names it (`--host`).
+    needs_host: bool = False
     #: Format with `task=`; the commands to run once the policy is in place.
     next_steps: tuple[str, ...]
     summary: str
+    #: Where uploads may be read from when the caller names no folder.
+    upload_dirs: tuple[str, ...] = ()
 
 
 TEMPLATES: dict[str, TaskTemplate] = {
+    "expense-report": TaskTemplate(
+        # Names the Oracle Fusion Expenses flow shows, none of which is a finalizing name:
+        # `Actions for * Report` opens a saved report's actions menu (its `Open` item is
+        # declared by itself; `Submit`, `Delete` and `Duplicate` never are), and `OK` confirms
+        # the attachments dialog only inside that dialog. Edit them to what your form shows.
+        allowed_controls=(
+            "Actions for * Report",
+            "Add Row",
+            "Create Item",
+            "Create Report",
+            "Manage Attachments",
+            "Open",
+            "Save",
+            "Save and Close",
+        ),
+        allowed_hosts=(),
+        dialog_confirm=("OK",),
+        name="expense-report",
+        needs_host=True,
+        next_steps=(
+            "Check the controls in config.toml against what your expense form shows; they are the "
+            "names of the Oracle Fusion Expenses flow; none is a finalizing name.",
+            "Launch the browser and open the form: `blumkin browser launch {task} --open` (needs "
+            "`--form-url` here or `form_url` in config.toml), then sign in by hand.",
+            "Record each page and dialog the flow passes through, one at a time: stay on the "
+            "page, then `blumkin browser explore observe {task} PAGE` (it adds the page to the "
+            "same draft, or to the stored model); then `blumkin browser explore save {task} "
+            "--yes`.",
+            "File a receipt: `blumkin receipts summarize` the files, confirm the table and the "
+            "total with the user, `blumkin receipts rehome ... --yes`, then fill the item with "
+            "`blumkin browser fill`, `select` and `upload` (one run per receipt). The task never "
+            "submits: end with `blumkin browser handoff {task}`.",
+        ),
+        summary="File receipts into an expense report through the task browser (never submits).",
+        upload_dirs=("~/Documents/receipts-archive",),
+    ),
     "teams-transcript": TaskTemplate(
         allowed_controls=("Notes", "Transcript"),
         allowed_hosts=("teams.cloud.microsoft", "teams.microsoft.com", "*.sharepoint.com"),
@@ -63,20 +108,49 @@ TEMPLATES: dict[str, TaskTemplate] = {
 }
 
 
-def init_task(config_dir: Path, task: str, template_name: str, *, write: bool) -> dict[str, Any]:
-    """Create the task's profile; add its policy to `config.toml` when `write` is true."""
+def init_task(
+    config_dir: Path,
+    task: str,
+    template_name: str,
+    *,
+    write: bool,
+    hosts: Sequence[str] = (),
+    upload_dirs: Sequence[str] = (),
+    form_url: str = "",
+) -> dict[str, Any]:
+    """Create the task's profile; add its policy to `config.toml` when `write` is true.
+
+    `hosts`, `upload_dirs` and `form_url` replace what the template starts with; a template whose
+    site differs per organization (`needs_host`) refuses to go on without a host.
+    """
     template = TEMPLATES.get(template_name)
     if template is None:
         raise InitTaskError(
             f"Expected one of {', '.join(sorted(TEMPLATES))}, got template {template_name!r}"
         )
+    chosen_hosts = tuple(host.strip().lower() for host in hosts) or template.allowed_hosts
+    if template.needs_host and not chosen_hosts:
+        raise InitTaskError(
+            f"Expected --host for the {template.name!r} template (the site's host differs per "
+            "organization, for example erp.example.com), got none"
+        )
+    if (upload_dirs or form_url.strip()) and not template.upload_dirs:
+        raise InitTaskError(
+            f"Expected no --upload-dir or --form-url for the {template.name!r} template (it "
+            "uploads nothing), got one"
+        )
+    chosen_dirs = tuple(upload_dirs) or template.upload_dirs
+    chosen_url = form_url.strip()
     try:
         validate_task_name(task)
         create_profile(config_dir, task)
     except BrowserProfileError as exc:
         raise InitTaskError(str(exc)) from exc
     path = config_dir / "config.toml"
-    table = render_table(task, template)
+    table = render_table(
+        task, template, hosts=chosen_hosts, upload_dirs=chosen_dirs, form_url=chosen_url
+    )
+    _check_policy(task, table)
     declared, written = _update_config(path, task, table, write=write)
     return {
         "action": "init-task",
@@ -92,11 +166,66 @@ def init_task(config_dir: Path, task: str, template_name: str, *, write: bool) -
     }
 
 
-def render_table(task: str, template: TaskTemplate) -> str:
+def render_table(
+    task: str,
+    template: TaskTemplate,
+    *,
+    hosts: Sequence[str] | None = None,
+    upload_dirs: Sequence[str] | None = None,
+    form_url: str = "",
+) -> str:
     """The `[browser.tasks.<task>]` table for `template`, as TOML text."""
-    controls = ", ".join(f'"{name}"' for name in template.allowed_controls)
-    hosts = ", ".join(f'"{host}"' for host in template.allowed_hosts)
-    return f"[browser.tasks.{task}]\nallowed_hosts = [{hosts}]\nallowed_controls = [{controls}]\n"
+    lines = [f"[browser.tasks.{task}]"]
+    lines.append(
+        f"allowed_hosts = {_toml_list(template.allowed_hosts if hosts is None else hosts)}"
+    )
+    lines.append(f"allowed_controls = {_toml_list(template.allowed_controls)}")
+    if template.dialog_confirm:
+        lines.append(f"dialog_confirm = {_toml_list(template.dialog_confirm)}")
+    folders = template.upload_dirs if upload_dirs is None else upload_dirs
+    if folders:
+        lines.append(f"upload_dirs = {_toml_list(folders)}")
+    if form_url:
+        lines.append(f"form_url = {_toml_string(form_url)}")
+    return "\n".join(lines) + "\n"
+
+
+def _check_policy(task: str, table: str) -> None:
+    """Refuse a table that the real config loader would reject, before anything is written."""
+    try:
+        parsed = tomllib.loads(table)
+        validate_browser_task_table(task, parsed["browser"]["tasks"][task])
+    except (tomllib.TOMLDecodeError, ProviderConfigError, KeyError) as exc:
+        raise InitTaskError(f"Expected a valid [browser.tasks.{task}] table, got: {exc}") from exc
+
+
+def _toml_list(values: Sequence[str]) -> str:
+    return "[" + ", ".join(_toml_string(value) for value in values) + "]"
+
+
+def _toml_string(value: str) -> str:
+    """A TOML basic string with every character outside printable ASCII escaped.
+
+    Not `json.dumps`: JSON writes a character beyond the first plane as a surrogate pair, which
+    TOML forbids; TOML wants one eight-digit `\\U` escape. A lone surrogate is refused.
+    """
+    escapes = {'"': '\\"', "\\": "\\\\", "\n": "\\n", "\t": "\\t", "\r": "\\r"}
+    out = ['"']
+    for char in value:
+        code = ord(char)
+        if char in escapes:
+            out.append(escapes[char])
+        elif 0x20 <= code < 0x7F:
+            out.append(char)
+        elif 0xD800 <= code <= 0xDFFF:
+            # The value is not echoed: it can be an address with a password in it.
+            raise InitTaskError("Expected text without a lone surrogate, got an invalid character")
+        elif code <= 0xFFFF:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(f"\\U{code:08x}")
+    out.append('"')
+    return "".join(out)
 
 
 def _declared_tasks(parsed: dict[str, Any], path: Path) -> set[str]:
