@@ -35,9 +35,11 @@ from typing import Any
 from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
     DEFAULT_CLICK_WAIT_S,
+    FIELD_ROLES,
     BrowserActionError,
     ControlInfo,
     DownloadedFile,
+    FieldTarget,
     FrameCapture,
     FrameInfo,
     PageText,
@@ -154,8 +156,10 @@ class GuardedDriver:
             timeout_s=DEFAULT_ACTION_TIMEOUT_S,
         )
 
-    def fill(self, label: str, value: str) -> None:
-        self._raw.fill(label, value)
+    def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:
+        """Fill a field; returns the value it holds afterwards (None for a password field)."""
+        self._check_target(target)
+        return self._raw.fill(label, value, target)
 
     def frame_aria_snapshot(
         self,
@@ -205,12 +209,43 @@ class GuardedDriver:
     def title(self) -> str:
         return self._raw.title()
 
-    def upload(self, label: str, path: Path) -> None:
-        self._raw.upload(label, path)
+    def select(self, label: str, option: str, target: FieldTarget | None = None) -> str | None:
+        """Choose an option in a dropdown; an option or field that finalizes a form is refused."""
+        action = f"select {option!r} in {label!r}"
+        if _is_denied(option, self._deny) or _is_denied(label, self._deny):
+            raise self._refuse(action, "its name is a finalizing action")
+        if target is not None and target.role is not None and target.role not in _SELECT_ROLES:
+            raise self._refuse(action, f"the role {target.role!r} is not one a dropdown has")
+        self._check_target(target)
+        return self._raw.select(
+            label,
+            option,
+            target,
+            lambda info: self._vet_control(action, info),
+            lambda name: self._vet_field_name(action, name),
+        )
+
+    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None:
+        self._check_target(target)
+        self._raw.upload(label, path, target)
 
     @property
     def url(self) -> str:
         return self._raw.url
+
+    def _check_target(self, target: FieldTarget | None) -> None:
+        """Reject a malformed narrowing before the page is touched."""
+        if target is None:
+            return
+        nth = target.nth
+        if nth is not None and (isinstance(nth, bool) or not isinstance(nth, int) or nth < 1):
+            raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
+        if target.frame_host is not None and target.frame is None:
+            raise ValueError("Expected a frame number with a frame host, got none")
+        if target.role is not None and target.role not in FIELD_ROLES:
+            raise ValueError(
+                f"Expected a field role ({', '.join(sorted(FIELD_ROLES))}), got {target.role!r}"
+            )
 
     def _locate(
         self, name: str, role: str | None, wait_s: float, nth: int | None = None
@@ -231,6 +266,11 @@ class GuardedDriver:
                 f"Expected {name!r} in one role, got {', '.join(found)}; pass --role to choose"
             )
         return next(iter(found)), action
+
+    def _vet_field_name(self, action: str, name: str) -> None:
+        """Refuse a field whose own accessible name is a finalizing action."""
+        if _is_denied(name, self._deny):
+            raise self._refuse(action, "the field's own name is a finalizing action")
 
     def _refuse(self, action: str, reason: str) -> SubmitBlockedError:
         _LOGGER.info("browser guard refused to %s: %s", action, reason)
@@ -264,6 +304,9 @@ def attach_guarded(
 
 
 _BUTTON_LIKE_INPUT_TYPES = frozenset({"button", "image", "reset", "submit"})
+#: Roles a dropdown has; `select` never goes through a button, link or other clickable role.
+_SELECT_ROLES = frozenset({"combobox", "listbox", "searchbox", "textbox"})
+
 _CLICKABLE_ROLES = frozenset(
     {
         "button",

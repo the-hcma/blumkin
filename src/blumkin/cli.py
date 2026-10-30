@@ -58,6 +58,7 @@ from blumkin.browser.actions import (
     press_task,
     read_task,
     refresh_tab_task,
+    select_task,
     transcript_task,
     upload_task,
 )
@@ -587,6 +588,72 @@ def _browser_action(
         emit_json(payload)
         return
     emit_lines([f"{task}: {done}"])
+
+
+def _field_options[F: Callable[..., Any]](command: F) -> F:
+    """The options `browser fill`, `select` and `upload` share to single out one field."""
+    options = [
+        click.option(
+            "--exact",
+            is_flag=True,
+            help="Match the whole label, not a case-insensitive part of it.",
+        ),
+        click.option(
+            "--frame",
+            type=click.IntRange(min=1),
+            default=None,
+            help="Work inside child frame N (see `browser frames`); needs allowed_hosts.",
+        ),
+        click.option(
+            "--host",
+            default=None,
+            help="With --frame: refuse unless that frame is on this host (numbers can shift).",
+        ),
+        click.option(
+            "--nth",
+            type=click.IntRange(min=1),
+            default=None,
+            help="Which match to use, 1-based in DOM order, when the label is repeated "
+            "(default: refuse more than one and list them).",
+        ),
+        click.option(
+            "--role",
+            default=None,
+            help="Find the field by accessible role and name (for example textbox, combobox).",
+        ),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+def _field_action(
+    ctx: click.Context,
+    as_json_flag: bool,
+    task: str,
+    call: Callable[[], dict[str, Any]],
+    done: str,
+) -> None:
+    """Like `_browser_action`, and for fill and select also says what the field now holds."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = call()
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    lines = [f"{task}: {done}"]
+    if payload.get("matches") is False:
+        lines.append(
+            f"  the field now holds {sanitize_terminal(payload['read_back'])!r}, not what was set"
+        )
+    emit_lines(lines)
+
+
+def _require_frame_for_host(frame: int | None, host: str | None) -> None:
+    if host is not None and frame is None:
+        raise click.UsageError("--host needs --frame")
 
 
 def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
@@ -2623,15 +2690,38 @@ def browser_download(
 @click.argument("task")
 @click.argument("label")
 @click.argument("value")
+@_field_options
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
-def browser_fill(ctx: click.Context, task: str, label: str, value: str, as_json_flag: bool) -> None:
-    """Fill the field with that label (the value is not echoed)."""
-    _browser_action(
+def browser_fill(
+    ctx: click.Context,
+    task: str,
+    label: str,
+    value: str,
+    as_json_flag: bool,
+    exact: bool,
+    frame: int | None,
+    host: str | None,
+    nth: int | None,
+    role: str | None,
+) -> None:
+    """Fill the field with that label and report the value it holds afterwards."""
+    _require_frame_for_host(frame, host)
+    _field_action(
         ctx,
         as_json_flag,
         task,
-        lambda: fill_task(load_browser_setup(), task, label, value),
+        lambda: fill_task(
+            load_browser_setup(),
+            task,
+            label,
+            value,
+            exact=exact,
+            frame=frame,
+            host=host,
+            nth=nth,
+            role=role,
+        ),
         "filled",
     )
 
@@ -3326,21 +3416,82 @@ def browser_transcript(
     emit_lines(lines)
 
 
+@browser.command("select", epilog=help_text.BROWSER_SELECT_EPILOG)
+@click.argument("task")
+@click.argument("label")
+@click.argument("option")
+@_field_options
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_select(
+    ctx: click.Context,
+    task: str,
+    label: str,
+    option: str,
+    as_json_flag: bool,
+    exact: bool,
+    frame: int | None,
+    host: str | None,
+    nth: int | None,
+    role: str | None,
+) -> None:
+    """Choose an option in the dropdown (native select or combobox) with that label."""
+    _require_frame_for_host(frame, host)
+    _field_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: select_task(
+            load_browser_setup(),
+            task,
+            label,
+            option,
+            exact=exact,
+            frame=frame,
+            host=host,
+            nth=nth,
+            role=role,
+        ),
+        "selected",
+    )
+
+
 @browser.command("upload", epilog=help_text.BROWSER_UPLOAD_EPILOG)
 @click.argument("task")
 @click.argument("label")
 @click.argument("path", type=click.Path(path_type=Path))
+@_field_options
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_upload(
-    ctx: click.Context, task: str, label: str, path: Path, as_json_flag: bool
+    ctx: click.Context,
+    task: str,
+    label: str,
+    path: Path,
+    as_json_flag: bool,
+    exact: bool,
+    frame: int | None,
+    host: str | None,
+    nth: int | None,
+    role: str | None,
 ) -> None:
     """Attach an existing file to the file field with that label."""
-    _browser_action(
+    _require_frame_for_host(frame, host)
+    _field_action(
         ctx,
         as_json_flag,
         task,
-        lambda: upload_task(load_browser_setup(), task, label, path),
+        lambda: upload_task(
+            load_browser_setup(),
+            task,
+            label,
+            path,
+            exact=exact,
+            frame=frame,
+            host=host,
+            nth=nth,
+            role=role,
+        ),
         "uploaded",
     )
 

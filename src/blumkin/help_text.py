@@ -404,8 +404,19 @@ Examples:
 \b
   blumkin browser fill expense-report "Amount" 12.50
   blumkin browser fill time-sheet "Monday hours" 8 --json
+  blumkin browser fill expense-report "Date" 2026-10-23 --nth 2
+  blumkin browser fill expense-report "Merchant" "Corner Cafe" --role textbox --exact
+  blumkin browser fill expense-report "Title" "Taxi" --frame 1 --host attachments.example.com
 
-Fills the field with that label. The value is never echoed back in the output. A value
+Fills the field with that label and checks what the field holds afterwards: `matches` says
+whether it is exactly what was typed, and when it is not (an autocomplete expanded the text to a
+canonical form, or rewrote it) the field's value is returned as `read_back`. What was typed is
+never echoed back and a password field is never read. A label that matches more than one field
+is refused with every match listed by role and accessible name; narrow it with `--exact` (the
+whole label), `--role` (look it up by accessible role and name) or `--nth N` (1-based, in DOM
+order, the order `browser read --aria` lists them). `--frame N` (a number from
+`browser frames`, pinned with `--host`) works inside a child frame, which must be on a host in
+`allowed_hosts`. A value
 that starts with a dash needs `--` before it, for example
 `blumkin browser fill TASK "Adjustment" -- -5`.
 """
@@ -808,13 +819,38 @@ Examples:
 \b
   blumkin browser upload expense-report "Receipt" ~/Documents/receipts/taxi.jpg
   blumkin browser upload expense-report "Receipt" ./hotel.pdf --json
+  blumkin browser upload expense-report "File" ./taxi.pdf --frame 1 --nth 2
 
-Attaches an existing file to the file field with that label. The file must be a regular
+Attaches an existing file to the file field with that label. `--exact`, `--role`, `--nth` and
+`--frame` (with `--host`) single out one field exactly as for `browser fill`, so an upload can
+reach a file input inside a child frame such as an attachments dialog; the frame must be on an
+allowed host and the folder rules below apply unchanged. The file must be a regular
 file inside a folder the task declared in `upload_dirs` under `[browser.tasks.TASK]` in
 config.toml (absolute, or starting with `~/`), and the page must be on a host the task
 declared in `allowed_hosts`; with either missing nothing can be uploaded, so a page cannot
 make an agent upload an arbitrary file or send a receipt to another site. Receipts stay on this
 machine and go only to the page you pointed the task at.
+"""
+
+BROWSER_SELECT_EPILOG = """
+Examples:
+
+\b
+  blumkin browser select expense-report "Type" "Taxi"
+  blumkin browser select expense-report "Type" "Meals" --nth 2 --json
+  blumkin browser select expense-report "Category" "Travel" --role combobox --frame 1
+
+Chooses an option in a native dropdown or an ARIA combobox: a native select takes the option
+by its label; a combobox is opened and the one option with exactly that name is clicked
+(none, or more than one, is an error). The result says whether the field then shows that option
+(`matches`, with `read_back` when it shows something else). `--exact`, `--role`, `--nth` and
+`--frame` (with `--host`) single out one field as for `browser fill`. An option or field named
+like a finalizing action (Submit, Pay, Send, ...) is refused, as it is for `click`. A combobox
+and its option are checked like a click before they are clicked (a submit control, a formaction
+or a script link is refused), and `--role` for a dropdown is one of combobox, listbox, searchbox
+or textbox; `fill` and `upload` accept the field roles checkbox, combobox, listbox, radio,
+searchbox, slider, spinbutton, switch and textbox. A frame reached only over its own DevTools
+socket can be read but not filled, and a frame's host is checked again right before each write.
 """
 
 CAPABILITIES_EPILOG = """
