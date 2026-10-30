@@ -86,8 +86,9 @@ class _Raw:
     def describe_field(self, label: str) -> ControlInfo:
         return self.fields.get(label, ControlInfo(tag="input", input_type="text", in_form=True))
 
-    def fill(self, label: str, value: str) -> None:
+    def fill(self, label: str, value: str, target: object = None) -> str | None:
         self.calls.append(("fill", label, value))
+        return value
 
     def frame_aria_snapshot(
         self,
@@ -139,7 +140,11 @@ class _Raw:
     def title(self) -> str:
         return "Expenses"
 
-    def upload(self, label: str, path: Path) -> None:
+    def select(self, label: str, option: str, target: object = None) -> str | None:
+        self.calls.append(("select", label, option))
+        return option
+
+    def upload(self, label: str, path: Path, target: object = None) -> None:
         self.calls.append(("upload", label, str(path)))
 
 
@@ -472,6 +477,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "read_frame_text",
         "read_text",
         "scroll_frame_text",
+        "select",
         "title",
         "upload",
         "url",
@@ -615,3 +621,40 @@ def test_the_guard_asks_for_the_lenient_net_unless_the_policy_is_strict() -> Non
     strict = _Raw()
     GuardedDriver(strict, GuardPolicy(block_background_writes=True))
     assert strict.background_writes is True
+
+
+def test_select_passes_through_and_returns_what_the_field_shows() -> None:
+    raw, driver = _guard()
+
+    assert driver.select("Type", "Taxi") == "Taxi"
+    assert raw.calls == [("select", "Type", "Taxi")]
+
+
+@pytest.mark.parametrize(
+    ("label", "option"), [("Type", "Submit"), ("Pay now", "Card"), ("Action", "Confirm")]
+)
+def test_select_refuses_a_finalizing_label_or_option_before_the_page_is_touched(
+    label: str, option: str
+) -> None:
+    raw, driver = _guard()
+
+    with pytest.raises(SubmitBlockedError):
+        driver.select(label, option)
+
+    assert raw.calls == []
+
+
+def test_a_bad_nth_or_a_host_without_a_frame_is_refused_before_the_page_is_touched() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    raw, driver = _guard()
+
+    for target in (FieldTarget(nth=0), FieldTarget(nth=True), FieldTarget(frame_host="a.example")):
+        with pytest.raises(ValueError, match="Expected"):
+            driver.fill("Date", "x", target)
+        with pytest.raises(ValueError, match="Expected"):
+            driver.select("Type", "Taxi", target)
+        with pytest.raises(ValueError, match="Expected"):
+            driver.upload("File", Path("/tmp/x"), target)
+
+    assert raw.calls == []

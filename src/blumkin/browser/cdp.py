@@ -78,7 +78,7 @@ class BrowserDriver(Protocol):
         wait_s: float = DEFAULT_CLICK_WAIT_S,
     ) -> DownloadedFile: ...
 
-    def fill(self, label: str, value: str) -> None: ...
+    def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None: ...
 
     def frame_aria_snapshot(
         self,
@@ -112,9 +112,11 @@ class BrowserDriver(Protocol):
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture: ...
 
+    def select(self, label: str, option: str, target: FieldTarget | None = None) -> str | None: ...
+
     def title(self) -> str: ...
 
-    def upload(self, label: str, path: Path) -> None: ...
+    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None: ...
 
     @property
     def url(self) -> str: ...
@@ -142,6 +144,29 @@ class ControlInfo:
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
+
+
+#: Most matches listed when a label is ambiguous.
+MAX_LISTED_MATCHES = 12
+
+
+@dataclass(frozen=True, slots=True)
+class FieldTarget:
+    """Which field a label means: the narrowing `fill`, `upload` and `select` share.
+
+    `role` looks the field up by accessible role and name instead of by label, `exact` matches
+    the whole label (the default is a case-insensitive substring), and `nth` (1-based, DOM
+    order) picks one of several matches. `frame` is a child frame number (see `frames`) and
+    `frame_host` pins the host that frame must be on; `is_allowed` is the task's host check,
+    applied to the frame before anything is touched.
+    """
+
+    exact: bool = False
+    frame: int | None = None
+    frame_host: str | None = None
+    is_allowed: Callable[[str], bool] | None = None
+    nth: int | None = None
+    role: str | None = None
 
 
 DEFAULT_FRAME_WAIT_S = 30.0
@@ -365,10 +390,18 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error(f"inspect the field labelled {label!r}", exc) from exc
 
-    def fill(self, label: str, value: str) -> None:
+    def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:
+        """Fill one field and return the value it holds afterwards (None for a password).
+
+        The read-back lets a caller tell when an autocomplete did not resolve: the field can
+        hold the canonical lookup value, not the text that was typed.
+        """
         self._require_open()
+        target = target or FieldTarget()
         try:
-            self._page.get_by_label(label).fill(value, timeout=self._timeout_ms)
+            locator = self._field(self._scope(target), label, target)
+            locator.fill(value, timeout=self._timeout_ms)
+            return self._read_back(locator)
         except _playwright_error() as exc:
             raise self._action_error(f"fill the field labelled {label!r}", exc) from exc
 
@@ -639,6 +672,31 @@ class PlaywrightDriver:
         with contextlib.suppress(_playwright_error()):
             self._page.wait_for_load_state("load", timeout=timeout_s * 1000)
 
+    def select(self, label: str, option: str, target: FieldTarget | None = None) -> str | None:
+        """Choose `option` in a native dropdown or an ARIA combobox; return what it shows after."""
+        self._require_open()
+        target = target or FieldTarget()
+        try:
+            scope = self._scope(target)
+            locator = self._field(scope, label, target)
+            if str(locator.evaluate("(e) => e.tagName.toLowerCase()")) == "select":
+                locator.select_option(label=option, timeout=self._timeout_ms)
+                return self._selected_text(locator)
+            # An ARIA combobox: open it, then pick the one option with exactly that name.
+            locator.click(timeout=self._timeout_ms)
+            choices = scope.get_by_role("option", name=option, exact=True)
+            count = int(choices.count())
+            if count != 1:
+                raise BrowserActionError(
+                    f"Expected one option named {option!r} in {label!r}, got {count}"
+                )
+            choices.click(timeout=self._timeout_ms)
+            return self._read_back(locator)
+        except _playwright_error() as exc:
+            raise self._action_error(
+                f"select {option!r} in the field labelled {label!r}", exc
+            ) from exc
+
     def title(self) -> str:
         self._require_open()
         try:
@@ -646,8 +704,9 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error("read the page title", exc) from exc
 
-    def upload(self, label: str, path: Path) -> None:
+    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None:
         self._require_open()
+        target = target or FieldTarget()
         resolved = path.resolve()
         if resolved != path:
             raise BrowserActionError(
@@ -656,7 +715,8 @@ class PlaywrightDriver:
         if not resolved.is_file():
             raise BrowserActionError(f"Expected an existing file to upload, got {str(path)!r}")
         try:
-            self._page.get_by_label(label).set_input_files(str(resolved), timeout=self._timeout_ms)
+            locator = self._field(self._scope(target), label, target)
+            locator.set_input_files(str(resolved), timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
 
@@ -675,6 +735,77 @@ class PlaywrightDriver:
             inline_handler=str(raw["onclick"]),
             target=str(raw.get("target", "")),
         )
+
+    def _field(self, scope: Any, label: str, target: FieldTarget) -> Any:
+        """The one field `label` means in `scope`, after `target` narrows it.
+
+        Waits for the field to appear. More than one match is refused, listing each with its
+        role and accessible name so the caller can see which `--exact`, `--role` or `--nth`
+        would single one out; a stale `nth` is checked again here, right before the use.
+        """
+        base = (
+            scope.get_by_role(target.role, name=label, exact=target.exact)
+            if target.role
+            else scope.get_by_label(label, exact=target.exact)
+        )
+        # A field that never appears times out here, and the caller words that as its action.
+        base.first.wait_for(state="attached", timeout=self._timeout_ms)
+        count = int(base.count())
+        if target.nth is None:
+            if count > 1:
+                raise BrowserActionError(
+                    f"Expected one field labelled {label!r}, got {count}: "
+                    f"{self._describe_matches(base, count)}; narrow it with --exact, --role or "
+                    "--nth"
+                )
+            return base
+        if count < target.nth:
+            raise BrowserActionError(
+                f"Expected at least {target.nth} fields labelled {label!r}, got {count}"
+            )
+        return base.nth(target.nth - 1)
+
+    def _describe_matches(self, base: Any, count: int) -> str:
+        """Each match as `N. role 'name'` (page-supplied names, one line each, capped)."""
+        parts = []
+        for index in range(min(count, MAX_LISTED_MATCHES)):
+            try:
+                info = (
+                    base.nth(index)
+                    .element_handle(timeout=self._timeout_ms)
+                    .evaluate(_MATCH_INFO_JS)
+                )
+                role, name = str(info.get("role", "")), str(info.get("name", ""))
+            except _playwright_error():
+                role, name = "?", "?"
+            parts.append(f"{index + 1}. {_clean(role, 30)} {_clean(name, 60)!r}")
+        more = f" (and {count - MAX_LISTED_MATCHES} more)" if count > MAX_LISTED_MATCHES else ""
+        return "; ".join(parts) + more
+
+    def _read_back(self, locator: Any) -> str | None:
+        """The value a field holds now, one line and capped; never a password's."""
+        try:
+            if str(locator.get_attribute("type", timeout=self._timeout_ms) or "").lower() == (
+                "password"
+            ):
+                return None
+            return _clean(str(locator.input_value(timeout=self._timeout_ms)), 200)
+        except _playwright_error():
+            return None
+
+    def _scope(self, target: FieldTarget) -> Any:
+        """The page, or the child frame `target` names (refused unless its host is allowed)."""
+        if target.frame is None:
+            return self._page
+        if target.is_allowed is None:
+            raise BrowserActionError("Expected allowed hosts to use a frame, got none")
+        return self._child_frame(target.frame, target.is_allowed, target.frame_host)
+
+    def _selected_text(self, locator: Any) -> str | None:
+        try:
+            return _clean(str(locator.evaluate(_SELECTED_TEXT_JS)), 200)
+        except _playwright_error():
+            return None
 
     def _action_error(self, what: str, exc: Exception) -> BrowserActionError:
         return BrowserActionError(
@@ -821,7 +952,7 @@ class RawBrowserDriver(Protocol):
 
     def describe_field(self, label: str) -> ControlInfo: ...
 
-    def fill(self, label: str, value: str) -> None: ...
+    def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None: ...
 
     def frame_aria_snapshot(
         self,
@@ -859,9 +990,11 @@ class RawBrowserDriver(Protocol):
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture: ...
 
+    def select(self, label: str, option: str, target: FieldTarget | None = None) -> str | None: ...
+
     def title(self) -> str: ...
 
-    def upload(self, label: str, path: Path) -> None: ...
+    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None: ...
 
     @property
     def url(self) -> str: ...
@@ -1014,6 +1147,20 @@ _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SCROLL_SETTLE_MS = 250
 
 
+_MATCH_INFO_JS = (
+    "(e) => { const l = e.labels && e.labels[0] ? e.labels[0].innerText : ''; "
+    "const name = l || e.getAttribute('aria-label') || e.getAttribute('placeholder') "
+    "|| e.getAttribute('name') || ''; "
+    "const kinds = {INPUT: e.type === 'checkbox' ? 'checkbox' : e.type === 'file' ? 'file' "
+    ": 'textbox', SELECT: 'combobox', TEXTAREA: 'textbox', BUTTON: 'button'}; "
+    "return {role: e.getAttribute('role') || kinds[e.tagName] || e.tagName.toLowerCase(), "
+    "name: name.trim()}; }"
+)
+
+_SELECTED_TEXT_JS = (
+    "(e) => e.selectedOptions && e.selectedOptions[0] ? e.selectedOptions[0].label : ''"
+)
+
 _DESCRIBE_CONTROL_JS = (
     "(e) => ({tag: e.tagName.toLowerCase(), "
     "type: String(e.type || '').toLowerCase(), "
@@ -1153,6 +1300,12 @@ def _fetch_version(endpoint: str, timeout_s: float) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Expected a JSON object from /json/version, got {type(data).__name__}")
     return data
+
+
+def _clean(text: str, limit: int) -> str:
+    """Page-supplied text as one printable line of at most `limit` characters."""
+    printable = "".join(char if char.isprintable() else " " for char in text)
+    return " ".join(printable.split())[:limit]
 
 
 def _playwright_error() -> type[Exception]:

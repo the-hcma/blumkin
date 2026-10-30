@@ -38,6 +38,7 @@ from blumkin.browser.cdp import (
     BrowserActionError,
     ControlInfo,
     DownloadedFile,
+    FieldTarget,
     FrameCapture,
     FrameInfo,
     PageText,
@@ -154,8 +155,10 @@ class GuardedDriver:
             timeout_s=DEFAULT_ACTION_TIMEOUT_S,
         )
 
-    def fill(self, label: str, value: str) -> None:
-        self._raw.fill(label, value)
+    def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:
+        """Fill a field; returns the value it holds afterwards (None for a password field)."""
+        self._check_target(target)
+        return self._raw.fill(label, value, target)
 
     def frame_aria_snapshot(
         self,
@@ -205,12 +208,31 @@ class GuardedDriver:
     def title(self) -> str:
         return self._raw.title()
 
-    def upload(self, label: str, path: Path) -> None:
-        self._raw.upload(label, path)
+    def select(self, label: str, option: str, target: FieldTarget | None = None) -> str | None:
+        """Choose an option in a dropdown; an option or field that finalizes a form is refused."""
+        action = f"select {option!r} in {label!r}"
+        if _is_denied(option, self._deny) or _is_denied(label, self._deny):
+            raise self._refuse(action, "its name is a finalizing action")
+        self._check_target(target)
+        return self._raw.select(label, option, target)
+
+    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None:
+        self._check_target(target)
+        self._raw.upload(label, path, target)
 
     @property
     def url(self) -> str:
         return self._raw.url
+
+    def _check_target(self, target: FieldTarget | None) -> None:
+        """Reject a malformed narrowing before the page is touched."""
+        if target is None:
+            return
+        nth = target.nth
+        if nth is not None and (isinstance(nth, bool) or not isinstance(nth, int) or nth < 1):
+            raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
+        if target.frame_host is not None and target.frame is None:
+            raise ValueError("Expected a frame number with a frame host, got none")
 
     def _locate(
         self, name: str, role: str | None, wait_s: float, nth: int | None = None

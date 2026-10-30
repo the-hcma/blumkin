@@ -24,6 +24,7 @@ from blumkin.browser.cdp import (
     DEFAULT_FRAME_WAIT_S,
     DEFAULT_SCROLL_MAX_STEPS,
     BrowserActionError,
+    FieldTarget,
     PageText,
     checked_http_url,
 )
@@ -194,12 +195,31 @@ def download_task(
     return _with_driver(config, task, act)
 
 
-def fill_task(config: BrowserSetup, task: str, label: str, value: str) -> dict[str, Any]:
-    """Fill the field labelled `label`; the value is never echoed back."""
+def fill_task(
+    config: BrowserSetup,
+    task: str,
+    label: str,
+    value: str,
+    *,
+    exact: bool = False,
+    frame: int | None = None,
+    host: str | None = None,
+    nth: int | None = None,
+    role: str | None = None,
+) -> dict[str, Any]:
+    """Fill the field labelled `label` and report the value the field holds afterwards.
+
+    `exact`, `role` and `nth` (1-based, DOM order) narrow a label the page repeats; `frame`
+    (its number from `frames_task`, pinned to `host`) fills inside a child frame on an allowed
+    host. `matches` says whether the field now holds exactly `value`; when it does not (an
+    autocomplete resolved it to a canonical form, or rewrote it) the field's value is returned
+    as `read_back`. What was set is never echoed back, and a password field is never read.
+    """
+    target = _field_target(config, task, "filling", exact, frame, host, nth, role)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        driver.fill(label, value)
-        return {"action": "fill", "label": label, "ok": True, "task": task}
+        read_back = driver.fill(label, value, target)
+        return _field_payload("fill", task, label, target, read_back, value)
 
     return _with_driver(config, task, act)
 
@@ -438,8 +458,50 @@ def transcript_task(
     return _with_driver(config, task, act)
 
 
-def upload_task(config: BrowserSetup, task: str, label: str, path: Path) -> dict[str, Any]:
+def select_task(
+    config: BrowserSetup,
+    task: str,
+    label: str,
+    option: str,
+    *,
+    exact: bool = False,
+    frame: int | None = None,
+    host: str | None = None,
+    nth: int | None = None,
+    role: str | None = None,
+) -> dict[str, Any]:
+    """Choose `option` in the dropdown (a native select or an ARIA combobox) labelled `label`.
+
+    Narrowing and frames work as for `fill_task`. An option or field whose name is a
+    finalizing action (such as "Submit") is refused. The read-back is the option the field
+    shows afterwards, so a caller can tell the choice took.
+    """
+    target = _field_target(config, task, "selecting", exact, frame, host, nth, role)
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        read_back = driver.select(label, option, target)
+        return _field_payload("select", task, label, target, read_back, option)
+
+    return _with_driver(config, task, act)
+
+
+def upload_task(
+    config: BrowserSetup,
+    task: str,
+    label: str,
+    path: Path,
+    *,
+    exact: bool = False,
+    frame: int | None = None,
+    host: str | None = None,
+    nth: int | None = None,
+    role: str | None = None,
+) -> dict[str, Any]:
     """Attach an existing file to the file field labelled `label`.
+
+    `exact`, `role`, `nth` and `frame` (pinned to `host`) work as for `fill_task`; an upload
+    inside a child frame also needs that frame on an allowed host, and the folder checks
+    below are unchanged.
 
     The file must be a regular file inside a folder the task declared in `upload_dirs`
     (default deny), judged on the fully resolved path, and the check runs before the
@@ -452,6 +514,7 @@ def upload_task(config: BrowserSetup, task: str, label: str, path: Path) -> dict
             f"Expected [browser.tasks.{task}] to declare upload_dirs in config.toml before "
             "uploading, got none"
         )
+    target = _field_target(config, task, "uploading", exact, frame, host, nth, role)
     resolved = _expand_home(os.fspath(path)).resolve()
     try:
         info = resolved.stat()
@@ -484,8 +547,10 @@ def upload_task(config: BrowserSetup, task: str, label: str, path: Path) -> dict
                 f"Expected the page on an allowed_hosts host of task {task!r} before uploading, "
                 f"got {page_host or 'no host'!r}"
             )
-        driver.upload(label, resolved)
-        return {"action": "upload", "file": resolved.name, "label": label, "ok": True, "task": task}
+        driver.upload(label, resolved, target)
+        payload = _field_payload("upload", task, label, target, None, None)
+        payload["file"] = resolved.name
+        return payload
 
     return _with_driver(config, task, act, check_after=True, check_before=False)
 
@@ -504,6 +569,61 @@ def _checked_output(out: Path) -> Path:
 
 def _default_wait(role: str | None) -> float:
     return DEFAULT_CLICK_WAIT_S if role is None else DEFAULT_ACTION_TIMEOUT_S
+
+
+def _field_payload(
+    action: str,
+    task: str,
+    label: str,
+    target: FieldTarget,
+    read_back: str | None,
+    wanted: str | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"action": action, "label": label, "ok": True, "task": task}
+    for key, value in (("nth", target.nth), ("role", target.role), ("frame", target.frame)):
+        if value is not None:
+            payload[key] = value
+    if target.exact:
+        payload["exact"] = True
+    if action != "upload" and read_back is not None:
+        # What was set is never echoed back; the field's value is reported only when it
+        # differs (an autocomplete expanded it, or left it as typed), which is what matters.
+        matches = read_back == wanted
+        payload["matches"] = matches
+        if not matches:
+            payload["read_back"] = read_back
+    return payload
+
+
+def _field_target(
+    config: BrowserSetup,
+    task: str,
+    verb: str,
+    exact: bool,
+    frame: int | None,
+    host: str | None,
+    nth: int | None,
+    role: str | None,
+) -> FieldTarget:
+    """The narrowing for one field action, with the host check a frame needs."""
+    if host is not None and frame is None:
+        raise ValueError("Expected a frame number with a frame host, got none")
+    if frame is None:
+        return FieldTarget(exact=exact, nth=nth, role=role)
+    hosts = _declared_hosts(config, task)
+    if not hosts:
+        raise HostBlockedError(
+            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
+            f"{verb} in a frame, got none"
+        )
+    return FieldTarget(
+        exact=exact,
+        frame=frame,
+        frame_host=host,
+        is_allowed=lambda name: host_allowed(name, hosts),
+        nth=nth,
+        role=role,
+    )
 
 
 def _clean_download_name(suggested: str) -> str:

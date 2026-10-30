@@ -34,6 +34,10 @@ class _Raw:
         self.calls: list[tuple[Any, ...]] = []
         self.closed = 0
         self.net_installed = 0
+        #: What a field reports holding after fill or select (default: what was set).
+        self.read_back: str | None = None
+        #: The `FieldTarget` each fill, select and upload was given.
+        self.targets: list[Any] = []
         self.controls: dict[str, ControlInfo] = {}
         self.page_text = PageText(text="Total due 12.50", injection_warning=None)
         self.url = "https://erp.example.com/expenses"
@@ -140,8 +144,15 @@ class _Raw:
     def describe_field(self, label: str) -> ControlInfo:
         return ControlInfo(tag="input", input_type="text", in_form=True)
 
-    def fill(self, label: str, value: str) -> None:
+    def fill(self, label: str, value: str, target: Any = None) -> str | None:
+        self.targets.append(target)
         self.calls.append(("fill", label, value))
+        return self.read_back if self.read_back is not None else value
+
+    def select(self, label: str, option: str, target: Any = None) -> str | None:
+        self.targets.append(target)
+        self.calls.append(("select", label, option))
+        return self.read_back if self.read_back is not None else option
 
     def goto(self, url: str) -> None:
         self.calls.append(("goto", url))
@@ -164,7 +175,8 @@ class _Raw:
     def title(self) -> str:
         return self.title_text
 
-    def upload(self, label: str, path: Path) -> None:
+    def upload(self, label: str, path: Path, target: Any = None) -> None:
+        self.targets.append(target)
         self.calls.append(("upload", label, str(path)))
         if self.lands_on is not None:
             self.url = self.lands_on
@@ -425,7 +437,7 @@ def test_a_missing_playwright_dependency_is_not_browser_not_running(
 
 
 def test_a_failed_action_still_closes_the_driver(raw: _Raw) -> None:
-    def broken(label: str, value: str) -> None:
+    def broken(label: str, value: str, target: object = None) -> None:
         raise BrowserActionError("Expected to fill the field labelled 'Amount', got a timeout")
 
     raw.fill = broken  # type: ignore[method-assign]
@@ -1529,3 +1541,125 @@ def test_the_guard_policy_carries_the_tasks_strict_mode() -> None:
     strict = BrowserTaskPolicy(block_background_writes=True)
     assert _policy_for(setup(strict), "t").block_background_writes is True
     assert _policy_for(setup(strict), "other").block_background_writes is False
+
+
+def test_fill_passes_nth_exact_and_role_to_the_driver(raw: _Raw) -> None:
+    result = _run(
+        "browser", "fill", "expense-report", "Date", "2026-10-23",
+        "--nth", "2", "--exact", "--role", "textbox",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    target = raw.targets[0]
+    assert (target.nth, target.exact, target.role, target.frame) == (2, True, "textbox", None)
+    payload = _json(result)
+    assert (payload["nth"], payload["exact"], payload["role"]) == (2, True, "textbox")
+
+
+def test_fill_says_what_the_field_holds_only_when_it_is_not_what_was_set(raw: _Raw) -> None:
+    raw.read_back = "San Francisco, CA"
+
+    payload = _json(_run("browser", "fill", "expense-report", "City", "San Francisco"))
+
+    assert payload["matches"] is False
+    assert payload["read_back"] == "San Francisco, CA"
+
+
+def test_fill_does_not_echo_the_value_when_the_field_holds_it(raw: _Raw) -> None:
+    payload = _json(_run("browser", "fill", "expense-report", "City", "Palo Alto"))
+
+    assert payload["matches"] is True
+    assert "read_back" not in payload
+
+
+def test_fill_prints_a_note_when_the_field_changed_the_value(raw: _Raw) -> None:
+    raw.read_back = "San Francisco, CA"
+
+    result = CliRunner().invoke(
+        main, ["browser", "fill", "expense-report", "City", "San Francisco"]
+    )
+
+    assert "now holds 'San Francisco, CA'" in result.output
+
+
+def test_host_without_a_frame_is_a_usage_error(raw: _Raw) -> None:
+    result = _run("browser", "fill", "expense-report", "Title", "x", "--host", "a.example.com")
+
+    assert result.exit_code == 2
+    assert raw.calls == []
+
+
+def test_a_frame_needs_declared_allowed_hosts(raw: _Raw) -> None:
+    result = _run("browser", "fill", "expense-report", "Title", "x", "--frame", "1")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "allowed_hosts" in result.output
+    assert raw.calls == []
+
+
+def test_fill_in_a_frame_hands_the_driver_the_frame_and_a_host_check(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+
+    result = _run(
+        "browser", "fill", "expense-report", "Title", "x",
+        "--frame", "1", "--host", "erp.example.com",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    target = raw.targets[0]
+    assert (target.frame, target.frame_host) == (1, "erp.example.com")
+    assert target.is_allowed("erp.example.com") is True
+    assert target.is_allowed("evil.example.net") is False
+
+
+def test_select_chooses_an_option_and_reports_whether_it_took(raw: _Raw) -> None:
+    result = _run("browser", "select", "expense-report", "Type", "Taxi", "--nth", "2")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.calls == [("select", "Type", "Taxi")]
+    assert raw.targets[0].nth == 2
+    payload = _json(result)
+    assert payload["action"] == "select"
+    assert payload["matches"] is True
+
+
+def test_select_refuses_a_finalizing_option_before_the_page_is_touched(raw: _Raw) -> None:
+    result = _run("browser", "select", "expense-report", "Action", "Submit report")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert raw.calls == []
+
+
+def test_upload_in_a_frame_keeps_the_upload_folder_check(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    inside = tmp_path / "ok"
+    inside.mkdir()
+    secret = outside / "secret.png"
+    secret.write_bytes(b"x")
+    _policy(_config_dir, f'upload_dirs = ["{inside}"]\nallowed_hosts = ["erp.example.com"]')
+
+    result = _run("browser", "upload", "expense-report", "File", str(secret), "--frame", "1")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert raw.calls == []
+
+
+def test_upload_in_a_frame_passes_the_target_on(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    receipt = tmp_path / "r.png"
+    receipt.write_bytes(b"x")
+    _policy(_config_dir, f'upload_dirs = ["{tmp_path}"]\nallowed_hosts = ["erp.example.com"]')
+
+    result = _run(
+        "browser", "upload", "expense-report", "File", str(receipt), "--frame", "1", "--nth", "2"
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert (raw.targets[0].frame, raw.targets[0].nth) == (1, 2)

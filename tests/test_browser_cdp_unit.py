@@ -59,15 +59,47 @@ class _Locator:
         self._label = label
         self._role = role
 
+    @property
+    def first(self) -> _Locator:
+        return self
+
     def count(self) -> int:
+        if not self._role:
+            return self._page.label_counts.get(self._label, 1)
         counts = self._page.role_counts.get((self._role, self._label), [0])
         self._page.calls.append(("count", self._role, self._label))
         return counts.pop(0) if len(counts) > 1 else counts[0]
 
+    def click(self, *, timeout: float) -> None:
+        self._page.calls.append(("locator-click", self._role, self._label, timeout))
+
     def element_handle(self, *, timeout: float) -> _Handle:
         if self._label in self._page.missing:
             raise PlaywrightTimeout("no such element")
-        return _Handle(self._page, self._page.element_info.get(self._label, _PLAIN_ELEMENT))
+        info = self._page.element_info.get(self._label, _PLAIN_ELEMENT)
+        if self._page.match_infos:
+            info = self._page.match_infos.pop(0)
+        return _Handle(self._page, info)
+
+    def evaluate(self, script: str) -> str:
+        if "tagName" in script and "selectedOptions" not in script:
+            return self._page.tags.get(self._label, "input")
+        return self._page.field_values.get(self._label, "")
+
+    def get_attribute(self, name: str, *, timeout: float) -> str | None:
+        return self._page.field_types.get(self._label)
+
+    def input_value(self, *, timeout: float) -> str:
+        if self._label in self._page.not_inputs:
+            raise PlaywrightError("not an input")
+        return self._page.field_values.get(self._label, "")
+
+    def select_option(self, *, label: str, timeout: float) -> None:
+        self._page.calls.append(("select_option", self._label, label, timeout))
+
+    def wait_for(self, *, state: str, timeout: float) -> None:
+        if self._label in self._page.missing:
+            raise PlaywrightTimeout("no such field")
 
     def nth(self, index: int) -> _Locator:
         self._page.calls.append(("nth", self._role, self._label, index))
@@ -115,8 +147,18 @@ class _Page:
         self.role_counts: dict[tuple[str, str], list[int]] = {}
         self.waits = 0
         self.wait_error: Exception | None = None
+        #: How many fields carry a label (default one).
+        self.label_counts: dict[str, int] = {}
+        #: What a field holds after it was filled or selected, by label.
+        self.field_values: dict[str, str] = {}
+        self.field_types: dict[str, str] = {}
+        self.not_inputs: set[str] = set()
+        #: Successive `{role, name}` answers for the ambiguity listing.
+        self.match_infos: list[dict[str, Any]] = []
+        self.tags: dict[str, str] = {}
 
-    def get_by_label(self, label: str) -> _Locator:
+    def get_by_label(self, label: str, *, exact: bool = False) -> _Locator:
+        self.calls.append(("get_by_label", label, exact)) if exact else None
         return _Locator(self, label)
 
     def locator(self, selector: str) -> _Locator:
@@ -1728,3 +1770,188 @@ def test_a_failed_install_of_the_strict_net_keeps_the_lenient_one_and_says_so() 
     context.unroute = lambda pattern, handler: unrouted.append(handler)  # type: ignore[method-assign]
     driver.close()
     assert unrouted == [kept]
+
+
+# --------------------------------------------------------------------------- fields (#586)
+
+
+def test_fill_with_nth_uses_that_match_in_dom_order() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    pw, driver = _driver()
+    pw.page.label_counts["Date"] = 3
+
+    driver.fill("Date", "2026-10-23", FieldTarget(nth=2))
+
+    assert ("nth", "", "Date", 1) in pw.page.calls
+    assert ("fill", "Date", "2026-10-23", 30000.0) in pw.page.calls
+
+
+def test_a_repeated_label_is_refused_with_every_match_listed() -> None:
+    pw, driver = _driver()
+    pw.page.label_counts["Date"] = 2
+    pw.page.match_infos = [
+        {"role": "textbox", "name": "Date"},
+        {"role": "combobox", "name": "*Date\nrequired"},
+    ]
+
+    with pytest.raises(BrowserActionError) as excinfo:
+        driver.fill("Date", "x")
+
+    message = str(excinfo.value)
+    assert "1. textbox 'Date'" in message
+    assert "2. combobox '*Date required'" in message
+    assert "--exact" in message
+    assert not any(call[0] == "fill" for call in pw.page.calls)
+
+
+def test_nth_beyond_the_matches_is_an_error_that_says_how_many_there_are() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    pw, driver = _driver()
+    pw.page.label_counts["Date"] = 2
+
+    with pytest.raises(BrowserActionError, match="at least 3 fields labelled 'Date', got 2"):
+        driver.fill("Date", "x", FieldTarget(nth=3))
+
+
+def test_exact_and_role_change_how_the_field_is_looked_up() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    pw, driver = _driver()
+    pw.page.role_counts[("textbox", "Date")] = [1]
+
+    driver.fill("Date", "x", FieldTarget(exact=True))
+    driver.fill("Date", "x", FieldTarget(role="textbox", exact=True))
+
+    assert ("get_by_label", "Date", True) in pw.page.calls
+    assert ("get_by_role", "textbox", "Date", True) in pw.page.calls
+
+
+def test_fill_reads_back_what_the_field_holds_and_never_a_password() -> None:
+    pw, driver = _driver()
+    pw.page.field_values["City"] = "San Francisco, CA"
+    pw.page.field_values["Secret"] = "hunter2"
+    pw.page.field_types["Secret"] = "password"
+
+    assert driver.fill("City", "San Francisco") == "San Francisco, CA"
+    assert driver.fill("Secret", "hunter2") is None
+
+
+def test_fill_reads_back_nothing_when_the_field_is_not_an_input() -> None:
+    pw, driver = _driver()
+    pw.page.not_inputs.add("Rich text")
+
+    assert driver.fill("Rich text", "x") is None
+
+
+def test_select_picks_the_label_in_a_native_dropdown() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "select"
+    pw.page.field_values["Type"] = "Taxi"
+
+    shown = driver.select("Type", "Taxi")
+
+    assert ("select_option", "Type", "Taxi", 30000.0) in pw.page.calls
+    assert shown == "Taxi"
+
+
+def test_select_opens_an_aria_combobox_and_clicks_the_one_option() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.role_counts[("option", "Taxi")] = [1]
+    pw.page.field_values["Type"] = "Taxi"
+
+    shown = driver.select("Type", "Taxi")
+
+    assert ("locator-click", "", "Type", 30000.0) in pw.page.calls
+    assert ("locator-click", "option", "Taxi", 30000.0) in pw.page.calls
+    assert shown == "Taxi"
+
+
+@pytest.mark.parametrize("found", [0, 2])
+def test_select_refuses_a_combobox_option_that_is_missing_or_ambiguous(found: int) -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.role_counts[("option", "Taxi")] = [found]
+
+    with pytest.raises(BrowserActionError, match=f"one option named 'Taxi' in 'Type', got {found}"):
+        driver.select("Type", "Taxi")
+
+    assert ("locator-click", "option", "Taxi", 30000.0) not in pw.page.calls
+
+
+def test_upload_with_nth_attaches_to_that_file_field(tmp_path: Path) -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    receipt = tmp_path / "r.png"
+    receipt.write_bytes(b"x")
+    pw, driver = _driver()
+    pw.page.label_counts["File"] = 4
+
+    driver.upload("File", receipt, FieldTarget(nth=3))
+
+    assert ("nth", "", "File", 2) in pw.page.calls
+    assert ("upload", "File", str(receipt.resolve()), 30000.0) in pw.page.calls
+
+
+class _FieldFrame(_PlainFrame):
+    """A child frame with fields: its lookups are recorded on the shared page."""
+
+    def __init__(self, url: str, page: _Page) -> None:
+        super().__init__(url)
+        self._page = page
+
+    def get_by_label(self, label: str, *, exact: bool = False) -> _Locator:
+        self._page.calls.append(("frame-get_by_label", self.url, label))
+        return _Locator(self._page, label)
+
+
+def _field_frames_driver(*urls: str):
+    page = _FramesPage()
+    page.frames = [page, *(_FieldFrame(url, page) for url in urls)]
+    return page, _driver(_Playwright(page))[1]
+
+
+def test_fill_inside_an_allowed_child_frame_uses_that_frame() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    page, driver = _field_frames_driver("https://tenant.sharepoint.com/attach")
+
+    driver.fill("Title", "Taxi", FieldTarget(frame=1, is_allowed=_sharepoint))
+
+    assert ("frame-get_by_label", "https://tenant.sharepoint.com/attach", "Title") in page.calls
+    assert ("fill", "Title", "Taxi", 30000.0) in page.calls
+
+
+def test_a_frame_on_a_host_the_task_does_not_allow_is_refused_untouched() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    page, driver = _field_frames_driver("https://evil.example.net/x")
+
+    with pytest.raises(BrowserActionError, match="allowed host"):
+        driver.fill("Title", "Taxi", FieldTarget(frame=1, is_allowed=_sharepoint))
+
+    assert not any(call[0] in {"fill", "frame-get_by_label"} for call in page.calls)
+
+
+def test_a_pinned_frame_host_that_no_longer_matches_is_refused() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    page, driver = _field_frames_driver("https://tenant.sharepoint.com/attach")
+
+    with pytest.raises(BrowserActionError, match="list the frames again"):
+        driver.fill(
+            "Title",
+            "Taxi",
+            FieldTarget(frame=1, frame_host="other.sharepoint.com", is_allowed=_sharepoint),
+        )
+
+
+def test_a_frame_without_a_host_check_is_refused() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    _, driver = _field_frames_driver("https://tenant.sharepoint.com/attach")
+
+    with pytest.raises(BrowserActionError, match="allowed hosts"):
+        driver.fill("Title", "Taxi", FieldTarget(frame=1))
