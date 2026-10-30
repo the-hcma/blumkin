@@ -41,6 +41,8 @@ class _Raw:
         self.select_probe: ControlInfo | None = None
         #: The accessible name the field resolved to, shown to the guard's name check.
         self.select_field_name: str | None = None
+        #: The tasks the window indicator was shown for (kept apart from `calls`).
+        self.marks: list[str] = []
         self.frame_chunks: tuple[str, ...] = ()
         self.net_installed = 0
         #: name -> roles a control of that name exists in.
@@ -166,6 +168,9 @@ class _Raw:
 
     def upload(self, label: str, path: Path, target: object = None) -> None:
         self.calls.append(("upload", label, str(path)))
+
+    def mark_window(self, task: str) -> None:
+        self.marks.append(task)
 
     def wait_ms(self, milliseconds: int) -> None:
         self.calls.append(("wait_ms", milliseconds))
@@ -502,6 +507,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "frame_aria_snapshot",
         "frame_list",
         "goto",
+        "mark_window",
         "press",
         "read_frame_text",
         "read_text",

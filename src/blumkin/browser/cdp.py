@@ -30,6 +30,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from blumkin.browser import teams
+from blumkin.browser.indicator import INDICATOR_JS, indicator_args
 from blumkin.browser.profiles import (
     BrowserProfile,
     read_session,
@@ -108,6 +109,8 @@ class BrowserDriver(Protocol):
     ) -> tuple[FrameInfo, ...]: ...
 
     def goto(self, url: str) -> None: ...
+
+    def mark_window(self, task: str) -> None: ...
 
     def press(self, label: str, key: str) -> None: ...
 
@@ -510,6 +513,12 @@ class PlaywrightDriver:
                 )
             )
         return tuple(found)
+
+    def mark_window(self, task: str) -> None:
+        """Show the task's indicator on the page (best effort: a page that refuses is skipped)."""
+        self._require_open()
+        with contextlib.suppress(_playwright_error()):
+            self._page.evaluate(INDICATOR_JS, indicator_args(task))
 
     def goto(self, url: str) -> None:
         self._require_open()
@@ -1146,6 +1155,8 @@ class RawBrowserDriver(Protocol):
     ) -> tuple[FrameInfo, ...]: ...
 
     def goto(self, url: str) -> None: ...
+
+    def mark_window(self, task: str) -> None: ...
 
     def matching_roles(
         self, name: str, roles: Sequence[str], wait_s: float, nth: int | None = None

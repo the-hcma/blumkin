@@ -903,9 +903,13 @@ def _with_driver(
     try:
         if check_before:
             _require_allowed_page(driver, task, hosts, "acting")
+            driver.mark_window(task)
         result = act(driver)
         if check_after:
             _require_allowed_page(driver, task, hosts, "the action")
+        if check_after or not hosts:
+            # Only a page on an allowed host (or any page when the task declares none) is marked.
+            driver.mark_window(task)
         return result
     finally:
         driver.close()

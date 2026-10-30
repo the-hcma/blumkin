@@ -521,7 +521,10 @@ Examples:
   blumkin browser launch expense-report --json
 
 Starts the task's browser on its own profile (create it first with `blumkin
-browser profile create TASK`) and prints the loopback DevTools endpoint. Sign in
+browser profile create TASK`) and prints the loopback DevTools endpoint. While blumkin is
+attached, the page shows a small `blumkin - TASK` pill in the task's own colour (`colour` in
+the output, the same for a task every time) and a thin line of that colour across the top, so
+you can tell which window an agent is driving. Sign in
 by hand in the window that opens; blumkin never sees your credentials. Running
 it again while the browser is open reports `already_running` and changes nothing.
 Uses `[browser] default` from config.toml, falling back to Chrome.
