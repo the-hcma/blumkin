@@ -153,7 +153,9 @@ class _Raw:
             return None
         return self.read_back if self.read_back is not None else value
 
-    def select(self, label: str, option: str, target: Any = None, vet: Any = None) -> str | None:
+    def select(
+        self, label: str, option: str, target: Any = None, vet: Any = None, vet_name: Any = None
+    ) -> str | None:
         self.targets.append(target)
         self.calls.append(("select", label, option))
         if self.returns_nothing:

@@ -38,6 +38,8 @@ class _Raw:
         self.fields: dict[str, ControlInfo] = {}
         #: What the guard's vet callback is shown when `select` clicks something.
         self.select_probe: ControlInfo | None = None
+        #: The accessible name the field resolved to, shown to the guard's name check.
+        self.select_field_name: str | None = None
         self.frame_chunks: tuple[str, ...] = ()
         self.net_installed = 0
         #: name -> roles a control of that name exists in.
@@ -143,8 +145,17 @@ class _Raw:
     def title(self) -> str:
         return "Expenses"
 
-    def select(self, label: str, option: str, target: object = None, vet: Any = None) -> str | None:
+    def select(
+        self,
+        label: str,
+        option: str,
+        target: object = None,
+        vet: Any = None,
+        vet_name: Any = None,
+    ) -> str | None:
         self.calls.append(("select", label, option))
+        if vet_name is not None and self.select_field_name is not None:
+            vet_name(self.select_field_name)
         if self.select_probe is not None and vet is not None:
             vet(self.select_probe)
         return option
@@ -695,3 +706,18 @@ def test_a_role_that_is_not_a_field_role_is_refused_for_fill_and_upload_too() ->
         driver.upload("File", Path("/tmp/x"), FieldTarget(role="button"))
 
     assert raw.calls == []
+
+
+def test_select_shows_the_resolved_field_name_to_the_finalizing_check() -> None:
+    raw, driver = _guard()
+    raw.select_field_name = "Submit action"
+
+    with pytest.raises(SubmitBlockedError, match="field's own name"):
+        driver.select("Action", "Draft")
+
+
+def test_a_harmless_resolved_field_name_passes_the_name_check() -> None:
+    raw, driver = _guard()
+    raw.select_field_name = "Expense type"
+
+    assert driver.select("Type", "Taxi") == "Taxi"

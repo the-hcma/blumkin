@@ -119,6 +119,7 @@ class BrowserDriver(Protocol):
         option: str,
         target: FieldTarget | None = None,
         vet: Callable[[ControlInfo], None] | None = None,
+        vet_name: Callable[[str], None] | None = None,
     ) -> str | None: ...
 
     def title(self) -> str: ...
@@ -705,23 +706,32 @@ class PlaywrightDriver:
         option: str,
         target: FieldTarget | None = None,
         vet: Callable[[ControlInfo], None] | None = None,
+        vet_name: Callable[[str], None] | None = None,
     ) -> str | None:
         """Choose `option` in a native dropdown or an ARIA combobox; return what it shows after.
 
         An ARIA combobox and its option are clicked, so `vet` inspects each element before it
-        is clicked (the submit guard); a native `<select>` is only given a value. The frame, when
-        there is one, is checked again right before every write.
+        is clicked (the submit guard) and `vet_name` is shown the resolved field's own accessible
+        name (a label that merely contained a safe word can resolve to a finalizing field); a
+        native `<select>` is only given a value. The frame, when there is one, is checked again
+        right before every write.
         """
         self._require_open()
         target = target or FieldTarget()
         try:
             scope = self._scope(target)
             locator = self._field(scope, label, target)
-            kind = locator.evaluate(_DROPDOWN_INFO_JS)
+            # One handle for everything that follows: what is inspected (what kind of field it
+            # is, what it is called, what it can submit) is what is acted on, so a re-render
+            # cannot swap in a different element between the check and the use.
+            opener = locator.element_handle(timeout=self._timeout_ms)
+            kind = opener.evaluate(_DROPDOWN_INFO_JS)
+            if vet_name is not None:
+                vet_name(str(opener.evaluate(_MATCH_INFO_JS).get("name", "")))
             if str(kind.get("tag")) == "select":
                 self._still_allowed(scope, target)
-                locator.select_option(label=option, timeout=self._timeout_ms)
-                return self._selected_text(locator)
+                opener.select_option(label=option, timeout=self._timeout_ms)
+                return self._selected_text(opener)
             if not kind.get("dropdown"):
                 # Whatever the lookup role, only a dropdown is opened: a labelled button or link
                 # is for `click`, which has its own allow list.
@@ -729,14 +739,14 @@ class PlaywrightDriver:
                 raise BrowserActionError(
                     f"Expected a dropdown labelled {label!r}, got a {role} that is not one"
                 )
-            # An ARIA combobox: open it, then pick the one option with exactly that name. The
-            # elements that were inspected are the elements that are clicked.
-            opener = locator.element_handle(timeout=self._timeout_ms)
+            # An ARIA combobox: open it, then pick the one option with exactly that name.
             if vet is not None:
                 vet(self._describe(opener))
             self._still_allowed(scope, target)
             opener.click(timeout=self._timeout_ms, no_wait_after=True)
-            choices = self._popup(scope, str(kind.get("controls", ""))).get_by_role(
+            # The popup relationship may only appear once the list is open: read it again.
+            opened = opener.evaluate(_DROPDOWN_INFO_JS)
+            choices = self._popup(scope, str(opened.get("controls", ""))).get_by_role(
                 "option", name=option, exact=True
             )
             with contextlib.suppress(_playwright_error()):
@@ -883,13 +893,14 @@ class PlaywrightDriver:
         """Where a combobox's options live: the element it controls.
 
         With no usable `aria-controls`/`aria-owns` the whole scope is searched, but only when it
-        shows at most one list: with several, an option could belong to another dropdown, so the
-        select is refused instead of guessed.
+        shows at most one visible list: with several, an option could belong to another
+        dropdown, so the select is refused instead of guessed (hidden lists are not counted, as
+        the option lookup does not see them either).
         """
         popup_id = controls.split()[0] if controls.split() else ""
         if popup_id and re.fullmatch(r"[A-Za-z0-9_.:\-]+", popup_id):
             return scope.locator(f'[id="{popup_id}"]')
-        lists = int(scope.locator('[role="listbox"]').count())
+        lists = int(scope.locator('[role="listbox"]:visible').count())
         if lists > 1:
             raise BrowserActionError(
                 f"Expected the dropdown to name its list (aria-controls), got none while the "
@@ -1104,6 +1115,7 @@ class RawBrowserDriver(Protocol):
         option: str,
         target: FieldTarget | None = None,
         vet: Callable[[ControlInfo], None] | None = None,
+        vet_name: Callable[[str], None] | None = None,
     ) -> str | None: ...
 
     def title(self) -> str: ...

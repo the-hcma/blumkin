@@ -217,7 +217,13 @@ class GuardedDriver:
         if target is not None and target.role is not None and target.role not in _SELECT_ROLES:
             raise self._refuse(action, f"the role {target.role!r} is not one a dropdown has")
         self._check_target(target)
-        return self._raw.select(label, option, target, lambda info: self._vet_control(action, info))
+        return self._raw.select(
+            label,
+            option,
+            target,
+            lambda info: self._vet_control(action, info),
+            lambda name: self._vet_field_name(action, name),
+        )
 
     def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None:
         self._check_target(target)
@@ -260,6 +266,11 @@ class GuardedDriver:
                 f"Expected {name!r} in one role, got {', '.join(found)}; pass --role to choose"
             )
         return next(iter(found)), action
+
+    def _vet_field_name(self, action: str, name: str) -> None:
+        """Refuse a field whose own accessible name is a finalizing action."""
+        if _is_denied(name, self._deny):
+            raise self._refuse(action, "the field's own name is a finalizing action")
 
     def _refuse(self, action: str, reason: str) -> SubmitBlockedError:
         _LOGGER.info("browser guard refused to %s: %s", action, reason)

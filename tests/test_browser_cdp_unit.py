@@ -41,16 +41,33 @@ from blumkin.browser.teams import (
 class _Handle:
     """An element handle: evaluates the describe script to a configured dict and clicks."""
 
-    def __init__(self, page: _Page, info: dict[str, Any]) -> None:
+    def __init__(self, page: _Page, info: dict[str, Any], label: str = "") -> None:
         self._page = page
         self._info = info
+        self._label = label
 
     def click(self, *, timeout: float, no_wait_after: bool = False) -> None:
         self._page.calls.append(("handle-click", timeout, no_wait_after))
 
-    def evaluate(self, script: str) -> dict[str, Any]:
+    def evaluate(self, script: str) -> Any:
         self._page.calls.append(("handle-evaluate",))
+        if "aria-haspopup" in script and self._label:
+            self._page.dropdown_reads += 1
+            popups = self._page.popups_after_open if self._page.dropdown_reads > 1 else None
+            return {
+                "tag": self._page.tags.get(self._label, "input"),
+                "role": self._page.roles.get(self._label, "combobox"),
+                "controls": (popups or self._page.popups).get(self._label, ""),
+                "dropdown": self._label not in self._page.not_dropdowns,
+            }
+        if "aria-labelledby" in script and self._label in self._page.accessible_names:
+            return {"role": "combobox", "name": self._page.accessible_names[self._label]}
+        if "selectedOptions" in script or "aria-valuetext" in script:
+            return self._page.field_values.get(self._label, "")
         return self._info
+
+    def select_option(self, *, label: str, timeout: float) -> None:
+        self._page.calls.append(("select_option", self._label, label, timeout))
 
 
 class _Locator:
@@ -79,7 +96,7 @@ class _Locator:
         info = self._page.element_info.get(self._label, _PLAIN_ELEMENT)
         if self._page.match_infos:
             info = self._page.match_infos.pop(0)
-        return _Handle(self._page, info)
+        return _Handle(self._page, info, self._label)
 
     def evaluate(self, script: str) -> Any:
         if "aria-haspopup" in script:
@@ -168,6 +185,11 @@ class _Page:
         #: Labelled elements that are not dropdowns (a plain button), and each one's role and
         #: the id of the popup it controls.
         self.not_dropdowns: set[str] = set()
+        #: What a field resolves its accessible name to, when that differs from its label.
+        self.accessible_names: dict[str, str] = {}
+        #: Popup ids a combobox reports once it has been opened (it showed none before).
+        self.popups_after_open: dict[str, str] = {}
+        self.dropdown_reads = 0
         self.roles: dict[str, str] = {}
         self.popups: dict[str, str] = {}
         #: Successive `{role, name}` answers for the ambiguity listing.
@@ -2210,7 +2232,7 @@ def test_the_ambiguity_script_uses_computed_names_and_roles() -> None:
 def test_without_a_named_popup_several_lists_make_the_select_refuse_instead_of_guess() -> None:
     pw, driver = _driver()
     pw.page.tags["Type"] = "div"
-    pw.page.label_counts['[role="listbox"]'] = 2
+    pw.page.label_counts['[role="listbox"]:visible'] = 2
     pw.page.role_counts[("option", "Taxi")] = [1]
 
     with pytest.raises(BrowserActionError, match="name its list"):
@@ -2225,7 +2247,7 @@ def test_without_a_named_popup_several_lists_make_the_select_refuse_instead_of_g
 def test_without_a_named_popup_a_single_list_is_still_searched() -> None:
     pw, driver = _driver()
     pw.page.tags["Type"] = "div"
-    pw.page.label_counts['[role="listbox"]'] = 1
+    pw.page.label_counts['[role="listbox"]:visible'] = 1
     pw.page.role_counts[("option", "Taxi")] = [1]
 
     driver.select("Type", "Taxi")
@@ -2237,7 +2259,81 @@ def test_an_unusable_popup_id_falls_back_to_the_same_single_list_rule() -> None:
     pw, driver = _driver()
     pw.page.tags["Type"] = "div"
     pw.page.popups["Type"] = 'bad"id'
-    pw.page.label_counts['[role="listbox"]'] = 3
+    pw.page.label_counts['[role="listbox"]:visible'] = 3
 
     with pytest.raises(BrowserActionError, match="name its list"):
         driver.select("Type", "Taxi")
+
+
+# --------------------------------------------------------------------------- review 3 (#586)
+
+
+def test_the_field_is_inspected_and_acted_on_through_one_element_handle() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.role_counts[("option", "Taxi")] = [1]
+
+    driver.select("Type", "Taxi")
+
+    # The kind of field is read from the handle that is then clicked, not from the locator.
+    assert not any(call[0] == "locator-click" for call in pw.page.calls)
+    assert pw.page.calls.index(("handle-evaluate",)) < pw.page.calls.index(
+        ("handle-click", 30000.0, True)
+    )
+
+
+def test_the_resolved_field_name_is_shown_to_the_name_check_before_anything_is_clicked() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Action"] = "div"
+    pw.page.accessible_names["Action"] = "Submit action"
+    seen: list[str] = []
+
+    def refuse(name: str) -> None:
+        seen.append(name)
+        raise BrowserActionError("Expected a safe field, got a finalizing name")
+
+    with pytest.raises(BrowserActionError, match="finalizing name"):
+        driver.select("Action", "Draft", vet_name=refuse)
+
+    assert seen == ["Submit action"]
+    assert not any(call[0] in {"handle-click", "select_option"} for call in pw.page.calls)
+
+
+def test_the_name_check_also_covers_a_native_select() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Action"] = "select"
+    pw.page.accessible_names["Action"] = "Submit action"
+
+    def refuse(name: str) -> None:
+        raise BrowserActionError("Expected a safe field, got a finalizing name")
+
+    with pytest.raises(BrowserActionError):
+        driver.select("Action", "Draft", vet_name=refuse)
+
+    assert not any(call[0] == "select_option" for call in pw.page.calls)
+
+
+def test_a_popup_link_that_appears_only_when_the_combobox_is_open_is_used() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.popups_after_open["Type"] = "type-list"
+    pw.page.label_counts['[role="listbox"]:visible'] = 3
+    pw.page.role_counts[("option", "Taxi")] = [1]
+
+    driver.select("Type", "Taxi")
+
+    assert ("locator", '[id="type-list"]') in pw.page.calls
+
+
+def test_only_visible_lists_count_when_the_dropdown_names_none() -> None:
+    from blumkin.browser import cdp
+
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.label_counts['[role="listbox"]:visible'] = 1
+    pw.page.label_counts['[role="listbox"]'] = 4  # closed lists kept in the DOM
+    pw.page.role_counts[("option", "Taxi")] = [1]
+
+    driver.select("Type", "Taxi")
+
+    assert '[role="listbox"]:visible' in cdp.PlaywrightDriver._popup.__code__.co_consts
