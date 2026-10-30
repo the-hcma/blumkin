@@ -434,7 +434,7 @@ def test_export_records_hashes_that_bind_the_text_to_the_pdf(tmp_path: Path) -> 
 
 def test_elements_hidden_by_an_inline_style_leave_neither_the_page_nor_the_text() -> None:
     html = (
-        '<div style="display:none;max-height:0">TOTAL $999.00</div>'
+        '<div style="display:none">TOTAL $999.00</div>'
         '<span style="mso-hide: all">preheader</span><p>Total $18.50</p>'
         '<p style="font-size:0.9em">kept</p>'
     )
@@ -485,3 +485,64 @@ def test_mail_export_human_output_for_a_failed_check_says_nothing_was_written(
     assert "Nothing was written" in result.output
     assert "problem: blank pages: 1" in result.output
     assert "Traceback" not in result.output
+
+
+def test_inline_tags_keep_the_text_adjacent_and_table_cells_are_separated() -> None:
+    text = html_to_text(
+        "<p>Total $<span>18.50</span></p><table><tr><td>Tip</td><td>2.00</td></tr></table>"
+    )
+
+    assert text.splitlines() == ["Total $18.50", "Tip 2.00"]
+
+
+def test_a_nested_hidden_element_is_removed_with_everything_inside_it() -> None:
+    html = (
+        '<div style="display:none"><div>preheader</div><p>TOTAL $999.00</p></div>'
+        "<p>Total $18.50</p>"
+    )
+
+    assert html_to_text(sanitize_html(html)).splitlines() == ["Total $18.50"]
+
+
+def test_an_unclosed_hidden_element_does_not_swallow_the_rest_of_the_message() -> None:
+    html = '<span style="display:none">x<p>Total $18.50</p>'
+
+    assert "Total $18.50" in html_to_text(sanitize_html(html))
+
+
+def test_a_zero_font_size_wrapper_does_not_hide_the_visible_amount_inside() -> None:
+    html = '<div style="font-size:0"><span style="font-size:16px">TOTAL USD 18.50</span></div>'
+
+    assert "TOTAL USD 18.50" in html_to_text(sanitize_html(html))
+
+
+def test_a_meta_refresh_in_the_message_is_removed() -> None:
+    html = '<meta http-equiv="refresh" content="0;url=https://evil.example/"><p>Total 5.00</p>'
+
+    cleaned = sanitize_html(html)
+
+    assert "refresh" not in cleaned
+    assert "Total 5.00" in cleaned
+
+
+def test_mail_export_reports_a_missing_browser_with_the_export_failed_envelope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from click.testing import CliRunner
+
+    from blumkin import cli
+    from blumkin.browser.discovery import BrowserNotFoundError
+
+    async def fake_export(*_: Any, **__: Any) -> dict[str, Any]:
+        raise BrowserNotFoundError("Expected Chrome to be installed, found none")
+
+    monkeypatch.setattr(cli, "export_message", fake_export)
+    monkeypatch.setattr(cli, "_workspace", lambda *_: object())
+
+    result = CliRunner().invoke(
+        cli.main, ["mail", "export", "--id", "m", "--out", str(tmp_path), "--json"]
+    )
+
+    assert result.exit_code == 1
+    assert "export_failed" in result.output
+    assert "graph_error" not in result.output

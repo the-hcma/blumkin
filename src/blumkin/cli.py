@@ -6245,7 +6245,7 @@ def mail_export_cmd(
                 browser=_load_config().browser.default,
             )
         )
-    except MailExportError as exc:
+    except (MailExportError, BrowserNotFoundError) as exc:
         _emit_error(error="export_failed", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_OTHER) from exc
     except Exception as exc:  # noqa: BLE001 - classify_exception owns the taxonomy

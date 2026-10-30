@@ -219,7 +219,8 @@ def html_to_text(raw: str) -> str:
     """Plain text of an HTML body, one line per block, entities decoded."""
     text = _DROPPED_BLOCKS.sub(" ", raw)
     text = _LINE_BREAKS.sub("\n", text)
-    text = _TAG.sub(" ", text)
+    text = _TABLE_CELLS.sub(" ", text)
+    text = _TAG.sub("", text)
     text = html_lib.unescape(text).replace("\u00a0", " ")
     lines = (re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in text.split("\n"))
     return "\n".join(line for line in lines if line)
@@ -290,7 +291,7 @@ def sanitize_html(html: str) -> str:
     """Remove comments, scripts, frames, embeds and linked resources before rendering."""
     cleaned = _COMMENT.sub(" ", html)
     cleaned = _ACTIVE_BLOCKS.sub(" ", cleaned)
-    cleaned = _HIDDEN_ELEMENTS.sub(" ", cleaned)
+    cleaned = _drop_hidden(cleaned)
     return _LINKED_TAGS.sub(" ", cleaned)
 
 
@@ -317,19 +318,20 @@ _CONTENT_SECURITY_POLICY = (
     "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; font-src data:"
 )
 _DROPPED_BLOCKS = re.compile(r"<(script|style|head)\b.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
-_HIDDEN_ELEMENTS = re.compile(
+_HIDDEN_OPEN = re.compile(
     r"<(div|span|p|td|font|a)\b[^>]*\bstyle\s*=\s*[\"'][^\"']*"
-    r"(?:display\s*:\s*none|visibility\s*:\s*hidden|mso-hide\s*:\s*all|font-size\s*:\s*0(?![.\d])"
-    r"|max-height\s*:\s*0(?![.\d])|opacity\s*:\s*0(?![.\d]))"
-    r"[^\"']*[\"'][^>]*>.*?</\1\s*>",
-    re.DOTALL | re.IGNORECASE,
+    r"(?:display\s*:\s*none|visibility\s*:\s*hidden|mso-hide\s*:\s*all|opacity\s*:\s*0(?![.\d]))"
+    r"[^\"']*[\"'][^>]*>",
+    re.IGNORECASE,
 )
 _HEAD_BLOCK = re.compile(r"<head\b.*?</head\s*>", re.DOTALL | re.IGNORECASE)
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
-_LINKED_TAGS = re.compile(r"<(?:link|base)\b[^>]*>", re.IGNORECASE)
 _LINE_BREAKS = re.compile(
-    r"<br\s*/?>|</(?:p|div|tr|li|h[1-6]|table|blockquote|pre)\s*>", re.IGNORECASE
+    r"<br\s*/?>|</?(?:p|div|tr|li|ul|ol|h[1-6]|table|tbody|thead|blockquote|pre|section|article)\b[^>]*>",
+    re.IGNORECASE,
 )
+_LINKED_TAGS = re.compile(r"<(?:link|base|meta)\b[^>]*>", re.IGNORECASE)
+_TABLE_CELLS = re.compile(r"</?(?:td|th)\b[^>]*>", re.IGNORECASE)
 _PIXEL_ATTR = r"""(?:^|[\s;"'])(?:{name})\s*[=:]\s*["']?\s*([0-9]+)(?:px)?\s*(?:["';\s/>]|$)"""
 _TAG = re.compile(r"<[^>]*>")
 
@@ -369,6 +371,28 @@ def _default_stem(message: dict[str, Any]) -> str:
     day = received if re.fullmatch(r"\d{4}-\d{2}-\d{2}", received) else "undated"
     slug = re.sub(r"[^a-z0-9]+", "-", str(message.get("subject") or "").lower()).strip("-")[:60]
     return f"{day}_{slug.strip('-') or 'message'}"
+
+
+def _drop_hidden(html: str) -> str:
+    """Remove each element hidden by an inline style, with everything nested inside it."""
+    searched = 0
+    while match := _HIDDEN_OPEN.search(html, searched):
+        same_tag = re.compile(rf"<(/?){match.group(1)}\b[^>]*>", re.IGNORECASE)
+        depth = 1
+        end = match.end()
+        for tag in same_tag.finditer(html, match.end()):
+            depth += -1 if tag.group(1) else 1
+            if depth == 0:
+                end = tag.end()
+                break
+        else:
+            # Never closed: drop only the opening tag rather than the rest of the message.
+            html = html[: match.start()] + html[match.end() :]
+            searched = match.start()
+            continue
+        html = html[: match.start()] + " " + html[end:]
+        searched = match.start()
+    return html
 
 
 def _file_sha256(path: Path) -> str:
