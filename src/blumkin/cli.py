@@ -124,6 +124,7 @@ from blumkin.browser.receipt_rehome import (
     AlreadyFiledError,
     RehomeError,
     UnconfirmedError,
+    file_sha256,
     rehome_receipt,
 )
 from blumkin.browser.transcript import parse_duration
@@ -392,6 +393,9 @@ _INSTALL_METHOD_LABELS: dict[str, str] = {
 # One `git pull` / `pipx|uv` step in `blumkin upgrade`. A cold reinstall builds
 # no wheels (blumkin is pure Python) but still resolves and downloads deps.
 _UPGRADE_STEP_TIMEOUT_S = 300
+
+# Most receipts `receipts summarize --dir` reads at once; more is an error, not a quiet cut-off.
+_SUMMARIZE_MAX_FILES = 500
 
 
 def _agent_lock_payload() -> dict[str, Any]:
@@ -753,11 +757,10 @@ def _summary_lines(summary: dict[str, Any]) -> list[str]:
     lines = []
     for row in summary["rows"]:
         name = sanitize_terminal(_strip_bidi(Path(row["path"]).name))
-        amount = f"{row['total'] or '?'} {row['currency'] or '?'}"
+        amount = _clean_line(f"{row['total'] or '?'} {row['currency'] or '?'}")
         vendor = _clean_line(row["vendor"] or "(unknown vendor)")
-        lines.append(
-            f"{row['action']:<6} {row['date'] or '(no date)':<10}  {vendor}  {amount}  {name}"
-        )
+        day = _clean_line(row["date"] or "(no date)")
+        lines.append(f"{row['action']:<6} {day:<10}  {vendor}  {amount}  {name}")
         if row["reason"]:
             lines.append(f"         {_clean_line(row['reason'])}")
     totals = ", ".join(f"{amount} {code}" for code, amount in summary["grand_totals"].items())
@@ -3846,10 +3849,21 @@ def receipts_summarize(
     files = [path.expanduser() for path in paths]
     if directory is not None:
         try:
-            files.extend(item.path for item in find_local_receipts(directory, limit=500))
+            found = find_local_receipts(directory, limit=_SUMMARIZE_MAX_FILES + 1)
         except ReceiptsDirError as exc:
             _emit_error(error="not_found", message=str(exc), as_json=as_json)
             raise SystemExit(EXIT_NOT_FOUND) from exc
+        if len(found) > _SUMMARIZE_MAX_FILES:
+            _emit_error(
+                error="usage_error",
+                message=(
+                    f"Expected at most {_SUMMARIZE_MAX_FILES} receipts in {str(directory)!r}, "
+                    "got more; pass the files you mean"
+                ),
+                as_json=as_json,
+            )
+            raise SystemExit(EXIT_USAGE)
+        files.extend(item.path for item in found)
     unique = list(dict.fromkeys(files))
     if not unique:
         _emit_error(
@@ -3881,6 +3895,7 @@ def receipts_summarize(
                     message_id=meta["message_id"],
                     path=file_path,
                     received=meta["received"],
+                    sha256=file_sha256(file_path),
                     subject=meta["subject"],
                     total=fields.total.value,
                     vendor=fields.vendor.value,

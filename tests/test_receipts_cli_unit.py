@@ -309,6 +309,21 @@ def test_summarize_exits_1_when_a_receipt_needs_review(tmp_path: Path) -> None:
     assert json.loads(result.output)["needs_review"] == 1
 
 
+def test_summarize_refuses_a_directory_over_the_cap_instead_of_cutting_it_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin import cli
+
+    monkeypatch.setattr(cli, "_SUMMARIZE_MAX_FILES", 2)
+    for number in range(3):
+        _mail_export(tmp_path, f"r{number}", _RIDE.format(total="5.00"), subject=f"s{number}")
+
+    result = CliRunner().invoke(main, ["receipts", "summarize", "--dir", str(tmp_path)])
+
+    assert result.exit_code == EXIT_USAGE
+    assert "at most 2" in result.output
+
+
 def test_summarize_needs_files_or_a_directory() -> None:
     result = CliRunner().invoke(main, ["receipts", "summarize"])
 

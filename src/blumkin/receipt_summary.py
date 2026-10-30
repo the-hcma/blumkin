@@ -4,7 +4,10 @@ Ride-hail services send two emails per ride, one before and one after the tip is
 only the with-tip copy should be filed. `summarize_receipts` groups receipts by vendor, ride
 date and currency, treats a lower total within a tip's reach of a higher one as the
 without-tip copy of the same ride, and returns one row per receipt saying whether it would be
-filed, dropped or needs a person to look. It decides nothing: nothing is moved or deleted,
+filed, dropped or needs a person to look. A copy is dropped only with evidence that both are
+the same ride (the same message or file, the same subject, or arrival within minutes of each
+other); two receipts that merely look alike are both marked `review`, because a dropped
+receipt would never be filed. It decides nothing: nothing is moved or deleted,
 and the caller shows the table and the grand total for the user to confirm before any
 `receipts rehome`.
 
@@ -17,14 +20,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from blumkin.receipts import Confidence, parse_receipt_text
 
-#: A tip rarely adds more than half the fare; a bigger gap is a different ride.
-MAX_TIP_RATIO = Decimal("1.5")
+#: A tip rarely adds more than 40% to the fare; a bigger gap is a different ride.
+MAX_TIP_RATIO = Decimal("1.4")
+#: Two emails for one ride arrive within minutes of each other.
+SAME_RIDE_WINDOW = timedelta(minutes=30)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +46,8 @@ class SummaryInput:
     subject: str | None
     total: str | None
     vendor: str | None
+    #: SHA-256 of the file when known; identical bytes are the same receipt.
+    sha256: str | None = None
 
 
 def summarize_receipts(items: list[SummaryInput]) -> dict[str, Any]:
@@ -58,6 +66,8 @@ def summarize_receipts(items: list[SummaryInput]) -> dict[str, Any]:
             totals[row["currency"]] = totals.get(row["currency"], Decimal(0)) + Decimal(
                 row["total"]
             )
+    for row in rows:
+        row.pop("_evidence", None)
     needs_review = sum(1 for row in rows if row["action"] == "review")
     return {
         "dropping": sum(1 for row in rows if row["action"] == "drop"),
@@ -75,7 +85,7 @@ _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 
 def _mark_copies(members: list[dict[str, Any]]) -> None:
-    """Within one vendor, date and currency, drop each copy that is a tip below another."""
+    """Within one vendor, date and currency, drop a copy only when it is the same ride."""
     ordered = sorted(members, key=lambda row: Decimal(row["total"]), reverse=True)
     anchor = ordered[0]
     for row in ordered[1:]:
@@ -84,27 +94,66 @@ def _mark_copies(members: list[dict[str, Any]]) -> None:
             anchor = row
             continue
         name = Path(anchor["path"]).name
-        row["action"] = "drop"
-        row["reason"] = (
-            f"exact duplicate of {name}"
-            if higher == lower
-            else f"without-tip copy of {name} (total {anchor['total']})"
+        if _same_ride(anchor["_evidence"], row["_evidence"]):
+            row["action"] = "drop"
+            row["reason"] = (
+                f"exact duplicate of {name}"
+                if higher == lower
+                else f"without-tip copy of {name} (total {anchor['total']})"
+            )
+        else:
+            row["action"] = "review"
+            row["reason"] = (
+                f"looks like {name} (total {anchor['total']}) but nothing shows it is the same "
+                "ride: ask the user whether it is a copy or a separate ride"
+            )
+
+
+def _same_ride(first: SummaryInput, second: SummaryInput) -> bool:
+    """Evidence that two receipts are copies of one ride, not just similar."""
+    if first.sha256 and first.sha256 == second.sha256:
+        return True
+    if first.message_id and first.message_id == second.message_id:
+        return True
+    subjects = {_NON_ALNUM.sub("", (item.subject or "").lower()) for item in (first, second)}
+    if len(subjects) == 1 and "" not in subjects:
+        return True
+    times = [_parse_time(item.received) for item in (first, second)]
+    return None not in times and abs(times[0] - times[1]) <= SAME_RIDE_WINDOW  # type: ignore[operator]
+
+
+def _parse_time(value: str | None) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+    except ValueError:
+        return None
+
+
+def _valid_date(value: str | None) -> bool:
+    try:
+        return (
+            bool(value)
+            and _DATE.fullmatch(value or "") is not None
+            and bool(date.fromisoformat(value or ""))
         )
+    except ValueError:
+        return False
 
 
 def _resolve_date(item: SummaryInput) -> tuple[str | None, str, str]:
     """The ride date, where it came from, and a reason when it needs a person to check."""
-    if item.date and _DATE.fullmatch(item.date) and item.date_confidence == Confidence.HIGH.value:
+    if _valid_date(item.date) and item.date_confidence == Confidence.HIGH.value:
         return item.date, "text", ""
     if item.subject:
         found = parse_receipt_text(item.subject).date
-        if found.value and found.confidence is Confidence.HIGH:
+        if _valid_date(found.value) and found.confidence is Confidence.HIGH:
             return found.value, "subject", ""
-    if item.date and _DATE.fullmatch(item.date):
+    if item.date and _valid_date(item.date):
         return item.date, "text", "the receipt date is not certain"
-    if item.received and _DATE.fullmatch(item.received[:10]):
+    arrival = (item.received or "")[:10]
+    if _valid_date(arrival):
         return (
-            item.received[:10],
+            arrival,
             "received",
             "the date is the email arrival time, which can be the day after the ride",
         )
@@ -121,6 +170,7 @@ def _row(item: SummaryInput) -> dict[str, Any]:
         "message_id": item.message_id,
         "path": str(item.path),
         "reason": "",
+        "_evidence": item,
         "total": None,
         "vendor": (item.vendor or "").strip() or None,
     }

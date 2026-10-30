@@ -16,9 +16,10 @@ def _item(
     total: str | None = "18.50",
     currency: str | None = "USD",
     date_confidence: str = "high",
-    subject: str | None = None,
+    subject: str | None = "Your ride",
     received: str | None = None,
     message_id: str | None = None,
+    sha256: str | None = None,
 ) -> SummaryInput:
     return SummaryInput(
         currency=currency,
@@ -27,6 +28,7 @@ def _item(
         message_id=message_id,
         path=Path(f"/r/{name}"),
         received=received,
+        sha256=sha256,
         subject=subject,
         total=total,
         vendor=vendor,
@@ -50,14 +52,16 @@ def test_the_with_tip_copy_is_filed_and_the_without_tip_copy_is_dropped() -> Non
 
 
 def test_an_exact_duplicate_is_dropped_and_the_first_one_is_kept() -> None:
-    summary = summarize_receipts([_item("a.pdf"), _item("b.pdf")])
+    summary = summarize_receipts([_item("a.pdf", sha256="1" * 64), _item("b.pdf", sha256="1" * 64)])
 
     assert _actions(summary) == {"a.pdf": "file", "b.pdf": "drop"}
     assert "duplicate" in summary["rows"][1]["reason"]
 
 
 def test_two_rides_the_same_day_with_far_apart_totals_are_both_filed() -> None:
-    summary = summarize_receipts([_item("am.pdf", total="9.00"), _item("pm.pdf", total="31.00")])
+    summary = summarize_receipts(
+        [_item("am.pdf", total="9.00", subject="a"), _item("pm.pdf", total="31.00", subject="b")]
+    )
 
     assert _actions(summary) == {"am.pdf": "file", "pm.pdf": "file"}
     assert summary["grand_totals"] == {"USD": "40.00"}
@@ -143,3 +147,71 @@ def test_an_unparseable_total_needs_review_instead_of_crashing() -> None:
     summary = summarize_receipts([_item("a.pdf", total="1,5x")])
 
     assert _actions(summary) == {"a.pdf": "review"}
+
+
+def test_similar_totals_with_nothing_tying_them_together_are_reviewed_not_dropped() -> None:
+    summary = summarize_receipts(
+        [
+            _item("am.pdf", total="12.00", subject="Morning trip", received="2026-10-23T08:00:00Z"),
+            _item("pm.pdf", total="15.00", subject="Evening trip", received="2026-10-23T22:00:00Z"),
+        ]
+    )
+
+    assert _actions(summary) == {"pm.pdf": "file", "am.pdf": "review"}
+    assert "separate ride" in summary["rows"][0]["reason"]
+    assert summary["ok"] is False
+
+
+def test_a_round_trip_with_two_identical_fares_is_not_called_a_duplicate() -> None:
+    summary = summarize_receipts(
+        [
+            _item("out.pdf", subject="Trip out", received="2026-10-23T08:00:00Z"),
+            _item("back.pdf", subject="Trip back", received="2026-10-23T18:00:00Z"),
+        ]
+    )
+
+    assert sorted(_actions(summary).values()) == ["file", "review"]
+
+
+def test_arrival_within_minutes_is_evidence_of_one_ride() -> None:
+    summary = summarize_receipts(
+        [
+            _item("a.pdf", total="18.50", subject="Receipt 1", received="2026-10-23T08:00:00Z"),
+            _item("b.pdf", total="21.00", subject="Receipt 2", received="2026-10-23T08:12:00Z"),
+        ]
+    )
+
+    assert _actions(summary) == {"a.pdf": "drop", "b.pdf": "file"}
+
+
+def test_the_same_message_id_is_the_same_receipt() -> None:
+    summary = summarize_receipts(
+        [
+            _item("a.pdf", subject="x", message_id="m1"),
+            _item("b.pdf", subject="y", message_id="m1"),
+        ]
+    )
+
+    assert sorted(_actions(summary).values()) == ["drop", "file"]
+
+
+def test_a_chain_of_rides_is_not_collapsed_into_the_highest() -> None:
+    summary = summarize_receipts(
+        [
+            _item("a.pdf", total="10.00", subject="a"),
+            _item("b.pdf", total="12.00", subject="b"),
+            _item("c.pdf", total="14.00", subject="c"),
+        ]
+    )
+
+    assert "drop" not in _actions(summary).values()
+
+
+def test_an_impossible_calendar_date_is_not_trusted() -> None:
+    summary = summarize_receipts(
+        [_item("a.pdf", date="2026-13-45", received="2026-10-24T01:00:00Z")]
+    )
+
+    row = summary["rows"][0]
+    assert row["date"] == "2026-10-24"
+    assert row["action"] == "review"

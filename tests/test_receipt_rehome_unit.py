@@ -615,3 +615,101 @@ def test_discard_leaves_a_superseded_receipt_where_it_was_set_aside(tmp_path: Pa
     assert (
         config / "browser-tasks" / "expense-report" / "trip-lisbon" / "superseded" / old.name
     ).is_file()
+
+
+def test_replace_checks_the_old_receipt_before_filing_the_new_one(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs,
+    )  # fmt: skip
+    old.dest.write_bytes(b"tampered")
+    source = _file(tmp_path, "b.pdf", b"two")
+
+    with pytest.raises(RehomeError, match="intact"):
+        rehome_receipt(
+            config, "expense-report", "trip-lisbon", source,
+            fields=_fields(total="20.00"), upload_dirs=dirs, replace=old.name,
+        )  # fmt: skip
+
+    assert source.is_file()
+
+
+def test_replace_with_identical_bytes_is_refused(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+
+    with pytest.raises(RehomeError, match="differs"):
+        rehome_receipt(
+            config, "expense-report", "trip-lisbon", _file(tmp_path, "b.pdf", b"one"),
+            fields=_fields(), upload_dirs=dirs, replace=old.name,
+        )  # fmt: skip
+
+
+def test_replace_resumes_when_an_earlier_run_filed_the_new_file_but_stopped(
+    tmp_path: Path,
+) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    new_source = _file(tmp_path, "b.pdf", b"two")
+    rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+
+    resumed = rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m", replace=old.name,
+    )  # fmt: skip
+
+    assert resumed.replaced == old.name
+    assert not old.dest.exists()
+
+
+def test_replace_finishes_the_journal_when_the_file_was_already_set_aside(
+    tmp_path: Path,
+) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    aside_dir = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "superseded"
+    aside_dir.mkdir()
+    old.dest.replace(aside_dir / old.name)  # a crash after the move, before the journal
+
+    new = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "b.pdf", b"two"),
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m", replace=old.name,
+    )  # fmt: skip
+
+    assert new.replaced == old.name
+    with pytest.raises(RehomeError, match="one filed receipt"):
+        rehome_receipt(
+            config, "expense-report", "trip-lisbon", _file(tmp_path, "c.pdf", b"three"),
+            fields=_fields(), upload_dirs=dirs, replace=old.name,
+        )  # fmt: skip
+
+
+def test_a_taken_name_in_superseded_gets_a_numbered_one(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    aside_dir = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "superseded"
+    aside_dir.mkdir()
+    (aside_dir / old.name).write_bytes(b"something else entirely")
+
+    rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "b.pdf", b"two"),
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m", replace=old.name,
+    )  # fmt: skip
+
+    assert (aside_dir / f"1-{old.name}").read_bytes() == b"one"
