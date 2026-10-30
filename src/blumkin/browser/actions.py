@@ -288,9 +288,10 @@ def goto_task(
     sign_in_hosts = (*SIGN_IN_HOSTS, *(declared.sign_in_hosts if declared else ()))
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        driver.goto(target)
         pause = sleep or (lambda seconds: driver.wait_ms(round(seconds * 1000)))
-        waited = _wait_through_sign_in(driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now)
+        with driver.sign_in_pass(lambda host: host_allowed(host, sign_in_hosts)):
+            driver.goto(target)
+            waited = _wait_through_sign_in(driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now)
         payload: dict[str, Any] = {"action": "goto", "ok": True, "task": task, "url": driver.url}
         if waited is not None:
             payload["sign_in_host"] = waited[1]

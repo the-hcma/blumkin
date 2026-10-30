@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from collections.abc import Callable
@@ -32,6 +33,7 @@ class _Raw:
 
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
+        self.sign_ins: list[bool] = []
         self.closed = 0
         #: Called with the seconds a `wait_ms` pause lasts (a test's clock advances here).
         self.on_wait: Callable[[float], None] | None = None
@@ -199,6 +201,10 @@ class _Raw:
 
     def title(self) -> str:
         return self.title_text
+
+    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> Any:
+        self.sign_ins.append(is_sign_in_host("login.microsoftonline.com"))
+        return contextlib.nullcontext()
 
     def wait_ms(self, milliseconds: int) -> None:
         self.calls.append(("wait_ms", milliseconds))
@@ -2118,3 +2124,10 @@ def test_a_form_url_that_is_not_https_or_not_allowed_is_a_config_error(
         _policy(_config_dir, body)
         with pytest.raises(ProviderConfigError, match="form_url"):
             load_browser_setup()
+
+
+def test_goto_lets_the_sign_in_through_the_safety_net_while_it_waits(raw: _Raw) -> None:
+    result = _run("browser", "goto", "expense-report", "https://erp.example.com/expenses")
+
+    assert result.exit_code == 0, result.output
+    assert raw.sign_ins == [True]

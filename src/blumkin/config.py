@@ -757,10 +757,25 @@ def _form_url(value: Any, allowed_hosts: tuple[str, ...], prefix: str) -> str:
         return ""
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not host or parts.username or parts.password:
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    # A backslash, whitespace or a control character is read differently by a browser than by
+    # urlsplit (`https://evil.example\\.erp.example.com` goes to evil.example), so none is allowed.
+    odd = any(char.isspace() or char == "\\" or not char.isprintable() for char in url)
+    if (
+        parts.scheme != "https"
+        or not _HOST_PATTERN.fullmatch(host)
+        or parts.username
+        or parts.password
+        or port == -1
+        or odd
+    ):
+        # The address is not echoed: it can hold a password.
         raise ProviderConfigError(
-            f"{prefix}.form_url must be an https address without credentials in config.toml, "
-            f"got {url!r}"
+            f"{prefix}.form_url must be a plain https address without credentials, spaces or "
+            "backslashes in config.toml"
         )
     allowed = not allowed_hosts or any(
         host.endswith(pattern[1:]) and len(host) > len(pattern) - 1

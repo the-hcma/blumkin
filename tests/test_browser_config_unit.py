@@ -402,6 +402,14 @@ def test_form_url_and_sign_in_hosts_are_parsed_and_default_to_nothing(
     ("body", "needle"),
     [
         ("[browser.tasks.expense-report]\nform_url = 5\n\n", "form_url"),
+        (
+            '[browser.tasks.expense-report]\nform_url = "https://erp.example.com/a b"\n\n',
+            "form_url",
+        ),
+        (
+            '[browser.tasks.expense-report]\nform_url = "https://erp.example.com\\\\x"\n\n',
+            "form_url",
+        ),
         ('[browser.tasks.expense-report]\nsign_in_hosts = "sso"\n\n', "sign_in_hosts"),
         ('[browser.tasks.expense-report]\nsign_in_hosts = ["*.com"]\n\n', "sign_in_hosts"),
         (
@@ -417,3 +425,18 @@ def test_a_bad_form_url_or_sign_in_host_is_a_config_error(
 
     with pytest.raises(ProviderConfigError, match=needle):
         load_config()
+
+
+def test_a_form_url_with_a_password_is_refused_without_echoing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nform_url = "https://me:hunter2@erp.example.com/x"\n\n',
+    )
+
+    with pytest.raises(ProviderConfigError, match="form_url") as caught:
+        load_config()
+
+    assert "hunter2" not in str(caught.value)

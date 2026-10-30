@@ -2573,3 +2573,48 @@ def test_an_attach_that_keeps_failing_is_a_protocol_error() -> None:
             fetch_version=always_down,
             sleep=lambda seconds: None,
         )
+
+
+class _SignInRequest:
+    def __init__(self, url: str, frame_url: str | None) -> None:
+        self.url = url
+        self.frame = type("Frame", (), {"url": frame_url})() if frame_url is not None else None
+
+
+class _SignInRoute:
+    def __init__(self, url: str, frame_url: str | None) -> None:
+        self.request = _SignInRequest(url, frame_url)
+        self.outcome = ""
+
+    def continue_(self) -> None:
+        self.outcome = "continue"
+
+    def fallback(self) -> None:
+        self.outcome = "fallback"
+
+
+@pytest.mark.parametrize(
+    ("url", "frame_url", "outcome"),
+    [
+        (
+            "https://login.microsoftonline.com/login",
+            "https://login.microsoftonline.com/",
+            "continue",
+        ),
+        ("https://erp.example.com/saml", "https://login.microsoftonline.com/", "continue"),
+        ("https://login.microsoftonline.com/x", "https://erp.example.com/", "continue"),
+        ("https://erp.example.com/submit", "https://erp.example.com/", "fallback"),
+        ("https://erp.example.com/submit", None, "fallback"),
+    ],
+)
+def test_the_sign_in_route_continues_only_traffic_to_or_from_a_sign_in_host(
+    url: str, frame_url: str | None, outcome: str
+) -> None:
+    from blumkin.browser.cdp import _sign_in_handler
+
+    handler = _sign_in_handler(lambda host: host == "login.microsoftonline.com")
+    route = _SignInRoute(url, frame_url)
+
+    handler(route)
+
+    assert route.outcome == outcome

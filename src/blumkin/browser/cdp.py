@@ -22,7 +22,8 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -639,6 +640,26 @@ class PlaywrightDriver:
             raise self._action_error("restrict navigation to the allowed hosts", exc) from exc
         self._navigation_handler = handler
 
+    @contextlib.contextmanager
+    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> Iterator[None]:
+        """While the user signs in by hand, let identity-provider requests past the safety net.
+
+        A login form POST, or the identity provider's POST back to the site, would otherwise be
+        answered with an empty page and the sign-in could never finish. Only a request that goes
+        to a sign-in host or comes from a page on one is let through, and only inside this block.
+        """
+        self._require_open()
+        handler = _sign_in_handler(is_sign_in_host)
+        try:
+            self._context.route("**/*", handler)
+        except _playwright_error() as exc:
+            raise self._action_error("let the sign-in through", exc) from exc
+        try:
+            yield
+        finally:
+            with contextlib.suppress(_playwright_error()):
+                self._context.unroute("**/*", handler)
+
     def scroll_frame_text(
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture:
@@ -1143,6 +1164,10 @@ class RawBrowserDriver(Protocol):
 
     def read_text(self) -> PageText: ...
 
+    def sign_in_pass(
+        self, is_sign_in_host: Callable[[str], bool]
+    ) -> AbstractContextManager[None]: ...
+
     def scroll_frame_text(
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture: ...
@@ -1437,6 +1462,27 @@ def _abort_non_get_navigation(route: Any) -> None:
         route.fulfill(status=204)
     else:
         route.continue_()
+
+
+def _sign_in_handler(is_sign_in_host: Callable[[str], bool]) -> Callable[[Any], None]:
+    """A route handler that continues sign-in traffic and hands everything else on."""
+
+    def host_of(address: str) -> str:
+        parts = urlsplit(address)
+        return (parts.hostname or "") if parts.scheme in ("http", "https") else ""
+
+    def handler(route: Any) -> None:
+        request = route.request
+        try:
+            origin = host_of(str(request.frame.url))
+        except Exception:  # a detached frame has no address; treat it as not a sign-in page
+            origin = ""
+        if is_sign_in_host(host_of(str(request.url))) or (origin and is_sign_in_host(origin)):
+            route.continue_()
+        else:
+            route.fallback()
+
+    return handler
 
 
 def _driver_for(

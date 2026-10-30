@@ -28,6 +28,7 @@ import logging
 import re
 import unicodedata
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -254,6 +255,10 @@ class GuardedDriver:
     def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None:
         self._check_target(target)
         self._raw.upload(label, path, target)
+
+    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> AbstractContextManager[None]:
+        """Let identity-provider requests past the safety net while the user signs in by hand."""
+        return self._raw.sign_in_pass(is_sign_in_host)
 
     def wait_ms(self, milliseconds: int) -> None:
         """Pause, with the page's events delivered (for example a redirect finishing)."""
