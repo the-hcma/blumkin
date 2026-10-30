@@ -31,12 +31,16 @@ class _Driver:
         self.url = "https://erp.example.com/expenses"
         self.clicks: list[tuple[str, str]] = []
         self.closed = 0
+        self.marks: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         self.lands_on: str | None = None
         self.refusal: str | None = None
         self.href = ""
 
     def aria_snapshot(self) -> str:
         return _SNAPSHOT
+
+    def mark_window(self, task: str, hosts: Any = (), blocked: Any = ()) -> None:
+        self.marks.append((task, tuple(hosts), tuple(blocked)))
 
     def inspect(self, role: str, name: str) -> Inspection:
         return Inspection(refusal=self.refusal, href=self.href)
@@ -118,6 +122,8 @@ def test_observe_records_a_page_in_the_draft_and_reports_what_it_kept(
     assert payload["controls"] >= 3
     assert driver.closed == 1
     assert _draft_path(_config_dir).is_file()
+    assert driver.marks and driver.marks[0][0] == "expense-report"
+    assert "login.microsoftonline.com" in driver.marks[0][2]
 
 
 def test_observe_refuses_a_task_without_allowed_hosts(driver: _Driver, _config_dir: Path) -> None:

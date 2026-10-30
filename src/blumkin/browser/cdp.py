@@ -110,7 +110,9 @@ class BrowserDriver(Protocol):
 
     def goto(self, url: str) -> None: ...
 
-    def mark_window(self, task: str) -> None: ...
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None: ...
 
     def press(self, label: str, key: str) -> None: ...
 
@@ -514,11 +516,17 @@ class PlaywrightDriver:
             )
         return tuple(found)
 
-    def mark_window(self, task: str) -> None:
-        """Show the task's indicator on the page (best effort: a page that refuses is skipped)."""
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None:
+        """Show the task's indicator on the page (best effort: a page that refuses is skipped).
+
+        The page's own address is checked in the evaluation that adds the pill: off `hosts`, or
+        on a `blocked` host, nothing is added.
+        """
         self._require_open()
         with contextlib.suppress(_playwright_error()):
-            self._page.evaluate(INDICATOR_JS, indicator_args(task))
+            self._page.evaluate(INDICATOR_JS, indicator_args(task, hosts, blocked))
 
     def goto(self, url: str) -> None:
         self._require_open()
@@ -1156,7 +1164,9 @@ class RawBrowserDriver(Protocol):
 
     def goto(self, url: str) -> None: ...
 
-    def mark_window(self, task: str) -> None: ...
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None: ...
 
     def matching_roles(
         self, name: str, roles: Sequence[str], wait_s: float, nth: int | None = None

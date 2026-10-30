@@ -9,7 +9,13 @@ from typing import Any
 import pytest
 from playwright.sync_api import Error as PlaywrightError
 
-from blumkin.browser.indicator import INDICATOR_ID, INDICATOR_JS, indicator_args, task_colour
+from blumkin.browser.indicator import (
+    INDICATOR_ID,
+    INDICATOR_JS,
+    contrast_with_white,
+    indicator_args,
+    task_colour,
+)
 
 
 def test_a_task_colour_is_a_hex_colour_that_is_the_same_every_time() -> None:
@@ -27,17 +33,25 @@ def test_different_tasks_get_different_colours() -> None:
 
 def test_the_colour_is_dark_enough_for_white_text() -> None:
     for name in ("a", "expense-report", "time-sheet", "x" * 40, "zz-9"):
-        red, green, blue = (int(task_colour(name)[index : index + 2], 16) for index in (1, 3, 5))
-        luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
-        assert luminance < 150, (name, luminance)
+        assert contrast_with_white(task_colour(name)) >= 4.5, name
+    # The ratio is the WCAG one: black on white is 21:1, white on white is 1:1.
+    assert round(contrast_with_white("#000000")) == 21
+    assert contrast_with_white("#ffffff") == pytest.approx(1.0)
 
 
 def test_the_arguments_carry_the_task_the_colour_and_the_element_id() -> None:
     assert indicator_args("time-sheet") == {
+        "blocked": [],
         "colour": task_colour("time-sheet"),
+        "hosts": [],
         "id": INDICATOR_ID,
         "task": "time-sheet",
     }
+    with_hosts = indicator_args("time-sheet", ("erp.example.com",), ("login.example.net",))
+    assert (with_hosts["hosts"], with_hosts["blocked"]) == (
+        ["erp.example.com"],
+        ["login.example.net"],
+    )
 
 
 def test_the_script_is_inert_hidden_and_not_added_twice() -> None:
@@ -132,14 +146,43 @@ def test_in_a_real_browser_the_marker_is_added_once_hidden_from_text_and_inert()
         )
         try:
             page = browser.new_page(viewport={"width": 800, "height": 600})
-            page.set_content(page_html)
+            page.route(
+                "https://**/*",
+                lambda route: route.fulfill(
+                    body=page_html, content_type="text/html", headers={"cache-control": "no-store"}
+                ),
+            )
+
+            def count() -> int:
+                return int(page.evaluate(f"document.querySelectorAll('#{INDICATOR_ID}').length"))
+
+            # Off the allowed hosts, or on a sign-in host, or on a page that is not http(s):
+            # nothing is added.
+            page.goto("https://other.example.net/")
+            page.evaluate(INDICATOR_JS, indicator_args("t", ("erp.example.com", "*.corp.example")))
+            assert count() == 0
+            page.goto("https://login.example.net/")
+            page.evaluate(INDICATOR_JS, indicator_args("t", (), ("login.example.net",)))
+            assert count() == 0
+            page.goto("about:blank")
+            page.evaluate(INDICATOR_JS, indicator_args("t"))
+            assert count() == 0
+
+            page.goto("https://erp.example.com/")
             before = page.evaluate("document.body.innerText")
             for _ in range(2):
-                page.evaluate(INDICATOR_JS, indicator_args("expense-report"))
+                page.evaluate(INDICATOR_JS, indicator_args("expense-report", ("erp.example.com",)))
 
-            assert page.evaluate(f"document.querySelectorAll('#{INDICATOR_ID}').length") == 1
+            assert count() == 1
             assert page.evaluate("document.body.innerText") == before
             assert "blumkin" not in page.locator("body").aria_snapshot()
             page.click("#go")  # the pill sits over the button and takes no clicks
+
+            page.goto("https://a.corp.example/")  # a `*.` pattern matches a subdomain only
+            page.evaluate(INDICATOR_JS, indicator_args("t", ("*.corp.example",)))
+            assert count() == 1
+            page.goto("https://corp.example/")
+            page.evaluate(INDICATOR_JS, indicator_args("t", ("*.corp.example",)))
+            assert count() == 0
         finally:
             browser.close()

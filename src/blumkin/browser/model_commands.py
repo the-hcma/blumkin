@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from blumkin.browser.actions import sign_in_hosts_for
 from blumkin.browser.commands import require_profile
 from blumkin.browser.drift import (
     Finding,
@@ -54,6 +55,7 @@ def model_check(
         raise PageIdError(f"Expected one of the model's pages ({known}), got {page_id!r}")
     profile = require_profile(config.config_dir, task)
     with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
+        driver.mark_window(task, hosts, sign_in_hosts_for(config, task))
         explorer = Explorer(driver, TerminalConfirmer(), allowed_hosts=hosts, extra_deny=extra_deny)
         url, controls = explorer.observe_with_url()
     check = check_page(page, controls)

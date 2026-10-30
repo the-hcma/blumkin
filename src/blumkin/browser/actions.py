@@ -317,6 +317,12 @@ def handoff_task(
     )
 
 
+def sign_in_hosts_for(config: BrowserSetup, task: str) -> tuple[str, ...]:
+    """The identity-provider hosts of a task: the built-in list plus its `sign_in_hosts`."""
+    declared = config.browser.tasks.get(task)
+    return (*SIGN_IN_HOSTS, *(declared.sign_in_hosts if declared else ()))
+
+
 def host_allowed(host: str, patterns: Sequence[str]) -> bool:
     """Exact host match, or `*.example.com` for any subdomain (not the bare domain)."""
     lowered = host.lower().rstrip(".")
@@ -899,17 +905,18 @@ def _with_driver(
         raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
     declared = config.browser.tasks.get(task)
     hosts = declared.allowed_hosts if declared else ()
+    sign_in_hosts = sign_in_hosts_for(config, task)
     driver = attach_guarded(profile, _policy_for(config, task))
     try:
         if check_before:
             _require_allowed_page(driver, task, hosts, "acting")
-            driver.mark_window(task)
+        # The pill is added only if the page itself, in the same evaluation, is on an allowed
+        # host and not on a sign-in page, so it is safe to try before and after every action.
+        driver.mark_window(task, hosts, sign_in_hosts)
         result = act(driver)
         if check_after:
             _require_allowed_page(driver, task, hosts, "the action")
-        if check_after or not hosts:
-            # Only a page on an allowed host (or any page when the task declares none) is marked.
-            driver.mark_window(task)
+        driver.mark_window(task, hosts, sign_in_hosts)
         return result
     finally:
         driver.close()

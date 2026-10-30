@@ -355,12 +355,16 @@ class _Raw:
         self.restricted: Any = None
         self.settled = 0
         self.settled_from = ""
+        self.marks: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
 
     def block_form_submission(self, *, background_writes: bool = False) -> None:
         self.net += 1
 
     def aria_snapshot(self) -> str:
         return _SNAPSHOT
+
+    def mark_window(self, task: str, hosts: Any = (), blocked: Any = ()) -> None:
+        self.marks.append((task, tuple(hosts), tuple(blocked)))
 
     def restrict_navigation(self, is_allowed: Any) -> None:
         self.restricted = is_allowed
@@ -976,3 +980,12 @@ def test_a_long_word_in_a_control_name_still_gives_a_storable_draft() -> None:
     )
     model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
     assert [c.name for c in model.pages[0].controls] == ["p.telecommunicatio"]
+
+
+def test_the_exploring_driver_hands_the_indicator_request_to_the_raw_driver() -> None:
+    raw = _Raw()
+    driver = ExploringDriver(raw)
+
+    driver.mark_window("expense-report", ("erp.example.com",), ("login.example.net",))
+
+    assert raw.marks == [("expense-report", ("erp.example.com",), ("login.example.net",))]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -35,8 +35,8 @@ class _Raw:
         self.calls: list[tuple[Any, ...]] = []
         self.sign_ins: list[bool] = []
         self.closed = 0
-        #: (task, page address) each time the window indicator was shown (apart from `calls`).
-        self.marks: list[tuple[str, str]] = []
+        #: (task, hosts, blocked hosts) each time the window indicator was asked for.
+        self.marks: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         #: Called with the seconds a `wait_ms` pause lasts (a test's clock advances here).
         self.on_wait: Callable[[float], None] | None = None
         self.scripted = False
@@ -208,8 +208,10 @@ class _Raw:
         self.sign_ins.append(is_sign_in_host("login.microsoftonline.com"))
         return contextlib.nullcontext()
 
-    def mark_window(self, task: str) -> None:
-        self.marks.append((task, self.url))
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None:
+        self.marks.append((task, tuple(hosts), tuple(blocked)))
 
     def wait_ms(self, milliseconds: int) -> None:
         self.calls.append(("wait_ms", milliseconds))
@@ -2141,19 +2143,25 @@ def test_goto_lets_the_sign_in_through_the_safety_net_while_it_waits(raw: _Raw) 
 # --------------------------------------------------------------------------- indicator (#590)
 
 
-def test_every_action_shows_the_task_indicator_on_an_allowed_page(
+def test_every_action_asks_for_the_indicator_with_the_hosts_and_the_sign_in_pages(
     raw: _Raw, _config_dir: Path
 ) -> None:
-    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    _policy(
+        _config_dir, 'allowed_hosts = ["erp.example.com"]\nsign_in_hosts = ["sso.corp.example"]'
+    )
 
     result = _run("browser", "fill", "expense-report", "Amount", "1")
 
     assert result.exit_code == EXIT_SUCCESS, result.output
-    # An action that does not navigate is marked once, before it acts, on the checked page.
-    assert raw.marks == [("expense-report", _FORM)]
+    # Before and after the action; the page itself decides, in the same evaluation.
+    assert len(raw.marks) == 2
+    task, hosts, blocked = raw.marks[0]
+    assert (task, hosts) == ("expense-report", ("erp.example.com",))
+    assert "login.microsoftonline.com" in blocked and "sso.corp.example" in blocked
+    assert raw.marks[1] == raw.marks[0]
 
 
-def test_an_action_that_navigates_is_marked_again_once_it_has_landed(
+def test_an_action_that_navigates_is_asked_to_mark_before_and_after(
     raw: _Raw, _config_dir: Path
 ) -> None:
     _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
@@ -2161,31 +2169,12 @@ def test_an_action_that_navigates_is_marked_again_once_it_has_landed(
     result = _run("browser", "goto", "expense-report", _FORM, "--sign-in-wait", "0")
 
     assert result.exit_code == EXIT_SUCCESS, result.output
-    assert raw.marks == [("expense-report", _FORM)]
+    assert len(raw.marks) == 2
 
 
-def test_a_page_on_a_blocked_host_is_never_marked(raw: _Raw, _config_dir: Path) -> None:
-    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
-    raw.url = "https://evil.example.net/x"
-
-    result = _run("browser", "fill", "expense-report", "Amount", "1")
-
-    assert result.exit_code == EXIT_OTHER
-    assert raw.marks == []
-
-
-def test_goto_marks_only_after_it_is_on_an_allowed_host(raw: _Raw, _config_dir: Path) -> None:
-    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
-    raw.url_script = [_IDP]
-
-    result = _run("browser", "goto", "expense-report", _FORM, "--sign-in-wait", "0")
-
-    assert result.exit_code == EXIT_OTHER
-    assert raw.marks == []
-
-
-def test_a_task_without_allowed_hosts_is_marked_wherever_it_is(raw: _Raw) -> None:
+def test_a_task_without_allowed_hosts_still_never_marks_a_sign_in_page(raw: _Raw) -> None:
     result = _run("browser", "fill", "expense-report", "Amount", "1")
 
     assert result.exit_code == EXIT_SUCCESS, result.output
-    assert len(raw.marks) == 2  # before acting, and again after (no host to check against)
+    assert raw.marks[0][1] == ()
+    assert "login.microsoftonline.com" in raw.marks[0][2]
