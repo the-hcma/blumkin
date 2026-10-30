@@ -713,3 +713,44 @@ def test_a_taken_name_in_superseded_gets_a_numbered_one(tmp_path: Path) -> None:
     )  # fmt: skip
 
     assert (aside_dir / f"1-{old.name}").read_bytes() == b"one"
+
+
+def test_replace_is_refused_for_a_closed_instance_and_moves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser import receipt_rehome
+    from blumkin.browser.ledger import Phase
+
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    new_source = _file(tmp_path, "b.pdf", b"two")
+    rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    monkeypatch.setattr(
+        receipt_rehome, "instance_status", lambda *_a, **_k: SimpleNamespace(phase=Phase.SUBMITTED)
+    )
+
+    with pytest.raises(RehomeError, match="open ledger instance"):
+        rehome_receipt(
+            config, "expense-report", "trip-lisbon", new_source,
+            fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m", replace=old.name,
+        )  # fmt: skip
+
+    assert old.dest.is_file()
+
+
+def test_replace_rejects_a_bad_instance_name_before_looking_anything_up(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+
+    with pytest.raises(RehomeError, match="instance name"):
+        rehome_receipt(
+            config, "expense-report", "../escape", _file(tmp_path, "b.pdf", b"two"),
+            fields=_fields(), upload_dirs=dirs, replace="deadbeef",
+        )  # fmt: skip

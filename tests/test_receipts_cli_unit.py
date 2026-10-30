@@ -345,3 +345,17 @@ def test_rehome_refuses_without_yes_and_says_what_to_do(tmp_path: Path) -> None:
     assert result.exit_code == EXIT_USAGE
     assert "--yes" in result.output
     assert photo.is_file()
+
+
+def test_summarize_ignores_a_json_left_over_from_a_different_export(tmp_path: Path) -> None:
+    first = _mail_export(tmp_path, "a", _RIDE.format(total="18.50"), subject="Same")
+    second = _mail_export(tmp_path, "b", _RIDE.format(total="21.00"), subject="Same")
+    stale = json.loads(second.with_suffix(".json").read_text())
+    stale["pdf_sha256"] = "0" * 64
+    second.with_suffix(".json").write_text(json.dumps(stale))
+
+    result = CliRunner().invoke(main, ["receipts", "summarize", str(first), str(second), "--json"])
+
+    rows = {row["path"].rsplit("/", 1)[-1]: row for row in json.loads(result.output)["rows"]}
+    assert rows["b.pdf"]["message_id"] is None
+    assert rows["a.pdf"]["action"] == "file"

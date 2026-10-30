@@ -3890,6 +3890,7 @@ def receipts_summarize(
             items.append(
                 SummaryInput(
                     currency=fields.currency.value,
+                    currency_confidence=fields.currency.confidence.value,
                     date=fields.date.value,
                     date_confidence=fields.date.confidence.value,
                     message_id=meta["message_id"],
@@ -3898,6 +3899,7 @@ def receipts_summarize(
                     sha256=file_sha256(file_path),
                     subject=meta["subject"],
                     total=fields.total.value,
+                    total_confidence=fields.total.confidence.value,
                     vendor=fields.vendor.value,
                 )
             )

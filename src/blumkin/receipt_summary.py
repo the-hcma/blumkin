@@ -5,11 +5,10 @@ only the with-tip copy should be filed. `summarize_receipts` groups receipts by 
 date and currency, treats a lower total within a tip's reach of a higher one as the
 without-tip copy of the same ride, and returns one row per receipt saying whether it would be
 filed, dropped or needs a person to look. A copy is dropped only with evidence that both are
-the same ride (the same message or file, the same subject, or arrival within minutes of each
-other); two receipts that merely look alike are both marked `review`, because a dropped
-receipt would never be filed. It decides nothing: nothing is moved or deleted,
-and the caller shows the table and the grand total for the user to confirm before any
-`receipts rehome`.
+the same ride (the same message or file, or arrival within minutes of each other); two
+receipts that merely look alike are both marked `review`, because a dropped receipt would
+never be filed. It decides nothing: nothing is moved or deleted, and the caller shows the
+table and the grand total for the user to confirm before any `receipts rehome`.
 
 The ride date comes from the receipt text, then from the subject, and only as a last resort
 from the email arrival time (a late-evening ride arrives on the next UTC day), which is
@@ -20,7 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -46,8 +45,10 @@ class SummaryInput:
     subject: str | None
     total: str | None
     vendor: str | None
+    currency_confidence: str = "high"
     #: SHA-256 of the file when known; identical bytes are the same receipt.
     sha256: str | None = None
+    total_confidence: str = "high"
 
 
 def summarize_receipts(items: list[SummaryInput]) -> dict[str, Any]:
@@ -115,18 +116,20 @@ def _same_ride(first: SummaryInput, second: SummaryInput) -> bool:
         return True
     if first.message_id and first.message_id == second.message_id:
         return True
-    subjects = {_NON_ALNUM.sub("", (item.subject or "").lower()) for item in (first, second)}
-    if len(subjects) == 1 and "" not in subjects:
-        return True
-    times = [_parse_time(item.received) for item in (first, second)]
-    return None not in times and abs(times[0] - times[1]) <= SAME_RIDE_WINDOW  # type: ignore[operator]
+    # A shared subject alone proves little (ride-hail subjects are generic), so arrival time is
+    # the signal: the two emails of one ride land within minutes of each other.
+    sent, other = _parse_time(first.received), _parse_time(second.received)
+    return sent is not None and other is not None and abs(sent - other) <= SAME_RIDE_WINDOW
 
 
 def _parse_time(value: str | None) -> datetime | None:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
     except ValueError:
         return None
+    if parsed is not None and parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def _valid_date(value: str | None) -> bool:
@@ -178,12 +181,17 @@ def _row(item: SummaryInput) -> dict[str, Any]:
     total = (item.total or "").strip()
     if not _AMOUNT.fullmatch(total):
         problems.append("no readable total" if not total else "the total is not a plain amount")
+    elif item.total_confidence != Confidence.HIGH.value:
+        row["total"] = f"{Decimal(total):.2f}"
+        problems.append("the total is not certain")
     else:
         row["total"] = f"{Decimal(total):.2f}"
     if row["vendor"] is None:
         problems.append("no vendor")
     if row["currency"] is None:
         problems.append("no currency")
+    elif item.currency_confidence != Confidence.HIGH.value:
+        problems.append("the currency is not certain")
     if problems:
         row["action"] = "review"
         row["reason"] = "; ".join(problems)

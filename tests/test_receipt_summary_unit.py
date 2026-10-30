@@ -17,12 +17,15 @@ def _item(
     currency: str | None = "USD",
     date_confidence: str = "high",
     subject: str | None = "Your ride",
-    received: str | None = None,
+    received: str | None = "2026-10-23T08:00:00Z",
+    total_confidence: str = "high",
+    currency_confidence: str = "high",
     message_id: str | None = None,
     sha256: str | None = None,
 ) -> SummaryInput:
     return SummaryInput(
         currency=currency,
+        currency_confidence=currency_confidence,
         date=date,
         date_confidence=date_confidence,
         message_id=message_id,
@@ -31,6 +34,7 @@ def _item(
         sha256=sha256,
         subject=subject,
         total=total,
+        total_confidence=total_confidence,
         vendor=vendor,
     )
 
@@ -59,9 +63,7 @@ def test_an_exact_duplicate_is_dropped_and_the_first_one_is_kept() -> None:
 
 
 def test_two_rides_the_same_day_with_far_apart_totals_are_both_filed() -> None:
-    summary = summarize_receipts(
-        [_item("am.pdf", total="9.00", subject="a"), _item("pm.pdf", total="31.00", subject="b")]
-    )
+    summary = summarize_receipts([_item("am.pdf", total="9.00"), _item("pm.pdf", total="31.00")])
 
     assert _actions(summary) == {"am.pdf": "file", "pm.pdf": "file"}
     assert summary["grand_totals"] == {"USD": "40.00"}
@@ -198,9 +200,9 @@ def test_the_same_message_id_is_the_same_receipt() -> None:
 def test_a_chain_of_rides_is_not_collapsed_into_the_highest() -> None:
     summary = summarize_receipts(
         [
-            _item("a.pdf", total="10.00", subject="a"),
-            _item("b.pdf", total="12.00", subject="b"),
-            _item("c.pdf", total="14.00", subject="c"),
+            _item("a.pdf", total="10.00", received="2026-10-23T06:00:00Z"),
+            _item("b.pdf", total="12.00", received="2026-10-23T12:00:00Z"),
+            _item("c.pdf", total="14.00", received="2026-10-23T18:00:00Z"),
         ]
     )
 
@@ -215,3 +217,57 @@ def test_an_impossible_calendar_date_is_not_trusted() -> None:
     row = summary["rows"][0]
     assert row["date"] == "2026-10-24"
     assert row["action"] == "review"
+
+
+def test_a_shared_subject_alone_does_not_make_two_rides_one() -> None:
+    summary = summarize_receipts(
+        [
+            _item("am.pdf", total="18.50", received="2026-10-23T08:00:00Z"),
+            _item("pm.pdf", total="21.00", received="2026-10-23T20:00:00Z"),
+        ]
+    )
+
+    assert sorted(_actions(summary).values()) == ["file", "review"]
+
+
+def test_a_naive_and_an_aware_arrival_time_can_be_compared() -> None:
+    summary = summarize_receipts(
+        [
+            _item("a.pdf", total="18.50", received="2026-10-23T08:00:00"),
+            _item("b.pdf", total="21.00", received="2026-10-23T08:05:00Z"),
+        ]
+    )
+
+    assert _actions(summary) == {"a.pdf": "drop", "b.pdf": "file"}
+
+
+def test_a_total_or_currency_that_is_not_certain_goes_to_review() -> None:
+    summary = summarize_receipts(
+        [
+            _item("a.pdf", vendor="A", total_confidence="low"),
+            _item("b.pdf", vendor="B", currency_confidence="low"),
+            _item("c.pdf", vendor="C"),
+        ]
+    )
+
+    assert _actions(summary) == {"a.pdf": "review", "b.pdf": "review", "c.pdf": "file"}
+    assert summary["grand_totals"] == {"USD": "18.50"}
+    assert summary["ok"] is False
+
+
+def test_totals_at_the_ratio_limit_are_a_tip_and_beyond_it_are_not() -> None:
+    inside = summarize_receipts(
+        [
+            _item("a.pdf", total="20.00"),
+            _item("b.pdf", total="28.00", received="2026-10-23T08:10:00Z"),
+        ]
+    )
+    beyond = summarize_receipts(
+        [
+            _item("a.pdf", total="20.00"),
+            _item("b.pdf", total="29.00", received="2026-10-23T08:10:00Z"),
+        ]
+    )
+
+    assert _actions(inside) == {"a.pdf": "drop", "b.pdf": "file"}
+    assert _actions(beyond) == {"a.pdf": "file", "b.pdf": "file"}

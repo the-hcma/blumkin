@@ -188,6 +188,9 @@ def rehome_receipt(
     is then set aside under the instance's ``superseded`` folder, so a bad render can be swapped
     without hand-deleting a hash-named file and nothing is ever lost.
     """
+    if replace is not None:
+        # Before anything is looked up or moved: a closed instance accepts no more changes.
+        _require_open_instance(config_dir, task, instance)
     old = find_filed(config_dir, task, instance, replace) if replace is not None else None
     if old is None:
         return _rehome_one(
@@ -238,17 +241,7 @@ def _rehome_one(
     message_id: str | None,
     require_high_confidence: bool,
 ) -> RehomeResult:
-    validate_task_name(task)
-    if not _INSTANCE.fullmatch(instance):
-        raise RehomeError(
-            "Expected an instance name of 1-64 lowercase letters, digits, '-' or '_' "
-            f"starting and ending with a letter or digit, got {instance!r}"
-        )
-    status = instance_status(config_dir, task, instance)
-    if status.phase is not Phase.OPEN:
-        raise RehomeError(
-            f"Expected an open ledger instance to rehome a receipt, got a {status.phase.value} one"
-        )
+    _require_open_instance(config_dir, task, instance)
     src = source.expanduser()
     if not src.is_file() or src.is_symlink():
         raise RehomeError(f"Expected a regular receipt file, got {str(source)!r}")
@@ -632,6 +625,20 @@ def _check_replaceable(config_dir: Path, task: str, instance: str, old: RehomeRe
         )
     if intact:
         _aside_path(aside_dir, old)
+
+
+def _require_open_instance(config_dir: Path, task: str, instance: str) -> None:
+    validate_task_name(task)
+    if not _INSTANCE.fullmatch(instance):
+        raise RehomeError(
+            "Expected an instance name of 1-64 lowercase letters, digits, '-' or '_' "
+            f"starting and ending with a letter or digit, got {instance!r}"
+        )
+    status = instance_status(config_dir, task, instance)
+    if status.phase is not Phase.OPEN:
+        raise RehomeError(
+            f"Expected an open ledger instance to rehome a receipt, got a {status.phase.value} one"
+        )
 
 
 def _supersede(config_dir: Path, task: str, instance: str, old: RehomeResult) -> None:

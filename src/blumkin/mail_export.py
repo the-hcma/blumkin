@@ -255,7 +255,7 @@ def read_bound_text(pdf_path: Path) -> str | None:
 
 
 def read_export_meta(pdf_path: Path) -> dict[str, str | None]:
-    """Message id, subject and received time from the `.json` beside a PDF, if it has one."""
+    """Message id, subject and received time from the `.json` beside a PDF, if it records it."""
     sidecar_path = pdf_path.with_suffix(".json")
     empty: dict[str, str | None] = {"message_id": None, "received": None, "subject": None}
     try:
@@ -265,6 +265,11 @@ def read_export_meta(pdf_path: Path) -> dict[str, str | None]:
     except OSError, UnicodeDecodeError, ValueError:
         return empty
     if not isinstance(recorded, dict):
+        return empty
+    try:
+        if recorded.get("pdf_sha256") != _file_sha256(pdf_path):
+            return empty  # left over from another export under the same name
+    except OSError:
         return empty
     return {
         key: value if isinstance(value, str) else None

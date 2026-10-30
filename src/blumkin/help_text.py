@@ -2413,11 +2413,14 @@ Examples:
 Reads each receipt (a PDF with the `.txt` and `.json` that `mail export` wrote is read from
 that text, without OCR), groups them by vendor, ride date and currency, and prints one row per
 receipt: `file`, `drop` or `review`. Ride-hail services send two emails per ride, before and
-after the tip; the lower total within a tip's reach (up to 1.5 times) of a higher one is marked
-`drop`, and an identical total is an exact duplicate. A bigger gap is a different ride and both
-are filed. The ride date comes from the receipt text, then the subject; the email arrival time
-is a last resort and is flagged `review` (a late ride arrives the next UTC day). The grand total
-is per currency and counts only `file` rows. Nothing is moved or deleted; show the table to the
+after the tip; a lower total within a tip's reach (up to 1.4 times) of a higher one is marked
+`drop` only when the two arrived within 30 minutes of each other (or are the same message or
+file); identical totals count as an exact duplicate on the same evidence. Otherwise both are
+marked `review`, since a dropped receipt is never filed, and a bigger gap is a different ride
+so both are filed. A total or currency that is not certain also goes to `review`. The ride
+date comes from the receipt text, then the subject; the email arrival time is a last resort
+and is flagged `review` (a late ride arrives the next UTC day). The grand total is per
+currency and counts only `file` rows. Nothing is moved or deleted; show the table to the
 user and rehome the `file` rows with `--yes` once they confirm. Exits 1 when any row needs review.
 """
 
