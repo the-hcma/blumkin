@@ -417,6 +417,15 @@ class _NullRaw:
         ["--host", "erp.example.com", "--form-url", "http://erp.example.com/x"],
         ["--host", "erp.example.com", "--form-url", "https://evil.example.net/x"],
         ["--host", "erp.example.com", "--form-url", "https://u:p@erp.example.com/x"],
+        ["--host", "*.example.com", "--form-url", "https://evil.example.net\\.erp.example.com/x"],
+        ["--host", "erp.example.com", "--form-url", "https://erp.example.com:bad/x"],
+        ["--host", "erp.example.com", "--form-url", "https://erp.example.com/x y"],
+        ["--host", "erp.example.com", "--form-url", "https://erp.example.com/x\x7f"],
+        ["--host", "erp.example.com", "--upload-dir", "receipts"],
+        ["--host", "erp.example.com", "--upload-dir", "/"],
+        ["--host", "erp.example.com", "--upload-dir", "~"],
+        ["--host", "erp.example.com", "--upload-dir", "~/.."],
+        ["--host", "erp.example.com", "--upload-dir", ""],
     ],
 )
 def test_a_bad_host_or_form_url_is_a_usage_error_and_nothing_is_written(
@@ -452,3 +461,62 @@ def test_the_other_template_still_needs_no_host_and_keeps_its_table(config: Path
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "dialog_confirm" not in _payload(result)["table"]
+
+
+def test_a_table_the_config_loader_would_reject_is_never_written_and_config_still_loads(
+    config: Path,
+) -> None:
+    before = (config / "config.toml").read_text()
+
+    result = _run("--template", "expense-report", "--host", "erp.example.com",
+                  "--upload-dir", "relative/path", "--yes")  # fmt: skip
+
+    assert result.exit_code == EXIT_USAGE
+    assert (config / "config.toml").read_text() == before
+    load_browser_setup()
+
+
+def test_a_lone_surrogate_in_a_value_is_a_usage_error_not_a_traceback(config: Path) -> None:
+    from blumkin.browser.init_task import InitTaskError, init_task
+
+    with pytest.raises(InitTaskError):
+        init_task(
+            config, "expense-report", "expense-report",
+            write=True, hosts=("erp.example.com",), upload_dirs=("~/r\udcffx",),
+        )  # fmt: skip
+    assert "expense-report" not in (config / "config.toml").read_text()
+
+
+def test_non_ascii_names_are_written_as_escapes_that_load_back_unchanged(config: Path) -> None:
+    result = _run("--template", "expense-report", "--host", "erp.example.com",
+                  "--upload-dir", "~/Belege/Caf\u00e9 \u2028x", "--yes")  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "Caf\\u00e9" in (config / "config.toml").read_text()
+    assert load_browser_setup().browser.tasks["expense-report"].upload_dirs == (
+        "~/Belege/Caf\u00e9 \u2028x",
+    )
+
+
+def test_upload_and_form_url_options_are_refused_for_a_template_that_uploads_nothing(
+    config: Path,
+) -> None:
+    for option in (["--upload-dir", "~/receipts"], ["--form-url", "https://example.com/x"]):
+        result = _run("--template", "teams-transcript", *option, "--yes")
+
+        assert result.exit_code == EXIT_USAGE
+        assert "uploads nothing" in _payload(result)["message"]
+    assert "teams-transcript" not in (config / "config.toml").read_text()
+
+
+def test_hosts_are_lowercased_and_a_second_run_never_overwrites_the_table(config: Path) -> None:
+    _run("--template", "expense-report", "--host", "ERP.Example.COM", "--yes")
+    first = (config / "config.toml").read_text()
+
+    second = _run("--template", "expense-report", "--host", "other.example.com", "--yes")
+
+    assert load_browser_setup().browser.tasks["expense-report"].allowed_hosts == (
+        "erp.example.com",
+    )
+    assert (config / "config.toml").read_text() == first
+    assert _payload(second)["already_declared"] is True

@@ -18,21 +18,17 @@ import contextlib
 import errno
 import json
 import os
-import re
 import stat
 import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from blumkin.browser.profiles import BrowserProfileError, create_profile, validate_task_name
+from blumkin.config import validate_browser_task_table
 from blumkin.config_lock import config_file_lock
-
-_HOST = re.compile(
-    r"(?:\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
-)
+from blumkin.providers.kind import ProviderConfigError
 
 
 class InitTaskError(ValueError):
@@ -48,10 +44,10 @@ class TaskTemplate:
     #: Buttons that confirm a dialog's own rows (valid only inside a dialog).
     dialog_confirm: tuple[str, ...] = ()
     name: str
-    #: Format with `task=`; the commands to run once the policy is in place.
-    next_steps: tuple[str, ...]
     #: The site's host differs per organization, so the caller names it (`--host`).
     needs_host: bool = False
+    #: Format with `task=`; the commands to run once the policy is in place.
+    next_steps: tuple[str, ...]
     summary: str
     #: Where uploads may be read from when the caller names no folder.
     upload_dirs: tuple[str, ...] = ()
@@ -59,7 +55,7 @@ class TaskTemplate:
 
 TEMPLATES: dict[str, TaskTemplate] = {
     "expense-report": TaskTemplate(
-        # Names the Oracle Fusion Expenses flow shows, none of which can submit the report:
+        # Names the Oracle Fusion Expenses flow shows, none of which is a finalizing name:
         # `Actions for * Report` opens a saved report's actions menu (its `Open` item is
         # declared by itself; `Submit`, `Delete` and `Duplicate` never are), and `OK` confirms
         # the attachments dialog only inside that dialog. Edit them to what your form shows.
@@ -79,7 +75,7 @@ TEMPLATES: dict[str, TaskTemplate] = {
         needs_host=True,
         next_steps=(
             "Check the controls in config.toml against what your expense form shows; they are the "
-            "names of the Oracle Fusion Expenses flow, and none of them can submit the report.",
+            "names of the Oracle Fusion Expenses flow; none is a finalizing name.",
             "Launch the browser and open the form: `blumkin browser launch {task} --open` (needs "
             "`--form-url` here or `form_url` in config.toml), then sign in by hand.",
             "Record each page and dialog the flow passes through, one at a time: stay on the "
@@ -139,9 +135,13 @@ def init_task(
             f"Expected --host for the {template.name!r} template (the site's host differs per "
             "organization, for example erp.example.com), got none"
         )
-    _check_hosts(chosen_hosts)
-    chosen_url = _check_form_url(form_url, chosen_hosts)
+    if (upload_dirs or form_url.strip()) and not template.upload_dirs:
+        raise InitTaskError(
+            f"Expected no --upload-dir or --form-url for the {template.name!r} template (it "
+            "uploads nothing), got one"
+        )
     chosen_dirs = tuple(upload_dirs) or template.upload_dirs
+    chosen_url = form_url.strip()
     try:
         validate_task_name(task)
         create_profile(config_dir, task)
@@ -151,6 +151,7 @@ def init_task(
     table = render_table(
         task, template, hosts=chosen_hosts, upload_dirs=chosen_dirs, form_url=chosen_url
     )
+    _check_policy(task, table)
     declared, written = _update_config(path, task, table, write=write)
     return {
         "action": "init-task",
@@ -190,37 +191,13 @@ def render_table(
     return "\n".join(lines) + "\n"
 
 
-def _check_form_url(form_url: str, hosts: Sequence[str]) -> str:
-    """`--form-url`: an https address without credentials, on one of the task's hosts."""
-    url = form_url.strip()
-    if not url:
-        return ""
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not host or parts.username or parts.password:
-        raise InitTaskError(f"Expected --form-url as an https address, got {url!r}")
-    covered = any(
-        host.endswith(pattern[1:]) and len(host) > len(pattern) - 1
-        if pattern.startswith("*.")
-        else host == pattern
-        for pattern in hosts
-    )
-    if not covered:
-        raise InitTaskError(f"Expected --form-url on one of the hosts {list(hosts)}, got {host!r}")
-    return url
-
-
-def _check_hosts(hosts: Sequence[str]) -> None:
-    for host in hosts:
-        if host.startswith("*.") and "." not in host[2:]:
-            raise InitTaskError(
-                f"Expected a wildcard host under a registrable domain such as *.example.com, "
-                f"got {host!r}"
-            )
-        if not _HOST.fullmatch(host):
-            raise InitTaskError(
-                f"Expected bare host names such as erp.example.com or *.example.com, got {host!r}"
-            )
+def _check_policy(task: str, table: str) -> None:
+    """Refuse a table that the real config loader would reject, before anything is written."""
+    try:
+        parsed = tomllib.loads(table)
+        validate_browser_task_table(task, parsed["browser"]["tasks"][task])
+    except (tomllib.TOMLDecodeError, ProviderConfigError, KeyError) as exc:
+        raise InitTaskError(f"Expected a valid [browser.tasks.{task}] table, got: {exc}") from exc
 
 
 def _toml_list(values: Sequence[str]) -> str:
@@ -228,8 +205,8 @@ def _toml_list(values: Sequence[str]) -> str:
 
 
 def _toml_string(value: str) -> str:
-    """A TOML basic string (a JSON string is one)."""
-    return json.dumps(value, ensure_ascii=False)
+    """A TOML basic string: a JSON string, with every non-ASCII character escaped."""
+    return json.dumps(value, ensure_ascii=True)
 
 
 def _declared_tasks(parsed: dict[str, Any], path: Path) -> set[str]:

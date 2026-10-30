@@ -517,7 +517,7 @@ template needs `--host` (the site's host differs per organization) and fills in 
 the Oracle Fusion Expenses flow (`Create Report`, `Create Item`, `Save and Close`, `Manage
 Attachments`, `Add Row`, `Save`, `Actions for * Report`, `Open`), `OK` as a dialog confirm and
 `~/Documents/receipts-archive` as the upload folder (`--upload-dir` replaces it); none of them
-can submit the report.
+is a finalizing name (the task still never submits).
 """
 
 BROWSER_LAUNCH_EPILOG = """

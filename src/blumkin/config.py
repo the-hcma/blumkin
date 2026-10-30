@@ -605,6 +605,11 @@ _TASK_POLICY_KEYS = frozenset(
 )
 
 
+def validate_browser_task_table(task: str, table: dict[str, Any]) -> None:
+    """Raise `ProviderConfigError` unless `table` is a `[browser.tasks.<task>]` that loads."""
+    _browser_task_policies({task: table})
+
+
 def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]) -> BlumkinConfig:
     """Build a minimal ``BlumkinConfig`` sufficient to check ``auth_present``, nothing else.
 
