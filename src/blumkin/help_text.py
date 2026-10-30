@@ -501,6 +501,8 @@ Examples:
 \b
   blumkin browser init-task --template teams-transcript
   blumkin browser init-task weekly-sync --template teams-transcript --yes
+  blumkin browser init-task --template expense-report --host erp.example.com \\
+    --form-url https://erp.example.com/expenses --upload-dir ~/Documents/receipts --yes
 
 Creates the task's browser profile (empty; your sign-in lives there later) and prints the
 `[browser.tasks.TASK]` table the template starts from: the hosts the site uses, including the
@@ -510,7 +512,12 @@ to it (the file is created with mode 0600 when it does not exist). A table of th
 already exists is never changed, and a config.toml that is not valid TOML, or is a symlink or
 not a regular file, is left alone. The profile is created either way. TASK defaults to the
 template name. The Teams template's `*.sharepoint.com` covers every organization's SharePoint:
-narrow it to your tenant's host. Templates: teams-transcript.
+narrow it to your tenant's host. Templates: expense-report, teams-transcript. The expense-report
+template needs `--host` (the site's host differs per organization) and fills in the controls of
+the Oracle Fusion Expenses flow (`Create Report`, `Create Item`, `Save and Close`, `Manage
+Attachments`, `Add Row`, `Save`, `Actions for * Report`, `Open`), `OK` as a dialog confirm and
+`~/Documents/receipts-archive` as the upload folder (`--upload-dir` replaces it); none of them
+can submit the report.
 """
 
 BROWSER_LAUNCH_EPILOG = """

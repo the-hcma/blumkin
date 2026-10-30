@@ -2402,16 +2402,51 @@ def browser() -> None:
 @click.option(
     "--yes", "yes", is_flag=True, help="Write the table to config.toml (never overwrites)."
 )
+@click.option(
+    "--host",
+    "hosts",
+    multiple=True,
+    help="A host the task's pages may be on (repeatable); replaces the template's hosts. "
+    "Required for templates whose site differs per organization (expense-report).",
+)
+@click.option(
+    "--upload-dir",
+    "upload_dirs",
+    multiple=True,
+    help="A folder uploads may be read from (repeatable); replaces the template's folder.",
+)
+@click.option(
+    "--form-url",
+    "form_url",
+    default="",
+    help="The page the task works on (https, on one of the hosts): what `browser goto` and "
+    "`browser launch --open` open.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_init_task(
-    ctx: click.Context, task: str | None, template: str, yes: bool, as_json_flag: bool
+    ctx: click.Context,
+    task: str | None,
+    template: str,
+    yes: bool,
+    hosts: tuple[str, ...],
+    upload_dirs: tuple[str, ...],
+    form_url: str,
+    as_json_flag: bool,
 ) -> None:
     """Create a task's browser profile and its starting policy from a built-in template."""
     as_json = _as_json(ctx, as_json_flag)
     name = task or template
     try:
-        payload = init_task(config_dir(), name, template, write=yes)
+        payload = init_task(
+            config_dir(),
+            name,
+            template,
+            write=yes,
+            hosts=hosts,
+            upload_dirs=upload_dirs,
+            form_url=form_url,
+        )
     except InitTaskError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc

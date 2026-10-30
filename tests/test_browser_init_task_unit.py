@@ -343,3 +343,112 @@ def test_the_next_steps_lead_to_an_open_transcript_view(config: Path) -> None:
     steps = " ".join(_payload(_run("--template", "teams-transcript"))["next_steps"])
     assert "Transcript view" in steps
     assert "Notes or Transcript" not in steps
+
+
+# --------------------------------------------------------------------------- expense-report (#591)
+
+
+def test_the_expense_report_template_needs_a_host_because_the_site_differs_per_organization(
+    config: Path,
+) -> None:
+    result = _run("--template", "expense-report")
+
+    assert result.exit_code == EXIT_USAGE
+    assert "--host" in _payload(result)["message"]
+    assert list_profiles(config) == []
+
+
+def test_the_expense_report_table_holds_the_hosts_controls_confirm_folder_and_form_url(
+    config: Path,
+) -> None:
+    result = _run(
+        "--template", "expense-report", "--host", "erp.example.com",
+        "--form-url", "https://erp.example.com/expenses", "--upload-dir", "~/receipts", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    policy = load_browser_setup().browser.tasks["expense-report"]
+    assert policy.allowed_hosts == ("erp.example.com",)
+    assert policy.dialog_confirm == ("OK",)
+    assert policy.upload_dirs == ("~/receipts",)
+    assert policy.form_url == "https://erp.example.com/expenses"
+    assert "Create Report" in policy.allowed_controls
+    assert "Actions for * Report" in policy.allowed_controls
+
+
+def test_the_upload_folder_defaults_to_the_receipts_archive(config: Path) -> None:
+    _run("--template", "expense-report", "--host", "erp.example.com", "--yes")
+
+    assert load_browser_setup().browser.tasks["expense-report"].upload_dirs == (
+        "~/Documents/receipts-archive",
+    )
+
+
+def test_no_control_of_the_expense_report_template_can_submit_and_the_guard_accepts_them(
+    config: Path,
+) -> None:
+    from blumkin.browser.guard import GuardedDriver, GuardPolicy, is_finalizing_name
+
+    _run("--template", "expense-report", "--host", "erp.example.com", "--yes")
+    policy = load_browser_setup().browser.tasks["expense-report"]
+
+    for name in (*policy.allowed_controls, *policy.dialog_confirm):
+        assert not is_finalizing_name(name.replace("*", "Trip"))
+    # The guard itself accepts the table: patterns and the dialog confirm validate.
+    GuardedDriver(
+        _NullRaw(),  # type: ignore[arg-type]
+        GuardPolicy(
+            allowed_controls=frozenset(policy.allowed_controls),
+            dialog_confirm=frozenset(policy.dialog_confirm),
+        ),
+    )
+
+
+class _NullRaw:
+    def block_form_submission(self, *, background_writes: bool = False) -> None:
+        return None
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--host", "http://erp.example.com"],
+        ["--host", "*.com"],
+        ["--host", "erp.example.com", "--form-url", "http://erp.example.com/x"],
+        ["--host", "erp.example.com", "--form-url", "https://evil.example.net/x"],
+        ["--host", "erp.example.com", "--form-url", "https://u:p@erp.example.com/x"],
+    ],
+)
+def test_a_bad_host_or_form_url_is_a_usage_error_and_nothing_is_written(
+    config: Path, arguments: list[str]
+) -> None:
+    result = _run("--template", "expense-report", *arguments, "--yes")
+
+    assert result.exit_code == EXIT_USAGE
+    assert "expense-report" not in (config / "config.toml").read_text()
+
+
+def test_a_name_with_a_quote_cannot_break_the_written_table(config: Path) -> None:
+    result = _run("--template", "expense-report", "--host", "erp.example.com",
+                  "--upload-dir", '~/my "receipts"', "--yes")  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert load_browser_setup().browser.tasks["expense-report"].upload_dirs == ('~/my "receipts"',)
+
+
+def test_the_expense_report_next_steps_lead_from_the_form_to_the_handoff(config: Path) -> None:
+    steps = _payload(_run("--template", "expense-report", "--host", "erp.example.com"))[
+        "next_steps"
+    ]
+
+    text = " ".join(steps)
+    for command in ("launch expense-report --open", "explore observe", "explore save", "handoff"):
+        assert command in text
+    assert "password" not in text.lower()
+
+
+def test_the_other_template_still_needs_no_host_and_keeps_its_table(config: Path) -> None:
+    result = _run("--template", "teams-transcript")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "dialog_confirm" not in _payload(result)["table"]

@@ -16,34 +16,84 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import json
 import os
+import re
 import stat
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from blumkin.browser.profiles import BrowserProfileError, create_profile, validate_task_name
 from blumkin.config_lock import config_file_lock
+
+_HOST = re.compile(
+    r"(?:\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
+)
 
 
 class InitTaskError(ValueError):
     """The template or the task name is unknown, or `config.toml` cannot take the policy."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TaskTemplate:
     """The policy and the first steps for one known site."""
 
     allowed_controls: tuple[str, ...]
     allowed_hosts: tuple[str, ...]
+    #: Buttons that confirm a dialog's own rows (valid only inside a dialog).
+    dialog_confirm: tuple[str, ...] = ()
     name: str
     #: Format with `task=`; the commands to run once the policy is in place.
     next_steps: tuple[str, ...]
+    #: The site's host differs per organization, so the caller names it (`--host`).
+    needs_host: bool = False
     summary: str
+    #: Where uploads may be read from when the caller names no folder.
+    upload_dirs: tuple[str, ...] = ()
 
 
 TEMPLATES: dict[str, TaskTemplate] = {
+    "expense-report": TaskTemplate(
+        # Names the Oracle Fusion Expenses flow shows, none of which can submit the report:
+        # `Actions for * Report` opens a saved report's actions menu (its `Open` item is
+        # declared by itself; `Submit`, `Delete` and `Duplicate` never are), and `OK` confirms
+        # the attachments dialog only inside that dialog. Edit them to what your form shows.
+        allowed_controls=(
+            "Actions for * Report",
+            "Add Row",
+            "Create Item",
+            "Create Report",
+            "Manage Attachments",
+            "Open",
+            "Save",
+            "Save and Close",
+        ),
+        allowed_hosts=(),
+        dialog_confirm=("OK",),
+        name="expense-report",
+        needs_host=True,
+        next_steps=(
+            "Check the controls in config.toml against what your expense form shows; they are the "
+            "names of the Oracle Fusion Expenses flow, and none of them can submit the report.",
+            "Launch the browser and open the form: `blumkin browser launch {task} --open` (needs "
+            "`--form-url` here or `form_url` in config.toml), then sign in by hand.",
+            "Record each page and dialog the flow passes through, one at a time: stay on the "
+            "page, then `blumkin browser explore observe {task} PAGE` (it adds the page to the "
+            "same draft, or to the stored model); then `blumkin browser explore save {task} "
+            "--yes`.",
+            "File a receipt: `blumkin receipts summarize` the files, confirm the table and the "
+            "total with the user, `blumkin receipts rehome ... --yes`, then fill the item with "
+            "`blumkin browser fill`, `select` and `upload` (one run per receipt). The task never "
+            "submits: end with `blumkin browser handoff {task}`.",
+        ),
+        summary="File receipts into an expense report through the task browser (never submits).",
+        upload_dirs=("~/Documents/receipts-archive",),
+    ),
     "teams-transcript": TaskTemplate(
         allowed_controls=("Notes", "Transcript"),
         allowed_hosts=("teams.cloud.microsoft", "teams.microsoft.com", "*.sharepoint.com"),
@@ -63,20 +113,44 @@ TEMPLATES: dict[str, TaskTemplate] = {
 }
 
 
-def init_task(config_dir: Path, task: str, template_name: str, *, write: bool) -> dict[str, Any]:
-    """Create the task's profile; add its policy to `config.toml` when `write` is true."""
+def init_task(
+    config_dir: Path,
+    task: str,
+    template_name: str,
+    *,
+    write: bool,
+    hosts: Sequence[str] = (),
+    upload_dirs: Sequence[str] = (),
+    form_url: str = "",
+) -> dict[str, Any]:
+    """Create the task's profile; add its policy to `config.toml` when `write` is true.
+
+    `hosts`, `upload_dirs` and `form_url` replace what the template starts with; a template whose
+    site differs per organization (`needs_host`) refuses to go on without a host.
+    """
     template = TEMPLATES.get(template_name)
     if template is None:
         raise InitTaskError(
             f"Expected one of {', '.join(sorted(TEMPLATES))}, got template {template_name!r}"
         )
+    chosen_hosts = tuple(host.strip().lower() for host in hosts) or template.allowed_hosts
+    if template.needs_host and not chosen_hosts:
+        raise InitTaskError(
+            f"Expected --host for the {template.name!r} template (the site's host differs per "
+            "organization, for example erp.example.com), got none"
+        )
+    _check_hosts(chosen_hosts)
+    chosen_url = _check_form_url(form_url, chosen_hosts)
+    chosen_dirs = tuple(upload_dirs) or template.upload_dirs
     try:
         validate_task_name(task)
         create_profile(config_dir, task)
     except BrowserProfileError as exc:
         raise InitTaskError(str(exc)) from exc
     path = config_dir / "config.toml"
-    table = render_table(task, template)
+    table = render_table(
+        task, template, hosts=chosen_hosts, upload_dirs=chosen_dirs, form_url=chosen_url
+    )
     declared, written = _update_config(path, task, table, write=write)
     return {
         "action": "init-task",
@@ -92,11 +166,70 @@ def init_task(config_dir: Path, task: str, template_name: str, *, write: bool) -
     }
 
 
-def render_table(task: str, template: TaskTemplate) -> str:
+def render_table(
+    task: str,
+    template: TaskTemplate,
+    *,
+    hosts: Sequence[str] | None = None,
+    upload_dirs: Sequence[str] | None = None,
+    form_url: str = "",
+) -> str:
     """The `[browser.tasks.<task>]` table for `template`, as TOML text."""
-    controls = ", ".join(f'"{name}"' for name in template.allowed_controls)
-    hosts = ", ".join(f'"{host}"' for host in template.allowed_hosts)
-    return f"[browser.tasks.{task}]\nallowed_hosts = [{hosts}]\nallowed_controls = [{controls}]\n"
+    lines = [f"[browser.tasks.{task}]"]
+    lines.append(
+        f"allowed_hosts = {_toml_list(template.allowed_hosts if hosts is None else hosts)}"
+    )
+    lines.append(f"allowed_controls = {_toml_list(template.allowed_controls)}")
+    if template.dialog_confirm:
+        lines.append(f"dialog_confirm = {_toml_list(template.dialog_confirm)}")
+    folders = template.upload_dirs if upload_dirs is None else upload_dirs
+    if folders:
+        lines.append(f"upload_dirs = {_toml_list(folders)}")
+    if form_url:
+        lines.append(f"form_url = {_toml_string(form_url)}")
+    return "\n".join(lines) + "\n"
+
+
+def _check_form_url(form_url: str, hosts: Sequence[str]) -> str:
+    """`--form-url`: an https address without credentials, on one of the task's hosts."""
+    url = form_url.strip()
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not host or parts.username or parts.password:
+        raise InitTaskError(f"Expected --form-url as an https address, got {url!r}")
+    covered = any(
+        host.endswith(pattern[1:]) and len(host) > len(pattern) - 1
+        if pattern.startswith("*.")
+        else host == pattern
+        for pattern in hosts
+    )
+    if not covered:
+        raise InitTaskError(f"Expected --form-url on one of the hosts {list(hosts)}, got {host!r}")
+    return url
+
+
+def _check_hosts(hosts: Sequence[str]) -> None:
+    for host in hosts:
+        if host.startswith("*.") and "." not in host[2:]:
+            raise InitTaskError(
+                f"Expected a wildcard host under a registrable domain such as *.example.com, "
+                f"got {host!r}"
+            )
+        if not _HOST.fullmatch(host):
+            raise InitTaskError(
+                f"Expected bare host names such as erp.example.com or *.example.com, got {host!r}"
+            )
+
+
+def _toml_list(values: Sequence[str]) -> str:
+    return "[" + ", ".join(_toml_string(value) for value in values) + "]"
+
+
+def _toml_string(value: str) -> str:
+    """A TOML basic string (a JSON string is one)."""
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _declared_tasks(parsed: dict[str, Any], path: Path) -> set[str]:
