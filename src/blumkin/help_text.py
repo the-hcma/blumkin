@@ -1808,8 +1808,10 @@ Renders the message body (HTML, or plain text wrapped in a page) to `<name>.pdf`
 headless browser, and writes `<name>.txt` (the same content as text) and `<name>.json`
 (message id, sender, received time, subject) beside it. Use it for receipts that arrive as
 HTML mail with no attachment. Images are loaded so the logo and the route map survive.
-Scripts, frames, linked resources and elements hidden by an inline style are removed, and
-images declared as one pixel or smaller are dropped; an image with no declared size can
+Scripts, frames, linked resources, meta tags and some elements hidden by supported inline
+styles are removed (text hidden by a stylesheet can be absent from the PDF yet remain in the
+`.txt` file, so check amounts visually), and images declared as one pixel or smaller are
+dropped; an image with no declared size can
 still load, and its address may tell the sender the message was opened. The browser runs in
 a throwaway profile, so nothing is fetched with your cookies or mailbox identity. The PDF is
 then checked against the message (images present, no blank pages, text layer matches the
