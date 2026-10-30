@@ -880,10 +880,21 @@ class PlaywrightDriver:
         return frame
 
     def _popup(self, scope: Any, controls: str) -> Any:
-        """Where a combobox's options live: the element it controls, else the whole scope."""
+        """Where a combobox's options live: the element it controls.
+
+        With no usable `aria-controls`/`aria-owns` the whole scope is searched, but only when it
+        shows at most one list: with several, an option could belong to another dropdown, so the
+        select is refused instead of guessed.
+        """
         popup_id = controls.split()[0] if controls.split() else ""
         if popup_id and re.fullmatch(r"[A-Za-z0-9_.:\-]+", popup_id):
             return scope.locator(f'[id="{popup_id}"]')
+        lists = int(scope.locator('[role="listbox"]').count())
+        if lists > 1:
+            raise BrowserActionError(
+                f"Expected the dropdown to name its list (aria-controls), got none while the "
+                f"page shows {lists} lists"
+            )
         return scope
 
     def _selected_text(self, locator: Any) -> str | None:

@@ -2154,7 +2154,7 @@ def test_a_popup_id_that_could_break_the_selector_is_not_used() -> None:
 
     driver.select("Type", "Taxi")
 
-    assert not any(call[0] == "locator" for call in pw.page.calls)
+    assert not any(call[0] == "locator" and "[id=" in call[1] for call in pw.page.calls)
 
 
 def test_an_aria_combobox_that_is_not_an_input_is_read_from_what_it_displays() -> None:
@@ -2205,3 +2205,39 @@ def test_the_ambiguity_script_uses_computed_names_and_roles() -> None:
         assert needle in _MATCH_INFO_JS
     # The value of a field is never part of the listing.
     assert ".value" not in _MATCH_INFO_JS
+
+
+def test_without_a_named_popup_several_lists_make_the_select_refuse_instead_of_guess() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.label_counts['[role="listbox"]'] = 2
+    pw.page.role_counts[("option", "Taxi")] = [1]
+
+    with pytest.raises(BrowserActionError, match="name its list"):
+        driver.select("Type", "Taxi")
+
+    # The combobox was opened, but no option was clicked.
+    assert [call for call in pw.page.calls if call[0] == "handle-click"] == [
+        ("handle-click", 30000.0, True)
+    ]
+
+
+def test_without_a_named_popup_a_single_list_is_still_searched() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.label_counts['[role="listbox"]'] = 1
+    pw.page.role_counts[("option", "Taxi")] = [1]
+
+    driver.select("Type", "Taxi")
+
+    assert len([call for call in pw.page.calls if call[0] == "handle-click"]) == 2
+
+
+def test_an_unusable_popup_id_falls_back_to_the_same_single_list_rule() -> None:
+    pw, driver = _driver()
+    pw.page.tags["Type"] = "div"
+    pw.page.popups["Type"] = 'bad"id'
+    pw.page.label_counts['[role="listbox"]'] = 3
+
+    with pytest.raises(BrowserActionError, match="name its list"):
+        driver.select("Type", "Taxi")
