@@ -50,6 +50,12 @@ from blumkin.browser.profiles import BrowserProfile
 
 _LOGGER = logging.getLogger(__name__)
 
+#: Fixed letters or digits a control pattern must keep (a bare `*` would declare everything).
+MIN_PATTERN_LITERAL = 4
+
+#: Most declared names listed in a "not declared" refusal.
+_HINT_NAMES = 10
+
 DEFAULT_DENY_NAMES: tuple[str, ...] = (
     "approve",
     "authorize",
@@ -91,7 +97,14 @@ class GuardedDriver:
     """The `BrowserDriver` a task uses; wraps the raw driver with the submit guard."""
 
     def __init__(self, raw: RawBrowserDriver, policy: GuardPolicy) -> None:
-        self._allowed = frozenset(_exact(name) for name in policy.allowed_controls)
+        validate_control_patterns(policy.allowed_controls, policy.extra_deny_names)
+        self._allowed = frozenset(
+            _exact(name) for name in policy.allowed_controls if "*" not in name
+        )
+        self._patterns = tuple(
+            _pattern_regex(name) for name in sorted(policy.allowed_controls) if "*" in name
+        )
+        self._declared = tuple(sorted({*policy.allowed_controls, *policy.dialog_confirm}))
         self._deny = _deny_stems((*DEFAULT_DENY_NAMES, *policy.extra_deny_names))
         validate_dialog_confirm(policy.dialog_confirm, policy.extra_deny_names)
         self._confirm = frozenset(_exact(name) for name in policy.dialog_confirm)
@@ -112,8 +125,10 @@ class GuardedDriver:
             raise self._refuse(action, f"the role {role!r} is not one a task may click")
         if _is_denied(name, self._deny):
             raise self._refuse(action, "its name is a finalizing action")
-        if _exact(name) not in self._allowed and not (confirm_ok and _exact(name) in self._confirm):
-            raise self._refuse(action, "the control is not declared by the task")
+        if not self._is_declared(name) and not (confirm_ok and _exact(name) in self._confirm):
+            raise self._refuse(
+                action, f"the control is not declared by the task{self._declared_hint()}"
+            )
 
     def click(
         self,
@@ -283,6 +298,23 @@ class GuardedDriver:
             )
         return next(iter(found)), action
 
+    def _declared_hint(self) -> str:
+        """The task's declared control names and patterns, for a refusal that lists them."""
+        if not self._declared:
+            return " (the task declares no controls)"
+        shown = ", ".join(repr(name) for name in self._declared[:_HINT_NAMES])
+        more = (
+            f" and {len(self._declared) - _HINT_NAMES} more"
+            if len(self._declared) > _HINT_NAMES
+            else ""
+        )
+        return f" (declared: {shown}{more}; a `*` stands for any text)"
+
+    def _is_declared(self, name: str) -> bool:
+        """Whether `name` is one of the declared controls, exactly or by a declared pattern."""
+        folded = _exact(name)
+        return folded in self._allowed or any(rule.fullmatch(folded) for rule in self._patterns)
+
     def _vet_field_name(self, action: str, name: str) -> None:
         """Refuse a field whose own accessible name is a finalizing action."""
         if _is_denied(name, self._deny):
@@ -304,7 +336,7 @@ class GuardedDriver:
         confirm = False
         if name is not None and _exact(name) in self._confirm:
             confirm = True
-            if _exact(name) not in self._allowed:
+            if not self._is_declared(name):
                 # Declared only as a dialog confirm: valid in a dialog whose form is its own,
                 # whatever type of button it is.
                 if not info.in_dialog:
@@ -390,6 +422,32 @@ def is_finalizing_name(name: str, extra_deny: Sequence[str] = ()) -> bool:
     return _is_denied(name, _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny)))
 
 
+def validate_control_patterns(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
+    """Refuse a declared control pattern that is too loose or could name a finalizing action.
+
+    A pattern is a declared name with `*` standing for any text (`Actions for *`). It must keep
+    at least `MIN_PATTERN_LITERAL` letters or digits of fixed text, and that fixed text must not
+    itself be a finalizing word: `Submit *` is refused. The name actually clicked is still
+    checked against the finalizing words, so a pattern can never reach one.
+    """
+    deny = _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny_names))
+    for name in names:
+        if "*" not in name:
+            continue
+        literal = _exact(name).replace("*", " ")
+        solid = sum(char.isalnum() for char in literal)
+        if solid < MIN_PATTERN_LITERAL:
+            raise SubmitBlockedError(
+                f"Expected a control pattern with at least {MIN_PATTERN_LITERAL} letters or "
+                f"digits of fixed text, got {name!r}. A browser task never submits"
+            )
+        if _is_denied(literal, deny):
+            raise SubmitBlockedError(
+                f"Expected a control pattern that is not a finalizing action, got {name!r}. "
+                "A browser task never submits"
+            )
+
+
 def validate_dialog_confirm(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
     """Refuse a `dialog_confirm` that names a finalizing action (`Submit`, `Pay`, ...)."""
     deny = _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny_names))
@@ -425,6 +483,12 @@ def _deny_stems(words: tuple[str, ...]) -> tuple[str, ...]:
     single spaces with punctuation removed, so `e-mail` matches the name `E-mail it`."""
     stems = (" ".join(re.findall(r"[^\W_]+", _folded(word))) for word in words)
     return tuple(stem for stem in stems if stem)
+
+
+def _pattern_regex(pattern: str) -> re.Pattern[str]:
+    """A declared pattern as a regex: `*` is any text, everything else is exact."""
+    parts = (re.escape(part) for part in _exact(pattern).split("*"))
+    return re.compile(".*".join(parts), re.DOTALL)
 
 
 def _exact(text: str) -> str:

@@ -1752,3 +1752,40 @@ def test_a_finalizing_dialog_confirm_is_refused_before_a_browser_is_attached(
     assert _json(result)["error"] == "submit_blocked"
     assert "not finalizing" in _json(result)["message"]
     assert raw.net_installed == 0
+
+
+def test_a_pattern_in_allowed_controls_opens_any_report_through_the_cli(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Actions for * Report", "Open"]')
+
+    for name in ("Actions for Trip to Lisbon Report", "Actions for Q3 Offsite Report"):
+        result = _run("browser", "click", "expense-report", name)
+        assert result.exit_code == EXIT_SUCCESS, result.output
+
+    assert [call[2] for call in raw.calls if call[0] == "click"] == [
+        "Actions for Trip to Lisbon Report",
+        "Actions for Q3 Offsite Report",
+    ]
+
+
+def test_a_finalizing_pattern_is_refused_before_a_browser_is_attached(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Submit *"]')
+
+    result = _run("browser", "click", "expense-report", "Submit report")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert "control pattern" in _json(result)["message"]
+    assert raw.net_installed == 0
+
+
+def test_the_click_refusal_lists_the_declared_controls(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Add line", "Actions for * Report"]')
+
+    result = _run("browser", "click", "expense-report", "Delete everything")
+
+    assert result.exit_code == EXIT_OTHER
+    assert "'Actions for * Report'" in _json(result)["message"]
