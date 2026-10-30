@@ -755,12 +755,16 @@ def _form_url(value: Any, allowed_hosts: tuple[str, ...], prefix: str) -> str:
     url = value.strip()
     if not url:
         return ""
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
     try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
         port = parts.port
     except ValueError:
-        port = -1
+        # The parser's own message can repeat the address, and the address can hold a password.
+        raise ProviderConfigError(
+            f"{prefix}.form_url must be a plain https address without credentials, spaces or "
+            "backslashes in config.toml"
+        ) from None
     # A backslash, whitespace or a control character is read differently by a browser than by
     # urlsplit (`https://evil.example\\.erp.example.com` goes to evil.example), so none is allowed.
     odd = any(char.isspace() or char == "\\" or not char.isprintable() for char in url)

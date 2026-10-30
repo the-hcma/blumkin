@@ -440,3 +440,19 @@ def test_a_form_url_with_a_password_is_refused_without_echoing_it(
         load_config()
 
     assert "hunter2" not in str(caught.value)
+
+
+def test_a_form_url_the_parser_chokes_on_is_refused_without_echoing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nform_url = "https://me:hunter2@erp\uff0fexample.com/x"\n\n',
+    )
+
+    with pytest.raises(ProviderConfigError, match="form_url") as caught:
+        load_config()
+
+    assert "hunter2" not in str(caught.value)
+    assert caught.value.__cause__ is None
