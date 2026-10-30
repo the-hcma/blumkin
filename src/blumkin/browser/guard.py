@@ -255,6 +255,10 @@ class GuardedDriver:
         self._check_target(target)
         self._raw.upload(label, path, target)
 
+    def wait_ms(self, milliseconds: int) -> None:
+        """Pause, with the page's events delivered (for example a redirect finishing)."""
+        self._raw.wait_ms(milliseconds)
+
     @property
     def url(self) -> str:
         return self._raw.url

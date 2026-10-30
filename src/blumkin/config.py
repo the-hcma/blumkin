@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import tomlkit
 import tomlkit.exceptions
@@ -720,11 +721,7 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
         download_dirs = _policy_folders(table, "download_dirs", prefix)
         hosts = _host_list(table, "allowed_hosts", prefix)
         sign_in_hosts = _host_list(table, "sign_in_hosts", prefix)
-        form_url = table.get("form_url", "")
-        if not isinstance(form_url, str):
-            raise ProviderConfigError(
-                f"{prefix}.form_url must be a string in config.toml, got {form_url!r}"
-            )
+        form_url = _form_url(table.get("form_url", ""), hosts, prefix)
         strict = table.get("block_background_writes", False)
         if not isinstance(strict, bool):
             raise ProviderConfigError(
@@ -738,7 +735,7 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 table.get("allowed_controls"), f"{prefix}.allowed_controls"
             ),
             dialog_confirm=_string_list(table.get("dialog_confirm"), f"{prefix}.dialog_confirm"),
-            form_url=form_url.strip(),
+            form_url=form_url,
             sign_in_hosts=sign_in_hosts,
             extra_deny_names=_string_list(
                 table.get("extra_deny_names"), f"{prefix}.extra_deny_names"
@@ -747,6 +744,36 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
             download_dirs=download_dirs,
         )
     return policies
+
+
+def _form_url(value: Any, allowed_hosts: tuple[str, ...], prefix: str) -> str:
+    """A task's `form_url`: an https address, on an allowed host once the task declares any."""
+    if not isinstance(value, str):
+        raise ProviderConfigError(
+            f"{prefix}.form_url must be a string in config.toml, got {value!r}"
+        )
+    url = value.strip()
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not host or parts.username or parts.password:
+        raise ProviderConfigError(
+            f"{prefix}.form_url must be an https address without credentials in config.toml, "
+            f"got {url!r}"
+        )
+    allowed = not allowed_hosts or any(
+        host.endswith(pattern[1:]) and len(host) > len(pattern) - 1
+        if pattern.startswith("*.")
+        else host == pattern
+        for pattern in allowed_hosts
+    )
+    if not allowed:
+        raise ProviderConfigError(
+            f"{prefix}.form_url must be on one of {prefix}.allowed_hosts in config.toml, "
+            f"got host {host!r}"
+        )
+    return url
 
 
 def _host_list(table: dict[str, Any], key: str, prefix: str) -> tuple[str, ...]:

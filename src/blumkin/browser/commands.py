@@ -26,6 +26,8 @@ from blumkin.browser.profiles import (
 )
 from blumkin.config import BrowserSetup
 
+_PAGE_COUNT_TIMEOUT_S = 1.0
+
 SIGN_IN_GUIDANCE = (
     "Sign in by hand in the browser window that opened (SSO and MFA included); "
     "blumkin never sees your credentials."
@@ -104,7 +106,7 @@ def list_task_profiles(config_dir: Path) -> dict[str, Any]:
     """Every profile blumkin created, with whether its browser is running."""
     return {
         "ok": True,
-        "profiles": [_profile_entry(p, lambda endpoint: None) for p in list_profiles(config_dir)],
+        "profiles": [_profile_entry(p) for p in list_profiles(config_dir)],
     }
 
 
@@ -140,16 +142,17 @@ def task_status(
     config_dir: Path,
     task: str | None,
     *,
-    count_pages: Callable[[str], int | None] = count_page_targets,
+    count_pages: Callable[[str], int | None] | None = None,
 ) -> dict[str, Any]:
     """Status of one task's profile, or of all of them when `task` is None."""
+    count = count_pages or _count_pages_quickly
     if task is None:
         return {
             "ok": True,
-            "profiles": [_profile_entry(p, count_pages) for p in list_profiles(config_dir)],
+            "profiles": [_profile_entry(p, count) for p in list_profiles(config_dir)],
         }
     profile = require_profile(config_dir, task)
-    return {"ok": True, "profiles": [_profile_entry(profile, count_pages)]}
+    return {"ok": True, "profiles": [_profile_entry(profile, count)]}
 
 
 def _launch_payload(
@@ -168,8 +171,18 @@ def _launch_payload(
     }
 
 
+def _count_pages_quickly(endpoint: str) -> int | None:
+    """Open pages at `endpoint`, giving up after a second so `status` never hangs on a dead port."""
+    return count_page_targets(endpoint, _PAGE_COUNT_TIMEOUT_S)
+
+
+def _no_page_count(endpoint: str) -> int | None:
+    """`profile list` does not probe the browsers: the page count stays unknown (null)."""
+    return None
+
+
 def _profile_entry(
-    profile: BrowserProfile, count_pages: Callable[[str], int | None] = count_page_targets
+    profile: BrowserProfile, count_pages: Callable[[str], int | None] = _no_page_count
 ) -> dict[str, Any]:
     session = read_session(profile.path)
     pages = count_pages(session.endpoint) if session else None

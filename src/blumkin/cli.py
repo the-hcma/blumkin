@@ -49,6 +49,7 @@ from blumkin.browser.actions import (
     DEFAULT_SIGN_IN_WAIT_S,
     DownloadBlockedError,
     HostBlockedError,
+    SignInTimeoutError,
     UploadBlockedError,
     click_task,
     download_task,
@@ -672,6 +673,12 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "upload_blocked", EXIT_OTHER
     elif isinstance(exc, DownloadBlockedError):
         slug, code = "download_blocked", EXIT_OTHER
+    elif isinstance(exc, SignInTimeoutError):
+        slug, code = "sign_in_timeout", EXIT_OTHER
+        hint = (
+            "Sign in by hand in the browser window, then run "
+            f"`blumkin browser goto {task or 'TASK'}` again (the browser keeps running)."
+        )
     elif isinstance(exc, HostBlockedError):
         slug, code = "host_blocked", EXIT_OTHER
     elif isinstance(exc, BrowserActionError):
@@ -2444,9 +2451,8 @@ def browser_init_task(
     "sign_in_wait_s",
     type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
     callback=_finite_wait,
-    default=DEFAULT_SIGN_IN_WAIT_S,
-    show_default=True,
-    help="With --open: seconds to wait for you to sign in before giving up.",
+    default=None,
+    help=f"With --open: seconds to wait for you to sign in (default {DEFAULT_SIGN_IN_WAIT_S:g}).",
 )
 @click.pass_context
 def browser_launch(
@@ -2454,17 +2460,33 @@ def browser_launch(
     task: str,
     as_json_flag: bool,
     open_page: bool,
-    sign_in_wait_s: float,
+    sign_in_wait_s: float | None,
 ) -> None:
     """Launch the task's browser on its profile so you can sign in by hand."""
     as_json = _as_json(ctx, as_json_flag)
+    if sign_in_wait_s is not None and not open_page:
+        raise click.UsageError("--sign-in-wait needs --open")
     try:
         setup = load_browser_setup()
         payload = launch_task_browser(setup, task)
-        if open_page:
-            payload["opened"] = goto_task(setup, task, None, sign_in_wait_s=sign_in_wait_s)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
+    if open_page:
+        try:
+            payload["opened"] = goto_task(
+                setup,
+                task,
+                None,
+                sign_in_wait_s=DEFAULT_SIGN_IN_WAIT_S if sign_in_wait_s is None else sign_in_wait_s,
+            )
+        except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+            if not as_json:
+                click.echo(
+                    f"{task}: the browser is running ({payload['endpoint']}); "
+                    f"retry with `blumkin browser goto {task}`",
+                    err=True,
+                )
+            _browser_fail(exc, as_json=as_json, task=task)
     if as_json:
         emit_json(payload)
         return

@@ -2488,6 +2488,26 @@ class _NoPageContext:
         if self._appears:
             self.pages.append(_Page())
 
+    def expect_event(self, event: str, *, timeout: float) -> Any:
+        """Playwright's `expect_event`: the body runs, then the event's value or a timeout."""
+        context = self
+
+        class _Waiting:
+            value: Any = None
+
+            def __enter__(self) -> _Waiting:
+                return self
+
+            def __exit__(self, *exc: object) -> bool:
+                if exc[0] is not None:
+                    return False
+                if not context.pages:
+                    raise PlaywrightTimeout("no page event")
+                self.value = context.pages[0]
+                return False
+
+        return _Waiting()
+
 
 def test_a_browser_with_no_page_gets_a_blank_one_from_devtools(
     monkeypatch: pytest.MonkeyPatch,

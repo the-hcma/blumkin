@@ -472,12 +472,14 @@ Opens an http or https page in the task's browser; other schemes (file, javascri
 data) are refused, and so is a host outside the task's `allowed_hosts` once it declares
 any. Without an address it opens the task's `form_url` from config.toml. Launch the browser
 first with `blumkin browser launch TASK`.
-A site that redirects to an identity provider (login.microsoftonline.com, accounts.google.com,
-Okta, Auth0, OneLogin, Ping, or a host in the task's `sign_in_hosts`) is waited through: the
-page address is polled for up to `--sign-in-wait` seconds (default 120, 0 to not wait) while you
-sign in by hand, nothing is ever done on the sign-in page, and the command finishes as soon as
-the page is on an allowed host (`waited_for_sign_in_s` says how long). If the page is still on
-the sign-in page when the time is up, sign in and run the command again.
+A site that redirects to an identity provider (login.microsoftonline.com, login.microsoft.com,
+login.live.com, accounts.google.com, or a host in the task's `sign_in_hosts`; name an Okta,
+Auth0, OneLogin or Ping tenant there, for example `acme.okta.com`, since anyone can register
+one) is waited through: the page address is polled for up to `--sign-in-wait` seconds (default
+120, 0 to not wait) while you sign in by hand, nothing is ever done on the sign-in page, and the
+command finishes as soon as the page is on an allowed host (`waited_for_sign_in_s` says how
+long, `sign_in_host` where). If the page is still on the sign-in page when the time is up
+(`sign_in_timeout`), sign in and run the command again; the browser keeps running.
 """
 
 BROWSER_HANDOFF_EPILOG = """

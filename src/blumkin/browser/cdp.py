@@ -55,6 +55,10 @@ class BrowserAttachError(RuntimeError):
     """The task browser could not be attached to."""
 
 
+class BrowserDependencyError(BrowserAttachError):
+    """Playwright (or another browser-driver dependency) is missing or broken."""
+
+
 class BrowserNoPageError(BrowserAttachError):
     """The browser is running but has no open page, and none could be opened."""
 
@@ -65,10 +69,6 @@ class BrowserNotRunningError(BrowserAttachError):
 
 class BrowserProtocolError(BrowserAttachError):
     """The browser is running but the DevTools attach to it failed."""
-
-
-class BrowserDependencyError(BrowserAttachError):
-    """Playwright (or another browser-driver dependency) is missing or broken."""
 
 
 class BrowserDriver(Protocol):
@@ -140,6 +140,8 @@ class BrowserDriver(Protocol):
 
     @property
     def url(self) -> str: ...
+
+    def wait_ms(self, milliseconds: int) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -821,6 +823,14 @@ class PlaywrightDriver:
     def url(self) -> str:
         return str(self._page.url)
 
+    def wait_ms(self, milliseconds: int) -> None:
+        """Pause through Playwright, so page events (a redirect finishing) are delivered."""
+        self._require_open()
+        try:
+            self._page.wait_for_timeout(milliseconds)
+        except _playwright_error() as exc:
+            raise self._action_error("wait for the page", exc) from exc
+
     def _describe(self, handle: Any) -> ControlInfo:
         raw = handle.evaluate(_DESCRIBE_CONTROL_JS)
         return ControlInfo(
@@ -1153,6 +1163,8 @@ class RawBrowserDriver(Protocol):
     @property
     def url(self) -> str: ...
 
+    def wait_ms(self, milliseconds: int) -> None: ...
+
 
 def attach(
     profile: BrowserProfile,
@@ -1462,7 +1474,9 @@ def _first_page(context: Any, endpoint: str, timeout_s: float) -> Any:
 
     A browser started with no page (or whose last tab was closed) cannot always make one
     through the attached context ("Browser context management is not supported"); DevTools can,
-    over its own loopback endpoint, so that is tried next before giving up with a clear error.
+    over its own loopback endpoint, so that is tried next, waiting through Playwright for the
+    new page to be reported (a plain sleep would never let the event arrive) before giving up
+    with a clear error.
     """
     pages = list(context.pages)
     if pages:
@@ -1471,15 +1485,17 @@ def _first_page(context: Any, endpoint: str, timeout_s: float) -> Any:
         return context.new_page()
     except _playwright_error():
         pass
-    probe_s = min(timeout_s, _DISCOVERY_TIMEOUT_S)
-    with contextlib.suppress(OSError, ValueError):
-        _open_blank_target(endpoint, probe_s)
-    deadline = time.monotonic() + probe_s
-    while time.monotonic() < deadline:
+    probe_ms = min(timeout_s, _DISCOVERY_TIMEOUT_S) * 1000
+    try:
+        # The wait is set up before the tab is requested, so the event cannot be missed.
+        with context.expect_event("page", timeout=probe_ms) as waiting:
+            with contextlib.suppress(OSError, ValueError):
+                _open_blank_target(endpoint, probe_ms / 1000)
+        return waiting.value
+    except _playwright_error():
         pages = list(context.pages)
         if pages:
             return pages[0]
-        time.sleep(0.1)
     raise BrowserNoPageError(
         f"Expected an open page in the browser at {endpoint}, got none and could not open one"
     )
@@ -1534,6 +1550,7 @@ def _fetch_targets(endpoint: str, timeout_s: float) -> list[dict[str, Any]]:
 
 def _open_blank_target(endpoint: str, timeout_s: float) -> None:
     """Ask a loopback DevTools endpoint to open a blank tab (`PUT /json/new`)."""
+    _require_loopback_endpoint(endpoint)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirects)
     request = urllib.request.Request(f"{endpoint}/json/new?about:blank", method="PUT")
     with opener.open(request, timeout=timeout_s):

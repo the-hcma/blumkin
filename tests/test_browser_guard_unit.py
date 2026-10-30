@@ -163,6 +163,9 @@ class _Raw:
     def upload(self, label: str, path: Path, target: object = None) -> None:
         self.calls.append(("upload", label, str(path)))
 
+    def wait_ms(self, milliseconds: int) -> None:
+        self.calls.append(("wait_ms", milliseconds))
+
 
 def _guard(
     *allowed: str, deny: tuple[str, ...] = (), confirm: tuple[str, ...] = ()
@@ -503,6 +506,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "title",
         "upload",
         "url",
+        "wait_ms",
     }
 
 
