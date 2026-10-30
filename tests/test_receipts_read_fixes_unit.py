@@ -556,3 +556,31 @@ def test_two_identical_reads_are_not_joined_even_with_negative_looking_words() -
 def test_a_credit_card_line_is_not_negative_evidence_but_a_credit_note_is() -> None:
     assert not docs_read._has_negative_evidence("Paid by CREDIT CARD")
     assert docs_read._has_negative_evidence("CREDIT NOTE 12.50")
+
+
+@pytest.mark.parametrize(
+    "plain",
+    [
+        "ACME\nTOTAL USD 12.50 CREDIT",
+        "ACME VOIDED\nTOTAL USD 12.50",
+        "ACME\nREVERSAL TOTAL USD 12.50",
+    ],
+)
+def test_trailing_credit_void_and_reversal_in_the_lower_scoring_read_keep_both_reads(
+    plain: str,
+) -> None:
+    from types import SimpleNamespace
+
+    def image_to_string(image: object, config: str | None = None) -> str:
+        return "ACME RECEIPT\nTOTAL USD 12.50\nDate: 2026-10-23" if config else plain
+
+    text = docs_read._best_ocr_text(
+        Image.new("RGB", (100, 100)), SimpleNamespace(image_to_string=image_to_string)
+    )
+
+    assert plain in text
+
+
+def test_a_trailing_credit_card_is_still_not_a_credit() -> None:
+    assert not docs_read._has_negative_evidence("TOTAL USD 12.50 CREDIT CARD")
+    assert docs_read._has_negative_evidence("TOTAL USD 12.50 CREDIT")
