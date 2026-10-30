@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from blumkin import __version__
-from blumkin.browser.actions import host_allowed
+from blumkin.browser.actions import host_allowed, sign_in_hosts_for
 from blumkin.browser.commands import require_profile
 from blumkin.browser.explore import (
     DraftNotFoundError,
@@ -50,8 +50,10 @@ def explore_click(
     confirmer = TerminalConfirmer()
     decision = decide_click(role, name, extra_deny=extra_deny)
     with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
+        driver.mark_window(task, hosts, sign_in_hosts_for(config, task))
         explorer = Explorer(driver, confirmer, allowed_hosts=hosts, extra_deny=extra_deny)
         clicked = explorer.click(role, name)
+        driver.mark_window(task, hosts, sign_in_hosts_for(config, task))
     outcome = explorer.last_outcome
     unavailable = bool(getattr(confirmer, "unavailable", False))
     timed_out = bool(getattr(confirmer, "timed_out", False))
@@ -81,6 +83,7 @@ def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, 
     hosts, extra_deny = explore_policy(config, task)
     profile = require_profile(config.config_dir, task)
     with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
+        driver.mark_window(task, hosts, sign_in_hosts_for(config, task))
         explorer = Explorer(driver, TerminalConfirmer(), allowed_hosts=hosts, extra_deny=extra_deny)
         url, controls = explorer.observe_with_url()
     seen: dict[str, Any] = {}

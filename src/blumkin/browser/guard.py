@@ -206,6 +206,12 @@ class GuardedDriver:
     def goto(self, url: str) -> None:
         self._raw.goto(url)
 
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None:
+        """Show the task's indicator on the page blumkin is attached to (on `hosts` only)."""
+        self._raw.mark_window(task, hosts, blocked)
+
     def press(self, label: str, key: str) -> None:
         action = f"press {key!r} in {label!r}"
         if not _key_is_safe(key):

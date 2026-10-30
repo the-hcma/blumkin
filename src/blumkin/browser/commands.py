@@ -13,6 +13,7 @@ from typing import Any
 
 from blumkin.browser.cdp import BrowserNotRunningError, count_page_targets
 from blumkin.browser.discovery import resolve_browser
+from blumkin.browser.indicator import task_colour
 from blumkin.browser.launcher import DEFAULT_CLOSE_TIMEOUT_S, close_browser, launch
 from blumkin.browser.profiles import (
     BrowserProfile,
@@ -130,6 +131,7 @@ def task_endpoint(config_dir: Path, task: str) -> dict[str, Any]:
         )
     return {
         "browser": session.browser,
+        "colour": task_colour(task),
         "endpoint": session.endpoint,
         "ok": True,
         "pid": session.pid,
@@ -161,6 +163,7 @@ def _launch_payload(
     return {
         "already_running": already_running,
         "browser": session.browser,
+        "colour": task_colour(task),
         "endpoint": session.endpoint,
         "fallback_from": fallback_from,
         "ok": True,
@@ -194,6 +197,7 @@ def _profile_entry(
         )
     return {
         "browser": session.browser if session else None,
+        "colour": task_colour(profile.task),
         "endpoint": session.endpoint if session else None,
         "note": note,
         "pages": pages,

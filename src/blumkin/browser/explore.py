@@ -113,6 +113,10 @@ class ExploreRawDriver(Protocol):
 
     def close(self) -> None: ...
 
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None: ...
+
     def restrict_navigation(self, is_allowed: Callable[[str], bool]) -> None: ...
 
     def settle(self, previous_url: str) -> None: ...
@@ -227,6 +231,12 @@ class ExploringDriver:
 
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()
+
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None:
+        """Show the task's indicator on the page (on `hosts` only, never on a sign-in page)."""
+        self._raw.mark_window(task, hosts, blocked)
 
     def click_vetted(self, role: str, name: str, expected: Inspection) -> None:
         def vet(info: ControlInfo) -> None:

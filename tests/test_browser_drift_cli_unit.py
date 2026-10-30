@@ -29,10 +29,14 @@ class _Driver:
         self.url = "https://erp.example.com/expenses"
         self.snapshot = _RECORDED
         self.closed = 0
+        self.marks: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         self.clicks: list[tuple[str, str]] = []
 
     def aria_snapshot(self) -> str:
         return self.snapshot
+
+    def mark_window(self, task: str, hosts: Any = (), blocked: Any = ()) -> None:
+        self.marks.append((task, tuple(hosts), tuple(blocked)))
 
     def click_vetted(self, role: str, name: str, expected: Inspection) -> None:
         self.clicks.append((role, name))
@@ -131,6 +135,7 @@ def test_a_page_at_another_address_is_reported(driver: _Driver, _config_dir: Pat
     payload = _json(_run("browser", "model", "check", "expense-report", "expense-list"))
     assert payload["url_matches"] is False
     assert payload["url_template"] == "/somewhere/else"
+    assert driver.marks and driver.marks[0][0] == "expense-report"
 
 
 def test_checking_refuses_a_page_off_the_allowed_hosts(driver: _Driver, _config_dir: Path) -> None:
