@@ -11,8 +11,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from blumkin.browser.commands import close_task_browser
+from blumkin.browser.commands import close_task_browser, require_profile
 from blumkin.browser.handoff import HandoffResult
+from blumkin.browser.launcher import BrowserCloseError
 from blumkin.browser.ledger import (
     ItemKind,
     ItemState,
@@ -70,6 +71,52 @@ def ledger_begin(
 ) -> dict[str, Any]:
     """Start an instance; `expect` is `KIND=COUNT` strings such as `day=10`."""
     return _payload(begin_instance(config.config_dir, task, instance, expected=_expected(expect)))
+
+
+def ledger_close(
+    config: BrowserSetup,
+    task: str,
+    instance: str,
+    *,
+    close_browser: bool = False,
+    outcome: str,
+    yes: bool,
+) -> dict[str, Any]:
+    """Record how the session ended (done or pending), then optionally close the browser.
+
+    The user's answer is the `outcome`; the browser is closed only after it is recorded, and its
+    profile (the saved sign-in) is kept. `--yes` says the user gave that answer.
+    """
+    _require_yes(
+        yes,
+        task,
+        instance,
+        "close the session",
+        "say yes only after the user chose done or pending",
+    )
+    try:
+        chosen = SessionOutcome(outcome)
+    except ValueError:
+        raise LedgerError(f"Expected an outcome of done or pending, got {outcome!r}") from None
+    if close_browser:
+        require_profile(config.config_dir, task)  # before the answer is recorded, not after
+    status = record_session(config.config_dir, task, instance, chosen)
+    payload = _payload(status)
+    local = len(status.local_only())
+    if chosen is SessionOutcome.DONE and local:
+        payload["warnings"] = [
+            f"{local} item(s) are only local or not read back from the page yet: "
+            "done does not verify them"
+        ]
+    if close_browser:
+        try:
+            closed = close_task_browser(config.config_dir, task)
+        except BrowserCloseError as exc:
+            raise BrowserCloseError(
+                f"{exc}; the answer ({chosen.value}) is already recorded in the ledger"
+            ) from exc
+        payload["browser_closed"] = closed["was_running"]
+    return payload
 
 
 def ledger_discard(config: BrowserSetup, task: str, instance: str, *, yes: bool) -> dict[str, Any]:
@@ -168,6 +215,28 @@ def ledger_reconcile(
     ).as_dict()
 
 
+def ledger_report(
+    config: BrowserSetup,
+    task: str,
+    instance: str,
+    *,
+    draft_saved: bool | None,
+    report_id: str | None,
+    total_confirmed: bool | None,
+) -> dict[str, Any]:
+    """Record the report itself: its server-side id, that a draft is saved, a confirmed total."""
+    return _payload(
+        record_report(
+            config.config_dir,
+            task,
+            instance,
+            draft_saved=draft_saved,
+            report_id=report_id,
+            total_confirmed=total_confirmed,
+        )
+    )
+
+
 def ledger_stage(
     config: BrowserSetup,
     task: str,
@@ -245,61 +314,6 @@ def _expected(values: Sequence[str]) -> dict[ItemKind, int]:
             raise LedgerError(f"Expected KIND=COUNT with KIND one of {kinds}, got {value!r}")
         expected[kind] = total
     return expected
-
-
-def ledger_close(
-    config: BrowserSetup,
-    task: str,
-    instance: str,
-    *,
-    close_browser: bool = False,
-    outcome: str,
-    yes: bool,
-) -> dict[str, Any]:
-    """Record how the session ended (done or pending), then optionally close the browser.
-
-    The user's answer is the `outcome`; the browser is closed only after it is recorded, and its
-    profile (the saved sign-in) is kept. `--yes` says the user gave that answer.
-    """
-    _require_yes(
-        yes,
-        task,
-        instance,
-        "close the session",
-        "say yes only after the user chose done or pending",
-    )
-    try:
-        chosen = SessionOutcome(outcome)
-    except ValueError:
-        raise LedgerError(f"Expected an outcome of done or pending, got {outcome!r}") from None
-    status = record_session(config.config_dir, task, instance, chosen)
-    payload = _payload(status)
-    if close_browser:
-        closed = close_task_browser(config.config_dir, task)
-        payload["browser_closed"] = closed["was_running"]
-    return payload
-
-
-def ledger_report(
-    config: BrowserSetup,
-    task: str,
-    instance: str,
-    *,
-    draft_saved: bool | None,
-    report_id: str | None,
-    total_confirmed: bool | None,
-) -> dict[str, Any]:
-    """Record the report itself: its server-side id, that a draft is saved, a confirmed total."""
-    return _payload(
-        record_report(
-            config.config_dir,
-            task,
-            instance,
-            draft_saved=draft_saved,
-            report_id=report_id,
-            total_confirmed=total_confirmed,
-        )
-    )
 
 
 def _payload(status: LedgerStatus) -> dict[str, Any]:

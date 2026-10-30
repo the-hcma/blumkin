@@ -217,6 +217,7 @@ def test_ledger_close_records_the_answer_before_closing_the_browser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _begin_trip()
+    monkeypatch.setattr("blumkin.browser.ledger_commands.require_profile", lambda *a, **k: None)
     order: list[str] = []
 
     def fake_close(config_dir: Path, task: str, **kwargs: Any) -> dict[str, Any]:
@@ -242,6 +243,7 @@ def test_a_failed_browser_close_leaves_the_recorded_answer_in_place(
     from blumkin.browser.launcher import BrowserCloseError
 
     _begin_trip()
+    monkeypatch.setattr("blumkin.browser.ledger_commands.require_profile", lambda *a, **k: None)
 
     def broken(config_dir: Path, task: str, **kwargs: Any) -> dict[str, Any]:
         raise BrowserCloseError("Expected the browser to close, got a hang")
@@ -255,6 +257,7 @@ def test_a_failed_browser_close_leaves_the_recorded_answer_in_place(
 
     assert result.exit_code == EXIT_OTHER
     assert _json(result)["error"] == "browser_close_failed"
+    assert "already recorded in the ledger" in _json(result)["message"]
     status = _json(_run("browser", "ledger", "status", "expense-report", "trip"))
     assert status["session"]["outcome"] == "pending"
 
@@ -287,3 +290,44 @@ def test_the_handoff_says_what_is_on_the_server_and_what_is_local() -> None:
     summary = " ".join(payload["summary"])
     assert "report 7 saved as a draft" in summary
     assert "on the server (read back from the page): 1 item(s)" in summary
+
+
+def test_closing_with_no_browser_running_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    _begin_trip()
+    monkeypatch.setattr("blumkin.browser.ledger_commands.require_profile", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "blumkin.browser.ledger_commands.close_task_browser",
+        lambda config_dir, task, **kwargs: {"forced": False, "ok": True, "was_running": False},
+    )
+
+    text = _text(
+        "browser", "ledger", "close", "expense-report", "trip",
+        "--outcome", "done", "--close-browser", "--yes",
+    )  # fmt: skip
+
+    assert text.exit_code == EXIT_SUCCESS, text.output
+    assert "no task browser was running" in text.output
+
+
+def test_done_with_only_local_items_warns_that_it_verified_nothing() -> None:
+    _begin_trip()
+    _run("browser", "ledger", "record", "expense-report", "trip", "receipt", "a", "staged",
+         "--sha256", _SHA)  # fmt: skip
+
+    result = _run(
+        "browser", "ledger", "close", "expense-report", "trip", "--outcome", "done", "--yes"
+    )
+
+    assert "done does not verify them" in _json(result)["warnings"][0]
+
+
+def test_a_task_without_a_profile_fails_before_the_answer_is_recorded() -> None:
+    _begin_trip()
+
+    result = _run(
+        "browser", "ledger", "close", "expense-report", "trip",
+        "--outcome", "pending", "--close-browser", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert _json(_run("browser", "ledger", "status", "expense-report", "trip"))["session"] is None

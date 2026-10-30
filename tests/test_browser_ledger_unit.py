@@ -13,6 +13,7 @@ from blumkin.browser.ledger import (
     ItemKind,
     ItemState,
     LedgerError,
+    LedgerJournalError,
     LedgerNotFoundError,
     Phase,
     SessionOutcome,
@@ -494,7 +495,9 @@ def test_the_report_is_recorded_without_an_amount_and_reads_in_the_summary(
     assert "report 100234 saved as a draft, total confirmed" in status.summary()
     assert status.summary().endswith("not submitted")
     journal = tmp_path / "browser-tasks" / "expense-report" / "trip-lisbon" / "journal.jsonl"
-    assert "84" not in journal.read_text()  # nothing like a total ever reaches the journal
+    entry = json.loads(journal.read_text().splitlines()[-1])
+    # The report entry holds identifiers and flags only: no amount, vendor or path.
+    assert set(entry) == {"at", "draft_saved", "event", "report_id", "seq", "total_confirmed"}
 
 
 def test_a_report_field_left_out_keeps_its_last_value(tmp_path: Path) -> None:
@@ -617,4 +620,52 @@ def test_a_journal_with_a_bad_report_or_session_entry_is_refused_not_skipped(
     from blumkin.browser.ledger import LedgerJournalError
 
     with pytest.raises(LedgerJournalError):
+        instance_status(tmp_path, "expense-report", "trip-lisbon")
+
+
+def test_a_pending_instance_with_a_report_id_but_no_saved_draft_does_not_claim_a_saved_report(
+    tmp_path: Path,
+) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    record_report(tmp_path, "expense-report", "trip-lisbon", report_id="7", draft_saved=False)
+
+    status = record_session(tmp_path, "expense-report", "trip-lisbon", SessionOutcome.PENDING)
+
+    hint = status.resume_hint()
+    assert hint is not None
+    assert "saved report" not in hint
+    assert "look for report 7 on the server" in hint
+
+
+def test_new_work_on_a_pending_instance_ends_its_pending_state(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    record_session(tmp_path, "expense-report", "trip-lisbon", SessionOutcome.PENDING)
+
+    record_report(tmp_path, "expense-report", "trip-lisbon", draft_saved=True)
+    status = instance_status(tmp_path, "expense-report", "trip-lisbon")
+
+    assert status.session is None
+    assert status.resume_hint() is None
+
+
+def test_a_torn_last_line_after_a_report_entry_is_ignored(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    record_report(tmp_path, "expense-report", "trip-lisbon", report_id="7", draft_saved=True)
+    journal = tmp_path / "browser-tasks" / "expense-report" / "trip-lisbon" / "journal.jsonl"
+    journal.write_text(journal.read_text() + '{"at": "2026-10-30T00:00:00Z", "event": "ses')
+
+    status = instance_status(tmp_path, "expense-report", "trip-lisbon")
+
+    assert status.report is not None and status.report.report_id == "7"
+
+
+def test_an_event_this_version_does_not_know_says_it_may_come_from_a_newer_blumkin(
+    tmp_path: Path,
+) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    journal = tmp_path / "browser-tasks" / "expense-report" / "trip-lisbon" / "journal.jsonl"
+    entry = {"at": "2026-10-30T00:00:00Z", "seq": 2, "event": "from-the-future"}
+    journal.write_text(journal.read_text() + json.dumps(entry) + "\n")
+
+    with pytest.raises(LedgerJournalError, match="newer blumkin"):
         instance_status(tmp_path, "expense-report", "trip-lisbon")

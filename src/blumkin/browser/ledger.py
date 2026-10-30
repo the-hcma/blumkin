@@ -78,33 +78,6 @@ class LedgerNotFoundError(LookupError):
 
 
 @dataclass(frozen=True, slots=True)
-class ReportRecord:
-    """The report itself, as far as the ledger knows: its server-side id and whether a draft is
-    saved there. Never an amount."""
-
-    at: str
-    #: A draft of the report is saved on the server.
-    draft_saved: bool
-    #: The report number the server gave it (an identifier, not a value from the form).
-    report_id: str | None
-    #: The user confirmed the report's total (the amount itself is never recorded).
-    total_confirmed: bool
-
-
-class SessionOutcome(StrEnum):
-    """How a session on an instance ended: the trip is done, or the instance stays pending."""
-
-    DONE = "done"
-    PENDING = "pending"
-
-
-@dataclass(frozen=True, slots=True)
-class SessionRecord:
-    at: str
-    outcome: SessionOutcome
-
-
-@dataclass(frozen=True, slots=True)
 class LedgerStatus:
     """The folded state of one instance."""
 
@@ -130,13 +103,20 @@ class LedgerStatus:
             return None
         if self.session.outcome is not SessionOutcome.PENDING:
             return None
-        where = (
-            f"reopen the saved report {self.report.report_id}"
-            if self.report is not None and self.report.report_id
-            else "reopen the saved report"
-            if self.report is not None and self.report.draft_saved
-            else "start from the form"
-        )
+        report = self.report
+        if report is not None and report.draft_saved:
+            where = (
+                f"reopen the saved report {report.report_id}"
+                if report.report_id
+                else "reopen the saved report"
+            )
+        elif report is not None and report.report_id:
+            where = (
+                f"look for report {report.report_id} on the server (no draft is recorded as "
+                "saved), or start from the form"
+            )
+        else:
+            where = "start from the form"
         return (
             f"pending: {where}, then reconcile the ledger with the page "
             f"(`blumkin browser ledger reconcile {self.task} {self.instance} ...`) before "
@@ -182,6 +162,33 @@ class Phase(StrEnum):
     OPEN = "open"
     SUBMITTED = "submitted"
     DISCARDED = "discarded"
+
+
+@dataclass(frozen=True, slots=True)
+class ReportRecord:
+    """The report itself, as far as the ledger knows: its server-side id and whether a draft is
+    saved there. Never an amount."""
+
+    at: str
+    #: A draft of the report is saved on the server.
+    draft_saved: bool
+    #: The report number the server gave it (an identifier, not a value from the form).
+    report_id: str | None
+    #: The user confirmed the report's total (the amount itself is never recorded).
+    total_confirmed: bool
+
+
+class SessionOutcome(StrEnum):
+    """How a session on an instance ended: the trip is done, or the instance stays pending."""
+
+    DONE = "done"
+    PENDING = "pending"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRecord:
+    at: str
+    outcome: SessionOutcome
 
 
 def begin_instance(
@@ -240,6 +247,62 @@ def list_instances(config_dir: Path, task: str) -> list[tuple[str, Phase]]:
 def mark_submitted(config_dir: Path, task: str, instance: str) -> LedgerStatus:
     """Record that the user submitted the form; nothing else ever infers it."""
     return _close(config_dir, task, instance, "submitted", "mark submitted")
+
+
+def record_item(
+    config_dir: Path,
+    task: str,
+    instance: str,
+    kind: ItemKind,
+    item: str,
+    state: ItemState,
+    *,
+    low_confidence: bool | None = None,
+    model_version: int | None = None,
+    sha256: str | None = None,
+) -> ItemRecord:
+    """Move one item to `state`; a receipt carries the SHA-256 of its file from the start.
+
+    `low_confidence` marks a receipt filed from a best reading; a later call that omits it
+    keeps the last recorded value.
+    """
+    _check_task(task)
+    _check_instance(instance)
+    if not _ITEM.fullmatch(item):
+        raise LedgerError(
+            "Expected an item id of 1-64 lowercase letters, digits, '.', '_' or '-' starting "
+            f"with a letter or digit, got {item!r}"
+        )
+    if model_version is not None and (
+        isinstance(model_version, bool) or not isinstance(model_version, int) or model_version < 1
+    ):
+        raise LedgerError(f"Expected a model version of 1 or more, got {model_version!r}")
+    if sha256 is not None and (kind is not ItemKind.RECEIPT or not _SHA256.fullmatch(sha256)):
+        raise LedgerError(
+            "Expected a sha256 of 64 lowercase hex digits for a receipt only, "
+            f"got {sha256!r} for a {kind.value}"
+        )
+    if low_confidence is not None and (
+        kind is not ItemKind.RECEIPT or not isinstance(low_confidence, bool)
+    ):
+        raise LedgerError(
+            f"Expected a boolean low_confidence for a receipt only, got {low_confidence!r} "
+            f"for a {kind.value}"
+        )
+    directory = _existing_instance_dir(config_dir, task, instance)
+    if directory is None:
+        raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
+    with _writing(directory) as journal:
+        folded = _fold(_read(journal, task, instance), task, instance)
+        if folded is None:
+            raise LedgerNotFoundError(
+                f"Expected an instance {instance!r} of task {task!r}, got none"
+            )
+        _require_open(folded, "record an item")
+        previous = folded.items.get((kind, item))
+        entry = _item_entry(kind, item, state, previous, model_version, sha256, low_confidence)
+        _append(journal, entry)
+        return _record(entry, _now())
 
 
 def record_report(
@@ -319,62 +382,6 @@ def record_session(
         _require_open(folded, "close the session")
         _append(journal, {"event": "session", "outcome": outcome.value})
         return _status(journal, task, instance)
-
-
-def record_item(
-    config_dir: Path,
-    task: str,
-    instance: str,
-    kind: ItemKind,
-    item: str,
-    state: ItemState,
-    *,
-    low_confidence: bool | None = None,
-    model_version: int | None = None,
-    sha256: str | None = None,
-) -> ItemRecord:
-    """Move one item to `state`; a receipt carries the SHA-256 of its file from the start.
-
-    `low_confidence` marks a receipt filed from a best reading; a later call that omits it
-    keeps the last recorded value.
-    """
-    _check_task(task)
-    _check_instance(instance)
-    if not _ITEM.fullmatch(item):
-        raise LedgerError(
-            "Expected an item id of 1-64 lowercase letters, digits, '.', '_' or '-' starting "
-            f"with a letter or digit, got {item!r}"
-        )
-    if model_version is not None and (
-        isinstance(model_version, bool) or not isinstance(model_version, int) or model_version < 1
-    ):
-        raise LedgerError(f"Expected a model version of 1 or more, got {model_version!r}")
-    if sha256 is not None and (kind is not ItemKind.RECEIPT or not _SHA256.fullmatch(sha256)):
-        raise LedgerError(
-            "Expected a sha256 of 64 lowercase hex digits for a receipt only, "
-            f"got {sha256!r} for a {kind.value}"
-        )
-    if low_confidence is not None and (
-        kind is not ItemKind.RECEIPT or not isinstance(low_confidence, bool)
-    ):
-        raise LedgerError(
-            f"Expected a boolean low_confidence for a receipt only, got {low_confidence!r} "
-            f"for a {kind.value}"
-        )
-    directory = _existing_instance_dir(config_dir, task, instance)
-    if directory is None:
-        raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
-    with _writing(directory) as journal:
-        folded = _fold(_read(journal, task, instance), task, instance)
-        if folded is None:
-            raise LedgerNotFoundError(
-                f"Expected an instance {instance!r} of task {task!r}, got none"
-            )
-        _require_open(folded, "record an item")
-        previous = folded.items.get((kind, item))
-        entry = _item_entry(kind, item, state, previous, model_version, sha256, low_confidence)
-        _append(journal, entry)
-        return _record(entry, _now())
 
 
 def _append(journal: Path, entry: dict[str, Any]) -> None:
@@ -470,9 +477,15 @@ def _fold(data: bytes, task: str, instance: str) -> _Folded | None:
                 raise ValueError("out of sequence")
             folded = _apply(folded, entry)
         except (ValueError, KeyError, TypeError, LedgerError) as exc:
+            newer = (
+                "; an event this blumkin does not know can come from a newer blumkin that "
+                "wrote this journal"
+                if str(exc) == "unknown event"
+                else ""
+            )
             raise LedgerJournalError(
                 f"Expected a valid journal entry on line {number} of the journal for "
-                f"{task!r}/{instance!r}, got {type(exc).__name__}"
+                f"{task!r}/{instance!r}, got {type(exc).__name__}{newer}"
             ) from exc
     return folded
 
@@ -584,13 +597,6 @@ def _reading(directory: Path) -> Iterator[None]:
         os.close(fd)
 
 
-def _report_text(report: ReportRecord) -> str:
-    """How the report reads in the summary line."""
-    name = f"report {report.report_id}" if report.report_id else "a report"
-    text = f"{name} saved as a draft" if report.draft_saved else f"{name} not yet saved"
-    return f"{text}, total confirmed" if report.total_confirmed else text
-
-
 def _record(entry: dict[str, Any], at: str) -> ItemRecord:
     return ItemRecord(
         at=at,
@@ -601,6 +607,13 @@ def _record(entry: dict[str, Any], at: str) -> ItemRecord:
         sha256=entry["sha256"],
         state=ItemState(entry["state"]),
     )
+
+
+def _report_text(report: ReportRecord) -> str:
+    """How the report reads in the summary line."""
+    name = f"report {report.report_id}" if report.report_id else "a report"
+    text = f"{name} saved as a draft" if report.draft_saved else f"{name} not yet saved"
+    return f"{text}, total confirmed" if report.total_confirmed else text
 
 
 def _require_open(folded: _Folded, action: str) -> None:
@@ -659,6 +672,7 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
     if folded.phase is not Phase.OPEN:
         raise ValueError("entry after the instance was closed")
     if event == "item":
+        folded.session = None  # new work: the session that was left pending has resumed
         record = _record(entry, at)
         if (
             not _ITEM.fullmatch(record.item)
@@ -678,12 +692,16 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
         )
         folded.items[(record.kind, record.item)] = record
     elif event == "report":
+        folded.session = None
         report_id = entry["report_id"]
         draft_saved, total_confirmed = entry["draft_saved"], entry["total_confirmed"]
         if (
             not isinstance(draft_saved, bool)
             or not isinstance(total_confirmed, bool)
-            or (report_id is not None and not _REPORT_ID.fullmatch(str(report_id)))
+            or (
+                report_id is not None
+                and not (isinstance(report_id, str) and _REPORT_ID.fullmatch(report_id))
+            )
         ):
             raise ValueError("bad report")
         folded.report = ReportRecord(

@@ -789,8 +789,12 @@ def _emit_ledger(payload: dict[str, Any], *, as_json: bool, items: bool = False)
             )
     if payload.get("resume"):
         lines.append(f"  {payload['resume']}")
-    if payload.get("browser_closed") is not None:
+    for warning in payload.get("warnings") or ():
+        lines.append(f"  warning: {warning}")
+    if payload.get("browser_closed") is True:
         lines.append("  the task browser was closed (its profile is kept)")
+    elif payload.get("browser_closed") is False:
+        lines.append("  no task browser was running")
     emit_lines(lines)
 
 
