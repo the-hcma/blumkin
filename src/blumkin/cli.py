@@ -124,6 +124,7 @@ from blumkin.browser.receipt_rehome import (
     AlreadyFiledError,
     RehomeError,
     UnconfirmedError,
+    file_sha256,
     rehome_receipt,
 )
 from blumkin.browser.transcript import parse_duration
@@ -167,7 +168,12 @@ from blumkin.loop.agent_task import AgentItemNotFoundError, AgentReplyError, Age
 from blumkin.loop.config import LoopConfigError, LoopTriggerNotFoundError
 from blumkin.loop.init import LoopInitError, init_profiles
 from blumkin.loop.service import LoopServiceError, install_user_unit
-from blumkin.mail_export import MailExportError, check_exported_pdf, export_message
+from blumkin.mail_export import (
+    MailExportError,
+    check_exported_pdf,
+    export_message,
+    read_export_meta,
+)
 from blumkin.mail_signature_state import (
     clear_signature_state,
     load_signature_state,
@@ -178,6 +184,7 @@ from blumkin.prompt_injection import format_injection_warning_banner
 from blumkin.providers import get_provider
 from blumkin.providers.kind import ProviderConfigError, ProviderKind
 from blumkin.providers.protocol import WorkspaceProvider
+from blumkin.receipt_summary import SummaryInput, summarize_receipts
 from blumkin.receipts import (
     DEFAULT_FIND_LIMIT,
     Confidence,
@@ -386,6 +393,9 @@ _INSTALL_METHOD_LABELS: dict[str, str] = {
 # One `git pull` / `pipx|uv` step in `blumkin upgrade`. A cold reinstall builds
 # no wheels (blumkin is pure Python) but still resolves and downloads deps.
 _UPGRADE_STEP_TIMEOUT_S = 300
+
+# Most receipts `receipts summarize --dir` reads at once; more is an error, not a quiet cut-off.
+_SUMMARIZE_MAX_FILES = 500
 
 
 def _agent_lock_payload() -> dict[str, Any]:
@@ -740,6 +750,26 @@ def _export_lines(payload: dict[str, Any]) -> list[str]:
         lines.append(f"  removed {payload['tracking_pixels_removed']} tracking pixel(s)")
     lines.extend(_check_lines(payload["pdf"] or "(rendered PDF)", payload["check"]))
     lines.extend(format_injection_warning_banner(payload["injection_warning"]))
+    return lines
+
+
+def _summary_lines(summary: dict[str, Any]) -> list[str]:
+    lines = []
+    for row in summary["rows"]:
+        name = sanitize_terminal(_strip_bidi(Path(row["path"]).name))
+        amount = _clean_line(f"{row['total'] or '?'} {row['currency'] or '?'}")
+        vendor = _clean_line(row["vendor"] or "(unknown vendor)")
+        day = _clean_line(row["date"] or "(no date)")
+        lines.append(f"{row['action']:<6} {day:<10}  {vendor}  {amount}  {name}")
+        if row["reason"]:
+            lines.append(f"         {_clean_line(row['reason'])}")
+    totals = ", ".join(f"{amount} {code}" for code, amount in summary["grand_totals"].items())
+    lines.append(f"Grand total to file: {totals or '0.00'} ({summary['filing']} receipts)")
+    if summary["dropping"]:
+        lines.append(f"{summary['dropping']} copies would be dropped (nothing is deleted).")
+    if summary["needs_review"]:
+        lines.append(f"{summary['needs_review']} need review: ask the user before filing them.")
+    lines.append("Confirm this table with the user, then rehome each `file` row with --yes.")
     return lines
 
 
@@ -3800,6 +3830,90 @@ def receipts_read(ctx: click.Context, path: Path, as_json_flag: bool) -> None:
     emit_lines(lines)
 
 
+@receipts.command("summarize", epilog=help_text.RECEIPTS_SUMMARIZE_EPILOG)
+@click.argument("paths", nargs=-1, type=click.Path(path_type=Path))
+@click.option(
+    "--dir",
+    "directory",
+    default=None,
+    type=click.Path(path_type=Path),
+    help="Also take every receipt file in this directory (not searched recursively).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def receipts_summarize(
+    ctx: click.Context, paths: tuple[Path, ...], directory: Path | None, as_json_flag: bool
+) -> None:
+    """Group receipts into trips, mark the copies to drop and total what would be filed."""
+    as_json = _as_json(ctx, as_json_flag)
+    files = [path.expanduser() for path in paths]
+    if directory is not None:
+        try:
+            found = find_local_receipts(directory, limit=_SUMMARIZE_MAX_FILES + 1)
+        except ReceiptsDirError as exc:
+            _emit_error(error="not_found", message=str(exc), as_json=as_json)
+            raise SystemExit(EXIT_NOT_FOUND) from exc
+        if len(found) > _SUMMARIZE_MAX_FILES:
+            _emit_error(
+                error="usage_error",
+                message=(
+                    f"Expected at most {_SUMMARIZE_MAX_FILES} receipts in {str(directory)!r}, "
+                    "got more; pass the files you mean"
+                ),
+                as_json=as_json,
+            )
+            raise SystemExit(EXIT_USAGE)
+        files.extend(item.path for item in found)
+    unique = list(dict.fromkeys(files))
+    if not unique:
+        _emit_error(
+            error="usage_error",
+            message="Expected receipt files or --dir, got neither",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    missing = [str(path) for path in unique if not path.is_file() or path.is_symlink()]
+    if missing:
+        _emit_error(
+            error="not_found",
+            message=f"Expected regular receipt files, got {', '.join(missing)}",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_NOT_FOUND)
+
+    async def read_all() -> list[SummaryInput]:
+        items = []
+        for file_path in unique:
+            reading = await read_receipt(file_path, config=None)
+            meta = read_export_meta(file_path)
+            fields = reading.fields
+            items.append(
+                SummaryInput(
+                    currency=fields.currency.value,
+                    currency_confidence=fields.currency.confidence.value,
+                    date=fields.date.value,
+                    date_confidence=fields.date.confidence.value,
+                    injection_warning=reading.injection_warning,
+                    message_id=meta["message_id"],
+                    path=file_path,
+                    received=meta["received"],
+                    sha256=file_sha256(file_path),
+                    subject=meta["subject"],
+                    total=fields.total.value,
+                    total_confidence=fields.total.confidence.value,
+                    vendor=fields.vendor.value,
+                )
+            )
+        return items
+
+    summary = summarize_receipts(asyncio.run(read_all()))
+    if as_json:
+        emit_json(summary)
+    else:
+        emit_lines(_summary_lines(summary))
+    raise SystemExit(EXIT_SUCCESS if summary["ok"] else EXIT_OTHER)
+
+
 @receipts.command("rehome", epilog=help_text.RECEIPTS_REHOME_EPILOG)
 @click.argument("path", type=click.Path(path_type=Path))
 @click.option("--task", required=True, help="Browser task that owns the expense instance.")
@@ -3813,6 +3927,12 @@ def receipts_read(ctx: click.Context, path: Path, as_json_flag: bool) -> None:
     default=None,
     help="Mail message id when the file came from an attachment (copy, do not move).",
 )
+@click.option(
+    "--replace",
+    default=None,
+    help="File name or 8+ hex digits of a filed receipt to set aside (kept, not deleted).",
+)
+@click.option("--yes", is_flag=True, help="Confirm the summarized table and total with the user.")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def receipts_rehome(
@@ -3825,10 +3945,23 @@ def receipts_rehome(
     total: str,
     currency: str,
     message_id: str | None,
+    replace: str | None,
+    yes: bool,
     as_json_flag: bool,
 ) -> None:
     """Move or copy a confirmed receipt into the managed instance folder."""
     as_json = _as_json(ctx, as_json_flag)
+    if not yes:
+        _emit_error(
+            error="usage_error",
+            message="Expected --yes after the user confirmed the receipts summary, got none",
+            as_json=as_json,
+            hint=(
+                "Run `blumkin receipts summarize ... --json`, show the user the table and the "
+                "grand total, and pass --yes only once they confirm."
+            ),
+        )
+        raise SystemExit(EXIT_USAGE)
     config = _load_config()
     policy = config.browser.tasks.get(task)
     if policy is None:
@@ -3853,6 +3986,7 @@ def receipts_rehome(
             fields=fields,
             upload_dirs=policy.upload_dirs,
             message_id=message_id,
+            replace=replace,
         )
     except AlreadyFiledError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
@@ -3874,7 +4008,10 @@ def receipts_rehome(
         return
     action = "copied" if result.copied else "moved"
     src = sanitize_terminal(str(result.source))
-    emit_lines([f"{action} {src} -> {sanitize_terminal(result.name)}"])
+    lines = [f"{action} {src} -> {sanitize_terminal(result.name)}"]
+    if result.replaced:
+        lines.append(f"set aside {sanitize_terminal(result.replaced)} (kept under superseded/)")
+    emit_lines(lines)
 
 
 @main.group(epilog=help_text.PROFILES_EPILOG)

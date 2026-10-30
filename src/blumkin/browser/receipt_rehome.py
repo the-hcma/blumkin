@@ -11,13 +11,14 @@ approval (``restore`` on discard puts files back).
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
 import re
 import shutil
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,6 +36,7 @@ _INSTANCE = re.compile(r"^[a-z0-9]([a-z0-9_-]{0,62}[a-z0-9])?$")
 _MAX_VENDOR = 48
 _MAX_JOURNAL_BYTES = 1_000_000
 _MOVES_FILENAME = "receipt-moves.jsonl"
+_SUPERSEDED_DIRNAME = "superseded"
 _STORE_DIRNAME = "browser-tasks"
 
 
@@ -60,6 +62,8 @@ class RehomeResult:
     source: Path
     copied: bool
     message_id: str | None
+    #: Name of the earlier file this one replaced (kept aside, not deleted), if any.
+    replaced: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +71,7 @@ class RehomeResult:
             "dest": str(self.dest),
             "message_id": self.message_id,
             "name": self.name,
+            "replaced": self.replaced,
             "sha256": self.sha256,
             "source": str(self.source),
         }
@@ -128,6 +133,25 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def find_filed(config_dir: Path, task: str, instance: str, ref: str) -> RehomeResult:
+    """The filed receipt named ``ref`` (its file name, or at least 8 hex digits of its SHA-256)."""
+    wanted = ref.strip().lower()
+    filed = _completed_by_hash(config_dir, task, instance)
+    matches = [
+        result
+        for digest, result in filed.items()
+        if result.name.lower() == wanted
+        or (len(wanted) >= 8 and re.fullmatch(r"[0-9a-f]+", wanted) and digest.startswith(wanted))
+    ]
+    if len(matches) != 1:
+        found = "none" if not matches else f"{len(matches)} matches"
+        raise RehomeError(
+            f"Expected one filed receipt matching {ref!r} (a file name or 8+ hex digits of its "
+            f"sha256), got {found}"
+        )
+    return matches[0]
+
+
 def managed_instance_dir(upload_dirs: Sequence[str], instance: str) -> Path:
     """Per-instance folder under the first ``upload_dirs`` entry."""
     if not upload_dirs:
@@ -155,20 +179,80 @@ def rehome_receipt(
     fields: ReceiptFields | Mapping[str, Mapping[str, Any]],
     upload_dirs: Sequence[str],
     message_id: str | None = None,
+    replace: str | None = None,
     require_high_confidence: bool = True,
 ) -> RehomeResult:
-    """Move or copy ``source`` into the managed folder under its canonical name."""
-    validate_task_name(task)
-    if not _INSTANCE.fullmatch(instance):
-        raise RehomeError(
-            "Expected an instance name of 1-64 lowercase letters, digits, '-' or '_' "
-            f"starting and ending with a letter or digit, got {instance!r}"
+    """Move or copy ``source`` into the managed folder under its canonical name.
+
+    With ``replace`` (a filed receipt's name or hash), the new file is filed first and the old one
+    is then set aside under the instance's ``superseded`` folder, so a bad render can be swapped
+    without hand-deleting a hash-named file and nothing is ever lost.
+    """
+    if replace is not None:
+        # Before anything is looked up or moved: a closed instance accepts no more changes.
+        _require_open_instance(config_dir, task, instance)
+    old = find_filed(config_dir, task, instance, replace) if replace is not None else None
+    if old is None:
+        return _rehome_one(
+            config_dir,
+            task,
+            instance,
+            source,
+            fields=fields,
+            upload_dirs=upload_dirs,
+            message_id=message_id,
+            require_high_confidence=require_high_confidence,
         )
-    status = instance_status(config_dir, task, instance)
-    if status.phase is not Phase.OPEN:
+    _check_replaceable(config_dir, task, instance, old)
+    src = source.expanduser()
+    digest = file_sha256(src) if src.is_file() and not src.is_symlink() else ""
+    if digest == old.sha256:
         raise RehomeError(
-            f"Expected an open ledger instance to rehome a receipt, got a {status.phase.value} one"
+            f"Expected a replacement that differs from {old.name!r}, got the same bytes"
         )
+    completed = _completed_by_hash(config_dir, task, instance)
+    filed = completed.get(digest) if digest else _filed_from_source(completed.values(), src)
+    if filed is not None:
+        # An earlier --replace filed the new receipt and stopped before setting the old one
+        # aside: finish that instead of failing on "already filed" (a moved source is found
+        # again by its journaled path). The filed copy must still be intact to stand in.
+        if (
+            not filed.dest.is_file()
+            or filed.dest.is_symlink()
+            or file_sha256(filed.dest) != filed.sha256
+        ):
+            raise RehomeError(
+                f"Expected the filed replacement {filed.name!r} to be intact, "
+                "got a missing or changed file"
+            )
+        result = filed
+    else:
+        result = _rehome_one(
+            config_dir,
+            task,
+            instance,
+            source,
+            fields=fields,
+            upload_dirs=upload_dirs,
+            message_id=message_id,
+            require_high_confidence=require_high_confidence,
+        )
+    _supersede(config_dir, task, instance, old)
+    return dataclasses.replace(result, replaced=old.name)
+
+
+def _rehome_one(
+    config_dir: Path,
+    task: str,
+    instance: str,
+    source: Path,
+    *,
+    fields: ReceiptFields | Mapping[str, Mapping[str, Any]],
+    upload_dirs: Sequence[str],
+    message_id: str | None,
+    require_high_confidence: bool,
+) -> RehomeResult:
+    _require_open_instance(config_dir, task, instance)
     src = source.expanduser()
     if not src.is_file() or src.is_symlink():
         raise RehomeError(f"Expected a regular receipt file, got {str(source)!r}")
@@ -301,7 +385,8 @@ def restore_rehomed(
     for entry in reversed(moves):
         event = entry.get("event")
         digest = str(entry.get("sha256") or "")
-        if event == "restored":
+        if event in {"restored", "superseded"}:
+            # A superseded file was set aside on purpose; discard leaves it where it is.
             if _SHA256.fullmatch(digest):
                 seen.add(digest)
             continue
@@ -384,7 +469,7 @@ def _completed_by_hash(config_dir: Path, task: str, instance: str) -> dict[str, 
                     str(entry["message_id"]) if entry.get("message_id") is not None else None
                 ),
             )
-        elif event == "restored":
+        elif event in {"restored", "superseded"}:
             found.pop(digest, None)
     return found
 
@@ -435,7 +520,7 @@ def _live_intents(moves: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, 
             continue
         if event == "intent":
             live[digest] = entry
-        elif event in {"result", "restored"}:
+        elif event in {"result", "restored", "superseded"}:
             live.pop(digest, None)
     return live
 
@@ -516,6 +601,98 @@ def _restore_one(*, dest: Path, source: Path, digest: str, copied: bool) -> bool
         )
     _place(dest, source, digest=digest, copy_only=False)
     return True
+
+
+def _aside_path(aside_dir: Path, old: RehomeResult) -> Path:
+    """Where the old file goes (or already went): its own name, else a numbered one."""
+    for number in range(0, 1000):
+        name = old.name if number == 0 else f"{number}-{old.name}"
+        candidate = aside_dir / name
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+        if (
+            candidate.is_file()
+            and not candidate.is_symlink()
+            and file_sha256(candidate) == old.sha256
+        ):
+            return candidate
+    raise RehomeError(f"Expected a free name for {old.name!r} in the superseded folder, got none")
+
+
+def _check_replaceable(config_dir: Path, task: str, instance: str, old: RehomeResult) -> None:
+    """Fail before anything is filed when the old receipt cannot be set aside."""
+    aside_dir = _instance_dir(config_dir, task, instance) / _SUPERSEDED_DIRNAME
+    intact = (
+        old.dest.is_file() and not old.dest.is_symlink() and file_sha256(old.dest) == old.sha256
+    )
+    already_aside = aside_dir.is_dir() and any(
+        path.is_file() and not path.is_symlink() and file_sha256(path) == old.sha256
+        for path in aside_dir.iterdir()
+    )
+    if not intact and not already_aside:
+        raise RehomeError(
+            f"Expected filed receipt {old.name!r} to be intact before replacing it, "
+            "got a missing or changed file"
+        )
+    if intact:
+        _aside_path(aside_dir, old)
+
+
+def _filed_from_source(filed: Iterable[RehomeResult], source: Path) -> RehomeResult | None:
+    """The one filed receipt that came from ``source`` (which a move may have removed)."""
+    wanted = source.resolve()
+    matches = [item for item in filed if item.source == wanted]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _require_open_instance(config_dir: Path, task: str, instance: str) -> None:
+    validate_task_name(task)
+    if not _INSTANCE.fullmatch(instance):
+        raise RehomeError(
+            "Expected an instance name of 1-64 lowercase letters, digits, '-' or '_' "
+            f"starting and ending with a letter or digit, got {instance!r}"
+        )
+    status = instance_status(config_dir, task, instance)
+    if status.phase is not Phase.OPEN:
+        raise RehomeError(
+            f"Expected an open ledger instance to rehome a receipt, got a {status.phase.value} one"
+        )
+
+
+def _supersede(config_dir: Path, task: str, instance: str, old: RehomeResult) -> None:
+    """Move a filed receipt out of the upload folder into ``superseded`` and journal it.
+
+    Safe to repeat: when an earlier run already moved the file but did not journal it, only the
+    journal entry is written.
+    """
+    aside_dir = _instance_dir(config_dir, task, instance) / _SUPERSEDED_DIRNAME
+    ensure_private_dir(aside_dir)
+    aside = _aside_path(aside_dir, old)
+    if old.dest.is_file() and not old.dest.is_symlink():
+        if file_sha256(old.dest) != old.sha256:
+            raise RehomeError(
+                f"Expected filed receipt {old.name!r} to be unchanged, got a different file"
+            )
+        if not aside.exists():
+            _place(old.dest, aside, digest=old.sha256, copy_only=False)
+        else:
+            old.dest.unlink()
+    elif not (aside.is_file() and file_sha256(aside) == old.sha256):
+        raise RehomeError(
+            f"Expected filed receipt {old.name!r} to be intact before replacing it, "
+            "got a missing or changed file"
+        )
+    _append_move(
+        config_dir,
+        task,
+        instance,
+        {
+            "event": "superseded",
+            "aside": str(aside.resolve()),
+            "dest": str(old.dest),
+            "sha256": old.sha256,
+        },
+    )
 
 
 def _suffix(suffix: str) -> str:

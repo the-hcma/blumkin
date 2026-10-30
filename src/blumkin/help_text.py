@@ -2381,10 +2381,18 @@ Examples:
 
 \b
   blumkin receipts rehome ~/Downloads/scan.jpg --task expense-report --instance trip-lisbon \\
-    --date 2026-10-20 --vendor "Taxi Co" --total 18.50 --currency USD
+    --date 2026-10-20 --vendor "Taxi Co" --total 18.50 --currency USD --yes
   blumkin receipts rehome ~/Downloads/mail-att.pdf --task expense-report --instance trip-lisbon \\
     --date 2026-10-21 --vendor Hotel --total 210.00 --currency EUR \\
-    --message-id AAMkAG... --json
+    --message-id AAMkAG... --yes --json
+  blumkin receipts rehome ./fixed.pdf --task expense-report --instance trip-lisbon \\
+    --date 2026-10-21 --vendor Hotel --total 210.00 --currency EUR --yes \\
+    --replace 2026-10-21_hotel_210.00-EUR_ab12cd34.pdf
+
+Requires `--yes`, passed only after the user confirmed the `receipts summarize` table and
+grand total. `--replace` files the new receipt and then sets the named earlier one (file name
+or 8+ hex digits of its SHA-256) aside under the instance's `superseded/` folder, so a bad
+render can be swapped without hand-deleting a hash-named file; the old file is kept.
 
 Moves (or copies, with `--message-id`) a confirmed receipt into the managed per-instance
 folder under the task's first `upload_dirs` entry, named
@@ -2393,6 +2401,27 @@ An intent-then-result journal under the browser-task instance records the move s
 is recoverable and `browser ledger discard --yes` can restore originals. A duplicate
 SHA-256 is treated as already filed. Email attachments are copied, not moved, and the
 message id is stored with the journal entry (issue #491).
+"""
+
+RECEIPTS_SUMMARIZE_EPILOG = """
+Examples:
+
+\b
+  blumkin receipts summarize ./receipts-to-upload/*.pdf
+  blumkin receipts summarize --dir ./receipts-to-upload --json
+
+Reads each receipt (a PDF with the `.txt` and `.json` that `mail export` wrote is read from
+that text, without OCR), groups them by vendor, ride date and currency, and prints one row per
+receipt: `file`, `drop` or `review`. Ride-hail services send two emails per ride, before and
+after the tip; a lower total within a tip's reach (up to 1.4 times) of a higher one is marked
+`drop` only when the two arrived within 30 minutes of each other (or are the same message or
+file); identical totals count as an exact duplicate on the same evidence. Otherwise both are
+marked `review`, since a dropped receipt is never filed, and a bigger gap is a different ride
+so both are filed. A total or currency that is not certain also goes to `review`. The ride
+date comes from the receipt text, then the subject; the email arrival time is a last resort
+and is flagged `review` (a late ride arrives the next UTC day). The grand total is per
+currency and counts only `file` rows. Nothing is moved or deleted; show the table to the
+user and rehome the `file` rows with `--yes` once they confirm. Exits 1 when any row needs review.
 """
 
 SKILLS_DESCRIBE_EPILOG = """

@@ -495,3 +495,307 @@ def test_discard_restores_intent_only_half_finished_move(tmp_path: Path) -> None
     assert source.read_bytes() == b"intent-only"
     assert not dest.exists()
     assert payload["receipts_restored"][0]["restored"] is True
+
+
+def _file(tmp_path: Path, name: str, data: bytes) -> Path:
+    path = tmp_path / name
+    path.write_bytes(data)
+    return path
+
+
+def test_replace_files_the_new_receipt_and_sets_the_old_one_aside(tmp_path: Path) -> None:
+    config, uploads, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "a.pdf", b"bad-render"),
+        fields=_fields(),
+        upload_dirs=dirs,
+        message_id="m1",
+    )
+
+    new = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "b.pdf", b"good-render"),
+        fields=_fields(),
+        upload_dirs=dirs,
+        message_id="m1",
+        replace=old.sha256[:8],
+    )
+
+    assert new.replaced == old.name
+    assert not old.dest.exists()
+    assert new.dest.is_file()
+    aside = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "superseded" / old.name
+    assert aside.read_bytes() == b"bad-render"
+    assert sorted(path.name for path in managed_instance_dir(dirs, "trip-lisbon").iterdir()) == [
+        new.name
+    ]
+
+
+def test_replace_by_file_name_works_and_the_old_bytes_can_be_filed_again(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(),
+        upload_dirs=dirs,
+        message_id="m1",
+    )
+    rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "b.pdf", b"two"),
+        fields=_fields(total="20.00"),
+        upload_dirs=dirs,
+        message_id="m1",
+        replace=old.name,
+    )
+
+    again = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "c.pdf", b"one"),
+        fields=_fields(),
+        upload_dirs=dirs,
+        message_id="m1",
+    )
+
+    assert again.sha256 == old.sha256
+
+
+def test_replace_with_an_unknown_receipt_changes_nothing(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    source = _file(tmp_path, "b.pdf", b"two")
+
+    with pytest.raises(RehomeError, match="one filed receipt"):
+        rehome_receipt(
+            config,
+            "expense-report",
+            "trip-lisbon",
+            source,
+            fields=_fields(),
+            upload_dirs=dirs,
+            replace="deadbeef",
+        )
+
+    assert source.is_file()
+
+
+def test_discard_leaves_a_superseded_receipt_where_it_was_set_aside(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(),
+        upload_dirs=dirs,
+    )
+    rehome_receipt(
+        config,
+        "expense-report",
+        "trip-lisbon",
+        _file(tmp_path, "b.pdf", b"two"),
+        fields=_fields(total="20.00"),
+        upload_dirs=dirs,
+        replace=old.name,
+    )
+
+    restored = restore_rehomed(config, "expense-report", "trip-lisbon", yes=True)
+
+    assert [item.sha256 for item in restored] == [file_sha256(tmp_path / "b.pdf")]
+    assert (
+        config / "browser-tasks" / "expense-report" / "trip-lisbon" / "superseded" / old.name
+    ).is_file()
+
+
+def test_replace_checks_the_old_receipt_before_filing_the_new_one(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs,
+    )  # fmt: skip
+    old.dest.write_bytes(b"tampered")
+    source = _file(tmp_path, "b.pdf", b"two")
+
+    with pytest.raises(RehomeError, match="intact"):
+        rehome_receipt(
+            config, "expense-report", "trip-lisbon", source,
+            fields=_fields(total="20.00"), upload_dirs=dirs, replace=old.name,
+        )  # fmt: skip
+
+    assert source.is_file()
+
+
+def test_replace_with_identical_bytes_is_refused(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+
+    with pytest.raises(RehomeError, match="differs"):
+        rehome_receipt(
+            config, "expense-report", "trip-lisbon", _file(tmp_path, "b.pdf", b"one"),
+            fields=_fields(), upload_dirs=dirs, replace=old.name,
+        )  # fmt: skip
+
+
+def test_replace_resumes_when_an_earlier_run_filed_the_new_file_but_stopped(
+    tmp_path: Path,
+) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    new_source = _file(tmp_path, "b.pdf", b"two")
+    rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+
+    resumed = rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m", replace=old.name,
+    )  # fmt: skip
+
+    assert resumed.replaced == old.name
+    assert not old.dest.exists()
+
+
+def test_replace_finishes_the_journal_when_the_file_was_already_set_aside(
+    tmp_path: Path,
+) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    aside_dir = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "superseded"
+    aside_dir.mkdir()
+    old.dest.replace(aside_dir / old.name)  # a crash after the move, before the journal
+
+    new = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "b.pdf", b"two"),
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m", replace=old.name,
+    )  # fmt: skip
+
+    assert new.replaced == old.name
+    with pytest.raises(RehomeError, match="one filed receipt"):
+        rehome_receipt(
+            config, "expense-report", "trip-lisbon", _file(tmp_path, "c.pdf", b"three"),
+            fields=_fields(), upload_dirs=dirs, replace=old.name,
+        )  # fmt: skip
+
+
+def test_a_taken_name_in_superseded_gets_a_numbered_one(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    aside_dir = config / "browser-tasks" / "expense-report" / "trip-lisbon" / "superseded"
+    aside_dir.mkdir()
+    (aside_dir / old.name).write_bytes(b"something else entirely")
+
+    rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "b.pdf", b"two"),
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m", replace=old.name,
+    )  # fmt: skip
+
+    assert (aside_dir / f"1-{old.name}").read_bytes() == b"one"
+
+
+def test_replace_is_refused_for_a_closed_instance_and_moves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser import receipt_rehome
+    from blumkin.browser.ledger import Phase
+
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    new_source = _file(tmp_path, "b.pdf", b"two")
+    rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    monkeypatch.setattr(
+        receipt_rehome, "instance_status", lambda *_a, **_k: SimpleNamespace(phase=Phase.SUBMITTED)
+    )
+
+    with pytest.raises(RehomeError, match="open ledger instance"):
+        rehome_receipt(
+            config, "expense-report", "trip-lisbon", new_source,
+            fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m", replace=old.name,
+        )  # fmt: skip
+
+    assert old.dest.is_file()
+
+
+def test_replace_rejects_a_bad_instance_name_before_looking_anything_up(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+
+    with pytest.raises(RehomeError, match="instance name"):
+        rehome_receipt(
+            config, "expense-report", "../escape", _file(tmp_path, "b.pdf", b"two"),
+            fields=_fields(), upload_dirs=dirs, replace="deadbeef",
+        )  # fmt: skip
+
+
+def test_replace_resumes_without_a_message_id_after_the_source_was_moved(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs,
+    )  # fmt: skip
+    new_source = _file(tmp_path, "b.pdf", b"two")
+    rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs,
+    )  # fmt: skip
+    assert not new_source.exists()  # a move: the source is gone, only the journal knows it
+
+    resumed = rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs, replace=old.name,
+    )  # fmt: skip
+
+    assert resumed.replaced == old.name
+    assert not old.dest.exists()
+    assert resumed.dest.read_bytes() == b"two"
+
+
+def test_replace_refuses_a_filed_replacement_that_is_no_longer_intact(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    new_source = _file(tmp_path, "b.pdf", b"two")
+    new = rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    new.dest.unlink()
+
+    with pytest.raises(RehomeError, match="intact"):
+        rehome_receipt(
+            config, "expense-report", "trip-lisbon", new_source,
+            fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m", replace=old.name,
+        )  # fmt: skip
+
+    assert old.dest.is_file()
