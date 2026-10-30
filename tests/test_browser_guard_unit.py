@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -35,6 +36,8 @@ class _Raw:
         self.calls: list[tuple[object, ...]] = []
         self.controls: dict[str, ControlInfo] = {}
         self.fields: dict[str, ControlInfo] = {}
+        #: What the guard's vet callback is shown when `select` clicks something.
+        self.select_probe: ControlInfo | None = None
         self.frame_chunks: tuple[str, ...] = ()
         self.net_installed = 0
         #: name -> roles a control of that name exists in.
@@ -140,8 +143,10 @@ class _Raw:
     def title(self) -> str:
         return "Expenses"
 
-    def select(self, label: str, option: str, target: object = None) -> str | None:
+    def select(self, label: str, option: str, target: object = None, vet: Any = None) -> str | None:
         self.calls.append(("select", label, option))
+        if self.select_probe is not None and vet is not None:
+            vet(self.select_probe)
         return option
 
     def upload(self, label: str, path: Path, target: object = None) -> None:
@@ -656,5 +661,37 @@ def test_a_bad_nth_or_a_host_without_a_frame_is_refused_before_the_page_is_touch
             driver.select("Type", "Taxi", target)
         with pytest.raises(ValueError, match="Expected"):
             driver.upload("File", Path("/tmp/x"), target)
+
+    assert raw.calls == []
+
+
+def test_select_hands_the_driver_a_vet_that_refuses_a_submit_control() -> None:
+    raw, driver = _guard()
+    raw.select_probe = ControlInfo(tag="button", input_type="submit", in_form=True)
+
+    with pytest.raises(SubmitBlockedError, match="submit control"):
+        driver.select("Continue", "x")
+
+
+def test_select_never_goes_through_a_clickable_role_that_is_not_a_dropdown() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    raw, driver = _guard()
+
+    with pytest.raises(SubmitBlockedError, match="not one a dropdown has"):
+        driver.select("Save draft", "x", FieldTarget(role="button"))
+
+    assert raw.calls == []
+
+
+def test_a_role_that_is_not_a_field_role_is_refused_for_fill_and_upload_too() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    raw, driver = _guard()
+
+    with pytest.raises(ValueError, match="field role"):
+        driver.fill("Date", "x", FieldTarget(role="textbx"))
+    with pytest.raises(ValueError, match="field role"):
+        driver.upload("File", Path("/tmp/x"), FieldTarget(role="button"))
 
     assert raw.calls == []

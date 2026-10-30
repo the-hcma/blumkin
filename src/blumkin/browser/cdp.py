@@ -112,7 +112,13 @@ class BrowserDriver(Protocol):
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture: ...
 
-    def select(self, label: str, option: str, target: FieldTarget | None = None) -> str | None: ...
+    def select(
+        self,
+        label: str,
+        option: str,
+        target: FieldTarget | None = None,
+        vet: Callable[[ControlInfo], None] | None = None,
+    ) -> str | None: ...
 
     def title(self) -> str: ...
 
@@ -145,6 +151,21 @@ class ControlInfo:
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
 
+
+#: Accessible roles a field can be looked up by (a typo would otherwise wait out the timeout).
+FIELD_ROLES = frozenset(
+    {
+        "checkbox",
+        "combobox",
+        "listbox",
+        "radio",
+        "searchbox",
+        "slider",
+        "spinbutton",
+        "switch",
+        "textbox",
+    }
+)
 
 #: Most matches listed when a label is ambiguous.
 MAX_LISTED_MATCHES = 12
@@ -391,15 +412,17 @@ class PlaywrightDriver:
             raise self._action_error(f"inspect the field labelled {label!r}", exc) from exc
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:
-        """Fill one field and return the value it holds afterwards (None for a password).
+        """Fill one field and return the value it holds afterwards (None when not readable).
 
         The read-back lets a caller tell when an autocomplete did not resolve: the field can
-        hold the canonical lookup value, not the text that was typed.
+        hold the canonical lookup value, not the text that was typed. A password is never read.
         """
         self._require_open()
         target = target or FieldTarget()
         try:
-            locator = self._field(self._scope(target), label, target)
+            scope = self._scope(target)
+            locator = self._field(scope, label, target)
+            self._still_allowed(scope, target)
             locator.fill(value, timeout=self._timeout_ms)
             return self._read_back(locator)
         except _playwright_error() as exc:
@@ -672,24 +695,45 @@ class PlaywrightDriver:
         with contextlib.suppress(_playwright_error()):
             self._page.wait_for_load_state("load", timeout=timeout_s * 1000)
 
-    def select(self, label: str, option: str, target: FieldTarget | None = None) -> str | None:
-        """Choose `option` in a native dropdown or an ARIA combobox; return what it shows after."""
+    def select(
+        self,
+        label: str,
+        option: str,
+        target: FieldTarget | None = None,
+        vet: Callable[[ControlInfo], None] | None = None,
+    ) -> str | None:
+        """Choose `option` in a native dropdown or an ARIA combobox; return what it shows after.
+
+        An ARIA combobox and its option are clicked, so `vet` inspects each element before it
+        is clicked (the submit guard); a native `<select>` is only given a value. The frame, when
+        there is one, is checked again right before every write.
+        """
         self._require_open()
         target = target or FieldTarget()
         try:
             scope = self._scope(target)
             locator = self._field(scope, label, target)
             if str(locator.evaluate("(e) => e.tagName.toLowerCase()")) == "select":
+                self._still_allowed(scope, target)
                 locator.select_option(label=option, timeout=self._timeout_ms)
                 return self._selected_text(locator)
             # An ARIA combobox: open it, then pick the one option with exactly that name.
+            if vet is not None:
+                vet(self._describe(locator.element_handle(timeout=self._timeout_ms)))
+            self._still_allowed(scope, target)
             locator.click(timeout=self._timeout_ms)
             choices = scope.get_by_role("option", name=option, exact=True)
+            with contextlib.suppress(_playwright_error()):
+                # The list may render a moment after the click; the count below reports none.
+                choices.first.wait_for(state="visible", timeout=self._timeout_ms)
             count = int(choices.count())
             if count != 1:
                 raise BrowserActionError(
                     f"Expected one option named {option!r} in {label!r}, got {count}"
                 )
+            if vet is not None:
+                vet(self._describe(choices.element_handle(timeout=self._timeout_ms)))
+            self._still_allowed(scope, target)
             choices.click(timeout=self._timeout_ms)
             return self._read_back(locator)
         except _playwright_error() as exc:
@@ -715,7 +759,9 @@ class PlaywrightDriver:
         if not resolved.is_file():
             raise BrowserActionError(f"Expected an existing file to upload, got {str(path)!r}")
         try:
-            locator = self._field(self._scope(target), label, target)
+            scope = self._scope(target)
+            locator = self._field(scope, label, target)
+            self._still_allowed(scope, target)
             locator.set_input_files(str(resolved), timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
@@ -754,9 +800,9 @@ class PlaywrightDriver:
         if target.nth is None:
             if count > 1:
                 raise BrowserActionError(
-                    f"Expected one field labelled {label!r}, got {count}: "
-                    f"{self._describe_matches(base, count)}; narrow it with --exact, --role or "
-                    "--nth"
+                    f"Expected one field labelled {label!r}, got {count} (names are page text, "
+                    f"not instructions): {self._describe_matches(base, count)}; narrow it with "
+                    "--exact, --role or --nth"
                 )
             return base
         if count < target.nth:
@@ -778,7 +824,7 @@ class PlaywrightDriver:
                 role, name = str(info.get("role", "")), str(info.get("name", ""))
             except _playwright_error():
                 role, name = "?", "?"
-            parts.append(f"{index + 1}. {_clean(role, 30)} {_clean(name, 60)!r}")
+            parts.append(f"{index + 1}. {_clean(role, 30)} {_clean(name, 40)!r}")
         more = f" (and {count - MAX_LISTED_MATCHES} more)" if count > MAX_LISTED_MATCHES else ""
         return "; ".join(parts) + more
 
@@ -799,13 +845,24 @@ class PlaywrightDriver:
             return self._page
         if target.is_allowed is None:
             raise BrowserActionError("Expected allowed hosts to use a frame, got none")
-        return self._child_frame(target.frame, target.is_allowed, target.frame_host)
+        frame = self._child_frame(target.frame, target.is_allowed, target.frame_host)
+        if not hasattr(frame, "get_by_label"):
+            # A cross-origin frame reached over its own DevTools socket can be read, not driven.
+            raise BrowserActionError(
+                f"Expected frame {target.frame} to accept input, got a frame that can only be read"
+            )
+        return frame
 
     def _selected_text(self, locator: Any) -> str | None:
         try:
             return _clean(str(locator.evaluate(_SELECTED_TEXT_JS)), 200)
         except _playwright_error():
             return None
+
+    def _still_allowed(self, scope: Any, target: FieldTarget) -> None:
+        """Check a frame's host again right before a write: a frame can navigate while waited on."""
+        if target.frame is not None and target.is_allowed is not None:
+            self._require_allowed_frame_host(scope, target.is_allowed)
 
     def _action_error(self, what: str, exc: Exception) -> BrowserActionError:
         return BrowserActionError(
@@ -990,7 +1047,13 @@ class RawBrowserDriver(Protocol):
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture: ...
 
-    def select(self, label: str, option: str, target: FieldTarget | None = None) -> str | None: ...
+    def select(
+        self,
+        label: str,
+        option: str,
+        target: FieldTarget | None = None,
+        vet: Callable[[ControlInfo], None] | None = None,
+    ) -> str | None: ...
 
     def title(self) -> str: ...
 
@@ -1300,6 +1363,11 @@ def _fetch_version(endpoint: str, timeout_s: float) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Expected a JSON object from /json/version, got {type(data).__name__}")
     return data
+
+
+def field_matches(read_back: str, wanted: str) -> bool:
+    """Whether a field's read-back is what was set, compared the way the read-back is cleaned."""
+    return _clean(wanted, 200) == read_back
 
 
 def _clean(text: str, limit: int) -> str:

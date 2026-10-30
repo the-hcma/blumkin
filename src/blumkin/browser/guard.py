@@ -35,6 +35,7 @@ from typing import Any
 from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
     DEFAULT_CLICK_WAIT_S,
+    FIELD_ROLES,
     BrowserActionError,
     ControlInfo,
     DownloadedFile,
@@ -213,8 +214,10 @@ class GuardedDriver:
         action = f"select {option!r} in {label!r}"
         if _is_denied(option, self._deny) or _is_denied(label, self._deny):
             raise self._refuse(action, "its name is a finalizing action")
+        if target is not None and target.role is not None and target.role not in _SELECT_ROLES:
+            raise self._refuse(action, f"the role {target.role!r} is not one a dropdown has")
         self._check_target(target)
-        return self._raw.select(label, option, target)
+        return self._raw.select(label, option, target, lambda info: self._vet_control(action, info))
 
     def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None:
         self._check_target(target)
@@ -233,6 +236,10 @@ class GuardedDriver:
             raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
         if target.frame_host is not None and target.frame is None:
             raise ValueError("Expected a frame number with a frame host, got none")
+        if target.role is not None and target.role not in FIELD_ROLES:
+            raise ValueError(
+                f"Expected a field role ({', '.join(sorted(FIELD_ROLES))}), got {target.role!r}"
+            )
 
     def _locate(
         self, name: str, role: str | None, wait_s: float, nth: int | None = None
@@ -286,6 +293,9 @@ def attach_guarded(
 
 
 _BUTTON_LIKE_INPUT_TYPES = frozenset({"button", "image", "reset", "submit"})
+#: Roles a dropdown has; `select` never goes through a button, link or other clickable role.
+_SELECT_ROLES = frozenset({"combobox", "listbox", "searchbox", "textbox"})
+
 _CLICKABLE_ROLES = frozenset(
     {
         "button",

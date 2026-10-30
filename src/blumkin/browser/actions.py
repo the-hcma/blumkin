@@ -23,10 +23,12 @@ from blumkin.browser.cdp import (
     DEFAULT_CLICK_WAIT_S,
     DEFAULT_FRAME_WAIT_S,
     DEFAULT_SCROLL_MAX_STEPS,
+    FIELD_ROLES,
     BrowserActionError,
     FieldTarget,
     PageText,
     checked_http_url,
+    field_matches,
 )
 from blumkin.browser.commands import TaskNotFoundError
 from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError, attach_guarded
@@ -401,6 +403,33 @@ def refresh_tab_task(
     return _with_driver(config, task, act, check_after=True)
 
 
+def select_task(
+    config: BrowserSetup,
+    task: str,
+    label: str,
+    option: str,
+    *,
+    exact: bool = False,
+    frame: int | None = None,
+    host: str | None = None,
+    nth: int | None = None,
+    role: str | None = None,
+) -> dict[str, Any]:
+    """Choose `option` in the dropdown (a native select or an ARIA combobox) labelled `label`.
+
+    Narrowing and frames work as for `fill_task`. An option or field whose name is a
+    finalizing action (such as "Submit") is refused. The read-back is the option the field
+    shows afterwards, so a caller can tell the choice took.
+    """
+    target = _field_target(config, task, "selecting", exact, frame, host, nth, role)
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        read_back = driver.select(label, option, target)
+        return _field_payload("select", task, label, target, read_back, option)
+
+    return _with_driver(config, task, act)
+
+
 def transcript_task(
     config: BrowserSetup,
     task: str,
@@ -454,33 +483,6 @@ def transcript_task(
             "text": None if target is not None else text,
             "untrusted": UNTRUSTED_NOTE,
         }
-
-    return _with_driver(config, task, act)
-
-
-def select_task(
-    config: BrowserSetup,
-    task: str,
-    label: str,
-    option: str,
-    *,
-    exact: bool = False,
-    frame: int | None = None,
-    host: str | None = None,
-    nth: int | None = None,
-    role: str | None = None,
-) -> dict[str, Any]:
-    """Choose `option` in the dropdown (a native select or an ARIA combobox) labelled `label`.
-
-    Narrowing and frames work as for `fill_task`. An option or field whose name is a
-    finalizing action (such as "Submit") is refused. The read-back is the option the field
-    shows afterwards, so a caller can tell the choice took.
-    """
-    target = _field_target(config, task, "selecting", exact, frame, host, nth, role)
-
-    def act(driver: GuardedDriver) -> dict[str, Any]:
-        read_back = driver.select(label, option, target)
-        return _field_payload("select", task, label, target, read_back, option)
 
     return _with_driver(config, task, act)
 
@@ -585,13 +587,15 @@ def _field_payload(
             payload[key] = value
     if target.exact:
         payload["exact"] = True
-    if action != "upload" and read_back is not None:
+    if action != "upload":
         # What was set is never echoed back; the field's value is reported only when it
         # differs (an autocomplete expanded it, or left it as typed), which is what matters.
-        matches = read_back == wanted
+        # `matches` is null when the field cannot be read (a password, rich text).
+        matches = None if read_back is None else field_matches(read_back, wanted or "")
         payload["matches"] = matches
-        if not matches:
+        if matches is False:
             payload["read_back"] = read_back
+            payload["untrusted"] = UNTRUSTED_NOTE
     return payload
 
 
@@ -608,6 +612,8 @@ def _field_target(
     """The narrowing for one field action, with the host check a frame needs."""
     if host is not None and frame is None:
         raise ValueError("Expected a frame number with a frame host, got none")
+    if role is not None and role not in FIELD_ROLES:
+        raise ValueError(f"Expected a field role ({', '.join(sorted(FIELD_ROLES))}), got {role!r}")
     if frame is None:
         return FieldTarget(exact=exact, nth=nth, role=role)
     hosts = _declared_hosts(config, task)

@@ -845,7 +845,12 @@ by its label; a combobox is opened and the one option with exactly that name is 
 (none, or more than one, is an error). The result says whether the field then shows that option
 (`matches`, with `read_back` when it shows something else). `--exact`, `--role`, `--nth` and
 `--frame` (with `--host`) single out one field as for `browser fill`. An option or field named
-like a finalizing action (Submit, Pay, Send, ...) is refused, as it is for `click`.
+like a finalizing action (Submit, Pay, Send, ...) is refused, as it is for `click`. A combobox
+and its option are checked like a click before they are clicked (a submit control, a formaction
+or a script link is refused), and `--role` for a dropdown is one of combobox, listbox, searchbox
+or textbox; `fill` and `upload` accept the field roles checkbox, combobox, listbox, radio,
+searchbox, slider, spinbutton, switch and textbox. A frame reached only over its own DevTools
+socket can be read but not filled, and a frame's host is checked again right before each write.
 """
 
 CAPABILITIES_EPILOG = """
