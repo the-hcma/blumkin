@@ -12,7 +12,8 @@ Entries are appended under an exclusive lock with one write and an fsync, so con
 writers cannot interleave and a crash leaves at most a torn last line. A reader ignores a
 torn last line, and the next writer cuts it off; a damaged line anywhere else is an error
 rather than a silently skipped one. The journal holds identifiers, states, model versions and
-file hashes only, never a field value, an amount, a vendor or a path. It is kept private
+file hashes only, never a field value, an amount, a vendor or a path (the report's total is
+therefore recorded only as "confirmed with the user", never as an amount). It is kept private
 (`0700` directories, `0600` file).
 """
 
@@ -77,6 +78,33 @@ class LedgerNotFoundError(LookupError):
 
 
 @dataclass(frozen=True, slots=True)
+class ReportRecord:
+    """The report itself, as far as the ledger knows: its server-side id and whether a draft is
+    saved there. Never an amount."""
+
+    at: str
+    #: A draft of the report is saved on the server.
+    draft_saved: bool
+    #: The report number the server gave it (an identifier, not a value from the form).
+    report_id: str | None
+    #: The user confirmed the report's total (the amount itself is never recorded).
+    total_confirmed: bool
+
+
+class SessionOutcome(StrEnum):
+    """How a session on an instance ended: the trip is done, or the instance stays pending."""
+
+    DONE = "done"
+    PENDING = "pending"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRecord:
+    at: str
+    outcome: SessionOutcome
+
+
+@dataclass(frozen=True, slots=True)
 class LedgerStatus:
     """The folded state of one instance."""
 
@@ -85,6 +113,35 @@ class LedgerStatus:
     items: tuple[ItemRecord, ...]
     phase: Phase
     task: str
+    report: ReportRecord | None = None
+    session: SessionRecord | None = None
+
+    def on_server(self) -> tuple[ItemRecord, ...]:
+        """Items filled into the form and read back from the page."""
+        return tuple(i for i in self.items if i.state is ItemState.VERIFIED)
+
+    def local_only(self) -> tuple[ItemRecord, ...]:
+        """Items staged or filled but not (yet) read back: nothing confirms them on the server."""
+        return tuple(i for i in self.items if i.state in (ItemState.STAGED, ItemState.FILLED))
+
+    def resume_hint(self) -> str | None:
+        """What to do to carry on a pending instance, or None when there is nothing to resume."""
+        if self.phase is not Phase.OPEN or self.session is None:
+            return None
+        if self.session.outcome is not SessionOutcome.PENDING:
+            return None
+        where = (
+            f"reopen the saved report {self.report.report_id}"
+            if self.report is not None and self.report.report_id
+            else "reopen the saved report"
+            if self.report is not None and self.report.draft_saved
+            else "start from the form"
+        )
+        return (
+            f"pending: {where}, then reconcile the ledger with the page "
+            f"(`blumkin browser ledger reconcile {self.task} {self.instance} ...`) before "
+            "filing more"
+        )
 
     def count(self, kind: ItemKind, state: ItemState) -> int:
         """How many items of `kind` are in `state`."""
@@ -111,6 +168,10 @@ class LedgerStatus:
             parts.append(f"{pending} in progress")
         if failed:
             parts.append(f"{failed} failed")
+        if self.report is not None:
+            parts.append(_report_text(self.report))
+        if self.session is not None:
+            parts.append(f"session {self.session.outcome.value}")
         parts.append(_PHASE_TEXT[self.phase])
         return ", ".join(parts)
 
@@ -179,6 +240,85 @@ def list_instances(config_dir: Path, task: str) -> list[tuple[str, Phase]]:
 def mark_submitted(config_dir: Path, task: str, instance: str) -> LedgerStatus:
     """Record that the user submitted the form; nothing else ever infers it."""
     return _close(config_dir, task, instance, "submitted", "mark submitted")
+
+
+def record_report(
+    config_dir: Path,
+    task: str,
+    instance: str,
+    *,
+    draft_saved: bool | None = None,
+    report_id: str | None = None,
+    total_confirmed: bool | None = None,
+) -> LedgerStatus:
+    """Record what is known of the report itself; a field left out keeps its last value.
+
+    `report_id` is the number the server gave the report, `draft_saved` that a draft of it is
+    saved there, `total_confirmed` that the user confirmed its total. Never an amount.
+    """
+    _check_task(task)
+    _check_instance(instance)
+    if report_id is not None and not _REPORT_ID.fullmatch(report_id):
+        raise LedgerError(
+            "Expected a report id of 1-64 letters, digits, '.', '_' or '-' starting with a "
+            f"letter or digit, got {report_id!r}"
+        )
+    for name, value in (("draft_saved", draft_saved), ("total_confirmed", total_confirmed)):
+        if value is not None and not isinstance(value, bool):
+            raise LedgerError(f"Expected {name} to be true or false, got {value!r}")
+    if report_id is None and draft_saved is None and total_confirmed is None:
+        raise LedgerError(
+            "Expected a report id, draft_saved or total_confirmed to record, got none"
+        )
+    directory = _existing_instance_dir(config_dir, task, instance)
+    if directory is None:
+        raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
+    with _writing(directory) as journal:
+        folded = _fold(_read(journal, task, instance), task, instance)
+        if folded is None:
+            raise LedgerNotFoundError(
+                f"Expected an instance {instance!r} of task {task!r}, got none"
+            )
+        _require_open(folded, "record the report")
+        before = folded.report
+        _append(
+            journal,
+            {
+                "draft_saved": draft_saved
+                if draft_saved is not None
+                else (before.draft_saved if before else False),
+                "event": "report",
+                "report_id": report_id
+                if report_id is not None
+                else (before.report_id if before else None),
+                "total_confirmed": total_confirmed
+                if total_confirmed is not None
+                else (before.total_confirmed if before else False),
+            },
+        )
+        return _status(journal, task, instance)
+
+
+def record_session(
+    config_dir: Path, task: str, instance: str, outcome: SessionOutcome
+) -> LedgerStatus:
+    """Record how the session ended: the trip is `done`, or the instance stays `pending`."""
+    _check_task(task)
+    _check_instance(instance)
+    if not isinstance(outcome, SessionOutcome):
+        raise LedgerError(f"Expected a session outcome of done or pending, got {outcome!r}")
+    directory = _existing_instance_dir(config_dir, task, instance)
+    if directory is None:
+        raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
+    with _writing(directory) as journal:
+        folded = _fold(_read(journal, task, instance), task, instance)
+        if folded is None:
+            raise LedgerNotFoundError(
+                f"Expected an instance {instance!r} of task {task!r}, got none"
+            )
+        _require_open(folded, "close the session")
+        _append(journal, {"event": "session", "outcome": outcome.value})
+        return _status(journal, task, instance)
 
 
 def record_item(
@@ -444,6 +584,13 @@ def _reading(directory: Path) -> Iterator[None]:
         os.close(fd)
 
 
+def _report_text(report: ReportRecord) -> str:
+    """How the report reads in the summary line."""
+    name = f"report {report.report_id}" if report.report_id else "a report"
+    text = f"{name} saved as a draft" if report.draft_saved else f"{name} not yet saved"
+    return f"{text}, total confirmed" if report.total_confirmed else text
+
+
 def _record(entry: dict[str, Any], at: str) -> ItemRecord:
     return ItemRecord(
         at=at,
@@ -470,6 +617,8 @@ def _status(journal: Path, task: str, instance: str) -> LedgerStatus:
         instance=instance,
         items=tuple(sorted(folded.items.values(), key=lambda i: (i.kind.value, i.item))),
         phase=folded.phase,
+        report=folded.report,
+        session=folded.session,
         task=task,
     )
 
@@ -490,6 +639,8 @@ class _Folded:
     expected: dict[ItemKind, int]
     items: dict[tuple[ItemKind, str], ItemRecord]
     phase: Phase
+    report: ReportRecord | None = None
+    session: SessionRecord | None = None
 
 
 def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
@@ -526,6 +677,23 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
             record.low_confidence,
         )
         folded.items[(record.kind, record.item)] = record
+    elif event == "report":
+        report_id = entry["report_id"]
+        draft_saved, total_confirmed = entry["draft_saved"], entry["total_confirmed"]
+        if (
+            not isinstance(draft_saved, bool)
+            or not isinstance(total_confirmed, bool)
+            or (report_id is not None and not _REPORT_ID.fullmatch(str(report_id)))
+        ):
+            raise ValueError("bad report")
+        folded.report = ReportRecord(
+            at=at,
+            draft_saved=draft_saved,
+            report_id=None if report_id is None else str(report_id),
+            total_confirmed=total_confirmed,
+        )
+    elif event == "session":
+        folded.session = SessionRecord(at=at, outcome=SessionOutcome(entry["outcome"]))
     elif event == "submitted":
         folded.phase = Phase.SUBMITTED
     elif event == "discarded":
@@ -552,5 +720,6 @@ _PHASE_TEXT = {
     Phase.SUBMITTED: "submitted",
     Phase.DISCARDED: "discarded",
 }
+_REPORT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _STORE_DIRNAME = "browser-tasks"

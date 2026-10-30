@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from blumkin.browser.commands import close_task_browser
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.ledger import (
     ItemKind,
@@ -18,12 +19,15 @@ from blumkin.browser.ledger import (
     LedgerError,
     LedgerStatus,
     Phase,
+    SessionOutcome,
     begin_instance,
     discard_instance,
     instance_status,
     list_instances,
     mark_submitted,
     record_item,
+    record_report,
+    record_session,
 )
 from blumkin.browser.ledger_ops import (
     apply_item,
@@ -243,7 +247,64 @@ def _expected(values: Sequence[str]) -> dict[ItemKind, int]:
     return expected
 
 
+def ledger_close(
+    config: BrowserSetup,
+    task: str,
+    instance: str,
+    *,
+    close_browser: bool = False,
+    outcome: str,
+    yes: bool,
+) -> dict[str, Any]:
+    """Record how the session ended (done or pending), then optionally close the browser.
+
+    The user's answer is the `outcome`; the browser is closed only after it is recorded, and its
+    profile (the saved sign-in) is kept. `--yes` says the user gave that answer.
+    """
+    _require_yes(
+        yes,
+        task,
+        instance,
+        "close the session",
+        "say yes only after the user chose done or pending",
+    )
+    try:
+        chosen = SessionOutcome(outcome)
+    except ValueError:
+        raise LedgerError(f"Expected an outcome of done or pending, got {outcome!r}") from None
+    status = record_session(config.config_dir, task, instance, chosen)
+    payload = _payload(status)
+    if close_browser:
+        closed = close_task_browser(config.config_dir, task)
+        payload["browser_closed"] = closed["was_running"]
+    return payload
+
+
+def ledger_report(
+    config: BrowserSetup,
+    task: str,
+    instance: str,
+    *,
+    draft_saved: bool | None,
+    report_id: str | None,
+    total_confirmed: bool | None,
+) -> dict[str, Any]:
+    """Record the report itself: its server-side id, that a draft is saved, a confirmed total."""
+    return _payload(
+        record_report(
+            config.config_dir,
+            task,
+            instance,
+            draft_saved=draft_saved,
+            report_id=report_id,
+            total_confirmed=total_confirmed,
+        )
+    )
+
+
 def _payload(status: LedgerStatus) -> dict[str, Any]:
+    report = status.report
+    session = status.session
     return {
         "counts": {
             kind.value: {state.value: status.count(kind, state) for state in ItemState}
@@ -263,8 +324,23 @@ def _payload(status: LedgerStatus) -> dict[str, Any]:
             }
             for item in status.items
         ],
+        "local_only": [i.item for i in status.local_only()],
         "ok": True,
+        "on_server": [i.item for i in status.on_server()],
         "phase": status.phase.value,
+        "report": None
+        if report is None
+        else {
+            "at": report.at,
+            "draft_saved": report.draft_saved,
+            "report_id": report.report_id,
+            "total_confirmed": report.total_confirmed,
+        },
+        "resume": status.resume_hint(),
+        "session": None
+        if session is None
+        else {"at": session.at, "outcome": session.outcome.value},
+        "submitted": status.phase is Phase.SUBMITTED,
         "summary": status.summary(),
         "task": status.task,
     }

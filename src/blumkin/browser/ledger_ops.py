@@ -154,6 +154,10 @@ def handoff_from_ledger(
         raise LedgerError("Expected at least one final-step instruction for the handoff, got none")
     status = instance_status(config_dir, task, instance)
     summary = [status.summary()]
+    summary.append(
+        f"on the server (read back from the page): {len(status.on_server())} item(s); "
+        f"only local or not yet read back: {len(status.local_only())} item(s)"
+    )
     for record in status.items:
         if record.state is ItemState.VERIFIED:
             summary.append(f"{record.kind.value} {record.item}: verified")

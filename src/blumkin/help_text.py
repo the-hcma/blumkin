@@ -652,6 +652,37 @@ Stages one item so it can be filled. An item that is already verified is left al
 running it again is safe. A receipt needs the SHA-256 of its file.
 """
 
+BROWSER_LEDGER_CLOSE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger close expense-report trip-lisbon --outcome pending --yes
+  blumkin browser ledger close expense-report trip-lisbon --outcome done --close-browser --yes
+
+Ends a session on an instance after asking the user whether they are all done with it:
+`--outcome done` (the trip is finished) or `--outcome pending` (it stays open and resumes in the
+next session). `--yes` says the user gave that answer; nothing infers it. The answer is
+recorded first, and only then does `--close-browser` close the task's browser, keeping its
+profile (the saved sign-in). A pending instance shows how to resume in `ledger status`: reopen
+the saved report (its server-side id is recorded with `ledger report`), then `ledger reconcile`
+the ledger with the page. Closing the session is not submitting: the report is still not
+submitted until the user says so with `ledger submitted`.
+"""
+
+BROWSER_LEDGER_REPORT_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger report expense-report trip-lisbon --report-id 100234 --draft-saved
+  blumkin browser ledger report expense-report trip-lisbon --total-confirmed --json
+
+Records the report itself on the instance: the number the server gave it (`--report-id`), that
+a draft of it is saved there (`--draft-saved`), and that the user confirmed its total
+(`--total-confirmed`). The ledger never holds an amount, so the total is recorded only as
+confirmed. A flag left out keeps its last value. The report stays `submitted: false` until the
+user submits it and says so with `ledger submitted`.
+"""
+
 BROWSER_LEDGER_STATUS_EPILOG = """
 Examples:
 

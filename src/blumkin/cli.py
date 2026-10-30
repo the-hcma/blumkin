@@ -104,11 +104,13 @@ from blumkin.browser.ledger import LedgerError, LedgerJournalError, LedgerNotFou
 from blumkin.browser.ledger_commands import (
     ledger_apply,
     ledger_begin,
+    ledger_close,
     ledger_discard,
     ledger_handoff,
     ledger_list,
     ledger_reconcile,
     ledger_record,
+    ledger_report,
     ledger_stage,
     ledger_status,
     ledger_submitted,
@@ -780,6 +782,15 @@ def _emit_ledger(payload: dict[str, Any], *, as_json: bool, items: bool = False)
     lines = [f"{payload['task']}/{payload['instance']}: {payload['summary']}"]
     if items:
         lines += [f"  {i['kind']} {i['item']}: {i['state']}" for i in payload["items"]]
+        if payload.get("on_server") or payload.get("local_only"):
+            lines.append(
+                f"  on the server (read back): {len(payload['on_server'])}; "
+                f"only local or not read back: {len(payload['local_only'])}"
+            )
+    if payload.get("resume"):
+        lines.append(f"  {payload['resume']}")
+    if payload.get("browser_closed") is not None:
+        lines.append("  the task browser was closed (its profile is kept)")
     emit_lines(lines)
 
 
@@ -3212,6 +3223,92 @@ def browser_ledger_stage(
             f"{payload['status']['summary']}"
         ]
     )
+
+
+@browser_ledger.command("close", epilog=help_text.BROWSER_LEDGER_CLOSE_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.option(
+    "--outcome",
+    type=click.Choice(["done", "pending"]),
+    required=True,
+    help="What the user said: done with the trip, or the instance stays pending.",
+)
+@click.option(
+    "--close-browser",
+    "close_browser",
+    is_flag=True,
+    help="After recording the answer, close the task browser (its profile is kept).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--yes", is_flag=True, help="Confirm that the user gave that answer.")
+@click.pass_context
+def browser_ledger_close(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    outcome: str,
+    close_browser: bool,
+    as_json_flag: bool,
+    yes: bool,
+) -> None:
+    """Record whether the session ended done or pending, then optionally close the browser."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_close(
+            load_browser_setup(),
+            task,
+            instance,
+            close_browser=close_browser,
+            outcome=outcome,
+            yes=yes,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json)
+
+
+@browser_ledger.command("report", epilog=help_text.BROWSER_LEDGER_REPORT_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.option("--report-id", default=None, help="The report number the server gave it.")
+@click.option(
+    "--draft-saved/--no-draft-saved",
+    "draft_saved",
+    default=None,
+    help="Whether a draft of the report is saved on the server.",
+)
+@click.option(
+    "--total-confirmed/--no-total-confirmed",
+    "total_confirmed",
+    default=None,
+    help="Whether the user confirmed the report's total (the amount is never recorded).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_ledger_report(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    report_id: str | None,
+    draft_saved: bool | None,
+    total_confirmed: bool | None,
+    as_json_flag: bool,
+) -> None:
+    """Record the report itself: its server-side id, that a draft is saved, a confirmed total."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_report(
+            load_browser_setup(),
+            task,
+            instance,
+            draft_saved=draft_saved,
+            report_id=report_id,
+            total_confirmed=total_confirmed,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json)
 
 
 @browser_ledger.command("status", epilog=help_text.BROWSER_LEDGER_STATUS_EPILOG)

@@ -15,12 +15,15 @@ from blumkin.browser.ledger import (
     LedgerError,
     LedgerNotFoundError,
     Phase,
+    SessionOutcome,
     begin_instance,
     discard_instance,
     instance_status,
     list_instances,
     mark_submitted,
     record_item,
+    record_report,
+    record_session,
 )
 
 _SHA = "ab12cd34" * 8
@@ -469,5 +472,149 @@ def test_a_damaged_low_confidence_value_is_a_journal_error(tmp_path: Path) -> No
     entry["low_confidence"] = "yes"
     lines[1] = json.dumps(entry, sort_keys=True).encode()
     journal.write_bytes(b"\n".join(lines) + b"\n")
+    with pytest.raises(LedgerJournalError):
+        instance_status(tmp_path, "expense-report", "trip-lisbon")
+
+
+# --------------------------------------------------------------------------- report, session (#592)
+
+
+def test_the_report_is_recorded_without_an_amount_and_reads_in_the_summary(
+    tmp_path: Path,
+) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+
+    status = record_report(
+        tmp_path, "expense-report", "trip-lisbon",
+        report_id="100234", draft_saved=True, total_confirmed=True,
+    )  # fmt: skip
+
+    assert status.report is not None
+    assert (status.report.report_id, status.report.draft_saved) == ("100234", True)
+    assert "report 100234 saved as a draft, total confirmed" in status.summary()
+    assert status.summary().endswith("not submitted")
+    journal = tmp_path / "browser-tasks" / "expense-report" / "trip-lisbon" / "journal.jsonl"
+    assert "84" not in journal.read_text()  # nothing like a total ever reaches the journal
+
+
+def test_a_report_field_left_out_keeps_its_last_value(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    record_report(tmp_path, "expense-report", "trip-lisbon", report_id="100234", draft_saved=True)
+
+    status = record_report(tmp_path, "expense-report", "trip-lisbon", total_confirmed=True)
+
+    assert status.report is not None
+    assert (status.report.report_id, status.report.draft_saved, status.report.total_confirmed) == (
+        "100234", True, True,
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("report_id", ["", "bad id", "../x", "-x", "x" * 65, "a/b", "1;2"])
+def test_a_report_id_that_is_not_an_identifier_is_refused(tmp_path: Path, report_id: str) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+
+    with pytest.raises(LedgerError, match="report id"):
+        record_report(tmp_path, "expense-report", "trip-lisbon", report_id=report_id)
+
+
+def test_recording_nothing_about_the_report_is_an_error(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+
+    with pytest.raises(LedgerError, match="to record"):
+        record_report(tmp_path, "expense-report", "trip-lisbon")
+
+
+def test_a_draft_that_is_not_saved_reads_as_not_yet_saved(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+
+    status = record_report(
+        tmp_path, "expense-report", "trip-lisbon", report_id="7", draft_saved=False
+    )
+
+    assert "report 7 not yet saved" in status.summary()
+
+
+def test_the_session_outcome_is_recorded_and_the_last_answer_wins(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+
+    record_session(tmp_path, "expense-report", "trip-lisbon", SessionOutcome.PENDING)
+    status = record_session(tmp_path, "expense-report", "trip-lisbon", SessionOutcome.DONE)
+
+    assert status.session is not None
+    assert status.session.outcome is SessionOutcome.DONE
+    assert "session done" in status.summary()
+    assert status.phase is Phase.OPEN  # closing a session is not submitting
+
+
+def test_a_pending_instance_says_how_to_resume(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    record_report(tmp_path, "expense-report", "trip-lisbon", report_id="100234", draft_saved=True)
+
+    status = record_session(tmp_path, "expense-report", "trip-lisbon", SessionOutcome.PENDING)
+
+    hint = status.resume_hint()
+    assert hint is not None
+    assert "reopen the saved report 100234" in hint
+    assert "ledger reconcile expense-report trip-lisbon" in hint
+
+
+def test_a_done_or_submitted_instance_has_nothing_to_resume(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    done = record_session(tmp_path, "expense-report", "trip-lisbon", SessionOutcome.DONE)
+    assert done.resume_hint() is None
+    record_session(tmp_path, "expense-report", "trip-lisbon", SessionOutcome.PENDING)
+
+    submitted = mark_submitted(tmp_path, "expense-report", "trip-lisbon")
+
+    assert submitted.resume_hint() is None
+
+
+def test_what_is_on_the_server_is_what_was_read_back_and_the_rest_is_local(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    for item, states in (
+        ("a", (ItemState.STAGED, ItemState.FILLED, ItemState.VERIFIED)),
+        ("b", (ItemState.STAGED, ItemState.FILLED)),
+        ("c", (ItemState.STAGED,)),
+    ):
+        for state in states:
+            record_item(
+                tmp_path, "expense-report", "trip-lisbon", ItemKind.RECEIPT, item, state,
+                sha256=_SHA,
+            )  # fmt: skip
+
+    status = instance_status(tmp_path, "expense-report", "trip-lisbon")
+
+    assert [i.item for i in status.on_server()] == ["a"]
+    assert [i.item for i in status.local_only()] == ["b", "c"]
+
+
+def test_a_closed_instance_takes_no_report_or_session_entries(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    mark_submitted(tmp_path, "expense-report", "trip-lisbon")
+
+    with pytest.raises(LedgerError, match="open instance"):
+        record_report(tmp_path, "expense-report", "trip-lisbon", draft_saved=True)
+    with pytest.raises(LedgerError, match="open instance"):
+        record_session(tmp_path, "expense-report", "trip-lisbon", SessionOutcome.PENDING)
+
+
+def test_a_missing_instance_is_not_found(tmp_path: Path) -> None:
+    with pytest.raises(LedgerNotFoundError):
+        record_report(tmp_path, "expense-report", "nope", draft_saved=True)
+    with pytest.raises(LedgerNotFoundError):
+        record_session(tmp_path, "expense-report", "nope", SessionOutcome.DONE)
+
+
+def test_a_journal_with_a_bad_report_or_session_entry_is_refused_not_skipped(
+    tmp_path: Path,
+) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-lisbon")
+    journal = tmp_path / "browser-tasks" / "expense-report" / "trip-lisbon" / "journal.jsonl"
+    lines = journal.read_text().splitlines()
+    bad = {"at": "2026-10-30T00:00:00Z", "event": "session", "outcome": "maybe", "seq": 2}
+    journal.write_text("\n".join([*lines, json.dumps(bad)]) + "\n")
+
+    from blumkin.browser.ledger import LedgerJournalError
+
     with pytest.raises(LedgerJournalError):
         instance_status(tmp_path, "expense-report", "trip-lisbon")
