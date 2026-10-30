@@ -161,6 +161,7 @@ async def export_message(
     sidecar = {
         "expected_images": expected_images,
         "from": message.get("from_email"),
+        "from_name": message.get("from_name"),
         "injection_warning": message.get("injection_warning"),
         "message_id": message.get("id") or message_id.strip(),
         "received": message.get("received"),
@@ -257,7 +258,13 @@ def read_bound_text(pdf_path: Path) -> str | None:
 def read_export_meta(pdf_path: Path) -> dict[str, str | None]:
     """Message id, subject and received time from the `.json` beside a PDF, if it records it."""
     sidecar_path = pdf_path.with_suffix(".json")
-    empty: dict[str, str | None] = {"message_id": None, "received": None, "subject": None}
+    empty: dict[str, str | None] = {
+        "from": None,
+        "from_name": None,
+        "message_id": None,
+        "received": None,
+        "subject": None,
+    }
     try:
         if (
             sidecar_path.is_symlink()
@@ -278,6 +285,8 @@ def read_export_meta(pdf_path: Path) -> dict[str, str | None]:
     return {
         key: value if isinstance(value, str) else None
         for key, value in (
+            ("from", recorded.get("from")),
+            ("from_name", recorded.get("from_name")),
             ("message_id", recorded.get("message_id")),
             ("received", recorded.get("received")),
             ("subject", recorded.get("subject")),

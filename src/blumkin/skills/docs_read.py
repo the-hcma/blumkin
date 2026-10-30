@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -110,7 +112,15 @@ def format_docs_read_human(payload: dict[str, Any]) -> list[str]:
 _IMAGE_EXTENSIONS = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
 _MAX_EXTRACTED_BYTES = 1_000_000
 _MAX_FILE_BYTES = 25_000_000
+_NEGATIVE_EVIDENCE = re.compile(
+    r"(?<![\d/])[-\u2212\u2013]\s*[$\u20ac\u00a3]?\s*\d|\d\s*[-\u2212\u2013]\s*(?:$|\s)|"
+    r"\(\s*[$\u20ac\u00a3]?\s*\d|\bCR\b|\bcredit\s+(?:note|memo)\b|\d\s*credit\b(?!\s+cards?)|"
+    r"\brefund|\bvoid(?:ed)?\b|\breversal\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 _OCR_EXTRA_HINT = "docs read --ocr needs the ocr extra: uv tool install -e '.[pdf,ocr]'"
+_OCR_MAX_PIXELS = 25_000_000
+_OCR_MIN_WIDTH = 1500
 _POPPLER_HINT = "poppler not found on PATH, install via `brew install tesseract poppler`"
 _TESSERACT_HINT = "tesseract not found on PATH, install via `brew install tesseract poppler`"
 
@@ -176,6 +186,9 @@ def _import_openpyxl() -> Any:
 
 
 def _import_pdfplumber() -> Any:
+    # pdfminer logs one "Could not get FontBBox" warning per odd font to stderr, which breaks
+    # `--json` output piped with stderr merged; real failures are exceptions, not log lines.
+    logging.getLogger("pdfminer").setLevel(logging.ERROR)
     try:
         return importlib.import_module("pdfplumber")
     except ModuleNotFoundError as exc:
@@ -272,6 +285,56 @@ def _read_docx(path: Path) -> list[dict[str, Any]]:
     return [page]
 
 
+def _best_ocr_text(image: Any, pytesseract: Any) -> str:
+    """OCR a photo twice (cleaned up for a till receipt, then as it is) and keep the fuller read.
+
+    A failure of the cleaned-up pass (other than tesseract being missing) leaves the plain read.
+    When either read shows negative evidence (a minus sign, brackets, CR or a credit near an
+    amount), both are kept: the receipt parser then sees any disagreement between the two as
+    different totals and asks instead of guessing.
+    """
+    candidates = []
+    not_found = getattr(pytesseract, "TesseractNotFoundError", RuntimeError)
+    try:
+        candidates.append(
+            str(pytesseract.image_to_string(_prepare_for_ocr(image), config="--psm 6")).strip()
+        )
+    except not_found:
+        raise
+    except Exception:  # noqa: BLE001 - the plain read below still stands
+        pass
+    candidates.append(str(pytesseract.image_to_string(image)).strip())
+    same = " ".join(candidates[0].split()) == " ".join(candidates[-1].split())
+    if (
+        len(candidates) == 2
+        and not same
+        and any(_has_negative_evidence(text) for text in candidates)
+    ):
+        return "\n".join(candidates)
+    # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
+    return max(candidates, key=lambda text: sum(char.isalnum() for char in text))
+
+
+def _has_negative_evidence(text: str) -> bool:
+    """Whether an amount looks negative: a leading or trailing minus (also the Unicode one),
+    brackets, CR, or the words credit and refund."""
+    return bool(_NEGATIVE_EVIDENCE.search(text))
+
+
+def _prepare_for_ocr(image: Any) -> Any:
+    """Greyscale, stretch the contrast and enlarge a small photo so thin print is readable."""
+    from PIL import ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
+
+    grey = ImageOps.autocontrast(ImageOps.exif_transpose(image).convert("L"))
+    if grey.width < _OCR_MIN_WIDTH:
+        scale = _OCR_MIN_WIDTH / grey.width
+        height = round(grey.height * scale)
+        # A very tall, thin image would blow up to millions of pixels: leave it as it is.
+        if _OCR_MIN_WIDTH * height <= _OCR_MAX_PIXELS:
+            grey = grey.resize((_OCR_MIN_WIDTH, height))
+    return grey
+
+
 def _read_image(path: Path) -> list[dict[str, Any]]:
     _require_tesseract_binary()
     pil_image, pytesseract = _import_image_ocr_modules()
@@ -279,7 +342,7 @@ def _read_image(path: Path) -> list[dict[str, Any]]:
         with pil_image.open(path) as image:
             image.load()
             try:
-                text = str(pytesseract.image_to_string(image)).strip()
+                text = _best_ocr_text(image, pytesseract)
             except getattr(pytesseract, "TesseractNotFoundError", RuntimeError) as exc:
                 raise DocsReadOcrUnavailableError(_TESSERACT_HINT) from exc
     except DocsReadOcrUnavailableError:

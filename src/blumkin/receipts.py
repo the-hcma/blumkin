@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.config import BlumkinConfig
-from blumkin.mail_export import read_bound_text
+from blumkin.mail_export import read_bound_text, read_export_meta
 from blumkin.prompt_injection import scan_for_injection
 from blumkin.skills.docs_read import (
     DocsReadExtraMissingError,
@@ -83,6 +83,8 @@ class ReceiptFields:
 
 @dataclass(frozen=True, slots=True)
 class ReceiptFile:
+    #: When the file arrived here (birth time where the system has one, else last change).
+    added_epoch: float
     modified_epoch: float
     name: str
     path: Path
@@ -114,6 +116,7 @@ def find_local_receipts(
     directory: Path,
     *,
     limit: int = DEFAULT_FIND_LIMIT,
+    new_since_epoch: float | None = None,
     since_epoch: float | None = None,
 ) -> list[ReceiptFile]:
     """Receipt files directly inside `directory`, newest first (no recursion, no symlinks)."""
@@ -124,7 +127,7 @@ def find_local_receipts(
     try:
         with os.scandir(folder) as entries:
             for entry in entries:
-                receipt = _receipt_file(entry, since_epoch)
+                receipt = _receipt_file(entry, since_epoch, new_since_epoch)
                 if receipt is not None:
                     found.append(receipt)
     except OSError as exc:
@@ -135,14 +138,20 @@ def find_local_receipts(
     return found[:limit]
 
 
-def parse_receipt_text(text: str, *, today: date | None = None) -> ReceiptFields:
-    """Parse vendor, date, currency and total out of OCR or PDF text."""
+def parse_receipt_text(
+    text: str, *, sender: str | None = None, today: date | None = None
+) -> ReceiptFields:
+    """Parse vendor, date, currency and total out of OCR or PDF text.
+
+    `sender` is the display name or domain the message came from; it names the vendor only when
+    the text itself does not.
+    """
     clean = _ascii_digits(text)
     return ReceiptFields(
         currency=_parse_currency(clean),
         date=_parse_date(clean, today or date.today()),
         total=_parse_total(clean),
-        vendor=_parse_vendor(clean),
+        vendor=_parse_vendor(clean, sender),
     )
 
 
@@ -162,9 +171,11 @@ async def read_receipt(
         )
     sidecar = read_bound_text(path) if suffix == ".pdf" else None
     if sidecar is not None:
-        scan = scan_for_injection(sidecar, location="body")
+        sender = _sender_name(read_export_meta(path))
+        # The sender's display name is chosen by the sender, so it is scanned with the body.
+        scan = scan_for_injection(f"{sidecar}\n{sender}" if sender else sidecar, location="body")
         return ReceiptReading(
-            fields=parse_receipt_text(sidecar),
+            fields=parse_receipt_text(sidecar, sender=sender),
             injection_warning=scan.to_payload() if scan.matched else None,
             message="Read from the text file next to the PDF (no OCR needed).",
             ocr_used=False,
@@ -315,11 +326,23 @@ _NOT_A_TOTAL = re.compile(
 )
 _SEPARATORS = " .,'\u2019\u00a0\u202f"
 _TAX_WORDS = re.compile(r"\b(?:gst|hst|tax|vat)\b")
+#: A vendor name counts only near the top, where a receipt prints its letterhead.
+_KNOWN_VENDOR_LINES = 15
+_KNOWN_VENDORS = ("Bolt", "Careem", "DiDi", "Free Now", "Grab", "Lyft", "Uber")
+#: Other products from the same company (food, bikes, freight) are not the ride.
+_KNOWN_VENDOR_OTHER_PRODUCTS = re.compile(r"\b(?:eats|bikes?|freight|food|market)\b", re.IGNORECASE)
+#: Words that may follow a brand in its letterhead ("Uber Receipt", "Lyft Ride"); anything else
+#: after the name is another business ("Bolt Coffee") or an incidental phrase ("Grab a coffee").
+_KNOWN_VENDOR_SUFFIXES = frozenset(
+    {"inc", "llc", "ltd", "receipt", "ride", "rides", "technologies", "trip", "trips"}
+)
 _TOTAL_LINE = re.compile(
     r"\b(?:amount\s+due|balance\s+due|grand\s+total|total\s+amount|total(?:\s+due)?)\b"
 )
 _VENDOR_SKIP = re.compile(
     r"receipt|invoice|order|tel\b|phone|www\.|http|@|thank|welcome|\d{3}[-. ]\d{3,4}|"
+    r"^\s*tip\b|this is your|charge summary|^\s*your\s+(?:charge|ride|total|trip)\b|"
+    r"^\s*(?:hi|hello|dear)\b|"
     r"^\s*(?:amex|cash|change|mastercard|sub\s*-?\s*total|tax|total|visa)\b|\d[.,]\d{2}\b",
     re.IGNORECASE,
 )
@@ -350,6 +373,29 @@ def _manual(path: Path, status: ReceiptStatus, message: str) -> ReceiptReading:
         path=str(path),
         status=status,
     )
+
+
+#: Second-level labels that go with a two-letter country code (uber.co.uk, ride.com.au).
+_SECOND_LEVEL_LABELS = frozenset({"ac", "co", "com", "edu", "gov", "net", "or", "org"})
+#: Longest sender-derived vendor name kept; a display name is chosen by the sender.
+_SENDER_NAME_MAX = 60
+
+
+def _sender_name(meta: dict[str, str | None]) -> str | None:
+    """A vendor name from a message's sender: its display name, else the domain's main label."""
+    name = " ".join("".join(c for c in (meta.get("from_name") or "") if c.isprintable()).split())
+    if name:
+        return name[:_SENDER_NAME_MAX]
+    domain = (meta.get("from") or "").rpartition("@")[2].lower()
+    labels = [label for label in domain.split(".") if label]
+    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in _SECOND_LEVEL_LABELS:
+        label = labels[-3]
+    elif len(labels) >= 2:
+        label = labels[-2]
+    else:
+        return None
+    known = {vendor.lower(): vendor for vendor in _KNOWN_VENDORS}
+    return known.get(label, label.capitalize())[:_SENDER_NAME_MAX]
 
 
 def _joined_text(payload: dict[str, Any]) -> str:
@@ -582,7 +628,11 @@ def _guess_total(text: str) -> ReceiptField:
     )
 
 
-def _parse_vendor(text: str) -> ReceiptField:
+def _parse_vendor(text: str, sender: str | None = None) -> ReceiptField:
+    for known in _known_vendor_lines(text):
+        return ReceiptField(
+            confidence=Confidence.LOW, value=known, note="a vendor name seen in the text"
+        )
     for raw in text.splitlines():
         line = raw.strip()
         letters = sum(char.isalpha() for char in line)
@@ -591,7 +641,28 @@ def _parse_vendor(text: str) -> ReceiptField:
         if _VENDOR_SKIP.search(line):
             continue
         return ReceiptField(confidence=Confidence.LOW, value=line)
+    if sender:
+        return ReceiptField(
+            confidence=Confidence.LOW, value=sender, note="taken from the sender of the message"
+        )
     return ReceiptField(confidence=Confidence.NONE, value=None)
+
+
+def _known_vendor_lines(text: str) -> list[str]:
+    """Known vendors printed as a letterhead: a short line that starts with the name."""
+    found = []
+    for raw in text.splitlines()[:_KNOWN_VENDOR_LINES]:
+        line = raw.strip()
+        words = line.rstrip(".,:;").split()
+        if not words or len(words) > 3 or "&" in line or _KNOWN_VENDOR_OTHER_PRODUCTS.search(line):
+            continue
+        for known in _KNOWN_VENDORS:
+            brand = known.split()
+            if words[: len(brand)] in (brand, [word.upper() for word in brand]) and all(
+                word.lower().rstrip(".,") in _KNOWN_VENDOR_SUFFIXES for word in words[len(brand) :]
+            ):
+                found.append(known)
+    return found
 
 
 def _refund_check(field: ReceiptField, refund: bool) -> ReceiptField:
@@ -664,7 +735,9 @@ def _distrust(fields: ReceiptFields, note: str) -> ReceiptFields:
     )
 
 
-def _receipt_file(entry: os.DirEntry[str], since_epoch: float | None) -> ReceiptFile | None:
+def _receipt_file(
+    entry: os.DirEntry[str], since_epoch: float | None, new_since_epoch: float | None
+) -> ReceiptFile | None:
     """One directory entry as a receipt file, or None when it is not one (or cannot be read)."""
     try:
         if entry.name.startswith(".") or entry.is_symlink() or not entry.is_file():
@@ -676,6 +749,13 @@ def _receipt_file(entry: os.DirEntry[str], since_epoch: float | None) -> Receipt
         return None  # removed or unreadable while scanning
     if since_epoch is not None and info.st_mtime < since_epoch:
         return None
+    added = float(getattr(info, "st_birthtime", info.st_ctime))
+    if new_since_epoch is not None and added < new_since_epoch:
+        return None
     return ReceiptFile(
-        modified_epoch=info.st_mtime, name=entry.name, path=Path(entry.path), size=info.st_size
+        added_epoch=added,
+        modified_epoch=info.st_mtime,
+        name=entry.name,
+        path=Path(entry.path),
+        size=info.st_size,
     )
