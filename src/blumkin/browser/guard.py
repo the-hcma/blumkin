@@ -153,7 +153,7 @@ class GuardedDriver:
             raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
         chosen, action = self._locate(name, role, wait_s, nth)
         self._raw.checked_click(
-            name, chosen, lambda info: self._vet_control(action, info, name), nth=nth
+            name, chosen, lambda info: self._vet_control(action, info, name, chosen), nth=nth
         )
         return chosen
 
@@ -349,7 +349,9 @@ class GuardedDriver:
             "stop and hand the final step to the user"
         )
 
-    def _vet_control(self, action: str, info: ControlInfo, name: str | None = None) -> None:
+    def _vet_control(
+        self, action: str, info: ControlInfo, name: str | None = None, role: str | None = None
+    ) -> None:
         """Raise if the element about to be clicked could finalize a form.
 
         A name declared as a dialog confirm (and not as a plain control) is valid only inside a
@@ -358,7 +360,7 @@ class GuardedDriver:
         confirm = False
         if name is not None and _exact(name) in self._confirm:
             confirm = True
-            if not self._is_declared(name):
+            if not self._is_declared(name, role):
                 # Declared only as a dialog confirm: valid in a dialog whose form is its own,
                 # whatever type of button it is.
                 if not info.in_dialog:
@@ -467,6 +469,11 @@ def validate_control_patterns(names: Iterable[str], extra_deny_names: Iterable[s
     for name in names:
         if "*" not in name:
             continue
+        if _WILDCARD in name:
+            raise SubmitBlockedError(
+                f"Expected a control pattern without private-use characters, got {name!r}. "
+                "A browser task never submits"
+            )
         folded = _wild(name)
         if folded.startswith(_WILDCARD):
             raise SubmitBlockedError(

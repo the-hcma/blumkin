@@ -1207,3 +1207,21 @@ def test_only_ascii_stars_count_against_the_star_limit() -> None:
     from blumkin.browser.guard import validate_control_patterns
 
     validate_control_patterns(["Actions for * Report ＊＊＊"])
+
+
+def test_a_pattern_cannot_open_a_confirm_only_name_outside_a_dialog() -> None:
+    raw, driver = _guard("Clos*", confirm=("Close",))
+    raw.present["Close"] = ("menuitem",)
+    raw.controls["Close"] = ControlInfo(tag="div", input_type="", in_form=False)
+
+    with pytest.raises(SubmitBlockedError, match="not in a dialog"):
+        driver.click("Close")
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_private_use_character_in_a_pattern_is_refused() -> None:
+    from blumkin.browser.guard import validate_control_patterns
+
+    with pytest.raises(SubmitBlockedError, match="private-use"):
+        validate_control_patterns(["Item * ()"])
