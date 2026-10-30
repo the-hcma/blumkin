@@ -1164,3 +1164,46 @@ def test_a_pattern_can_have_a_leading_and_trailing_fixed_part() -> None:
     driver.click("Actions for Trip Report (draft)")
 
     assert [call[2] for call in raw.calls] == ["Actions for Trip Report (draft)"]
+
+
+@pytest.mark.parametrize("role", ["menuitem", "menuitemcheckbox", "menuitemradio"])
+def test_a_pattern_never_authorizes_a_menu_item(role: str) -> None:
+    raw, driver = _guard("Dupl*")
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Duplicate", role)
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_pattern_does_not_authorize_a_menu_item_found_when_no_role_is_given() -> None:
+    raw, driver = _guard("Dupl*")
+    raw.present["Duplicate"] = ("menuitem",)
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Duplicate")
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_menu_item_declared_by_its_exact_name_is_still_clicked() -> None:
+    raw, driver = _guard("Open", "Actions for * Report")
+    raw.present["Open"] = ("menuitem",)
+
+    assert driver.click("Open") == "menuitem"
+
+
+def test_a_fullwidth_star_in_a_pattern_is_literal_text_not_a_wildcard() -> None:
+    raw, driver = _guard("Item * (＊)")
+
+    driver.click("Item row (*)")
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Item row (unrelated)")
+
+    assert [call[2] for call in raw.calls] == ["Item row (*)"]
+
+
+def test_only_ascii_stars_count_against_the_star_limit() -> None:
+    from blumkin.browser.guard import validate_control_patterns
+
+    validate_control_patterns(["Actions for * Report ＊＊＊"])

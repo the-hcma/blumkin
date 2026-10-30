@@ -126,7 +126,7 @@ class GuardedDriver:
             raise self._refuse(action, f"the role {role!r} is not one a task may click")
         if _is_denied(name, self._deny):
             raise self._refuse(action, "its name is a finalizing action")
-        if not self._is_declared(name) and not (confirm_ok and _exact(name) in self._confirm):
+        if not self._is_declared(name, role) and not (confirm_ok and _exact(name) in self._confirm):
             raise self._refuse(
                 action, f"the control is not declared by the task{self._declared_hint()}"
             )
@@ -297,7 +297,10 @@ class GuardedDriver:
             raise BrowserActionError(
                 f"Expected {name!r} in one role, got {', '.join(found)}; pass --role to choose"
             )
-        return next(iter(found)), action
+        resolved = next(iter(found))
+        if role is None:
+            self.check_click(name, resolved, confirm_ok=confirm_ok)
+        return resolved, action
 
     def _declared_hint(self) -> str:
         """The task's declared control names and patterns, for a refusal that lists them."""
@@ -319,11 +322,17 @@ class GuardedDriver:
             )
         return f" ({'; '.join(parts)})"
 
-    def _is_declared(self, name: str) -> bool:
-        """Whether `name` is one of the declared controls, exactly or by a declared pattern."""
+    def _is_declared(self, name: str, role: str | None = None) -> bool:
+        """Whether `name` is one of the declared controls, exactly or by a declared pattern.
+
+        A menu item is never reached by a pattern: each one stays individually declared, so
+        `Dupl*` cannot authorize `Duplicate`.
+        """
         folded = _exact(name)
         if folded in self._allowed:
             return True
+        if role in _MENU_ROLES:
+            return False
         return len(folded) <= _MAX_PATTERN_NAME and any(
             rule.fullmatch(folded) for rule in self._patterns
         )
@@ -394,6 +403,11 @@ def attach_guarded(
 _HINT_NAMES = 10
 #: Longest name a pattern is tried against (page-supplied names can be arbitrarily long).
 _MAX_PATTERN_NAME = 300
+#: Menu items are never reached by a pattern: each stays individually declared.
+_MENU_ROLES = frozenset({"menuitem", "menuitemcheckbox", "menuitemradio"})
+#: Stands in for an ASCII `*` while a pattern is normalized, so a fullwidth `＊` (which NFKC turns
+#: into `*`) stays literal text.
+_WILDCARD = "\ue000"
 _BUTTON_LIKE_INPUT_TYPES = frozenset({"button", "image", "reset", "submit"})
 #: Roles a dropdown has; `select` never goes through a button, link or other clickable role.
 _SELECT_ROLES = frozenset({"combobox", "listbox", "searchbox", "textbox"})
@@ -453,18 +467,18 @@ def validate_control_patterns(names: Iterable[str], extra_deny_names: Iterable[s
     for name in names:
         if "*" not in name:
             continue
-        folded = _exact(name)
-        if folded.startswith("*"):
+        folded = _wild(name)
+        if folded.startswith(_WILDCARD):
             raise SubmitBlockedError(
                 f"Expected a control pattern that starts with fixed text, got {name!r}: the "
                 "page would choose how the name begins. A browser task never submits"
             )
-        if len(re.findall(r"\*+", folded)) > MAX_PATTERN_STARS:
+        if len(re.findall(f"{_WILDCARD}+", folded)) > MAX_PATTERN_STARS:
             raise SubmitBlockedError(
                 f"Expected a control pattern with at most {MAX_PATTERN_STARS} `*`, got {name!r}. "
                 "A browser task never submits"
             )
-        literal = folded.replace("*", " ")
+        literal = folded.replace(_WILDCARD, " ")
         solid = sum(char.isalnum() for char in literal)
         if solid < MIN_PATTERN_LITERAL:
             raise SubmitBlockedError(
@@ -521,6 +535,11 @@ def _exact(text: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", text).translate(_ZERO_WIDTH).split())
 
 
+def _wild(pattern: str) -> str:
+    """`_exact` for a declared pattern: each ASCII `*` becomes `_WILDCARD`, all else is text."""
+    return _exact(pattern.replace("*", _WILDCARD))
+
+
 def _folded(text: str) -> str:
     return _exact(text).casefold()
 
@@ -568,8 +587,8 @@ def _key_is_safe(key: str) -> bool:
 
 def _pattern_regex(pattern: str) -> re.Pattern[str]:
     """A declared pattern as a regex: `*` is any text, everything else is exact."""
-    collapsed = re.sub(r"\*+", "*", _exact(pattern))
-    parts = (re.escape(part) for part in collapsed.split("*"))
+    collapsed = re.sub(f"{_WILDCARD}+", _WILDCARD, _wild(pattern))
+    parts = (re.escape(part) for part in collapsed.split(_WILDCARD))
     return re.compile(".*".join(parts), re.DOTALL)
 
 
