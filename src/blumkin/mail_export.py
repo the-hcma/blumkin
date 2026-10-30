@@ -40,6 +40,22 @@ class MailExportError(RuntimeError):
     """The message could not be exported (no body, name taken, render failed)."""
 
 
+def check_exported_pdf(pdf_path: Path, *, pdf_reader: PdfReader | None = None) -> dict[str, Any]:
+    """`check_pdf` for an export: the `.txt` and `.json` beside the PDF supply the rest."""
+    text_path = pdf_path.with_suffix(".txt")
+    expected: int | None = None
+    try:
+        expected = int(json.loads(pdf_path.with_suffix(".json").read_text())["expected_images"])
+    except OSError, ValueError, KeyError, TypeError:
+        expected = None
+    return check_pdf(
+        pdf_path,
+        text_path=text_path if text_path.is_file() else None,
+        expected_images=expected,
+        pdf_reader=pdf_reader,
+    )
+
+
 def check_pdf(
     pdf_path: Path,
     *,
@@ -61,9 +77,14 @@ def check_pdf(
             "text_overlap": None,
         }
     page_texts: list[str] = list(layers.get("page_texts") or [])
-    images = int(layers.get("images") or 0)
+    page_images: list[int] = list(layers.get("page_images") or [0] * len(page_texts))
+    images = int(layers.get("images") or sum(page_images))
     problems: list[str] = []
-    blank = [index + 1 for index, text in enumerate(page_texts) if not text.strip()]
+    blank = [
+        index + 1
+        for index, text in enumerate(page_texts)
+        if not text.strip() and not (page_images[index] if index < len(page_images) else 0)
+    ]
     if not page_texts:
         problems.append("PDF has no pages")
     if blank:
@@ -72,7 +93,11 @@ def check_pdf(
         problems.append(f"expected {expected_images} images in the PDF, found {images}")
     overlap: float | None = None
     if text_path is not None:
-        wanted = _words(text_path.read_text(encoding="utf-8"))
+        try:
+            wanted = _words(text_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            wanted = set()
+            problems.append(f"text file could not be read ({type(exc).__name__})")
         if wanted:
             have = _words(" ".join(page_texts))
             overlap = round(len(wanted & have) / len(wanted), 2)
@@ -89,22 +114,6 @@ def check_pdf(
         "problems": problems,
         "text_overlap": overlap,
     }
-
-
-def check_exported_pdf(pdf_path: Path, *, pdf_reader: PdfReader | None = None) -> dict[str, Any]:
-    """`check_pdf` for an export: the `.txt` and `.json` beside the PDF supply the rest."""
-    text_path = pdf_path.with_suffix(".txt")
-    expected: int | None = None
-    try:
-        expected = int(json.loads(pdf_path.with_suffix(".json").read_text())["expected_images"])
-    except OSError, ValueError, KeyError, TypeError:
-        expected = None
-    return check_pdf(
-        pdf_path,
-        text_path=text_path if text_path.is_file() else None,
-        expected_images=expected,
-        pdf_reader=pdf_reader,
-    )
 
 
 async def export_message(
@@ -128,7 +137,7 @@ async def export_message(
         body = (
             f'<pre style="white-space:pre-wrap;font-family:monospace">{html_lib.escape(body)}</pre>'
         )
-    cleaned, removed = strip_tracking_pixels(body)
+    cleaned, removed = strip_tracking_pixels(sanitize_html(body))
     document = _as_document(cleaned)
     stem = _safe_stem(name) if name else _default_stem(message)
     folder = out_dir.expanduser()
@@ -141,18 +150,8 @@ async def export_message(
             f"{', '.join(taken)} already exists in {folder}, refusing to overwrite"
         )
     text = html_to_text(cleaned)
-    expected_images = len(_IMG_TAG.findall(cleaned))
+    expected_images = count_loadable_images(cleaned)
     render = renderer or _chrome_renderer()
-    with tempfile.TemporaryDirectory(prefix="blumkin-mail-export-") as scratch:
-        html_path = Path(scratch) / "message.html"
-        pdf_path = Path(scratch) / "message.pdf"
-        html_path.write_text(document, encoding="utf-8")
-        render(html_path, pdf_path)
-        if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
-            raise MailExportError("the browser produced no PDF")
-        pdf_bytes = pdf_path.read_bytes()
-    write_new_private_file(targets["pdf"], pdf_bytes)
-    write_new_private_file(targets["txt"], (text + "\n").encode("utf-8"))
     sidecar = {
         "expected_images": expected_images,
         "from": message.get("from_email"),
@@ -162,24 +161,52 @@ async def export_message(
         "subject": message.get("subject"),
         "tracking_pixels_removed": removed,
     }
-    write_new_private_file(
-        targets["json"], (json.dumps(sidecar, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    )
-    check = check_pdf(
-        targets["pdf"],
-        text_path=targets["txt"],
-        expected_images=expected_images,
-        pdf_reader=pdf_reader,
-    )
-    return {
-        "check": check,
+    payload: dict[str, Any] = {
         "injection_warning": message.get("injection_warning"),
-        "json": str(targets["json"]),
+        "json": None,
         "message_id": sidecar["message_id"],
-        "pdf": str(targets["pdf"]),
-        "text": str(targets["txt"]),
+        "pdf": None,
+        "text": None,
         "tracking_pixels_removed": removed,
     }
+    with tempfile.TemporaryDirectory(prefix="blumkin-mail-export-") as scratch:
+        html_path = Path(scratch) / "message.html"
+        pdf_path = Path(scratch) / "message.pdf"
+        text_path = Path(scratch) / "message.txt"
+        html_path.write_text(document, encoding="utf-8")
+        render(html_path, pdf_path)
+        if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
+            raise MailExportError("the browser produced no PDF")
+        text_path.write_text(text + "\n", encoding="utf-8")
+        check = check_pdf(
+            pdf_path, text_path=text_path, expected_images=expected_images, pdf_reader=pdf_reader
+        )
+        payload["check"] = check
+        if not check["ok"]:
+            # Nothing is left behind, so the same --out and --name can be retried.
+            return payload
+        pdf_bytes = pdf_path.read_bytes()
+    written: list[Path] = []
+    try:
+        for suffix, data in (
+            ("pdf", pdf_bytes),
+            ("txt", (text + "\n").encode("utf-8")),
+            ("json", (json.dumps(sidecar, indent=2, sort_keys=True) + "\n").encode("utf-8")),
+        ):
+            write_new_private_file(targets[suffix], data)
+            written.append(targets[suffix])
+    except BaseException:
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise
+    payload.update(json=str(targets["json"]), pdf=str(targets["pdf"]), text=str(targets["txt"]))
+    return payload
+
+
+def count_loadable_images(html: str) -> int:
+    """Images the render should show: body `<img>` tags, not comments or `cid:` inline parts."""
+    body = _HEAD_BLOCK.sub(" ", _COMMENT.sub(" ", html))
+    return sum(1 for tag in _IMG_TAG.findall(body) if not _CID_SRC.search(tag))
 
 
 def html_to_text(raw: str) -> str:
@@ -187,7 +214,7 @@ def html_to_text(raw: str) -> str:
     text = _DROPPED_BLOCKS.sub(" ", raw)
     text = _LINE_BREAKS.sub("\n", text)
     text = _TAG.sub(" ", text)
-    text = html_lib.unescape(text).replace(" ", " ")
+    text = html_lib.unescape(text).replace("\u00a0", " ")
     lines = (re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in text.split("\n"))
     return "\n".join(line for line in lines if line)
 
@@ -202,8 +229,10 @@ def read_pdf_layers(pdf_path: Path) -> dict[str, Any]:
         ) from exc
     with pdfplumber.open(str(pdf_path)) as document:
         pages = list(document.pages)
+        page_images = [len(page.images) for page in pages]
         return {
-            "images": sum(len(page.images) for page in pages),
+            "images": sum(page_images),
+            "page_images": page_images,
             "page_texts": [page.extract_text() or "" for page in pages],
         }
 
@@ -225,6 +254,13 @@ def render_pdf_command(browser: Path, html_path: Path, pdf_path: Path, profile: 
     ]
 
 
+def sanitize_html(html: str) -> str:
+    """Remove comments, scripts, frames, embeds and linked resources before rendering."""
+    cleaned = _COMMENT.sub(" ", html)
+    cleaned = _ACTIVE_BLOCKS.sub(" ", cleaned)
+    return _LINKED_TAGS.sub(" ", cleaned)
+
+
 def strip_tracking_pixels(html: str) -> tuple[str, int]:
     """Drop one-pixel images (open trackers); returns the HTML and how many were removed."""
     removed = 0
@@ -239,8 +275,18 @@ def strip_tracking_pixels(html: str) -> tuple[str, int]:
     return _IMG_TAG.sub(drop, html), removed
 
 
+_ACTIVE_BLOCKS = re.compile(
+    r"<(script|iframe|object|embed|noscript)\b.*?</\1\s*>", re.DOTALL | re.IGNORECASE
+)
+_CID_SRC = re.compile(r"""src\s*=\s*["']?\s*cid:""", re.IGNORECASE)
+_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; font-src data:"
+)
 _DROPPED_BLOCKS = re.compile(r"<(script|style|head)\b.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
+_HEAD_BLOCK = re.compile(r"<head\b.*?</head\s*>", re.DOTALL | re.IGNORECASE)
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_LINKED_TAGS = re.compile(r"<(?:link|base)\b[^>]*>", re.IGNORECASE)
 _LINE_BREAKS = re.compile(
     r"<br\s*/?>|</(?:p|div|tr|li|h[1-6]|table|blockquote|pre)\s*>", re.IGNORECASE
 )
@@ -249,9 +295,10 @@ _TAG = re.compile(r"<[^>]*>")
 
 
 def _as_document(fragment: str) -> str:
-    if re.search(r"<meta[^>]+charset", fragment, re.IGNORECASE):
-        return fragment
-    return f'<!doctype html><meta charset="utf-8">{fragment}'
+    # The policy comes first so nothing in the message can undo it: no scripts, no frames, and
+    # only https or inline images, fonts and styles (no local files, no other hosts' markup).
+    policy = f'<meta http-equiv="Content-Security-Policy" content="{_CONTENT_SECURITY_POLICY}">'
+    return f'<!doctype html><meta charset="utf-8">{policy}{fragment}'
 
 
 def _chrome_renderer() -> Renderer:
@@ -291,7 +338,7 @@ def _is_pixel(tag: str) -> bool:
 
 
 def _safe_stem(name: str) -> str:
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip("-.")
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip())[:120].strip("-.")
     if not stem:
         raise ValueError("--name must contain letters or digits")
     return stem

@@ -14,9 +14,11 @@ import pytest
 from blumkin.mail_export import (
     MailExportError,
     check_pdf,
+    count_loadable_images,
     export_message,
     html_to_text,
     render_pdf_command,
+    sanitize_html,
     strip_tracking_pixels,
 )
 
@@ -126,6 +128,91 @@ def test_export_fails_loudly_when_the_images_are_missing(tmp_path: Path) -> None
 
     assert payload["check"]["ok"] is False
     assert any("image" in problem for problem in payload["check"]["problems"])
+    assert payload["pdf"] is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_failed_check_leaves_nothing_so_the_same_name_can_be_retried(tmp_path: Path) -> None:
+    bad_render, bad_read = _fake_renderer("Ride receipt Total $18.50", images=0)
+    good_render, good_read = _fake_renderer("Ride receipt Total $18.50", images=1)
+    kwargs: dict[str, Any] = {"message_id": "m", "name": "ride", "out_dir": tmp_path}
+
+    first = asyncio.run(
+        export_message(_Provider(), renderer=bad_render, pdf_reader=bad_read, **kwargs)
+    )
+    second = asyncio.run(
+        export_message(_Provider(), renderer=good_render, pdf_reader=good_read, **kwargs)
+    )
+
+    assert first["check"]["ok"] is False
+    assert second["check"]["ok"] is True
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["ride.json", "ride.pdf", "ride.txt"]
+
+
+def test_the_rendered_page_carries_a_policy_and_no_scripts_frames_or_links(
+    tmp_path: Path,
+) -> None:
+    seen: list[str] = []
+
+    def render(html_path: Path, pdf_path: Path) -> None:
+        seen.append(html_path.read_text())
+        pdf_path.write_bytes(b"%PDF")
+
+    body = (
+        "<html><head><link rel=stylesheet href=https://x.example/a.css></head><body>"
+        "<script>fetch('https://x.example')</script>"
+        "<iframe src='file:///etc/passwd'></iframe><p>Total 5.00</p></body></html>"
+    )
+    _, read = _fake_renderer("Total 5.00", images=0)
+
+    asyncio.run(
+        export_message(
+            _Provider(body=body), message_id="m", out_dir=tmp_path, renderer=render, pdf_reader=read
+        )
+    )
+
+    page = seen[0]
+    assert page.index("Content-Security-Policy") < page.index("Total 5.00")
+    assert "default-src 'none'" in page
+    for forbidden in ("<script", "<iframe", "<link", "passwd"):
+        assert forbidden not in page
+
+
+def test_images_in_comments_and_cid_parts_are_not_expected_in_the_pdf() -> None:
+    html = (
+        "<!--[if mso]><img src='https://x.example/mso.png'><![endif]-->"
+        "<img src='cid:logo@123'><img src='https://x.example/real.png' width='80'>"
+    )
+
+    assert count_loadable_images(sanitize_html(html)) == 1
+
+
+def test_an_image_only_page_is_not_blank(tmp_path: Path) -> None:
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"%PDF")
+
+    def read(_: Path) -> dict[str, Any]:
+        return {"images": 1, "page_images": [0, 1], "page_texts": ["Total 5.00", ""]}
+
+    result = check_pdf(pdf, text_path=None, expected_images=1, pdf_reader=read)
+
+    assert result["blank_pages"] == []
+    assert result["ok"] is True
+
+
+def test_a_text_file_that_is_not_utf8_is_a_problem_not_a_crash(tmp_path: Path) -> None:
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"%PDF")
+    txt = tmp_path / "r.txt"
+    txt.write_bytes(b"\xff\xfe\x00bad")
+
+    def read(_: Path) -> dict[str, Any]:
+        return {"images": 0, "page_texts": ["x"]}
+
+    result = check_pdf(pdf, text_path=txt, expected_images=0, pdf_reader=read)
+
+    assert result["ok"] is False
+    assert "text file could not be read" in result["problems"][0]
 
 
 def test_export_refuses_to_overwrite_an_existing_export(tmp_path: Path) -> None:
