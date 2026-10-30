@@ -618,3 +618,15 @@ def test_non_latin_receipt_text_is_compared_too(tmp_path: Path) -> None:
     result = check_pdf(pdf, text_path=txt, expected_images=0, pdf_reader=read)
 
     assert result["ok"] is False
+
+
+def test_a_fifo_named_like_the_json_does_not_hang_the_metadata_read(tmp_path: Path) -> None:
+    import os
+
+    from blumkin.mail_export import read_export_meta
+
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"%PDF")
+    os.mkfifo(pdf.with_suffix(".json"))
+
+    assert read_export_meta(pdf)["message_id"] is None

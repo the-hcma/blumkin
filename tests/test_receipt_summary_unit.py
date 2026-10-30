@@ -159,8 +159,9 @@ def test_similar_totals_with_nothing_tying_them_together_are_reviewed_not_droppe
         ]
     )
 
-    assert _actions(summary) == {"pm.pdf": "file", "am.pdf": "review"}
+    assert _actions(summary) == {"pm.pdf": "review", "am.pdf": "review"}
     assert "separate ride" in summary["rows"][0]["reason"]
+    assert summary["grand_totals"] == {}
     assert summary["ok"] is False
 
 
@@ -172,7 +173,7 @@ def test_a_round_trip_with_two_identical_fares_is_not_called_a_duplicate() -> No
         ]
     )
 
-    assert sorted(_actions(summary).values()) == ["file", "review"]
+    assert sorted(_actions(summary).values()) == ["review", "review"]
 
 
 def test_arrival_within_minutes_is_evidence_of_one_ride() -> None:
@@ -227,7 +228,7 @@ def test_a_shared_subject_alone_does_not_make_two_rides_one() -> None:
         ]
     )
 
-    assert sorted(_actions(summary).values()) == ["file", "review"]
+    assert sorted(_actions(summary).values()) == ["review", "review"]
 
 
 def test_a_naive_and_an_aware_arrival_time_can_be_compared() -> None:
@@ -271,3 +272,52 @@ def test_totals_at_the_ratio_limit_are_a_tip_and_beyond_it_are_not() -> None:
 
     assert _actions(inside) == {"a.pdf": "drop", "b.pdf": "file"}
     assert _actions(beyond) == {"a.pdf": "file", "b.pdf": "file"}
+
+
+def test_unrelated_non_latin_vendors_are_not_grouped_together() -> None:
+    summary = summarize_receipts(
+        [
+            _item("a.pdf", vendor="北京饭店", total="18.50"),
+            _item("b.pdf", vendor="上海出租", total="21.00", received="2026-10-23T08:10:00Z"),
+        ]
+    )
+
+    assert _actions(summary) == {"a.pdf": "file", "b.pdf": "file"}
+
+
+def test_the_same_non_latin_vendor_still_groups() -> None:
+    summary = summarize_receipts(
+        [
+            _item("a.pdf", vendor="北京饭店", total="18.50"),
+            _item("b.pdf", vendor="北京饭店", total="21.00", received="2026-10-23T08:10:00Z"),
+        ]
+    )
+
+    assert _actions(summary) == {"a.pdf": "drop", "b.pdf": "file"}
+
+
+def test_a_receipt_with_an_injection_warning_is_reviewed_and_keeps_its_warning() -> None:
+    warning = {"matched": True, "findings": [{"pattern": "ignore previous instructions"}]}
+
+    summary = summarize_receipts(
+        [
+            SummaryInput(
+                currency="USD",
+                date="2026-10-23",
+                date_confidence="high",
+                injection_warning=warning,
+                message_id=None,
+                path=Path("/r/a.pdf"),
+                received=None,
+                subject=None,
+                total="18.50",
+                vendor="Ride Co",
+            )
+        ]
+    )
+
+    row = summary["rows"][0]
+    assert row["action"] == "review"
+    assert "prompt-injection" in row["reason"]
+    assert row["injection_warning"] == warning
+    assert summary["grand_totals"] == {}

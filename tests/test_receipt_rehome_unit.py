@@ -754,3 +754,48 @@ def test_replace_rejects_a_bad_instance_name_before_looking_anything_up(tmp_path
             config, "expense-report", "../escape", _file(tmp_path, "b.pdf", b"two"),
             fields=_fields(), upload_dirs=dirs, replace="deadbeef",
         )  # fmt: skip
+
+
+def test_replace_resumes_without_a_message_id_after_the_source_was_moved(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs,
+    )  # fmt: skip
+    new_source = _file(tmp_path, "b.pdf", b"two")
+    rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs,
+    )  # fmt: skip
+    assert not new_source.exists()  # a move: the source is gone, only the journal knows it
+
+    resumed = rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs, replace=old.name,
+    )  # fmt: skip
+
+    assert resumed.replaced == old.name
+    assert not old.dest.exists()
+    assert resumed.dest.read_bytes() == b"two"
+
+
+def test_replace_refuses_a_filed_replacement_that_is_no_longer_intact(tmp_path: Path) -> None:
+    config, _, dirs = _setup(tmp_path)
+    old = rehome_receipt(
+        config, "expense-report", "trip-lisbon", _file(tmp_path, "a.pdf", b"one"),
+        fields=_fields(), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    new_source = _file(tmp_path, "b.pdf", b"two")
+    new = rehome_receipt(
+        config, "expense-report", "trip-lisbon", new_source,
+        fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m",
+    )  # fmt: skip
+    new.dest.unlink()
+
+    with pytest.raises(RehomeError, match="intact"):
+        rehome_receipt(
+            config, "expense-report", "trip-lisbon", new_source,
+            fields=_fields(total="20.00"), upload_dirs=dirs, message_id="m", replace=old.name,
+        )  # fmt: skip
+
+    assert old.dest.is_file()

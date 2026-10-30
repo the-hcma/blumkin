@@ -18,7 +18,7 @@ import os
 import re
 import shutil
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -210,10 +210,21 @@ def rehome_receipt(
         raise RehomeError(
             f"Expected a replacement that differs from {old.name!r}, got the same bytes"
         )
-    filed = _completed_by_hash(config_dir, task, instance).get(digest)
+    completed = _completed_by_hash(config_dir, task, instance)
+    filed = completed.get(digest) if digest else _filed_from_source(completed.values(), src)
     if filed is not None:
         # An earlier --replace filed the new receipt and stopped before setting the old one
-        # aside: finish that instead of failing on "already filed".
+        # aside: finish that instead of failing on "already filed" (a moved source is found
+        # again by its journaled path). The filed copy must still be intact to stand in.
+        if (
+            not filed.dest.is_file()
+            or filed.dest.is_symlink()
+            or file_sha256(filed.dest) != filed.sha256
+        ):
+            raise RehomeError(
+                f"Expected the filed replacement {filed.name!r} to be intact, "
+                "got a missing or changed file"
+            )
         result = filed
     else:
         result = _rehome_one(
@@ -625,6 +636,13 @@ def _check_replaceable(config_dir: Path, task: str, instance: str, old: RehomeRe
         )
     if intact:
         _aside_path(aside_dir, old)
+
+
+def _filed_from_source(filed: Iterable[RehomeResult], source: Path) -> RehomeResult | None:
+    """The one filed receipt that came from ``source`` (which a move may have removed)."""
+    wanted = source.resolve()
+    matches = [item for item in filed if item.source == wanted]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _require_open_instance(config_dir: Path, task: str, instance: str) -> None:

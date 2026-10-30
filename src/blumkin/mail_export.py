@@ -259,7 +259,11 @@ def read_export_meta(pdf_path: Path) -> dict[str, str | None]:
     sidecar_path = pdf_path.with_suffix(".json")
     empty: dict[str, str | None] = {"message_id": None, "received": None, "subject": None}
     try:
-        if sidecar_path.is_symlink() or sidecar_path.stat().st_size > MAX_TEXT_BYTES:
+        if (
+            sidecar_path.is_symlink()
+            or not sidecar_path.is_file()
+            or sidecar_path.stat().st_size > MAX_TEXT_BYTES
+        ):
             return empty
         recorded = json.loads(sidecar_path.read_text(encoding="utf-8"))
     except OSError, UnicodeDecodeError, ValueError:

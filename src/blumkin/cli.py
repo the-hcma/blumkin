@@ -3893,6 +3893,7 @@ def receipts_summarize(
                     currency_confidence=fields.currency.confidence.value,
                     date=fields.date.value,
                     date_confidence=fields.date.confidence.value,
+                    injection_warning=reading.injection_warning,
                     message_id=meta["message_id"],
                     path=file_path,
                     received=meta["received"],

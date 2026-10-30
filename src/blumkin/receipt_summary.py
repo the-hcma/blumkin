@@ -46,6 +46,8 @@ class SummaryInput:
     total: str | None
     vendor: str | None
     currency_confidence: str = "high"
+    #: A prompt-injection warning found in the receipt text; such a receipt needs a person.
+    injection_warning: dict[str, Any] | None = None
     #: SHA-256 of the file when known; identical bytes are the same receipt.
     sha256: str | None = None
     total_confidence: str = "high"
@@ -82,7 +84,7 @@ def summarize_receipts(items: list[SummaryInput]) -> dict[str, Any]:
 
 _AMOUNT = re.compile(r"\d+(?:\.\d{1,2})?")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+_NON_ALNUM = re.compile(r"[\W_]+")
 
 
 def _mark_copies(members: list[dict[str, Any]]) -> None:
@@ -103,11 +105,19 @@ def _mark_copies(members: list[dict[str, Any]]) -> None:
                 else f"without-tip copy of {name} (total {anchor['total']})"
             )
         else:
+            # Neither is safe to file or drop on a guess, so both go to a person.
             row["action"] = "review"
             row["reason"] = (
                 f"looks like {name} (total {anchor['total']}) but nothing shows it is the same "
                 "ride: ask the user whether it is a copy or a separate ride"
             )
+            if anchor["action"] == "file":
+                anchor["action"] = "review"
+                anchor["reason"] = (
+                    f"looks like {Path(row['path']).name} (total {row['total']}) but nothing "
+                    "shows it is the same ride: ask the user whether it is a copy or a "
+                    "separate ride"
+                )
 
 
 def _same_ride(first: SummaryInput, second: SummaryInput) -> bool:
@@ -170,6 +180,7 @@ def _row(item: SummaryInput) -> dict[str, Any]:
         "currency": (item.currency or "").strip().upper() or None,
         "date": date,
         "date_source": source,
+        "injection_warning": item.injection_warning,
         "message_id": item.message_id,
         "path": str(item.path),
         "reason": "",
@@ -192,6 +203,11 @@ def _row(item: SummaryInput) -> dict[str, Any]:
         problems.append("no currency")
     elif item.currency_confidence != Confidence.HIGH.value:
         problems.append("the currency is not certain")
+    if item.injection_warning:
+        problems.append(
+            "the receipt text matched a prompt-injection pattern: read it yourself before "
+            "trusting its fields"
+        )
     if problems:
         row["action"] = "review"
         row["reason"] = "; ".join(problems)
@@ -199,4 +215,5 @@ def _row(item: SummaryInput) -> dict[str, Any]:
 
 
 def _vendor_key(vendor: str) -> str:
-    return _NON_ALNUM.sub("", vendor.lower())
+    lowered = vendor.lower()
+    return _NON_ALNUM.sub("", lowered) or lowered
