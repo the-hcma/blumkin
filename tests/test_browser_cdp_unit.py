@@ -2441,3 +2441,180 @@ def test_the_describe_script_gathers_every_name_source_and_limits_nothing_silent
     assert "complete = false" in _DESCRIBE_CONTROL_JS
     assert "dialogComplete" in _DESCRIBE_CONTROL_JS
     assert ".slice(0, 100)" not in _DESCRIBE_CONTROL_JS
+
+
+# --------------------------------------------------------------------------- pages (#589)
+
+
+def test_count_page_targets_counts_only_pages() -> None:
+    from blumkin.browser.cdp import count_page_targets
+
+    targets = [{"type": "page"}, {"type": "iframe"}, {"type": "page"}, {"type": "worker"}]
+
+    assert count_page_targets("http://127.0.0.1:9222", fetch=lambda e, t: targets) == 2
+    assert count_page_targets("http://127.0.0.1:9222", fetch=lambda e, t: []) == 0
+
+
+def test_count_page_targets_is_unknown_when_the_endpoint_does_not_answer_or_is_not_loopback() -> (
+    None
+):
+    from blumkin.browser.cdp import count_page_targets
+
+    def down(endpoint: str, timeout_s: float) -> list[dict[str, Any]]:
+        raise OSError("refused")
+
+    assert count_page_targets("http://127.0.0.1:9222", fetch=down) is None
+    assert (
+        count_page_targets("http://example.com:9222", fetch=lambda e, t: [{"type": "page"}]) is None
+    )
+
+
+class _NoPageContext:
+    def __init__(self, *, new_page_works: bool, appears_after_open: bool = False) -> None:
+        self.pages: list[Any] = []
+        self._new_page_works = new_page_works
+        self._appears = appears_after_open
+        self.opened = 0
+
+    def new_page(self) -> Any:
+        if not self._new_page_works:
+            raise PlaywrightError("Browser context management is not supported.")
+        page = _Page()
+        self.pages.append(page)
+        return page
+
+    def open_blank(self) -> None:
+        self.opened += 1
+        if self._appears:
+            self.pages.append(_Page())
+
+    def expect_event(self, event: str, *, timeout: float) -> Any:
+        """Playwright's `expect_event`: the body runs, then the event's value or a timeout."""
+        context = self
+
+        class _Waiting:
+            value: Any = None
+
+            def __enter__(self) -> _Waiting:
+                return self
+
+            def __exit__(self, *exc: object) -> bool:
+                if exc[0] is not None:
+                    return False
+                if not context.pages:
+                    raise PlaywrightTimeout("no page event")
+                self.value = context.pages[0]
+                return False
+
+        return _Waiting()
+
+
+def test_a_browser_with_no_page_gets_a_blank_one_from_devtools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import cdp
+
+    context = _NoPageContext(new_page_works=False, appears_after_open=True)
+    monkeypatch.setattr(cdp, "_open_blank_target", lambda endpoint, timeout_s: context.open_blank())
+
+    page = cdp._first_page(context, "http://127.0.0.1:9222", 1.0)
+
+    assert page is context.pages[0]
+    assert context.opened == 1
+
+
+def test_a_browser_that_cannot_make_a_page_is_reported_as_having_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import cdp
+    from blumkin.browser.cdp import BrowserNoPageError
+
+    context = _NoPageContext(new_page_works=False)
+    monkeypatch.setattr(cdp, "_open_blank_target", lambda endpoint, timeout_s: context.open_blank())
+
+    with pytest.raises(BrowserNoPageError, match="open page"):
+        cdp._first_page(context, "http://127.0.0.1:9222", 0.2)
+
+
+def test_an_existing_page_is_used_without_opening_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import cdp
+
+    context = _NoPageContext(new_page_works=True)
+    existing = _Page()
+    context.pages.append(existing)
+    monkeypatch.setattr(cdp, "_open_blank_target", lambda endpoint, timeout_s: context.open_blank())
+
+    assert cdp._first_page(context, "http://127.0.0.1:9222", 1.0) is existing
+    assert context.opened == 0
+
+
+def test_attaching_with_no_launched_browser_is_a_not_running_error(tmp_path: Path) -> None:
+    from blumkin.browser.cdp import BrowserNotRunningError
+
+    profile = create_profile(tmp_path, "expense-report")
+
+    with pytest.raises(BrowserNotRunningError, match="browser launch expense-report"):
+        attach(profile)
+
+
+def test_an_attach_that_keeps_failing_is_a_protocol_error() -> None:
+    from blumkin.browser.cdp import BrowserProtocolError
+
+    def always_down(endpoint: str, timeout_s: float) -> dict[str, Any]:
+        raise OSError("connection reset")
+
+    with pytest.raises(BrowserProtocolError, match="after 2 attempts"):
+        open_driver(
+            "http://127.0.0.1:9222",
+            attempts=2,
+            factory=lambda: _Playwright(),
+            fetch_version=always_down,
+            sleep=lambda seconds: None,
+        )
+
+
+class _SignInRequest:
+    def __init__(self, url: str, frame_url: str | None) -> None:
+        self.url = url
+        self.frame = type("Frame", (), {"url": frame_url})() if frame_url is not None else None
+
+
+class _SignInRoute:
+    def __init__(self, url: str, frame_url: str | None) -> None:
+        self.request = _SignInRequest(url, frame_url)
+        self.outcome = ""
+
+    def continue_(self) -> None:
+        self.outcome = "continue"
+
+    def fallback(self) -> None:
+        self.outcome = "fallback"
+
+
+@pytest.mark.parametrize(
+    ("url", "frame_url", "outcome"),
+    [
+        (
+            "https://login.microsoftonline.com/login",
+            "https://login.microsoftonline.com/",
+            "continue",
+        ),
+        ("https://erp.example.com/saml", "https://login.microsoftonline.com/", "continue"),
+        ("https://login.microsoftonline.com/x", "https://erp.example.com/", "continue"),
+        ("https://erp.example.com/submit", "https://erp.example.com/", "fallback"),
+        ("https://erp.example.com/submit", None, "fallback"),
+    ],
+)
+def test_the_sign_in_route_continues_only_traffic_to_or_from_a_sign_in_host(
+    url: str, frame_url: str | None, outcome: str
+) -> None:
+    from blumkin.browser.cdp import _sign_in_handler
+
+    handler = _sign_in_handler(lambda host: host == "login.microsoftonline.com")
+    route = _SignInRoute(url, frame_url)
+
+    handler(route)
+
+    assert route.outcome == outcome

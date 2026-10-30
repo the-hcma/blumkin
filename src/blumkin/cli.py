@@ -46,8 +46,10 @@ from blumkin.auth_setup import (
     remove_first_run_config,
 )
 from blumkin.browser.actions import (
+    DEFAULT_SIGN_IN_WAIT_S,
     DownloadBlockedError,
     HostBlockedError,
+    SignInTimeoutError,
     UploadBlockedError,
     click_task,
     download_task,
@@ -67,6 +69,8 @@ from blumkin.browser.cdp import (
     BrowserActionError,
     BrowserAttachError,
     BrowserDependencyError,
+    BrowserNoPageError,
+    BrowserProtocolError,
 )
 from blumkin.browser.commands import (
     TaskNotFoundError,
@@ -75,6 +79,7 @@ from blumkin.browser.commands import (
     delete_task_profile,
     launch_task_browser,
     list_task_profiles,
+    task_endpoint,
     task_status,
 )
 from blumkin.browser.discovery import BrowserConfigError, BrowserNotFoundError
@@ -668,6 +673,12 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "upload_blocked", EXIT_OTHER
     elif isinstance(exc, DownloadBlockedError):
         slug, code = "download_blocked", EXIT_OTHER
+    elif isinstance(exc, SignInTimeoutError):
+        slug, code = "sign_in_timeout", EXIT_OTHER
+        hint = (
+            "Sign in by hand in the browser window, then run "
+            f"`blumkin browser goto {task or 'TASK'}` again (the browser keeps running)."
+        )
     elif isinstance(exc, HostBlockedError):
         slug, code = "host_blocked", EXIT_OTHER
     elif isinstance(exc, BrowserActionError):
@@ -678,6 +689,19 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
             "Restore playwright with `uv sync --reinstall-package playwright` "
             "in the blumkin clone, `uv tool install -e . --reinstall`, or "
             "`uv tool upgrade blumkin --reinstall-package playwright`, then retry."
+        )
+    elif isinstance(exc, BrowserNoPageError):
+        slug, code = "browser_no_page", EXIT_OTHER
+        hint = (
+            "The browser is running but has no open page: open a tab in its window, or "
+            f"close it (`blumkin browser close {task or 'TASK'}`) and launch it again with "
+            "`--open`."
+        )
+    elif isinstance(exc, BrowserProtocolError):
+        slug, code = "browser_attach_failed", EXIT_OTHER
+        hint = (
+            "The browser is running but attaching to it over DevTools failed; try the command "
+            f"again, or close it (`blumkin browser close {task or 'TASK'}`) and launch it again."
         )
     elif isinstance(exc, BrowserAttachError):
         slug, code = "browser_not_running", EXIT_OTHER
@@ -738,6 +762,8 @@ def _browser_profile_lines(payload: dict[str, Any]) -> list[str]:
     for entry in profiles:
         state = f"running ({entry['endpoint']})" if entry["running"] else "not running"
         lines.append(f"{entry['task']}: {state}")
+        if entry.get("note"):
+            lines.append(f"  note: {entry['note']}")
     return lines
 
 
@@ -2413,14 +2439,54 @@ def browser_init_task(
 @browser.command("launch", epilog=help_text.BROWSER_LAUNCH_EPILOG)
 @click.argument("task")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--open",
+    "open_page",
+    is_flag=True,
+    help="Open the task's form_url right away, waiting through the sign-in redirect while you "
+    "sign in by hand.",
+)
+@click.option(
+    "--sign-in-wait",
+    "sign_in_wait_s",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=None,
+    help=f"With --open: seconds to wait for you to sign in (default {DEFAULT_SIGN_IN_WAIT_S:g}).",
+)
 @click.pass_context
-def browser_launch(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+def browser_launch(
+    ctx: click.Context,
+    task: str,
+    as_json_flag: bool,
+    open_page: bool,
+    sign_in_wait_s: float | None,
+) -> None:
     """Launch the task's browser on its profile so you can sign in by hand."""
     as_json = _as_json(ctx, as_json_flag)
+    if sign_in_wait_s is not None and not open_page:
+        raise click.UsageError("--sign-in-wait needs --open")
     try:
-        payload = launch_task_browser(load_browser_setup(), task)
+        setup = load_browser_setup()
+        payload = launch_task_browser(setup, task)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
+    if open_page:
+        try:
+            payload["opened"] = goto_task(
+                setup,
+                task,
+                None,
+                sign_in_wait_s=DEFAULT_SIGN_IN_WAIT_S if sign_in_wait_s is None else sign_in_wait_s,
+            )
+        except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+            if not as_json:
+                click.echo(
+                    f"{task}: the browser is running ({payload['endpoint']}); "
+                    f"retry with `blumkin browser goto {task}`",
+                    err=True,
+                )
+            _browser_fail(exc, as_json=as_json, task=task)
     if as_json:
         emit_json(payload)
         return
@@ -2432,7 +2498,10 @@ def browser_launch(ctx: click.Context, task: str, as_json_flag: bool) -> None:
         lines.append(
             f"note: {payload['fallback_from']} is not installed; using {payload['browser']}"
         )
-    lines.append(payload["sign_in"])
+    if "opened" in payload:
+        lines.append(f"opened {sanitize_terminal(payload['opened']['url'])}")
+    else:
+        lines.append(payload["sign_in"])
     emit_lines(lines)
 
 
@@ -2763,16 +2832,32 @@ def browser_frames(ctx: click.Context, task: str, as_json_flag: bool, wait_s: fl
 
 @browser.command("goto", epilog=help_text.BROWSER_GOTO_EPILOG)
 @click.argument("task")
-@click.argument("url")
+@click.argument("url", required=False)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--sign-in-wait",
+    "sign_in_wait_s",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=DEFAULT_SIGN_IN_WAIT_S,
+    show_default=True,
+    help="Seconds to wait for you to sign in when the site redirects to an identity provider "
+    "(0 to not wait).",
+)
 @click.pass_context
-def browser_goto(ctx: click.Context, task: str, url: str, as_json_flag: bool) -> None:
-    """Open an http or https page in the task's browser."""
+def browser_goto(
+    ctx: click.Context,
+    task: str,
+    url: str | None,
+    as_json_flag: bool,
+    sign_in_wait_s: float,
+) -> None:
+    """Open an http or https page (default: the task's form_url) in the task's browser."""
     _browser_action(
         ctx,
         as_json_flag,
         task,
-        lambda: goto_task(load_browser_setup(), task, url),
+        lambda: goto_task(load_browser_setup(), task, url, sign_in_wait_s=sign_in_wait_s),
         "opened",
     )
 
@@ -3561,6 +3646,23 @@ def browser_profile_list(ctx: click.Context, as_json_flag: bool) -> None:
         emit_json(payload)
         return
     emit_lines(_browser_profile_lines(payload))
+
+
+@browser.command("endpoint", epilog=help_text.BROWSER_ENDPOINT_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_endpoint(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Print the DevTools endpoint of the task's running browser (it changes every launch)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = task_endpoint(config_dir(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([payload["endpoint"]])
 
 
 @browser.command("status", epilog=help_text.BROWSER_STATUS_EPILOG)

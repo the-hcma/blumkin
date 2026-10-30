@@ -409,6 +409,19 @@ Summarizes the draft: its pages with their URL templates and control counts, the
 that look finalizing, and the number of recorded steps.
 """
 
+BROWSER_ENDPOINT_EPILOG = """
+Examples:
+
+\b
+  blumkin browser endpoint expense-report
+  blumkin browser endpoint expense-report --json
+
+Prints the loopback DevTools endpoint of the task's running browser (for example
+`http://127.0.0.1:41873`). The port changes on every launch, so a script or a diagnosis asks
+for it here instead of keeping it. Fails with `browser_not_running` when no browser is running
+for the task.
+"""
+
 BROWSER_FILL_EPILOG = """
 Examples:
 
@@ -457,7 +470,16 @@ Examples:
 
 Opens an http or https page in the task's browser; other schemes (file, javascript,
 data) are refused, and so is a host outside the task's `allowed_hosts` once it declares
-any. Launch the browser first with `blumkin browser launch TASK`.
+any. Without an address it opens the task's `form_url` from config.toml. Launch the browser
+first with `blumkin browser launch TASK`.
+A site that redirects to an identity provider (login.microsoftonline.com, login.microsoft.com,
+login.live.com, accounts.google.com, or a host in the task's `sign_in_hosts`; name an Okta,
+Auth0, OneLogin or Ping tenant there, for example `acme.okta.com`, since anyone can register
+one) is waited through: the page address is polled for up to `--sign-in-wait` seconds (default
+120, 0 to not wait) while you sign in by hand, nothing is ever done on the sign-in page, and the
+command finishes as soon as the page is on an allowed host (`waited_for_sign_in_s` says how
+long, `sign_in_host` where). If the page is still on the sign-in page when the time is up
+(`sign_in_timeout`), sign in and run the command again; the browser keeps running.
 """
 
 BROWSER_HANDOFF_EPILOG = """
@@ -503,6 +525,13 @@ browser profile create TASK`) and prints the loopback DevTools endpoint. Sign in
 by hand in the window that opens; blumkin never sees your credentials. Running
 it again while the browser is open reports `already_running` and changes nothing.
 Uses `[browser] default` from config.toml, falling back to Chrome.
+`--open` opens the task's `form_url` (set in `[browser.tasks.TASK]`) right away and waits
+through the sign-in redirect while you sign in by hand, as `browser goto` does, so there is
+nothing to tell the agent: it carries on when the page reaches an allowed host. Any other
+address goes through `blumkin browser goto TASK URL`. Cookies the
+identity provider sets without an expiry (session cookies) are dropped when the browser
+closes, so after `browser close` and a new launch you may have to sign in again; leave the
+browser open between runs to stay signed in.
 """
 
 BROWSER_LEDGER_APPLY_EPILOG = """
@@ -798,8 +827,12 @@ Examples:
   blumkin browser status
   blumkin browser status expense-report --json
 
-Shows each task profile, whether its browser is running, and the loopback DevTools
-endpoint when it is. Give a task name to look at just that one.
+Shows each task profile, whether its browser is running, the loopback DevTools endpoint
+when it is, and how many pages (tabs) it has open (`pages`). A browser with no open page is
+running but cannot be driven until it has one: the status says so (`note`), and any browser
+command opens a blank page for you. Give a task name to look at just that one.
+`status --json` is also the way for a script to learn the endpoint, which changes on every
+launch; `blumkin browser endpoint TASK` prints just that.
 """
 
 BROWSER_TRANSCRIPT_EPILOG = """

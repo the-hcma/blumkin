@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from blumkin.browser.cdp import BrowserNotRunningError, count_page_targets
 from blumkin.browser.discovery import resolve_browser
 from blumkin.browser.launcher import DEFAULT_CLOSE_TIMEOUT_S, close_browser, launch
 from blumkin.browser.profiles import (
@@ -24,6 +25,8 @@ from blumkin.browser.profiles import (
     validate_task_name,
 )
 from blumkin.config import BrowserSetup
+
+_PAGE_COUNT_TIMEOUT_S = 1.0
 
 SIGN_IN_GUIDANCE = (
     "Sign in by hand in the browser window that opened (SSO and MFA included); "
@@ -101,7 +104,10 @@ def launch_task_browser(config: BrowserSetup, task: str) -> dict[str, Any]:
 
 def list_task_profiles(config_dir: Path) -> dict[str, Any]:
     """Every profile blumkin created, with whether its browser is running."""
-    return {"ok": True, "profiles": [_profile_entry(p) for p in list_profiles(config_dir)]}
+    return {
+        "ok": True,
+        "profiles": [_profile_entry(p) for p in list_profiles(config_dir)],
+    }
 
 
 def require_profile(config_dir: Path, task: str) -> BrowserProfile:
@@ -113,11 +119,40 @@ def require_profile(config_dir: Path, task: str) -> BrowserProfile:
     return profile
 
 
-def task_status(config_dir: Path, task: str | None) -> dict[str, Any]:
+def task_endpoint(config_dir: Path, task: str) -> dict[str, Any]:
+    """The DevTools endpoint of the task's running browser (it changes on every launch)."""
+    profile = require_profile(config_dir, task)
+    session = read_session(profile.path)
+    if session is None:
+        raise BrowserNotRunningError(
+            f"Expected a running browser for task {task!r}, got none; "
+            f"run `blumkin browser launch {task}` first"
+        )
+    return {
+        "browser": session.browser,
+        "endpoint": session.endpoint,
+        "ok": True,
+        "pid": session.pid,
+        "port": session.port,
+        "task": task,
+    }
+
+
+def task_status(
+    config_dir: Path,
+    task: str | None,
+    *,
+    count_pages: Callable[[str], int | None] | None = None,
+) -> dict[str, Any]:
     """Status of one task's profile, or of all of them when `task` is None."""
+    count = count_pages or _count_pages_quickly
     if task is None:
-        return list_task_profiles(config_dir)
-    return {"ok": True, "profiles": [_profile_entry(require_profile(config_dir, task))]}
+        return {
+            "ok": True,
+            "profiles": [_profile_entry(p, count) for p in list_profiles(config_dir)],
+        }
+    profile = require_profile(config_dir, task)
+    return {"ok": True, "profiles": [_profile_entry(profile, count)]}
 
 
 def _launch_payload(
@@ -136,11 +171,32 @@ def _launch_payload(
     }
 
 
-def _profile_entry(profile: BrowserProfile) -> dict[str, Any]:
+def _count_pages_quickly(endpoint: str) -> int | None:
+    """Open pages at `endpoint`, giving up after a second so `status` never hangs on a dead port."""
+    return count_page_targets(endpoint, _PAGE_COUNT_TIMEOUT_S)
+
+
+def _no_page_count(endpoint: str) -> int | None:
+    """`profile list` does not probe the browsers: the page count stays unknown (null)."""
+    return None
+
+
+def _profile_entry(
+    profile: BrowserProfile, count_pages: Callable[[str], int | None] = _no_page_count
+) -> dict[str, Any]:
     session = read_session(profile.path)
+    pages = count_pages(session.endpoint) if session else None
+    note = None
+    if session is not None and pages == 0:
+        note = (
+            "the browser is running but has no open page: open one in its window, or run "
+            f"`blumkin browser goto {profile.task} URL` (a blank page is opened for you)"
+        )
     return {
         "browser": session.browser if session else None,
         "endpoint": session.endpoint if session else None,
+        "note": note,
+        "pages": pages,
         "path": str(profile.path),
         "pid": session.pid if session else None,
         "running": session is not None,

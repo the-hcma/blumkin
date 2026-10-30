@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -142,6 +143,9 @@ class _Raw:
             chunks=self.frame_chunks, reached_end=True, reached_top=True, steps=1, url="u"
         )
 
+    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> Any:
+        return contextlib.nullcontext()
+
     def title(self) -> str:
         return "Expenses"
 
@@ -162,6 +166,9 @@ class _Raw:
 
     def upload(self, label: str, path: Path, target: object = None) -> None:
         self.calls.append(("upload", label, str(path)))
+
+    def wait_ms(self, milliseconds: int) -> None:
+        self.calls.append(("wait_ms", milliseconds))
 
 
 def _guard(
@@ -500,9 +507,11 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "read_text",
         "scroll_frame_text",
         "select",
+        "sign_in_pass",
         "title",
         "upload",
         "url",
+        "wait_ms",
     }
 
 
