@@ -2336,3 +2336,108 @@ def test_only_visible_lists_count_when_the_dropdown_names_none() -> None:
 
     # Counting the hidden lists too (4) would have refused the select.
     assert len([call for call in pw.page.calls if call[0] == "handle-click"]) == 2
+
+
+# ------------------------------------------------------------------ dialog detection (#587)
+
+
+def test_a_control_describes_whether_it_is_in_a_dialog_with_its_own_form() -> None:
+    pw, driver = _driver()
+    pw.page.role_counts[("button", "OK")] = [1]
+    pw.page.element_info["OK"] = {
+        "tag": "button",
+        "type": "submit",
+        "form": True,
+        "formaction": False,
+        "href": "",
+        "onclick": "",
+        "dialog": True,
+        "formInDialog": True,
+        "dialogControls": ["Cancel", "OK"],
+    }
+    seen: list[ControlInfo] = []
+
+    driver.checked_click("OK", "button", seen.append)
+
+    assert (seen[0].in_dialog, seen[0].form_in_dialog) == (True, True)
+    assert seen[0].dialog_controls == ("Cancel", "OK")
+
+
+def test_a_control_without_dialog_facts_is_described_as_not_in_a_dialog() -> None:
+    pw, driver = _driver()
+    seen: list[ControlInfo] = []
+
+    driver.checked_click("Go", "button", seen.append)
+
+    assert (seen[0].in_dialog, seen[0].form_in_dialog) == (False, False)
+
+
+def test_the_describe_script_looks_for_dialog_ancestors_and_the_form_owner() -> None:
+    from blumkin.browser.cdp import _DESCRIBE_CONTROL_JS
+
+    for needle in (
+        "dialog",
+        "[role=dialog]",
+        "[role=alertdialog]",
+        "d.contains(f)",
+        "e.closest('form')",
+        "dialogControls",
+    ):
+        assert needle in _DESCRIBE_CONTROL_JS
+    # A page can set aria-modal on any wrapper, so it does not make something a dialog.
+    assert "aria-modal" not in _DESCRIBE_CONTROL_JS
+
+
+def test_the_dialog_inventory_comes_with_whether_it_is_complete() -> None:
+    pw, driver = _driver()
+    pw.page.element_info["OK"] = {
+        "tag": "button",
+        "type": "submit",
+        "form": True,
+        "formaction": False,
+        "href": "",
+        "onclick": "",
+        "dialog": True,
+        "formInDialog": True,
+        "dialogControls": ["OK", "Submit"],
+        "dialogComplete": False,
+    }
+    pw.page.role_counts[("button", "OK")] = [1]
+    seen: list[Any] = []
+
+    driver.checked_click("OK", "button", seen.append)
+
+    assert seen[0].dialog_controls == ("OK", "Submit")
+    assert seen[0].dialog_controls_complete is False
+
+
+def test_a_probe_that_does_not_say_is_treated_as_complete_only_when_it_has_no_dialog() -> None:
+    pw, driver = _driver()
+    seen: list[Any] = []
+
+    driver.checked_click("Go", "button", seen.append)
+
+    assert seen[0].dialog_controls == ()
+    assert seen[0].dialog_controls_complete is True
+
+
+def test_the_describe_script_gathers_every_name_source_and_limits_nothing_silently() -> None:
+    from blumkin.browser.cdp import _DESCRIBE_CONTROL_JS
+
+    for needle in ("aria-labelledby", "aria-label", "innerText", "b.value", "b.title", "b.id"):
+        assert needle in _DESCRIBE_CONTROL_JS
+    # Image inputs are named by alt, links and menu items count as controls, and a
+    # shadow-local label is looked up in its own root.
+    for needle in (
+        "'alt'",
+        "a, summary",
+        "[role=link]",
+        "[role=menuitem]",
+        "getRootNode",
+        "[aria-label], [alt], [title], svg title",
+    ):
+        assert needle in _DESCRIBE_CONTROL_JS
+    # Too many controls, or a name cut short, is reported instead of hidden.
+    assert "complete = false" in _DESCRIBE_CONTROL_JS
+    assert "dialogComplete" in _DESCRIBE_CONTROL_JS
+    assert ".slice(0, 100)" not in _DESCRIBE_CONTROL_JS

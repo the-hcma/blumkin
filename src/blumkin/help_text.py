@@ -261,6 +261,12 @@ When the page legitimately repeats a name (a "More actions" button on every row)
 match is refused until `--nth N` (1-based, in DOM order, the order `browser read --aria` lists
 them) says which one is meant; it narrows the lookup only, and the policy and the vetting of
 that element are unchanged. `--nth` is for `click` only.
+A button that confirms a dialog's own rows (an attachments dialog's `OK`) can be declared in
+`dialog_confirm` instead of `allowed_controls` (such a button is usually submit-type, which is
+why it is refused otherwise): it is clicked only inside a dialog whose form, if it has one,
+lies inside that dialog and which holds no finalizing control of its own, the same name
+anywhere else is refused, it cannot start a download, and a finalizing name can never be
+declared there.
 Refused, without touching the page: an
 undeclared control, a submit control, and any control named like a finalizing action
 (submit, send, file, confirm, pay, ...), plus a control with a formaction, a link that runs

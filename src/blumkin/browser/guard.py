@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -82,6 +82,8 @@ class GuardPolicy:
     allowed_controls: frozenset[str] = frozenset()
     #: Strict mode: also swallow background writes (see `block_form_submission`).
     block_background_writes: bool = False
+    #: Exact names of buttons that confirm a dialog's own rows; see `vet_control`.
+    dialog_confirm: frozenset[str] = frozenset()
     extra_deny_names: tuple[str, ...] = field(default=())
 
 
@@ -91,20 +93,26 @@ class GuardedDriver:
     def __init__(self, raw: RawBrowserDriver, policy: GuardPolicy) -> None:
         self._allowed = frozenset(_exact(name) for name in policy.allowed_controls)
         self._deny = _deny_stems((*DEFAULT_DENY_NAMES, *policy.extra_deny_names))
+        validate_dialog_confirm(policy.dialog_confirm, policy.extra_deny_names)
+        self._confirm = frozenset(_exact(name) for name in policy.dialog_confirm)
         self._raw = raw
         raw.block_form_submission(background_writes=policy.block_background_writes)
 
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()
 
-    def check_click(self, name: str, role: str | None = None) -> None:
-        """Raise `SubmitBlockedError` unless a click on `name` is allowed (no page access)."""
+    def check_click(self, name: str, role: str | None = None, *, confirm_ok: bool = True) -> None:
+        """Raise `SubmitBlockedError` unless a click on `name` is allowed (no page access).
+
+        A dialog confirm name passes only with `confirm_ok`; a download is never a dialog's
+        confirm, so it takes `allowed_controls` names alone.
+        """
         action = f"click {name!r}"
         if role is not None and role not in _CLICKABLE_ROLES:
             raise self._refuse(action, f"the role {role!r} is not one a task may click")
         if _is_denied(name, self._deny):
             raise self._refuse(action, "its name is a finalizing action")
-        if _exact(name) not in self._allowed:
+        if _exact(name) not in self._allowed and not (confirm_ok and _exact(name) in self._confirm):
             raise self._refuse(action, "the control is not declared by the task")
 
     def click(
@@ -128,7 +136,9 @@ class GuardedDriver:
         if nth is not None and (isinstance(nth, bool) or not isinstance(nth, int) or nth < 1):
             raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
         chosen, action = self._locate(name, role, wait_s, nth)
-        self._raw.checked_click(name, chosen, lambda info: self._vet_control(action, info), nth=nth)
+        self._raw.checked_click(
+            name, chosen, lambda info: self._vet_control(action, info, name), nth=nth
+        )
         return chosen
 
     def close(self) -> None:
@@ -147,7 +157,7 @@ class GuardedDriver:
         The same policy as `click`, found and vetted the same way; where the file may go and
         whether it may be kept are the caller's checks.
         """
-        chosen, action = self._locate(name, role, wait_s)
+        chosen, action = self._locate(name, role, wait_s, confirm_ok=False)
         return self._raw.checked_download(
             name,
             chosen,
@@ -248,11 +258,17 @@ class GuardedDriver:
             )
 
     def _locate(
-        self, name: str, role: str | None, wait_s: float, nth: int | None = None
+        self,
+        name: str,
+        role: str | None,
+        wait_s: float,
+        nth: int | None = None,
+        *,
+        confirm_ok: bool = True,
     ) -> tuple[str, str]:
         """Check the policy, then find `name` on the page: (the role it is in, the action)."""
         action = f"click {name!r}"
-        self.check_click(name, role)
+        self.check_click(name, role, confirm_ok=confirm_ok)
         roles = (role,) if role is not None else tuple(sorted(_CLICKABLE_ROLES))
         found = self._raw.matching_roles(name, roles, wait_s, nth=nth)
         label = role if role is not None else "control"
@@ -279,9 +295,35 @@ class GuardedDriver:
             "stop and hand the final step to the user"
         )
 
-    def _vet_control(self, action: str, info: ControlInfo) -> None:
-        """Raise if the element about to be clicked could finalize a form."""
-        reason = vet_control(info)
+    def _vet_control(self, action: str, info: ControlInfo, name: str | None = None) -> None:
+        """Raise if the element about to be clicked could finalize a form.
+
+        A name declared as a dialog confirm (and not as a plain control) is valid only inside a
+        dialog; there it is spared the submit-control check when its form is the dialog's own.
+        """
+        confirm = False
+        if name is not None and _exact(name) in self._confirm:
+            confirm = True
+            if _exact(name) not in self._allowed:
+                # Declared only as a dialog confirm: valid in a dialog whose form is its own,
+                # whatever type of button it is.
+                if not info.in_dialog:
+                    raise self._refuse(
+                        action, "it is declared as a dialog confirm and is not in a dialog"
+                    )
+                if not info.form_in_dialog:
+                    raise self._refuse(
+                        action,
+                        "it is declared as a dialog confirm and its form is not the dialog's",
+                    )
+            if info.in_dialog and not info.dialog_controls_complete:
+                raise self._refuse(action, "the dialog holds more controls than can be checked")
+            held = [text for text in info.dialog_controls if _is_denied(text, self._deny)]
+            if info.in_dialog and held:
+                # A dialog that also holds the report's own Submit is the whole report in a
+                # modal wrapper, not a small dialog with rows of its own.
+                raise self._refuse(action, "the dialog also holds a finalizing control")
+        reason = vet_control(info, dialog_confirm=confirm)
         if reason is not None:
             raise self._refuse(action, reason)
 
@@ -348,9 +390,26 @@ def is_finalizing_name(name: str, extra_deny: Sequence[str] = ()) -> bool:
     return _is_denied(name, _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny)))
 
 
-def vet_control(info: ControlInfo) -> str | None:
-    """Why clicking this element could finalize a form, or None when nothing says it could."""
-    if _is_submit_control(info):
+def validate_dialog_confirm(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
+    """Refuse a `dialog_confirm` that names a finalizing action (`Submit`, `Pay`, ...)."""
+    deny = _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny_names))
+    finalizing = sorted(name for name in names if _is_denied(name, deny))
+    if finalizing:
+        raise SubmitBlockedError(
+            "Expected dialog_confirm names that are not finalizing actions, got "
+            f"{', '.join(repr(name) for name in finalizing)}. A browser task never submits; "
+            "a confirm button can only close a dialog"
+        )
+
+
+def vet_control(info: ControlInfo, *, dialog_confirm: bool = False) -> str | None:
+    """Why clicking this element could finalize a form, or None when nothing says it could.
+
+    `dialog_confirm` spares a submit-type button the submit check, but only inside a dialog
+    whose form, if any, lies inside that dialog: it then submits the dialog's own rows. Every
+    other check (a formaction override, a script link, a submitting handler) still applies.
+    """
+    if _is_submit_control(info) and not (dialog_confirm and info.in_dialog and info.form_in_dialog):
         return "it is a submit control"
     if info.has_formaction:
         return "it carries a formaction override"

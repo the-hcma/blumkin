@@ -138,6 +138,8 @@ def test_no_task_policies_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyP
         ('[browser.tasks.expense-report]\nallowed_controls = "Add line"\n\n', "allowed_controls"),
         ("[browser.tasks.expense-report]\nallowed_controls = [1]\n\n", "allowed_controls"),
         ('[browser.tasks.expense-report]\nextra_deny_names = "x"\n\n', "extra_deny_names"),
+        ('[browser.tasks.expense-report]\ndialog_confirm = "OK"\n\n', "dialog_confirm"),
+        ("[browser.tasks.expense-report]\ndialog_confirm = [1]\n\n", "dialog_confirm"),
         ('[browser.tasks."Bad Name"]\n\n', "task name"),
         ('[browser]\ntasks = "x"\n\n', "browser.tasks"),
         ('[browser.tasks]\nexpense-report = "x"\n\n', "browser.tasks.expense-report"),
@@ -359,3 +361,19 @@ def test_there_is_no_form_get_setting_and_the_error_lists_what_is_accepted(
     with pytest.raises(ProviderConfigError, match="block_form_gets") as excinfo:
         load_config()
     assert "block_background_writes" in str(excinfo.value)
+
+
+def test_dialog_confirm_names_are_parsed_and_default_to_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\ndialog_confirm = ["OK", "Done"]\n\n'
+        "[browser.tasks.time-sheet]\n\n",
+    )
+
+    tasks = load_config().browser.tasks
+
+    assert tasks["expense-report"].dialog_confirm == ("OK", "Done")
+    assert tasks["time-sheet"].dialog_confirm == ()

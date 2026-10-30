@@ -164,9 +164,15 @@ class _Raw:
         self.calls.append(("upload", label, str(path)))
 
 
-def _guard(*allowed: str, deny: tuple[str, ...] = ()) -> tuple[_Raw, GuardedDriver]:
+def _guard(
+    *allowed: str, deny: tuple[str, ...] = (), confirm: tuple[str, ...] = ()
+) -> tuple[_Raw, GuardedDriver]:
     raw = _Raw()
-    policy = GuardPolicy(allowed_controls=frozenset(allowed), extra_deny_names=deny)
+    policy = GuardPolicy(
+        allowed_controls=frozenset(allowed),
+        dialog_confirm=frozenset(confirm),
+        extra_deny_names=deny,
+    )
     return raw, GuardedDriver(raw, policy)
 
 
@@ -721,3 +727,249 @@ def test_a_harmless_resolved_field_name_passes_the_name_check() -> None:
     raw.select_field_name = "Expense type"
 
     assert driver.select("Type", "Taxi") == "Taxi"
+
+
+# --------------------------------------------------------------------------- dialog confirm (#587)
+
+
+def _ok_button(
+    *,
+    in_dialog: bool,
+    form_in_dialog: bool,
+    has_formaction: bool = False,
+    inline_handler: str = "",
+    dialog_controls: tuple[str, ...] = (),
+    complete: bool = True,
+    input_type: str = "submit",
+) -> ControlInfo:
+    return ControlInfo(
+        tag="button",
+        input_type=input_type,
+        in_form=True,
+        in_dialog=in_dialog,
+        form_in_dialog=form_in_dialog,
+        has_formaction=has_formaction,
+        inline_handler=inline_handler,
+        dialog_controls=dialog_controls,
+        dialog_controls_complete=complete,
+    )
+
+
+def test_a_dialog_confirm_button_is_clicked_inside_a_dialog_with_its_own_form() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=True)
+
+    driver.click("OK")
+
+    assert raw.calls == [("click", "button", "OK")]
+
+
+def test_a_dialog_confirm_button_outside_any_dialog_is_refused() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=False, form_in_dialog=False)
+
+    with pytest.raises(SubmitBlockedError, match="not in a dialog"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+def test_a_dialog_nested_in_the_page_form_is_not_a_safe_place_to_confirm() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=False)
+
+    with pytest.raises(SubmitBlockedError, match="its form is not the dialog's"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+def test_the_same_name_declared_only_as_a_plain_control_stays_refused_as_a_submit() -> None:
+    raw, driver = _guard("OK")
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=True)
+
+    with pytest.raises(SubmitBlockedError, match="submit control"):
+        driver.click("OK")
+
+
+def test_a_name_that_is_not_declared_at_all_is_still_refused() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["Close"] = _ok_button(in_dialog=True, form_in_dialog=True)
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Close")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"has_formaction": True}, {"inline_handler": "this.form.submit()"}],
+)
+def test_a_dialog_confirm_is_still_refused_with_a_formaction_or_a_submitting_handler(
+    extra: dict[str, Any],
+) -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=True, **extra)
+
+    with pytest.raises(SubmitBlockedError):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize("name", ["Submit", "Pay now", "Send", "Confirm payment", "File report"])
+def test_a_finalizing_name_can_never_be_a_dialog_confirm(name: str) -> None:
+    with pytest.raises(SubmitBlockedError, match="not finalizing"):
+        _guard(confirm=(name,))
+
+
+def test_a_task_extra_deny_name_cannot_be_a_dialog_confirm_either() -> None:
+    with pytest.raises(SubmitBlockedError, match="not finalizing"):
+        _guard(confirm=("Release",), deny=("release",))
+
+
+def test_a_dialog_confirm_never_unlocks_the_report_own_submit_button() -> None:
+    raw, driver = _guard("Add line", confirm=("OK",))
+    raw.controls["Submit"] = _ok_button(in_dialog=True, form_in_dialog=True)
+
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Submit")
+
+    assert raw.calls == []
+
+
+def test_a_modal_wrapped_around_the_whole_report_does_not_qualify() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(
+        in_dialog=True, form_in_dialog=True, dialog_controls=("Add line", "OK", "Submit report")
+    )
+
+    with pytest.raises(SubmitBlockedError, match="finalizing control"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+def test_a_small_dialog_with_its_own_buttons_qualifies() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(
+        in_dialog=True, form_in_dialog=True, dialog_controls=("Add", "Cancel", "OK")
+    )
+
+    driver.click("OK")
+
+    assert raw.calls == [("click", "button", "OK")]
+
+
+def test_a_confirm_only_name_cannot_start_a_download(tmp_path: Path) -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = ControlInfo(
+        tag="button", input_type="button", in_form=False, in_dialog=True, form_in_dialog=True
+    )
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.download("OK", save_to=tmp_path)
+
+    assert raw.calls == []
+
+
+def test_check_click_accepts_a_confirm_name_but_not_when_a_download_asks() -> None:
+    _, driver = _guard(confirm=("OK",))
+
+    driver.check_click("OK")
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.check_click("OK", confirm_ok=False)
+
+
+def test_a_name_in_both_lists_is_spared_in_a_dialog_and_a_plain_control_elsewhere() -> None:
+    raw, driver = _guard("OK", confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=True)
+    driver.click("OK")
+    raw.controls["OK"] = _ok_button(in_dialog=False, form_in_dialog=False)
+
+    with pytest.raises(SubmitBlockedError, match="submit control"):
+        driver.click("OK")
+
+
+def test_a_submit_input_in_a_dialog_is_spared_like_a_submit_button() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = ControlInfo(
+        tag="input", input_type="submit", in_form=True, in_dialog=True, form_in_dialog=True
+    )
+
+    driver.click("OK")
+
+    assert raw.calls == [("click", "button", "OK")]
+
+
+def test_nth_picks_a_match_but_each_match_is_vetted_on_its_own() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=False, form_in_dialog=False)
+
+    with pytest.raises(SubmitBlockedError, match="not in a dialog"):
+        driver.click("OK", nth=2)
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+# --------------------------------------------------------------------------- review (#587)
+
+
+def test_a_confirm_only_ok_that_is_a_plain_button_still_needs_the_dialogs_own_form() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=False, input_type="button")
+
+    with pytest.raises(SubmitBlockedError, match="its form is not the dialog's"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+def test_a_name_that_is_also_a_plain_control_keeps_the_ordinary_rules_for_a_plain_button() -> None:
+    raw, driver = _guard("OK", confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=False, input_type="button")
+
+    driver.click("OK")
+
+    assert raw.calls == [("click", "button", "OK")]
+
+
+def test_a_dialog_with_more_controls_than_could_be_collected_does_not_qualify() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(
+        in_dialog=True, form_in_dialog=True, dialog_controls=("Add", "OK"), complete=False
+    )
+
+    with pytest.raises(SubmitBlockedError, match="more controls than can be checked"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("OK", "Submit report"),
+        ("OK", "\u2713", "Submit"),  # an icon button whose aria-label is the finalizing word
+        ("OK", "pay-button"),  # an id or name that says what the button does
+        ("OK", "Cancel", "Send for approval"),
+    ],
+)
+def test_any_name_a_dialog_control_goes_by_that_is_finalizing_disqualifies_the_dialog(
+    names: tuple[str, ...],
+) -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(in_dialog=True, form_in_dialog=True, dialog_controls=names)
+
+    with pytest.raises(SubmitBlockedError, match="finalizing control"):
+        driver.click("OK")
+
+
+def test_an_icon_only_control_with_no_finalizing_name_does_not_disqualify_the_dialog() -> None:
+    raw, driver = _guard(confirm=("OK",))
+    raw.controls["OK"] = _ok_button(
+        in_dialog=True, form_in_dialog=True, dialog_controls=("OK", "\u00d7", "Close", "close-x")
+    )
+
+    driver.click("OK")
+
+    assert raw.calls == [("click", "button", "OK")]

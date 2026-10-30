@@ -149,6 +149,18 @@ class ControlInfo:
     inline_handler: str = ""
     #: Where a link opens: empty or `_self` stays in the window, anything else opens another.
     target: str = ""
+    #: The element sits inside a dialog (`<dialog>`, `role=dialog`, `alertdialog` or a modal).
+    in_dialog: bool = False
+    #: Inside a dialog, and its form (if it has one) lies inside that same dialog: the click
+    #: can only submit the dialog's own form, never a page-level one the dialog sits in.
+    form_in_dialog: bool = False
+    #: Every name the button-like controls inside that dialog go by (accessible-name sources:
+    #: aria-labelledby, aria-label, text, value, title, id, name), so the guard can tell a small
+    #: dialog from a modal wrapped around the whole report and its own Submit.
+    dialog_controls: tuple[str, ...] = ()
+    #: False when the dialog held more controls, or longer names, than were collected: nothing
+    #: can then be said about what the dialog holds.
+    dialog_controls_complete: bool = True
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
@@ -807,6 +819,10 @@ class PlaywrightDriver:
             href=str(raw["href"]),
             inline_handler=str(raw["onclick"]),
             target=str(raw.get("target", "")),
+            in_dialog=bool(raw.get("dialog", False)),
+            form_in_dialog=bool(raw.get("formInDialog", False)),
+            dialog_controls=tuple(str(text) for text in raw.get("dialogControls", ()) or ()),
+            dialog_controls_complete=bool(raw.get("dialogComplete", True)),
         )
 
     def _field(self, scope: Any, label: str, target: FieldTarget) -> Any:
@@ -1308,13 +1324,39 @@ _SELECTED_TEXT_JS = (
 )
 
 _DESCRIBE_CONTROL_JS = (
-    "(e) => ({tag: e.tagName.toLowerCase(), "
-    "type: String(e.type || '').toLowerCase(), "
+    "(e) => { const sel = 'dialog, [role=dialog], [role=alertdialog]'; "
+    "const d = e.closest(sel); "
+    "const text = (n) => (n ? String(n.innerText || n.textContent || '').trim() : ''); "
+    "const names = []; let complete = true; "
+    "if (d) { const all = Array.from(d.querySelectorAll("
+    '"button, a, summary, [onclick], input[type=submit], input[type=button], '
+    "input[type=image], input[type=reset], "
+    "[role=button], [role=link], [role=menuitem], [role=menuitemradio], "
+    "[role=menuitemcheckbox], [role=tab], [role=option], [role=switch], "
+    '[role=checkbox], [role=radio]")); '
+    "if (all.length > 200) complete = false; "
+    "if (Array.from(d.querySelectorAll('*')).some((n) => n.shadowRoot)) complete = false; "
+    "for (const b of all.slice(0, 200)) { "
+    "const root = b.getRootNode(); "
+    "const find = (id) => (root.getElementById ? root.getElementById(id) : null); "
+    "const by = (b.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean)"
+    ".map((id) => text(find(id))).join(' '); "
+    "const kids = Array.from(b.querySelectorAll('[aria-label], [alt], [title], svg title'))"
+    ".map((k) => k.getAttribute('aria-label') || k.getAttribute('alt') || "
+    "k.getAttribute('title') || k.textContent); "
+    "for (const raw of [by, b.getAttribute('aria-label'), b.innerText, b.value, b.title, "
+    "b.getAttribute('alt'), b.id, b.getAttribute('name'), ...kids]) { "
+    "const t = String(raw || '').trim(); if (!t) continue; "
+    "if (t.length > 200) complete = false; names.push(t.slice(0, 200)); } } } "
+    "const f = e.form || e.closest('form'); "
+    "return {tag: e.tagName.toLowerCase(), type: String(e.type || '').toLowerCase(), "
     "form: !!e.form, "
     "formaction: e.hasAttribute('formaction') || e.hasAttribute('formmethod'), "
     "href: String(e.getAttribute('href') || ''), "
     "onclick: String(e.getAttribute('onclick') || ''), "
-    "target: String(e.getAttribute('target') || '')})"
+    "target: String(e.getAttribute('target') || ''), "
+    "dialog: !!d, formInDialog: !!d && (!f || d.contains(f)), "
+    "dialogControls: names, dialogComplete: complete}; }"
 )
 
 

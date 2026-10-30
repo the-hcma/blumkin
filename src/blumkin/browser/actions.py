@@ -32,7 +32,13 @@ from blumkin.browser.cdp import (
     field_matches,
 )
 from blumkin.browser.commands import TaskNotFoundError
-from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError, attach_guarded
+from blumkin.browser.guard import (
+    GuardedDriver,
+    GuardPolicy,
+    SubmitBlockedError,
+    attach_guarded,
+    validate_dialog_confirm,
+)
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.profiles import load_profile
 from blumkin.browser.teams import merge_chunks, transcription_stopped_after_capture
@@ -728,9 +734,12 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
     declared = config.browser.tasks.get(task)
     if declared is None:
         return GuardPolicy()
+    # Before any browser is touched: a finalizing name cannot be a dialog confirm.
+    validate_dialog_confirm(declared.dialog_confirm, declared.extra_deny_names)
     return GuardPolicy(
         allowed_controls=frozenset(declared.allowed_controls),
         block_background_writes=declared.block_background_writes,
+        dialog_confirm=frozenset(declared.dialog_confirm),
         extra_deny_names=declared.extra_deny_names,
     )
 

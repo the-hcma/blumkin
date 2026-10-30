@@ -156,6 +156,11 @@ class BrowserTaskPolicy:
     #: Folders `download` may save into (absolute, or starting with `~/`). Empty means no
     #: download at all: the default is deny.
     download_dirs: tuple[str, ...] = ()
+    #: Exact accessible names of buttons that confirm a dialog's own rows (an attachments
+    #: dialog's `OK`). Such a button may be clicked only inside a dialog whose form, if it has
+    #: one, lies inside that dialog; the same name anywhere else is refused. A finalizing name
+    #: (`Submit`, `Pay`, ...) can never be declared here.
+    dialog_confirm: tuple[str, ...] = ()
     #: Added to the built-in finalizing words; the built-in list can never be shortened.
     extra_deny_names: tuple[str, ...] = ()
     #: Folders `upload` may read from (absolute, or starting with `~/`). Empty means no
@@ -583,6 +588,7 @@ _TASK_POLICY_KEYS = frozenset(
         "allowed_controls",
         "allowed_hosts",
         "block_background_writes",
+        "dialog_confirm",
         "download_dirs",
         "extra_deny_names",
         "upload_dirs",
@@ -731,6 +737,7 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
             allowed_controls=_string_list(
                 table.get("allowed_controls"), f"{prefix}.allowed_controls"
             ),
+            dialog_confirm=_string_list(table.get("dialog_confirm"), f"{prefix}.dialog_confirm"),
             extra_deny_names=_string_list(
                 table.get("extra_deny_names"), f"{prefix}.extra_deny_names"
             ),
