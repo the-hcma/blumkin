@@ -546,3 +546,75 @@ def test_mail_export_reports_a_missing_browser_with_the_export_failed_envelope(
     assert result.exit_code == 1
     assert "export_failed" in result.output
     assert "graph_error" not in result.output
+
+
+def test_a_pixel_removal_cannot_rebuild_a_meta_refresh(tmp_path: Path) -> None:
+    broken = (
+        '<me<img width="1" height="1" src="x">ta http-equiv="refresh" '
+        'content="0;url=https://x.example/"><p>Total 5.00</p>'
+    )
+    seen: list[str] = []
+
+    def render(html_path: Path, pdf_path: Path) -> None:
+        seen.append(html_path.read_text())
+        pdf_path.write_bytes(b"%PDF")
+
+    _, read = _fake_renderer("Total 5.00", images=0)
+
+    asyncio.run(
+        export_message(
+            _Provider(body=broken),
+            message_id="m",
+            out_dir=tmp_path,
+            renderer=render,
+            pdf_reader=read,
+        )
+    )
+
+    assert "refresh" not in seen[0]
+
+
+def test_an_image_hidden_by_an_inline_style_is_not_expected_in_the_pdf() -> None:
+    html = '<img src="https://x.example/a.png" style="display:none"><img src="https://x.example/b.png">'
+
+    assert count_loadable_images(sanitize_html(html)) == 1
+
+
+def test_a_later_declaration_that_shows_the_element_wins() -> None:
+    html = '<div style="display:none;display:block">TOTAL $18.50</div>'
+
+    assert "TOTAL $18.50" in html_to_text(sanitize_html(html))
+
+
+def test_an_important_hidden_declaration_beats_a_later_plain_one() -> None:
+    html = '<div style="display:none !important;display:block">hidden</div><p>kept</p>'
+
+    assert html_to_text(sanitize_html(html)).splitlines() == ["kept"]
+
+
+def test_a_visible_child_inside_a_visibility_hidden_parent_is_kept() -> None:
+    html = (
+        '<div style="visibility:hidden"><span style="visibility:visible">Total $18.50</span></div>'
+    )
+
+    assert "Total $18.50" in html_to_text(sanitize_html(html))
+
+
+def test_br_and_hr_with_attributes_still_break_lines() -> None:
+    text = html_to_text('Receipt<hr class="x">Total<br clear="all">$18.50')
+
+    assert text.splitlines() == ["Receipt", "Total", "$18.50"]
+
+
+def test_non_latin_receipt_text_is_compared_too(tmp_path: Path) -> None:
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"%PDF")
+    txt = tmp_path / "r.txt"
+    txt.write_text("المجموع ١٨٫٥٠ ريال\n")
+
+    def read(_: Path) -> dict[str, Any]:
+        return {"images": 0, "page_texts": ["something else entirely"]}
+
+    result = check_pdf(pdf, text_path=txt, expected_images=0, pdf_reader=read)
+
+    assert result["ok"] is False

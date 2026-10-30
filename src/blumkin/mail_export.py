@@ -141,7 +141,9 @@ async def export_message(
         body = (
             f'<pre style="white-space:pre-wrap;font-family:monospace">{html_lib.escape(body)}</pre>'
         )
+    # Removing a pixel can join the text around it into a new tag, so sanitize again after.
     cleaned, removed = strip_tracking_pixels(sanitize_html(body))
+    cleaned = sanitize_html(cleaned)
     document = _as_document(cleaned)
     stem = _safe_stem(name) if name else _default_stem(message)
     folder = out_dir.expanduser()
@@ -318,16 +320,18 @@ _CONTENT_SECURITY_POLICY = (
     "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; font-src data:"
 )
 _DROPPED_BLOCKS = re.compile(r"<(script|style|head)\b.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
+_HIDDEN_IMG = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
 _HIDDEN_OPEN = re.compile(
-    r"<(div|span|p|td|font|a)\b[^>]*\bstyle\s*=\s*[\"'][^\"']*"
-    r"(?:display\s*:\s*none|visibility\s*:\s*hidden|mso-hide\s*:\s*all|opacity\s*:\s*0(?![.\d]))"
-    r"[^\"']*[\"'][^>]*>",
+    r"<(div|span|p|td|font|a)\b[^>]*?\bstyle\s*=\s*(?:\"([^\"]*)\"|'([^']*)')[^>]*>",
     re.IGNORECASE,
 )
+_STYLE_ATTR = re.compile(r"""\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
+_VISIBLE_AGAIN = re.compile(r"visibility\s*:\s*visible", re.IGNORECASE)
 _HEAD_BLOCK = re.compile(r"<head\b.*?</head\s*>", re.DOTALL | re.IGNORECASE)
 _IMG_TAG = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
 _LINE_BREAKS = re.compile(
-    r"<br\s*/?>|</?(?:p|div|tr|li|ul|ol|h[1-6]|table|tbody|thead|blockquote|pre|section|article)\b[^>]*>",
+    r"<(?:br|hr)\b[^>]*>"
+    r"|</?(?:p|div|tr|li|ul|ol|h[1-6]|table|tbody|thead|blockquote|pre|section|article)\b[^>]*>",
     re.IGNORECASE,
 )
 _LINKED_TAGS = re.compile(r"<(?:link|base|meta)\b[^>]*>", re.IGNORECASE)
@@ -374,9 +378,19 @@ def _default_stem(message: dict[str, Any]) -> str:
 
 
 def _drop_hidden(html: str) -> str:
-    """Remove each element hidden by an inline style, with everything nested inside it."""
+    """Remove each element hidden by an inline style, with everything nested inside it.
+
+    A hidden declaration counts only when it is the one that wins in that style attribute, and
+    a `visibility:hidden` subtree that turns `visibility:visible` again is left alone: keeping
+    some hidden text is safer than deleting an amount the page shows.
+    """
+    html = _HIDDEN_IMG.sub(lambda tag: " " if _style_hides(tag.group(0))[0] else tag.group(0), html)
     searched = 0
     while match := _HIDDEN_OPEN.search(html, searched):
+        hides, only_visibility = _style_hides(match.group(0))
+        if not hides:
+            searched = match.end()
+            continue
         same_tag = re.compile(rf"<(/?){match.group(1)}\b[^>]*>", re.IGNORECASE)
         depth = 1
         end = match.end()
@@ -390,6 +404,9 @@ def _drop_hidden(html: str) -> str:
             html = html[: match.start()] + html[match.end() :]
             searched = match.start()
             continue
+        if only_visibility and _VISIBLE_AGAIN.search(html, match.end(), end):
+            searched = match.end()
+            continue
         html = html[: match.start()] + " " + html[end:]
         searched = match.start()
     return html
@@ -401,6 +418,27 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _style_hides(tag: str) -> tuple[bool, bool]:
+    """Whether the tag's style attribute ends up hiding it, and whether only visibility does."""
+    found = _STYLE_ATTR.search(tag)
+    if found is None:
+        return False, False
+    final: dict[str, tuple[str, bool]] = {}
+    for declaration in (found.group(1) or found.group(2) or "").split(";"):
+        name, _, value = declaration.partition(":")
+        value = value.strip().lower()
+        important = value.endswith("!important")
+        value = value.removesuffix("!important").strip()
+        key = name.strip().lower()
+        if key and (key not in final or important or not final[key][1]):
+            final[key] = (value, important)
+    display = final.get("display", ("", False))[0] == "none"
+    visibility = final.get("visibility", ("", False))[0] == "hidden"
+    mso = final.get("mso-hide", ("", False))[0] == "all"
+    opacity = final.get("opacity", ("", False))[0] in {"0", "0.0"}
+    return display or visibility or mso or opacity, visibility and not (display or mso or opacity)
 
 
 def _is_pixel(tag: str) -> bool:
@@ -417,4 +455,4 @@ def _safe_stem(name: str) -> str:
 
 
 def _words(text: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9$.,]{2,}", text.lower()))
+    return set(re.findall(r"[\w$.,]{2,}", text.lower()))
