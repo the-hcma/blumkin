@@ -114,7 +114,7 @@ _MAX_EXTRACTED_BYTES = 1_000_000
 _MAX_FILE_BYTES = 25_000_000
 _NEGATIVE_EVIDENCE = re.compile(
     r"(?<![\d/])[-\u2212\u2013]\s*[$\u20ac\u00a3]?\s*\d|\d\s*[-\u2212\u2013]\s*(?:$|\s)|"
-    r"\(\s*[$\u20ac\u00a3]?\s*\d|\bCR\b|\bcredit\b|\brefund",
+    r"\(\s*[$\u20ac\u00a3]?\s*\d|\bCR\b|\bcredit\s+(?:note|memo)\b|\brefund",
     re.IGNORECASE | re.MULTILINE,
 )
 _OCR_EXTRA_HINT = "docs read --ocr needs the ocr extra: uv tool install -e '.[pdf,ocr]'"
@@ -303,7 +303,12 @@ def _best_ocr_text(image: Any, pytesseract: Any) -> str:
     except Exception:  # noqa: BLE001 - the plain read below still stands
         pass
     candidates.append(str(pytesseract.image_to_string(image)).strip())
-    if len(candidates) == 2 and any(_has_negative_evidence(text) for text in candidates):
+    same = " ".join(candidates[0].split()) == " ".join(candidates[-1].split())
+    if (
+        len(candidates) == 2
+        and not same
+        and any(_has_negative_evidence(text) for text in candidates)
+    ):
         return "\n".join(candidates)
     # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
     return max(candidates, key=lambda text: sum(char.isalnum() for char in text))

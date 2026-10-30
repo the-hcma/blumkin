@@ -536,3 +536,23 @@ def test_new_since_looks_at_arrival_alone_not_at_a_later_modification() -> None:
             )
 
     assert _receipt_file(Entry(), None, time.time() - 1800) is None  # type: ignore[arg-type]
+
+
+def test_two_identical_reads_are_not_joined_even_with_negative_looking_words() -> None:
+    from types import SimpleNamespace
+
+    receipt = "ACME\nPaid by CREDIT CARD\nTOTAL $12.50 (incl. tax)"
+
+    def image_to_string(image: object, config: str | None = None) -> str:
+        return receipt
+
+    text = docs_read._best_ocr_text(
+        Image.new("RGB", (100, 100)), SimpleNamespace(image_to_string=image_to_string)
+    )
+
+    assert text == receipt
+
+
+def test_a_credit_card_line_is_not_negative_evidence_but_a_credit_note_is() -> None:
+    assert not docs_read._has_negative_evidence("Paid by CREDIT CARD")
+    assert docs_read._has_negative_evidence("CREDIT NOTE 12.50")
