@@ -1908,3 +1908,20 @@ def test_an_option_that_is_simply_unknown_gets_no_placement_hint() -> None:
 
     assert result.exit_code == EXIT_USAGE
     assert "before the subcommand" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("args", "leaf"),
+    [
+        (["loop", "--profile", "work", "init"], "loop init --profile VALUE"),
+        (["mcp", "--profile", "work", "serve"], "mcp serve --profile VALUE"),
+    ],
+)
+def test_a_group_whose_subcommands_own_profile_points_at_the_subcommand(
+    args: list[str], leaf: str
+) -> None:
+    result = CliRunner().invoke(main, args)
+
+    assert result.exit_code == EXIT_USAGE
+    assert f"`blumkin {leaf}`" in result.output
+    assert "put it before the subcommand" not in result.output
