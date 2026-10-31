@@ -45,6 +45,7 @@ from blumkin.browser.cdp import (
     FrameInfo,
     PageText,
     RawBrowserDriver,
+    UploadObservation,
     attach,
 )
 from blumkin.browser.profiles import BrowserProfile
@@ -258,9 +259,11 @@ class GuardedDriver:
             lambda name: self._vet_field_name(action, name),
         )
 
-    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None:
+    def upload(
+        self, label: str, path: Path, target: FieldTarget | None = None
+    ) -> UploadObservation:
         self._check_target(target)
-        self._raw.upload(label, path, target)
+        return self._raw.upload(label, path, target)
 
     def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> AbstractContextManager[None]:
         """Let identity-provider requests past the safety net while the user signs in by hand."""

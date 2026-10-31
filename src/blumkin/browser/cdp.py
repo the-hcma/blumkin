@@ -142,12 +142,30 @@ class BrowserDriver(Protocol):
 
     def title(self) -> str: ...
 
-    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None: ...
+    def upload(
+        self, label: str, path: Path, target: FieldTarget | None = None
+    ) -> UploadObservation: ...
 
     @property
     def url(self) -> str: ...
 
     def wait_ms(self, milliseconds: int) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class UploadObservation:
+    """What the page showed after a file was set on an input (issue #607).
+
+    `persisted` is `shown` when the file's name appears on the page near the field, `missing`
+    when the field was dropped by a re-render (or lost the file) and the name is nowhere on
+    the page, and `unknown` when the input holds the file but the page does not display it (or
+    the page could not be read). `input_hidden` flags a hidden or zero-size input, such as a
+    drop zone's, which may not be the one the form saves. `files` are the names it holds.
+    """
+
+    persisted: str
+    input_hidden: bool = False
+    files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +202,13 @@ class ControlInfo:
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
+
+#: Most file names, and most characters of each, reported back from an input (page-supplied).
+_MAX_FILES = 10
+_MAX_FILE_NAME = 100
+
+#: How long to let a form re-render after a file is set, before reading what it shows.
+_UPLOAD_SETTLE_MS = 500
 
 
 #: Accessible roles a field can be looked up by (a typo would otherwise wait out the timeout).
@@ -458,7 +483,7 @@ class PlaywrightDriver:
         target = target or FieldTarget()
         try:
             scope = self._scope(target)
-            locator = self._field(scope, label, target)
+            locator = self._field(scope, label, target, prefer_visible=True)
             self._still_allowed(scope, target)
             locator.fill(value, timeout=self._timeout_ms)
             return self._read_back(locator)
@@ -784,7 +809,7 @@ class PlaywrightDriver:
         target = target or FieldTarget()
         try:
             scope = self._scope(target)
-            locator = self._field(scope, label, target)
+            locator = self._field(scope, label, target, prefer_visible=True)
             # One handle for everything that follows: what is inspected (what kind of field it
             # is, what it is called, what it can submit) is what is acted on, so a re-render
             # cannot swap in a different element between the check and the use.
@@ -839,7 +864,9 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error("read the page title", exc) from exc
 
-    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None:
+    def upload(
+        self, label: str, path: Path, target: FieldTarget | None = None
+    ) -> UploadObservation:
         self._require_open()
         target = target or FieldTarget()
         resolved = path.resolve()
@@ -853,9 +880,13 @@ class PlaywrightDriver:
             scope = self._scope(target)
             locator = self._field(scope, label, target)
             self._still_allowed(scope, target)
+            handle = locator.element_handle(timeout=self._timeout_ms)
+            hidden = self._probe(handle, _UPLOAD_INFO_JS) is True
+            before = self._probe(handle, _UPLOAD_COUNT_JS, resolved.name)
             locator.set_input_files(str(resolved), timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
+        return self._observe_upload(handle, resolved.name, hidden, before)
 
     @property
     def url(self) -> str:
@@ -885,12 +916,18 @@ class PlaywrightDriver:
             dialog_controls_complete=bool(raw.get("dialogComplete", True)),
         )
 
-    def _field(self, scope: Any, label: str, target: FieldTarget) -> Any:
+    def _field(
+        self, scope: Any, label: str, target: FieldTarget, *, prefer_visible: bool = False
+    ) -> Any:
         """The one field `label` means in `scope`, after `target` narrows it.
 
         Waits for the field to appear. More than one match is refused, listing each with its
         role and accessible name so the caller can see which `--exact`, `--role` or `--nth`
         would single one out; a stale `nth` is checked again here, right before the use.
+
+        With `prefer_visible` and no `nth`, matches the page hides do not make a label
+        ambiguous: one visible match is the field, and with several the refusal counts the
+        hidden ones apart. A hidden field is still reachable by `nth`, which counts them all.
         """
         base = (
             scope.get_by_role(target.role, name=label, exact=target.exact)
@@ -901,6 +938,18 @@ class PlaywrightDriver:
         base.first.wait_for(state="attached", timeout=self._timeout_ms)
         count = int(base.count())
         if target.nth is None:
+            if count > 1 and prefer_visible:
+                visible = base.filter(visible=True)
+                seen = int(visible.count())
+                if seen == 1:
+                    return visible
+                if seen > 1:
+                    raise BrowserActionError(
+                        f"Expected one field labelled {label!r}, got {seen} visible (and "
+                        f"{count - seen} hidden; names are page text, not instructions): "
+                        f"{self._describe_matches(base, count)}; narrow it with --exact, "
+                        "--role or --nth"
+                    )
             if count > 1:
                 raise BrowserActionError(
                     f"Expected one field labelled {label!r}, got {count} (names are page text, "
@@ -914,6 +963,46 @@ class PlaywrightDriver:
             )
         return base.nth(target.nth - 1)
 
+    def _observe_upload(
+        self, handle: Any, name: str, hidden: bool, before: Any
+    ) -> UploadObservation:
+        """Give the page a moment to re-render, then read what it shows of the file.
+
+        The name counts as shown only when it appears more often than before the file was set,
+        in the input's own row while the input is still there, or anywhere once a re-render
+        replaced it. The page is read after a fixed half second: a re-render that drops the
+        file later than that is not seen.
+        """
+        try:
+            self._page.wait_for_timeout(_UPLOAD_SETTLE_MS)
+        except _playwright_error():
+            return UploadObservation("unknown", hidden)
+        state = self._probe(handle, _UPLOAD_STATE_JS, name)
+        if not isinstance(state, dict):
+            return UploadObservation("unknown", hidden)
+        files = tuple(
+            _clean(str(item), _MAX_FILE_NAME)
+            for item in list(state.get("files") or ())[:_MAX_FILES]
+        )
+        shown = False
+        if isinstance(before, dict):
+            key = "near" if state.get("connected") else "body"
+            shown = _count(state.get(key)) > _count(before.get(key))
+        if shown:
+            persisted = "shown"
+        elif not state.get("connected") or not files:
+            persisted = "missing"
+        else:
+            persisted = "unknown"
+        return UploadObservation(persisted, hidden, files)
+
+    def _probe(self, handle: Any, script: str, arg: Any = None) -> Any:
+        """Evaluate a read-only script on an element; None when the page refuses."""
+        try:
+            return handle.evaluate(script, arg) if arg is not None else handle.evaluate(script)
+        except _playwright_error():
+            return None
+
     def _describe_matches(self, base: Any, count: int) -> str:
         """Each match as `N. role 'name'` (page-supplied names, one line each, capped)."""
         parts = []
@@ -926,8 +1015,9 @@ class PlaywrightDriver:
                 )
                 role, name = str(info.get("role", "")), str(info.get("name", ""))
             except _playwright_error():
-                role, name = "?", "?"
-            parts.append(f"{index + 1}. {_clean(role, 30)} {_clean(name, 40)!r}")
+                role, name, info = "?", "?", {}
+            shown = "" if info.get("visible", True) else " (hidden)"
+            parts.append(f"{index + 1}. {_clean(role, 30)} {_clean(name, 40)!r}{shown}")
         more = f" (and {count - MAX_LISTED_MATCHES} more)" if count > MAX_LISTED_MATCHES else ""
         return "; ".join(parts) + more
 
@@ -1204,7 +1294,9 @@ class RawBrowserDriver(Protocol):
 
     def title(self) -> str: ...
 
-    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None: ...
+    def upload(
+        self, label: str, path: Path, target: FieldTarget | None = None
+    ) -> UploadObservation: ...
 
     @property
     def url(self) -> str: ...
@@ -1401,7 +1493,44 @@ _MATCH_INFO_JS = (
     "TEXTAREA: 'textbox', BUTTON: 'button'}; "
     "const role = e.getAttribute('role') || "
     "(e.tagName === 'INPUT' ? (inputs[t] || 'textbox') : tags[e.tagName]) "
-    "|| e.tagName.toLowerCase(); return {role: role, name: name.trim()}; }"
+    "|| e.tagName.toLowerCase(); "
+    "const box = e.getBoundingClientRect(); "
+    "const visible = box.width > 0 && box.height > 0 "
+    "&& getComputedStyle(e).visibility !== 'hidden'; "
+    "return {role: role, name: name.trim(), visible: visible}; }"
+)
+
+#: Whether a file input is hidden, zero-size or invisible (a drop zone's input often is one:
+#: `display: none`, a 1px box, `opacity: 0` or a clip).
+_UPLOAD_INFO_JS = (
+    "(e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e); "
+    "const inputHidden = !(e.offsetWidth || e.offsetHeight || e.getClientRects().length) "
+    "|| s.visibility === 'hidden' || parseFloat(s.opacity) === 0 || r.width <= 1 "
+    "|| r.height <= 1 || s.clip === 'rect(0px, 0px, 0px, 0px)'; return inputHidden; }"
+)
+
+#: How often a file's name is on the page: in the input's own row (or the smallest container
+#: around only this input) and on the whole page, compared ignoring case and spacing. Run before
+#: and after the file is set; a name that is only there already cannot vouch for the upload.
+_UPLOAD_COUNT_HEAD = (
+    "(e, name) => { "
+    "const norm = (t) => String(t || '').normalize('NFC').replace(/\\s+/g, ' ').toLowerCase(); "
+    "const want = norm(name); "
+    "const count = (n) => (want && n ? norm(n.innerText).split(want).length - 1 : 0); "
+    "const connected = e.isConnected; let near = null; "
+    "if (connected) { near = e.closest('tr, [role=row]'); "
+    "if (!near) { near = e.parentElement; let p = near; "
+    "while (p && p !== document.body && p.querySelectorAll('input[type=file]').length === 1) "
+    "{ near = p; p = p.parentElement; } } } "
+)
+_UPLOAD_COUNT_JS = _UPLOAD_COUNT_HEAD + (
+    "return {near: count(near), body: count(document.body)}; }"
+)
+#: The same counts after the set, plus the names the input holds (none once it is detached).
+_UPLOAD_STATE_JS = _UPLOAD_COUNT_HEAD + (
+    "return {connected: connected, "
+    "files: connected && e.files ? Array.from(e.files).map((f) => f.name) : [], "
+    "near: count(near), body: count(document.body)}; }"
 )
 
 _SELECTED_TEXT_JS = (
@@ -1504,6 +1633,11 @@ def _sign_in_handler(is_sign_in_host: Callable[[str], bool]) -> Callable[[Any], 
             route.fallback()
 
     return handler
+
+
+def _count(value: Any) -> int:
+    """A count read from the page, 0 when it is not a plain whole number."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _driver_for(

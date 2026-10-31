@@ -49,8 +49,16 @@ class _Handle:
     def click(self, *, timeout: float, no_wait_after: bool = False) -> None:
         self._page.calls.append(("handle-click", timeout, no_wait_after))
 
-    def evaluate(self, script: str) -> Any:
+    def evaluate(self, script: str, arg: Any = None) -> Any:
         self._page.calls.append(("handle-evaluate",))
+        if "inputHidden" in script:
+            return self._page.upload_hidden
+        if "isConnected" in script and "e.files" in script:
+            if self._page.upload_state_error is not None:
+                raise self._page.upload_state_error
+            return self._page.upload_state
+        if "isConnected" in script:
+            return self._page.upload_before
         if "aria-haspopup" in script and self._label:
             self._page.dropdown_reads += 1
             popups = self._page.popups_after_open if self._page.dropdown_reads > 1 else None
@@ -71,16 +79,23 @@ class _Handle:
 
 
 class _Locator:
-    def __init__(self, page: _Page, label: str, role: str = "") -> None:
+    def __init__(self, page: _Page, label: str, role: str = "", visible: bool = False) -> None:
         self._page = page
         self._label = label
         self._role = role
+        self._visible = visible
+
+    def filter(self, *, visible: bool) -> _Locator:
+        self._page.calls.append(("filter-visible", self._label, visible))
+        return _Locator(self._page, self._label, self._role, visible=visible)
 
     @property
     def first(self) -> _Locator:
         return self
 
     def count(self) -> int:
+        if self._visible and self._label in self._page.visible_counts:
+            return self._page.visible_counts[self._label]
         if not self._role:
             return self._page.label_counts.get(self._label, 1)
         counts = self._page.role_counts.get((self._role, self._label), [0])
@@ -195,6 +210,19 @@ class _Page:
         #: Successive `{role, name}` answers for the ambiguity listing.
         self.match_infos: list[dict[str, Any]] = []
         self.tags: dict[str, str] = {}
+        #: How many of a label's matches are visible (default: all of them).
+        self.visible_counts: dict[str, int] = {}
+        #: What the upload probes report: a hidden input, and the state after the file is set.
+        self.upload_hidden = False
+        #: The name counts before the file is set, and the state read after it.
+        self.upload_before: dict[str, Any] = {"near": 0, "body": 0}
+        self.upload_state: dict[str, Any] = {
+            "connected": True,
+            "files": ["receipt.png"],
+            "near": 1,
+            "body": 1,
+        }
+        self.upload_state_error: Exception | None = None
 
     def get_by_label(self, label: str, *, exact: bool = False) -> _Locator:
         self.calls.append(("get_by_label", label, exact)) if exact else None
@@ -419,7 +447,7 @@ def test_upload_attaches_an_existing_file(tmp_path: Path) -> None:
     receipt.write_bytes(b"png")
     pw, driver = _driver()
     driver.upload("Receipt", receipt)
-    assert pw.page.calls == [("upload", "Receipt", str(receipt.resolve()), 30000.0)]
+    assert ("upload", "Receipt", str(receipt.resolve()), 30000.0) in pw.page.calls
 
 
 def test_upload_refuses_a_missing_file_and_a_directory(tmp_path: Path) -> None:
@@ -2618,3 +2646,162 @@ def test_the_sign_in_route_continues_only_traffic_to_or_from_a_sign_in_host(
     handler(route)
 
     assert route.outcome == outcome
+
+
+# --------------------------------------------------------------------------- upload, hidden (#607)
+
+
+def _receipt(tmp_path: Path) -> Path:
+    receipt = tmp_path / "receipt.png"
+    receipt.write_bytes(b"png")
+    return receipt
+
+
+def test_an_upload_reports_that_the_page_shows_the_file(tmp_path: Path) -> None:
+    pw, driver = _driver()
+
+    seen = driver.upload("Receipt", _receipt(tmp_path))
+
+    assert (seen.persisted, seen.input_hidden, seen.files) == ("shown", False, ("receipt.png",))
+    assert any(call[0] == "wait" for call in pw.page.calls)  # a re-render gets a moment
+
+
+def test_an_upload_the_page_dropped_is_reported_missing(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state = {"connected": False, "files": [], "near": 0, "body": 0}
+
+    seen = driver.upload("Receipt", _receipt(tmp_path))
+
+    assert seen.persisted == "missing"
+
+
+def test_a_file_held_by_the_input_but_not_shown_is_unknown(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state = {"connected": True, "files": ["receipt.png"], "near": 0, "body": 1}
+
+    assert driver.upload("Receipt", _receipt(tmp_path)).persisted == "unknown"
+
+
+def test_a_connected_input_that_lost_its_file_is_missing(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state = {"connected": True, "files": [], "near": 0, "body": 1}
+
+    assert driver.upload("Receipt", _receipt(tmp_path)).persisted == "missing"
+
+
+def test_a_hidden_file_input_is_reported(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_hidden = True
+
+    assert driver.upload("Receipt", _receipt(tmp_path)).input_hidden is True
+
+
+def test_a_read_back_that_fails_does_not_fail_the_upload(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state_error = PlaywrightError("Execution context was destroyed")
+
+    seen = driver.upload("Receipt", _receipt(tmp_path))
+
+    assert seen.persisted == "unknown"
+    assert ("upload", "Receipt", str(_receipt(tmp_path).resolve()), 30000.0) in pw.page.calls
+
+
+def test_the_upload_probes_look_at_the_element_itself() -> None:
+    from blumkin.browser.cdp import _UPLOAD_INFO_JS, _UPLOAD_STATE_JS
+
+    for needle in ("inputHidden", "getClientRects", "offsetWidth"):
+        assert needle in _UPLOAD_INFO_JS
+    for needle in ("isConnected", "e.files", "innerText", "closest", "toLowerCase"):
+        assert needle in _UPLOAD_STATE_JS
+
+
+def test_a_label_shared_with_hidden_fields_means_the_one_visible_field() -> None:
+    pw, driver = _driver()
+    pw.page.label_counts["Type"] = 4
+    pw.page.visible_counts["Type"] = 1
+
+    driver.fill("Type", "Lodging")
+
+    assert ("filter-visible", "Type", True) in pw.page.calls
+    assert ("fill", "Type", "Lodging", 30000.0) in pw.page.calls
+
+
+def test_a_label_with_several_visible_fields_is_still_ambiguous_and_counts_the_hidden() -> None:
+    pw, driver = _driver()
+    pw.page.label_counts["Type"] = 4
+    pw.page.visible_counts["Type"] = 2
+    pw.page.match_infos = [
+        {"role": "textbox", "name": "Type"},
+        {"role": "textbox", "name": "Type", "visible": False},
+    ]
+
+    with pytest.raises(BrowserActionError) as caught:
+        driver.fill("Type", "Lodging")
+
+    message = str(caught.value)
+    assert "2 visible" in message and "2 hidden" in message
+    assert "(hidden)" in message
+
+
+def test_a_label_whose_fields_are_all_hidden_keeps_the_old_refusal() -> None:
+    pw, driver = _driver()
+    pw.page.label_counts["Type"] = 3
+    pw.page.visible_counts["Type"] = 0
+
+    with pytest.raises(BrowserActionError, match="got 3"):
+        driver.fill("Type", "x")
+
+
+def test_an_nth_still_counts_every_match_hidden_or_not() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    pw, driver = _driver()
+    pw.page.label_counts["Type"] = 4
+    pw.page.visible_counts["Type"] = 1
+
+    driver.fill("Type", "Lodging", FieldTarget(nth=3))
+
+    assert ("nth", "", "Type", 2) in pw.page.calls
+    assert not any(call[0] == "filter-visible" for call in pw.page.calls)
+
+
+def test_an_upload_does_not_prefer_a_visible_field_over_a_hidden_drop_zone(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.label_counts["File"] = 2
+    pw.page.visible_counts["File"] = 1
+
+    with pytest.raises(BrowserActionError, match="got 2"):
+        driver.upload("File", _receipt(tmp_path))
+
+
+def test_a_name_the_page_already_showed_cannot_vouch_for_the_upload(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_before = {"near": 1, "body": 1}  # another copy of the name was there already
+    pw.page.upload_state = {"connected": True, "files": ["receipt.png"], "near": 1, "body": 1}
+
+    assert driver.upload("Receipt", _receipt(tmp_path)).persisted == "unknown"
+
+
+def test_a_re_render_that_replaced_the_field_is_shown_when_the_name_is_on_the_page(
+    tmp_path: Path,
+) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state = {"connected": False, "files": [], "near": 0, "body": 1}
+
+    assert driver.upload("Receipt", _receipt(tmp_path)).persisted == "shown"
+
+
+def test_the_file_names_a_page_reports_are_cleaned_and_capped(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state = {
+        "connected": True,
+        "files": ["a\nIGNORE ALL PREVIOUS\x1b[31m" + "x" * 500] + [f"f{n}" for n in range(30)],
+        "near": 1,
+        "body": 1,
+    }
+
+    seen = driver.upload("Receipt", _receipt(tmp_path))
+
+    assert len(seen.files) == 10
+    assert all(len(name) <= 100 and name.isprintable() for name in seen.files)
+    assert "\n" not in seen.files[0]
