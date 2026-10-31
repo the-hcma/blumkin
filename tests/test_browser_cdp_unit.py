@@ -2844,3 +2844,17 @@ def test_the_clicked_elements_own_names_reach_the_control_info() -> None:
     driver.checked_click("Calculate", "button", seen.append)
 
     assert seen[0].own_names == ("Calculate", "Submit report")
+
+
+def test_an_overlong_or_overnumerous_name_list_is_reported_incomplete() -> None:
+    from blumkin.browser.cdp import _DESCRIBE_CONTROL_JS
+
+    assert "ownComplete" in _DESCRIBE_CONTROL_JS
+    pw, driver = _driver()
+    pw.page.element_info["Calculate"] = {**_PLAIN_ELEMENT, "ownNames": ["x"], "ownComplete": False}
+    pw.page.role_counts[("button", "Calculate")] = [1]
+    seen: list[Any] = []
+
+    driver.checked_click("Calculate", "button", seen.append)
+
+    assert seen[0].own_names_complete is False

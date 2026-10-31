@@ -203,6 +203,9 @@ class ControlInfo:
     #: by (aria-labelledby, aria-label, text, value, title, alt, id, name and the labels of
     #: its children), so a draft control cannot be a finalizing button renamed by the page.
     own_names: tuple[str, ...] = ()
+    #: False when a name was cut at 200 characters or there were more than 50: the list then
+    #: may be missing the very name that matters, and a draft control is refused.
+    own_names_complete: bool = True
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
@@ -921,6 +924,7 @@ class PlaywrightDriver:
             dialog_controls=tuple(str(text) for text in raw.get("dialogControls", ()) or ()),
             dialog_controls_complete=bool(raw.get("dialogComplete", True)),
             own_names=tuple(str(text) for text in raw.get("ownNames", ()) or ()),
+            own_names_complete=bool(raw.get("ownComplete", True)),
         )
 
     def _field(
@@ -1572,7 +1576,7 @@ _DESCRIBE_CONTROL_JS = (
     "const t = String(raw || '').trim(); if (!t) continue; "
     "if (t.length > 200) complete = false; names.push(t.slice(0, 200)); } } } "
     "const f = e.form || e.closest('form'); "
-    "const own = []; "
+    "const own = []; let ownComplete = true; "
     "{ const eroot = e.getRootNode(); "
     "const eby = (e.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean)"
     ".map((id) => text(eroot.getElementById ? eroot.getElementById(id) : null)).join(' '); "
@@ -1581,8 +1585,10 @@ _DESCRIBE_CONTROL_JS = (
     "k.getAttribute('title') || k.textContent); "
     "for (const raw of [eby, e.getAttribute('aria-label'), e.innerText, e.value, e.title, "
     "e.getAttribute('alt'), e.id, e.getAttribute('name'), ...ekids]) "
-    "{ const t = String(raw || '').trim(); if (t) own.push(t.slice(0, 200)); } } "
-    "return {ownNames: own.slice(0, 50), tag: e.tagName.toLowerCase(), "
+    "{ const t = String(raw || '').trim(); if (!t) continue; "
+    "if (t.length > 200) ownComplete = false; own.push(t.slice(0, 200)); } "
+    "if (own.length > 50) ownComplete = false; } "
+    "return {ownNames: own.slice(0, 50), ownComplete: ownComplete, tag: e.tagName.toLowerCase(), "
     "type: String(e.type || '').toLowerCase(), "
     "form: !!e.form, "
     "formaction: e.hasAttribute('formaction') || e.hasAttribute('formmethod'), "

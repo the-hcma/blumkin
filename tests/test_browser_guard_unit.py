@@ -1436,3 +1436,23 @@ def test_a_draft_name_in_allowed_controls_too_still_cannot_download_a_submit_con
 
     with pytest.raises(SubmitBlockedError, match="submit control"):
         driver.download("Calculate", save_to=Path("/tmp"))
+
+
+def test_a_draft_control_with_names_that_could_not_all_be_checked_is_refused() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button(
+        own_names=("Calculate",), own_names_complete=False
+    )
+
+    with pytest.raises(SubmitBlockedError, match="more names than can be checked"):
+        driver.click("Calculate")
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_reset_button_is_not_a_draft_control() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button(input_type="reset")
+
+    with pytest.raises(SubmitBlockedError, match="must be a button"):
+        driver.click("Calculate")

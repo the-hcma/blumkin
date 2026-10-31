@@ -382,11 +382,12 @@ class GuardedDriver:
         """A declared draft control must really be a button, and none of its own names (text,
         value, title, id, labels) may be a finalizing action: the page may have renamed the
         report's real Submit to the declared name."""
-        plain = info.tag == "button" or (
-            info.tag == "input" and info.input_type in ("button", "submit")
-        )
+        # Only the two types a recalculation button has: a reset or an image input is not one.
+        plain = info.tag in ("button", "input") and info.input_type in ("button", "submit")
         if not plain:
             raise self._refuse(action, "a draft control must be a button")
+        if not info.own_names_complete:
+            raise self._refuse(action, "the control has more names than can be checked")
         held = [text for text in info.own_names if _is_denied(text, self._deny)]
         if held:
             raise self._refuse(action, "a name this control also goes by is a finalizing action")
