@@ -1977,6 +1977,11 @@ Examples:
 
 Fetches one message in full. Prefer this over listing and filtering client-side
 when you already have the id. Default body type is text.
+
+`--body-type` only chooses how the body is shown to you: a draft stored as HTML reads as plain
+text under the default, exactly like a draft stored as text. To see whether a draft really
+holds markup (after `mail reply` or `mail update-draft` with `--body-type html`), ask for
+`--body-type html`; the plain-text default cannot tell the two apart.
 """
 
 MAIL_TRIAGE_EPILOG = """
@@ -2130,8 +2135,10 @@ Examples:
 Prefer this over a fresh draft with "RE:" - Graph keeps it in the original
 conversation and inherits recipients. Draft only; send with `mail send-draft
 --yes`. Pass `--body` on create (Markdown by default, rendered to HTML above the
-quoted thread; `--body-type text` for plain); a later `mail update-draft --body`
-drops the quoted original.
+quoted thread; `--body-type text` for plain; `--body-type html` keeps your markup).
+Graph reads a reply's comment as plain text, so an HTML or Markdown body is written into
+the draft after it is created, above the quoted thread. A later
+`mail update-draft --body` drops the quoted original unless you add `--keep-quoted`.
 """
 
 MAIL_SEND_DRAFT_EPILOG = """
