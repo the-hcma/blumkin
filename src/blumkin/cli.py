@@ -95,6 +95,7 @@ from blumkin.browser.explore import (
 from blumkin.browser.explore_commands import (
     explore_click,
     explore_discard,
+    explore_forget,
     explore_observe,
     explore_save,
     explore_show,
@@ -2749,6 +2750,29 @@ def browser_explore_discard(ctx: click.Context, task: str, as_json_flag: bool) -
     emit_lines([f"{task}: draft {'discarded' if payload['discarded'] else 'was empty'}"])
 
 
+@browser_explore.command("forget", epilog=help_text.BROWSER_EXPLORE_FORGET_EPILOG)
+@click.argument("task")
+@click.argument("page_id")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_explore_forget(ctx: click.Context, task: str, page_id: str, as_json_flag: bool) -> None:
+    """Drop one page from the in-progress draft."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = explore_forget(load_browser_setup(), task, page_id)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines(
+        [
+            f"{task}: page {page_id} {'dropped' if payload['forgotten'] else 'was not there'}",
+            *(f"  warning: {sanitize_terminal(text)}" for text in payload.get("warnings", ())),
+        ]
+    )
+
+
 @browser_explore.command("observe", epilog=help_text.BROWSER_EXPLORE_OBSERVE_EPILOG)
 @click.argument("task")
 @click.argument("page_id")
@@ -2769,7 +2793,8 @@ def browser_explore_observe(
     emit_lines(
         [
             f"{task}: page {payload['page']} ({payload['url_template']}) recorded with "
-            f"{payload['controls']} control(s); {payload['skipped']} label(s) skipped"
+            f"{payload['controls']} control(s); {payload['skipped']} label(s) skipped",
+            *(f"  warning: {sanitize_terminal(text)}" for text in payload.get("warnings", ())),
         ]
     )
 

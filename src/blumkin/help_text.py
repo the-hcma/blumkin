@@ -374,6 +374,19 @@ Examples:
 Drops the in-progress exploration draft. A saved model is not touched.
 """
 
+BROWSER_EXPLORE_FORGET_EPILOG = """
+Examples:
+
+\b
+  blumkin browser explore forget expense-report expense-item
+
+Drops one page, and the recorded steps that used it, from the in-progress draft (or from the
+stored model, which the next `explore save` then stores as a new version without it): a page
+left over from an earlier session, or one recorded before a field took effect. Nothing is
+printed about a page the draft does not have. The last page cannot be forgotten; use
+`explore discard` to drop the whole draft.
+"""
+
 BROWSER_EXPLORE_OBSERVE_EPILOG = """
 Examples:
 
@@ -730,6 +743,10 @@ name. The grade is `compatible` (it still matches; layout changes are ignored), 
 cannot be verified, or some landmarks changed) or `incompatible` (re-explore the page: a
 control is gone, a new field appeared or the page no longer looks like the recorded one).
 The command exits 1 for `incompatible`. The page must be on the task's `allowed_hosts`.
+
+Some sites serve every page from one address. When the page matches another recorded page
+better than the one named, the JSON carries `best_match` (that page and the share of its
+landmarks that are on the page), which says which page the browser is really on.
 """
 
 BROWSER_MODEL_DIFF_EPILOG = """

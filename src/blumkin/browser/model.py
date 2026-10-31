@@ -314,6 +314,11 @@ def save_model(
     return stored
 
 
+def is_logical_name(value: str) -> bool:
+    """Whether `value` is an acceptable page, control or action name in a stored model."""
+    return _LOGICAL_NAME.fullmatch(value) is not None and not _looks_like_a_token(value)
+
+
 def update_draft(
     config_dir: Path,
     task: str,
