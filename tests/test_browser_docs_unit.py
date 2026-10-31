@@ -127,10 +127,12 @@ _POLICY_KEYS = (
     "block_background_writes",
     "dialog_confirm",
     "download_dirs",
+    "draft_controls",
     "extra_deny_names",
     "form_url",
     "sign_in_hosts",
     "upload_dirs",
+    "use_profile_address",
 )
 
 

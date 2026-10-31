@@ -199,6 +199,13 @@ class ControlInfo:
     #: False when the dialog held more controls, or longer names, than were collected: nothing
     #: can then be said about what the dialog holds.
     dialog_controls_complete: bool = True
+    #: Every name the clicked element itself goes by, beyond the accessible name it was found
+    #: by (aria-labelledby, aria-label, text, value, title, alt, id, name and the labels of
+    #: its children), so a draft control cannot be a finalizing button renamed by the page.
+    own_names: tuple[str, ...] = ()
+    #: False when a name was cut at 200 characters or there were more than 50: the list then
+    #: may be missing the very name that matters, and a draft control is refused.
+    own_names_complete: bool = True
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
@@ -916,6 +923,8 @@ class PlaywrightDriver:
             form_in_dialog=bool(raw.get("formInDialog", False)),
             dialog_controls=tuple(str(text) for text in raw.get("dialogControls", ()) or ()),
             dialog_controls_complete=bool(raw.get("dialogComplete", True)),
+            own_names=tuple(str(text) for text in raw.get("ownNames", ()) or ()),
+            own_names_complete=bool(raw.get("ownComplete", True)),
         )
 
     def _field(
@@ -1567,7 +1576,20 @@ _DESCRIBE_CONTROL_JS = (
     "const t = String(raw || '').trim(); if (!t) continue; "
     "if (t.length > 200) complete = false; names.push(t.slice(0, 200)); } } } "
     "const f = e.form || e.closest('form'); "
-    "return {tag: e.tagName.toLowerCase(), type: String(e.type || '').toLowerCase(), "
+    "const own = []; let ownComplete = true; "
+    "{ const eroot = e.getRootNode(); "
+    "const eby = (e.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean)"
+    ".map((id) => text(eroot.getElementById ? eroot.getElementById(id) : null)).join(' '); "
+    "const ekids = Array.from(e.querySelectorAll('[aria-label], [alt], [title], svg title'))"
+    ".map((k) => k.getAttribute('aria-label') || k.getAttribute('alt') || "
+    "k.getAttribute('title') || k.textContent); "
+    "for (const raw of [eby, e.getAttribute('aria-label'), e.innerText, e.value, e.title, "
+    "e.getAttribute('alt'), e.id, e.getAttribute('name'), ...ekids]) "
+    "{ const t = String(raw || '').trim(); if (!t) continue; "
+    "if (t.length > 200) ownComplete = false; own.push(t.slice(0, 200)); } "
+    "if (own.length > 50) ownComplete = false; } "
+    "return {ownNames: own.slice(0, 50), ownComplete: ownComplete, tag: e.tagName.toLowerCase(), "
+    "type: String(e.type || '').toLowerCase(), "
     "form: !!e.form, "
     "formaction: e.hasAttribute('formaction') || e.hasAttribute('formmethod'), "
     "href: String(e.getAttribute('href') || ''), "

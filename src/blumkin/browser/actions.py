@@ -42,6 +42,7 @@ from blumkin.browser.guard import (
     attach_guarded,
     validate_control_patterns,
     validate_dialog_confirm,
+    validate_draft_controls,
 )
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.profiles import load_profile
@@ -66,6 +67,14 @@ _ARIA_FIELD_VALUE = re.compile(
 _DOWNLOAD_EXTENSIONS = frozenset({".csv", ".md", ".srt", ".txt", ".vtt"})
 _DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
 _DOWNLOAD_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ ()-]{0,119}")
+
+
+class AddressNotAuthorizedError(BrowserActionError):
+    """The task was not authorized (`use_profile_address`) to read the profile's address."""
+
+
+class AddressNotSetError(LookupError):
+    """The task may read the profile's address, but the profile has none."""
 
 
 class DownloadBlockedError(BrowserActionError):
@@ -112,6 +121,33 @@ class SignInTimeoutError(HostBlockedError):
 
 class UploadBlockedError(BrowserActionError):
     """The file is not one the task may upload."""
+
+
+def address_task(config: BrowserSetup, task: str, *, address: str, profile: str) -> dict[str, Any]:
+    """The profile's physical address, for a task that declared `use_profile_address = true`.
+
+    Authorization is checked before the address is looked at, an unknown task is not
+    authorized, and the address is only returned to the caller: nothing is typed into a page
+    or sent anywhere.
+    """
+    declared = config.browser.tasks.get(task)
+    if declared is None or not declared.use_profile_address:
+        raise AddressNotAuthorizedError(
+            f"Expected [browser.tasks.{task}] to set use_profile_address = true in config.toml "
+            "before reading the profile's address, got no such permission"
+        )
+    if not address:
+        raise AddressNotSetError(f"Expected an address on profile {profile!r}, got none")
+    return {
+        "address": address,
+        "note": (
+            "This is the operator's address, sensitive: use it only for the task it was "
+            "authorized for, and do not copy it into logs, commits or messages."
+        ),
+        "ok": True,
+        "profile": profile,
+        "task": task,
+    }
 
 
 def click_task(
@@ -859,11 +895,13 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
         return GuardPolicy()
     # Before any browser is touched: a finalizing name cannot be a dialog confirm.
     validate_dialog_confirm(declared.dialog_confirm, declared.extra_deny_names)
+    validate_draft_controls(declared.draft_controls, declared.extra_deny_names)
     validate_control_patterns(declared.allowed_controls, declared.extra_deny_names)
     return GuardPolicy(
         allowed_controls=frozenset(declared.allowed_controls),
         block_background_writes=declared.block_background_writes,
         dialog_confirm=frozenset(declared.dialog_confirm),
+        draft_controls=frozenset(declared.draft_controls),
         extra_deny_names=declared.extra_deny_names,
     )
 

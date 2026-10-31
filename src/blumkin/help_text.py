@@ -242,6 +242,21 @@ history and `ps`. Use `--from-file`, `--stdin`, or the interactive hidden
 prompt (no flag, on a TTY).
 """
 
+BROWSER_ADDRESS_EPILOG = """
+Examples:
+
+\b
+  blumkin --profile work browser address expense-report
+  blumkin --profile work browser address expense-report --json
+
+Prints the physical address stored with `blumkin profiles set-address`, and only for a task
+that declares `use_profile_address = true` under `[browser.tasks.TASK]` in config.toml; any
+other task, or an unknown one, is refused before the address is looked at. The command only
+returns the address: filling it into a page is a separate `browser fill`, so it reaches a
+site only when you or the agent do that on a host the task allows. Treat the output as
+sensitive.
+"""
+
 BROWSER_CLICK_EPILOG = """
 Examples:
 
@@ -272,6 +287,16 @@ why it is refused otherwise): it is clicked only inside a dialog whose form, if 
 lies inside that dialog and which holds no finalizing control of its own, the same name
 anywhere else is refused, it cannot start a download, and a finalizing name can never be
 declared there.
+A button that only recalculates what is on the page (a mileage form's `Calculate`, which the
+page renders as a submit-type control inside the report's form) can be declared in
+`draft_controls`: only after checking by hand that it does not save or send the report.
+Exact names only, never a finalizing name; the declared button is spared the submit-control
+check and nothing else: it must be a real button none of whose other names (text, value,
+title, id) is a finalizing word, a formaction override, a script link and a submitting click
+handler are still refused, it cannot start a download, and the form-submission safety net
+stays on (it swallows a form post, not a background request). The page can still send a
+background request or run a script handler that blumkin cannot tell from a recalculation, so
+the declaration is yours: when unsure, leave it out and click the button yourself.
 Refused, without touching the page: an
 undeclared control, a submit control, and any control named like a finalizing action
 (submit, send, file, confirm, pay, ...), plus a control with a formaction, a link that runs
@@ -372,6 +397,19 @@ Examples:
   blumkin browser explore discard expense-report
 
 Drops the in-progress exploration draft. A saved model is not touched.
+"""
+
+BROWSER_EXPLORE_FORGET_EPILOG = """
+Examples:
+
+\b
+  blumkin browser explore forget expense-report expense-item
+
+Drops one page, and the recorded steps that used it, from the in-progress draft (or from the
+stored model, which the next `explore save` then stores as a new version without it): a page
+left over from an earlier session, or one recorded before a field took effect. Nothing is
+printed about a page the draft does not have. The last page cannot be forgotten; use
+`explore discard` to drop the whole draft.
 """
 
 BROWSER_EXPLORE_OBSERVE_EPILOG = """
@@ -730,6 +768,10 @@ name. The grade is `compatible` (it still matches; layout changes are ignored), 
 cannot be verified, or some landmarks changed) or `incompatible` (re-explore the page: a
 control is gone, a new field appeared or the page no longer looks like the recorded one).
 The command exits 1 for `incompatible`. The page must be on the task's `allowed_hosts`.
+
+Some sites serve every page from one address. When the page matches another recorded page
+better than the one named, the JSON carries `best_match` (that page and the share of its
+landmarks that are on the page), which says which page the browser is really on.
 """
 
 BROWSER_MODEL_DIFF_EPILOG = """
@@ -1994,6 +2036,11 @@ Examples:
 
 Fetches one message in full. Prefer this over listing and filtering client-side
 when you already have the id. Default body type is text.
+
+`--body-type` only chooses how the body is shown to you: a draft stored as HTML reads as plain
+text under the default, exactly like a draft stored as text. To see whether a draft really
+holds markup (after `mail reply` or `mail update-draft` with `--body-type html`), ask for
+`--body-type html`; the plain-text default cannot tell the two apart.
 """
 
 MAIL_TRIAGE_EPILOG = """
@@ -2147,8 +2194,10 @@ Examples:
 Prefer this over a fresh draft with "RE:" - Graph keeps it in the original
 conversation and inherits recipients. Draft only; send with `mail send-draft
 --yes`. Pass `--body` on create (Markdown by default, rendered to HTML above the
-quoted thread; `--body-type text` for plain); a later `mail update-draft --body`
-drops the quoted original.
+quoted thread; `--body-type text` for plain; `--body-type html` keeps your markup).
+Graph reads a reply's comment as plain text, so an HTML or Markdown body is written into
+the draft after it is created, above the quoted thread. A later
+`mail update-draft --body` drops the quoted original unless you add `--keep-quoted`.
 """
 
 MAIL_SEND_DRAFT_EPILOG = """
@@ -2427,6 +2476,29 @@ default. Use a name or a unique tag with `--profile` on any command, e.g.
 """
 
 PROFILES_LIST_EPILOG = PROFILES_EPILOG
+
+PROFILES_SET_ADDRESS_EPILOG = """
+Examples:
+
+\b
+  # Asked for at a hidden prompt (nothing in shell history)
+  blumkin --profile work profiles set-address
+\b
+  # From standard input, for a script
+  pass show addresses/home | blumkin --profile work profiles set-address --stdin
+\b
+  # Remove it
+  blumkin --profile work profiles set-address --clear
+
+Stores an optional physical address on one profile, for browser tasks such as a mileage
+expense that need it. It is unset by default, never printed back, and left out of
+`profiles list`, `doctor` and error messages (a listing only says whether one exists). It is
+kept in plain text in config.toml like the rest of the profile (the file is made private to
+you); a task can read it only if its table sets `use_profile_address = true`, and then only
+through `blumkin browser address TASK`: nothing is typed into a page or sent anywhere on its
+own. That is a guard rail for the commands, not a boundary against anyone who can read or edit
+config.toml.
+"""
 
 PROFILES_SET_EMAIL_EPILOG = """
 Examples:

@@ -245,3 +245,43 @@ def test_a_thin_page_at_another_address_is_incompatible(driver: _Driver, _config
     assert payload["grade"] == "incompatible"
     assert payload["ok"] is False
     assert result.exit_code == EXIT_OTHER
+
+
+_EDIT_PAGE = """\
+- heading "Edit Report"
+- button "Save and Close"
+- textbox "Purpose"
+- button "Create Item"
+- combobox "Business Unit"
+"""
+
+
+def _store_two_pages(config: Path) -> None:
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    draft.add_page("expense-list", "https://erp.example.com/x", parse_aria_snapshot(_RECORDED))
+    draft.add_page("report-edit", "https://erp.example.com/x", parse_aria_snapshot(_EDIT_PAGE))
+    save_model(config, draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0"))
+
+
+def test_checking_the_wrong_page_names_the_page_the_browser_is_on(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _store_two_pages(_config_dir)
+    driver.snapshot = _EDIT_PAGE
+    driver.url = "https://erp.example.com/x"
+
+    payload = _json(_run("browser", "model", "check", "expense-report", "expense-list"))
+
+    assert payload["best_match"] == {"page": "report-edit", "share": 1.0}
+
+
+def test_checking_the_right_page_has_no_other_best_match(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _store_two_pages(_config_dir)
+    driver.snapshot = _EDIT_PAGE
+    driver.url = "https://erp.example.com/x"
+
+    payload = _json(_run("browser", "model", "check", "expense-report", "report-edit"))
+
+    assert payload["best_match"] is None

@@ -181,12 +181,16 @@ class _Raw:
 
 
 def _guard(
-    *allowed: str, deny: tuple[str, ...] = (), confirm: tuple[str, ...] = ()
+    *allowed: str,
+    deny: tuple[str, ...] = (),
+    confirm: tuple[str, ...] = (),
+    draft: tuple[str, ...] = (),
 ) -> tuple[_Raw, GuardedDriver]:
     raw = _Raw()
     policy = GuardPolicy(
         allowed_controls=frozenset(allowed),
         dialog_confirm=frozenset(confirm),
+        draft_controls=frozenset(draft),
         extra_deny_names=deny,
     )
     return raw, GuardedDriver(raw, policy)
@@ -1244,3 +1248,211 @@ def test_a_private_use_character_in_a_pattern_is_refused() -> None:
 
     with pytest.raises(SubmitBlockedError, match="private-use"):
         validate_control_patterns(["Item * ()"])
+
+
+# --------------------------------------------------------------------------- draft controls (#614)
+
+
+def _calculate_button(**kwargs: object) -> ControlInfo:
+    """A page-level submit-type `Calculate` button in the report's own form (not in a dialog)."""
+    fields: dict[str, object] = {"tag": "button", "input_type": "submit", "in_form": True}
+    fields.update(kwargs)
+    return ControlInfo(**fields)  # type: ignore[arg-type]
+
+
+def test_a_declared_draft_control_may_be_a_submit_type_button_in_the_page_form() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button()
+
+    driver.click("Calculate")
+
+    assert raw.calls == [("click", "button", "Calculate")]
+
+
+def test_the_same_button_is_refused_when_it_is_not_declared_as_a_draft_control() -> None:
+    raw, driver = _guard("Calculate")
+    raw.controls["Calculate"] = _calculate_button()
+
+    with pytest.raises(SubmitBlockedError, match="submit control"):
+        driver.click("Calculate")
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_draft_control_needs_no_allowed_controls_entry() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button(input_type="button")
+
+    driver.click("Calculate")
+
+    assert raw.calls == [("click", "button", "Calculate")]
+
+
+def test_other_buttons_stay_refused_next_to_a_declared_draft_control() -> None:
+    raw, driver = _guard("Save", draft=("Calculate",))
+    raw.controls["Save"] = _calculate_button()
+
+    with pytest.raises(SubmitBlockedError, match="submit control"):
+        driver.click("Save")
+
+
+@pytest.mark.parametrize(
+    ("extra", "reason"),
+    [
+        ({"has_formaction": True}, "formaction"),
+        ({"href": "javascript:save()", "tag": "a", "input_type": ""}, "must be a button"),
+        ({"inline_handler": "this.form.submit()"}, "click handler submits"),
+    ],
+)
+def test_a_draft_control_is_still_refused_when_it_is_deceptive(
+    extra: dict[str, object], reason: str
+) -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button(**extra)
+
+    with pytest.raises(SubmitBlockedError, match=reason):
+        driver.click("Calculate")
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+@pytest.mark.parametrize("name", ["Submit", "Pay now", "Send", "Confirm", "Submit and calculate"])
+def test_a_finalizing_name_can_never_be_declared_as_a_draft_control(name: str) -> None:
+    with pytest.raises(SubmitBlockedError, match="draft_controls"):
+        _guard(draft=(name,))
+
+
+def test_a_draft_control_name_cannot_hold_a_wildcard() -> None:
+    with pytest.raises(SubmitBlockedError, match="draft_controls"):
+        _guard(draft=("Calc*",))
+
+
+def test_a_task_extra_deny_word_also_blocks_a_draft_control_name() -> None:
+    with pytest.raises(SubmitBlockedError, match="draft_controls"):
+        _guard(draft=("Release hold",), deny=("release",))
+
+
+def test_a_control_that_merely_starts_with_a_draft_name_is_not_a_draft_control() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate Total"] = _calculate_button()
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Calculate Total")
+
+
+def test_a_draft_name_is_refused_when_the_clicked_name_is_finalizing() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+
+    with pytest.raises(SubmitBlockedError, match="finalizing"):
+        driver.click("Calculate Submit")
+
+
+def test_a_draft_control_cannot_start_a_download() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button()
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.download("Calculate", save_to=Path("/tmp"))
+
+
+def test_a_draft_control_is_vetted_per_match_when_a_nth_is_given() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button(has_formaction=True)
+
+    with pytest.raises(SubmitBlockedError, match="formaction"):
+        driver.click("Calculate", nth=2)
+
+
+def test_the_form_submission_net_is_installed_whatever_the_draft_controls() -> None:
+    raw, _ = _guard(draft=("Calculate",))
+
+    assert raw.net_installed == 1
+
+
+@pytest.mark.parametrize(
+    "own",
+    [
+        ("Calculate", "Submit expense report"),
+        ("Calculate", "submitReport"),
+        ("Calculate", "Pay now"),
+        ("Calculate", "S\u200bubmit"),
+    ],
+)
+def test_a_page_cannot_pass_its_real_submit_off_as_a_draft_control(own: tuple[str, ...]) -> None:
+    """The accessible name is `Calculate`, but the element's text, value or id says otherwise."""
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button(own_names=own)
+
+    with pytest.raises(SubmitBlockedError, match="also goes by"):
+        driver.click("Calculate")
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_draft_control_whose_other_names_are_harmless_is_clicked() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button(own_names=("Calculate", "calcButton"))
+
+    driver.click("Calculate")
+
+    assert raw.calls == [("click", "button", "Calculate")]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"tag": "input", "input_type": "image"}, {"tag": "a", "input_type": ""}, {"tag": "div"}],
+)
+def test_only_a_real_button_can_be_a_draft_control(extra: dict[str, object]) -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button(**extra)
+
+    with pytest.raises(SubmitBlockedError, match="must be a button"):
+        driver.click("Calculate")
+
+
+@pytest.mark.parametrize("role", ["link", "tab", "menuitem", "checkbox"])
+def test_a_draft_name_does_not_authorize_a_click_in_another_role(role: str) -> None:
+    raw, driver = _guard(draft=("Calculate",))
+
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Calculate", role)
+
+
+@pytest.mark.parametrize("name", ["", "   ", "\u200b", "\u200b \u200b"])
+def test_a_draft_name_that_is_empty_once_normalized_is_refused(name: str) -> None:
+    with pytest.raises(SubmitBlockedError, match="draft_controls"):
+        _guard(draft=(name,))
+
+
+def test_a_fullwidth_or_zero_width_finalizing_draft_name_is_refused() -> None:
+    for name in ("\uff33ubmit", "Su\u200bbmit"):
+        with pytest.raises(SubmitBlockedError, match="draft_controls"):
+            _guard(draft=(name,))
+
+
+def test_a_draft_name_in_allowed_controls_too_still_cannot_download_a_submit_control() -> None:
+    raw, driver = _guard("Calculate", draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button()
+
+    with pytest.raises(SubmitBlockedError, match="submit control"):
+        driver.download("Calculate", save_to=Path("/tmp"))
+
+
+def test_a_draft_control_with_names_that_could_not_all_be_checked_is_refused() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button(
+        own_names=("Calculate",), own_names_complete=False
+    )
+
+    with pytest.raises(SubmitBlockedError, match="more names than can be checked"):
+        driver.click("Calculate")
+
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_reset_button_is_not_a_draft_control() -> None:
+    raw, driver = _guard(draft=("Calculate",))
+    raw.controls["Calculate"] = _calculate_button(input_type="reset")
+
+    with pytest.raises(SubmitBlockedError, match="must be a button"):
+        driver.click("Calculate")

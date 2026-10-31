@@ -140,6 +140,8 @@ def test_no_task_policies_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyP
         ('[browser.tasks.expense-report]\nextra_deny_names = "x"\n\n', "extra_deny_names"),
         ('[browser.tasks.expense-report]\ndialog_confirm = "OK"\n\n', "dialog_confirm"),
         ("[browser.tasks.expense-report]\ndialog_confirm = [1]\n\n", "dialog_confirm"),
+        ('[browser.tasks.expense-report]\ndraft_controls = "Calculate"\n\n', "draft_controls"),
+        ("[browser.tasks.expense-report]\ndraft_controls = [1]\n\n", "draft_controls"),
         ('[browser.tasks."Bad Name"]\n\n', "task name"),
         ('[browser]\ntasks = "x"\n\n', "browser.tasks"),
         ('[browser.tasks]\nexpense-report = "x"\n\n', "browser.tasks.expense-report"),
@@ -377,6 +379,22 @@ def test_dialog_confirm_names_are_parsed_and_default_to_none(
 
     assert tasks["expense-report"].dialog_confirm == ("OK", "Done")
     assert tasks["time-sheet"].dialog_confirm == ()
+
+
+def test_draft_controls_are_parsed_and_default_to_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\ndraft_controls = ["Calculate"]\n\n'
+        "[browser.tasks.time-sheet]\n\n",
+    )
+
+    tasks = load_config().browser.tasks
+
+    assert tasks["expense-report"].draft_controls == ("Calculate",)
+    assert tasks["time-sheet"].draft_controls == ()
 
 
 def test_form_url_and_sign_in_hosts_are_parsed_and_default_to_nothing(
