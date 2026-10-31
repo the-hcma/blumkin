@@ -126,6 +126,32 @@ class PageCheck:
     page_id: str
 
 
+def best_matching_page(
+    pages: Sequence[Page], observed: Sequence[ControlObservation], prefer: str | None = None
+) -> tuple[str, float] | None:
+    """The page whose recorded landmarks are most on the live page: (page id, share).
+
+    Only pages with enough landmarks to tell them apart count, and the best must reach the
+    share at which two pages are the same page; with none that does, there is no best match.
+    Some sites serve every page from one address, so this is how a caller learns which of
+    the recorded pages the browser is actually on. A page whose few landmarks are all on a
+    richer page scores the same as that page, so a tie goes to `prefer` (the page the caller
+    asked about), then to the page with more landmarks.
+    """
+    live = {_canonical(mark) for mark in landmark_marks(observed) if not mark.startswith("link:")}
+    best: tuple[str, float] | None = None
+    best_key: tuple[float, bool, int] = (0.0, False, 0)
+    for page in pages:
+        recorded = {_canonical(mark) for mark in page.fingerprint if not mark.startswith("link:")}
+        if len(recorded) < _MIN_LANDMARKS:
+            continue
+        share = len(recorded & live) / len(recorded)
+        key = (share, page.page_id == prefer, len(recorded))
+        if share >= _SAME_PAGE and (best is None or key > best_key):
+            best, best_key = (page.page_id, share), key
+    return best
+
+
 def check_page(page: Page, observed: Sequence[ControlObservation]) -> PageCheck:
     """Grade the recorded `page` against what was `observed` on the live page."""
     live = {(item.role, item.name) for item in observed if is_storable_label(item.name)}

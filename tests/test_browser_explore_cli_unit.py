@@ -35,9 +35,10 @@ class _Driver:
         self.lands_on: str | None = None
         self.refusal: str | None = None
         self.href = ""
+        self.snapshot = _SNAPSHOT
 
     def aria_snapshot(self) -> str:
-        return _SNAPSHOT
+        return self.snapshot
 
     def mark_window(self, task: str, hosts: Any = (), blocked: Any = ()) -> None:
         self.marks.append((task, tuple(hosts), tuple(blocked)))
@@ -354,3 +355,76 @@ def test_a_page_that_moves_while_it_is_observed_is_refused_and_leaves_no_draft(
     assert result.exit_code == EXIT_OTHER
     assert _json(result)["error"] == "explore_refused"
     assert not _draft_path(_config_dir).exists()
+
+
+# --------------------------------------------------------------------------- explore fixes (#608)
+
+
+def test_forget_drops_one_page_from_the_draft(driver: _Driver, _config_dir: Path) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    _run("browser", "explore", "observe", "expense-report", "old-page")
+
+    result = _run("browser", "explore", "forget", "expense-report", "old-page")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["forgotten"] is True
+    shown = _json(_run("browser", "explore", "show", "expense-report"))
+    assert [page["page_id"] for page in shown["pages"]] == ["expense-list"]
+
+
+def test_forget_of_a_page_that_is_not_there_says_so(driver: _Driver, _config_dir: Path) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+
+    result = _run("browser", "explore", "forget", "expense-report", "nope")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["forgotten"] is False
+
+
+def test_forget_with_no_draft_or_model_is_a_clean_no_op(driver: _Driver) -> None:
+    result = _run("browser", "explore", "forget", "expense-report", "any-page")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["forgotten"] is False
+
+
+def test_forget_refuses_a_page_id_that_is_not_words(driver: _Driver) -> None:
+    result = _run("browser", "explore", "forget", "expense-report", "Not A Page")
+
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_observing_a_second_page_at_the_same_address_warns(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    driver.snapshot = '- heading "Other"\n- button "Something else"\n- textbox "Purpose"\n'
+
+    payload = _json(_run("browser", "explore", "observe", "expense-report", "report-edit"))
+
+    assert payload["shared_addresses"] == {"/expenses": ["expense-list", "report-edit"]}
+    assert "landmarks" in payload["warnings"][0]
+
+
+def test_forget_will_not_drop_the_last_page(driver: _Driver, _config_dir: Path) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+
+    result = _run("browser", "explore", "forget", "expense-report", "expense-list")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "discard" in _json(result)["message"]
+    shown = _json(_run("browser", "explore", "show", "expense-report"))
+    assert [page["page_id"] for page in shown["pages"]] == ["expense-list"]
+
+
+def test_forget_says_which_flow_lost_steps(driver: _Driver, _config_dir: Path) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    _run("browser", "explore", "observe", "expense-report", "old-page")
+    _run("browser", "explore", "click", "expense-report", "Help", "--role", "link",
+         "--page", "old-page")  # fmt: skip
+
+    payload = _json(_run("browser", "explore", "forget", "expense-report", "old-page"))
+
+    assert payload["forgotten"] is True
+    assert payload["steps_dropped"] == {"recorded": 1}
+    assert "lost 1 step" in payload["warnings"][0]

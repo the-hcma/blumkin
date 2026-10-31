@@ -29,6 +29,7 @@ from blumkin.browser.explore import (
     TerminalConfirmer,
     attach_exploring,
     decide_click,
+    validate_page_id,
 )
 from blumkin.browser.model import (
     SiteModel,
@@ -78,6 +79,49 @@ def explore_discard(config: BrowserSetup, task: str) -> dict[str, Any]:
     return {"discarded": discard_draft(config.config_dir, task), "ok": True, "task": task}
 
 
+def explore_forget(config: BrowserSetup, task: str, page_id: str) -> dict[str, Any]:
+    """Drop one page (and the recorded steps that used it) from the task's draft.
+
+    Without a draft the stored model is continued, as `observe` does, so a page of the saved
+    model can be removed in the next version. The last page cannot be forgotten: that is what
+    `discard` is for.
+    """
+    _, extra_deny = explore_policy(config, task)
+    validate_page_id(page_id)
+    seen: dict[str, Any] = {"forgotten": False, "steps_dropped": {}}
+
+    def change(current: SiteModel | None) -> SiteModel | None:
+        if current is None:
+            return None
+        draft = ModelDraft.from_model(current, extra_deny)
+        dropped = draft.forget(page_id)
+        if dropped is None:
+            return None
+        if not any(True for _ in draft.page_ids()):
+            raise ExploreRefusedError(
+                "Expected a draft that keeps at least one page, got none; use "
+                "`explore discard` to drop the whole draft"
+            )
+        seen["forgotten"] = True
+        seen["steps_dropped"] = dropped
+        return _to_model(draft)
+
+    update_draft(config.config_dir, task, change)
+    payload: dict[str, Any] = {
+        "forgotten": seen["forgotten"],
+        "ok": True,
+        "page": page_id,
+        "task": task,
+    }
+    if seen["steps_dropped"]:
+        payload["steps_dropped"] = seen["steps_dropped"]
+        payload["warnings"] = [
+            f"flow {name} lost {count} step(s) that used {page_id}; check that it still makes sense"
+            for name, count in seen["steps_dropped"].items()
+        ]
+    return payload
+
+
 def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, Any]:
     """Add the page the task's browser is on to the draft (continuing a stored model)."""
     hosts, extra_deny = explore_policy(config, task)
@@ -99,10 +143,15 @@ def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, 
         model = _to_model(draft)
         page = next(p for p in model.pages if p.page_id == page_id)
         seen.update(controls=len(page.controls), skipped=draft.skipped, template=page.url_template)
+        seen["shared"] = {
+            address: list(ids)
+            for address, ids in draft.shared_addresses().items()
+            if page_id in ids
+        }
         return model
 
     update_draft(config.config_dir, task, change)
-    return {
+    payload: dict[str, Any] = {
         "controls": seen["controls"],
         "ok": True,
         "page": page_id,
@@ -110,6 +159,14 @@ def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, 
         "task": task,
         "url_template": seen["template"],
     }
+    if seen["shared"]:
+        payload["shared_addresses"] = seen["shared"]
+        payload["warnings"] = [
+            f"pages {', '.join(ids)} share the address {address} and differ by landmarks only: "
+            "the address cannot tell them apart, so `model check` compares what is on the page"
+            for address, ids in seen["shared"].items()
+        ]
+    return payload
 
 
 def explore_policy(config: BrowserSetup, task: str) -> tuple[Sequence[str], Sequence[str]]:

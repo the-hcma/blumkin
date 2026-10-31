@@ -400,3 +400,56 @@ def test_a_recorded_field_the_model_has_no_control_for_is_not_new(role: str) -> 
     check = check_page(page, observed)
     assert check.grade is Grade.COMPATIBLE
     assert FindingKind.NEW_FIELD not in {f.kind for f in check.findings}
+
+
+# --------------------------------------------------------------------------- best match (#608)
+
+
+def test_the_best_matching_page_is_the_one_whose_landmarks_are_on_the_page() -> None:
+    from blumkin.browser.drift import best_matching_page
+
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    draft.add_page("expense-list", "https://erp.example.com/x", _obs())
+    draft.add_page(
+        "report-edit",
+        "https://erp.example.com/x",
+        parse_aria_snapshot(
+            '- heading "Edit Report"\n- button "Save and Close"\n- textbox "Purpose"\n'
+            '- button "Create Item"\n- combobox "Business Unit"\n- checkbox "Draft"\n'
+        ),
+    )
+    pages = draft.to_model(recorded_at="t", blumkin_version="1").pages
+    live = parse_aria_snapshot(
+        '- heading "Edit Report"\n- button "Save and Close"\n- textbox "Purpose"\n'
+        '- button "Create Item"\n- combobox "Business Unit"\n'
+    )
+
+    best = best_matching_page(pages, live)
+
+    assert best is not None
+    assert best[0] == "report-edit" and best[1] > 0.7
+
+
+def test_no_page_matches_when_nothing_recorded_is_on_the_page() -> None:
+    from blumkin.browser.drift import best_matching_page
+
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    draft.add_page("expense-list", "https://erp.example.com/x", _obs())
+    pages = draft.to_model(recorded_at="t", blumkin_version="1").pages
+
+    assert best_matching_page(pages, parse_aria_snapshot('- button "Elsewhere"\n')) is None
+
+
+def test_a_page_with_few_landmarks_inside_a_richer_page_does_not_win_a_tie() -> None:
+    from blumkin.browser.drift import best_matching_page
+
+    small = '- heading "Home"\n- button "Add line"\n- textbox "Amount"\n'
+    rich = small + '- combobox "Category"\n- checkbox "Billable"\n- button "Save"\n'
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    draft.add_page("small-page", "https://erp.example.com/x", parse_aria_snapshot(small))
+    draft.add_page("rich-page", "https://erp.example.com/x", parse_aria_snapshot(rich))
+    pages = draft.to_model(recorded_at="t", blumkin_version="1").pages
+    live = parse_aria_snapshot(rich)
+
+    assert best_matching_page(pages, live, prefer="rich-page") == ("rich-page", 1.0)
+    assert best_matching_page(pages, live) == ("rich-page", 1.0)  # more landmarks wins a tie
