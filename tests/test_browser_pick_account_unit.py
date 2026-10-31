@@ -326,3 +326,19 @@ def test_a_tile_changed_after_it_was_judged_is_not_clicked() -> None:
             assert page.evaluate("window.hits") == 0
         finally:
             browser.close()
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "<button disabled>ada@example.com</button>",
+        "<button aria-disabled=true>ada@example.com</button>",
+        '<button style="display:none">ada@example.com</button>',
+        '<button style="visibility:hidden">ada@example.com</button>',
+        "<div inert><button>ada@example.com</button></div>",
+        "<div aria-hidden=true><button>ada@example.com</button></div>",
+        "<fieldset disabled><button>ada@example.com</button></fieldset>",
+    ],
+)
+def test_a_hidden_disabled_or_inert_tile_is_not_a_tile(page: str) -> None:
+    assert _pick(page, "ada@example.com")[:2] == ("none", 0)

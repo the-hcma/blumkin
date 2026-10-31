@@ -1669,7 +1669,14 @@ _PICK_ACCOUNT_JS = r"""(args) => {
   for (const el of document.querySelectorAll(actionable + ', [data-test-id]')) {
     candidates.add(el.matches(actionable) ? el : (el.closest(actionable) || el));
   }
+  const usable = (el) => {
+    const css = getComputedStyle(el);
+    return shown(el) && css.visibility === 'visible' && css.pointerEvents !== 'none'
+      && !el.disabled && el.getAttribute('aria-disabled') !== 'true'
+      && !el.closest('[inert], [aria-hidden=true], fieldset:disabled');
+  };
   const hits = Array.from(candidates).filter((el) => {
+    if (!usable(el)) return false;
     const parts = names(el);
     const found = parts.flatMap(tokens).filter((t) => t.includes('@'));
     if (!found.includes(want) || found.some((t) => t !== want)) return false;
