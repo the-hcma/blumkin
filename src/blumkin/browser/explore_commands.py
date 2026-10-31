@@ -26,14 +26,15 @@ from blumkin.browser.explore import (
     Explorer,
     ExploreRefusedError,
     ModelDraft,
+    PageIdError,
     TerminalConfirmer,
     attach_exploring,
     decide_click,
-    validate_page_id,
 )
 from blumkin.browser.model import (
     SiteModel,
     discard_draft,
+    is_logical_name,
     load_draft,
     save_model,
     update_draft,
@@ -87,7 +88,9 @@ def explore_forget(config: BrowserSetup, task: str, page_id: str) -> dict[str, A
     `discard` is for.
     """
     _, extra_deny = explore_policy(config, task)
-    validate_page_id(page_id)
+    if not is_logical_name(page_id):
+        # A stored model may hold ids exploration would not make (`expense-item-2`).
+        raise PageIdError(f"Expected the id of a page in the draft or model, got {page_id!r}")
     seen: dict[str, Any] = {"forgotten": False, "steps_dropped": {}}
 
     def change(current: SiteModel | None) -> SiteModel | None:

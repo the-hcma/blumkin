@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-from blumkin.browser.explore import Inspection
+from blumkin.browser.explore import Inspection, ModelDraft, parse_aria_snapshot
 from blumkin.browser.profiles import create_profile
 from blumkin.cli import main
 from blumkin.exit_codes import EXIT_OTHER, EXIT_SUCCESS, EXIT_USAGE
@@ -428,3 +428,28 @@ def test_forget_says_which_flow_lost_steps(driver: _Driver, _config_dir: Path) -
     assert payload["forgotten"] is True
     assert payload["steps_dropped"] == {"recorded": 1}
     assert "lost 1 step" in payload["warnings"][0]
+
+
+def test_forget_can_drop_a_stored_page_whose_id_exploration_would_not_make(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    import dataclasses
+
+    from blumkin.browser.model import save_model
+
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    draft.add_page("expense-list", "https://erp.example.com/a", parse_aria_snapshot(_SNAPSHOT))
+    draft.add_page("expense-item", "https://erp.example.com/b", parse_aria_snapshot(_SNAPSHOT))
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+    pages = tuple(
+        dataclasses.replace(page, page_id="expense-item-2")
+        if page.page_id == "expense-item"
+        else page
+        for page in model.pages
+    )
+    save_model(_config_dir, dataclasses.replace(model, pages=pages))
+
+    result = _run("browser", "explore", "forget", "expense-report", "expense-item-2")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["forgotten"] is True

@@ -134,19 +134,22 @@ def best_matching_page(
     Only pages with enough landmarks to tell them apart count, and the best must reach the
     share at which two pages are the same page; with none that does, there is no best match.
     Some sites serve every page from one address, so this is how a caller learns which of
-    the recorded pages the browser is actually on. A page whose few landmarks are all on a
-    richer page scores the same as that page, so a tie goes to `prefer` (the page the caller
-    asked about), then to the page with more landmarks.
+    the recorded pages the browser is actually on. Pages are ranked by how many of their
+    landmarks are on the page, then by the share of theirs that are, so a small page that sits
+    inside a richer one does not win; a tie goes to `prefer` (the page the caller asked about).
     """
     live = {_canonical(mark) for mark in landmark_marks(observed) if not mark.startswith("link:")}
     best: tuple[str, float] | None = None
-    best_key: tuple[float, bool, int] = (0.0, False, 0)
+    best_key: tuple[int, float, bool] = (0, 0.0, False)
     for page in pages:
         recorded = {_canonical(mark) for mark in page.fingerprint if not mark.startswith("link:")}
         if len(recorded) < _MIN_LANDMARKS:
             continue
-        share = len(recorded & live) / len(recorded)
-        key = (share, page.page_id == prefer, len(recorded))
+        matched = len(recorded & live)
+        share = matched / len(recorded)
+        # Most landmarks matched first, so a small page whose few landmarks are all on the
+        # page cannot outrank a richer page that lost one; then the share, then the page asked.
+        key = (matched, share, page.page_id == prefer)
         if share >= _SAME_PAGE and (best is None or key > best_key):
             best, best_key = (page.page_id, share), key
     return best

@@ -453,3 +453,9 @@ def test_a_page_with_few_landmarks_inside_a_richer_page_does_not_win_a_tie() -> 
 
     assert best_matching_page(pages, live, prefer="rich-page") == ("rich-page", 1.0)
     assert best_matching_page(pages, live) == ("rich-page", 1.0)  # more landmarks wins a tie
+
+    # The rich page lost one landmark: it still matches more of its own than the small page
+    # does, so the small page that sits inside it does not take over.
+    drifted = parse_aria_snapshot(rich.replace('- checkbox "Billable"\n', ""))
+    best = best_matching_page(pages, drifted, prefer="rich-page")
+    assert best is not None and best[0] == "rich-page"
