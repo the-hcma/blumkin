@@ -280,3 +280,49 @@ def test_any_visible_field_to_type_into_is_unsupported(field: str) -> None:
     page = _PICKER + field
 
     assert _pick(page, "ada@example.com")[0] == "unsupported"
+
+
+def test_an_actionable_child_of_an_off_host_link_is_not_a_tile() -> None:
+    page = (
+        '<a href="https://evil.example.org/">'
+        '<span role=button data-test-id="ada@example.com">ada@example.com</span></a>'
+    )
+
+    assert _pick(page, "ada@example.com")[:2] == ("none", 0)
+
+
+def test_a_tile_changed_after_it_was_judged_is_not_clicked() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+
+    page_html = (
+        "<button id=t>ada@example.com</button>"
+        "<script>window.hits = 0; document.getElementById('t')"
+        ".addEventListener('click', () => { window.hits += 1; });</script>"
+    )
+    args = {"blocked": [], "email": "ada@example.com", "hosts": ["login.example.net"]}
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.route(
+                "http*://**/*", lambda r: r.fulfill(body=page_html, content_type="text/html")
+            )
+            page.goto("https://login.example.net/")
+            found = page.evaluate_handle(_PICK_ACCOUNT_JS, args)
+            names = found.get_property("3").json_value()
+            element = found.get_property("1").as_element()
+            page.evaluate(
+                "document.getElementById('t')"
+                ".setAttribute('aria-label', 'Sign in as ada@example.com')"
+            )
+            result = page.evaluate_handle(
+                _PICK_ACCOUNT_JS, {**args, "click": element, "names": names}
+            )
+            assert result.get_property("0").json_value() == "changed"
+            assert page.evaluate("window.hits") == 0
+        finally:
+            browser.close()

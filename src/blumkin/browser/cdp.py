@@ -115,7 +115,11 @@ class BrowserDriver(Protocol):
     ) -> None: ...
 
     def pick_account(
-        self, email: str, hosts: Sequence[str], blocked: Sequence[str]
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Callable[[Sequence[str]], bool] | None = None,
     ) -> AccountPick: ...
 
     def press(self, label: str, key: str) -> None: ...
@@ -665,7 +669,13 @@ class PlaywrightDriver:
             injection_warning=scan_for_injection(text, location="frame.text").to_payload(),
         )
 
-    def pick_account(self, email: str, hosts: Sequence[str], blocked: Sequence[str]) -> AccountPick:
+    def pick_account(
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Callable[[Sequence[str]], bool] | None = None,
+    ) -> AccountPick:
         """Click the one account tile bound to ``email`` on an identity provider's picker.
 
         Everything is decided in one evaluation on the page itself, so a redirect between a
@@ -673,19 +683,29 @@ class PlaywrightDriver:
         ``hosts`` and not on one of ``blocked`` (the task's own sites); it must show no field
         to type into (a password or code page is not a picker); and exactly one clickable
         element, outermost, must carry the address as a whole word in its test id, label or
-        text. Anything else is reported, not clicked. Nothing is typed.
+        text. Anything else is reported, not clicked. Nothing is typed. ``vet_names`` (the guard's
+        finalizing-name check) sees the tile's names before the click; the click then re-judges
+        the same element on the page and requires the same names, so a tile changed in between
+        is not clicked.
         """
         self._require_open()
         try:
-            handle = self._page.evaluate_handle(
-                _PICK_ACCOUNT_JS,
-                {"blocked": list(blocked), "email": email, "hosts": list(hosts)},
-            )
+            args: dict[str, Any] = {"blocked": list(blocked), "email": email, "hosts": list(hosts)}
+            handle = self._page.evaluate_handle(_PICK_ACCOUNT_JS, args)
             status = str(handle.get_property("0").json_value())
             count = int(handle.get_property("2").json_value() or 0)
-            element = handle.get_property("1").as_element() if status == "ok" else None
-            if element is not None:
-                element.click(timeout=self._timeout_ms)
+            if status != "ok":
+                return AccountPick(status=status, tiles=count)
+            names = [str(n) for n in handle.get_property("3").json_value() or ()]
+            if vet_names is not None and not vet_names(names):
+                return AccountPick(status="denied", tiles=1)
+            element = handle.get_property("1").as_element()
+            if element is None:
+                return AccountPick(status="none", tiles=0)
+            clicked = self._page.evaluate_handle(
+                _PICK_ACCOUNT_JS, {**args, "click": element, "names": names}
+            )
+            status = str(clicked.get_property("0").json_value())
         except _playwright_error() as exc:
             raise self._action_error("pick the account on the sign-in page", exc) from exc
         return AccountPick(status=status, tiles=count)
@@ -1314,7 +1334,11 @@ class RawBrowserDriver(Protocol):
     def raw_press(self, label: str, key: str) -> None: ...
 
     def pick_account(
-        self, email: str, hosts: Sequence[str], blocked: Sequence[str]
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Callable[[Sequence[str]], bool] | None = None,
     ) -> AccountPick: ...
 
     def read_frame_text(
@@ -1621,7 +1645,7 @@ _PICK_ACCOUNT_JS = r"""(args) => {
     'register', 'sign[ -]?up', 'add', 'another', 'different', 'other', 'continue', 'next'];
   const deny = new RegExp('\\b(' + denied.join('|') + ')\\b');
   const actionable = 'a[href], button, [role=button], [role=link]';
-  const offHost = (el) => (el.matches('a[href]') ? [el] : []).concat(
+  const offHost = (el) => [el.closest('a[href]')].filter(Boolean).concat(
     Array.from(el.querySelectorAll('a[href]'))).some((a) => {
     try {
       const u = new URL(a.href, location.href);
@@ -1654,7 +1678,15 @@ _PICK_ACCOUNT_JS = r"""(args) => {
   const tiles = hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
   if (tiles.length === 0) return ['none', null, 0];
   if (tiles.length > 1) return ['ambiguous', null, tiles.length];
-  return ['ok', tiles[0], 1];
+  const seen = names(tiles[0]);
+  if (args.click) {
+    if (tiles[0] !== args.click || JSON.stringify(seen) !== JSON.stringify(args.names)) {
+      return ['changed', null, 1, []];
+    }
+    tiles[0].click();
+    return ['ok', null, 1, []];
+  }
+  return ['ok', tiles[0], 1, seen];
 }"""
 
 _DESCRIBE_CONTROL_JS = (

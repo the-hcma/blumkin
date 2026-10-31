@@ -229,6 +229,8 @@ class _Page:
         self.upload_state_error: Exception | None = None
         #: What the account-picker script answers: (status, count).
         self.pick_outcome: tuple[str, int] = ("ok", 1)
+        #: What the page answers when the chosen tile is judged again right before the click.
+        self.click_outcome = "ok"
 
     def get_by_label(self, label: str, *, exact: bool = False) -> _Locator:
         self.calls.append(("get_by_label", label, exact)) if exact else None
@@ -256,8 +258,16 @@ class _Page:
             def as_element(self) -> Any:
                 return self._value
 
-        tile = SimpleNamespace(click=lambda *, timeout: self.calls.append(("tile-click", timeout)))
-        values = {"0": outcome[0], "1": tile if outcome[0] == "ok" else None, "2": outcome[1]}
+        tile = SimpleNamespace()
+        values = {
+            "0": outcome[0],
+            "1": tile if outcome[0] == "ok" else None,
+            "2": outcome[1],
+            "3": ["ada@example.com"],
+        }
+        if isinstance(arg, dict) and "click" in arg:  # the second turn: re-judge and click
+            self.calls.append(("tile-click", tuple(arg["names"])))
+            values = {"0": self.click_outcome, "1": None, "2": 1, "3": []}
 
         class _Array:
             def get_property(self, index: str) -> _Prop:
@@ -2858,7 +2868,7 @@ def test_pick_account_clicks_the_one_tile_and_passes_the_policy_to_the_page() ->
     picked = driver.pick_account("ada@example.com", ["login.example.net"], ["erp.example.com"])
 
     assert (picked.status, picked.tiles) == ("ok", 1)
-    assert ("tile-click", 30000.0) in pw.page.calls
+    assert ("tile-click", ("ada@example.com",)) in pw.page.calls
     args = next(call[1] for call in pw.page.calls if call[0] == "evaluate_handle")
     assert args == {
         "blocked": ["erp.example.com"],
@@ -2936,3 +2946,23 @@ def test_the_sign_in_route_is_removed_even_when_the_block_is_interrupted() -> No
 
     assert pw.page.context is not None
     assert len(pw.page.context.unrouted) == 1
+
+
+def test_pick_account_reports_a_tile_that_changed_before_the_click() -> None:
+    pw, driver = _driver()
+    pw.page.click_outcome = "changed"
+
+    picked = driver.pick_account("ada@example.com", ["login.example.net"], [])
+
+    assert picked.status == "changed"
+
+
+def test_pick_account_does_not_click_a_tile_the_name_vet_refuses() -> None:
+    pw, driver = _driver()
+
+    picked = driver.pick_account(
+        "ada@example.com", ["login.example.net"], [], vet_names=lambda names: False
+    )
+
+    assert picked.status == "denied"
+    assert not any(call[0] == "tile-click" for call in pw.page.calls)

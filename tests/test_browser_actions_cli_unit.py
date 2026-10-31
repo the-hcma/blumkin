@@ -220,7 +220,13 @@ class _Raw:
     ) -> None:
         self.marks.append((task, tuple(hosts), tuple(blocked)))
 
-    def pick_account(self, email: str, hosts: Sequence[str], blocked: Sequence[str]) -> AccountPick:
+    def pick_account(
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Any = None,
+    ) -> AccountPick:
         self.picks.append((email, tuple(hosts), tuple(blocked)))
         return self.pick_result
 
@@ -2590,7 +2596,9 @@ def test_an_interruption_during_the_pick_leaves_nothing_to_undo(
     _authorize_sign_in(_config_dir)
     before = (_config_dir / "config.toml").read_text()
 
-    def interrupted(email: str, hosts: Sequence[str], blocked: Sequence[str]) -> AccountPick:
+    def interrupted(
+        email: str, hosts: Sequence[str], blocked: Sequence[str], vet_names: Any = None
+    ) -> AccountPick:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(raw, "pick_account", interrupted)

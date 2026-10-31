@@ -225,13 +225,24 @@ class GuardedDriver:
         """Show the task's indicator on the page blumkin is attached to (on `hosts` only)."""
         self._raw.mark_window(task, hosts, blocked)
 
-    def pick_account(self, email: str, hosts: Sequence[str], blocked: Sequence[str]) -> AccountPick:
+    def pick_account(
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Callable[[Sequence[str]], bool] | None = None,
+    ) -> AccountPick:
         """Select the one account tile for ``email`` on an identity provider's picker.
 
         Not a control click: it works only on an identity-provider host that is not one of
         the task's own, never types, and reports instead of guessing; see the driver.
         """
-        return self._raw.pick_account(email, hosts, blocked)
+
+        def clean(names: Sequence[str]) -> bool:
+            lines = [line for name in names for line in (name, *name.splitlines())]
+            return not any(_is_denied(line, self._deny) for line in lines)
+
+        return self._raw.pick_account(email, hosts, blocked, clean)
 
     def press(self, label: str, key: str) -> None:
         action = f"press {key!r} in {label!r}"

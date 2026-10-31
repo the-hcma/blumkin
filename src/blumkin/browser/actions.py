@@ -360,6 +360,8 @@ def mask_email(address: str) -> str:
 
 
 _PICK_REFUSALS = {
+    "changed": "the tile changed between the check and the click, so nothing was clicked",
+    "denied": "the tile is named like a finalizing action (submit, send, pay), so none was clicked",
     "ambiguous": "more than one tile on the page matches the account, so none was clicked",
     "none": "no tile on the page is for the profile's account, so none was clicked",
     "unsupported": (
