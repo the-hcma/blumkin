@@ -794,3 +794,31 @@ def test_updating_a_hand_written_file_without_a_prompt_explains_why_it_is_refuse
 
     with pytest.raises(TaskValidationError, match="usable prompt before it is updated"):
         asyncio.run(tasks_update(config=cfg, name="mileage", prompt="Do the thing"))
+
+
+def test_updating_a_file_that_holds_only_the_template_fields_adds_the_missing_prompt_header(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    _write_tasks(tmp_path, fields="# Mileage\n\n**Trigger:** mileage claim\n**Output:** a draft\n")
+
+    updated = asyncio.run(tasks_update(config=cfg, name="fields", prompt="Do the thing"))
+
+    assert updated["task"]["prompt"] == "Do the thing"
+    text = (tmp_path / "tasks" / "fields.md").read_text()
+    assert "**Trigger:** mileage claim" in text and "**Output:** a draft" in text
+    assert "**Prompt:**" in text and "> Do the thing" in text
+    assert asyncio.run(tasks_list(config=cfg))["tasks"][0]["problems"] == []
+
+
+def test_updating_a_fields_only_file_without_a_prompt_cannot_drop_other_content(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    _write_tasks(tmp_path, notes="**Trigger:** x\n\nExtra notes the template does not model.\n")
+    before = (tmp_path / "tasks" / "notes.md").read_bytes()
+
+    with pytest.raises(TaskValidationError, match="usable prompt before it is updated"):
+        asyncio.run(tasks_update(config=cfg, name="notes", prompt="Do it"))
+
+    assert (tmp_path / "tasks" / "notes.md").read_bytes() == before

@@ -329,7 +329,14 @@ async def tasks_update(
     # The stored title may be the stem default (no # line) or an explicit # line
     # that happens to equal the name; keep whichever form the file has.
     for kept_title in ("", task.title):
-        if _signature(_render_markdown(title=kept_title, **unchanged)) == original:
+        rendered = _signature(_render_markdown(title=kept_title, **unchanged))
+        # A file with the template fields but no `**Prompt:**` line at all differs from the
+        # rendering only by that header, which the update is there to add.
+        adds_header_only = task.problems == ("missing_prompt",) and rendered == [
+            *original,
+            "**prompt:** ",
+        ]
+        if rendered == original or adds_header_only:
             break
     else:
         if task.problems:
