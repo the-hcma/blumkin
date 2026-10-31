@@ -168,3 +168,9 @@ def test_only_escaped_quotes_and_backslashes_are_unescaped() -> None:
     text, _ = scope(page, "dialog", 'Say "hi" a\\b \\n')
 
     assert 'button "OK"' in text
+
+
+def test_a_selected_option_with_quotes_in_its_name_is_written_escaped() -> None:
+    page = '- combobox "T":\n  - option "Say \\"hi\\"" [selected]\n  - option "B"\n'
+
+    assert collapse_options(page).strip() == ('- combobox "T" (2 options, selected "Say \\"hi\\"")')

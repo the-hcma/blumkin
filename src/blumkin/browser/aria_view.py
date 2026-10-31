@@ -51,7 +51,7 @@ def collapse_options(snapshot: str) -> str:
         ):
             out.extend(lines[index:end])
         else:
-            selected = [f'"{child.name}"' for child in options if child.selected]
+            selected = [_quote(child.name) for child in options if child.selected]
             shown = ", ".join(selected) if selected else None
             noun = "option" if len(options) == 1 else "options"
             summary = f"{len(options)} {noun}, " + (
@@ -160,6 +160,12 @@ def _closing_quote(body: str) -> int | None:
             continue
         index += 1
     return None
+
+
+def _quote(name: str | None) -> str:
+    """A name as the snapshot writes it: in double quotes, with `"` and `\\` escaped."""
+    text = (name or "").replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
 
 
 def _subtree_end(lines: list[str], start: int) -> int:
