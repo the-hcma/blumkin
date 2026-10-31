@@ -1123,3 +1123,31 @@ def test_rsvp_today_pending_bulk_mode_is_never_gated(tmp_path, monkeypatch) -> N
     prov = _provider("calendar_decline")
     _run("calendar.decline", {"today_pending": True, "yes": True}, config=cfg, provider=prov)
     prov.calendar_decline.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("asked", "suggested"),
+    [
+        ("from", ["from_email", "from_name"]),
+        ("sender", []),
+        ("subjct", ["subject"]),
+        ("Subject", ["subject"]),
+    ],
+)
+def test_an_unknown_field_suggests_the_closest_valid_names(
+    asked: str, suggested: list[str]
+) -> None:
+    payload = _items_payload({"subject": "s", "from_email": "a@x.com", "from_name": "A"})
+    with pytest.raises(ValueError, match=asked) as exc:
+        _run_payload(
+            "mail.list",
+            {"top": 10, "fields": [asked]},
+            provider=_items_provider("mail_list", payload),
+        )
+    message = str(exc.value)
+    head = message.split("; valid fields are")[0]
+    assert "valid fields are" in message
+    if not suggested:
+        assert "did you mean" not in head
+    else:
+        assert head.endswith("(did you mean " + " or ".join(repr(n) for n in suggested) + "?)")

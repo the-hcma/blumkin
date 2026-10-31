@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import tomlkit
 import tomlkit.exceptions
@@ -156,6 +157,12 @@ class BrowserTaskPolicy:
     #: Folders `download` may save into (absolute, or starting with `~/`). Empty means no
     #: download at all: the default is deny.
     download_dirs: tuple[str, ...] = ()
+    #: The page the task works on (an https address on an `allowed_hosts` host): `browser goto`
+    #: without an address and `browser launch --open` open it.
+    form_url: str = ""
+    #: Extra identity-provider hosts `goto` waits through while the user signs in (the common
+    #: ones are built in): never acted on, only waited out until the page reaches an allowed host.
+    sign_in_hosts: tuple[str, ...] = ()
     #: Exact accessible names of buttons that confirm a dialog's own rows (an attachments
     #: dialog's `OK`). Such a button may be clicked only inside a dialog whose form, if it has
     #: one, lies inside that dialog; the same name anywhere else is refused. A finalizing name
@@ -591,9 +598,16 @@ _TASK_POLICY_KEYS = frozenset(
         "dialog_confirm",
         "download_dirs",
         "extra_deny_names",
+        "form_url",
+        "sign_in_hosts",
         "upload_dirs",
     }
 )
+
+
+def validate_browser_task_table(task: str, table: dict[str, Any]) -> None:
+    """Raise `ProviderConfigError` unless `table` is a `[browser.tasks.<task>]` that loads."""
+    _browser_task_policies({task: table})
 
 
 def _auth_present_probe_cfg(directory: Path, profile: str, table: dict[str, Any]) -> BlumkinConfig:
@@ -710,21 +724,9 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
             )
         upload_dirs = _policy_folders(table, "upload_dirs", prefix)
         download_dirs = _policy_folders(table, "download_dirs", prefix)
-        hosts = tuple(
-            host.strip().lower()
-            for host in _string_list(table.get("allowed_hosts"), f"{prefix}.allowed_hosts")
-        )
-        for host in hosts:
-            if host.startswith("*.") and "." not in host[2:]:
-                raise ProviderConfigError(
-                    f"{prefix}.allowed_hosts wildcard must sit under a registrable domain such "
-                    f"as *.example.com in config.toml, got {host!r}"
-                )
-            if not _HOST_PATTERN.fullmatch(host):
-                raise ProviderConfigError(
-                    f"{prefix}.allowed_hosts must hold bare host names such as erp.example.com "
-                    f"or *.example.com in config.toml, got {host!r}"
-                )
+        hosts = _host_list(table, "allowed_hosts", prefix)
+        sign_in_hosts = _host_list(table, "sign_in_hosts", prefix)
+        form_url = _form_url(table.get("form_url", ""), hosts, prefix)
         strict = table.get("block_background_writes", False)
         if not isinstance(strict, bool):
             raise ProviderConfigError(
@@ -738,6 +740,8 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 table.get("allowed_controls"), f"{prefix}.allowed_controls"
             ),
             dialog_confirm=_string_list(table.get("dialog_confirm"), f"{prefix}.dialog_confirm"),
+            form_url=form_url,
+            sign_in_hosts=sign_in_hosts,
             extra_deny_names=_string_list(
                 table.get("extra_deny_names"), f"{prefix}.extra_deny_names"
             ),
@@ -745,6 +749,72 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
             download_dirs=download_dirs,
         )
     return policies
+
+
+def _form_url(value: Any, allowed_hosts: tuple[str, ...], prefix: str) -> str:
+    """A task's `form_url`: an https address, on an allowed host once the task declares any."""
+    if not isinstance(value, str):
+        raise ProviderConfigError(
+            f"{prefix}.form_url must be a string in config.toml, got {value!r}"
+        )
+    url = value.strip()
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        port = parts.port
+    except ValueError:
+        # The parser's own message can repeat the address, and the address can hold a password.
+        raise ProviderConfigError(
+            f"{prefix}.form_url must be a plain https address without credentials, spaces or "
+            "backslashes in config.toml"
+        ) from None
+    # A backslash, whitespace or a control character is read differently by a browser than by
+    # urlsplit (`https://evil.example\\.erp.example.com` goes to evil.example), so none is allowed.
+    odd = any(char.isspace() or char == "\\" or not char.isprintable() for char in url)
+    if (
+        parts.scheme != "https"
+        or not _HOST_PATTERN.fullmatch(host)
+        or parts.username
+        or parts.password
+        or port == -1
+        or odd
+    ):
+        # The address is not echoed: it can hold a password.
+        raise ProviderConfigError(
+            f"{prefix}.form_url must be a plain https address without credentials, spaces or "
+            "backslashes in config.toml"
+        )
+    allowed = not allowed_hosts or any(
+        host.endswith(pattern[1:]) and len(host) > len(pattern) - 1
+        if pattern.startswith("*.")
+        else host == pattern
+        for pattern in allowed_hosts
+    )
+    if not allowed:
+        raise ProviderConfigError(
+            f"{prefix}.form_url must be on one of {prefix}.allowed_hosts in config.toml, "
+            f"got host {host!r}"
+        )
+    return url
+
+
+def _host_list(table: dict[str, Any], key: str, prefix: str) -> tuple[str, ...]:
+    """A list of bare host names (`erp.example.com`, `*.example.com`) from a task table."""
+    hosts = tuple(host.strip().lower() for host in _string_list(table.get(key), f"{prefix}.{key}"))
+    for host in hosts:
+        if host.startswith("*.") and "." not in host[2:]:
+            raise ProviderConfigError(
+                f"{prefix}.{key} wildcard must sit under a registrable domain such "
+                f"as *.example.com in config.toml, got {host!r}"
+            )
+        if not _HOST_PATTERN.fullmatch(host):
+            raise ProviderConfigError(
+                f"{prefix}.{key} must hold bare host names such as erp.example.com "
+                f"or *.example.com in config.toml, got {host!r}"
+            )
+    return hosts
 
 
 def _client_id_from_google_oauth_file(path: Path) -> str:

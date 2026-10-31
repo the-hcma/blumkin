@@ -37,6 +37,14 @@ def _live_pid_is_the_browser(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _one_open_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test here talks to a real DevTools port: every browser reports one open page."""
+    monkeypatch.setattr(
+        "blumkin.browser.cdp._fetch_targets", lambda endpoint, timeout_s: [{"type": "page"}]
+    )
+
+
+@pytest.fixture(autouse=True)
 def _config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
@@ -560,3 +568,85 @@ def test_profile_delete_refused_for_a_launch_in_progress_does_not_say_to_close_a
     payload = _json(result)
     assert payload["error"] == "profile_in_use"
     assert "browser close" not in (payload.get("hint") or "")
+
+
+def test_status_reports_the_open_page_count_and_says_nothing_when_there_is_one(
+    _config_dir: Path,
+) -> None:
+    write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+
+    entry = _json(_run("browser", "status", "expense-report"))["profiles"][0]
+
+    assert entry["pages"] == 1
+    assert entry["note"] is None
+
+
+def test_status_says_so_when_the_browser_is_running_with_no_open_page(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("blumkin.browser.cdp._fetch_targets", lambda endpoint, timeout_s: [])
+    write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+
+    entry = _json(_run("browser", "status", "expense-report"))["profiles"][0]
+    text = CliRunner().invoke(main, ["browser", "status", "expense-report"]).output
+
+    assert entry["pages"] == 0
+    assert "no open page" in entry["note"]
+    assert "no open page" in text
+
+
+def test_only_pages_count_as_open_pages(_config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "blumkin.browser.cdp._fetch_targets",
+        lambda endpoint, timeout_s: [
+            {"type": "service_worker"},
+            {"type": "page"},
+            {"type": "iframe"},
+        ],
+    )
+    write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+
+    assert _json(_run("browser", "status", "expense-report"))["profiles"][0]["pages"] == 1
+
+
+def test_status_leaves_the_page_count_unknown_when_devtools_does_not_answer(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def down(endpoint: str, timeout_s: float) -> list[dict[str, Any]]:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("blumkin.browser.cdp._fetch_targets", down)
+    write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+
+    entry = _json(_run("browser", "status", "expense-report"))["profiles"][0]
+
+    assert entry["pages"] is None
+    assert entry["note"] is None
+    assert entry["running"] is True
+
+
+def test_endpoint_prints_the_devtools_endpoint_of_the_running_browser(
+    _config_dir: Path,
+) -> None:
+    write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+
+    payload = _json(_run("browser", "endpoint", "expense-report"))
+    text = CliRunner().invoke(main, ["browser", "endpoint", "expense-report"]).output
+
+    assert payload["endpoint"] == "http://127.0.0.1:40123"
+    assert payload["port"] == 40123
+    assert text.strip() == "http://127.0.0.1:40123"
+
+
+def test_endpoint_without_a_running_browser_says_to_launch_it(_config_dir: Path) -> None:
+    create_profile(_config_dir, "expense-report")
+
+    result = _run("browser", "endpoint", "expense-report")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "browser_not_running"
+    assert "browser launch expense-report" in _json(result)["hint"]
+
+
+def test_endpoint_for_an_unknown_task_is_not_found() -> None:
+    assert _run("browser", "endpoint", "nope").exit_code == EXIT_NOT_FOUND

@@ -1892,3 +1892,36 @@ def test_wo1162425_gate_does_not_apply_to_a_google_profile(tmp_path, monkeypatch
         result = CliRunner().invoke(main, ["people", "resolve", "--name", "Ada", "--json"])
     assert result.exit_code == 0, result.stderr
     assert json.loads(result.stdout)["person"]["email"] == "a@b.com"
+
+
+def test_the_profile_option_after_the_subcommand_says_where_it_goes() -> None:
+    option = "--profile"
+    result = CliRunner().invoke(main, ["mail", "inbox", option, "x"])
+
+    assert result.exit_code == EXIT_USAGE
+    assert f"{option} is a global option: put it before the subcommand" in result.output
+    assert f"blumkin {option} VALUE mail inbox" in result.output
+
+
+def test_an_option_that_is_simply_unknown_gets_no_placement_hint() -> None:
+    result = CliRunner().invoke(main, ["mail", "inbox", "--no-such-flag"])
+
+    assert result.exit_code == EXIT_USAGE
+    assert "before the subcommand" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("args", "leaf"),
+    [
+        (["loop", "--profile", "work", "init"], "loop init --profile VALUE"),
+        (["mcp", "--profile", "work", "serve"], "mcp serve --profile VALUE"),
+    ],
+)
+def test_a_group_whose_subcommands_own_profile_points_at_the_subcommand(
+    args: list[str], leaf: str
+) -> None:
+    result = CliRunner().invoke(main, args)
+
+    assert result.exit_code == EXIT_USAGE
+    assert f"`blumkin {leaf}`" in result.output
+    assert "put it before the subcommand" not in result.output

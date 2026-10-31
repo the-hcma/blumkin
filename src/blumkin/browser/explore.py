@@ -113,6 +113,10 @@ class ExploreRawDriver(Protocol):
 
     def close(self) -> None: ...
 
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None: ...
+
     def restrict_navigation(self, is_allowed: Callable[[str], bool]) -> None: ...
 
     def settle(self, previous_url: str) -> None: ...
@@ -228,6 +232,12 @@ class ExploringDriver:
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()
 
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None:
+        """Show the task's indicator on the page (on `hosts` only, never on a sign-in page)."""
+        self._raw.mark_window(task, hosts, blocked)
+
     def click_vetted(self, role: str, name: str, expected: Inspection) -> None:
         def vet(info: ControlInfo) -> None:
             reason = vet_control(info) or _window_problem(info)
@@ -299,10 +309,7 @@ class ModelDraft:
 
     def add_page(self, page_id: str, url: str, controls: Sequence[ControlObservation]) -> None:
         """Record (or update) a page from what was observed on it."""
-        if not _PAGE_ID.fullmatch(page_id):
-            raise PageIdError(
-                f"Expected a page id of lowercase words (such as expense-list), got {page_id!r}"
-            )
+        validate_page_id(page_id)
         marks: list[str] = []
         built: list[Control] = []
         used: set[str] = set()
@@ -337,6 +344,37 @@ class ModelDraft:
             FlowStep(action=action, control=control, expect=expect, page=page_id)
         )
 
+    def forget(self, page_id: str) -> dict[str, int] | None:
+        """Drop a page and the recorded steps that used it.
+
+        Returns how many steps each flow lost (only flows that lost some), or None when the
+        page was not there. A flow left with no steps is dropped from the model.
+        """
+        if self._pages.pop(page_id, None) is None:
+            return None
+        before = {name: len(steps) for name, steps in self._flows.items()}
+        self._prune_steps()
+        return {
+            name: before[name] - len(steps)
+            for name, steps in self._flows.items()
+            if len(steps) < before[name]
+        }
+
+    def shared_addresses(self) -> dict[str, tuple[str, ...]]:
+        """Address templates that pages with different landmarks share (page ids in order).
+
+        Some sites serve every page from one address and tell them apart by what is on them
+        only, so the address alone cannot say which page the browser is on.
+        """
+        by_address: dict[str, list[Page]] = {}
+        for page in self._pages.values():
+            by_address.setdefault(page.url_template, []).append(page)
+        return {
+            address: tuple(page.page_id for page in pages)
+            for address, pages in by_address.items()
+            if len({page.fingerprint for page in pages}) > 1
+        }
+
     def control_for(self, page_id: str, role: str, name: str) -> str | None:
         """The logical name of the control with this role and name on the page, if recorded."""
         page = self._pages.get(page_id)
@@ -362,6 +400,10 @@ class ModelDraft:
         self._flows = {
             name: [step for step in steps if alive(step)] for name, steps in self._flows.items()
         }
+
+    def page_ids(self) -> tuple[str, ...]:
+        """The ids of the pages recorded so far."""
+        return tuple(self._pages)
 
     def to_model(self, *, recorded_at: str, blumkin_version: str) -> SiteModel:
         """The draft as a model (not yet validated or stored: `save_model` does both)."""
@@ -525,6 +567,14 @@ def parse_aria_snapshot(text: str) -> tuple[ControlObservation, ...]:
     return tuple(found)
 
 
+def validate_page_id(page_id: str) -> None:
+    """Raise `PageIdError` unless `page_id` is lowercase words (such as expense-list)."""
+    if not _PAGE_ID.fullmatch(page_id):
+        raise PageIdError(
+            f"Expected a page id of lowercase words (such as expense-list), got {page_id!r}"
+        )
+
+
 def url_template(url: str) -> str:
     """The path of `url` with every value-like segment replaced by `{id}`; no query or fragment."""
     path = urlsplit(url).path or "/"
@@ -542,6 +592,10 @@ _DESTRUCTIVE_HREF = re.compile(
     "archive|cancel|closeaccount|deactivate|delete|destroy|disable|discard|empty|erase|kill|"
     "logoff|logout|purge|remove|reset|revoke|signoff|signout|terminate|trash|unlink|"
     "unsubscribe|wipe"
+)
+#: Roles whose name decides whether pressing them could finalize something.
+_ACTIONABLE_ROLES = frozenset(
+    {"button", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "tab"}
 )
 _MAX_MARKS = 100
 _PAGE_ID = re.compile(r"[a-z]+(?:-[a-z]+){0,5}")
@@ -633,7 +687,10 @@ def _control(
     locators = [Locator(strategy=LocatorStrategy.ROLE_NAME, value=f"{item.role}:{item.name}")]
     if item.role in LABELLED_ROLES:
         locators.append(Locator(strategy=LocatorStrategy.LABEL, value=item.name))
-    finalizing = _is_finalizing(item.name, extra_deny)
+    # Only a control that can be pressed is finalizing by its name: a combobox called
+    # "Payment Method", a date called "Checkout Date" or a file input called "File Name" is a
+    # field, and marking it would refuse every flow that has to fill it.
+    finalizing = item.role in _ACTIONABLE_ROLES and _is_finalizing(item.name, extra_deny)
     safety = ControlSafety.FINALIZING if finalizing else ControlSafety.SAFE
     return Control(kind=kind, locators=tuple(locators), name=name, safety=safety)
 

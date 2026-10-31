@@ -46,8 +46,12 @@ from blumkin.auth_setup import (
     remove_first_run_config,
 )
 from blumkin.browser.actions import (
+    DEFAULT_SIGN_IN_WAIT_S,
+    MAX_READ_CHARS,
+    MAX_READ_LIMIT,
     DownloadBlockedError,
     HostBlockedError,
+    SignInTimeoutError,
     UploadBlockedError,
     click_task,
     download_task,
@@ -62,11 +66,14 @@ from blumkin.browser.actions import (
     transcript_task,
     upload_task,
 )
+from blumkin.browser.aria_view import parse_within
 from blumkin.browser.cdp import (
     MAX_WAIT_S,
     BrowserActionError,
     BrowserAttachError,
     BrowserDependencyError,
+    BrowserNoPageError,
+    BrowserProtocolError,
 )
 from blumkin.browser.commands import (
     TaskNotFoundError,
@@ -75,6 +82,7 @@ from blumkin.browser.commands import (
     delete_task_profile,
     launch_task_browser,
     list_task_profiles,
+    task_endpoint,
     task_status,
 )
 from blumkin.browser.discovery import BrowserConfigError, BrowserNotFoundError
@@ -87,6 +95,7 @@ from blumkin.browser.explore import (
 from blumkin.browser.explore_commands import (
     explore_click,
     explore_discard,
+    explore_forget,
     explore_observe,
     explore_save,
     explore_show,
@@ -99,11 +108,13 @@ from blumkin.browser.ledger import LedgerError, LedgerJournalError, LedgerNotFou
 from blumkin.browser.ledger_commands import (
     ledger_apply,
     ledger_begin,
+    ledger_close,
     ledger_discard,
     ledger_handoff,
     ledger_list,
     ledger_reconcile,
     ledger_record,
+    ledger_report,
     ledger_stage,
     ledger_status,
     ledger_submitted,
@@ -648,6 +659,11 @@ def _field_action(
         lines.append(
             f"  the field now holds {sanitize_terminal(payload['read_back'])!r}, not what was set"
         )
+    if "persisted" in payload:  # an upload: what the page shows of the file
+        lines.append(f"  the page shows the file: {payload['persisted']}")
+        lines.extend(
+            f"  warning: {sanitize_terminal(text)}" for text in payload.get("warnings", ())
+        )
     emit_lines(lines)
 
 
@@ -668,6 +684,12 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "upload_blocked", EXIT_OTHER
     elif isinstance(exc, DownloadBlockedError):
         slug, code = "download_blocked", EXIT_OTHER
+    elif isinstance(exc, SignInTimeoutError):
+        slug, code = "sign_in_timeout", EXIT_OTHER
+        hint = (
+            "Sign in by hand in the browser window, then run "
+            f"`blumkin browser goto {task or 'TASK'}` again (the browser keeps running)."
+        )
     elif isinstance(exc, HostBlockedError):
         slug, code = "host_blocked", EXIT_OTHER
     elif isinstance(exc, BrowserActionError):
@@ -678,6 +700,19 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
             "Restore playwright with `uv sync --reinstall-package playwright` "
             "in the blumkin clone, `uv tool install -e . --reinstall`, or "
             "`uv tool upgrade blumkin --reinstall-package playwright`, then retry."
+        )
+    elif isinstance(exc, BrowserNoPageError):
+        slug, code = "browser_no_page", EXIT_OTHER
+        hint = (
+            "The browser is running but has no open page: open a tab in its window, or "
+            f"close it (`blumkin browser close {task or 'TASK'}`) and launch it again with "
+            "`--open`."
+        )
+    elif isinstance(exc, BrowserProtocolError):
+        slug, code = "browser_attach_failed", EXIT_OTHER
+        hint = (
+            "The browser is running but attaching to it over DevTools failed; try the command "
+            f"again, or close it (`blumkin browser close {task or 'TASK'}`) and launch it again."
         )
     elif isinstance(exc, BrowserAttachError):
         slug, code = "browser_not_running", EXIT_OTHER
@@ -738,6 +773,8 @@ def _browser_profile_lines(payload: dict[str, Any]) -> list[str]:
     for entry in profiles:
         state = f"running ({entry['endpoint']})" if entry["running"] else "not running"
         lines.append(f"{entry['task']}: {state}")
+        if entry.get("note"):
+            lines.append(f"  note: {entry['note']}")
     return lines
 
 
@@ -754,6 +791,19 @@ def _emit_ledger(payload: dict[str, Any], *, as_json: bool, items: bool = False)
     lines = [f"{payload['task']}/{payload['instance']}: {payload['summary']}"]
     if items:
         lines += [f"  {i['kind']} {i['item']}: {i['state']}" for i in payload["items"]]
+        if payload.get("on_server") or payload.get("local_only"):
+            lines.append(
+                f"  on the server (read back): {len(payload['on_server'])}; "
+                f"only local or not read back: {len(payload['local_only'])}"
+            )
+    if payload.get("resume"):
+        lines.append(f"  {payload['resume']}")
+    for warning in payload.get("warnings") or ():
+        lines.append(f"  warning: {warning}")
+    if payload.get("browser_closed") is True:
+        lines.append("  the task browser was closed (its profile is kept)")
+    elif payload.get("browser_closed") is False:
+        lines.append("  no task browser was running")
     emit_lines(lines)
 
 
@@ -1478,6 +1528,9 @@ def _dispatch_soft(
     raise SystemExit(fail_exit if failed else EXIT_SUCCESS)
 
 
+_GLOBAL_ONLY_OPTIONS = frozenset({"--profile", "--tz"})
+
+
 def _xdg_base(var: str, default: Path) -> Path:
     """XDG base dir from ``$var``, honoring the spec: a relative value is ignored."""
     value = os.environ.get(var, "")
@@ -1485,7 +1538,59 @@ def _xdg_base(var: str, default: Path) -> Path:
     return candidate if candidate.is_absolute() else default
 
 
-@click.group(epilog=help_text.MAIN_EPILOG)
+class _BlumkinGroup(click.Group):
+    """The top-level group: a global option typed after a subcommand gets a placement hint."""
+
+    def invoke(self, ctx: click.Context) -> Any:
+        typed_words = [*ctx.protected_args, *ctx.args]  # click empties these as it dispatches
+        try:
+            return super().invoke(ctx)
+        except click.NoSuchOption as exc:
+            if exc.option_name not in _GLOBAL_ONLY_OPTIONS:
+                raise
+            path = " ".join(_subcommand_path(exc.ctx))
+            owners = _subcommands_with_option(exc.ctx, exc.option_name)
+            if owners:
+                typed = [word for word in typed_words if word in owners]
+                chosen = typed[0] if typed else owners[0]
+                # A group (`loop`, `mcp`) whose subcommands take the option themselves: the
+                # global one would not reach them, so point at the subcommand's own.
+                raise click.UsageError(
+                    f"{exc.option_name} belongs to the subcommand, not to `{path}`: put it "
+                    f"after the subcommand, as in `blumkin {path} {chosen} "
+                    f"{exc.option_name} VALUE` (also: {', '.join(owners)})",
+                    ctx=exc.ctx,
+                ) from exc
+            raise click.UsageError(
+                f"{exc.option_name} is a global option: put it before the subcommand, as in "
+                f"`blumkin {exc.option_name} VALUE {path}`",
+                ctx=exc.ctx,
+            ) from exc
+
+
+def _subcommands_with_option(ctx: click.Context | None, option: str) -> list[str]:
+    """The subcommands of the group `ctx` is for that declare `option` themselves."""
+    if ctx is None or not isinstance(ctx.command, click.Group):
+        return []
+    return sorted(
+        name
+        for name, command in ctx.command.commands.items()
+        if any(option in param.opts for param in command.params)
+    )
+
+
+def _subcommand_path(ctx: click.Context | None) -> list[str]:
+    """The subcommand words typed so far (`mail inbox`), for an example in a hint."""
+    if ctx is None:
+        return []
+    path: list[str] = []
+    while ctx.parent is not None:  # the root is the program, whatever its name has in it
+        path.append(ctx.info_name or "")
+        ctx = ctx.parent
+    return path[::-1]
+
+
+@click.group(cls=_BlumkinGroup, epilog=help_text.MAIN_EPILOG)
 @click.option(
     "--profile",
     default=None,
@@ -2376,16 +2481,51 @@ def browser() -> None:
 @click.option(
     "--yes", "yes", is_flag=True, help="Write the table to config.toml (never overwrites)."
 )
+@click.option(
+    "--host",
+    "hosts",
+    multiple=True,
+    help="A host the task's pages may be on (repeatable); replaces the template's hosts. "
+    "Required for templates whose site differs per organization (expense-report).",
+)
+@click.option(
+    "--upload-dir",
+    "upload_dirs",
+    multiple=True,
+    help="A folder uploads may be read from (repeatable); replaces the template's folder.",
+)
+@click.option(
+    "--form-url",
+    "form_url",
+    default="",
+    help="The page the task works on (https, on one of the hosts): what `browser goto` and "
+    "`browser launch --open` open.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_init_task(
-    ctx: click.Context, task: str | None, template: str, yes: bool, as_json_flag: bool
+    ctx: click.Context,
+    task: str | None,
+    template: str,
+    yes: bool,
+    hosts: tuple[str, ...],
+    upload_dirs: tuple[str, ...],
+    form_url: str,
+    as_json_flag: bool,
 ) -> None:
     """Create a task's browser profile and its starting policy from a built-in template."""
     as_json = _as_json(ctx, as_json_flag)
     name = task or template
     try:
-        payload = init_task(config_dir(), name, template, write=yes)
+        payload = init_task(
+            config_dir(),
+            name,
+            template,
+            write=yes,
+            hosts=hosts,
+            upload_dirs=upload_dirs,
+            form_url=form_url,
+        )
     except InitTaskError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
@@ -2413,14 +2553,54 @@ def browser_init_task(
 @browser.command("launch", epilog=help_text.BROWSER_LAUNCH_EPILOG)
 @click.argument("task")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--open",
+    "open_page",
+    is_flag=True,
+    help="Open the task's form_url right away, waiting through the sign-in redirect while you "
+    "sign in by hand.",
+)
+@click.option(
+    "--sign-in-wait",
+    "sign_in_wait_s",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=None,
+    help=f"With --open: seconds to wait for you to sign in (default {DEFAULT_SIGN_IN_WAIT_S:g}).",
+)
 @click.pass_context
-def browser_launch(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+def browser_launch(
+    ctx: click.Context,
+    task: str,
+    as_json_flag: bool,
+    open_page: bool,
+    sign_in_wait_s: float | None,
+) -> None:
     """Launch the task's browser on its profile so you can sign in by hand."""
     as_json = _as_json(ctx, as_json_flag)
+    if sign_in_wait_s is not None and not open_page:
+        raise click.UsageError("--sign-in-wait needs --open")
     try:
-        payload = launch_task_browser(load_browser_setup(), task)
+        setup = load_browser_setup()
+        payload = launch_task_browser(setup, task)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
+    if open_page:
+        try:
+            payload["opened"] = goto_task(
+                setup,
+                task,
+                None,
+                sign_in_wait_s=DEFAULT_SIGN_IN_WAIT_S if sign_in_wait_s is None else sign_in_wait_s,
+            )
+        except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+            if not as_json:
+                click.echo(
+                    f"{task}: the browser is running ({payload['endpoint']}); "
+                    f"retry with `blumkin browser goto {task}`",
+                    err=True,
+                )
+            _browser_fail(exc, as_json=as_json, task=task)
     if as_json:
         emit_json(payload)
         return
@@ -2432,7 +2612,10 @@ def browser_launch(ctx: click.Context, task: str, as_json_flag: bool) -> None:
         lines.append(
             f"note: {payload['fallback_from']} is not installed; using {payload['browser']}"
         )
-    lines.append(payload["sign_in"])
+    if "opened" in payload:
+        lines.append(f"opened {sanitize_terminal(payload['opened']['url'])}")
+    else:
+        lines.append(payload["sign_in"])
     emit_lines(lines)
 
 
@@ -2567,6 +2750,29 @@ def browser_explore_discard(ctx: click.Context, task: str, as_json_flag: bool) -
     emit_lines([f"{task}: draft {'discarded' if payload['discarded'] else 'was empty'}"])
 
 
+@browser_explore.command("forget", epilog=help_text.BROWSER_EXPLORE_FORGET_EPILOG)
+@click.argument("task")
+@click.argument("page_id")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_explore_forget(ctx: click.Context, task: str, page_id: str, as_json_flag: bool) -> None:
+    """Drop one page from the in-progress draft."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = explore_forget(load_browser_setup(), task, page_id)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines(
+        [
+            f"{task}: page {page_id} {'dropped' if payload['forgotten'] else 'was not there'}",
+            *(f"  warning: {sanitize_terminal(text)}" for text in payload.get("warnings", ())),
+        ]
+    )
+
+
 @browser_explore.command("observe", epilog=help_text.BROWSER_EXPLORE_OBSERVE_EPILOG)
 @click.argument("task")
 @click.argument("page_id")
@@ -2587,7 +2793,8 @@ def browser_explore_observe(
     emit_lines(
         [
             f"{task}: page {payload['page']} ({payload['url_template']}) recorded with "
-            f"{payload['controls']} control(s); {payload['skipped']} label(s) skipped"
+            f"{payload['controls']} control(s); {payload['skipped']} label(s) skipped",
+            *(f"  warning: {sanitize_terminal(text)}" for text in payload.get("warnings", ())),
         ]
     )
 
@@ -2763,16 +2970,32 @@ def browser_frames(ctx: click.Context, task: str, as_json_flag: bool, wait_s: fl
 
 @browser.command("goto", epilog=help_text.BROWSER_GOTO_EPILOG)
 @click.argument("task")
-@click.argument("url")
+@click.argument("url", required=False)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--sign-in-wait",
+    "sign_in_wait_s",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=DEFAULT_SIGN_IN_WAIT_S,
+    show_default=True,
+    help="Seconds to wait for you to sign in when the site redirects to an identity provider "
+    "(0 to not wait).",
+)
 @click.pass_context
-def browser_goto(ctx: click.Context, task: str, url: str, as_json_flag: bool) -> None:
-    """Open an http or https page in the task's browser."""
+def browser_goto(
+    ctx: click.Context,
+    task: str,
+    url: str | None,
+    as_json_flag: bool,
+    sign_in_wait_s: float,
+) -> None:
+    """Open an http or https page (default: the task's form_url) in the task's browser."""
     _browser_action(
         ctx,
         as_json_flag,
         task,
-        lambda: goto_task(load_browser_setup(), task, url),
+        lambda: goto_task(load_browser_setup(), task, url, sign_in_wait_s=sign_in_wait_s),
         "opened",
     )
 
@@ -3094,6 +3317,92 @@ def browser_ledger_stage(
     )
 
 
+@browser_ledger.command("close", epilog=help_text.BROWSER_LEDGER_CLOSE_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.option(
+    "--outcome",
+    type=click.Choice(["done", "pending"]),
+    required=True,
+    help="What the user said: done with the trip, or the instance stays pending.",
+)
+@click.option(
+    "--close-browser",
+    "close_browser",
+    is_flag=True,
+    help="After recording the answer, close the task browser (its profile is kept).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--yes", is_flag=True, help="Confirm that the user gave that answer.")
+@click.pass_context
+def browser_ledger_close(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    outcome: str,
+    close_browser: bool,
+    as_json_flag: bool,
+    yes: bool,
+) -> None:
+    """Record whether the session ended done or pending, then optionally close the browser."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_close(
+            load_browser_setup(),
+            task,
+            instance,
+            close_browser=close_browser,
+            outcome=outcome,
+            yes=yes,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json)
+
+
+@browser_ledger.command("report", epilog=help_text.BROWSER_LEDGER_REPORT_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.option("--report-id", default=None, help="The report number the server gave it.")
+@click.option(
+    "--draft-saved/--no-draft-saved",
+    "draft_saved",
+    default=None,
+    help="Whether a draft of the report is saved on the server.",
+)
+@click.option(
+    "--total-confirmed/--no-total-confirmed",
+    "total_confirmed",
+    default=None,
+    help="Whether the user confirmed the report's total (the amount is never recorded).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_ledger_report(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    report_id: str | None,
+    draft_saved: bool | None,
+    total_confirmed: bool | None,
+    as_json_flag: bool,
+) -> None:
+    """Record the report itself: its server-side id, that a draft is saved, a confirmed total."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_report(
+            load_browser_setup(),
+            task,
+            instance,
+            draft_saved=draft_saved,
+            report_id=report_id,
+            total_confirmed=total_confirmed,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json)
+
+
 @browser_ledger.command("status", epilog=help_text.BROWSER_LEDGER_STATUS_EPILOG)
 @click.argument("task")
 @click.argument("instance")
@@ -3292,6 +3601,34 @@ def browser_press(ctx: click.Context, task: str, label: str, key: str, as_json_f
     default=None,
     help="With --frame: refuse unless that frame is on this host (numbers can shift).",
 )
+@click.option(
+    "--within",
+    "within",
+    default=None,
+    help="With --aria: keep one subtree, ROLE or ROLE:NAME (for example `dialog`).",
+)
+@click.option(
+    "--options",
+    "expand_options",
+    is_flag=True,
+    help="With --aria: list every option of a combobox (they are summarized by default).",
+)
+@click.option(
+    "--offset",
+    "offset",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="Start at this character (the JSON `next_offset` says where the next window starts).",
+)
+@click.option(
+    "--limit",
+    "limit",
+    type=click.IntRange(min=1, max=MAX_READ_LIMIT),
+    default=MAX_READ_CHARS,
+    show_default=True,
+    help="Characters to return.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option(
     "--wait",
@@ -3308,6 +3645,10 @@ def browser_read(
     aria: bool,
     frame: int | None,
     host: str | None,
+    within: str | None,
+    expand_options: bool,
+    offset: int,
+    limit: int,
     as_json_flag: bool,
     wait_s: float | None,
 ) -> None:
@@ -3317,9 +3658,25 @@ def browser_read(
         raise click.UsageError("--host needs --frame")
     if wait_s is not None and frame is None:
         raise click.UsageError("--wait needs --frame")
+    if (within is not None or expand_options) and not aria:
+        raise click.UsageError("--within and --options need --aria")
+    if within is not None:
+        try:
+            parse_within(within)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
     try:
         payload = read_task(
-            load_browser_setup(), task, aria=aria, frame=frame, host=host, wait_s=wait_s or 0.0
+            load_browser_setup(),
+            task,
+            aria=aria,
+            frame=frame,
+            host=host,
+            wait_s=wait_s or 0.0,
+            within=within,
+            expand_options=expand_options,
+            offset=offset,
+            limit=limit,
         )
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
@@ -3330,9 +3687,18 @@ def browser_read(
     lines.extend(format_injection_warning_banner(payload["injection_warning"]))
     lines.extend(["", payload["untrusted"], ""])
     lines.extend(sanitize_terminal(payload["text"]).splitlines())
+    if payload["within_matches"] > 1:
+        lines.extend(
+            ["", f"[{payload['within_matches']} nodes matched --within; the first is shown]"]
+        )
     if payload["truncated"]:
         lines.extend(
-            ["", f"[truncated: only the first {len(payload['text'])} characters are shown]"]
+            [
+                "",
+                f"[truncated: characters {payload['offset']} to {payload['next_offset']} of "
+                f"{payload['total_chars']} are shown; continue with --offset "
+                f"{payload['next_offset']}]",
+            ]
         )
     emit_lines(lines)
 
@@ -3561,6 +3927,23 @@ def browser_profile_list(ctx: click.Context, as_json_flag: bool) -> None:
         emit_json(payload)
         return
     emit_lines(_browser_profile_lines(payload))
+
+
+@browser.command("endpoint", epilog=help_text.BROWSER_ENDPOINT_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_endpoint(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Print the DevTools endpoint of the task's running browser (it changes every launch)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = task_endpoint(config_dir(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([payload["endpoint"]])
 
 
 @browser.command("status", epilog=help_text.BROWSER_STATUS_EPILOG)

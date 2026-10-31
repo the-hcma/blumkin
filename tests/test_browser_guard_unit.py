@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -16,6 +17,7 @@ from blumkin.browser.cdp import (
     FrameCapture,
     FrameInfo,
     PageText,
+    UploadObservation,
 )
 from blumkin.browser.guard import (
     DEFAULT_DENY_NAMES,
@@ -40,6 +42,8 @@ class _Raw:
         self.select_probe: ControlInfo | None = None
         #: The accessible name the field resolved to, shown to the guard's name check.
         self.select_field_name: str | None = None
+        #: The tasks the window indicator was shown for (kept apart from `calls`).
+        self.marks: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         self.frame_chunks: tuple[str, ...] = ()
         self.net_installed = 0
         #: name -> roles a control of that name exists in.
@@ -142,6 +146,9 @@ class _Raw:
             chunks=self.frame_chunks, reached_end=True, reached_top=True, steps=1, url="u"
         )
 
+    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> Any:
+        return contextlib.nullcontext()
+
     def title(self) -> str:
         return "Expenses"
 
@@ -160,8 +167,17 @@ class _Raw:
             vet(self.select_probe)
         return option
 
-    def upload(self, label: str, path: Path, target: object = None) -> None:
+    def upload(self, label: str, path: Path, target: object = None) -> UploadObservation:
         self.calls.append(("upload", label, str(path)))
+        return UploadObservation("shown", False, (path.name,))
+
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None:
+        self.marks.append((task, tuple(hosts), tuple(blocked)))
+
+    def wait_ms(self, milliseconds: int) -> None:
+        self.calls.append(("wait_ms", milliseconds))
 
 
 def _guard(
@@ -495,14 +511,17 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "frame_aria_snapshot",
         "frame_list",
         "goto",
+        "mark_window",
         "press",
         "read_frame_text",
         "read_text",
         "scroll_frame_text",
         "select",
+        "sign_in_pass",
         "title",
         "upload",
         "url",
+        "wait_ms",
     }
 
 

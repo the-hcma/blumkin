@@ -22,13 +22,15 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from blumkin.browser import teams
+from blumkin.browser.indicator import INDICATOR_JS, indicator_args
 from blumkin.browser.profiles import (
     BrowserProfile,
     read_session,
@@ -57,6 +59,18 @@ class BrowserAttachError(RuntimeError):
 
 class BrowserDependencyError(BrowserAttachError):
     """Playwright (or another browser-driver dependency) is missing or broken."""
+
+
+class BrowserNoPageError(BrowserAttachError):
+    """The browser is running but has no open page, and none could be opened."""
+
+
+class BrowserNotRunningError(BrowserAttachError):
+    """No browser was launched for the task, or it has exited."""
+
+
+class BrowserProtocolError(BrowserAttachError):
+    """The browser is running but the DevTools attach to it failed."""
 
 
 class BrowserDriver(Protocol):
@@ -96,6 +110,10 @@ class BrowserDriver(Protocol):
 
     def goto(self, url: str) -> None: ...
 
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None: ...
+
     def press(self, label: str, key: str) -> None: ...
 
     def read_frame_text(
@@ -124,10 +142,30 @@ class BrowserDriver(Protocol):
 
     def title(self) -> str: ...
 
-    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None: ...
+    def upload(
+        self, label: str, path: Path, target: FieldTarget | None = None
+    ) -> UploadObservation: ...
 
     @property
     def url(self) -> str: ...
+
+    def wait_ms(self, milliseconds: int) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class UploadObservation:
+    """What the page showed after a file was set on an input (issue #607).
+
+    `persisted` is `shown` when the file's name appears on the page near the field, `missing`
+    when the field was dropped by a re-render (or lost the file) and the name is nowhere on
+    the page, and `unknown` when the input holds the file but the page does not display it (or
+    the page could not be read). `input_hidden` flags a hidden or zero-size input, such as a
+    drop zone's, which may not be the one the form saves. `files` are the names it holds.
+    """
+
+    persisted: str
+    input_hidden: bool = False
+    files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +202,13 @@ class ControlInfo:
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
+
+#: Most file names, and most characters of each, reported back from an input (page-supplied).
+_MAX_FILES = 10
+_MAX_FILE_NAME = 100
+
+#: How long to let a form re-render after a file is set, before reading what it shows.
+_UPLOAD_SETTLE_MS = 500
 
 
 #: Accessible roles a field can be looked up by (a typo would otherwise wait out the timeout).
@@ -438,7 +483,7 @@ class PlaywrightDriver:
         target = target or FieldTarget()
         try:
             scope = self._scope(target)
-            locator = self._field(scope, label, target)
+            locator = self._field(scope, label, target, prefer_visible=True)
             self._still_allowed(scope, target)
             locator.fill(value, timeout=self._timeout_ms)
             return self._read_back(locator)
@@ -495,6 +540,18 @@ class PlaywrightDriver:
                 )
             )
         return tuple(found)
+
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None:
+        """Show the task's indicator on the page (best effort: a page that refuses is skipped).
+
+        The page's own address is checked in the evaluation that adds the pill: off `hosts`, or
+        on a `blocked` host, nothing is added.
+        """
+        self._require_open()
+        with contextlib.suppress(_playwright_error()):
+            self._page.evaluate(INDICATOR_JS, indicator_args(task, hosts, blocked))
 
     def goto(self, url: str) -> None:
         self._require_open()
@@ -625,6 +682,26 @@ class PlaywrightDriver:
             raise self._action_error("restrict navigation to the allowed hosts", exc) from exc
         self._navigation_handler = handler
 
+    @contextlib.contextmanager
+    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> Iterator[None]:
+        """While the user signs in by hand, let identity-provider requests past the safety net.
+
+        A login form POST, or the identity provider's POST back to the site, would otherwise be
+        answered with an empty page and the sign-in could never finish. Only a request that goes
+        to a sign-in host or comes from a page on one is let through, and only inside this block.
+        """
+        self._require_open()
+        handler = _sign_in_handler(is_sign_in_host)
+        try:
+            self._context.route("**/*", handler)
+        except _playwright_error() as exc:
+            raise self._action_error("let the sign-in through", exc) from exc
+        try:
+            yield
+        finally:
+            with contextlib.suppress(_playwright_error()):
+                self._context.unroute("**/*", handler)
+
     def scroll_frame_text(
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture:
@@ -732,7 +809,7 @@ class PlaywrightDriver:
         target = target or FieldTarget()
         try:
             scope = self._scope(target)
-            locator = self._field(scope, label, target)
+            locator = self._field(scope, label, target, prefer_visible=True)
             # One handle for everything that follows: what is inspected (what kind of field it
             # is, what it is called, what it can submit) is what is acted on, so a re-render
             # cannot swap in a different element between the check and the use.
@@ -787,7 +864,9 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error("read the page title", exc) from exc
 
-    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None:
+    def upload(
+        self, label: str, path: Path, target: FieldTarget | None = None
+    ) -> UploadObservation:
         self._require_open()
         target = target or FieldTarget()
         resolved = path.resolve()
@@ -801,13 +880,27 @@ class PlaywrightDriver:
             scope = self._scope(target)
             locator = self._field(scope, label, target)
             self._still_allowed(scope, target)
-            locator.set_input_files(str(resolved), timeout=self._timeout_ms)
+            handle = locator.element_handle(timeout=self._timeout_ms)
+            hidden = self._probe(handle, _UPLOAD_INFO_JS) is True
+            before = self._probe(handle, _UPLOAD_COUNT_JS, resolved.name)
+            # Through the handle the probes read: a form that swaps the input in between would
+            # otherwise receive the file while the replaced one is observed.
+            handle.set_input_files(str(resolved), timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
+        return self._observe_upload(handle, resolved.name, hidden, before)
 
     @property
     def url(self) -> str:
         return str(self._page.url)
+
+    def wait_ms(self, milliseconds: int) -> None:
+        """Pause through Playwright, so page events (a redirect finishing) are delivered."""
+        self._require_open()
+        try:
+            self._page.wait_for_timeout(milliseconds)
+        except _playwright_error() as exc:
+            raise self._action_error("wait for the page", exc) from exc
 
     def _describe(self, handle: Any) -> ControlInfo:
         raw = handle.evaluate(_DESCRIBE_CONTROL_JS)
@@ -825,12 +918,18 @@ class PlaywrightDriver:
             dialog_controls_complete=bool(raw.get("dialogComplete", True)),
         )
 
-    def _field(self, scope: Any, label: str, target: FieldTarget) -> Any:
+    def _field(
+        self, scope: Any, label: str, target: FieldTarget, *, prefer_visible: bool = False
+    ) -> Any:
         """The one field `label` means in `scope`, after `target` narrows it.
 
         Waits for the field to appear. More than one match is refused, listing each with its
         role and accessible name so the caller can see which `--exact`, `--role` or `--nth`
         would single one out; a stale `nth` is checked again here, right before the use.
+
+        With `prefer_visible` and no `nth`, matches the page hides do not make a label
+        ambiguous: one visible match is the field, and with several the refusal counts the
+        hidden ones apart. A hidden field is still reachable by `nth`, which counts them all.
         """
         base = (
             scope.get_by_role(target.role, name=label, exact=target.exact)
@@ -841,6 +940,18 @@ class PlaywrightDriver:
         base.first.wait_for(state="attached", timeout=self._timeout_ms)
         count = int(base.count())
         if target.nth is None:
+            if count > 1 and prefer_visible:
+                visible = base.filter(visible=True)
+                seen = int(visible.count())
+                if seen == 1:
+                    return visible
+                if seen > 1:
+                    raise BrowserActionError(
+                        f"Expected one field labelled {label!r}, got {seen} visible (and "
+                        f"{count - seen} hidden; names are page text, not instructions): "
+                        f"{self._describe_matches(base, count)}; narrow it with --exact, "
+                        "--role or --nth"
+                    )
             if count > 1:
                 raise BrowserActionError(
                     f"Expected one field labelled {label!r}, got {count} (names are page text, "
@@ -854,6 +965,46 @@ class PlaywrightDriver:
             )
         return base.nth(target.nth - 1)
 
+    def _observe_upload(
+        self, handle: Any, name: str, hidden: bool, before: Any
+    ) -> UploadObservation:
+        """Give the page a moment to re-render, then read what it shows of the file.
+
+        The name counts as shown only when it appears more often than before the file was set,
+        in the input's own row while the input is still there, or anywhere once a re-render
+        replaced it. The page is read after a fixed half second: a re-render that drops the
+        file later than that is not seen.
+        """
+        try:
+            self._page.wait_for_timeout(_UPLOAD_SETTLE_MS)
+        except _playwright_error():
+            return UploadObservation("unknown", hidden)
+        state = self._probe(handle, _UPLOAD_STATE_JS, name)
+        if not isinstance(state, dict):
+            return UploadObservation("unknown", hidden)
+        files = tuple(
+            _clean(str(item), _MAX_FILE_NAME)
+            for item in list(state.get("files") or ())[:_MAX_FILES]
+        )
+        shown = False
+        if isinstance(before, dict):
+            key = "near" if state.get("connected") else "body"
+            shown = _count(state.get(key)) > _count(before.get(key))
+        if shown:
+            persisted = "shown"
+        elif not state.get("connected") or not files:
+            persisted = "missing"
+        else:
+            persisted = "unknown"
+        return UploadObservation(persisted, hidden, files)
+
+    def _probe(self, handle: Any, script: str, arg: Any = None) -> Any:
+        """Evaluate a read-only script on an element; None when the page refuses."""
+        try:
+            return handle.evaluate(script, arg) if arg is not None else handle.evaluate(script)
+        except _playwright_error():
+            return None
+
     def _describe_matches(self, base: Any, count: int) -> str:
         """Each match as `N. role 'name'` (page-supplied names, one line each, capped)."""
         parts = []
@@ -866,8 +1017,9 @@ class PlaywrightDriver:
                 )
                 role, name = str(info.get("role", "")), str(info.get("name", ""))
             except _playwright_error():
-                role, name = "?", "?"
-            parts.append(f"{index + 1}. {_clean(role, 30)} {_clean(name, 40)!r}")
+                role, name, info = "?", "?", {}
+            shown = "" if info.get("visible", True) else " (hidden)"
+            parts.append(f"{index + 1}. {_clean(role, 30)} {_clean(name, 40)!r}{shown}")
         more = f" (and {count - MAX_LISTED_MATCHES} more)" if count > MAX_LISTED_MATCHES else ""
         return "; ".join(parts) + more
 
@@ -1104,6 +1256,10 @@ class RawBrowserDriver(Protocol):
 
     def goto(self, url: str) -> None: ...
 
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None: ...
+
     def matching_roles(
         self, name: str, roles: Sequence[str], wait_s: float, nth: int | None = None
     ) -> tuple[str, ...]: ...
@@ -1121,6 +1277,10 @@ class RawBrowserDriver(Protocol):
 
     def read_text(self) -> PageText: ...
 
+    def sign_in_pass(
+        self, is_sign_in_host: Callable[[str], bool]
+    ) -> AbstractContextManager[None]: ...
+
     def scroll_frame_text(
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture: ...
@@ -1136,10 +1296,14 @@ class RawBrowserDriver(Protocol):
 
     def title(self) -> str: ...
 
-    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None: ...
+    def upload(
+        self, label: str, path: Path, target: FieldTarget | None = None
+    ) -> UploadObservation: ...
 
     @property
     def url(self) -> str: ...
+
+    def wait_ms(self, milliseconds: int) -> None: ...
 
 
 def attach(
@@ -1156,7 +1320,7 @@ def attach(
     require_blumkin_profile(profile.path)
     session = read_session(profile.path, pid_alive=pid_alive)
     if session is None:
-        raise BrowserAttachError(
+        raise BrowserNotRunningError(
             f"Expected a running browser for task {profile.task!r}, got none; "
             f"run `blumkin browser launch {profile.task}` and sign in first"
         )
@@ -1168,6 +1332,21 @@ def attach(
         sleep=sleep,
         timeout_s=timeout_s,
     )
+
+
+def count_page_targets(
+    endpoint: str,
+    timeout_s: float | None = None,
+    fetch: Callable[[str, float], list[dict[str, Any]]] | None = None,
+) -> int | None:
+    """How many open pages (tabs) the browser at a loopback `endpoint` has; None if unknown."""
+    try:
+        _require_loopback_endpoint(endpoint)
+        wait = _DISCOVERY_TIMEOUT_S if timeout_s is None else timeout_s
+        targets = (fetch or _fetch_targets)(endpoint, wait)
+    except BrowserAttachError, OSError, ValueError:
+        return None
+    return sum(1 for target in targets if target.get("type") == "page")
 
 
 def clamp_wait(seconds: float) -> float:
@@ -1249,7 +1428,7 @@ def open_driver(
             try:
                 version = fetch(endpoint, timeout_s)
             except urllib.error.HTTPError as exc:
-                raise BrowserAttachError(
+                raise BrowserProtocolError(
                     f"Expected {endpoint}/json/version to answer directly, got HTTP {exc.code}"
                 ) from exc
             except (OSError, ValueError) as exc:
@@ -1270,7 +1449,7 @@ def open_driver(
                 timeout_s=timeout_s,
             )
         detail = str(last).splitlines()[0] if last and str(last) else "no detail"
-        raise BrowserAttachError(
+        raise BrowserProtocolError(
             f"Expected to attach to {endpoint}, got {detail} after {attempts} attempts"
         )
     except BaseException:
@@ -1316,7 +1495,46 @@ _MATCH_INFO_JS = (
     "TEXTAREA: 'textbox', BUTTON: 'button'}; "
     "const role = e.getAttribute('role') || "
     "(e.tagName === 'INPUT' ? (inputs[t] || 'textbox') : tags[e.tagName]) "
-    "|| e.tagName.toLowerCase(); return {role: role, name: name.trim()}; }"
+    "|| e.tagName.toLowerCase(); "
+    "const box = e.getBoundingClientRect(); "
+    "const visible = box.width > 0 && box.height > 0 "
+    "&& getComputedStyle(e).visibility !== 'hidden'; "
+    "return {role: role, name: name.trim(), visible: visible}; }"
+)
+
+#: Whether a file input is hidden, zero-size or invisible (a drop zone's input often is one:
+#: `display: none`, a 1px box, `opacity: 0` or a clip).
+_UPLOAD_INFO_JS = (
+    "(e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e); "
+    "let faded = false; "
+    "for (let n = e; n && n.nodeType === 1; n = n.parentElement) "
+    "{ if (parseFloat(getComputedStyle(n).opacity) === 0) faded = true; } "
+    "const inputHidden = !(e.offsetWidth || e.offsetHeight || e.getClientRects().length) "
+    "|| s.visibility === 'hidden' || faded || r.width <= 1 || r.height <= 1 "
+    "|| (s.clipPath && s.clipPath !== 'none') || s.clip === 'rect(0px, 0px, 0px, 0px)'; "
+    "return inputHidden; }"
+)
+
+#: How often a file's name is on the page: in the input's own row (a table row, list item,
+#: fieldset or group; with none, nothing local can be said and the result stays `unknown`) and
+#: on the whole page, compared ignoring case and spacing. Run before and after the file is set;
+#: a name that is only there already cannot vouch for the upload.
+_UPLOAD_COUNT_HEAD = (
+    "(e, name) => { "
+    "const norm = (t) => String(t || '').normalize('NFC').replace(/\\s+/g, ' ').toLowerCase(); "
+    "const want = norm(name); "
+    "const count = (n) => (want && n ? norm(n.innerText).split(want).length - 1 : 0); "
+    "const connected = e.isConnected; let near = null; "
+    "if (connected) { near = e.closest('tr, [role=row], li, fieldset, [role=group]'); } "
+)
+_UPLOAD_COUNT_JS = _UPLOAD_COUNT_HEAD + (
+    "return {near: count(near), body: count(document.body)}; }"
+)
+#: The same counts after the set, plus the names the input holds (none once it is detached).
+_UPLOAD_STATE_JS = _UPLOAD_COUNT_HEAD + (
+    "return {connected: connected, "
+    "files: connected && e.files ? Array.from(e.files).map((f) => f.name) : [], "
+    "near: count(near), body: count(document.body)}; }"
 )
 
 _SELECTED_TEXT_JS = (
@@ -1400,6 +1618,32 @@ def _abort_non_get_navigation(route: Any) -> None:
         route.continue_()
 
 
+def _sign_in_handler(is_sign_in_host: Callable[[str], bool]) -> Callable[[Any], None]:
+    """A route handler that continues sign-in traffic and hands everything else on."""
+
+    def host_of(address: str) -> str:
+        parts = urlsplit(address)
+        return (parts.hostname or "") if parts.scheme in ("http", "https") else ""
+
+    def handler(route: Any) -> None:
+        request = route.request
+        try:
+            origin = host_of(str(request.frame.url))
+        except Exception:  # a detached frame has no address; treat it as not a sign-in page
+            origin = ""
+        if is_sign_in_host(host_of(str(request.url))) or (origin and is_sign_in_host(origin)):
+            route.continue_()
+        else:
+            route.fallback()
+
+    return handler
+
+
+def _count(value: Any) -> int:
+    """A count read from the page, 0 when it is not a plain whole number."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def _driver_for(
     browser: Any,
     playwright: Any,
@@ -1412,9 +1656,8 @@ def _driver_for(
     try:
         contexts = list(browser.contexts)
         if not contexts:
-            raise BrowserAttachError(f"Expected a browser context at {endpoint}, got none")
-        pages = list(contexts[0].pages)
-        page = pages[0] if pages else contexts[0].new_page()
+            raise BrowserProtocolError(f"Expected a browser context at {endpoint}, got none")
+        page = _first_page(contexts[0], endpoint, timeout_s)
         page.set_default_timeout(timeout_s * 1000)
     except BaseException:
         with contextlib.suppress(_playwright_error()):
@@ -1428,6 +1671,38 @@ def _driver_for(
         playwright=playwright,
         timeout_s=timeout_s,
         existing_frames=existing_frames,
+    )
+
+
+def _first_page(context: Any, endpoint: str, timeout_s: float) -> Any:
+    """The first open page, opening a blank one when the browser has none.
+
+    A browser started with no page (or whose last tab was closed) cannot always make one
+    through the attached context ("Browser context management is not supported"); DevTools can,
+    over its own loopback endpoint, so that is tried next, waiting through Playwright for the
+    new page to be reported (a plain sleep would never let the event arrive) before giving up
+    with a clear error.
+    """
+    pages = list(context.pages)
+    if pages:
+        return pages[0]
+    try:
+        return context.new_page()
+    except _playwright_error():
+        pass
+    probe_ms = min(timeout_s, _DISCOVERY_TIMEOUT_S) * 1000
+    try:
+        # The wait is set up before the tab is requested, so the event cannot be missed.
+        with context.expect_event("page", timeout=probe_ms) as waiting:
+            with contextlib.suppress(OSError, ValueError):
+                _open_blank_target(endpoint, probe_ms / 1000)
+        return waiting.value
+    except _playwright_error():
+        pages = list(context.pages)
+        if pages:
+            return pages[0]
+    raise BrowserNoPageError(
+        f"Expected an open page in the browser at {endpoint}, got none and could not open one"
     )
 
 
@@ -1476,6 +1751,15 @@ def _fetch_targets(endpoint: str, timeout_s: float) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError(f"Expected a JSON list from /json/list, got {type(data).__name__}")
     return [item for item in data if isinstance(item, dict)]
+
+
+def _open_blank_target(endpoint: str, timeout_s: float) -> None:
+    """Ask a loopback DevTools endpoint to open a blank tab (`PUT /json/new`)."""
+    _require_loopback_endpoint(endpoint)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirects)
+    request = urllib.request.Request(f"{endpoint}/json/new?about:blank", method="PUT")
+    with opener.open(request, timeout=timeout_s):
+        pass
 
 
 def _fetch_version(endpoint: str, timeout_s: float) -> dict[str, Any]:

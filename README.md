@@ -20,7 +20,7 @@ One config file, one or more **named profiles** (Microsoft, Google, or both), se
 | `calendar` | `today`, `view`, `freebusy`, `suggest`, `create`, `accept`, `cancel`, `update` |
 | `mail` | `inbox`, `list`, `get`, `folders`, `draft`, `update-draft`, `delete-draft`, `send-draft`, `reply`, `forward`, `signature`, `attachments` (+ `download`) |
 | `chat` (Teams / Google Chat) | `find`, `last`, `send`, `edit`, `delete`, `attachments` (+ `download`) |
-| `browser` | `profile` (`create`, `list`, `delete`), `launch`, `status`, `goto`, `read`, `fill`, `upload`, `click`, `press`, `handoff`, `explore` (`observe`, `click`, `show`, `save`, `discard`), `ledger` (`begin`, `stage`, `apply`, `verify`, `reconcile`, `handoff`, `record`, `status`, `list`, `submitted`, `discard`), `model` (`check`, `versions`, `diff`) - browser-assisted tasks that stop before the final submit |
+| `browser` | `profile` (`create`, `list`, `delete`), `launch`, `status`, `goto`, `read`, `fill`, `upload`, `click`, `press`, `handoff`, `explore` (`observe`, `click`, `show`, `save`, `discard`), `ledger` (`begin`, `stage`, `apply`, `verify`, `reconcile`, `handoff`, `record`, `report`, `status`, `list`, `close`, `submitted`, `discard`), `model` (`check`, `versions`, `diff`) - browser-assisted tasks that stop before the final submit |
 | `docs` | `create` (a Markdown subset → a real Google Doc, or a `.docx` in OneDrive) |
 | `drive` (Google Drive / OneDrive) | `list`, `get`, `read`, `download`, `export`, `mkdir`, `move`, `rename`, `upload` |
 | `meeting` (Microsoft) | `get`, `transcription` |

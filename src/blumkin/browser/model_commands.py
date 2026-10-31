@@ -8,20 +8,24 @@ compares two of them.
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 from typing import Any
 
+from blumkin.browser.actions import sign_in_hosts_for
 from blumkin.browser.commands import require_profile
 from blumkin.browser.drift import (
     Finding,
     FindingKind,
     Grade,
     ModelDiff,
+    best_matching_page,
     check_page,
     diff_models,
     has_thin_fingerprint,
     worst,
 )
 from blumkin.browser.explore import (
+    ControlObservation,
     Explorer,
     PageIdError,
     TerminalConfirmer,
@@ -30,6 +34,7 @@ from blumkin.browser.explore import (
 )
 from blumkin.browser.explore_commands import explore_policy
 from blumkin.browser.model import (
+    Page,
     SiteModel,
     list_versions,
     load_model,
@@ -54,6 +59,7 @@ def model_check(
         raise PageIdError(f"Expected one of the model's pages ({known}), got {page_id!r}")
     profile = require_profile(config.config_dir, task)
     with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
+        driver.mark_window(task, hosts, sign_in_hosts_for(config, task))
         explorer = Explorer(driver, TerminalConfirmer(), allowed_hosts=hosts, extra_deny=extra_deny)
         url, controls = explorer.observe_with_url()
     check = check_page(page, controls)
@@ -77,6 +83,7 @@ def model_check(
             {"control": f.control, "grade": f.grade.value, "kind": f.kind.value, "note": f.note}
             for f in findings
         ],
+        "best_match": _best_match(model.pages, page_id, controls),
         "grade": grade.value,
         "ok": grade is not Grade.INCOMPATIBLE,
         "page": page_id,
@@ -103,6 +110,16 @@ def model_versions(config: BrowserSetup, task: str) -> dict[str, Any]:
         "task": task,
         "versions": versions,
     }
+
+
+def _best_match(
+    pages: Sequence[Page], asked: str, controls: Sequence[ControlObservation]
+) -> dict[str, Any] | None:
+    """The recorded page the live page matches best, when that is not the one asked about."""
+    best = best_matching_page(pages, controls, prefer=asked)
+    if best is None or best[0] == asked:
+        return None
+    return {"page": best[0], "share": round(best[1], 2)}
 
 
 def _diff_payload(task: str, old: int, new: int, diff: ModelDiff) -> dict[str, Any]:

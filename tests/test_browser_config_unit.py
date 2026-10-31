@@ -377,3 +377,106 @@ def test_dialog_confirm_names_are_parsed_and_default_to_none(
 
     assert tasks["expense-report"].dialog_confirm == ("OK", "Done")
     assert tasks["time-sheet"].dialog_confirm == ()
+
+
+def test_form_url_and_sign_in_hosts_are_parsed_and_default_to_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nform_url = " https://erp.example.com/expenses "\n'
+        'sign_in_hosts = ["SSO.Corp.Example", "*.idp.example"]\n\n'
+        "[browser.tasks.time-sheet]\n\n",
+    )
+
+    tasks = load_config().browser.tasks
+
+    assert tasks["expense-report"].form_url == "https://erp.example.com/expenses"
+    assert tasks["expense-report"].sign_in_hosts == ("sso.corp.example", "*.idp.example")
+    assert tasks["time-sheet"].form_url == ""
+    assert tasks["time-sheet"].sign_in_hosts == ()
+
+
+@pytest.mark.parametrize(
+    ("body", "needle"),
+    [
+        ("[browser.tasks.expense-report]\nform_url = 5\n\n", "form_url"),
+        (
+            '[browser.tasks.expense-report]\nform_url = "https://erp.example.com/a b"\n\n',
+            "form_url",
+        ),
+        (
+            '[browser.tasks.expense-report]\nform_url = "https://erp.example.com\\\\x"\n\n',
+            "form_url",
+        ),
+        ('[browser.tasks.expense-report]\nsign_in_hosts = "sso"\n\n', "sign_in_hosts"),
+        ('[browser.tasks.expense-report]\nsign_in_hosts = ["*.com"]\n\n', "sign_in_hosts"),
+        (
+            '[browser.tasks.expense-report]\nsign_in_hosts = ["http://x.example"]\n\n',
+            "sign_in_hosts",
+        ),
+    ],
+)
+def test_a_bad_form_url_or_sign_in_host_is_a_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str, needle: str
+) -> None:
+    _config(tmp_path, monkeypatch, body)
+
+    with pytest.raises(ProviderConfigError, match=needle):
+        load_config()
+
+
+def test_a_form_url_with_a_password_is_refused_without_echoing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nform_url = "https://me:hunter2@erp.example.com/x"\n\n',
+    )
+
+    with pytest.raises(ProviderConfigError, match="form_url") as caught:
+        load_config()
+
+    assert "hunter2" not in str(caught.value)
+
+
+def test_a_form_url_the_parser_chokes_on_is_refused_without_echoing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nform_url = "https://me:hunter2@erp\uff0fexample.com/x"\n\n',
+    )
+
+    with pytest.raises(ProviderConfigError, match="form_url") as caught:
+        load_config()
+
+    assert "hunter2" not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.example.net\\\\.erp.example.com/x",
+        "https://erp.example.com:bad/x",
+        "https://erp.example.com/a b",
+        "https://erp.example.com/a\\u0000b",
+        "https://erp\\u202e.example.com/x",
+    ],
+)
+def test_a_form_url_a_browser_would_read_differently_from_python_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\nallowed_hosts = ["*.example.com"]\n'
+        f'form_url = "{url}"\n\n',
+    )
+
+    with pytest.raises(ProviderConfigError, match="form_url"):
+        load_config()

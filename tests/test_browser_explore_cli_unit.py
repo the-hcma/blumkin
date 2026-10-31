@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-from blumkin.browser.explore import Inspection
+from blumkin.browser.explore import Inspection, ModelDraft, parse_aria_snapshot
 from blumkin.browser.profiles import create_profile
 from blumkin.cli import main
 from blumkin.exit_codes import EXIT_OTHER, EXIT_SUCCESS, EXIT_USAGE
@@ -31,12 +31,17 @@ class _Driver:
         self.url = "https://erp.example.com/expenses"
         self.clicks: list[tuple[str, str]] = []
         self.closed = 0
+        self.marks: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         self.lands_on: str | None = None
         self.refusal: str | None = None
         self.href = ""
+        self.snapshot = _SNAPSHOT
 
     def aria_snapshot(self) -> str:
-        return _SNAPSHOT
+        return self.snapshot
+
+    def mark_window(self, task: str, hosts: Any = (), blocked: Any = ()) -> None:
+        self.marks.append((task, tuple(hosts), tuple(blocked)))
 
     def inspect(self, role: str, name: str) -> Inspection:
         return Inspection(refusal=self.refusal, href=self.href)
@@ -118,6 +123,8 @@ def test_observe_records_a_page_in_the_draft_and_reports_what_it_kept(
     assert payload["controls"] >= 3
     assert driver.closed == 1
     assert _draft_path(_config_dir).is_file()
+    assert driver.marks and driver.marks[0][0] == "expense-report"
+    assert "login.microsoftonline.com" in driver.marks[0][2]
 
 
 def test_observe_refuses_a_task_without_allowed_hosts(driver: _Driver, _config_dir: Path) -> None:
@@ -348,3 +355,101 @@ def test_a_page_that_moves_while_it_is_observed_is_refused_and_leaves_no_draft(
     assert result.exit_code == EXIT_OTHER
     assert _json(result)["error"] == "explore_refused"
     assert not _draft_path(_config_dir).exists()
+
+
+# --------------------------------------------------------------------------- explore fixes (#608)
+
+
+def test_forget_drops_one_page_from_the_draft(driver: _Driver, _config_dir: Path) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    _run("browser", "explore", "observe", "expense-report", "old-page")
+
+    result = _run("browser", "explore", "forget", "expense-report", "old-page")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["forgotten"] is True
+    shown = _json(_run("browser", "explore", "show", "expense-report"))
+    assert [page["page_id"] for page in shown["pages"]] == ["expense-list"]
+
+
+def test_forget_of_a_page_that_is_not_there_says_so(driver: _Driver, _config_dir: Path) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+
+    result = _run("browser", "explore", "forget", "expense-report", "nope")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["forgotten"] is False
+
+
+def test_forget_with_no_draft_or_model_is_a_clean_no_op(driver: _Driver) -> None:
+    result = _run("browser", "explore", "forget", "expense-report", "any-page")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["forgotten"] is False
+
+
+def test_forget_refuses_a_page_id_that_is_not_words(driver: _Driver) -> None:
+    result = _run("browser", "explore", "forget", "expense-report", "Not A Page")
+
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_observing_a_second_page_at_the_same_address_warns(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    driver.snapshot = '- heading "Other"\n- button "Something else"\n- textbox "Purpose"\n'
+
+    payload = _json(_run("browser", "explore", "observe", "expense-report", "report-edit"))
+
+    assert payload["shared_addresses"] == {"/expenses": ["expense-list", "report-edit"]}
+    assert "landmarks" in payload["warnings"][0]
+
+
+def test_forget_will_not_drop_the_last_page(driver: _Driver, _config_dir: Path) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+
+    result = _run("browser", "explore", "forget", "expense-report", "expense-list")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "discard" in _json(result)["message"]
+    shown = _json(_run("browser", "explore", "show", "expense-report"))
+    assert [page["page_id"] for page in shown["pages"]] == ["expense-list"]
+
+
+def test_forget_says_which_flow_lost_steps(driver: _Driver, _config_dir: Path) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    _run("browser", "explore", "observe", "expense-report", "old-page")
+    _run("browser", "explore", "click", "expense-report", "Help", "--role", "link",
+         "--page", "old-page")  # fmt: skip
+
+    payload = _json(_run("browser", "explore", "forget", "expense-report", "old-page"))
+
+    assert payload["forgotten"] is True
+    assert payload["steps_dropped"] == {"recorded": 1}
+    assert "lost 1 step" in payload["warnings"][0]
+
+
+def test_forget_can_drop_a_stored_page_whose_id_exploration_would_not_make(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    import dataclasses
+
+    from blumkin.browser.model import save_model
+
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    draft.add_page("expense-list", "https://erp.example.com/a", parse_aria_snapshot(_SNAPSHOT))
+    draft.add_page("expense-item", "https://erp.example.com/b", parse_aria_snapshot(_SNAPSHOT))
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+    pages = tuple(
+        dataclasses.replace(page, page_id="expense-item-2")
+        if page.page_id == "expense-item"
+        else page
+        for page in model.pages
+    )
+    save_model(_config_dir, dataclasses.replace(model, pages=pages))
+
+    result = _run("browser", "explore", "forget", "expense-report", "expense-item-2")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["forgotten"] is True

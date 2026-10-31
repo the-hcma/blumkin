@@ -374,6 +374,19 @@ Examples:
 Drops the in-progress exploration draft. A saved model is not touched.
 """
 
+BROWSER_EXPLORE_FORGET_EPILOG = """
+Examples:
+
+\b
+  blumkin browser explore forget expense-report expense-item
+
+Drops one page, and the recorded steps that used it, from the in-progress draft (or from the
+stored model, which the next `explore save` then stores as a new version without it): a page
+left over from an earlier session, or one recorded before a field took effect. Nothing is
+printed about a page the draft does not have. The last page cannot be forgotten; use
+`explore discard` to drop the whole draft.
+"""
+
 BROWSER_EXPLORE_OBSERVE_EPILOG = """
 Examples:
 
@@ -407,6 +420,19 @@ Examples:
 
 Summarizes the draft: its pages with their URL templates and control counts, the controls
 that look finalizing, and the number of recorded steps.
+"""
+
+BROWSER_ENDPOINT_EPILOG = """
+Examples:
+
+\b
+  blumkin browser endpoint expense-report
+  blumkin browser endpoint expense-report --json
+
+Prints the loopback DevTools endpoint of the task's running browser (for example
+`http://127.0.0.1:41873`). The port changes on every launch, so a script or a diagnosis asks
+for it here instead of keeping it. Fails with `browser_not_running` when no browser is running
+for the task.
 """
 
 BROWSER_FILL_EPILOG = """
@@ -457,7 +483,16 @@ Examples:
 
 Opens an http or https page in the task's browser; other schemes (file, javascript,
 data) are refused, and so is a host outside the task's `allowed_hosts` once it declares
-any. Launch the browser first with `blumkin browser launch TASK`.
+any. Without an address it opens the task's `form_url` from config.toml. Launch the browser
+first with `blumkin browser launch TASK`.
+A site that redirects to an identity provider (login.microsoftonline.com, login.microsoft.com,
+login.live.com, accounts.google.com, or a host in the task's `sign_in_hosts`; name an Okta,
+Auth0, OneLogin or Ping tenant there, for example `acme.okta.com`, since anyone can register
+one) is waited through: the page address is polled for up to `--sign-in-wait` seconds (default
+120, 0 to not wait) while you sign in by hand, nothing is ever done on the sign-in page, and the
+command finishes as soon as the page is on an allowed host (`waited_for_sign_in_s` says how
+long, `sign_in_host` where). If the page is still on the sign-in page when the time is up
+(`sign_in_timeout`), sign in and run the command again; the browser keeps running.
 """
 
 BROWSER_HANDOFF_EPILOG = """
@@ -479,6 +514,8 @@ Examples:
 \b
   blumkin browser init-task --template teams-transcript
   blumkin browser init-task weekly-sync --template teams-transcript --yes
+  blumkin browser init-task --template expense-report --host erp.example.com \\
+    --form-url https://erp.example.com/expenses --upload-dir ~/Documents/receipts --yes
 
 Creates the task's browser profile (empty; your sign-in lives there later) and prints the
 `[browser.tasks.TASK]` table the template starts from: the hosts the site uses, including the
@@ -488,7 +525,12 @@ to it (the file is created with mode 0600 when it does not exist). A table of th
 already exists is never changed, and a config.toml that is not valid TOML, or is a symlink or
 not a regular file, is left alone. The profile is created either way. TASK defaults to the
 template name. The Teams template's `*.sharepoint.com` covers every organization's SharePoint:
-narrow it to your tenant's host. Templates: teams-transcript.
+narrow it to your tenant's host. Templates: expense-report, teams-transcript. The expense-report
+template needs `--host` (the site's host differs per organization) and fills in the controls of
+the Oracle Fusion Expenses flow (`Create Report`, `Create Item`, `Save and Close`, `Manage
+Attachments`, `Add Row`, `Save`, `Actions for * Report`, `Open`), `OK` as a dialog confirm and
+`~/Documents/receipts-archive` as the upload folder (`--upload-dir` replaces it); none of them
+is a finalizing name (the task still never submits).
 """
 
 BROWSER_LAUNCH_EPILOG = """
@@ -499,10 +541,20 @@ Examples:
   blumkin browser launch expense-report --json
 
 Starts the task's browser on its own profile (create it first with `blumkin
-browser profile create TASK`) and prints the loopback DevTools endpoint. Sign in
+browser profile create TASK`) and prints the loopback DevTools endpoint. While blumkin is
+attached, the page shows a small `blumkin - TASK` pill in the task's own colour (`colour` in
+the output, the same for a task every time) and a thin line of that colour across the top, so
+you can tell which window an agent is driving. Sign in
 by hand in the window that opens; blumkin never sees your credentials. Running
 it again while the browser is open reports `already_running` and changes nothing.
 Uses `[browser] default` from config.toml, falling back to Chrome.
+`--open` opens the task's `form_url` (set in `[browser.tasks.TASK]`) right away and waits
+through the sign-in redirect while you sign in by hand, as `browser goto` does, so there is
+nothing to tell the agent: it carries on when the page reaches an allowed host. Any other
+address goes through `blumkin browser goto TASK URL`. Cookies the
+identity provider sets without an expiry (session cookies) are dropped when the browser
+closes, so after `browser close` and a new launch you may have to sign in again; leave the
+browser open between runs to stay signed in.
 """
 
 BROWSER_LEDGER_APPLY_EPILOG = """
@@ -613,6 +665,37 @@ Stages one item so it can be filled. An item that is already verified is left al
 running it again is safe. A receipt needs the SHA-256 of its file.
 """
 
+BROWSER_LEDGER_CLOSE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger close expense-report trip-lisbon --outcome pending --yes
+  blumkin browser ledger close expense-report trip-lisbon --outcome done --close-browser --yes
+
+Ends a session on an instance after asking the user whether they are all done with it:
+`--outcome done` (the trip is finished) or `--outcome pending` (it stays open and resumes in the
+next session). `--yes` says the user gave that answer; nothing infers it. The answer is
+recorded first, and only then does `--close-browser` close the task's browser, keeping its
+profile (the saved sign-in). A pending instance shows how to resume in `ledger status`: reopen
+the saved report (its server-side id is recorded with `ledger report`), then `ledger reconcile`
+the ledger with the page. Closing the session is not submitting: the report is still not
+submitted until the user says so with `ledger submitted`.
+"""
+
+BROWSER_LEDGER_REPORT_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger report expense-report trip-lisbon --report-id 100234 --draft-saved
+  blumkin browser ledger report expense-report trip-lisbon --total-confirmed --json
+
+Records the report itself on the instance: the number the server gave it (`--report-id`), that
+a draft of it is saved there (`--draft-saved`), and that the user confirmed its total
+(`--total-confirmed`). The ledger never holds an amount, so the total is recorded only as
+confirmed. A flag left out keeps its last value. The report stays `submitted: false` until the
+user submits it and says so with `ledger submitted`.
+"""
+
 BROWSER_LEDGER_STATUS_EPILOG = """
 Examples:
 
@@ -660,6 +743,10 @@ name. The grade is `compatible` (it still matches; layout changes are ignored), 
 cannot be verified, or some landmarks changed) or `incompatible` (re-explore the page: a
 control is gone, a new field appeared or the page no longer looks like the recorded one).
 The command exits 1 for `incompatible`. The page must be on the task's `allowed_hosts`.
+
+Some sites serve every page from one address. When the page matches another recorded page
+better than the one named, the JSON carries `best_match` (that page and the share of its
+landmarks that are on the page), which says which page the browser is really on.
 """
 
 BROWSER_MODEL_DIFF_EPILOG = """
@@ -776,6 +863,14 @@ when the page adds or reloads a frame, so add `--host HOST` to refuse any other 
 frame with `--frame`, with link addresses and field values removed: use it to find a
 control's name and role before a click. A page snapshot stops at frame boundaries, and
 hidden or screen-reader-only text is included, so it is untrusted data like the text.
+
+A long page is read in windows: `--limit N` (default 20000) and `--offset N` pick the
+characters, and the JSON says `truncated`, `total_chars` and the `next_offset` to continue
+from. With `--aria`, a combobox or listbox that only holds options is summarized
+(`combobox "Type" (27 options, selected "Lodging")`; `--options` lists them), and
+`--within ROLE[:NAME]` keeps one subtree, for example `--within dialog` for the open
+dialog or `--within "dialog:Manage Attachments"`. The page is scanned for injection before
+it is narrowed, so a warning outside the subtree still shows.
 """
 
 BROWSER_REFRESH_TAB_EPILOG = """
@@ -798,8 +893,12 @@ Examples:
   blumkin browser status
   blumkin browser status expense-report --json
 
-Shows each task profile, whether its browser is running, and the loopback DevTools
-endpoint when it is. Give a task name to look at just that one.
+Shows each task profile, whether its browser is running, the loopback DevTools endpoint
+when it is, and how many pages (tabs) it has open (`pages`). A browser with no open page is
+running but cannot be driven until it has one: the status says so (`note`), and any browser
+command opens a blank page for you. Give a task name to look at just that one.
+`status --json` is also the way for a script to learn the endpoint, which changes on every
+launch; `blumkin browser endpoint TASK` prints just that.
 """
 
 BROWSER_TRANSCRIPT_EPILOG = """
@@ -841,6 +940,15 @@ config.toml (absolute, or starting with `~/`), and the page must be on a host th
 declared in `allowed_hosts`; with either missing nothing can be uploaded, so a page cannot
 make an agent upload an arbitrary file or send a receipt to another site. Receipts stay on this
 machine and go only to the page you pointed the task at.
+
+`ok` only means the file was handed to the input. The command then waits half a second and
+reads what the page shows: `persisted` is `shown` (the file's name is on the page near the
+field), `missing` (a re-render dropped it) or `unknown` (the input holds it but the page does
+not show it), `files_held` lists the names the input holds, and `input_hidden` flags a hidden
+or zero-size input, such as a drop zone's, which may not be the one the form saves. A `warnings`
+list says what to check. On a form that re-renders after a field changes (Oracle ADF, for
+one), set the file last: fill the row's other fields first, because a later edit of the same
+row loses a file chosen earlier.
 """
 
 BROWSER_SELECT_EPILOG = """
@@ -1903,6 +2011,11 @@ Examples:
 
 Fetches one message in full. Prefer this over listing and filtering client-side
 when you already have the id. Default body type is text.
+
+`--body-type` only chooses how the body is shown to you: a draft stored as HTML reads as plain
+text under the default, exactly like a draft stored as text. To see whether a draft really
+holds markup (after `mail reply` or `mail update-draft` with `--body-type html`), ask for
+`--body-type html`; the plain-text default cannot tell the two apart.
 """
 
 MAIL_TRIAGE_EPILOG = """
@@ -2056,8 +2169,10 @@ Examples:
 Prefer this over a fresh draft with "RE:" - Graph keeps it in the original
 conversation and inherits recipients. Draft only; send with `mail send-draft
 --yes`. Pass `--body` on create (Markdown by default, rendered to HTML above the
-quoted thread; `--body-type text` for plain); a later `mail update-draft --body`
-drops the quoted original.
+quoted thread; `--body-type text` for plain; `--body-type html` keeps your markup).
+Graph reads a reply's comment as plain text, so an HTML or Markdown body is written into
+the draft after it is created, above the quoted thread. A later
+`mail update-draft --body` drops the quoted original unless you add `--keep-quoted`.
 """
 
 MAIL_SEND_DRAFT_EPILOG = """

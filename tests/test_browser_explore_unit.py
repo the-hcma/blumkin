@@ -355,12 +355,16 @@ class _Raw:
         self.restricted: Any = None
         self.settled = 0
         self.settled_from = ""
+        self.marks: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
 
     def block_form_submission(self, *, background_writes: bool = False) -> None:
         self.net += 1
 
     def aria_snapshot(self) -> str:
         return _SNAPSHOT
+
+    def mark_window(self, task: str, hosts: Any = (), blocked: Any = ()) -> None:
+        self.marks.append((task, tuple(hosts), tuple(blocked)))
 
     def restrict_navigation(self, is_allowed: Any) -> None:
         self.restricted = is_allowed
@@ -976,3 +980,114 @@ def test_a_long_word_in_a_control_name_still_gives_a_storable_draft() -> None:
     )
     model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
     assert [c.name for c in model.pages[0].controls] == ["p.telecommunicatio"]
+
+
+def test_the_exploring_driver_hands_the_indicator_request_to_the_raw_driver() -> None:
+    raw = _Raw()
+    driver = ExploringDriver(raw)
+
+    driver.mark_window("expense-report", ("erp.example.com",), ("login.example.net",))
+
+    assert raw.marks == [("expense-report", ("erp.example.com",), ("login.example.net",))]
+
+
+# --------------------------------------------------------------------------- explore fixes (#608)
+
+
+@pytest.mark.parametrize(
+    ("role", "name"),
+    [
+        ("combobox", "Payment Method"),
+        ("textbox", "Checkout Date"),
+        ("textbox", "File Name"),
+        ("searchbox", "Pay to"),
+        ("checkbox", "Send me a copy"),
+        ("spinbutton", "Pay amount"),
+    ],
+)
+def test_a_field_is_not_finalizing_whatever_words_its_name_holds(role: str, name: str) -> None:
+    draft = _draft()
+    draft.add_page(
+        "expense-item", "https://erp.example.com/item", (ControlObservation(role, name),)
+    )
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+
+    assert model.pages[0].controls[0].safety is ControlSafety.SAFE
+
+
+@pytest.mark.parametrize(
+    ("role", "name"),
+    [
+        ("button", "Pay now"),
+        ("link", "Submit report"),
+        ("menuitem", "Send"),
+        ("tab", "Checkout"),
+        ("button", "Sub mit"),
+    ],
+)
+def test_an_actionable_control_with_a_finalizing_name_is_still_finalizing(
+    role: str, name: str
+) -> None:
+    draft = _draft()
+    draft.add_page(
+        "expense-item", "https://erp.example.com/item", (ControlObservation(role, name),)
+    )
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+
+    assert model.pages[0].controls[0].safety is ControlSafety.FINALIZING
+
+
+def test_forgetting_a_page_drops_it_and_the_steps_that_used_it() -> None:
+    draft = _draft()
+    draft.add_page("expense-list", "https://erp.example.com/a", parse_aria_snapshot(_SNAPSHOT))
+    draft.add_page("old-page", "https://erp.example.com/b", parse_aria_snapshot(_SNAPSHOT))
+    draft.add_step("click", page_id="old-page", control="old-page.add-line")
+    draft.add_step("click", page_id="expense-list", control="expense-list.add-line")
+
+    assert draft.forget("old-page") == {"recorded": 1}
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+
+    assert [page.page_id for page in model.pages] == ["expense-list"]
+    assert [step.page for flow in model.flows for step in flow.steps] == ["expense-list"]
+
+
+def test_forgetting_a_page_the_draft_does_not_have_changes_nothing() -> None:
+    draft = _draft()
+    draft.add_page("expense-list", "https://erp.example.com/a", parse_aria_snapshot(_SNAPSHOT))
+
+    assert draft.forget("nope") is None
+    assert len(draft.to_model(recorded_at="t", blumkin_version="1").pages) == 1
+
+
+def test_pages_that_share_an_address_but_differ_by_landmarks_are_reported() -> None:
+    draft = _draft()
+    draft.add_page(
+        "overview", "https://erp.example.com/ui/Overview", parse_aria_snapshot(_SNAPSHOT)
+    )
+    draft.add_page(
+        "report-edit",
+        "https://erp.example.com/ui/Overview",
+        (ControlObservation("button", "Save and Close"), ControlObservation("textbox", "Purpose")),
+    )
+    draft.add_page("other", "https://erp.example.com/ui/Other", parse_aria_snapshot(_SNAPSHOT))
+
+    assert draft.shared_addresses() == {"/ui/Overview": ("overview", "report-edit")}
+
+
+def test_pages_with_the_same_address_and_landmarks_are_not_a_warning() -> None:
+    draft = _draft()
+    draft.add_page("a-page", "https://erp.example.com/x", parse_aria_snapshot(_SNAPSHOT))
+    draft.add_page("b-page", "https://erp.example.com/x", parse_aria_snapshot(_SNAPSHOT))
+
+    assert draft.shared_addresses() == {}
+
+
+def test_forgetting_a_middle_page_reports_which_flow_lost_steps() -> None:
+    draft = _draft()
+    for page in ("first-page", "middle-page", "last-page"):
+        draft.add_page(page, f"https://erp.example.com/{page}", parse_aria_snapshot(_SNAPSHOT))
+        draft.add_step("click", page_id=page, control=f"{page}.add-line")
+
+    assert draft.forget("middle-page") == {"recorded": 1}
+    assert draft.forget("last-page") == {"recorded": 1}
+    assert draft.forget("first-page") == {"recorded": 1}

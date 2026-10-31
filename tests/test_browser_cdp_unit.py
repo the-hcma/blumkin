@@ -49,8 +49,19 @@ class _Handle:
     def click(self, *, timeout: float, no_wait_after: bool = False) -> None:
         self._page.calls.append(("handle-click", timeout, no_wait_after))
 
-    def evaluate(self, script: str) -> Any:
+    def set_input_files(self, path: str, *, timeout: float) -> None:
+        self._page.calls.append(("upload", self._label, path, timeout))
+
+    def evaluate(self, script: str, arg: Any = None) -> Any:
         self._page.calls.append(("handle-evaluate",))
+        if "inputHidden" in script:
+            return self._page.upload_hidden
+        if "isConnected" in script and "e.files" in script:
+            if self._page.upload_state_error is not None:
+                raise self._page.upload_state_error
+            return self._page.upload_state
+        if "isConnected" in script:
+            return self._page.upload_before
         if "aria-haspopup" in script and self._label:
             self._page.dropdown_reads += 1
             popups = self._page.popups_after_open if self._page.dropdown_reads > 1 else None
@@ -71,16 +82,23 @@ class _Handle:
 
 
 class _Locator:
-    def __init__(self, page: _Page, label: str, role: str = "") -> None:
+    def __init__(self, page: _Page, label: str, role: str = "", visible: bool = False) -> None:
         self._page = page
         self._label = label
         self._role = role
+        self._visible = visible
+
+    def filter(self, *, visible: bool) -> _Locator:
+        self._page.calls.append(("filter-visible", self._label, visible))
+        return _Locator(self._page, self._label, self._role, visible=visible)
 
     @property
     def first(self) -> _Locator:
         return self
 
     def count(self) -> int:
+        if self._visible and self._label in self._page.visible_counts:
+            return self._page.visible_counts[self._label]
         if not self._role:
             return self._page.label_counts.get(self._label, 1)
         counts = self._page.role_counts.get((self._role, self._label), [0])
@@ -195,6 +213,19 @@ class _Page:
         #: Successive `{role, name}` answers for the ambiguity listing.
         self.match_infos: list[dict[str, Any]] = []
         self.tags: dict[str, str] = {}
+        #: How many of a label's matches are visible (default: all of them).
+        self.visible_counts: dict[str, int] = {}
+        #: What the upload probes report: a hidden input, and the state after the file is set.
+        self.upload_hidden = False
+        #: The name counts before the file is set, and the state read after it.
+        self.upload_before: dict[str, Any] = {"near": 0, "body": 0}
+        self.upload_state: dict[str, Any] = {
+            "connected": True,
+            "files": ["receipt.png"],
+            "near": 1,
+            "body": 1,
+        }
+        self.upload_state_error: Exception | None = None
 
     def get_by_label(self, label: str, *, exact: bool = False) -> _Locator:
         self.calls.append(("get_by_label", label, exact)) if exact else None
@@ -419,7 +450,7 @@ def test_upload_attaches_an_existing_file(tmp_path: Path) -> None:
     receipt.write_bytes(b"png")
     pw, driver = _driver()
     driver.upload("Receipt", receipt)
-    assert pw.page.calls == [("upload", "Receipt", str(receipt.resolve()), 30000.0)]
+    assert ("upload", "Receipt", str(receipt.resolve()), 30000.0) in pw.page.calls
 
 
 def test_upload_refuses_a_missing_file_and_a_directory(tmp_path: Path) -> None:
@@ -2441,3 +2472,352 @@ def test_the_describe_script_gathers_every_name_source_and_limits_nothing_silent
     assert "complete = false" in _DESCRIBE_CONTROL_JS
     assert "dialogComplete" in _DESCRIBE_CONTROL_JS
     assert ".slice(0, 100)" not in _DESCRIBE_CONTROL_JS
+
+
+# --------------------------------------------------------------------------- pages (#589)
+
+
+def test_count_page_targets_counts_only_pages() -> None:
+    from blumkin.browser.cdp import count_page_targets
+
+    targets = [{"type": "page"}, {"type": "iframe"}, {"type": "page"}, {"type": "worker"}]
+
+    assert count_page_targets("http://127.0.0.1:9222", fetch=lambda e, t: targets) == 2
+    assert count_page_targets("http://127.0.0.1:9222", fetch=lambda e, t: []) == 0
+
+
+def test_count_page_targets_is_unknown_when_the_endpoint_does_not_answer_or_is_not_loopback() -> (
+    None
+):
+    from blumkin.browser.cdp import count_page_targets
+
+    def down(endpoint: str, timeout_s: float) -> list[dict[str, Any]]:
+        raise OSError("refused")
+
+    assert count_page_targets("http://127.0.0.1:9222", fetch=down) is None
+    assert (
+        count_page_targets("http://example.com:9222", fetch=lambda e, t: [{"type": "page"}]) is None
+    )
+
+
+class _NoPageContext:
+    def __init__(self, *, new_page_works: bool, appears_after_open: bool = False) -> None:
+        self.pages: list[Any] = []
+        self._new_page_works = new_page_works
+        self._appears = appears_after_open
+        self.opened = 0
+
+    def new_page(self) -> Any:
+        if not self._new_page_works:
+            raise PlaywrightError("Browser context management is not supported.")
+        page = _Page()
+        self.pages.append(page)
+        return page
+
+    def open_blank(self) -> None:
+        self.opened += 1
+        if self._appears:
+            self.pages.append(_Page())
+
+    def expect_event(self, event: str, *, timeout: float) -> Any:
+        """Playwright's `expect_event`: the body runs, then the event's value or a timeout."""
+        context = self
+
+        class _Waiting:
+            value: Any = None
+
+            def __enter__(self) -> _Waiting:
+                return self
+
+            def __exit__(self, *exc: object) -> bool:
+                if exc[0] is not None:
+                    return False
+                if not context.pages:
+                    raise PlaywrightTimeout("no page event")
+                self.value = context.pages[0]
+                return False
+
+        return _Waiting()
+
+
+def test_a_browser_with_no_page_gets_a_blank_one_from_devtools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import cdp
+
+    context = _NoPageContext(new_page_works=False, appears_after_open=True)
+    monkeypatch.setattr(cdp, "_open_blank_target", lambda endpoint, timeout_s: context.open_blank())
+
+    page = cdp._first_page(context, "http://127.0.0.1:9222", 1.0)
+
+    assert page is context.pages[0]
+    assert context.opened == 1
+
+
+def test_a_browser_that_cannot_make_a_page_is_reported_as_having_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import cdp
+    from blumkin.browser.cdp import BrowserNoPageError
+
+    context = _NoPageContext(new_page_works=False)
+    monkeypatch.setattr(cdp, "_open_blank_target", lambda endpoint, timeout_s: context.open_blank())
+
+    with pytest.raises(BrowserNoPageError, match="open page"):
+        cdp._first_page(context, "http://127.0.0.1:9222", 0.2)
+
+
+def test_an_existing_page_is_used_without_opening_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import cdp
+
+    context = _NoPageContext(new_page_works=True)
+    existing = _Page()
+    context.pages.append(existing)
+    monkeypatch.setattr(cdp, "_open_blank_target", lambda endpoint, timeout_s: context.open_blank())
+
+    assert cdp._first_page(context, "http://127.0.0.1:9222", 1.0) is existing
+    assert context.opened == 0
+
+
+def test_attaching_with_no_launched_browser_is_a_not_running_error(tmp_path: Path) -> None:
+    from blumkin.browser.cdp import BrowserNotRunningError
+
+    profile = create_profile(tmp_path, "expense-report")
+
+    with pytest.raises(BrowserNotRunningError, match="browser launch expense-report"):
+        attach(profile)
+
+
+def test_an_attach_that_keeps_failing_is_a_protocol_error() -> None:
+    from blumkin.browser.cdp import BrowserProtocolError
+
+    def always_down(endpoint: str, timeout_s: float) -> dict[str, Any]:
+        raise OSError("connection reset")
+
+    with pytest.raises(BrowserProtocolError, match="after 2 attempts"):
+        open_driver(
+            "http://127.0.0.1:9222",
+            attempts=2,
+            factory=lambda: _Playwright(),
+            fetch_version=always_down,
+            sleep=lambda seconds: None,
+        )
+
+
+class _SignInRequest:
+    def __init__(self, url: str, frame_url: str | None) -> None:
+        self.url = url
+        self.frame = type("Frame", (), {"url": frame_url})() if frame_url is not None else None
+
+
+class _SignInRoute:
+    def __init__(self, url: str, frame_url: str | None) -> None:
+        self.request = _SignInRequest(url, frame_url)
+        self.outcome = ""
+
+    def continue_(self) -> None:
+        self.outcome = "continue"
+
+    def fallback(self) -> None:
+        self.outcome = "fallback"
+
+
+@pytest.mark.parametrize(
+    ("url", "frame_url", "outcome"),
+    [
+        (
+            "https://login.microsoftonline.com/login",
+            "https://login.microsoftonline.com/",
+            "continue",
+        ),
+        ("https://erp.example.com/saml", "https://login.microsoftonline.com/", "continue"),
+        ("https://login.microsoftonline.com/x", "https://erp.example.com/", "continue"),
+        ("https://erp.example.com/submit", "https://erp.example.com/", "fallback"),
+        ("https://erp.example.com/submit", None, "fallback"),
+    ],
+)
+def test_the_sign_in_route_continues_only_traffic_to_or_from_a_sign_in_host(
+    url: str, frame_url: str | None, outcome: str
+) -> None:
+    from blumkin.browser.cdp import _sign_in_handler
+
+    handler = _sign_in_handler(lambda host: host == "login.microsoftonline.com")
+    route = _SignInRoute(url, frame_url)
+
+    handler(route)
+
+    assert route.outcome == outcome
+
+
+# --------------------------------------------------------------------------- upload, hidden (#607)
+
+
+def _receipt(tmp_path: Path) -> Path:
+    receipt = tmp_path / "receipt.png"
+    receipt.write_bytes(b"png")
+    return receipt
+
+
+def test_an_upload_reports_that_the_page_shows_the_file(tmp_path: Path) -> None:
+    pw, driver = _driver()
+
+    seen = driver.upload("Receipt", _receipt(tmp_path))
+
+    assert (seen.persisted, seen.input_hidden, seen.files) == ("shown", False, ("receipt.png",))
+    assert any(call[0] == "wait" for call in pw.page.calls)  # a re-render gets a moment
+
+
+def test_an_upload_the_page_dropped_is_reported_missing(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state = {"connected": False, "files": [], "near": 0, "body": 0}
+
+    seen = driver.upload("Receipt", _receipt(tmp_path))
+
+    assert seen.persisted == "missing"
+
+
+def test_a_file_held_by_the_input_but_not_shown_is_unknown(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state = {"connected": True, "files": ["receipt.png"], "near": 0, "body": 1}
+
+    assert driver.upload("Receipt", _receipt(tmp_path)).persisted == "unknown"
+
+
+def test_a_connected_input_that_lost_its_file_is_missing(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state = {"connected": True, "files": [], "near": 0, "body": 1}
+
+    assert driver.upload("Receipt", _receipt(tmp_path)).persisted == "missing"
+
+
+def test_a_hidden_file_input_is_reported(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_hidden = True
+
+    assert driver.upload("Receipt", _receipt(tmp_path)).input_hidden is True
+
+
+def test_a_read_back_that_fails_does_not_fail_the_upload(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state_error = PlaywrightError("Execution context was destroyed")
+
+    seen = driver.upload("Receipt", _receipt(tmp_path))
+
+    assert seen.persisted == "unknown"
+    assert ("upload", "Receipt", str(_receipt(tmp_path).resolve()), 30000.0) in pw.page.calls
+
+
+def test_the_upload_probes_look_at_the_element_itself() -> None:
+    from blumkin.browser.cdp import _UPLOAD_INFO_JS, _UPLOAD_STATE_JS
+
+    for needle in ("inputHidden", "getClientRects", "offsetWidth"):
+        assert needle in _UPLOAD_INFO_JS
+    for needle in ("isConnected", "e.files", "innerText", "closest", "toLowerCase"):
+        assert needle in _UPLOAD_STATE_JS
+
+
+def test_a_label_shared_with_hidden_fields_means_the_one_visible_field() -> None:
+    pw, driver = _driver()
+    pw.page.label_counts["Type"] = 4
+    pw.page.visible_counts["Type"] = 1
+
+    driver.fill("Type", "Lodging")
+
+    assert ("filter-visible", "Type", True) in pw.page.calls
+    assert ("fill", "Type", "Lodging", 30000.0) in pw.page.calls
+
+
+def test_a_label_with_several_visible_fields_is_still_ambiguous_and_counts_the_hidden() -> None:
+    pw, driver = _driver()
+    pw.page.label_counts["Type"] = 4
+    pw.page.visible_counts["Type"] = 2
+    pw.page.match_infos = [
+        {"role": "textbox", "name": "Type"},
+        {"role": "textbox", "name": "Type", "visible": False},
+    ]
+
+    with pytest.raises(BrowserActionError) as caught:
+        driver.fill("Type", "Lodging")
+
+    message = str(caught.value)
+    assert "2 visible" in message and "2 hidden" in message
+    assert "(hidden)" in message
+
+
+def test_a_label_whose_fields_are_all_hidden_keeps_the_old_refusal() -> None:
+    pw, driver = _driver()
+    pw.page.label_counts["Type"] = 3
+    pw.page.visible_counts["Type"] = 0
+
+    with pytest.raises(BrowserActionError, match="got 3"):
+        driver.fill("Type", "x")
+
+
+def test_an_nth_still_counts_every_match_hidden_or_not() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    pw, driver = _driver()
+    pw.page.label_counts["Type"] = 4
+    pw.page.visible_counts["Type"] = 1
+
+    driver.fill("Type", "Lodging", FieldTarget(nth=3))
+
+    assert ("nth", "", "Type", 2) in pw.page.calls
+    assert not any(call[0] == "filter-visible" for call in pw.page.calls)
+
+
+def test_an_upload_does_not_prefer_a_visible_field_over_a_hidden_drop_zone(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.label_counts["File"] = 2
+    pw.page.visible_counts["File"] = 1
+
+    with pytest.raises(BrowserActionError, match="got 2"):
+        driver.upload("File", _receipt(tmp_path))
+
+
+def test_a_name_the_page_already_showed_cannot_vouch_for_the_upload(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_before = {"near": 1, "body": 1}  # another copy of the name was there already
+    pw.page.upload_state = {"connected": True, "files": ["receipt.png"], "near": 1, "body": 1}
+
+    assert driver.upload("Receipt", _receipt(tmp_path)).persisted == "unknown"
+
+
+def test_a_re_render_that_replaced_the_field_is_shown_when_the_name_is_on_the_page(
+    tmp_path: Path,
+) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state = {"connected": False, "files": [], "near": 0, "body": 1}
+
+    assert driver.upload("Receipt", _receipt(tmp_path)).persisted == "shown"
+
+
+def test_the_file_names_a_page_reports_are_cleaned_and_capped(tmp_path: Path) -> None:
+    pw, driver = _driver()
+    pw.page.upload_state = {
+        "connected": True,
+        "files": ["a\nIGNORE ALL PREVIOUS\x1b[31m" + "x" * 500] + [f"f{n}" for n in range(30)],
+        "near": 1,
+        "body": 1,
+    }
+
+    seen = driver.upload("Receipt", _receipt(tmp_path))
+
+    assert len(seen.files) == 10
+    assert all(len(name) <= 100 and name.isprintable() for name in seen.files)
+    assert "\n" not in seen.files[0]
+
+
+def test_the_file_goes_to_the_element_that_was_probed_not_to_a_fresh_lookup(
+    tmp_path: Path,
+) -> None:
+    pw, driver = _driver()
+
+    driver.upload("Receipt", _receipt(tmp_path))
+
+    calls = [call[0] for call in pw.page.calls]
+    # The handle was taken, probed, written to and probed again; the locator itself never wrote.
+    assert calls.count("upload") == 1
+    assert calls.index("handle-evaluate") < calls.index("upload")

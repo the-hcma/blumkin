@@ -143,3 +143,191 @@ def test_a_damaged_journal_is_reported_not_guessed_at(_config_dir: Path) -> None
     result = _run("browser", "ledger", "status", "timesheet", "2026-p21")
     assert result.exit_code == EXIT_OTHER
     assert _json(result)["error"] == "ledger_invalid"
+
+
+# --------------------------------------------------------------------------- report, close (#592)
+
+
+def _begin_trip() -> None:
+    assert _run("browser", "ledger", "begin", "expense-report", "trip").exit_code == EXIT_SUCCESS
+
+
+def test_ledger_report_records_the_report_and_status_shows_it() -> None:
+    _begin_trip()
+
+    result = _run(
+        "browser", "ledger", "report", "expense-report", "trip",
+        "--report-id", "100234", "--draft-saved", "--total-confirmed",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(_run("browser", "ledger", "status", "expense-report", "trip"))
+    assert payload["report"]["report_id"] == "100234"
+    assert payload["report"]["draft_saved"] is True
+    assert payload["submitted"] is False
+    assert "total" not in json.dumps(payload["report"]).replace("total_confirmed", "")
+
+
+def test_ledger_status_lists_what_is_on_the_server_and_what_is_only_local() -> None:
+    _begin_trip()
+    for state in ("staged", "filled", "verified"):
+        _run("browser", "ledger", "record", "expense-report", "trip", "receipt", "a", state,
+             "--sha256", _SHA)  # fmt: skip
+    _run("browser", "ledger", "record", "expense-report", "trip", "receipt", "b", "staged",
+         "--sha256", _SHA)  # fmt: skip
+
+    payload = _json(_run("browser", "ledger", "status", "expense-report", "trip"))
+    text = _text("browser", "ledger", "status", "expense-report", "trip").output
+
+    assert payload["on_server"] == ["a"]
+    assert payload["local_only"] == ["b"]
+    assert "on the server (read back): 1; only local or not read back: 1" in text
+
+
+def test_ledger_close_needs_the_users_yes_and_an_outcome() -> None:
+    _begin_trip()
+
+    no_yes = _run("browser", "ledger", "close", "expense-report", "trip", "--outcome", "done")
+    no_outcome = _run("browser", "ledger", "close", "expense-report", "trip", "--yes")
+
+    assert no_yes.exit_code == EXIT_USAGE
+    assert no_outcome.exit_code == EXIT_USAGE
+
+
+def test_ledger_close_pending_records_the_answer_and_shows_how_to_resume() -> None:
+    _begin_trip()
+    _run(
+        "browser", "ledger", "report", "expense-report", "trip", "--report-id", "7", "--draft-saved"
+    )
+
+    result = _run(
+        "browser", "ledger", "close", "expense-report", "trip", "--outcome", "pending", "--yes"
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["session"]["outcome"] == "pending"
+    assert "reopen the saved report 7" in payload["resume"]
+    assert payload["phase"] == "open"
+    text = _text("browser", "ledger", "status", "expense-report", "trip").output
+    assert "pending: reopen the saved report 7" in text
+
+
+def test_ledger_close_records_the_answer_before_closing_the_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _begin_trip()
+    monkeypatch.setattr("blumkin.browser.ledger_commands.require_profile", lambda *a, **k: None)
+    order: list[str] = []
+
+    def fake_close(config_dir: Path, task: str, **kwargs: Any) -> dict[str, Any]:
+        status = _json(_run("browser", "ledger", "status", task, "trip"))
+        order.append(f"closed after session={status['session']['outcome']}")
+        return {"forced": False, "ok": True, "task": task, "was_running": True}
+
+    monkeypatch.setattr("blumkin.browser.ledger_commands.close_task_browser", fake_close)
+
+    result = _run(
+        "browser", "ledger", "close", "expense-report", "trip",
+        "--outcome", "done", "--close-browser", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert order == ["closed after session=done"]
+    assert _json(result)["browser_closed"] is True
+
+
+def test_a_failed_browser_close_leaves_the_recorded_answer_in_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser.launcher import BrowserCloseError
+
+    _begin_trip()
+    monkeypatch.setattr("blumkin.browser.ledger_commands.require_profile", lambda *a, **k: None)
+
+    def broken(config_dir: Path, task: str, **kwargs: Any) -> dict[str, Any]:
+        raise BrowserCloseError("Expected the browser to close, got a hang")
+
+    monkeypatch.setattr("blumkin.browser.ledger_commands.close_task_browser", broken)
+
+    result = _run(
+        "browser", "ledger", "close", "expense-report", "trip",
+        "--outcome", "pending", "--close-browser", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "browser_close_failed"
+    assert "already recorded in the ledger" in _json(result)["message"]
+    status = _json(_run("browser", "ledger", "status", "expense-report", "trip"))
+    assert status["session"]["outcome"] == "pending"
+
+
+def test_closing_the_session_never_submits_the_report() -> None:
+    _begin_trip()
+    _run("browser", "ledger", "close", "expense-report", "trip", "--outcome", "done", "--yes")
+
+    status = _json(_run("browser", "ledger", "status", "expense-report", "trip"))
+
+    assert status["submitted"] is False
+    assert status["phase"] == "open"
+
+
+def test_the_handoff_says_what_is_on_the_server_and_what_is_local() -> None:
+    _begin_trip()
+    for state in ("staged", "filled", "verified"):
+        _run(
+            "browser", "ledger", "record", "expense-report", "trip", "receipt", "a", state,
+            "--sha256", _SHA,
+        )  # fmt: skip
+    _run(
+        "browser", "ledger", "report", "expense-report", "trip", "--report-id", "7", "--draft-saved"
+    )
+
+    payload = _json(
+        _run("browser", "ledger", "handoff", "expense-report", "trip", "--step", "Review it.")
+    )
+
+    summary = " ".join(payload["summary"])
+    assert "report 7 saved as a draft" in summary
+    assert "on the server (read back from the page): 1 item(s)" in summary
+
+
+def test_closing_with_no_browser_running_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    _begin_trip()
+    monkeypatch.setattr("blumkin.browser.ledger_commands.require_profile", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "blumkin.browser.ledger_commands.close_task_browser",
+        lambda config_dir, task, **kwargs: {"forced": False, "ok": True, "was_running": False},
+    )
+
+    text = _text(
+        "browser", "ledger", "close", "expense-report", "trip",
+        "--outcome", "done", "--close-browser", "--yes",
+    )  # fmt: skip
+
+    assert text.exit_code == EXIT_SUCCESS, text.output
+    assert "no task browser was running" in text.output
+
+
+def test_done_with_only_local_items_warns_that_it_verified_nothing() -> None:
+    _begin_trip()
+    _run("browser", "ledger", "record", "expense-report", "trip", "receipt", "a", "staged",
+         "--sha256", _SHA)  # fmt: skip
+
+    result = _run(
+        "browser", "ledger", "close", "expense-report", "trip", "--outcome", "done", "--yes"
+    )
+
+    assert "done does not verify them" in _json(result)["warnings"][0]
+
+
+def test_a_task_without_a_profile_fails_before_the_answer_is_recorded() -> None:
+    _begin_trip()
+
+    result = _run(
+        "browser", "ledger", "close", "expense-report", "trip",
+        "--outcome", "pending", "--close-browser", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_NOT_FOUND
+    assert _json(_run("browser", "ledger", "status", "expense-report", "trip"))["session"] is None

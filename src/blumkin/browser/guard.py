@@ -28,6 +28,7 @@ import logging
 import re
 import unicodedata
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,7 @@ from blumkin.browser.cdp import (
     FrameInfo,
     PageText,
     RawBrowserDriver,
+    UploadObservation,
     attach,
 )
 from blumkin.browser.profiles import BrowserProfile
@@ -205,6 +207,12 @@ class GuardedDriver:
     def goto(self, url: str) -> None:
         self._raw.goto(url)
 
+    def mark_window(
+        self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
+    ) -> None:
+        """Show the task's indicator on the page blumkin is attached to (on `hosts` only)."""
+        self._raw.mark_window(task, hosts, blocked)
+
     def press(self, label: str, key: str) -> None:
         action = f"press {key!r} in {label!r}"
         if not _key_is_safe(key):
@@ -251,9 +259,19 @@ class GuardedDriver:
             lambda name: self._vet_field_name(action, name),
         )
 
-    def upload(self, label: str, path: Path, target: FieldTarget | None = None) -> None:
+    def upload(
+        self, label: str, path: Path, target: FieldTarget | None = None
+    ) -> UploadObservation:
         self._check_target(target)
-        self._raw.upload(label, path, target)
+        return self._raw.upload(label, path, target)
+
+    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> AbstractContextManager[None]:
+        """Let identity-provider requests past the safety net while the user signs in by hand."""
+        return self._raw.sign_in_pass(is_sign_in_host)
+
+    def wait_ms(self, milliseconds: int) -> None:
+        """Pause, with the page's events delivered (for example a redirect finishing)."""
+        self._raw.wait_ms(milliseconds)
 
     @property
     def url(self) -> str:

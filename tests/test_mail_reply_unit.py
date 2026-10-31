@@ -185,14 +185,113 @@ def test_mail_reply_escapes_text_comments_for_the_html_draft(monkeypatch) -> Non
     assert _posted(item.create_reply.post).comment == "see &lt;5 and 6&gt; for details"
 
 
-def test_mail_reply_leaves_html_comments_unescaped(monkeypatch) -> None:
+def _patched_body(item: Any) -> Any:
+    """The body of the one PATCH sent to the draft."""
+    assert item.patch.await_count == 1
+    return item.patch.await_args.args[0].body
+
+
+def _with_quote(subject: str) -> Any:
+    draft = _draft(subject)
+    draft.body = SimpleNamespace(
+        content='<p></p><hr><div id="divRplyFwdMsg"><b>From:</b> Rebecca</div>',
+        content_type=BodyType.Html,
+    )
+    return draft
+
+
+def test_mail_reply_with_an_html_body_is_patched_in_above_the_quote(monkeypatch) -> None:
+    """Graph reads a createReply comment as plain text, so HTML is put into the body (#612)."""
     client = _client(monkeypatch)
     item = client.me.messages.by_message_id.return_value
-    item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+    draft = _with_quote("RE: Quarterly sync")
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(
+        mail_reply(message_id="msg-1", body="<p><strong>Thanks</strong></p>", body_type="html")
+    )
+
+    assert _posted(item.create_reply.post).comment == ""
+    body = _patched_body(item)
+    assert body.content_type == BodyType.Html
+    assert body.content == (
+        '<p><strong>Thanks</strong></p><hr><div id="divRplyFwdMsg"><b>From:</b> Rebecca</div>'
+    )
+
+
+def test_mail_reply_all_with_an_html_body_file_is_patched_too(monkeypatch, tmp_path) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _with_quote("RE: Quarterly sync")
+    item.create_reply_all.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+    html = tmp_path / "body.html"
+    html.write_text("<p>Hello <code>x</code></p>")
+
+    asyncio.run(
+        mail_reply(message_id="msg-1", body_file=str(html), body_type="html", reply_all=True)
+    )
+
+    assert _posted(item.create_reply_all.post).comment == ""
+    assert "<code>x</code>" in _patched_body(item).content
+
+
+def test_mail_reply_keeps_the_whole_draft_when_no_quote_is_recognised(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")  # body "<p>…</p>": no quote marker
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
 
     asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
 
-    assert _posted(item.create_reply.post).comment == "<p>Thanks</p>"
+    assert _patched_body(item).content == "<p>Thanks</p><p>…</p>"
+
+
+def test_mail_reply_markdown_is_rendered_to_html_and_patched(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _with_quote("RE: Quarterly sync")
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="**bold** text", body_type="markdown"))
+
+    assert _posted(item.create_reply.post).comment == ""
+    assert "<strong>bold</strong>" in _patched_body(item).content
+
+
+def test_mail_reply_with_a_text_body_still_goes_through_the_comment(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
+    item.patch = AsyncMock()
+
+    asyncio.run(mail_reply(message_id="msg-1", body="Thanks", body_type="text", no_signature=True))
+
+    assert _posted(item.create_reply.post).comment == "Thanks"
+    item.patch.assert_not_called()
+
+
+def test_mail_forward_with_an_html_body_is_patched_in_above_the_quote(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _with_quote("FW: Quarterly sync")
+    item.create_forward.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(
+        mail_forward(message_id="msg-1", to="sam@example.com", body="<p>FYI</p>", body_type="html")
+    )
+
+    assert _posted(item.create_forward.post).comment == ""
+    assert _patched_body(item).content.startswith("<p>FYI</p><hr>")
 
 
 def test_mail_reply_fails_loudly_when_graph_returns_no_draft(monkeypatch) -> None:
@@ -266,7 +365,12 @@ def test_mail_reply_merges_cc_onto_inherited_recipients(monkeypatch) -> None:
     item.patch = AsyncMock(return_value=patched)
 
     payload = asyncio.run(
-        mail_reply(message_id="msg-1", body="Thanks", cc="new@example.com, ALREADY@example.com")
+        mail_reply(
+            message_id="msg-1",
+            body="Thanks",
+            body_type="text",
+            cc="new@example.com, ALREADY@example.com",
+        )
     )
 
     patch_msg = _posted(item.patch)
@@ -294,7 +398,7 @@ def test_mail_reply_skips_recipient_patch_when_cc_omitted(monkeypatch) -> None:
     item.get = AsyncMock(return_value=live)
     item.patch = AsyncMock()
 
-    payload = asyncio.run(mail_reply(message_id="msg-1", body="Thanks"))
+    payload = asyncio.run(mail_reply(message_id="msg-1", body="Thanks", body_type="text"))
 
     item.get.assert_awaited()
     item.patch.assert_not_called()
@@ -359,6 +463,7 @@ def test_mail_forward_merges_bcc_onto_inherited_recipients(monkeypatch) -> None:
             message_id="msg-1",
             to="sam@example.com",
             body="FYI",
+            body_type="text",
             bcc="new@example.com, HIDDEN@example.com",
         )
     )
@@ -389,11 +494,16 @@ def test_mail_reply_signature_only_empty_body(monkeypatch) -> None:
     item = client.me.messages.by_message_id.return_value
     item.create_reply.post = AsyncMock(return_value=_draft("RE: Quarterly sync"))
 
+    draft = _draft("RE: Quarterly sync")
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
     asyncio.run(mail_reply(message_id="msg-1"))
 
-    # Empty-body reply on the markdown default: signature renders as HTML to match
-    # the HTML quoted original the draft is joined onto.
-    assert _posted(item.create_reply.post).comment == (
+    # Empty-body reply on the markdown default: the signature is HTML, so it is put into the
+    # body above the quoted original instead of travelling as a plain-text comment.
+    assert _posted(item.create_reply.post).comment == ""
+    assert _patched_body(item).content.startswith(
         '<span style="color:#003366;font-weight:bold">Ada</span>'
     )
 
@@ -411,7 +521,10 @@ def test_mail_reply_no_signature_skips_config(monkeypatch) -> None:
 def test_mail_forward_appends_html_signature(monkeypatch) -> None:
     client = _client(monkeypatch, signature=True)
     item = client.me.messages.by_message_id.return_value
-    item.create_forward.post = AsyncMock(return_value=_draft("FW: Quarterly sync"))
+    draft = _draft("FW: Quarterly sync")
+    item.create_forward.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
 
     asyncio.run(
         mail_forward(
@@ -422,7 +535,7 @@ def test_mail_forward_appends_html_signature(monkeypatch) -> None:
         )
     )
 
-    comment = _posted(item.create_forward.post).comment
+    comment = _patched_body(item).content
     assert comment.startswith("<p>FYI</p><br><br>")
     assert "Ada" in comment
     assert "font-weight:bold" in comment
@@ -433,6 +546,8 @@ def _client(monkeypatch, *, signature: bool = False) -> MagicMock:
     monkeypatch.setattr("blumkin.skills.mail.create_graph_client", lambda _cfg: client)
     # Reply/forward always re-fetch the draft for accurate recipient summaries.
     client.me.messages.by_message_id.return_value.get = AsyncMock(return_value=_draft("RE: live"))
+    # A markup body is patched into the draft after it is created (#612).
+    client.me.messages.by_message_id.return_value.patch = AsyncMock(return_value=_draft("RE: live"))
     if signature:
         cfg = BlumkinConfig(
             client_id="x",
@@ -489,3 +604,217 @@ def _posted(post_mock: AsyncMock) -> Any:
     await_args = post_mock.await_args
     assert await_args is not None
     return await_args.args[0]
+
+
+def test_mail_reply_deletes_the_draft_when_the_body_patch_fails(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _with_quote("RE: Quarterly sync")
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(side_effect=_odata_error(400, "ErrorInvalidRequest"))
+    item.delete = AsyncMock()
+
+    with pytest.raises(ODataError):
+        asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    item.delete.assert_awaited_once()
+
+
+def test_a_failed_follow_up_read_does_not_delete_a_draft_whose_body_landed(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _with_quote("RE: Quarterly sync")
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(side_effect=[draft, None])
+    item.patch = AsyncMock(return_value=draft)
+    item.delete = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="no draft after the body update"):
+        asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    item.delete.assert_not_called()
+
+
+def test_an_unfamiliar_quote_shape_is_kept_whole_below_the_new_text(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content="<p>From: Rebecca</p><blockquote>earlier</blockquote><p>tail</p>",
+        content_type=BodyType.Html,
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    assert _patched_body(item).content == (
+        "<p>Thanks</p><p>From: Rebecca</p><blockquote>earlier</blockquote><p>tail</p>"
+    )
+
+
+def test_the_markup_goes_inside_the_body_tag_of_a_full_document(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content=(
+            "<html><head><style>p{}</style></head><body dir='ltr'><p></p><hr>"
+            '<div id="divRplyFwdMsg" dir="ltr"><b>From:</b> R</div></body></html>'
+        ),
+        content_type=BodyType.Html,
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    assert _patched_body(item).content == (
+        "<html><head><style>p{}</style></head><body dir='ltr'><p>Thanks</p><hr>"
+        '<div id="divRplyFwdMsg" dir="ltr"><b>From:</b> R</div></body></html>'
+    )
+
+
+def test_a_quote_wrapper_with_other_attribute_order_is_still_found(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content="<p></p><div class='x' id='divRplyFwdMsg'><blockquote>q</blockquote></div>",
+        content_type=BodyType.Html,
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    assert _patched_body(item).content == (
+        "<p>Thanks</p><div class='x' id='divRplyFwdMsg'><blockquote>q</blockquote></div>"
+    )
+
+
+def test_cc_and_an_html_body_work_together_and_report_the_stored_body(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    created = _with_quote("RE: Quarterly sync")
+    stored = _with_quote("RE: Quarterly sync")
+    stored.body = SimpleNamespace(content="<p>x</p>", content_type=BodyType.Text)
+    item.create_reply.post = AsyncMock(return_value=created)
+    item.get = AsyncMock(side_effect=[created, stored])
+    item.patch = AsyncMock(return_value=created)
+
+    payload = asyncio.run(
+        mail_reply(message_id="msg-1", body="<p>Hi</p>", body_type="html", cc="new@example.com")
+    )
+
+    assert item.patch.await_count == 2  # recipients, then the body
+    assert payload["draft"]["body_type"] == "text"  # reported from the draft as stored
+
+
+@pytest.mark.parametrize(
+    "lookalike",
+    [
+        '<div data-id="divRplyFwdMsg">Not the wrapper</div>',
+        '<div id="divRplyFwdMsg-extra">Not the wrapper</div>',
+        '<div class="divRplyFwdMsg">Not the wrapper</div>',
+    ],
+)
+def test_a_lookalike_of_the_quote_wrapper_cuts_nothing(monkeypatch, lookalike: str) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content=f"<p>before</p>{lookalike}<p>after</p>", content_type=BodyType.Html
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    assert _patched_body(item).content == f"<p>Thanks</p><p>before</p>{lookalike}<p>after</p>"
+
+
+def test_a_plain_text_draft_body_is_escaped_before_it_goes_under_the_markup(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content="From: Rebecca\n<pending> & more\n", content_type=BodyType.Text
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    body = _patched_body(item)
+    assert body.content_type == BodyType.Html
+    assert body.content == "<p>Thanks</p>From: Rebecca<br>&lt;pending&gt; &amp; more<br>"
+
+
+def test_an_injected_signature_before_the_quote_is_kept_below_the_new_text(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content=(
+            "<p><br></p><div id='Signature'>Ada Lovelace<br>Example Corp</div><hr>"
+            '<div id="divRplyFwdMsg"><b>From:</b> R</div>'
+        ),
+        content_type=BodyType.Html,
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    content = _patched_body(item).content
+    assert content.startswith("<p>Thanks</p><p><br></p><div id='Signature'>Ada Lovelace")
+    assert 'Example Corp</div><hr><div id="divRplyFwdMsg">' in content
+
+
+def test_a_wrapper_inside_an_older_reply_does_not_cut_the_newest_message(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content=(
+            '<p>Newest message text</p><blockquote><div id="divRplyFwdMsg">older</div></blockquote>'
+        ),
+        content_type=BodyType.Html,
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    assert _patched_body(item).content.startswith("<p>Thanks</p><p>Newest message text</p>")
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    ["", "<p></p>", "<p><br></p>", "<div>&nbsp;</div>", "<p> </p><br>"],
+)
+def test_an_empty_compose_placeholder_before_the_quote_is_replaced(
+    monkeypatch, placeholder: str
+) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content=f'{placeholder}<hr><div id="divRplyFwdMsg">q</div>', content_type=BodyType.Html
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    assert _patched_body(item).content == '<p>Thanks</p><hr><div id="divRplyFwdMsg">q</div>'
