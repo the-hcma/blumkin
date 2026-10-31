@@ -2686,9 +2686,9 @@ async def _patch_compose_recipients(
 async def _put_markup_above_quote(client: Any, draft: Any, markup: str) -> Any:
     """Make ``markup`` the top of a reply/forward draft, above the quoted original.
 
-    The draft's body is split with ``split_quoted_original`` and only the quoted tail is
-    kept; with no quote recognised the whole existing body is kept below the new text, so
-    nothing the draft carried is lost. Returns the draft as it is stored afterwards.
+    ``_markup_above_existing`` places the markup above Outlook's ``divRplyFwdMsg`` quote
+    wrapper. When that wrapper is not found, the whole existing body is kept below the new
+    text, so nothing the draft carried is lost. Returns the draft as it is stored afterwards.
     """
     mid = getattr(draft, "id", None)
     if not mid:
