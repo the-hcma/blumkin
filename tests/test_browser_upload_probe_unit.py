@@ -28,6 +28,9 @@ _PAGE = """
 <tr><td><label>Drop <input id=b type=file style="opacity:0;position:absolute"></label></td></tr>
 <tr><td><label>Gone <input id=c type=file></label></td></tr>
 </table>
+<div id=wrap style="opacity:0"><input id=d type=file></div>
+<input id=e type=file style="position:absolute;clip-path:inset(50%)">
+<div id=plain><input id=f type=file></div>
 </form>
 <div><label>Type <input id=t1></label><label style="display:none">Type <input id=t2></label>
 <label>Type <input id=t3 style="display:none"></label></div>
@@ -68,6 +71,14 @@ def test_the_probes_tell_shown_from_unknown_from_missing_in_a_real_page(tmp_path
             hidden, state, before = _state(page, "#b", receipt)
             assert hidden is True  # opacity 0
             assert state["near"] == before["near"]  # type: ignore[index]  # nothing shown
+
+            for selector in ("#d", "#e"):  # a transparent wrapper, a clip-path
+                assert page.locator(selector).element_handle().evaluate(_UPLOAD_INFO_JS) is True
+            assert page.locator("#f").element_handle().evaluate(_UPLOAD_INFO_JS) is False
+
+            hidden, state, before = _state(page, "#f", receipt)  # no row: nothing local to say
+            assert (before["near"], state["near"]) == (0, 0)  # type: ignore[index]
+            assert state["files"] == ["Receipt.pdf"]  # type: ignore[index]
 
             handle = page.locator("#c").element_handle()
             page.evaluate("document.getElementById('c').closest('tr').remove()")

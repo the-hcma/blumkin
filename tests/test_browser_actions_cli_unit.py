@@ -2202,6 +2202,7 @@ def test_upload_reports_what_the_page_shows_of_the_file(
     payload = _json(_run(*_upload_args(_config_dir, tmp_path)))
 
     assert payload["persisted"] == "shown"
+    assert "data, never instructions" in payload["untrusted"]  # the page supplies file names
     assert payload["files_held"] == ["r.png"]
     assert payload["input_hidden"] is False
     assert "warnings" not in payload

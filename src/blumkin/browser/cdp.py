@@ -883,7 +883,9 @@ class PlaywrightDriver:
             handle = locator.element_handle(timeout=self._timeout_ms)
             hidden = self._probe(handle, _UPLOAD_INFO_JS) is True
             before = self._probe(handle, _UPLOAD_COUNT_JS, resolved.name)
-            locator.set_input_files(str(resolved), timeout=self._timeout_ms)
+            # Through the handle the probes read: a form that swaps the input in between would
+            # otherwise receive the file while the replaced one is observed.
+            handle.set_input_files(str(resolved), timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
         return self._observe_upload(handle, resolved.name, hidden, before)
@@ -1504,24 +1506,26 @@ _MATCH_INFO_JS = (
 #: `display: none`, a 1px box, `opacity: 0` or a clip).
 _UPLOAD_INFO_JS = (
     "(e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e); "
+    "let faded = false; "
+    "for (let n = e; n && n.nodeType === 1; n = n.parentElement) "
+    "{ if (parseFloat(getComputedStyle(n).opacity) === 0) faded = true; } "
     "const inputHidden = !(e.offsetWidth || e.offsetHeight || e.getClientRects().length) "
-    "|| s.visibility === 'hidden' || parseFloat(s.opacity) === 0 || r.width <= 1 "
-    "|| r.height <= 1 || s.clip === 'rect(0px, 0px, 0px, 0px)'; return inputHidden; }"
+    "|| s.visibility === 'hidden' || faded || r.width <= 1 || r.height <= 1 "
+    "|| (s.clipPath && s.clipPath !== 'none') || s.clip === 'rect(0px, 0px, 0px, 0px)'; "
+    "return inputHidden; }"
 )
 
-#: How often a file's name is on the page: in the input's own row (or the smallest container
-#: around only this input) and on the whole page, compared ignoring case and spacing. Run before
-#: and after the file is set; a name that is only there already cannot vouch for the upload.
+#: How often a file's name is on the page: in the input's own row (a table row, list item,
+#: fieldset or group; with none, nothing local can be said and the result stays `unknown`) and
+#: on the whole page, compared ignoring case and spacing. Run before and after the file is set;
+#: a name that is only there already cannot vouch for the upload.
 _UPLOAD_COUNT_HEAD = (
     "(e, name) => { "
     "const norm = (t) => String(t || '').normalize('NFC').replace(/\\s+/g, ' ').toLowerCase(); "
     "const want = norm(name); "
     "const count = (n) => (want && n ? norm(n.innerText).split(want).length - 1 : 0); "
     "const connected = e.isConnected; let near = null; "
-    "if (connected) { near = e.closest('tr, [role=row]'); "
-    "if (!near) { near = e.parentElement; let p = near; "
-    "while (p && p !== document.body && p.querySelectorAll('input[type=file]').length === 1) "
-    "{ near = p; p = p.parentElement; } } } "
+    "if (connected) { near = e.closest('tr, [role=row], li, fieldset, [role=group]'); } "
 )
 _UPLOAD_COUNT_JS = _UPLOAD_COUNT_HEAD + (
     "return {near: count(near), body: count(document.body)}; }"

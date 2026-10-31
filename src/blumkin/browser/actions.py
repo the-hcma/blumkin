@@ -618,6 +618,8 @@ def upload_task(
         payload = _field_payload("upload", task, label, target, None, None)
         payload["file"] = resolved.name
         payload["files_held"] = list(seen.files)
+        if seen.files:
+            payload["untrusted"] = UNTRUSTED_NOTE  # the page supplies these names
         payload["input_hidden"] = seen.input_hidden
         payload["persisted"] = seen.persisted
         warnings = _upload_warnings(seen)

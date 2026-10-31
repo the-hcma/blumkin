@@ -49,6 +49,9 @@ class _Handle:
     def click(self, *, timeout: float, no_wait_after: bool = False) -> None:
         self._page.calls.append(("handle-click", timeout, no_wait_after))
 
+    def set_input_files(self, path: str, *, timeout: float) -> None:
+        self._page.calls.append(("upload", self._label, path, timeout))
+
     def evaluate(self, script: str, arg: Any = None) -> Any:
         self._page.calls.append(("handle-evaluate",))
         if "inputHidden" in script:
@@ -2805,3 +2808,16 @@ def test_the_file_names_a_page_reports_are_cleaned_and_capped(tmp_path: Path) ->
     assert len(seen.files) == 10
     assert all(len(name) <= 100 and name.isprintable() for name in seen.files)
     assert "\n" not in seen.files[0]
+
+
+def test_the_file_goes_to_the_element_that_was_probed_not_to_a_fresh_lookup(
+    tmp_path: Path,
+) -> None:
+    pw, driver = _driver()
+
+    driver.upload("Receipt", _receipt(tmp_path))
+
+    calls = [call[0] for call in pw.page.calls]
+    # The handle was taken, probed, written to and probed again; the locator itself never wrote.
+    assert calls.count("upload") == 1
+    assert calls.index("handle-evaluate") < calls.index("upload")
