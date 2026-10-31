@@ -92,6 +92,10 @@ class GuardPolicy:
     block_background_writes: bool = False
     #: Exact names of buttons that confirm a dialog's own rows; see `vet_control`.
     dialog_confirm: frozenset[str] = frozenset()
+    #: Exact names of buttons the user declared as draft calculations (`Calculate`): a
+    #: submit-type button of that name is spared the submit check and nothing else; see
+    #: `vet_control`.
+    draft_controls: frozenset[str] = frozenset()
     extra_deny_names: tuple[str, ...] = field(default=())
 
 
@@ -111,6 +115,9 @@ class GuardedDriver:
         self._deny = _deny_stems((*DEFAULT_DENY_NAMES, *policy.extra_deny_names))
         validate_dialog_confirm(policy.dialog_confirm, policy.extra_deny_names)
         self._confirm = frozenset(_exact(name) for name in policy.dialog_confirm)
+        self._draft_names = tuple(sorted(set(policy.draft_controls)))
+        validate_draft_controls(policy.draft_controls, policy.extra_deny_names)
+        self._draft = frozenset(_exact(name) for name in policy.draft_controls)
         self._raw = raw
         raw.block_form_submission(background_writes=policy.block_background_writes)
 
@@ -128,7 +135,11 @@ class GuardedDriver:
             raise self._refuse(action, f"the role {role!r} is not one a task may click")
         if _is_denied(name, self._deny):
             raise self._refuse(action, "its name is a finalizing action")
-        if not self._is_declared(name, role) and not (confirm_ok and _exact(name) in self._confirm):
+        # A draft name is a button's: a link, tab or menu item of that name is not covered.
+        listed = _exact(name) in self._confirm or (
+            _exact(name) in self._draft and role in (None, "button")
+        )
+        if not self._is_declared(name, role) and not (confirm_ok and listed):
             raise self._refuse(
                 action, f"the control is not declared by the task{self._declared_hint()}"
             )
@@ -367,6 +378,19 @@ class GuardedDriver:
             "stop and hand the final step to the user"
         )
 
+    def _vet_draft_control(self, action: str, info: ControlInfo) -> None:
+        """A declared draft control must really be a button, and none of its own names (text,
+        value, title, id, labels) may be a finalizing action: the page may have renamed the
+        report's real Submit to the declared name."""
+        plain = info.tag == "button" or (
+            info.tag == "input" and info.input_type in ("button", "submit")
+        )
+        if not plain:
+            raise self._refuse(action, "a draft control must be a button")
+        held = [text for text in info.own_names if _is_denied(text, self._deny)]
+        if held:
+            raise self._refuse(action, "a name this control also goes by is a finalizing action")
+
     def _vet_control(
         self, action: str, info: ControlInfo, name: str | None = None, role: str | None = None
     ) -> None:
@@ -397,7 +421,10 @@ class GuardedDriver:
                 # A dialog that also holds the report's own Submit is the whole report in a
                 # modal wrapper, not a small dialog with rows of its own.
                 raise self._refuse(action, "the dialog also holds a finalizing control")
-        reason = vet_control(info, dialog_confirm=confirm)
+        draft = name is not None and _exact(name) in self._draft
+        if draft:
+            self._vet_draft_control(action, info)
+        reason = vet_control(info, dialog_confirm=confirm, draft_control=draft)
         if reason is not None:
             raise self._refuse(action, reason)
 
@@ -529,14 +556,33 @@ def validate_dialog_confirm(names: Iterable[str], extra_deny_names: Iterable[str
         )
 
 
-def vet_control(info: ControlInfo, *, dialog_confirm: bool = False) -> str | None:
+def validate_draft_controls(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
+    """Refuse a `draft_controls` name that is finalizing (`Submit`, `Pay`, ...) or a pattern."""
+    deny = _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny_names))
+    bad = sorted(
+        name for name in names if "*" in name or not _exact(name) or _is_denied(name, deny)
+    )
+    if bad:
+        raise SubmitBlockedError(
+            "Expected draft_controls names that are exact and not finalizing actions, got "
+            f"{', '.join(repr(name) for name in bad)}. A browser task never submits; a draft "
+            "control may only recalculate what is on the page"
+        )
+
+
+def vet_control(
+    info: ControlInfo, *, dialog_confirm: bool = False, draft_control: bool = False
+) -> str | None:
     """Why clicking this element could finalize a form, or None when nothing says it could.
 
     `dialog_confirm` spares a submit-type button the submit check, but only inside a dialog
-    whose form, if any, lies inside that dialog: it then submits the dialog's own rows. Every
-    other check (a formaction override, a script link, a submitting handler) still applies.
+    whose form, if any, lies inside that dialog: it then submits the dialog's own rows.
+    `draft_control` spares it for a button the user declared a draft calculation, anywhere on
+    the page. Every other check (a formaction override, a script link, a submitting handler)
+    still applies to both.
     """
-    if _is_submit_control(info) and not (dialog_confirm and info.in_dialog and info.form_in_dialog):
+    confirmed = dialog_confirm and info.in_dialog and info.form_in_dialog
+    if _is_submit_control(info) and not (confirmed or draft_control):
         return "it is a submit control"
     if info.has_formaction:
         return "it carries a formaction override"

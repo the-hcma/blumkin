@@ -1795,6 +1795,44 @@ def test_a_finalizing_dialog_confirm_is_refused_before_a_browser_is_attached(
     assert raw.net_installed == 0
 
 
+def test_a_declared_draft_control_is_clicked_through_the_cli(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'draft_controls = ["Calculate"]')
+    raw.controls["Calculate"] = ControlInfo(tag="button", input_type="submit", in_form=True)
+
+    result = _run("browser", "click", "expense-report", "Calculate")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert ("click", "button", "Calculate") in raw.calls
+
+
+def test_a_deceptive_draft_control_is_still_refused_through_the_cli(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'draft_controls = ["Calculate"]')
+    raw.controls["Calculate"] = ControlInfo(
+        tag="button", input_type="submit", in_form=True, has_formaction=True
+    )
+
+    result = _run("browser", "click", "expense-report", "Calculate")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_finalizing_draft_control_is_refused_before_a_browser_is_attached(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'draft_controls = ["Submit report"]')
+
+    result = _run("browser", "click", "expense-report", "Submit report")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert "draft_controls" in _json(result)["message"]
+    assert raw.net_installed == 0
+
+
 def test_a_pattern_in_allowed_controls_opens_any_report_through_the_cli(
     raw: _Raw, _config_dir: Path
 ) -> None:
