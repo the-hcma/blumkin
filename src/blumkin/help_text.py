@@ -242,6 +242,21 @@ history and `ps`. Use `--from-file`, `--stdin`, or the interactive hidden
 prompt (no flag, on a TTY).
 """
 
+BROWSER_ADDRESS_EPILOG = """
+Examples:
+
+\b
+  blumkin --profile work browser address expense-report
+  blumkin --profile work browser address expense-report --json
+
+Prints the physical address stored with `blumkin profiles set-address`, and only for a task
+that declares `use_profile_address = true` under `[browser.tasks.TASK]` in config.toml; any
+other task, or an unknown one, is refused before the address is looked at. The command only
+returns the address: filling it into a page is a separate `browser fill`, so it reaches a
+site only when you or the agent do that on a host the task allows. Treat the output as
+sensitive.
+"""
+
 BROWSER_CLICK_EPILOG = """
 Examples:
 
@@ -2451,6 +2466,29 @@ default. Use a name or a unique tag with `--profile` on any command, e.g.
 """
 
 PROFILES_LIST_EPILOG = PROFILES_EPILOG
+
+PROFILES_SET_ADDRESS_EPILOG = """
+Examples:
+
+\b
+  # Asked for at a hidden prompt (nothing in shell history)
+  blumkin --profile work profiles set-address
+\b
+  # From standard input, for a script
+  pass show addresses/home | blumkin --profile work profiles set-address --stdin
+\b
+  # Remove it
+  blumkin --profile work profiles set-address --clear
+
+Stores an optional physical address on one profile, for browser tasks such as a mileage
+expense that need it. It is unset by default, never printed back, and left out of
+`profiles list`, `doctor` and error messages (a listing only says whether one exists). It is
+kept in plain text in config.toml like the rest of the profile (the file is made private to
+you); a task can read it only if its table sets `use_profile_address = true`, and then only
+through `blumkin browser address TASK`: nothing is typed into a page or sent anywhere on its
+own. That is a guard rail for the commands, not a boundary against anyone who can read or edit
+config.toml.
+"""
 
 PROFILES_SET_EMAIL_EPILOG = """
 Examples:
