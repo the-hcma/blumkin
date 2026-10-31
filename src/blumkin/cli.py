@@ -47,6 +47,8 @@ from blumkin.auth_setup import (
 )
 from blumkin.browser.actions import (
     DEFAULT_SIGN_IN_WAIT_S,
+    MAX_READ_CHARS,
+    MAX_READ_LIMIT,
     DownloadBlockedError,
     HostBlockedError,
     SignInTimeoutError,
@@ -64,6 +66,7 @@ from blumkin.browser.actions import (
     transcript_task,
     upload_task,
 )
+from blumkin.browser.aria_view import parse_within
 from blumkin.browser.cdp import (
     MAX_WAIT_S,
     BrowserActionError,
@@ -3568,6 +3571,34 @@ def browser_press(ctx: click.Context, task: str, label: str, key: str, as_json_f
     default=None,
     help="With --frame: refuse unless that frame is on this host (numbers can shift).",
 )
+@click.option(
+    "--within",
+    "within",
+    default=None,
+    help="With --aria: keep one subtree, ROLE or ROLE:NAME (for example `dialog`).",
+)
+@click.option(
+    "--options",
+    "expand_options",
+    is_flag=True,
+    help="With --aria: list every option of a combobox (they are summarized by default).",
+)
+@click.option(
+    "--offset",
+    "offset",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="Start at this character (the JSON `next_offset` says where the next window starts).",
+)
+@click.option(
+    "--limit",
+    "limit",
+    type=click.IntRange(min=1, max=MAX_READ_LIMIT),
+    default=MAX_READ_CHARS,
+    show_default=True,
+    help="Characters to return.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option(
     "--wait",
@@ -3584,6 +3615,10 @@ def browser_read(
     aria: bool,
     frame: int | None,
     host: str | None,
+    within: str | None,
+    expand_options: bool,
+    offset: int,
+    limit: int,
     as_json_flag: bool,
     wait_s: float | None,
 ) -> None:
@@ -3593,9 +3628,25 @@ def browser_read(
         raise click.UsageError("--host needs --frame")
     if wait_s is not None and frame is None:
         raise click.UsageError("--wait needs --frame")
+    if (within is not None or expand_options) and not aria:
+        raise click.UsageError("--within and --options need --aria")
+    if within is not None:
+        try:
+            parse_within(within)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
     try:
         payload = read_task(
-            load_browser_setup(), task, aria=aria, frame=frame, host=host, wait_s=wait_s or 0.0
+            load_browser_setup(),
+            task,
+            aria=aria,
+            frame=frame,
+            host=host,
+            wait_s=wait_s or 0.0,
+            within=within,
+            expand_options=expand_options,
+            offset=offset,
+            limit=limit,
         )
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
@@ -3606,9 +3657,18 @@ def browser_read(
     lines.extend(format_injection_warning_banner(payload["injection_warning"]))
     lines.extend(["", payload["untrusted"], ""])
     lines.extend(sanitize_terminal(payload["text"]).splitlines())
+    if payload["within_matches"] > 1:
+        lines.extend(
+            ["", f"[{payload['within_matches']} nodes matched --within; the first is shown]"]
+        )
     if payload["truncated"]:
         lines.extend(
-            ["", f"[truncated: only the first {len(payload['text'])} characters are shown]"]
+            [
+                "",
+                f"[truncated: characters {payload['offset']} to {payload['next_offset']} of "
+                f"{payload['total_chars']} are shown; continue with --offset "
+                f"{payload['next_offset']}]",
+            ]
         )
     emit_lines(lines)
 

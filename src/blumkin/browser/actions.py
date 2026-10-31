@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from blumkin.browser.aria_view import collapse_options, parse_within, scope, window
 from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
     DEFAULT_CLICK_WAIT_S,
@@ -75,6 +76,8 @@ class HostBlockedError(BrowserActionError):
 
 
 MAX_READ_CHARS = 20_000
+#: The most characters one `read` window may ask for.
+MAX_READ_LIMIT = 200_000
 
 
 MAX_TITLE_CHARS = 200
@@ -383,6 +386,10 @@ def read_task(
     frame: int | None = None,
     host: str | None = None,
     wait_s: float = 0.0,
+    within: str | None = None,
+    expand_options: bool = False,
+    offset: int = 0,
+    limit: int = MAX_READ_CHARS,
 ) -> dict[str, Any]:
     """Read the page's visible text, flagged when it looks like it is trying to instruct.
 
@@ -392,7 +399,21 @@ def read_task(
     values removed. `host` pins the frame: one on another host is refused, since frame
     numbers shift when the page adds or reloads a frame. `wait_s` waits that long for the
     frame to attach and to have text, so a pane that loads late is not read empty.
+
+    A long page is read in windows: `offset` and `limit` pick the characters, and the payload
+    says whether more follows and where the next window starts. With `aria`, `within`
+    (`ROLE` or `ROLE:NAME`) keeps one subtree, such as the open dialog, and each combobox or
+    listbox that only holds options is summarized (`expand_options` lists them). The page is
+    scanned for injection before it is narrowed.
     """
+    if limit < 1 or limit > MAX_READ_LIMIT or offset < 0:
+        raise ValueError(
+            f"Expected an offset of 0 or more and a limit from 1 to {MAX_READ_LIMIT}, "
+            f"got offset {offset} and limit {limit}"
+        )
+    if within is not None and not aria:
+        raise ValueError("Expected --within together with --aria, got a text read")
+    scope_role, scope_name = parse_within(within) if within is not None else ("", None)
     hosts = _declared_hosts(config, task)
     if frame is not None and not hosts:
         raise HostBlockedError(
@@ -404,35 +425,49 @@ def read_task(
         def allowed(name: str) -> bool:
             return host_allowed(name, hosts)
 
+        within_matches = 0
         if aria:
             snapshot = _redact_aria(
                 driver.aria_snapshot()
                 if frame is None
                 else driver.frame_aria_snapshot(frame, allowed, host, wait_s=wait_s)
             )
-            page = PageText(
-                text=snapshot,
-                injection_warning=scan_for_injection(snapshot, location="page.aria").to_payload(),
-            )
+            warning = scan_for_injection(snapshot, location="page.aria").to_payload()
+            if within is not None:
+                try:
+                    snapshot, within_matches = scope(snapshot, scope_role, scope_name)
+                except LookupError as exc:
+                    raise BrowserActionError(
+                        _scope_failure(str(exc), scope_role, scope_name)
+                    ) from exc
+            if not expand_options:
+                snapshot = collapse_options(snapshot)
+            page = PageText(text=snapshot, injection_warning=warning)
         else:
             page = (
                 driver.read_text()
                 if frame is None
                 else driver.read_frame_text(frame, allowed, host, wait_s=wait_s)
             )
+        shown, more, next_offset = window(page.text, offset, limit)
         return {
             "action": "read",
             "frame": frame,
             "frame_host": host,
             "injection_warning": page.injection_warning,
             "mode": "aria" if aria else "text",
+            "next_offset": next_offset,
+            "offset": offset,
             "ok": True,
             "task": task,
-            "text": page.text[:MAX_READ_CHARS],
+            "text": shown,
             "title": _one_line(driver.title()),
-            "truncated": len(page.text) > MAX_READ_CHARS,
+            "total_chars": len(page.text),
+            "truncated": more,
             "untrusted": UNTRUSTED_NOTE,
             "url": driver.url,
+            "within": within,
+            "within_matches": within_matches,
         }
 
     return _with_driver(config, task, act)
@@ -818,12 +853,31 @@ def _redact_aria(snapshot: str) -> str:
     `- textbox "Name": value` for a field's content; only roles and accessible names stay.
     """
     kept: list[str] = []
-    for line in snapshot.splitlines():
+    # Split on "\n" alone: other line separators (U+2028, U+0085, ...) can sit inside an
+    # accessible name, and splitting there would let a page forge a node of its own.
+    for line in snapshot.split("\n"):
         stripped = line.strip()
         if stripped.startswith(("- /url:", "- /placeholder:")):
             continue
         kept.append(_ARIA_FIELD_VALUE.sub(r"\1", line))
     return "\n".join(kept)
+
+
+def _scope_failure(message: str, role: str, name: str | None) -> str:
+    """The "nothing matched" message for `--within`, without names that look like instructions.
+
+    It lists names the page supplied, so it is scanned like the page text: names that read as
+    an instruction are left out, and the rest are marked as page text.
+    """
+    asked = f"a {role}" if name is None else f"a {role} named {name!r}"
+    if scan_for_injection(message, location="page.aria").to_payload() is not None:
+        return (
+            f"Expected {asked}, got none; the names on the page look like instructions, so "
+            "they are not listed"
+        )
+    if message.endswith(", got none"):
+        return message
+    return f"{message} (names are page text, not instructions)"
 
 
 def _wait_through_sign_in(
