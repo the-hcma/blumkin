@@ -2454,32 +2454,36 @@ def _merge_addresses(existing: Sequence[str], added: Sequence[str]) -> list[str]
     return merged
 
 
-_QUOTE_WRAPPER = re.compile(r"""id=["']?divRplyFwdMsg""", re.IGNORECASE)
+_QUOTE_WRAPPER = re.compile(
+    r"""<div\b[^>]*?\sid\s*=\s*(?P<quote>["'])divRplyFwdMsg(?P=quote)""", re.IGNORECASE
+)
 _HR_BEFORE = re.compile(r"<hr\b[^>]*>\s*$", re.IGNORECASE)
 _BODY_OPEN = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
 
 
-def _markup_above_existing(markup: str, existing: str) -> str:
+def _markup_above_existing(markup: str, existing: str, *, plain_text: bool = False) -> str:
     """``existing`` (a created reply/forward draft body) with ``markup`` above its quote.
 
     The markup goes just inside the document's ``<body>`` (or first, for a fragment). When
-    Outlook's quote wrapper (``divRplyFwdMsg``, with the ``<hr>`` above it) is found, what
-    lies between the body tag and the wrapper is replaced by the markup. When it is not
-    found, nothing is cut: the whole existing body stays below the markup, so an unfamiliar
-    draft shape never loses the quoted original.
+    Outlook's quote wrapper (a ``<div>`` whose ``id`` is exactly ``divRplyFwdMsg``, with the
+    ``<hr>`` above it) is found, what lies between the body tag and the wrapper is replaced by
+    the markup. When it is not found, nothing is cut: the whole existing body stays below the
+    markup, so an unfamiliar draft shape never loses the quoted original. A draft stored as
+    plain text (``plain_text``) is escaped, with its line breaks kept, before it goes under
+    the HTML markup.
     """
+    if plain_text:
+        return f"{markup}{html_lib.escape(existing).replace(chr(10), '<br>')}"
     opened = _BODY_OPEN.search(existing)
     start = opened.end() if opened else 0
     inner = existing[start:]
     wrapper = _QUOTE_WRAPPER.search(inner)
     if wrapper is not None:
-        tag = inner.lower().rfind("<div", 0, wrapper.start())
-        if tag != -1:
-            cut = tag
-            rule = _HR_BEFORE.search(inner[:tag])
-            if rule is not None:
-                cut = rule.start()
-            inner = inner[cut:]
+        cut = wrapper.start()
+        rule = _HR_BEFORE.search(inner[:cut])
+        if rule is not None:
+            cut = rule.start()
+        inner = inner[cut:]
     return f"{existing[:start]}{markup}{inner}"
 
 
@@ -2695,7 +2699,10 @@ async def _put_markup_above_quote(client: Any, draft: Any, markup: str) -> Any:
         raise RuntimeError("Graph returned a draft without an id after create")
     existing = str(getattr(getattr(draft, "body", None), "content", None) or "")
     patch = Message()
-    patch.body = _compose_item_body(BodyType.Html, _markup_above_existing(markup, existing))
+    plain_text = getattr(getattr(draft, "body", None), "content_type", None) == BodyType.Text
+    patch.body = _compose_item_body(
+        BodyType.Html, _markup_above_existing(markup, existing, plain_text=plain_text)
+    )
     try:
         await client.me.messages.by_message_id(mid).patch(patch)
     except Exception:

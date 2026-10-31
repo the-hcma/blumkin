@@ -713,3 +713,45 @@ def test_cc_and_an_html_body_work_together_and_report_the_stored_body(monkeypatc
 
     assert item.patch.await_count == 2  # recipients, then the body
     assert payload["draft"]["body_type"] == "text"  # reported from the draft as stored
+
+
+@pytest.mark.parametrize(
+    "lookalike",
+    [
+        '<div data-id="divRplyFwdMsg">Not the wrapper</div>',
+        '<div id="divRplyFwdMsg-extra">Not the wrapper</div>',
+        '<div class="divRplyFwdMsg">Not the wrapper</div>',
+    ],
+)
+def test_a_lookalike_of_the_quote_wrapper_cuts_nothing(monkeypatch, lookalike: str) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content=f"<p>before</p>{lookalike}<p>after</p>", content_type=BodyType.Html
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    assert _patched_body(item).content == f"<p>Thanks</p><p>before</p>{lookalike}<p>after</p>"
+
+
+def test_a_plain_text_draft_body_is_escaped_before_it_goes_under_the_markup(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content="From: Rebecca\n<pending> & more\n", content_type=BodyType.Text
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    body = _patched_body(item)
+    assert body.content_type == BodyType.Html
+    assert body.content == "<p>Thanks</p>From: Rebecca<br>&lt;pending&gt; &amp; more<br>"
