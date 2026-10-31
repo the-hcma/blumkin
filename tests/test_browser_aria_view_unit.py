@@ -174,3 +174,30 @@ def test_a_selected_option_with_quotes_in_its_name_is_written_escaped() -> None:
     page = '- combobox "T":\n  - option "Say \\"hi\\"" [selected]\n  - option "B"\n'
 
     assert collapse_options(page).strip() == ('- combobox "T" (2 options, selected "Say \\"hi\\"")')
+
+
+def test_a_combobox_that_holds_more_than_options_still_gets_its_nested_list_summarized() -> None:
+    page = (
+        '- combobox "Outer":\n'
+        '  - textbox "Filter"\n'
+        '  - listbox "Inner":\n'
+        '    - option "A"\n'
+        '    - option "B" [selected]\n'
+    )
+
+    text = collapse_options(page)
+
+    assert '- combobox "Outer":' in text and '- textbox "Filter"' in text
+    assert '- listbox "Inner" (2 options, selected "B")' in text
+    assert "- option" not in text
+
+
+def test_a_selected_token_in_an_options_text_does_not_select_it() -> None:
+    page = (
+        '- combobox "T":\n'
+        '  - option "A": literal [selected]\n'
+        '  - option "B" [selected]: more\n'
+        '  - option "C"\n'
+    )
+
+    assert collapse_options(page).strip() == '- combobox "T" (3 options, selected "B")'

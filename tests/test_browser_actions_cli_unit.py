@@ -2206,7 +2206,9 @@ def test_read_aria_summarizes_option_lists_unless_asked_to_list_them(raw: _Raw) 
 def test_read_aria_within_keeps_one_subtree_even_when_the_page_is_over_the_cap(
     raw: _Raw,
 ) -> None:
-    raw.aria_text = _LONG_FORM + "".join(f'- button "Filler {n}"\n' for n in range(2000))
+    filler = "".join(f'- button "Filler {n}"\n' for n in range(2000))
+    raw.aria_text = filler + _LONG_FORM  # the dialog lies beyond the old 20000 character cap
+    assert raw.aria_text.index("dialog") > 20_000
 
     whole = _json(_run("browser", "read", "expense-report", "--aria", "--limit", "100"))
     scoped = _json(_run("browser", "read", "expense-report", "--aria", "--within", "dialog"))

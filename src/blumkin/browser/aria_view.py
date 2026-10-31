@@ -16,6 +16,9 @@ from typing import NamedTuple
 _LINE = re.compile(r"^(?P<indent> *)- (?P<body>.*)$")
 _NODE = re.compile(r'^(?P<role>[A-Za-z]+)(?: "(?P<name>(?:[^"\\]|\\.)*)")?(?P<rest>.*)$')
 _ROLE = re.compile(r"[A-Za-z]+")
+#: The bracketed state attributes right after a node's name (`[selected] [expanded]`), before
+#: any `:` and inline text, which a page controls.
+_ATTRIBUTES = re.compile(r"^(?:\s*\[[^\]]*\])*")
 #: Controls whose children are option lists a summary can stand in for.
 _OPTION_PARENTS = frozenset({"combobox", "listbox"})
 #: How many names a "nothing matched" error lists.
@@ -49,17 +52,18 @@ def collapse_options(snapshot: str) -> str:
             or any(child.role != "option" for child in options)
             or len({child.indent for child in options}) != 1
         ):
-            out.extend(lines[index:end])
-        else:
-            selected = [_quote(child.name) for child in options if child.selected]
-            shown = ", ".join(selected) if selected else None
-            noun = "option" if len(options) == 1 else "options"
-            summary = f"{len(options)} {noun}, " + (
-                f"selected {shown}" if shown else "none selected"
-            )
-            head = lines[index].rstrip()
-            head = head[:-1] if head.endswith(":") else head
-            out.append(f"{head} ({summary})")
+            # Not an option-only list: keep the line, and keep walking its children, so an
+            # option-only list nested inside it is still summarized.
+            out.append(lines[index])
+            index += 1
+            continue
+        selected = [_quote(child.name) for child in options if child.selected]
+        shown = ", ".join(selected) if selected else None
+        noun = "option" if len(options) == 1 else "options"
+        summary = f"{len(options)} {noun}, " + (f"selected {shown}" if shown else "none selected")
+        head = lines[index].rstrip()
+        head = head[:-1] if head.endswith(":") else head
+        out.append(f"{head} ({summary})")
         index = end
     return "\n".join(out) + ("\n" if snapshot.endswith("\n") else "")
 
@@ -145,8 +149,14 @@ def _parse(line: str) -> _Node | None:
         indent=len(match["indent"]),
         role=node["role"].lower(),
         name=_unquote(node["name"]),
-        selected="[selected]" in rest,
+        selected="[selected]" in _attributes(rest),
     )
+
+
+def _attributes(rest: str) -> str:
+    """The leading `[state]` attributes of what follows a node's name, not its inline text."""
+    found = _ATTRIBUTES.match(rest)
+    return found[0] if found else ""
 
 
 def _closing_quote(body: str) -> int | None:
