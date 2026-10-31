@@ -480,7 +480,24 @@ order, the order `browser read --aria` lists them). `--frame N` (a number from
 `browser frames`, pinned with `--host`) works inside a child frame, which must be on a host in
 `allowed_hosts`. A value
 that starts with a dash needs `--` before it, for example
-`blumkin browser fill TASK "Adjustment" -- -5`.
+`blumkin browser fill TASK "Adjustment" -- -5`. For a sensitive value omit it (a hidden prompt
+asks) or pass `--stdin`, which keeps it out of shell history and `ps`; `--no-read-back` never
+prints the field's value (`matches` still says whether it is what was set), and a hidden prompt or
+`--stdin` implies it. `blumkin browser verify` checks a field without printing anything.
+"""
+
+BROWSER_VERIFY_EPILOG = """
+Examples:
+
+\b
+  blumkin browser verify expense-report "Amount" 12.50
+  printf '%s' "$SECRET" | blumkin browser verify portal "Account number" --stdin --json
+
+Compares the field's value with the expected one (whitespace collapsed, as `fill` compares) and
+prints only the outcome: `match`, `mismatch`, `missing` (no such field), `ambiguous` (narrow with
+`--exact`, `--role` or `--nth` as for `fill`) or `unreadable` (a password or other secret field).
+The value is never printed, and the exit status is non-zero unless it is a match. With no value
+argument and no `--stdin`, the expected value is asked for at a hidden prompt.
 """
 
 BROWSER_FRAMES_EPILOG = """

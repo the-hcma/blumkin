@@ -41,6 +41,7 @@ from blumkin.browser.cdp import (
     BrowserActionError,
     ControlInfo,
     DownloadedFile,
+    FieldReading,
     FieldTarget,
     FrameCapture,
     FrameInfo,
@@ -200,6 +201,11 @@ class GuardedDriver:
         """Fill a field; returns the value it holds afterwards (None for a password field)."""
         self._check_target(target)
         return self._raw.fill(label, value, target)
+
+    def read_field(self, label: str, target: FieldTarget | None = None) -> FieldReading:
+        """Read a field's value for a comparison; the same targeting rules as `fill`."""
+        self._check_target(target)
+        return self._raw.read_field(label, target)
 
     def frame_aria_snapshot(
         self,

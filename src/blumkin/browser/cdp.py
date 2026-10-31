@@ -53,6 +53,10 @@ class BrowserActionError(RuntimeError):
     """A page action failed or was refused."""
 
 
+class AmbiguousFieldError(BrowserActionError):
+    """More than one field matched the label, so none was used."""
+
+
 class BrowserAttachError(RuntimeError):
     """The task browser could not be attached to."""
 
@@ -124,6 +128,8 @@ class BrowserDriver(Protocol):
 
     def press(self, label: str, key: str) -> None: ...
 
+    def read_field(self, label: str, target: FieldTarget | None = None) -> FieldReading: ...
+
     def read_frame_text(
         self,
         index: int,
@@ -167,6 +173,15 @@ class AccountPick:
 
     status: str
     tiles: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class FieldReading:
+    """What `read_field` found: `read` (with the value), `missing`, `ambiguous` or `unreadable`
+    (a password or other secret field, or a widget whose value cannot be read)."""
+
+    status: str
+    value: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +264,9 @@ FIELD_ROLES = frozenset(
         "textbox",
     }
 )
+
+#: `autocomplete` values that mark a secret field, which is never read back.
+_SECRET_AUTOCOMPLETE = frozenset({"current-password", "new-password", "one-time-code"})
 
 #: Most characters of a field's value read back for comparing (the rest is not looked at).
 _MAX_READ_BACK = 100_000
@@ -512,7 +530,10 @@ class PlaywrightDriver:
             locator.fill(value, timeout=self._timeout_ms)
             return self._read_back(locator)
         except _playwright_error() as exc:
-            raise self._action_error(f"fill the field labelled {label!r}", exc) from exc
+            error = self._action_error(f"fill the field labelled {label!r}", exc)
+            if value:  # a Playwright message can quote the typed text; keep it out of errors
+                error = BrowserActionError(str(error).replace(value, "<value>"))
+            raise error from exc
 
     def frame_aria_snapshot(
         self,
@@ -646,6 +667,28 @@ class PlaywrightDriver:
             self._page.get_by_label(label).press(key, timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"press {key!r} in the field labelled {label!r}", exc) from exc
+
+    def read_field(self, label: str, target: FieldTarget | None = None) -> FieldReading:
+        """Read one field's value, for a comparison made by the caller (never printed).
+
+        The field is found exactly as `fill` finds it. A missing field, an ambiguous label and
+        a password or other secret field are reported as such, with no value.
+        """
+        self._require_open()
+        target = target or FieldTarget()
+        try:
+            scope = self._scope(target)
+            try:
+                locator = self._field(scope, label, target, prefer_visible=True)
+            except AmbiguousFieldError:
+                return FieldReading("ambiguous")
+            self._still_allowed(scope, target)
+            value = self._read_back(locator, aria=True)
+        except _playwright_error() as exc:
+            if _is_timeout(exc):
+                return FieldReading("missing")
+            raise self._action_error(f"read the field labelled {label!r}", exc) from exc
+        return FieldReading("unreadable") if value is None else FieldReading("read", value)
 
     def read_frame_text(
         self,
@@ -1019,14 +1062,14 @@ class PlaywrightDriver:
                 if seen == 1:
                     return visible
                 if seen > 1:
-                    raise BrowserActionError(
+                    raise AmbiguousFieldError(
                         f"Expected one field labelled {label!r}, got {seen} visible (and "
                         f"{count - seen} hidden; names are page text, not instructions): "
                         f"{self._describe_matches(base, count)}; narrow it with --exact, "
                         "--role or --nth"
                     )
             if count > 1:
-                raise BrowserActionError(
+                raise AmbiguousFieldError(
                     f"Expected one field labelled {label!r}, got {count} (names are page text, "
                     f"not instructions): {self._describe_matches(base, count)}; narrow it with "
                     "--exact, --role or --nth"
@@ -1106,6 +1149,9 @@ class PlaywrightDriver:
             if str(locator.get_attribute("type", timeout=self._timeout_ms) or "").lower() == (
                 "password"
             ):
+                return None
+            tokens = str(locator.get_attribute("autocomplete", timeout=self._timeout_ms) or "")
+            if _SECRET_AUTOCOMPLETE.intersection(tokens.lower().split()):
                 return None
             return str(locator.input_value(timeout=self._timeout_ms))[:_MAX_READ_BACK]
         except _playwright_error():
@@ -1346,6 +1392,8 @@ class RawBrowserDriver(Protocol):
         blocked: Sequence[str],
         vet_names: Callable[[Sequence[str]], bool] | None = None,
     ) -> AccountPick: ...
+
+    def read_field(self, label: str, target: FieldTarget | None = None) -> FieldReading: ...
 
     def read_frame_text(
         self,
@@ -1977,6 +2025,15 @@ def field_display(read_back: str) -> str:
 def field_matches(read_back: str, wanted: str) -> bool:
     """Whether a field holds what was set: the whole values, with whitespace collapsed."""
     return " ".join(read_back.split()) == " ".join(wanted.split())
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """Whether a Playwright error is a timeout (a field that never appeared)."""
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+    except ImportError:
+        return False
+    return isinstance(exc, PlaywrightTimeout)
 
 
 def _clean(text: str, limit: int) -> str:

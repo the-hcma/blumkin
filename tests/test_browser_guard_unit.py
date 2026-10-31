@@ -15,6 +15,7 @@ from blumkin.browser.cdp import (
     BrowserActionError,
     ControlInfo,
     DownloadedFile,
+    FieldReading,
     FrameCapture,
     FrameInfo,
     PageText,
@@ -101,6 +102,10 @@ class _Raw:
     def fill(self, label: str, value: str, target: object = None) -> str | None:
         self.calls.append(("fill", label, value))
         return value
+
+    def read_field(self, label: str, target: object = None) -> FieldReading:
+        self.calls.append(("read_field", label))
+        return FieldReading("read", "held")
 
     def frame_aria_snapshot(
         self,
@@ -533,6 +538,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "mark_window",
         "pick_account",
         "press",
+        "read_field",
         "read_frame_text",
         "read_text",
         "scroll_frame_text",
