@@ -521,14 +521,17 @@ def _write_profile_address(config_path: Path, profile: str, value: str) -> bool:
         return False
     if value:
         table["address"] = value
+        try:
+            # Private to the user before the address lands in it, as the credential files are,
+            # so a file created with looser bits never holds it, even for a moment, and a
+            # failure here writes nothing.
+            config_path.chmod(0o600)
+        except OSError:
+            return False
     elif "address" in table:
         del table["address"]
     try:
         config_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
-        if value:
-            # The file now holds an address: make it private to the user, as the credential
-            # files are, even if it was created with looser bits.
-            config_path.chmod(0o600)
     except OSError:
         return False
     return True

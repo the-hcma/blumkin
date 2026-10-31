@@ -275,3 +275,47 @@ def test_other_browser_commands_never_show_the_address(config_dir: Path) -> None
         result = _run("--profile", "work", *args)
         assert result.output.strip()  # type: ignore[attr-defined]  # it printed something
         assert "Springfield" not in result.output  # type: ignore[attr-defined]
+
+
+def test_the_file_is_made_private_before_the_address_is_written(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = config_dir / "config.toml"
+    path.chmod(0o644)
+    seen: list[int] = []
+    real_write = Path.write_text
+
+    def spy(self: Path, data: str, *args: object, **kwargs: object) -> int:
+        if self == path:
+            seen.append(stat.S_IMODE(path.stat().st_mode))
+        return real_write(self, data, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", spy)
+
+    set_profile_address(path, profile="work", address=_ADDRESS)
+
+    assert seen == [0o600]
+
+
+def test_nothing_is_written_when_the_file_cannot_be_made_private(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = config_dir / "config.toml"
+    before = path.read_text()
+
+    def refuse(self: Path, mode: int) -> None:
+        raise PermissionError("no")
+
+    monkeypatch.setattr(Path, "chmod", refuse)
+
+    assert set_profile_address(path, profile="work", address=_ADDRESS) is False
+    assert path.read_text() == before
+
+
+def test_a_stdin_far_longer_than_an_address_is_refused_not_truncated(config_dir: Path) -> None:
+    padded = "1 Example Street\n" + " " * 5000 + "\nSpringfield\n"
+
+    result = _run("profiles", "set-address", "--stdin", input_text=padded)
+
+    assert result.exit_code == EXIT_USAGE  # type: ignore[attr-defined]
+    assert _address_in(config_dir, "work") is None

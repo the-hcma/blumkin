@@ -4742,7 +4742,15 @@ def profiles_set_address(
         value = ""
     elif from_stdin:
         # Bounded, and a multi-line address (as copied from a letter) becomes one line.
-        raw = sys.stdin.read(MAX_ADDRESS_CHARS * 4)
+        limit = MAX_ADDRESS_CHARS * 4
+        raw = sys.stdin.read(limit + 1)
+        if len(raw) > limit:
+            _emit_error(
+                error="usage_error",
+                message=f"The address on stdin is far longer than {MAX_ADDRESS_CHARS} characters",
+                as_json=as_json,
+            )
+            raise SystemExit(EXIT_USAGE)
         value = ", ".join(part.strip() for part in raw.splitlines() if part.strip())
     elif address is not None:
         value = address.strip()
