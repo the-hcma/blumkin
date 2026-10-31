@@ -8661,7 +8661,9 @@ def tasks_show_cmd(ctx: click.Context, name: str, as_json_flag: bool) -> None:
     """Show one template in full, including its `Prompt:` block.
 
     Unknown name exits 5 (not_found); an ambiguous prefix exits 2 (usage_error)
-    with the candidates; a template that conflicts across the two dirs exits 2.
+    with the candidates; a template that conflicts across the two dirs exits 2. A
+    template with no usable `**Prompt:**` blockquote also exits 2, naming the file
+    and the format, rather than succeeding with an empty prompt; the file is not changed.
     """
     _dispatch_local(
         ctx,

@@ -18,6 +18,7 @@ from blumkin.tasks import (
     TaskConflictError,
     TaskExistsError,
     TaskNotFoundError,
+    TaskPromptError,
     TaskValidationError,
     format_tasks_create_human,
     format_tasks_delete_human,
@@ -139,7 +140,7 @@ def test_missing_prompt_block_warns_but_still_lists(tmp_path, monkeypatch, capsy
     (tmp_path / "tasks" / "broken.md").write_text("**Trigger:** x\n", encoding="utf-8")
     listed = asyncio.run(tasks_list(config=cfg))
     assert [t["name"] for t in listed["tasks"]] == ["broken"]
-    assert asyncio.run(tasks_show(config=cfg, name="broken"))["task"]["prompt"] == ""
+    assert listed["tasks"][0]["problems"] == ["missing_prompt"]
     assert "no `**Prompt:**` blockquote" in capsys.readouterr().err
 
 
@@ -148,7 +149,8 @@ def test_prompt_header_with_no_blockquote_warns(tmp_path, monkeypatch, capsys) -
     (tmp_path / "tasks" / "wk.md").write_text(
         "**Prompt:**\n\nplain prose, no blockquote\n", encoding="utf-8"
     )
-    assert asyncio.run(tasks_show(config=cfg, name="wk"))["task"]["prompt"] == ""
+    with pytest.raises(TaskPromptError):
+        asyncio.run(tasks_show(config=cfg, name="wk"))
     assert "no `**Prompt:**` blockquote" in capsys.readouterr().err
 
 
@@ -645,3 +647,150 @@ def test_update_refuses_a_template_that_is_not_valid_utf8(tmp_path, monkeypatch)
     with pytest.raises(TaskValidationError, match="UTF-8"):
         asyncio.run(tasks_update(config=cfg, name="wk", trigger="t"))
     assert path.read_bytes() == original
+
+
+# --------------------------------------------------------------------------- unusable prompt (#615)
+
+_HAND_WRITTEN = """\
+# Mileage claim
+
+## Workflow
+1. Open the expense form.
+2. Add one item per trip.
+
+## Site map
+- Overview -> Create Report
+
+Safety: never press Submit.
+"""
+
+
+def _write_tasks(tmp_path: Path, **files: str) -> None:
+    for name, text in files.items():
+        (tmp_path / "tasks" / f"{name}.md").write_text(text, encoding="utf-8")
+
+
+def test_showing_a_task_with_no_prompt_block_is_an_error_not_an_empty_success(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    _write_tasks(tmp_path, mileage=_HAND_WRITTEN)
+
+    with pytest.raises(TaskPromptError) as caught:
+        asyncio.run(tasks_show(config=cfg, name="mileage"))
+
+    message = str(caught.value)
+    assert str(tmp_path / "tasks" / "mileage.md") in message
+    assert "Expected template 'mileage'" in message and "got missing_prompt" in message
+    assert "is not read" in message  # same-line text and `**Prompt**:` are called out
+
+
+def test_a_prompt_header_followed_by_an_empty_blockquote_is_unusable_too(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    _write_tasks(tmp_path, blank="**Prompt:**\n\n>\n>\n")
+
+    with pytest.raises(TaskPromptError, match="empty_prompt"):
+        asyncio.run(tasks_show(config=cfg, name="blank"))
+    (entry,) = asyncio.run(tasks_list(config=cfg))["tasks"]
+    assert entry["problems"] == ["empty_prompt"]
+
+
+def test_the_unusable_prompt_error_is_a_usage_error_with_a_structured_exit(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    _write_tasks(tmp_path, mileage=_HAND_WRITTEN)
+
+    info = classify_exception(TaskPromptError("x"))
+
+    assert (info.slug, info.exit_code) == ("usage_error", EXIT_USAGE)
+    result = CliRunner().invoke(main, ["tasks", "show", "--name", "mileage", "--json"], obj={})
+    assert result.exit_code == EXIT_USAGE
+    # The stderr warning about the file comes first; the error envelope is the JSON line.
+    payload = json.loads(next(line for line in result.output.splitlines() if line.startswith("{")))
+    assert payload["error"] == "usage_error"
+    assert "mileage.md" in payload["message"] and "got missing_prompt" in payload["message"]
+    del cfg
+
+
+def test_listing_keeps_working_when_one_task_is_malformed(tmp_path, monkeypatch) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    _write_tasks(tmp_path, mileage=_HAND_WRITTEN, **{"weekly-report": _REPORT})
+
+    tasks = {t["name"]: t for t in asyncio.run(tasks_list(config=cfg))["tasks"]}
+
+    assert set(tasks) == {"mileage", "weekly-report"}
+    assert tasks["mileage"]["problems"] == ["missing_prompt"]
+    assert tasks["weekly-report"]["problems"] == []
+    assert asyncio.run(tasks_show(config=cfg, name="weekly-report"))["ok"] is True
+
+
+def test_the_human_listing_flags_a_task_with_a_problem() -> None:
+    lines = format_tasks_list_human(
+        {
+            "tasks": [
+                {"name": "mileage", "title": "Mileage", "problems": ["missing_prompt"]},
+                {"name": "ok", "title": "Fine", "problems": []},
+            ]
+        }
+    )
+
+    assert any(
+        line.startswith("  ! no usable prompt") and "mileage" in " ".join(lines) for line in lines
+    )
+    assert not any("ok" in line and "!" in line for line in lines)
+
+
+def test_showing_or_updating_a_hand_written_task_never_rewrites_the_file(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    _write_tasks(tmp_path, mileage=_HAND_WRITTEN)
+    path = tmp_path / "tasks" / "mileage.md"
+    path.chmod(0o640)
+    before = (path.read_bytes(), path.stat().st_mode)
+
+    with pytest.raises(TaskPromptError):
+        asyncio.run(tasks_show(config=cfg, name="mileage"))
+    with pytest.raises(TaskValidationError):
+        asyncio.run(tasks_update(config=cfg, name="mileage", prompt="Do the thing"))
+
+    assert (path.read_bytes(), path.stat().st_mode) == before
+
+
+@pytest.mark.parametrize(
+    ("text", "prompt", "problems"),
+    [
+        ("**Prompt:**\r\n\r\n> Do it.\r\n> Twice.\r\n", "Do it.\nTwice.", []),
+        ("\ufeff**Prompt:**\n\n> Do it.\n", "Do it.", []),
+        ("**Prompt:**\n>\n> Do it.\n", "Do it.", []),
+        ("**Prompt:**\n\n>   \n>\n", "", ["empty_prompt"]),
+        ("**Prompt:**\n\n> Run:\n> ```\n> ls\n> ```\n", "Run:\n```\nls\n```", []),
+        ("**Prompt:**\n\n> Outer\n> > nested\n", "Outer\n> nested", []),
+        ("**Prompt:** do the thing on the same line\n", "", ["missing_prompt"]),
+        ("**Prompt**: colon outside the bold\n\n> text\n", "", ["missing_prompt"]),
+    ],
+)
+def test_prompt_parsing_edge_cases_are_flagged_or_accepted_as_documented(
+    tmp_path, monkeypatch, text: str, prompt: str, problems: list[str]
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    (tmp_path / "tasks" / "t.md").write_bytes(text.encode("utf-8"))
+
+    (entry,) = asyncio.run(tasks_list(config=cfg))["tasks"]
+
+    assert entry["problems"] == problems
+    if not problems:
+        assert asyncio.run(tasks_show(config=cfg, name="t"))["task"]["prompt"] == prompt
+
+
+def test_updating_a_hand_written_file_without_a_prompt_explains_why_it_is_refused(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cfg(tmp_path, monkeypatch)
+    _write_tasks(tmp_path, mileage=_HAND_WRITTEN)
+
+    with pytest.raises(TaskValidationError, match="usable prompt before it is updated"):
+        asyncio.run(tasks_update(config=cfg, name="mileage", prompt="Do the thing"))

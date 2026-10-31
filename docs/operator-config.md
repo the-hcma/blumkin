@@ -70,7 +70,7 @@ One markdown file per template under `tasks/`, so each is easy to diff and share
 - The leading `# Title` line is optional (defaults to the name).
 - `**Trigger:**`, `**Input:**`, `**Output:**` are one-line fields, all optional.
 - Everything in the `>` blockquote after `**Prompt:**` is the prompt body.
-- A file with no `**Prompt:**` block still lists, with a warning.
+- A file with no usable `**Prompt:**` block (the line missing, or an empty blockquote) still lists, with a warning on stderr and a `problems` entry (`missing_prompt` or `empty_prompt`) in `tasks list --json`, so one malformed file never hides the others. `tasks show` refuses it with a usage error that names the file and the format instead of returning an empty prompt, so an agent cannot take a task with missing instructions for a success. blumkin never rewrites such a file: add the `**Prompt:**` line and a `>` blockquote by hand. `tasks update` refuses a file that holds anything beyond the title, `Trigger:`, `Input:`, `Output:` and the prompt, so a hand-written workflow with headings and steps is never dropped.
 
 ### Browser tasks keep your own values here
 

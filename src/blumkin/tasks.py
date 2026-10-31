@@ -60,6 +60,14 @@ class TaskValidationError(ValueError):
     """
 
 
+class TaskPromptError(TaskValidationError):
+    """The selected template has no usable ``**Prompt:**`` blockquote (#615).
+
+    A usage error, so a caller cannot take a success-shaped response for a task whose
+    instructions are missing; the message names the file and the supported format.
+    """
+
+
 class TaskNotFoundError(LookupError):
     """No template matched ``--name``."""
 
@@ -70,6 +78,7 @@ class Task:
     input: str
     name: str
     output: str
+    problems: tuple[str, ...]
     prompt: str
     sources: tuple[str, ...]
     title: str
@@ -94,6 +103,11 @@ def format_tasks_list_human(payload: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     for task in tasks:
         lines.append(sanitize_terminal(f"{task['name']} - {task['title']}"))
+        if task.get("problems"):
+            lines.append(
+                f"  ! no usable prompt ({', '.join(task['problems'])}): `blumkin tasks show` "
+                "says how to fix it"
+            )
         for label in ("trigger", "input", "output"):
             if task.get(label):
                 lines.append(sanitize_terminal(f"  {label}: {task[label]}"))
@@ -237,6 +251,7 @@ async def tasks_list(*, config: BlumkinConfig) -> dict[str, Any]:
                 "input": task.input,
                 "name": task.name,
                 "output": task.output,
+                "problems": list(task.problems),
                 "sources": list(task.sources),
                 "title": task.title,
                 "trigger": task.trigger,
@@ -248,6 +263,8 @@ async def tasks_list(*, config: BlumkinConfig) -> dict[str, Any]:
 
 async def tasks_show(*, config: BlumkinConfig, name: str) -> dict[str, Any]:
     task = _select(load_tasks(config), name)
+    if task.problems:
+        raise TaskPromptError(_prompt_problem_message(task))
     return {
         "ok": True,
         "task": {
@@ -315,6 +332,13 @@ async def tasks_update(
         if _signature(_render_markdown(title=kept_title, **unchanged)) == original:
             break
     else:
+        if task.problems:
+            raise TaskValidationError(
+                f"Expected template {task.name!r} to hold a usable prompt before it is updated, "
+                f"got {task.problems[0]} in a file with other content, which an update would "
+                "rewrite and drop; add a `**Prompt:**` line followed by the prompt as `>` "
+                "blockquote lines by hand"
+            )
         raise TaskValidationError(
             f"Expected template {task.name!r} to hold only a title, Trigger/Input/Output "
             "lines and a Prompt blockquote, got other content that an update would drop; "
@@ -386,6 +410,7 @@ def _merge(merged: dict[str, Task], parsed: Task) -> None:
         input=parsed.input,
         name=parsed.name,
         output=parsed.output,
+        problems=parsed.problems,
         prompt=parsed.prompt,
         sources=(*existing.sources, *parsed.sources),
         title=parsed.title,
@@ -464,15 +489,32 @@ def _parse(path: Path) -> Task:
     name = path.stem
     if not saw_blockquote:
         emit_warning(f"{path}: no `**Prompt:**` blockquote")
+    text_prompt = "\n".join(prompt).strip()
+    problems = () if text_prompt else (("empty_prompt",) if saw_blockquote else ("missing_prompt",))
     return Task(
         conflict=False,
         input=fields.get("input", ""),
         name=name,
         output=fields.get("output", ""),
-        prompt="\n".join(prompt).strip(),
+        problems=problems,
+        prompt=text_prompt,
         sources=(str(path),),
         title=title or name,
         trigger=fields.get("trigger", ""),
+    )
+
+
+def _prompt_problem_message(task: Task) -> str:
+    """What is wrong with a template's prompt and the format that fixes it (file untouched)."""
+    where = ", ".join(task.sources)
+    return (
+        f"Expected template {task.name!r} ({where}) to hold a prompt, got {task.problems[0]}: "
+        "a line `**Prompt:**` followed by the prompt as `>` blockquote lines is required "
+        "(text on the `**Prompt:**` line itself, or `**Prompt**:`, is not read). "
+        "Nothing was changed and the task was not run; add it to the file by hand, for example:\n"
+        "**Prompt:**\n\n> What the agent should do, as written instructions.\n"
+        "(`blumkin tasks update --prompt` refuses a file that holds other content, so that "
+        "content is never dropped)"
     )
 
 
