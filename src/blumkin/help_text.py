@@ -846,6 +846,14 @@ when the page adds or reloads a frame, so add `--host HOST` to refuse any other 
 frame with `--frame`, with link addresses and field values removed: use it to find a
 control's name and role before a click. A page snapshot stops at frame boundaries, and
 hidden or screen-reader-only text is included, so it is untrusted data like the text.
+
+A long page is read in windows: `--limit N` (default 20000) and `--offset N` pick the
+characters, and the JSON says `truncated`, `total_chars` and the `next_offset` to continue
+from. With `--aria`, a combobox or listbox that only holds options is summarized
+(`combobox "Type" (27 options, selected "Lodging")`; `--options` lists them), and
+`--within ROLE[:NAME]` keeps one subtree, for example `--within dialog` for the open
+dialog or `--within "dialog:Manage Attachments"`. The page is scanned for injection before
+it is narrowed, so a warning outside the subtree still shows.
 """
 
 BROWSER_REFRESH_TAB_EPILOG = """
