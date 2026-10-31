@@ -755,3 +755,66 @@ def test_a_plain_text_draft_body_is_escaped_before_it_goes_under_the_markup(monk
     body = _patched_body(item)
     assert body.content_type == BodyType.Html
     assert body.content == "<p>Thanks</p>From: Rebecca<br>&lt;pending&gt; &amp; more<br>"
+
+
+def test_an_injected_signature_before_the_quote_is_kept_below_the_new_text(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content=(
+            "<p><br></p><div id='Signature'>Ada Lovelace<br>Example Corp</div><hr>"
+            '<div id="divRplyFwdMsg"><b>From:</b> R</div>'
+        ),
+        content_type=BodyType.Html,
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    content = _patched_body(item).content
+    assert content.startswith("<p>Thanks</p><p><br></p><div id='Signature'>Ada Lovelace")
+    assert 'Example Corp</div><hr><div id="divRplyFwdMsg">' in content
+
+
+def test_a_wrapper_inside_an_older_reply_does_not_cut_the_newest_message(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content=(
+            '<p>Newest message text</p><blockquote><div id="divRplyFwdMsg">older</div></blockquote>'
+        ),
+        content_type=BodyType.Html,
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    assert _patched_body(item).content.startswith("<p>Thanks</p><p>Newest message text</p>")
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    ["", "<p></p>", "<p><br></p>", "<div>&nbsp;</div>", "<p> </p><br>"],
+)
+def test_an_empty_compose_placeholder_before_the_quote_is_replaced(
+    monkeypatch, placeholder: str
+) -> None:
+    client = _client(monkeypatch)
+    item = client.me.messages.by_message_id.return_value
+    draft = _draft("RE: Quarterly sync")
+    draft.body = SimpleNamespace(
+        content=f'{placeholder}<hr><div id="divRplyFwdMsg">q</div>', content_type=BodyType.Html
+    )
+    item.create_reply.post = AsyncMock(return_value=draft)
+    item.get = AsyncMock(return_value=draft)
+    item.patch = AsyncMock(return_value=draft)
+
+    asyncio.run(mail_reply(message_id="msg-1", body="<p>Thanks</p>", body_type="html"))
+
+    assert _patched_body(item).content == '<p>Thanks</p><hr><div id="divRplyFwdMsg">q</div>'

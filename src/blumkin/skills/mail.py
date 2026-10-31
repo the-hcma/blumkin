@@ -2461,16 +2461,25 @@ _HR_BEFORE = re.compile(r"<hr\b[^>]*>\s*$", re.IGNORECASE)
 _BODY_OPEN = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
 
 
+def _is_blank_markup(text: str) -> bool:
+    """Whether ``text`` is only an empty compose placeholder (empty tags, breaks, spaces)."""
+    if re.search(r"<(img|table|blockquote|a|hr)\b", text, re.IGNORECASE):
+        return False
+    visible = re.sub(r"<[^>]*>|&nbsp;|&#160;|\s", "", text, flags=re.IGNORECASE)
+    return not visible
+
+
 def _markup_above_existing(markup: str, existing: str, *, plain_text: bool = False) -> str:
     """``existing`` (a created reply/forward draft body) with ``markup`` above its quote.
 
-    The markup goes just inside the document's ``<body>`` (or first, for a fragment). When
+    The markup goes just inside the document's ``<body>`` (or first, for a fragment). Nothing
+    the draft already holds is thrown away except an empty compose placeholder: when
     Outlook's quote wrapper (a ``<div>`` whose ``id`` is exactly ``divRplyFwdMsg``, with the
-    ``<hr>`` above it) is found, what lies between the body tag and the wrapper is replaced by
-    the markup. When it is not found, nothing is cut: the whole existing body stays below the
-    markup, so an unfamiliar draft shape never loses the quoted original. A draft stored as
-    plain text (``plain_text``) is escaped, with its line breaks kept, before it goes under
-    the HTML markup.
+    ``<hr>`` above it) follows nothing but such a placeholder, the placeholder is replaced by
+    the markup. Anything else before the quote (an injected signature, the newest message
+    when the wrapper belongs to an older reply) stays below the new text, as does the whole
+    body when the wrapper is not found. A draft stored as plain text (``plain_text``) is
+    escaped, with its line breaks kept, before it goes under the HTML markup.
     """
     if plain_text:
         return f"{markup}{html_lib.escape(existing).replace(chr(10), '<br>')}"
@@ -2483,7 +2492,8 @@ def _markup_above_existing(markup: str, existing: str, *, plain_text: bool = Fal
         rule = _HR_BEFORE.search(inner[:cut])
         if rule is not None:
             cut = rule.start()
-        inner = inner[cut:]
+        if _is_blank_markup(inner[:cut]):
+            inner = inner[cut:]
     return f"{existing[:start]}{markup}{inner}"
 
 
