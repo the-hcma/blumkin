@@ -1519,6 +1519,9 @@ def _dispatch_soft(
     raise SystemExit(fail_exit if failed else EXIT_SUCCESS)
 
 
+_GLOBAL_ONLY_OPTIONS = frozenset({"--profile", "--tz"})
+
+
 def _xdg_base(var: str, default: Path) -> Path:
     """XDG base dir from ``$var``, honoring the spec: a relative value is ignored."""
     value = os.environ.get(var, "")
@@ -1526,7 +1529,59 @@ def _xdg_base(var: str, default: Path) -> Path:
     return candidate if candidate.is_absolute() else default
 
 
-@click.group(epilog=help_text.MAIN_EPILOG)
+class _BlumkinGroup(click.Group):
+    """The top-level group: a global option typed after a subcommand gets a placement hint."""
+
+    def invoke(self, ctx: click.Context) -> Any:
+        typed_words = [*ctx.protected_args, *ctx.args]  # click empties these as it dispatches
+        try:
+            return super().invoke(ctx)
+        except click.NoSuchOption as exc:
+            if exc.option_name not in _GLOBAL_ONLY_OPTIONS:
+                raise
+            path = " ".join(_subcommand_path(exc.ctx))
+            owners = _subcommands_with_option(exc.ctx, exc.option_name)
+            if owners:
+                typed = [word for word in typed_words if word in owners]
+                chosen = typed[0] if typed else owners[0]
+                # A group (`loop`, `mcp`) whose subcommands take the option themselves: the
+                # global one would not reach them, so point at the subcommand's own.
+                raise click.UsageError(
+                    f"{exc.option_name} belongs to the subcommand, not to `{path}`: put it "
+                    f"after the subcommand, as in `blumkin {path} {chosen} "
+                    f"{exc.option_name} VALUE` (also: {', '.join(owners)})",
+                    ctx=exc.ctx,
+                ) from exc
+            raise click.UsageError(
+                f"{exc.option_name} is a global option: put it before the subcommand, as in "
+                f"`blumkin {exc.option_name} VALUE {path}`",
+                ctx=exc.ctx,
+            ) from exc
+
+
+def _subcommands_with_option(ctx: click.Context | None, option: str) -> list[str]:
+    """The subcommands of the group `ctx` is for that declare `option` themselves."""
+    if ctx is None or not isinstance(ctx.command, click.Group):
+        return []
+    return sorted(
+        name
+        for name, command in ctx.command.commands.items()
+        if any(option in param.opts for param in command.params)
+    )
+
+
+def _subcommand_path(ctx: click.Context | None) -> list[str]:
+    """The subcommand words typed so far (`mail inbox`), for an example in a hint."""
+    if ctx is None:
+        return []
+    path: list[str] = []
+    while ctx.parent is not None:  # the root is the program, whatever its name has in it
+        path.append(ctx.info_name or "")
+        ctx = ctx.parent
+    return path[::-1]
+
+
+@click.group(cls=_BlumkinGroup, epilog=help_text.MAIN_EPILOG)
 @click.option(
     "--profile",
     default=None,
