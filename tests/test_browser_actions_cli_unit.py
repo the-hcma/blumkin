@@ -2481,6 +2481,24 @@ def test_sign_in_needs_the_profile_to_record_its_address(raw: _Raw, _config_dir:
     assert raw.picks == []
 
 
+@pytest.mark.parametrize("email", ["ada", "ada@", "a b@example.com", "ada@example"])
+def test_sign_in_refuses_an_address_that_is_not_one_plain_address(
+    raw: _Raw, _config_dir: Path, email: str
+) -> None:
+    (_config_dir / "config.toml").write_text(
+        "[browser.tasks.expense-report]\nsign_in_account = true\n"
+        'allowed_hosts = ["erp.example.com"]\n\n'
+        f'[profiles.default]\nclient_id = "abc-123"\nemail = "{email}"\n'
+    )
+
+    result = _run("browser", "sign-in", "expense-report")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "sign_in_not_authorized"
+    assert email not in result.output
+    assert raw.picks == []
+
+
 @pytest.mark.parametrize(
     ("status", "needle"),
     [

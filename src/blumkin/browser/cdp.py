@@ -1594,10 +1594,11 @@ _SELECTED_TEXT_JS = (
 
 #: Finds the one account tile for an address on an identity provider's picker; run on the page.
 #: Returns [status, element, count] (see `AccountPick`). The page must be https on a listed
-#: host and not on a blocked one, and must show nothing to type into. A tile is the innermost
-#: clickable that names the address (and no other address), carries no word such as remove,
-#: sign out, forget or allow, and links nowhere off the listed hosts; the address must not be
-#: part of a longer one.
+#: host and not on a blocked one, and must show nothing to type into. A tile is the actionable
+#: element (a button or link, or the nearest one around a marked child) whose own names (text,
+#: labels, titles, referenced labels) hold the address as a whole token and no other address,
+#: carry no word such as remove, sign out, send, code, confirm or allow, and link nowhere off
+#: the listed hosts. Anything with `@` in a name must be exactly the address.
 _PICK_ACCOUNT_JS = r"""(args) => {
   const lower = (t) => String(t || '').replace(/[A-Z]/g, (c) => c.toLowerCase());
   const want = lower(args.email);
@@ -1607,19 +1608,19 @@ _PICK_ACCOUNT_JS = r"""(args) => {
   const here = strip(location.hostname);
   if (location.protocol !== 'https:' || !args.hosts.some((p) => hostMatch(here, p))
       || args.blocked.some((p) => hostMatch(here, p))) return ['wrong_origin', null, 0];
+  const shown = (e) => !!(e.offsetWidth || e.offsetHeight);
   const skip = ['hidden', 'submit', 'button', 'checkbox', 'radio', 'image', 'reset'];
-  const fields = Array.from(document.querySelectorAll('input')).filter((i) =>
-    !skip.includes(i.type) && (i.offsetWidth || i.offsetHeight));
+  const fields = Array.from(document.querySelectorAll(
+    'input, textarea, select, [contenteditable]:not([contenteditable=false]), '
+    + '[role=textbox], [role=combobox], [role=searchbox]')).filter((e) =>
+    !(e.tagName === 'INPUT' && skip.includes(e.type)) && shown(e));
   if (fields.length) return ['unsupported', null, fields.length];
-  const edge = "a-z0-9._%+'!#$&*/=?^`{|}~@-";
-  const esc = want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const edgeNoDot = edge.replace('.', '');
-  const rx = new RegExp('(^|[^' + edge + '])' + esc + '(?![' + edgeNoDot + '])'
-    + '(?!\\.[' + edge + '])');
-  const anyAddress = /[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+/g;
   const denied = ['remove', 'forget', 'sign[ -]?out', 'log[ -]?out', 'delete', 'allow',
-    'authori[sz]e', 'grant', 'consent', 'accept', 'approve', 'revoke'];
+    'authori[sz]e', 'grant', 'consent', 'accept', 'approve', 'revoke', 'send', 'resend',
+    'code', 'confirm', 'verify', 'sms', 'text', 'call', 'password', 'passkey', 'create',
+    'register', 'sign[ -]?up', 'add', 'another', 'different', 'other', 'continue', 'next'];
   const deny = new RegExp('\\b(' + denied.join('|') + ')\\b');
+  const actionable = 'a[href], button, [role=button], [role=link]';
   const offHost = (el) => (el.matches('a[href]') ? [el] : []).concat(
     Array.from(el.querySelectorAll('a[href]'))).some((a) => {
     try {
@@ -1627,15 +1628,28 @@ _PICK_ACCOUNT_JS = r"""(args) => {
       return u.protocol !== 'https:' || !args.hosts.some((p) => hostMatch(strip(u.hostname), p));
     } catch (e) { return true; }
   });
-  const all = Array.from(document.querySelectorAll(
-    '[role=button], [role=link], a, button, [data-test-id]'));
-  const hits = all.filter((el) => {
-    const parts = [el.getAttribute('data-test-id'), el.getAttribute('aria-label'),
-      el.innerText].map(lower);
-    if (!parts.some((t) => rx.test(t))) return false;
-    const joined = parts.join(' \n ');
-    if ((joined.match(anyAddress) || []).some((a) => a !== want)) return false;
-    return !deny.test(joined) && !offHost(el);
+  const names = (el) => {
+    const root = el.getRootNode();
+    const by = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean).map(
+      (id) => { const n = root.getElementById ? root.getElementById(id) : null;
+        return n ? n.innerText || n.textContent : ''; });
+    const kids = Array.from(el.querySelectorAll('[aria-label], [title], [alt], [data-test-id]'))
+      .map((k) => [k.getAttribute('aria-label'), k.getAttribute('title'),
+        k.getAttribute('alt'), k.getAttribute('data-test-id')].join(' '));
+    return [el.getAttribute('data-test-id'), el.getAttribute('aria-label'),
+      el.getAttribute('title'), el.innerText, ...by, ...kids].map(lower);
+  };
+  const tokens = (text) => text.split(/[\s"<>()\[\],;:]+/).map(
+    (t) => t.replace(/[.!?]+$/, '')).filter(Boolean);
+  const candidates = new Set();
+  for (const el of document.querySelectorAll(actionable + ', [data-test-id]')) {
+    candidates.add(el.matches(actionable) ? el : (el.closest(actionable) || el));
+  }
+  const hits = Array.from(candidates).filter((el) => {
+    const parts = names(el);
+    const found = parts.flatMap(tokens).filter((t) => t.includes('@'));
+    if (!found.includes(want) || found.some((t) => t !== want)) return false;
+    return !deny.test(parts.join(' \n ')) && !offHost(el);
   });
   const tiles = hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
   if (tiles.length === 0) return ['none', null, 0];

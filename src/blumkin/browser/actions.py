@@ -52,6 +52,8 @@ from blumkin.config import BrowserSetup
 from blumkin.output import sanitize_terminal
 from blumkin.prompt_injection import scan_for_injection
 
+#: The plain address shape the account picker can match as a whole token.
+_ADDRESS_SYNTAX = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
 _ARIA_FIELD_ROLES = r"(?:combobox|searchbox|slider|spinbutton|textbox)"
 
 # A field line's key, plain (`- textbox "Name" [attr]`) or, when the name needs it, wrapped in
@@ -406,6 +408,11 @@ def sign_in_task(
     if not email.strip():
         raise SignInNotAuthorizedError(
             "Expected the profile to record its account address (profiles set-email), got none"
+        )
+    if not _ADDRESS_SYNTAX.fullmatch(email.strip()):
+        raise SignInNotAuthorizedError(
+            "Expected the profile's account address to be one plain address "
+            "(local@domain.tld), got a different shape"
         )
     sign_in_hosts = sign_in_hosts_for(config, task)
     hosts = declared.allowed_hosts

@@ -237,3 +237,46 @@ def test_an_input_hidden_by_css_does_not_make_the_page_unsupported() -> None:
     page = _PICKER + '<input type=text style="display:none">'
 
     assert _pick(page, "ada@example.com")[0] == "ok"
+
+
+@pytest.mark.parametrize("name", ["éada@example.com", "ada@example.comé", "ada@example.coḿ"])
+def test_a_unicode_neighbour_makes_a_different_address(name: str) -> None:
+    page = f'<div role=button data-test-id="x">{name}</div>'
+
+    assert _pick(page, "ada@example.com")[:2] == ("none", 0)
+
+
+@pytest.mark.parametrize("name", ["Send code to ada@example.com", "Confirm ada@example.com"])
+def test_a_button_that_does_something_else_with_the_address_is_not_a_tile(name: str) -> None:
+    assert _pick(f"<button>{name}</button>", "ada@example.com")[:2] == ("none", 0)
+
+
+def test_a_marked_child_of_a_rejected_button_is_not_a_way_around_it() -> None:
+    page = (
+        '<button>Allow access <span data-test-id="ada@example.com">ada@example.com</span></button>'
+    )
+
+    assert _pick(page, "ada@example.com")[:2] == ("none", 0)
+    off_host = (
+        '<a href="https://evil.example.org/"><span data-test-id="ada@example.com">x</span></a>'
+    )
+    assert _pick(off_host, "ada@example.com")[:2] == ("none", 0)
+
+
+def test_a_label_reference_naming_a_forbidden_action_vetoes_the_tile() -> None:
+    page = (
+        "<span id=l>Remove ada@example.com</span>"
+        '<button aria-labelledby=l data-test-id="ada@example.com">ada@example.com</button>'
+    )
+
+    assert _pick(page, "ada@example.com")[:2] == ("none", 0)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["<textarea></textarea>", "<div contenteditable=true>x</div>", "<div role=textbox>x</div>"],
+)
+def test_any_visible_field_to_type_into_is_unsupported(field: str) -> None:
+    page = _PICKER + field
+
+    assert _pick(page, "ada@example.com")[0] == "unsupported"
