@@ -7,6 +7,7 @@ Every address in these tests is synthetic.
 from __future__ import annotations
 
 import json
+import os
 import stat
 import tomllib
 from pathlib import Path
@@ -277,39 +278,68 @@ def test_other_browser_commands_never_show_the_address(config_dir: Path) -> None
         assert "Springfield" not in result.output  # type: ignore[attr-defined]
 
 
-def test_the_file_is_made_private_before_the_address_is_written(
+def test_the_new_content_is_written_to_a_private_temporary_file_then_swapped_in(
     config_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = config_dir / "config.toml"
     path.chmod(0o644)
-    seen: list[int] = []
-    real_write = Path.write_text
+    seen: list[tuple[int, str]] = []
+    real_replace = os.replace
 
-    def spy(self: Path, data: str, *args: object, **kwargs: object) -> int:
-        if self == path:
-            seen.append(stat.S_IMODE(path.stat().st_mode))
-        return real_write(self, data, *args, **kwargs)  # type: ignore[arg-type]
+    def spy(source: object, target: object) -> None:
+        seen.append((stat.S_IMODE(Path(str(source)).stat().st_mode), Path(str(source)).read_text()))
+        real_replace(source, target)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "write_text", spy)
+    monkeypatch.setattr(os, "replace", spy)
 
-    set_profile_address(path, profile="work", address=_ADDRESS)
+    assert set_profile_address(path, profile="work", address=_ADDRESS)
 
-    assert seen == [0o600]
+    assert [mode for mode, _ in seen] == [0o600]
+    assert _ADDRESS in seen[0][1]
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert not list(config_dir.glob(".config-*"))
 
 
-def test_nothing_is_written_when_the_file_cannot_be_made_private(
+def test_a_failed_swap_leaves_the_old_file_whole_and_no_temporary_file(
     config_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = config_dir / "config.toml"
     before = path.read_text()
 
-    def refuse(self: Path, mode: int) -> None:
-        raise PermissionError("no")
+    def refuse(source: object, target: object) -> None:
+        raise OSError("disk full")
 
-    monkeypatch.setattr(Path, "chmod", refuse)
+    monkeypatch.setattr(os, "replace", refuse)
 
     assert set_profile_address(path, profile="work", address=_ADDRESS) is False
     assert path.read_text() == before
+    assert not list(config_dir.glob(".config-*"))
+
+
+def test_clearing_an_address_keeps_the_files_existing_mode(config_dir: Path) -> None:
+    path = config_dir / "config.toml"
+    set_profile_address(path, profile="work", address=_ADDRESS)
+    path.chmod(0o640)
+
+    assert set_profile_address(path, profile="work", address="")
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert _address_in(config_dir, "work") is None
+
+
+def test_a_symlinked_config_is_updated_at_its_target(
+    config_dir: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    real_dir = tmp_path_factory.mktemp("real")
+    real = real_dir / "config.toml"
+    real.write_text((config_dir / "config.toml").read_text())
+    link = config_dir / "linked.toml"
+    link.symlink_to(real)
+
+    assert set_profile_address(link, profile="work", address=_ADDRESS)
+
+    assert link.is_symlink()
+    assert _ADDRESS in real.read_text()
 
 
 def test_a_stdin_far_longer_than_an_address_is_refused_not_truncated(config_dir: Path) -> None:

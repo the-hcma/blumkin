@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import posixpath
 import re
+import stat
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -521,18 +524,36 @@ def _write_profile_address(config_path: Path, profile: str, value: str) -> bool:
         return False
     if value:
         table["address"] = value
-        try:
-            # Private to the user before the address lands in it, as the credential files are,
-            # so a file created with looser bits never holds it, even for a moment, and a
-            # failure here writes nothing.
-            config_path.chmod(0o600)
-        except OSError:
-            return False
     elif "address" in table:
         del table["address"]
+    # Storing an address makes the file private to the user, as the credential files are;
+    # removing one keeps whatever mode the file had.
+    return _replace_atomically(config_path, tomlkit.dumps(doc), private=bool(value))
+
+
+def _replace_atomically(config_path: Path, text: str, *, private: bool) -> bool:
+    """Write ``text`` to ``config_path`` through a temporary file and ``os.replace``.
+
+    The temporary file is created next to the target with mode 0600, so a looser file never
+    holds the new content, a failed write leaves the old file whole, and a reader never sees
+    half a document. A symlinked config is replaced at its target, not turned into a file.
+    """
+    target = config_path.resolve()
     try:
-        config_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+        mode = 0o600 if private else stat.S_IMODE(target.stat().st_mode)
+        fd, temp_name = tempfile.mkstemp(dir=target.parent, prefix=".config-", suffix=".tmp")
     except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, mode)
+        os.replace(temp_name, target)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(temp_name)
         return False
     return True
 
