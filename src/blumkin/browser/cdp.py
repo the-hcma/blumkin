@@ -114,6 +114,10 @@ class BrowserDriver(Protocol):
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
     ) -> None: ...
 
+    def pick_account(
+        self, email: str, hosts: Sequence[str], blocked: Sequence[str]
+    ) -> AccountPick: ...
+
     def press(self, label: str, key: str) -> None: ...
 
     def read_frame_text(
@@ -150,6 +154,15 @@ class BrowserDriver(Protocol):
     def url(self) -> str: ...
 
     def wait_ms(self, milliseconds: int) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AccountPick:
+    """What `pick_account` found on the page: `ok` (one tile, clicked), `wrong_origin`,
+    `unsupported` (a field to type into), `none` (no tile for the account) or `ambiguous`."""
+
+    status: str
+    tiles: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -651,6 +664,31 @@ class PlaywrightDriver:
             text=text,
             injection_warning=scan_for_injection(text, location="frame.text").to_payload(),
         )
+
+    def pick_account(self, email: str, hosts: Sequence[str], blocked: Sequence[str]) -> AccountPick:
+        """Click the one account tile bound to ``email`` on an identity provider's picker.
+
+        Everything is decided in one evaluation on the page itself, so a redirect between a
+        check and the click cannot change what is judged: the page must be https on one of
+        ``hosts`` and not on one of ``blocked`` (the task's own sites); it must show no field
+        to type into (a password or code page is not a picker); and exactly one clickable
+        element, outermost, must carry the address as a whole word in its test id, label or
+        text. Anything else is reported, not clicked. Nothing is typed.
+        """
+        self._require_open()
+        try:
+            handle = self._page.evaluate_handle(
+                _PICK_ACCOUNT_JS,
+                {"blocked": list(blocked), "email": email, "hosts": list(hosts)},
+            )
+            status = str(handle.get_property("0").json_value())
+            count = int(handle.get_property("2").json_value() or 0)
+            element = handle.get_property("1").as_element() if status == "ok" else None
+            if element is not None:
+                element.click(timeout=self._timeout_ms)
+        except _playwright_error() as exc:
+            raise self._action_error("pick the account on the sign-in page", exc) from exc
+        return AccountPick(status=status, tiles=count)
 
     def read_text(self) -> PageText:
         self._require_open()
@@ -1275,6 +1313,10 @@ class RawBrowserDriver(Protocol):
 
     def raw_press(self, label: str, key: str) -> None: ...
 
+    def pick_account(
+        self, email: str, hosts: Sequence[str], blocked: Sequence[str]
+    ) -> AccountPick: ...
+
     def read_frame_text(
         self,
         index: int,
@@ -1549,6 +1591,57 @@ _UPLOAD_STATE_JS = _UPLOAD_COUNT_HEAD + (
 _SELECTED_TEXT_JS = (
     "(e) => e.selectedOptions && e.selectedOptions[0] ? e.selectedOptions[0].label : ''"
 )
+
+#: Finds the one account tile for an address on an identity provider's picker; run on the page.
+#: Returns [status, element, count] (see `AccountPick`). The page must be https on a listed
+#: host and not on a blocked one, and must show nothing to type into. A tile is the innermost
+#: clickable that names the address (and no other address), carries no word such as remove,
+#: sign out, forget or allow, and links nowhere off the listed hosts; the address must not be
+#: part of a longer one.
+_PICK_ACCOUNT_JS = r"""(args) => {
+  const lower = (t) => String(t || '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const want = lower(args.email);
+  const strip = (h) => h.toLowerCase().replace(/\.+$/, '');
+  const hostMatch = (host, p) => p.startsWith('*.')
+    ? (host.endsWith(p.slice(1)) && host.length > p.length - 1) : host === p;
+  const here = strip(location.hostname);
+  if (location.protocol !== 'https:' || !args.hosts.some((p) => hostMatch(here, p))
+      || args.blocked.some((p) => hostMatch(here, p))) return ['wrong_origin', null, 0];
+  const skip = ['hidden', 'submit', 'button', 'checkbox', 'radio', 'image', 'reset'];
+  const fields = Array.from(document.querySelectorAll('input')).filter((i) =>
+    !skip.includes(i.type) && (i.offsetWidth || i.offsetHeight));
+  if (fields.length) return ['unsupported', null, fields.length];
+  const edge = "a-z0-9._%+'!#$&*/=?^`{|}~@-";
+  const esc = want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const edgeNoDot = edge.replace('.', '');
+  const rx = new RegExp('(^|[^' + edge + '])' + esc + '(?![' + edgeNoDot + '])'
+    + '(?!\\.[' + edge + '])');
+  const anyAddress = /[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+/g;
+  const denied = ['remove', 'forget', 'sign[ -]?out', 'log[ -]?out', 'delete', 'allow',
+    'authori[sz]e', 'grant', 'consent', 'accept', 'approve', 'revoke'];
+  const deny = new RegExp('\\b(' + denied.join('|') + ')\\b');
+  const offHost = (el) => (el.matches('a[href]') ? [el] : []).concat(
+    Array.from(el.querySelectorAll('a[href]'))).some((a) => {
+    try {
+      const u = new URL(a.href, location.href);
+      return u.protocol !== 'https:' || !args.hosts.some((p) => hostMatch(strip(u.hostname), p));
+    } catch (e) { return true; }
+  });
+  const all = Array.from(document.querySelectorAll(
+    '[role=button], [role=link], a, button, [data-test-id]'));
+  const hits = all.filter((el) => {
+    const parts = [el.getAttribute('data-test-id'), el.getAttribute('aria-label'),
+      el.innerText].map(lower);
+    if (!parts.some((t) => rx.test(t))) return false;
+    const joined = parts.join(' \n ');
+    if ((joined.match(anyAddress) || []).some((a) => a !== want)) return false;
+    return !deny.test(joined) && !offHost(el);
+  });
+  const tiles = hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
+  if (tiles.length === 0) return ['none', null, 0];
+  if (tiles.length > 1) return ['ambiguous', null, tiles.length];
+  return ['ok', tiles[0], 1];
+}"""
 
 _DESCRIBE_CONTROL_JS = (
     "(e) => { const sel = 'dialog, [role=dialog], [role=alertdialog]'; "

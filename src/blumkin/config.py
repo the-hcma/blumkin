@@ -182,6 +182,9 @@ class BrowserTaskPolicy:
     draft_controls: tuple[str, ...] = ()
     #: Added to the built-in finalizing words; the built-in list can never be shortened.
     extra_deny_names: tuple[str, ...] = ()
+    #: Whether `browser sign-in` may pick the profile's own account on an identity provider's
+    #: account picker for this task. Off by default; it never types a credential.
+    sign_in_account: bool = False
     #: Whether the task may read the profile's physical address (`browser address TASK`).
     #: Off by default; nothing is ever sent to a site on its own.
     use_profile_address: bool = False
@@ -696,6 +699,7 @@ _TASK_POLICY_KEYS = frozenset(
         "draft_controls",
         "extra_deny_names",
         "form_url",
+        "sign_in_account",
         "sign_in_hosts",
         "upload_dirs",
         "use_profile_address",
@@ -831,6 +835,12 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 f"{prefix}.block_background_writes must be true or false in config.toml, "
                 f"got {strict!r}"
             )
+        picks_account = table.get("sign_in_account", False)
+        if not isinstance(picks_account, bool):
+            raise ProviderConfigError(
+                f"{prefix}.sign_in_account must be true or false in config.toml, "
+                f"got {picks_account!r}"
+            )
         wants_address = table.get("use_profile_address", False)
         if not isinstance(wants_address, bool):
             raise ProviderConfigError(
@@ -840,6 +850,7 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
         policies[str(name)] = BrowserTaskPolicy(
             allowed_hosts=hosts,
             block_background_writes=strict,
+            sign_in_account=picks_account,
             use_profile_address=wants_address,
             allowed_controls=_string_list(
                 table.get("allowed_controls"), f"{prefix}.allowed_controls"

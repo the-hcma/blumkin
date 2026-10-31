@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from blumkin.browser.cdp import (
+    AccountPick,
     BrowserActionError,
     ControlInfo,
     DownloadedFile,
@@ -175,6 +176,10 @@ class _Raw:
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
     ) -> None:
         self.marks.append((task, tuple(hosts), tuple(blocked)))
+
+    def pick_account(self, email: str, hosts: Sequence[str], blocked: Sequence[str]) -> AccountPick:
+        self.calls.append(("pick_account", email, tuple(hosts), tuple(blocked)))
+        return AccountPick("ok", 1)
 
     def wait_ms(self, milliseconds: int) -> None:
         self.calls.append(("wait_ms", milliseconds))
@@ -516,6 +521,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "frame_list",
         "goto",
         "mark_window",
+        "pick_account",
         "press",
         "read_frame_text",
         "read_text",

@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 from blumkin.browser.cdp import (
+    AccountPick,
     BrowserActionError,
     BrowserAttachError,
     BrowserDependencyError,
@@ -35,6 +36,9 @@ class _Raw:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
         self.sign_ins: list[bool] = []
+        #: Each `pick_account` call, and what it answers (default: one tile, clicked).
+        self.picks: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+        self.pick_result = AccountPick("ok", 1)
         #: What `upload` reports back about the page (default: the file is shown).
         self.upload_result: UploadObservation | None = None
         self.closed = 0
@@ -215,6 +219,10 @@ class _Raw:
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
     ) -> None:
         self.marks.append((task, tuple(hosts), tuple(blocked)))
+
+    def pick_account(self, email: str, hosts: Sequence[str], blocked: Sequence[str]) -> AccountPick:
+        self.picks.append((email, tuple(hosts), tuple(blocked)))
+        return self.pick_result
 
     def wait_ms(self, milliseconds: int) -> None:
         self.calls.append(("wait_ms", milliseconds))
@@ -2408,3 +2416,169 @@ def test_upload_text_output_says_what_the_page_shows_and_warns(
     assert "uploaded" in result.output
     assert "the page shows the file: missing" in result.output
     assert "warning:" in result.output
+
+
+# --------------------------------------------------------------------------- sign-in (#616)
+
+
+def _authorize_sign_in(config_dir: Path, extra: str = "") -> None:
+    (config_dir / "config.toml").write_text(
+        '[browser.tasks.expense-report]\nallowed_hosts = ["erp.example.com"]\n'
+        f"sign_in_account = true\n{extra}\n"
+        '[profiles.default]\nclient_id = "abc-123"\nemail = "ada@example.com"\n'
+    )
+
+
+def test_sign_in_picks_the_profiles_account_on_the_builtin_sign_in_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _authorize_sign_in(_config_dir)
+    raw.url = _FORM  # the sign-in finished
+
+    result = _run("browser", "sign-in", "expense-report", "--wait", "0")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["selected"] is True and payload["handover"] is False
+    assert payload["account"] == "a***@example.com"
+    assert "ada@example.com" not in result.output
+    (email, hosts, blocked) = raw.picks[0]
+    assert email == "ada@example.com"
+    assert "login.microsoftonline.com" in hosts and blocked == ("erp.example.com",)
+    assert not any(call[0] in ("fill", "upload", "press") for call in raw.calls)
+
+
+def test_sign_in_includes_the_tasks_own_sign_in_hosts(raw: _Raw, _config_dir: Path) -> None:
+    _authorize_sign_in(_config_dir, 'sign_in_hosts = ["sso.corp.example"]')
+    raw.url = _FORM
+
+    _run("browser", "sign-in", "expense-report", "--wait", "0")
+
+    assert "sso.corp.example" in raw.picks[0][1]
+
+
+def test_sign_in_is_refused_for_a_task_that_did_not_authorize_it(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    result = _run("browser", "sign-in", "expense-report")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "sign_in_not_authorized"
+    assert "sign_in_account = true" in _json(result)["hint"]
+    assert raw.picks == [] and raw.calls == []
+
+
+def test_sign_in_needs_the_profile_to_record_its_address(raw: _Raw, _config_dir: Path) -> None:
+    (_config_dir / "config.toml").write_text(
+        "[browser.tasks.expense-report]\nsign_in_account = true\n\n"
+        '[profiles.default]\nclient_id = "abc-123"\n'
+    )
+
+    result = _run("browser", "sign-in", "expense-report")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "sign_in_not_authorized"
+    assert raw.picks == []
+
+
+@pytest.mark.parametrize(
+    ("status", "needle"),
+    [
+        ("wrong_origin", "not an https sign-in page"),
+        ("none", "no tile on the page is for the profile's account"),
+        ("ambiguous", "more than one tile"),
+        ("unsupported", "asks for something to be typed"),
+    ],
+)
+def test_sign_in_fails_closed_and_clicks_nothing_it_cannot_vouch_for(
+    raw: _Raw, _config_dir: Path, status: str, needle: str
+) -> None:
+    _authorize_sign_in(_config_dir)
+    raw.pick_result = AccountPick(status, 2)
+
+    result = _run("browser", "sign-in", "expense-report", "--wait", "0")
+
+    assert result.exit_code == EXIT_OTHER
+    payload = _json(result)
+    assert payload["error"] == "sign_in_refused"
+    assert needle in payload["message"] and "by hand" in payload["message"]
+    assert "ada@example.com" not in result.output
+
+
+def test_sign_in_that_lands_on_a_password_page_hands_over_instead_of_failing(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _authorize_sign_in(_config_dir)
+    raw.url = _IDP  # still on the identity provider after the click
+
+    result = _run("browser", "sign-in", "expense-report", "--wait", "0")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["handover"] is True and "by hand" in payload["next"]
+
+
+def test_sign_in_adds_no_permission_to_the_task(raw: _Raw, _config_dir: Path) -> None:
+    _authorize_sign_in(_config_dir)
+    before = (_config_dir / "config.toml").read_text()
+    raw.pick_result = AccountPick("none", 0)
+
+    _run("browser", "sign-in", "expense-report", "--wait", "0")
+
+    assert (_config_dir / "config.toml").read_text() == before
+
+
+def test_the_sign_in_authorization_must_be_a_boolean(raw: _Raw, _config_dir: Path) -> None:
+    (_config_dir / "config.toml").write_text(
+        '[browser.tasks.expense-report]\nsign_in_account = "yes"\n\n'
+        '[profiles.default]\nclient_id = "abc-123"\nemail = "ada@example.com"\n'
+    )
+
+    result = _run("browser", "sign-in", "expense-report")
+
+    assert result.exit_code != EXIT_SUCCESS
+
+
+def test_sign_in_needs_the_task_to_declare_allowed_hosts(raw: _Raw, _config_dir: Path) -> None:
+    (_config_dir / "config.toml").write_text(
+        "[browser.tasks.expense-report]\nsign_in_account = true\n\n"
+        '[profiles.default]\nclient_id = "abc-123"\nemail = "ada@example.com"\n'
+    )
+
+    result = _run("browser", "sign-in", "expense-report")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "sign_in_not_authorized"
+    assert "allowed_hosts" in _json(result)["message"]
+    assert raw.picks == []
+
+
+def test_a_click_that_leaves_the_sign_in_and_task_hosts_is_reported_as_blocked(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _authorize_sign_in(_config_dir)
+    raw.url = "https://evil.example.org/landing"
+
+    result = _run("browser", "sign-in", "expense-report", "--wait", "0")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "host_blocked"
+    assert "evil.example.org" in _json(result)["message"]
+
+
+def test_an_interruption_during_the_pick_leaves_nothing_to_undo(
+    raw: _Raw, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _authorize_sign_in(_config_dir)
+    before = (_config_dir / "config.toml").read_text()
+
+    def interrupted(email: str, hosts: Sequence[str], blocked: Sequence[str]) -> AccountPick:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(raw, "pick_account", interrupted)
+
+    result = _run("browser", "sign-in", "expense-report", "--wait", "0")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert (_config_dir / "config.toml").read_text() == before
+    assert raw.closed == 1

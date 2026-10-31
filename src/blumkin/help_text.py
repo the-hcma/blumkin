@@ -520,6 +520,30 @@ long, `sign_in_host` where). If the page is still on the sign-in page when the t
 (`sign_in_timeout`), sign in and run the command again; the browser keeps running.
 """
 
+BROWSER_SIGN_IN_EPILOG = """
+Examples:
+
+\b
+  blumkin browser goto expense-report
+  blumkin --profile work browser sign-in expense-report
+
+Picks the profile's own account on an identity provider's account picker (the Microsoft
+"Pick an account" page, say) after `browser goto` was redirected to it, so the sign-in does
+not wait for you to click your own tile. It needs `sign_in_account = true` in the task's
+`[browser.tasks.TASK]` table (which must declare `allowed_hosts`) and the account address on
+the profile (`profiles set-email`).
+
+It clicks one tile and only when it is sure: the page must be https on a sign-in host (the
+built-in ones and the task's `sign_in_hosts`) that is not one of the task's own sites, show no
+field to type into (a password, a code), and have exactly one tile for the address (the
+innermost clickable that names it on its own, no other address, no word such as remove, sign
+out or allow, and no link off the sign-in hosts). Otherwise it clicks nothing and you pick the
+account yourself. It never types a credential and never adds a permission to the task, so
+there is nothing to undo; the account is shown masked. After the click it checks the page is
+still on a task or sign-in host and waits up to `--wait` seconds for it to reach one of the
+task's hosts; if a password, a code or consent follows, the result says you finish it by hand.
+"""
+
 BROWSER_HANDOFF_EPILOG = """
 Examples:
 

@@ -9,6 +9,7 @@ import threading
 import urllib.error
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -226,6 +227,8 @@ class _Page:
             "body": 1,
         }
         self.upload_state_error: Exception | None = None
+        #: What the account-picker script answers: (status, count).
+        self.pick_outcome: tuple[str, int] = ("ok", 1)
 
     def get_by_label(self, label: str, *, exact: bool = False) -> _Locator:
         self.calls.append(("get_by_label", label, exact)) if exact else None
@@ -238,6 +241,29 @@ class _Page:
     def get_by_role(self, role: str, *, name: str, exact: bool) -> _Locator:
         self.calls.append(("get_by_role", role, name, exact))
         return _Locator(self, name, role)
+
+    def evaluate_handle(self, script: str, arg: Any = None) -> Any:
+        self.calls.append(("evaluate_handle", arg))
+        outcome = self.pick_outcome
+
+        class _Prop:
+            def __init__(self, value: Any) -> None:
+                self._value = value
+
+            def json_value(self) -> Any:
+                return self._value
+
+            def as_element(self) -> Any:
+                return self._value
+
+        tile = SimpleNamespace(click=lambda *, timeout: self.calls.append(("tile-click", timeout)))
+        values = {"0": outcome[0], "1": tile if outcome[0] == "ok" else None, "2": outcome[1]}
+
+        class _Array:
+            def get_property(self, index: str) -> _Prop:
+                return _Prop(values[index])
+
+        return _Array()
 
     def goto(self, url: str, *, timeout: float) -> None:
         self.calls.append(("goto", url, timeout))
@@ -2823,6 +2849,46 @@ def test_the_file_goes_to_the_element_that_was_probed_not_to_a_fresh_lookup(
     assert calls.index("handle-evaluate") < calls.index("upload")
 
 
+# --------------------------------------------------------------------------- account picker (#616)
+
+
+def test_pick_account_clicks_the_one_tile_and_passes_the_policy_to_the_page() -> None:
+    pw, driver = _driver()
+
+    picked = driver.pick_account("ada@example.com", ["login.example.net"], ["erp.example.com"])
+
+    assert (picked.status, picked.tiles) == ("ok", 1)
+    assert ("tile-click", 30000.0) in pw.page.calls
+    args = next(call[1] for call in pw.page.calls if call[0] == "evaluate_handle")
+    assert args == {
+        "blocked": ["erp.example.com"],
+        "email": "ada@example.com",
+        "hosts": ["login.example.net"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("outcome", "count"),
+    [("wrong_origin", 0), ("none", 0), ("ambiguous", 2), ("unsupported", 1)],
+)
+def test_pick_account_clicks_nothing_unless_the_page_says_ok(outcome: str, count: int) -> None:
+    pw, driver = _driver()
+    pw.page.pick_outcome = (outcome, count)
+
+    picked = driver.pick_account("ada@example.com", ["login.example.net"], [])
+
+    assert (picked.status, picked.tiles) == (outcome, count)
+    assert not any(call[0] == "tile-click" for call in pw.page.calls)
+
+
+def test_the_picker_script_decides_everything_on_the_page_itself() -> None:
+    from blumkin.browser.cdp import _PICK_ACCOUNT_JS
+
+    for needle in ("location.protocol", "args.blocked", "'unsupported'", "'ambiguous'", "contains"):
+        assert needle in _PICK_ACCOUNT_JS
+    assert "args.email" in _PICK_ACCOUNT_JS and "ada@" not in _PICK_ACCOUNT_JS
+
+
 def test_the_describe_script_collects_every_name_the_clicked_element_goes_by() -> None:
     from blumkin.browser.cdp import _DESCRIBE_CONTROL_JS
 
@@ -2858,3 +2924,15 @@ def test_an_overlong_or_overnumerous_name_list_is_reported_incomplete() -> None:
     driver.checked_click("Calculate", "button", seen.append)
 
     assert seen[0].own_names_complete is False
+
+
+def test_the_sign_in_route_is_removed_even_when_the_block_is_interrupted() -> None:
+    pw, driver = _driver()
+
+    with pytest.raises(KeyboardInterrupt):
+        with driver.sign_in_pass(lambda host: host == "login.example.net"):
+            assert pw.page.context is not None and len(pw.page.context.routes) >= 1
+            raise KeyboardInterrupt
+
+    assert pw.page.context is not None
+    assert len(pw.page.context.unrouted) == 1
