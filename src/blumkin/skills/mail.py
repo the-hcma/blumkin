@@ -1040,7 +1040,7 @@ async def mail_forward(
     cc_addrs = _parse_addresses(cc, flag="--cc", required=False)
     bcc_addrs = _parse_addresses(bcc, flag="--bcc", required=False)
     cfg = config or load_config()
-    comment = _resolve_comment(
+    comment, markup = _resolve_comment(
         body=body,
         body_file=body_file,
         body_type=body_type,
@@ -1056,6 +1056,8 @@ async def mail_forward(
         client.me.messages.by_message_id(mid).create_forward, request, message_id=mid
     )
     created = await _patch_compose_recipients(client, created, cc=cc_addrs, bcc=bcc_addrs)
+    if markup:
+        created = await _put_markup_above_quote(client, created, markup)
     return {"draft": _draft_summary(created, source=mid, kind="forward")}
 
 
@@ -1388,7 +1390,7 @@ async def mail_reply(
     cc_addrs = _parse_addresses(cc, flag="--cc", required=False)
     bcc_addrs = _parse_addresses(bcc, flag="--bcc", required=False)
     cfg = config or load_config()
-    comment = _resolve_comment(
+    comment, markup = _resolve_comment(
         body=body,
         body_file=body_file,
         body_type=body_type,
@@ -1406,6 +1408,8 @@ async def mail_reply(
             item.create_reply, CreateReplyPostRequestBody(comment=comment), message_id=mid
         )
     created = await _patch_compose_recipients(client, created, cc=cc_addrs, bcc=bcc_addrs)
+    if markup:
+        created = await _put_markup_above_quote(client, created, markup)
     kind = "reply-all" if reply_all else "reply"
     return {"draft": _draft_summary(created, source=mid, kind=kind)}
 
@@ -2450,6 +2454,49 @@ def _merge_addresses(existing: Sequence[str], added: Sequence[str]) -> list[str]
     return merged
 
 
+_QUOTE_WRAPPER = re.compile(
+    r"""<div\b[^>]*?\sid\s*=\s*(?P<quote>["'])divRplyFwdMsg(?P=quote)""", re.IGNORECASE
+)
+_HR_BEFORE = re.compile(r"<hr\b[^>]*>\s*$", re.IGNORECASE)
+_BODY_OPEN = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
+
+
+def _is_blank_markup(text: str) -> bool:
+    """Whether ``text`` is only an empty compose placeholder (empty tags, breaks, spaces)."""
+    if re.search(r"<(img|table|blockquote|a|hr)\b", text, re.IGNORECASE):
+        return False
+    visible = re.sub(r"<[^>]*>|&nbsp;|&#160;|\s", "", text, flags=re.IGNORECASE)
+    return not visible
+
+
+def _markup_above_existing(markup: str, existing: str, *, plain_text: bool = False) -> str:
+    """``existing`` (a created reply/forward draft body) with ``markup`` above its quote.
+
+    The markup goes just inside the document's ``<body>`` (or first, for a fragment). Nothing
+    the draft already holds is thrown away except an empty compose placeholder: when
+    Outlook's quote wrapper (a ``<div>`` whose ``id`` is exactly ``divRplyFwdMsg``, with the
+    ``<hr>`` above it) follows nothing but such a placeholder, the placeholder is replaced by
+    the markup. Anything else before the quote (an injected signature, the newest message
+    when the wrapper belongs to an older reply) stays below the new text, as does the whole
+    body when the wrapper is not found. A draft stored as plain text (``plain_text``) is
+    escaped, with its line breaks kept, before it goes under the HTML markup.
+    """
+    if plain_text:
+        return f"{markup}{html_lib.escape(existing).replace(chr(10), '<br>')}"
+    opened = _BODY_OPEN.search(existing)
+    start = opened.end() if opened else 0
+    inner = existing[start:]
+    wrapper = _QUOTE_WRAPPER.search(inner)
+    if wrapper is not None:
+        cut = wrapper.start()
+        rule = _HR_BEFORE.search(inner[:cut])
+        if rule is not None:
+            cut = rule.start()
+        if _is_blank_markup(inner[:cut]):
+            inner = inner[cut:]
+    return f"{existing[:start]}{markup}{inner}"
+
+
 def _parse_addresses(
     value: str | Sequence[str] | None,
     *,
@@ -2650,6 +2697,34 @@ async def _patch_compose_recipients(
     return updated
 
 
+async def _put_markup_above_quote(client: Any, draft: Any, markup: str) -> Any:
+    """Make ``markup`` the top of a reply/forward draft, above the quoted original.
+
+    ``_markup_above_existing`` places the markup above Outlook's ``divRplyFwdMsg`` quote
+    wrapper. When that wrapper is not found, the whole existing body is kept below the new
+    text, so nothing the draft carried is lost. Returns the draft as it is stored afterwards.
+    """
+    mid = getattr(draft, "id", None)
+    if not mid:
+        raise RuntimeError("Graph returned a draft without an id after create")
+    existing = str(getattr(getattr(draft, "body", None), "content", None) or "")
+    patch = Message()
+    plain_text = getattr(getattr(draft, "body", None), "content_type", None) == BodyType.Text
+    patch.body = _compose_item_body(
+        BodyType.Html, _markup_above_existing(markup, existing, plain_text=plain_text)
+    )
+    try:
+        await client.me.messages.by_message_id(mid).patch(patch)
+    except Exception:
+        # Like a failed recipient patch: no half-made draft is left for a retry to duplicate.
+        await _delete_failed_draft(client, mid)
+        raise
+    live = await client.me.messages.by_message_id(mid).get()
+    if live is None or not getattr(live, "id", None):
+        raise RuntimeError(f"Graph returned no draft after the body update: {mid}")
+    return live
+
+
 def _primary_to_address(msg: Any) -> str | None:
     recipients = getattr(msg, "to_recipients", None) or []
     for recipient in recipients:
@@ -2725,14 +2800,15 @@ def _resolve_comment(
     body_type: str | None,
     config: BlumkinConfig | None = None,
     no_signature: bool = False,
-) -> str:
+) -> tuple[str, str]:
     """Resolve the reply/forward text, which is optional: an empty draft is editable.
 
-    Graph takes this as a ``comment`` rather than a body so the quoted original survives;
-    replacing the body would produce a message that threads but reads like a fresh one.
-    The draft body is always HTML (quoted original), so plain ``--body-type text`` must
-    be escaped before Graph embeds it. Signatures append in the comment's content type,
-    then text comments are escaped for HTML embedding.
+    Returns ``(comment, markup)``. A text body goes to Graph as the ``comment`` of
+    createReply/createForward (escaped, since the draft body is HTML), which keeps the
+    quoted original. Graph reads a ``comment`` as plain text, so HTML and markdown bodies
+    would lose their markup there: they come back as ``markup`` instead, for
+    ``_put_markup_above_quote`` to place above the quoted original after the draft exists.
+    Signatures append in the body's content type.
     """
     cfg = config or load_config()
     if body is None and body_file is None:
@@ -2740,18 +2816,18 @@ def _resolve_comment(
         # matches the HTML quoted original the draft is joined onto.
         label = _compose_wire_label(body_type, config=cfg)
         content = append_mail_signature("", body_type=label, config=cfg, no_signature=no_signature)
-        if not content:
-            return ""
-        if label == "text":
-            return html_lib.escape(content).replace("\n", "<br>")
-        return content
-    content, label, _graph_type = resolve_mail_body(
-        body=body, body_file=body_file, body_type=body_type, config=cfg
-    )
-    content = append_mail_signature(content, body_type=label, config=cfg, no_signature=no_signature)
+    else:
+        content, label, _graph_type = resolve_mail_body(
+            body=body, body_file=body_file, body_type=body_type, config=cfg
+        )
+        content = append_mail_signature(
+            content, body_type=label, config=cfg, no_signature=no_signature
+        )
+    if not content:
+        return "", ""
     if label == "text":
-        return html_lib.escape(content).replace("\n", "<br>")
-    return content
+        return html_lib.escape(content).replace("\n", "<br>"), ""
+    return "", content
 
 
 async def _resolve_folder_fallback(client: Any, label: str) -> tuple[str | None, str | None, bool]:
@@ -2841,6 +2917,14 @@ async def _scan_messages(
             return matches, scanned, False
         page = await builder.with_url(str(link)).get()
     return matches, scanned, True
+
+
+async def _delete_failed_draft(client: Any, message_id: str) -> None:
+    """Best-effort removal of a draft whose follow-up step failed (a retry must not duplicate)."""
+    try:
+        await client.me.messages.by_message_id(message_id).delete()
+    except Exception:  # noqa: BLE001 - the original error is what the caller needs to see
+        return
 
 
 async def _delete_uploaded_attachments(

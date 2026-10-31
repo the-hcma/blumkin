@@ -224,7 +224,7 @@ tags = ["@personal", "personal", "google", "gmail"]
 
 `blumkin auth login` records the signed-in address as `email = "..."` in that profile the first time (display only - it is never used to pick a profile, and never rewritten afterwards). `blumkin profiles list` shows it, so two profiles are tellable apart at a glance; `blumkin doctor` warns if the profile is later signed in as a different account.
 
-`blumkin --profile NAME profiles set-email [--email ADDRESS]` records or corrects that address explicitly. Unlike the automatic fill, it overwrites an existing value, and with no `--email` it resolves the signed-in address; it is the way to fix the drift `blumkin doctor` reports.
+`blumkin --profile NAME profiles set-email [--email ADDRESS]` records or corrects that address explicitly. Unlike the automatic fill, it overwrites an existing value, and with no `--email` it resolves the signed-in address; it is the way to fix the drift `blumkin doctor` reports. `blumkin --profile NAME profiles set-address` stores an optional physical address the same way for browser tasks that need one (see [docs/browser-tasks.md](docs/browser-tasks.md)); it is asked for at a hidden prompt, never printed back, and left out of every listing.
 
 Optional: set `client_id` in toml as well; when omitted it is read from the JSON. Keep the client JSON mode `0600` and outside the repo.
 

@@ -132,6 +132,7 @@ _POLICY_KEYS = (
     "form_url",
     "sign_in_hosts",
     "upload_dirs",
+    "use_profile_address",
 )
 
 
