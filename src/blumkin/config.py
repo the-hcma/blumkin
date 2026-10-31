@@ -174,6 +174,12 @@ class BrowserTaskPolicy:
     #: one, lies inside that dialog; the same name anywhere else is refused. A finalizing name
     #: (`Submit`, `Pay`, ...) can never be declared here.
     dialog_confirm: tuple[str, ...] = ()
+    #: Exact accessible names of buttons the user has verified only recalculate what is on the
+    #: page (the mileage form's `Calculate`). Such a button may be clicked although it is a
+    #: submit-type control in the page's form; a formaction override, a script link, a
+    #: submitting handler and every finalizing name are still refused. The declaration is the
+    #: user's: blumkin cannot tell from the page that a control does not save the report.
+    draft_controls: tuple[str, ...] = ()
     #: Added to the built-in finalizing words; the built-in list can never be shortened.
     extra_deny_names: tuple[str, ...] = ()
     #: Whether the task may read the profile's physical address (`browser address TASK`).
@@ -687,6 +693,7 @@ _TASK_POLICY_KEYS = frozenset(
         "block_background_writes",
         "dialog_confirm",
         "download_dirs",
+        "draft_controls",
         "extra_deny_names",
         "form_url",
         "sign_in_hosts",
@@ -838,6 +845,7 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 table.get("allowed_controls"), f"{prefix}.allowed_controls"
             ),
             dialog_confirm=_string_list(table.get("dialog_confirm"), f"{prefix}.dialog_confirm"),
+            draft_controls=_string_list(table.get("draft_controls"), f"{prefix}.draft_controls"),
             form_url=form_url,
             sign_in_hosts=sign_in_hosts,
             extra_deny_names=_string_list(

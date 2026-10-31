@@ -287,6 +287,16 @@ why it is refused otherwise): it is clicked only inside a dialog whose form, if 
 lies inside that dialog and which holds no finalizing control of its own, the same name
 anywhere else is refused, it cannot start a download, and a finalizing name can never be
 declared there.
+A button that only recalculates what is on the page (a mileage form's `Calculate`, which the
+page renders as a submit-type control inside the report's form) can be declared in
+`draft_controls`: only after checking by hand that it does not save or send the report.
+Exact names only, never a finalizing name; the declared button is spared the submit-control
+check and nothing else: it must be a real button none of whose other names (text, value,
+title, id) is a finalizing word, a formaction override, a script link and a submitting click
+handler are still refused, it cannot start a download, and the form-submission safety net
+stays on (it swallows a form post, not a background request). The page can still send a
+background request or run a script handler that blumkin cannot tell from a recalculation, so
+the declaration is yours: when unsure, leave it out and click the button yourself.
 Refused, without touching the page: an
 undeclared control, a submit control, and any control named like a finalizing action
 (submit, send, file, confirm, pay, ...), plus a control with a formaction, a link that runs

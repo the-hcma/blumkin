@@ -2821,3 +2821,40 @@ def test_the_file_goes_to_the_element_that_was_probed_not_to_a_fresh_lookup(
     # The handle was taken, probed, written to and probed again; the locator itself never wrote.
     assert calls.count("upload") == 1
     assert calls.index("handle-evaluate") < calls.index("upload")
+
+
+def test_the_describe_script_collects_every_name_the_clicked_element_goes_by() -> None:
+    from blumkin.browser.cdp import _DESCRIBE_CONTROL_JS
+
+    assert "ownNames" in _DESCRIBE_CONTROL_JS
+    for needle in ("e.value", "e.id", "e.title", "e.innerText", "ekids"):
+        assert needle in _DESCRIBE_CONTROL_JS
+
+
+def test_the_clicked_elements_own_names_reach_the_control_info() -> None:
+    pw, driver = _driver()
+    pw.page.element_info["Calculate"] = {
+        **_PLAIN_ELEMENT,
+        "type": "submit",
+        "ownNames": ["Calculate", "Submit report"],
+    }
+    pw.page.role_counts[("button", "Calculate")] = [1]
+    seen: list[Any] = []
+
+    driver.checked_click("Calculate", "button", seen.append)
+
+    assert seen[0].own_names == ("Calculate", "Submit report")
+
+
+def test_an_overlong_or_overnumerous_name_list_is_reported_incomplete() -> None:
+    from blumkin.browser.cdp import _DESCRIBE_CONTROL_JS
+
+    assert "ownComplete" in _DESCRIBE_CONTROL_JS
+    pw, driver = _driver()
+    pw.page.element_info["Calculate"] = {**_PLAIN_ELEMENT, "ownNames": ["x"], "ownComplete": False}
+    pw.page.role_counts[("button", "Calculate")] = [1]
+    seen: list[Any] = []
+
+    driver.checked_click("Calculate", "button", seen.append)
+
+    assert seen[0].own_names_complete is False
