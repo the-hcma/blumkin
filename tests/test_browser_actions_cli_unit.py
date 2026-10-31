@@ -211,7 +211,7 @@ class _Raw:
     def title(self) -> str:
         return self.title_text
 
-    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> Any:
+    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool], is_task_host: Any = None) -> Any:
         self.sign_ins.append(is_sign_in_host("login.microsoftonline.com"))
         return contextlib.nullcontext()
 

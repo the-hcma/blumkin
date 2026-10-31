@@ -149,7 +149,7 @@ class _Raw:
             chunks=self.frame_chunks, reached_end=True, reached_top=True, steps=1, url="u"
         )
 
-    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> Any:
+    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool], is_task_host: Any = None) -> Any:
         return contextlib.nullcontext()
 
     def title(self) -> str:

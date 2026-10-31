@@ -702,10 +702,10 @@ class PlaywrightDriver:
             element = handle.get_property("1").as_element()
             if element is None:
                 return AccountPick(status="none", tiles=0)
-            clicked = self._page.evaluate_handle(
+            clicked = self._page.evaluate(
                 _PICK_ACCOUNT_JS, {**args, "click": element, "names": names}
             )
-            status = str(clicked.get_property("0").json_value())
+            status = str(clicked[0])
         except _playwright_error() as exc:
             raise self._action_error("pick the account on the sign-in page", exc) from exc
         return AccountPick(status=status, tiles=count)
@@ -748,15 +748,21 @@ class PlaywrightDriver:
         self._navigation_handler = handler
 
     @contextlib.contextmanager
-    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> Iterator[None]:
+    def sign_in_pass(
+        self,
+        is_sign_in_host: Callable[[str], bool],
+        is_task_host: Callable[[str], bool] | None = None,
+    ) -> Iterator[None]:
         """While the user signs in by hand, let identity-provider requests past the safety net.
 
         A login form POST, or the identity provider's POST back to the site, would otherwise be
         answered with an empty page and the sign-in could never finish. Only a request that goes
         to a sign-in host or comes from a page on one is let through, and only inside this block.
+        With ``is_task_host``, a top-level navigation out of a sign-in page may go only to a
+        sign-in host or a task host; any other is left to the navigation guard.
         """
         self._require_open()
-        handler = _sign_in_handler(is_sign_in_host)
+        handler = _sign_in_handler(is_sign_in_host, is_task_host)
         try:
             self._context.route("**/*", handler)
         except _playwright_error() as exc:
@@ -1353,7 +1359,9 @@ class RawBrowserDriver(Protocol):
     def read_text(self) -> PageText: ...
 
     def sign_in_pass(
-        self, is_sign_in_host: Callable[[str], bool]
+        self,
+        is_sign_in_host: Callable[[str], bool],
+        is_task_host: Callable[[str], bool] | None = None,
     ) -> AbstractContextManager[None]: ...
 
     def scroll_frame_text(
@@ -1786,7 +1794,10 @@ def _abort_non_get_navigation(route: Any) -> None:
         route.continue_()
 
 
-def _sign_in_handler(is_sign_in_host: Callable[[str], bool]) -> Callable[[Any], None]:
+def _sign_in_handler(
+    is_sign_in_host: Callable[[str], bool],
+    is_task_host: Callable[[str], bool] | None = None,
+) -> Callable[[Any], None]:
     """A route handler that continues sign-in traffic and hands everything else on."""
 
     def host_of(address: str) -> str:
@@ -1799,7 +1810,23 @@ def _sign_in_handler(is_sign_in_host: Callable[[str], bool]) -> Callable[[Any], 
             origin = host_of(str(request.frame.url))
         except Exception:  # a detached frame has no address; treat it as not a sign-in page
             origin = ""
-        if is_sign_in_host(host_of(str(request.url))) or (origin and is_sign_in_host(origin)):
+        target = host_of(str(request.url))
+        if is_sign_in_host(target):
+            route.continue_()
+            return
+        top_level = False
+        if is_task_host is not None:
+            try:
+                top_level = (
+                    bool(request.is_navigation_request()) and request.frame.parent_frame is None
+                )
+            except Exception:  # a detached frame: treat it as top level, the safer reading
+                top_level = True
+        if (
+            origin
+            and is_sign_in_host(origin)
+            and not (top_level and is_task_host is not None and not is_task_host(target))
+        ):
             route.continue_()
         else:
             route.fallback()

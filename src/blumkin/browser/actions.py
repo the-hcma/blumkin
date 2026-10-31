@@ -341,7 +341,10 @@ def goto_task(
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         pause = sleep or (lambda seconds: driver.wait_ms(round(seconds * 1000)))
-        with driver.sign_in_pass(lambda host: host_allowed(host, sign_in_hosts)):
+        with driver.sign_in_pass(
+            lambda host: host_allowed(host, sign_in_hosts),
+            lambda host: not hosts or host_allowed(host, hosts),
+        ):
             driver.goto(target)
             waited = _wait_through_sign_in(driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now)
         payload: dict[str, Any] = {"action": "goto", "ok": True, "task": task, "url": driver.url}
@@ -421,7 +424,9 @@ def sign_in_task(
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         pause = sleep or (lambda seconds: driver.wait_ms(round(seconds * 1000)))
-        with driver.sign_in_pass(lambda host: host_allowed(host, sign_in_hosts)):
+        with driver.sign_in_pass(
+            lambda host: host_allowed(host, sign_in_hosts), lambda host: host_allowed(host, hosts)
+        ):
             picked = driver.pick_account(email.strip(), sign_in_hosts, hosts)
             if picked.status != "ok":
                 reason = _PICK_REFUSALS.get(picked.status, "the page was not recognized")

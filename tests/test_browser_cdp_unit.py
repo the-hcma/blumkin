@@ -244,6 +244,12 @@ class _Page:
         self.calls.append(("get_by_role", role, name, exact))
         return _Locator(self, name, role)
 
+    def evaluate(self, script: str, arg: Any = None) -> Any:
+        self.calls.append(("evaluate", arg))
+        assert isinstance(arg, dict) and "click" in arg, "only the click pass uses evaluate"
+        self.calls.append(("tile-click", tuple(arg["names"])))
+        return [self.click_outcome, None, 1, []]
+
     def evaluate_handle(self, script: str, arg: Any = None) -> Any:
         self.calls.append(("evaluate_handle", arg))
         outcome = self.pick_outcome
@@ -265,9 +271,6 @@ class _Page:
             "2": outcome[1],
             "3": ["ada@example.com"],
         }
-        if isinstance(arg, dict) and "click" in arg:  # the second turn: re-judge and click
-            self.calls.append(("tile-click", tuple(arg["names"])))
-            values = {"0": self.click_outcome, "1": None, "2": 1, "3": []}
 
         class _Array:
             def get_property(self, index: str) -> _Prop:
@@ -2643,14 +2646,27 @@ def test_an_attach_that_keeps_failing_is_a_protocol_error() -> None:
 
 
 class _SignInRequest:
-    def __init__(self, url: str, frame_url: str | None) -> None:
+    def __init__(
+        self, url: str, frame_url: str | None, *, navigation: bool = False, top: bool = True
+    ) -> None:
         self.url = url
-        self.frame = type("Frame", (), {"url": frame_url})() if frame_url is not None else None
+        self._navigation = navigation
+        parent = None if top else object()
+        self.frame = (
+            type("Frame", (), {"url": frame_url, "parent_frame": parent})()
+            if frame_url is not None
+            else None
+        )
+
+    def is_navigation_request(self) -> bool:
+        return self._navigation
 
 
 class _SignInRoute:
-    def __init__(self, url: str, frame_url: str | None) -> None:
-        self.request = _SignInRequest(url, frame_url)
+    def __init__(
+        self, url: str, frame_url: str | None, *, navigation: bool = False, top: bool = True
+    ) -> None:
+        self.request = _SignInRequest(url, frame_url, navigation=navigation, top=top)
         self.outcome = ""
 
     def continue_(self) -> None:
@@ -2681,6 +2697,30 @@ def test_the_sign_in_route_continues_only_traffic_to_or_from_a_sign_in_host(
 
     handler = _sign_in_handler(lambda host: host == "login.microsoftonline.com")
     route = _SignInRoute(url, frame_url)
+
+    handler(route)
+
+    assert route.outcome == outcome
+
+
+@pytest.mark.parametrize(
+    ("url", "navigation", "top", "outcome"),
+    [
+        ("https://evil.example.org/", True, True, "fallback"),  # top-level out of the sign-in page
+        ("https://evil.example.org/", False, True, "continue"),  # a script or image subrequest
+        ("https://evil.example.org/", True, False, "continue"),  # a frame inside the sign-in page
+        ("https://erp.example.com/saml", True, True, "continue"),  # back to the task's own site
+    ],
+)
+def test_a_sign_in_page_may_navigate_the_window_only_to_a_task_or_sign_in_host(
+    url: str, navigation: bool, top: bool, outcome: str
+) -> None:
+    from blumkin.browser.cdp import _sign_in_handler
+
+    handler = _sign_in_handler(
+        lambda host: host == "login.microsoftonline.com", lambda host: host == "erp.example.com"
+    )
+    route = _SignInRoute(url, "https://login.microsoftonline.com/", navigation=navigation, top=top)
 
     handler(route)
 

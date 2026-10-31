@@ -296,9 +296,13 @@ class GuardedDriver:
         self._check_target(target)
         return self._raw.upload(label, path, target)
 
-    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> AbstractContextManager[None]:
+    def sign_in_pass(
+        self,
+        is_sign_in_host: Callable[[str], bool],
+        is_task_host: Callable[[str], bool] | None = None,
+    ) -> AbstractContextManager[None]:
         """Let identity-provider requests past the safety net while the user signs in by hand."""
-        return self._raw.sign_in_pass(is_sign_in_host)
+        return self._raw.sign_in_pass(is_sign_in_host, is_task_host)
 
     def wait_ms(self, milliseconds: int) -> None:
         """Pause, with the page's events delivered (for example a redirect finishing)."""
