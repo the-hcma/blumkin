@@ -21,8 +21,9 @@ _ROLE = re.compile(r"[A-Za-z]+")
 _ATTRIBUTES = re.compile(r"^(?:\s*\[[^\]]*\])*")
 #: Controls whose children are option lists a summary can stand in for.
 _OPTION_PARENTS = frozenset({"combobox", "listbox"})
-#: How many names a "nothing matched" error lists.
+#: How many names a "nothing matched" error lists, and how long each may be.
 _LISTED = 10
+_NAME_CHARS = 60
 
 
 def collapse_options(snapshot: str) -> str:
@@ -102,7 +103,7 @@ def scope(snapshot: str, role: str, name: str | None = None) -> tuple[str, int]:
     if matches:
         return first, matches
     asked = f"a {role}" if name is None else f"a {role} named {name!r}"
-    listed = ", ".join(repr(item) for item in seen[:_LISTED])
+    listed = ", ".join(repr(_one_line(item)) for item in seen[:_LISTED])
     more = f" (and {len(seen) - _LISTED} more)" if len(seen) > _LISTED else ""
     raise LookupError(f"Expected {asked}, got {listed + more if seen else 'none'}")
 
@@ -170,6 +171,12 @@ def _closing_quote(body: str) -> int | None:
             continue
         index += 1
     return None
+
+
+def _one_line(text: str) -> str:
+    """A page-supplied name as one printable line of at most `_NAME_CHARS` characters."""
+    printable = "".join(char if char.isprintable() else " " for char in text)
+    return " ".join(printable.split())[:_NAME_CHARS]
 
 
 def _quote(name: str | None) -> str:
