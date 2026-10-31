@@ -60,6 +60,9 @@ class BlumkinConfig:
     # chat/meeting/people-resolve skills closed instead of letting them hit a
     # Graph 400/403 - see docs/SECURITY-AT-A-GLANCE.md.
     account_type: str = "organizational"
+    #: The operator's physical address, optional and private (issue #613): never printed in a
+    #: listing, a diagnostic or a repr; only a task the config authorizes can read it.
+    address: str = field(default="", repr=False)
     browser: BrowserConfig = field(default_factory=lambda: BrowserConfig())
     # Opt-in Microsoft add-on: Files.ReadWrite for `docs create` (uploads a .docx
     # to OneDrive). Separate from files_scopes, which only unlocks chat-file
@@ -170,6 +173,9 @@ class BrowserTaskPolicy:
     dialog_confirm: tuple[str, ...] = ()
     #: Added to the built-in finalizing words; the built-in list can never be shortened.
     extra_deny_names: tuple[str, ...] = ()
+    #: Whether the task may read the profile's physical address (`browser address TASK`).
+    #: Off by default; nothing is ever sent to a site on its own.
+    use_profile_address: bool = False
     #: Folders `upload` may read from (absolute, or starting with `~/`). Empty means no
     #: upload at all: the default is deny.
     upload_dirs: tuple[str, ...] = ()
@@ -361,6 +367,8 @@ def list_profiles() -> list[dict[str, Any]]:
             "auth_present": auth_present,
             "default_tz": _string_values(table).get("default_tz", "").strip(),
             "email": _string_values(table).get("email", "").strip(),
+            # Whether one is stored, never the address itself.
+            "has_address": bool(_string_values(table).get("address", "").strip()),
             "is_default": name == marked_default,
             "name": name,
             "provider": provider,
@@ -413,6 +421,7 @@ def load_config(*, profile: str | None = None) -> BlumkinConfig:
         client_id = _client_id_from_google_oauth_file(google_oauth_client_file)
     return BlumkinConfig(
         account_type=_account_type(table),
+        address=string_values.get("address", "").strip(),
         browser=_browser_config(file_data),
         client_id=client_id,
         config_dir=directory,
@@ -466,6 +475,63 @@ def load_loop_setup() -> LoopSetup:
         return parse_loop_setup(directory, file_data)
     except LoopConfigError as exc:
         raise ProviderConfigError(str(exc)) from exc
+
+
+MAX_ADDRESS_CHARS = 300
+
+
+def set_profile_address(config_path: Path, *, profile: str, address: str) -> bool:
+    """Store (or, with an empty ``address``, remove) the profile's physical address.
+
+    A style-preserving ``tomlkit`` edit under the config lock, like ``set_profile_email``.
+    Raises ``ValueError`` for an address a TOML string cannot carry safely (a newline or other
+    control character would otherwise break every later command or inject a table). Returns
+    False when the file, the profile or the write is not there; the address is never put in
+    an error message.
+    """
+    value = address.strip()
+    if any(ch == "\x7f" or (ord(ch) < 0x20 and ch != "\t") for ch in value):
+        raise ValueError("the address must be a single line without control characters")
+    try:
+        value.encode("utf-8")
+    except UnicodeError as exc:
+        raise ValueError("the address holds characters that cannot be stored") from exc
+    if len(value) > MAX_ADDRESS_CHARS:
+        raise ValueError(f"the address must be at most {MAX_ADDRESS_CHARS} characters")
+    if not config_path.is_file():
+        return False
+    try:
+        with config_file_lock(config_path):
+            return _write_profile_address(config_path, profile, value)
+    except OSError:
+        return False
+
+
+def _write_profile_address(config_path: Path, profile: str, value: str) -> bool:
+    """The read-modify-write of `set_profile_address`, run under the config lock."""
+    try:
+        doc = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+    except OSError, UnicodeError, tomlkit.exceptions.TOMLKitError:
+        return False
+    profiles = doc.get("profiles")
+    if not isinstance(profiles, dict) or profile not in profiles:
+        return False
+    table = profiles[profile]
+    if not isinstance(table, dict):
+        return False
+    if value:
+        table["address"] = value
+    elif "address" in table:
+        del table["address"]
+    try:
+        config_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+        if value:
+            # The file now holds an address: make it private to the user, as the credential
+            # files are, even if it was created with looser bits.
+            config_path.chmod(0o600)
+    except OSError:
+        return False
+    return True
 
 
 def set_profile_email(
@@ -601,6 +667,7 @@ _TASK_POLICY_KEYS = frozenset(
         "form_url",
         "sign_in_hosts",
         "upload_dirs",
+        "use_profile_address",
     }
 )
 
@@ -733,9 +800,16 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 f"{prefix}.block_background_writes must be true or false in config.toml, "
                 f"got {strict!r}"
             )
+        wants_address = table.get("use_profile_address", False)
+        if not isinstance(wants_address, bool):
+            raise ProviderConfigError(
+                f"{prefix}.use_profile_address must be true or false in config.toml, "
+                f"got {wants_address!r}"
+            )
         policies[str(name)] = BrowserTaskPolicy(
             allowed_hosts=hosts,
             block_background_writes=strict,
+            use_profile_address=wants_address,
             allowed_controls=_string_list(
                 table.get("allowed_controls"), f"{prefix}.allowed_controls"
             ),

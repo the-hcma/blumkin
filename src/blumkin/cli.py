@@ -49,10 +49,13 @@ from blumkin.browser.actions import (
     DEFAULT_SIGN_IN_WAIT_S,
     MAX_READ_CHARS,
     MAX_READ_LIMIT,
+    AddressNotAuthorizedError,
+    AddressNotSetError,
     DownloadBlockedError,
     HostBlockedError,
     SignInTimeoutError,
     UploadBlockedError,
+    address_task,
     click_task,
     download_task,
     fill_task,
@@ -142,6 +145,7 @@ from blumkin.browser.receipt_rehome import (
 from blumkin.browser.transcript import parse_duration
 from blumkin.capabilities import capability_summary
 from blumkin.config import (
+    MAX_ADDRESS_CHARS,
     BlumkinConfig,
     config_dir,
     config_dir_source,
@@ -150,6 +154,7 @@ from blumkin.config import (
     load_browser_setup,
     load_config,
     load_loop_setup,
+    set_profile_address,
     set_profile_email,
 )
 from blumkin.contacts import format_people_context_human
@@ -677,6 +682,15 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
     if isinstance(exc, TaskNotFoundError):
         slug, code = "not_found", EXIT_NOT_FOUND
         hint = f"Create it first: `blumkin browser profile create {task or 'TASK'}`."
+    elif isinstance(exc, AddressNotAuthorizedError):
+        slug, code = "address_not_authorized", EXIT_OTHER
+        hint = (
+            f"Set `use_profile_address = true` under [browser.tasks.{task or 'TASK'}] in "
+            "config.toml if this task should read the profile's address."
+        )
+    elif isinstance(exc, AddressNotSetError):
+        slug, code = "not_found", EXIT_NOT_FOUND
+        hint = "Store one with `blumkin profiles set-address` (it prompts, or use --stdin)."
     elif isinstance(exc, SubmitBlockedError):
         slug, code = "submit_blocked", EXIT_OTHER
     elif isinstance(exc, UploadBlockedError):
@@ -2616,6 +2630,24 @@ def browser_launch(
     else:
         lines.append(payload["sign_in"])
     emit_lines(lines)
+
+
+@browser.command("address", epilog=help_text.BROWSER_ADDRESS_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_address(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Print the profile's physical address, for a task authorized to use it."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        cfg = _load_config()
+        payload = address_task(load_browser_setup(), task, address=cfg.address, profile=cfg.profile)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([sanitize_terminal(payload["address"])])
 
 
 @browser.command("click", epilog=help_text.BROWSER_CLICK_EPILOG)
@@ -4669,6 +4701,80 @@ def profiles_set_email(ctx: click.Context, email: str | None, as_json_flag: bool
         emit_json({"ok": True, "email": address, "profile": cfg.profile})
     else:
         emit_lines([f"Recorded {address} for profile {cfg.profile!r}."])
+    raise SystemExit(EXIT_SUCCESS)
+
+
+@profiles.command("set-address", epilog=help_text.PROFILES_SET_ADDRESS_EPILOG)
+@click.option(
+    "--address",
+    "address",
+    default=None,
+    help="The address to store (it lands in shell history and `ps`; prefer --stdin or the prompt).",
+)
+@click.option("--stdin", "from_stdin", is_flag=True, help="Read the address from standard input.")
+@click.option("--clear", "clear", is_flag=True, help="Remove the stored address.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def profiles_set_address(
+    ctx: click.Context,
+    address: str | None,
+    from_stdin: bool,
+    clear: bool,
+    as_json_flag: bool,
+) -> None:
+    """Store, or with --clear remove, the operator's physical address on the active profile.
+
+    Optional and unset by default. With no option the address is asked for at a hidden prompt.
+    It is never printed back, and never appears in `profiles list`, `doctor` or errors; only a
+    browser task whose config sets `use_profile_address = true` can read it.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    given = [address is not None, from_stdin, clear]
+    if sum(given) > 1:
+        _emit_error(
+            error="usage_error",
+            message="Expected at most one of --address, --stdin and --clear, got several",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    cfg = _load_config()
+    if clear:
+        value = ""
+    elif from_stdin:
+        # Bounded, and a multi-line address (as copied from a letter) becomes one line.
+        raw = sys.stdin.read(MAX_ADDRESS_CHARS * 4)
+        value = ", ".join(part.strip() for part in raw.splitlines() if part.strip())
+    elif address is not None:
+        value = address.strip()
+    else:
+        value = click.prompt(
+            "Address", hide_input=True, default="", show_default=False, err=True
+        ).strip()
+    if not clear and not value:
+        _emit_error(
+            error="usage_error",
+            message="Expected an address, got an empty one (use --clear to remove it)",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    try:
+        written = set_profile_address(cfg.config_path, profile=cfg.profile, address=value)
+    except ValueError as exc:
+        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        raise SystemExit(EXIT_USAGE) from exc
+    if not written:
+        _emit_error(
+            error="usage_error",
+            message=f"could not write the address into {cfg.config_path}",
+            as_json=as_json,
+            hint=f"Check that [profiles.{cfg.profile}] exists in config.toml.",
+        )
+        raise SystemExit(EXIT_USAGE)
+    if as_json:
+        emit_json({"address_set": bool(value), "ok": True, "profile": cfg.profile})
+    else:
+        verb = "Stored an address for" if value else "Cleared the address of"
+        emit_lines([f"{verb} profile {cfg.profile!r}."])
     raise SystemExit(EXIT_SUCCESS)
 
 
