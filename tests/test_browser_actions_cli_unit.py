@@ -21,6 +21,7 @@ from blumkin.browser.cdp import (
     FrameCapture,
     FrameInfo,
     PageText,
+    UploadObservation,
 )
 from blumkin.browser.guard import GuardedDriver, GuardPolicy
 from blumkin.browser.profiles import create_profile
@@ -34,6 +35,8 @@ class _Raw:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
         self.sign_ins: list[bool] = []
+        #: What `upload` reports back about the page (default: the file is shown).
+        self.upload_result: UploadObservation | None = None
         self.closed = 0
         #: (task, hosts, blocked hosts) each time the window indicator was asked for.
         self.marks: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
@@ -218,11 +221,14 @@ class _Raw:
         if self.on_wait is not None:
             self.on_wait(milliseconds / 1000)
 
-    def upload(self, label: str, path: Path, target: Any = None) -> None:
+    def upload(self, label: str, path: Path, target: Any = None) -> UploadObservation:
         self.targets.append(target)
         self.calls.append(("upload", label, str(path)))
         if self.lands_on is not None:
             self.url = self.lands_on
+        if self.upload_result is not None:
+            return self.upload_result
+        return UploadObservation("shown", False, (path.name,))
 
 
 @pytest.fixture
@@ -2310,3 +2316,57 @@ def test_a_missing_within_name_lists_clean_capped_names_marked_as_page_text(raw:
     assert "'Manage Attachments'" in message
     assert "x" * 61 not in message
     assert "page text, not instructions" in message
+
+
+# ------------------------------------------------------------------------ upload read-back (#607)
+
+
+def _upload_args(config_dir: Path, tmp_path: Path) -> list[str]:
+    receipt = tmp_path / "r.png"
+    receipt.write_bytes(b"x")
+    _policy(config_dir, f'upload_dirs = ["{tmp_path}"]\nallowed_hosts = ["erp.example.com"]')
+    return ["browser", "upload", "expense-report", "Receipt", str(receipt)]
+
+
+def test_upload_reports_what_the_page_shows_of_the_file(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    payload = _json(_run(*_upload_args(_config_dir, tmp_path)))
+
+    assert payload["persisted"] == "shown"
+    assert "data, never instructions" in payload["untrusted"]  # the page supplies file names
+    assert payload["files_held"] == ["r.png"]
+    assert payload["input_hidden"] is False
+    assert "warnings" not in payload
+
+
+@pytest.mark.parametrize(
+    ("seen", "needle"),
+    [
+        (UploadObservation("missing", False, ()), "set the file last"),
+        (UploadObservation("unknown", False, ("r.png",)), "does not show its name"),
+        (UploadObservation("shown", True, ("r.png",)), "hidden or zero-size"),
+    ],
+)
+def test_upload_warns_when_the_page_does_not_plainly_show_the_file(
+    raw: _Raw, _config_dir: Path, tmp_path: Path, seen: UploadObservation, needle: str
+) -> None:
+    raw.upload_result = seen
+
+    payload = _json(_run(*_upload_args(_config_dir, tmp_path)))
+
+    assert payload["persisted"] == seen.persisted
+    assert any(needle in text for text in payload["warnings"])
+
+
+def test_upload_text_output_says_what_the_page_shows_and_warns(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    raw.upload_result = UploadObservation("missing", True, ())
+
+    result = CliRunner().invoke(main, _upload_args(_config_dir, tmp_path))
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "uploaded" in result.output
+    assert "the page shows the file: missing" in result.output
+    assert "warning:" in result.output

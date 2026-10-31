@@ -29,6 +29,7 @@ from blumkin.browser.cdp import (
     BrowserActionError,
     FieldTarget,
     PageText,
+    UploadObservation,
     checked_http_url,
     field_display,
     field_matches,
@@ -648,12 +649,42 @@ def upload_task(
                 f"Expected the page on an allowed_hosts host of task {task!r} before uploading, "
                 f"got {page_host or 'no host'!r}"
             )
-        driver.upload(label, resolved, target)
+        seen = driver.upload(label, resolved, target)
         payload = _field_payload("upload", task, label, target, None, None)
         payload["file"] = resolved.name
+        payload["files_held"] = list(seen.files)
+        if seen.files:
+            payload["untrusted"] = UNTRUSTED_NOTE  # the page supplies these names
+        payload["input_hidden"] = seen.input_hidden
+        payload["persisted"] = seen.persisted
+        warnings = _upload_warnings(seen)
+        if warnings:
+            payload["warnings"] = warnings
         return payload
 
     return _with_driver(config, task, act, check_after=True, check_before=False)
+
+
+def _upload_warnings(seen: UploadObservation) -> list[str]:
+    """What to tell the caller when the page does not plainly show the file it was given."""
+    warnings: list[str] = []
+    if seen.persisted == "missing":
+        warnings.append(
+            "the file's name was not found on the page after the upload: a form that re-renders "
+            "after a field changes drops a file chosen earlier, so set the file last and check "
+            "the row"
+        )
+    elif seen.persisted == "unknown":
+        warnings.append(
+            "the input holds the file but the page does not show its name: check the row "
+            "before saving"
+        )
+    if seen.input_hidden:
+        warnings.append(
+            "the file input is hidden or zero-size (a drop zone's input): it may not be the "
+            "one the form saves, so check the attachment after saving"
+        )
+    return warnings
 
 
 def _checked_output(out: Path) -> Path:

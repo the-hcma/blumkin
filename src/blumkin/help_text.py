@@ -923,6 +923,15 @@ config.toml (absolute, or starting with `~/`), and the page must be on a host th
 declared in `allowed_hosts`; with either missing nothing can be uploaded, so a page cannot
 make an agent upload an arbitrary file or send a receipt to another site. Receipts stay on this
 machine and go only to the page you pointed the task at.
+
+`ok` only means the file was handed to the input. The command then waits half a second and
+reads what the page shows: `persisted` is `shown` (the file's name is on the page near the
+field), `missing` (a re-render dropped it) or `unknown` (the input holds it but the page does
+not show it), `files_held` lists the names the input holds, and `input_hidden` flags a hidden
+or zero-size input, such as a drop zone's, which may not be the one the form saves. A `warnings`
+list says what to check. On a form that re-renders after a field changes (Oracle ADF, for
+one), set the file last: fill the row's other fields first, because a later edit of the same
+row loses a file chosen earlier.
 """
 
 BROWSER_SELECT_EPILOG = """

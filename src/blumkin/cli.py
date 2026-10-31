@@ -658,6 +658,11 @@ def _field_action(
         lines.append(
             f"  the field now holds {sanitize_terminal(payload['read_back'])!r}, not what was set"
         )
+    if "persisted" in payload:  # an upload: what the page shows of the file
+        lines.append(f"  the page shows the file: {payload['persisted']}")
+        lines.extend(
+            f"  warning: {sanitize_terminal(text)}" for text in payload.get("warnings", ())
+        )
     emit_lines(lines)
 
 

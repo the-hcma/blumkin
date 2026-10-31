@@ -17,6 +17,7 @@ from blumkin.browser.cdp import (
     FrameCapture,
     FrameInfo,
     PageText,
+    UploadObservation,
 )
 from blumkin.browser.guard import (
     DEFAULT_DENY_NAMES,
@@ -166,8 +167,9 @@ class _Raw:
             vet(self.select_probe)
         return option
 
-    def upload(self, label: str, path: Path, target: object = None) -> None:
+    def upload(self, label: str, path: Path, target: object = None) -> UploadObservation:
         self.calls.append(("upload", label, str(path)))
+        return UploadObservation("shown", False, (path.name,))
 
     def mark_window(
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
