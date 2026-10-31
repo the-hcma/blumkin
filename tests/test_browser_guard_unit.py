@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from blumkin.browser.cdp import (
+    AccountPick,
     BrowserActionError,
     ControlInfo,
     DownloadedFile,
@@ -36,6 +37,8 @@ class _Raw:
 
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
+        #: The names a picked tile shows the guard's vet callback.
+        self.tile_names: list[str] = ["ada@example.com"]
         self.controls: dict[str, ControlInfo] = {}
         self.fields: dict[str, ControlInfo] = {}
         #: What the guard's vet callback is shown when `select` clicks something.
@@ -146,7 +149,7 @@ class _Raw:
             chunks=self.frame_chunks, reached_end=True, reached_top=True, steps=1, url="u"
         )
 
-    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> Any:
+    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool], is_task_host: Any = None) -> Any:
         return contextlib.nullcontext()
 
     def title(self) -> str:
@@ -175,6 +178,18 @@ class _Raw:
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
     ) -> None:
         self.marks.append((task, tuple(hosts), tuple(blocked)))
+
+    def pick_account(
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Any = None,
+    ) -> AccountPick:
+        self.calls.append(("pick_account", email, tuple(hosts), tuple(blocked)))
+        if vet_names is not None and not vet_names(self.tile_names):
+            return AccountPick("denied", 1)
+        return AccountPick("ok", 1)
 
     def wait_ms(self, milliseconds: int) -> None:
         self.calls.append(("wait_ms", milliseconds))
@@ -516,6 +531,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "frame_list",
         "goto",
         "mark_window",
+        "pick_account",
         "press",
         "read_frame_text",
         "read_text",
@@ -1456,3 +1472,25 @@ def test_a_reset_button_is_not_a_draft_control() -> None:
 
     with pytest.raises(SubmitBlockedError, match="must be a button"):
         driver.click("Calculate")
+
+
+@pytest.mark.parametrize("name", ["Submit ada@example.com", "Complete ada@example.com", "Pay now"])
+def test_pick_account_refuses_a_tile_named_like_a_finalizing_action(name: str) -> None:
+    raw, driver = _guard()
+    raw.tile_names = ["Ada", name]
+
+    assert driver.pick_account("ada@example.com", ["login.example.net"], []).status == "denied"
+
+
+def test_pick_account_honours_the_tasks_extra_deny_names() -> None:
+    raw, driver = _guard(deny=("Approve",))
+    raw.tile_names = ["Approve ada@example.com"]
+
+    assert driver.pick_account("ada@example.com", ["login.example.net"], []).status == "denied"
+
+
+def test_pick_account_lets_a_plain_account_tile_through() -> None:
+    raw, driver = _guard()
+    raw.tile_names = ["Ada Lovelace\nada@example.com"]
+
+    assert driver.pick_account("ada@example.com", ["login.example.net"], []).status == "ok"

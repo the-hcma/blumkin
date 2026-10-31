@@ -52,6 +52,8 @@ from blumkin.config import BrowserSetup
 from blumkin.output import sanitize_terminal
 from blumkin.prompt_injection import scan_for_injection
 
+#: The plain address shape the account picker can match as a whole token.
+_ADDRESS_SYNTAX = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
 _ARIA_FIELD_ROLES = r"(?:combobox|searchbox|slider|spinbutton|textbox)"
 
 # A field line's key, plain (`- textbox "Name" [attr]`) or, when the name needs it, wrapped in
@@ -96,6 +98,8 @@ MAX_TITLE_CHARS = 200
 #: How long `goto` waits for the user to sign in when the site sends the page to an identity
 #: provider (seconds); the page address is polled once a second.
 DEFAULT_SIGN_IN_WAIT_S = 120.0
+#: How long `sign-in` waits, after the click, for the page to reach one of the task's hosts.
+DEFAULT_PICK_WAIT_S = 20.0
 
 #: Identity providers `goto` waits through. Only providers whose host is the same for everyone
 #: are built in: anyone can register an Okta, Auth0, OneLogin or Ping tenant, so those are named
@@ -117,6 +121,14 @@ UNTRUSTED_NOTE = (
 
 class SignInTimeoutError(HostBlockedError):
     """The page was still on the identity provider's sign-in page when the wait ended."""
+
+
+class SignInNotAuthorizedError(BrowserActionError):
+    """The task did not set `sign_in_account = true`, or the profile has no account address."""
+
+
+class SignInRefusedError(BrowserActionError):
+    """The page is not one `browser sign-in` may act on; the user signs in by hand."""
 
 
 class UploadBlockedError(BrowserActionError):
@@ -329,7 +341,10 @@ def goto_task(
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         pause = sleep or (lambda seconds: driver.wait_ms(round(seconds * 1000)))
-        with driver.sign_in_pass(lambda host: host_allowed(host, sign_in_hosts)):
+        with driver.sign_in_pass(
+            lambda host: host_allowed(host, sign_in_hosts),
+            lambda host: not hosts or host_allowed(host, hosts),
+        ):
             driver.goto(target)
             waited = _wait_through_sign_in(driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now)
         payload: dict[str, Any] = {"action": "goto", "ok": True, "task": task, "url": driver.url}
@@ -339,6 +354,116 @@ def goto_task(
         return payload
 
     return _with_driver(config, task, act, check_before=False, check_after=True)
+
+
+def mask_email(address: str) -> str:
+    """`ada@example.com` as `a***@example.com`, so a log line does not carry the account."""
+    local, _, domain = address.partition("@")
+    return f"{local[:1]}***@{domain}" if domain else "***"
+
+
+_PICK_REFUSALS = {
+    "changed": "the tile changed between the check and the click, so nothing was clicked",
+    "denied": "the tile is named like a finalizing action (submit, send, pay), so none was clicked",
+    "ambiguous": "more than one tile on the page matches the account, so none was clicked",
+    "none": "no tile on the page is for the profile's account, so none was clicked",
+    "unsupported": (
+        "the page asks for something to be typed (a password, a code), which is not an "
+        "account picker"
+    ),
+    "wrong_origin": (
+        "the page is not an https sign-in page of this task, or it is one of the task's own sites"
+    ),
+}
+
+
+def sign_in_task(
+    config: BrowserSetup,
+    task: str,
+    *,
+    email: str,
+    wait_s: float = DEFAULT_PICK_WAIT_S,
+    sleep: Callable[[float], None] | None = None,
+    now: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Pick the profile's own account on an identity provider's account picker.
+
+    Needs `sign_in_account = true` in the task's table and an `email` on the profile. The
+    browser must already show the picker (open the site with `goto` first). Exactly one tile
+    for that address is clicked, and only on an https sign-in host (the built-in ones and the
+    task's `sign_in_hosts`) that is not one of the task's own `allowed_hosts`; anything else
+    (another account, several matching tiles, a page with a field to type into, another site)
+    is refused and the user signs in by hand. Nothing is typed, no permission is added to the
+    task, and nothing needs undoing. After the click it waits up to `wait_s` seconds for the
+    page to reach an allowed host; if a password, code or consent page follows, the result says
+    the user must finish.
+    """
+    declared = config.browser.tasks.get(task)
+    if declared is None or not declared.sign_in_account:
+        raise SignInNotAuthorizedError(
+            f"Expected [browser.tasks.{task}] to set sign_in_account = true in config.toml "
+            "before picking an account, got no such permission"
+        )
+    if not declared.allowed_hosts:
+        raise SignInNotAuthorizedError(
+            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
+            "picking an account, got none (the task's own sites are what the picker is told "
+            "apart from, and where the sign-in should end)"
+        )
+    if not email.strip():
+        raise SignInNotAuthorizedError(
+            "Expected the profile to record its account address (profiles set-email), got none"
+        )
+    if not _ADDRESS_SYNTAX.fullmatch(email.strip()):
+        raise SignInNotAuthorizedError(
+            "Expected the profile's account address to be one plain address "
+            "(local@domain.tld), got a different shape"
+        )
+    sign_in_hosts = sign_in_hosts_for(config, task)
+    hosts = declared.allowed_hosts
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        pause = sleep or (lambda seconds: driver.wait_ms(round(seconds * 1000)))
+        with driver.sign_in_pass(
+            lambda host: host_allowed(host, sign_in_hosts), lambda host: host_allowed(host, hosts)
+        ):
+            picked = driver.pick_account(email.strip(), sign_in_hosts, hosts)
+            if picked.status != "ok":
+                reason = _PICK_REFUSALS.get(picked.status, "the page was not recognized")
+                count = f" ({picked.tiles})" if picked.status == "ambiguous" else ""
+                raise SignInRefusedError(
+                    f"Expected one tile for the profile's account on a sign-in page, got: "
+                    f"{reason}{count}; sign in by hand in the browser window"
+                )
+            handover = False
+            try:
+                _wait_through_sign_in(driver, hosts, sign_in_hosts, wait_s, pause, now)
+            except SignInTimeoutError:
+                handover = True
+        host = urlsplit(driver.url).hostname or ""
+        if not host_allowed(host, hosts) and not host_allowed(host, sign_in_hosts):
+            raise HostBlockedError(
+                f"Expected the page on an allowed_hosts or sign-in host of task {task!r} after "
+                f"picking the account, got {host or 'no host'!r}; do not continue on it"
+            )
+        payload: dict[str, Any] = {
+            "account": mask_email(email.strip()),
+            "action": "sign-in",
+            "handover": handover,
+            "host": host,
+            "ok": True,
+            "selected": True,
+            "task": task,
+        }
+        if handover or (hosts and not host_allowed(host, hosts)):
+            payload["handover"] = True
+            payload["next"] = (
+                "The account was selected. Finish signing in by hand in the browser window "
+                "(password, a code, consent), then run `blumkin browser goto` again."
+            )
+        return payload
+
+    return _with_driver(config, task, act, check_before=False)
 
 
 def handoff_task(

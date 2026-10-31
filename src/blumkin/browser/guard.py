@@ -37,6 +37,7 @@ from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
     DEFAULT_CLICK_WAIT_S,
     FIELD_ROLES,
+    AccountPick,
     BrowserActionError,
     ControlInfo,
     DownloadedFile,
@@ -224,6 +225,25 @@ class GuardedDriver:
         """Show the task's indicator on the page blumkin is attached to (on `hosts` only)."""
         self._raw.mark_window(task, hosts, blocked)
 
+    def pick_account(
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Callable[[Sequence[str]], bool] | None = None,
+    ) -> AccountPick:
+        """Select the one account tile for ``email`` on an identity provider's picker.
+
+        Not a control click: it works only on an identity-provider host that is not one of
+        the task's own, never types, and reports instead of guessing; see the driver.
+        """
+
+        def clean(names: Sequence[str]) -> bool:
+            lines = [line for name in names for line in (name, *name.splitlines())]
+            return not any(_is_denied(line, self._deny) for line in lines)
+
+        return self._raw.pick_account(email, hosts, blocked, clean)
+
     def press(self, label: str, key: str) -> None:
         action = f"press {key!r} in {label!r}"
         if not _key_is_safe(key):
@@ -276,9 +296,13 @@ class GuardedDriver:
         self._check_target(target)
         return self._raw.upload(label, path, target)
 
-    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> AbstractContextManager[None]:
+    def sign_in_pass(
+        self,
+        is_sign_in_host: Callable[[str], bool],
+        is_task_host: Callable[[str], bool] | None = None,
+    ) -> AbstractContextManager[None]:
         """Let identity-provider requests past the safety net while the user signs in by hand."""
-        return self._raw.sign_in_pass(is_sign_in_host)
+        return self._raw.sign_in_pass(is_sign_in_host, is_task_host)
 
     def wait_ms(self, milliseconds: int) -> None:
         """Pause, with the page's events delivered (for example a redirect finishing)."""

@@ -114,6 +114,14 @@ class BrowserDriver(Protocol):
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
     ) -> None: ...
 
+    def pick_account(
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Callable[[Sequence[str]], bool] | None = None,
+    ) -> AccountPick: ...
+
     def press(self, label: str, key: str) -> None: ...
 
     def read_frame_text(
@@ -150,6 +158,15 @@ class BrowserDriver(Protocol):
     def url(self) -> str: ...
 
     def wait_ms(self, milliseconds: int) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AccountPick:
+    """What `pick_account` found on the page: `ok` (one tile, clicked), `wrong_origin`,
+    `unsupported` (a field to type into), `none` (no tile for the account) or `ambiguous`."""
+
+    status: str
+    tiles: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -652,6 +669,47 @@ class PlaywrightDriver:
             injection_warning=scan_for_injection(text, location="frame.text").to_payload(),
         )
 
+    def pick_account(
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Callable[[Sequence[str]], bool] | None = None,
+    ) -> AccountPick:
+        """Click the one account tile bound to ``email`` on an identity provider's picker.
+
+        Everything is decided in one evaluation on the page itself, so a redirect between a
+        check and the click cannot change what is judged: the page must be https on one of
+        ``hosts`` and not on one of ``blocked`` (the task's own sites); it must show no field
+        to type into (a password or code page is not a picker); and exactly one clickable
+        element, outermost, must carry the address as a whole word in its test id, label or
+        text. Anything else is reported, not clicked. Nothing is typed. ``vet_names`` (the guard's
+        finalizing-name check) sees the tile's names before the click; the click then re-judges
+        the same element on the page and requires the same names, so a tile changed in between
+        is not clicked.
+        """
+        self._require_open()
+        try:
+            args: dict[str, Any] = {"blocked": list(blocked), "email": email, "hosts": list(hosts)}
+            handle = self._page.evaluate_handle(_PICK_ACCOUNT_JS, args)
+            status = str(handle.get_property("0").json_value())
+            count = int(handle.get_property("2").json_value() or 0)
+            if status != "ok":
+                return AccountPick(status=status, tiles=count)
+            names = [str(n) for n in handle.get_property("3").json_value() or ()]
+            if vet_names is not None and not vet_names(names):
+                return AccountPick(status="denied", tiles=1)
+            element = handle.get_property("1").as_element()
+            if element is None:
+                return AccountPick(status="none", tiles=0)
+            clicked = self._page.evaluate(
+                _PICK_ACCOUNT_JS, {**args, "click": element, "names": names}
+            )
+            status = str(clicked[0])
+        except _playwright_error() as exc:
+            raise self._action_error("pick the account on the sign-in page", exc) from exc
+        return AccountPick(status=status, tiles=count)
+
     def read_text(self) -> PageText:
         self._require_open()
         try:
@@ -690,15 +748,21 @@ class PlaywrightDriver:
         self._navigation_handler = handler
 
     @contextlib.contextmanager
-    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool]) -> Iterator[None]:
+    def sign_in_pass(
+        self,
+        is_sign_in_host: Callable[[str], bool],
+        is_task_host: Callable[[str], bool] | None = None,
+    ) -> Iterator[None]:
         """While the user signs in by hand, let identity-provider requests past the safety net.
 
         A login form POST, or the identity provider's POST back to the site, would otherwise be
         answered with an empty page and the sign-in could never finish. Only a request that goes
         to a sign-in host or comes from a page on one is let through, and only inside this block.
+        With ``is_task_host``, a top-level navigation out of a sign-in page may go only to a
+        sign-in host or a task host; any other is left to the navigation guard.
         """
         self._require_open()
-        handler = _sign_in_handler(is_sign_in_host)
+        handler = _sign_in_handler(is_sign_in_host, is_task_host)
         try:
             self._context.route("**/*", handler)
         except _playwright_error() as exc:
@@ -1275,6 +1339,14 @@ class RawBrowserDriver(Protocol):
 
     def raw_press(self, label: str, key: str) -> None: ...
 
+    def pick_account(
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Callable[[Sequence[str]], bool] | None = None,
+    ) -> AccountPick: ...
+
     def read_frame_text(
         self,
         index: int,
@@ -1287,7 +1359,9 @@ class RawBrowserDriver(Protocol):
     def read_text(self) -> PageText: ...
 
     def sign_in_pass(
-        self, is_sign_in_host: Callable[[str], bool]
+        self,
+        is_sign_in_host: Callable[[str], bool],
+        is_task_host: Callable[[str], bool] | None = None,
     ) -> AbstractContextManager[None]: ...
 
     def scroll_frame_text(
@@ -1550,6 +1624,86 @@ _SELECTED_TEXT_JS = (
     "(e) => e.selectedOptions && e.selectedOptions[0] ? e.selectedOptions[0].label : ''"
 )
 
+#: Finds the one account tile for an address on an identity provider's picker; run on the page.
+#: Returns [status, element, count] (see `AccountPick`). The page must be https on a listed
+#: host and not on a blocked one, and must show nothing to type into. A tile is the actionable
+#: element (a button or link, or the nearest one around a marked child) whose own names (text,
+#: labels, titles, referenced labels) hold the address as a whole token and no other address,
+#: carry no word such as remove, sign out, send, code, confirm or allow, and link nowhere off
+#: the listed hosts. Anything with `@` in a name must be exactly the address.
+_PICK_ACCOUNT_JS = r"""(args) => {
+  const lower = (t) => String(t || '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const want = lower(args.email);
+  const strip = (h) => h.toLowerCase().replace(/\.+$/, '');
+  const hostMatch = (host, p) => p.startsWith('*.')
+    ? (host.endsWith(p.slice(1)) && host.length > p.length - 1) : host === p;
+  const here = strip(location.hostname);
+  if (location.protocol !== 'https:' || !args.hosts.some((p) => hostMatch(here, p))
+      || args.blocked.some((p) => hostMatch(here, p))) return ['wrong_origin', null, 0];
+  const shown = (e) => !!(e.offsetWidth || e.offsetHeight);
+  const skip = ['hidden', 'submit', 'button', 'checkbox', 'radio', 'image', 'reset'];
+  const fields = Array.from(document.querySelectorAll(
+    'input, textarea, select, [contenteditable]:not([contenteditable=false]), '
+    + '[role=textbox], [role=combobox], [role=searchbox]')).filter((e) =>
+    !(e.tagName === 'INPUT' && skip.includes(e.type)) && shown(e));
+  if (fields.length) return ['unsupported', null, fields.length];
+  const denied = ['remove', 'forget', 'sign[ -]?out', 'log[ -]?out', 'delete', 'allow',
+    'authori[sz]e', 'grant', 'consent', 'accept', 'approve', 'revoke', 'send', 'resend',
+    'code', 'confirm', 'verify', 'sms', 'text', 'call', 'password', 'passkey', 'create',
+    'register', 'sign[ -]?up', 'add', 'another', 'different', 'other', 'continue', 'next'];
+  const deny = new RegExp('\\b(' + denied.join('|') + ')\\b');
+  const actionable = 'a[href], button, [role=button], [role=link]';
+  const offHost = (el) => [el.closest('a[href]')].filter(Boolean).concat(
+    Array.from(el.querySelectorAll('a[href]'))).some((a) => {
+    try {
+      const u = new URL(a.href, location.href);
+      return u.protocol !== 'https:' || !args.hosts.some((p) => hostMatch(strip(u.hostname), p));
+    } catch (e) { return true; }
+  });
+  const names = (el) => {
+    const root = el.getRootNode();
+    const by = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean).map(
+      (id) => { const n = root.getElementById ? root.getElementById(id) : null;
+        return n ? n.innerText || n.textContent : ''; });
+    const kids = Array.from(el.querySelectorAll('[aria-label], [title], [alt], [data-test-id]'))
+      .map((k) => [k.getAttribute('aria-label'), k.getAttribute('title'),
+        k.getAttribute('alt'), k.getAttribute('data-test-id')].join(' '));
+    return [el.getAttribute('data-test-id'), el.getAttribute('aria-label'),
+      el.getAttribute('title'), el.innerText, ...by, ...kids].map(lower);
+  };
+  const tokens = (text) => text.split(/[\s"<>()\[\],;:]+/).map(
+    (t) => t.replace(/[.!?]+$/, '')).filter(Boolean);
+  const candidates = new Set();
+  for (const el of document.querySelectorAll(actionable + ', [data-test-id]')) {
+    candidates.add(el.matches(actionable) ? el : (el.closest(actionable) || el));
+  }
+  const usable = (el) => {
+    const css = getComputedStyle(el);
+    return shown(el) && css.visibility === 'visible' && css.pointerEvents !== 'none'
+      && !el.disabled && el.getAttribute('aria-disabled') !== 'true'
+      && !el.closest('[inert], [aria-hidden=true], fieldset:disabled');
+  };
+  const hits = Array.from(candidates).filter((el) => {
+    if (!usable(el)) return false;
+    const parts = names(el);
+    const found = parts.flatMap(tokens).filter((t) => t.includes('@'));
+    if (!found.includes(want) || found.some((t) => t !== want)) return false;
+    return !deny.test(parts.join(' \n ')) && !offHost(el);
+  });
+  const tiles = hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
+  if (tiles.length === 0) return ['none', null, 0];
+  if (tiles.length > 1) return ['ambiguous', null, tiles.length];
+  const seen = names(tiles[0]);
+  if (args.click) {
+    if (tiles[0] !== args.click || JSON.stringify(seen) !== JSON.stringify(args.names)) {
+      return ['changed', null, 1, []];
+    }
+    tiles[0].click();
+    return ['ok', null, 1, []];
+  }
+  return ['ok', tiles[0], 1, seen];
+}"""
+
 _DESCRIBE_CONTROL_JS = (
     "(e) => { const sel = 'dialog, [role=dialog], [role=alertdialog]'; "
     "const d = e.closest(sel); "
@@ -1640,7 +1794,10 @@ def _abort_non_get_navigation(route: Any) -> None:
         route.continue_()
 
 
-def _sign_in_handler(is_sign_in_host: Callable[[str], bool]) -> Callable[[Any], None]:
+def _sign_in_handler(
+    is_sign_in_host: Callable[[str], bool],
+    is_task_host: Callable[[str], bool] | None = None,
+) -> Callable[[Any], None]:
     """A route handler that continues sign-in traffic and hands everything else on."""
 
     def host_of(address: str) -> str:
@@ -1653,7 +1810,23 @@ def _sign_in_handler(is_sign_in_host: Callable[[str], bool]) -> Callable[[Any], 
             origin = host_of(str(request.frame.url))
         except Exception:  # a detached frame has no address; treat it as not a sign-in page
             origin = ""
-        if is_sign_in_host(host_of(str(request.url))) or (origin and is_sign_in_host(origin)):
+        target = host_of(str(request.url))
+        if is_sign_in_host(target):
+            route.continue_()
+            return
+        top_level = False
+        if is_task_host is not None:
+            try:
+                top_level = (
+                    bool(request.is_navigation_request()) and request.frame.parent_frame is None
+                )
+            except Exception:  # a detached frame: treat it as top level, the safer reading
+                top_level = True
+        if (
+            origin
+            and is_sign_in_host(origin)
+            and not (top_level and is_task_host is not None and not is_task_host(target))
+        ):
             route.continue_()
         else:
             route.fallback()

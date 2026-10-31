@@ -9,6 +9,7 @@ import threading
 import urllib.error
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -226,6 +227,10 @@ class _Page:
             "body": 1,
         }
         self.upload_state_error: Exception | None = None
+        #: What the account-picker script answers: (status, count).
+        self.pick_outcome: tuple[str, int] = ("ok", 1)
+        #: What the page answers when the chosen tile is judged again right before the click.
+        self.click_outcome = "ok"
 
     def get_by_label(self, label: str, *, exact: bool = False) -> _Locator:
         self.calls.append(("get_by_label", label, exact)) if exact else None
@@ -238,6 +243,40 @@ class _Page:
     def get_by_role(self, role: str, *, name: str, exact: bool) -> _Locator:
         self.calls.append(("get_by_role", role, name, exact))
         return _Locator(self, name, role)
+
+    def evaluate(self, script: str, arg: Any = None) -> Any:
+        self.calls.append(("evaluate", arg))
+        assert isinstance(arg, dict) and "click" in arg, "only the click pass uses evaluate"
+        self.calls.append(("tile-click", tuple(arg["names"])))
+        return [self.click_outcome, None, 1, []]
+
+    def evaluate_handle(self, script: str, arg: Any = None) -> Any:
+        self.calls.append(("evaluate_handle", arg))
+        outcome = self.pick_outcome
+
+        class _Prop:
+            def __init__(self, value: Any) -> None:
+                self._value = value
+
+            def json_value(self) -> Any:
+                return self._value
+
+            def as_element(self) -> Any:
+                return self._value
+
+        tile = SimpleNamespace()
+        values = {
+            "0": outcome[0],
+            "1": tile if outcome[0] == "ok" else None,
+            "2": outcome[1],
+            "3": ["ada@example.com"],
+        }
+
+        class _Array:
+            def get_property(self, index: str) -> _Prop:
+                return _Prop(values[index])
+
+        return _Array()
 
     def goto(self, url: str, *, timeout: float) -> None:
         self.calls.append(("goto", url, timeout))
@@ -2607,14 +2646,27 @@ def test_an_attach_that_keeps_failing_is_a_protocol_error() -> None:
 
 
 class _SignInRequest:
-    def __init__(self, url: str, frame_url: str | None) -> None:
+    def __init__(
+        self, url: str, frame_url: str | None, *, navigation: bool = False, top: bool = True
+    ) -> None:
         self.url = url
-        self.frame = type("Frame", (), {"url": frame_url})() if frame_url is not None else None
+        self._navigation = navigation
+        parent = None if top else object()
+        self.frame = (
+            type("Frame", (), {"url": frame_url, "parent_frame": parent})()
+            if frame_url is not None
+            else None
+        )
+
+    def is_navigation_request(self) -> bool:
+        return self._navigation
 
 
 class _SignInRoute:
-    def __init__(self, url: str, frame_url: str | None) -> None:
-        self.request = _SignInRequest(url, frame_url)
+    def __init__(
+        self, url: str, frame_url: str | None, *, navigation: bool = False, top: bool = True
+    ) -> None:
+        self.request = _SignInRequest(url, frame_url, navigation=navigation, top=top)
         self.outcome = ""
 
     def continue_(self) -> None:
@@ -2645,6 +2697,30 @@ def test_the_sign_in_route_continues_only_traffic_to_or_from_a_sign_in_host(
 
     handler = _sign_in_handler(lambda host: host == "login.microsoftonline.com")
     route = _SignInRoute(url, frame_url)
+
+    handler(route)
+
+    assert route.outcome == outcome
+
+
+@pytest.mark.parametrize(
+    ("url", "navigation", "top", "outcome"),
+    [
+        ("https://evil.example.org/", True, True, "fallback"),  # top-level out of the sign-in page
+        ("https://evil.example.org/", False, True, "continue"),  # a script or image subrequest
+        ("https://evil.example.org/", True, False, "continue"),  # a frame inside the sign-in page
+        ("https://erp.example.com/saml", True, True, "continue"),  # back to the task's own site
+    ],
+)
+def test_a_sign_in_page_may_navigate_the_window_only_to_a_task_or_sign_in_host(
+    url: str, navigation: bool, top: bool, outcome: str
+) -> None:
+    from blumkin.browser.cdp import _sign_in_handler
+
+    handler = _sign_in_handler(
+        lambda host: host == "login.microsoftonline.com", lambda host: host == "erp.example.com"
+    )
+    route = _SignInRoute(url, "https://login.microsoftonline.com/", navigation=navigation, top=top)
 
     handler(route)
 
@@ -2823,6 +2899,46 @@ def test_the_file_goes_to_the_element_that_was_probed_not_to_a_fresh_lookup(
     assert calls.index("handle-evaluate") < calls.index("upload")
 
 
+# --------------------------------------------------------------------------- account picker (#616)
+
+
+def test_pick_account_clicks_the_one_tile_and_passes_the_policy_to_the_page() -> None:
+    pw, driver = _driver()
+
+    picked = driver.pick_account("ada@example.com", ["login.example.net"], ["erp.example.com"])
+
+    assert (picked.status, picked.tiles) == ("ok", 1)
+    assert ("tile-click", ("ada@example.com",)) in pw.page.calls
+    args = next(call[1] for call in pw.page.calls if call[0] == "evaluate_handle")
+    assert args == {
+        "blocked": ["erp.example.com"],
+        "email": "ada@example.com",
+        "hosts": ["login.example.net"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("outcome", "count"),
+    [("wrong_origin", 0), ("none", 0), ("ambiguous", 2), ("unsupported", 1)],
+)
+def test_pick_account_clicks_nothing_unless_the_page_says_ok(outcome: str, count: int) -> None:
+    pw, driver = _driver()
+    pw.page.pick_outcome = (outcome, count)
+
+    picked = driver.pick_account("ada@example.com", ["login.example.net"], [])
+
+    assert (picked.status, picked.tiles) == (outcome, count)
+    assert not any(call[0] == "tile-click" for call in pw.page.calls)
+
+
+def test_the_picker_script_decides_everything_on_the_page_itself() -> None:
+    from blumkin.browser.cdp import _PICK_ACCOUNT_JS
+
+    for needle in ("location.protocol", "args.blocked", "'unsupported'", "'ambiguous'", "contains"):
+        assert needle in _PICK_ACCOUNT_JS
+    assert "args.email" in _PICK_ACCOUNT_JS and "ada@" not in _PICK_ACCOUNT_JS
+
+
 def test_the_describe_script_collects_every_name_the_clicked_element_goes_by() -> None:
     from blumkin.browser.cdp import _DESCRIBE_CONTROL_JS
 
@@ -2858,3 +2974,35 @@ def test_an_overlong_or_overnumerous_name_list_is_reported_incomplete() -> None:
     driver.checked_click("Calculate", "button", seen.append)
 
     assert seen[0].own_names_complete is False
+
+
+def test_the_sign_in_route_is_removed_even_when_the_block_is_interrupted() -> None:
+    pw, driver = _driver()
+
+    with pytest.raises(KeyboardInterrupt):
+        with driver.sign_in_pass(lambda host: host == "login.example.net"):
+            assert pw.page.context is not None and len(pw.page.context.routes) >= 1
+            raise KeyboardInterrupt
+
+    assert pw.page.context is not None
+    assert len(pw.page.context.unrouted) == 1
+
+
+def test_pick_account_reports_a_tile_that_changed_before_the_click() -> None:
+    pw, driver = _driver()
+    pw.page.click_outcome = "changed"
+
+    picked = driver.pick_account("ada@example.com", ["login.example.net"], [])
+
+    assert picked.status == "changed"
+
+
+def test_pick_account_does_not_click_a_tile_the_name_vet_refuses() -> None:
+    pw, driver = _driver()
+
+    picked = driver.pick_account(
+        "ada@example.com", ["login.example.net"], [], vet_names=lambda names: False
+    )
+
+    assert picked.status == "denied"
+    assert not any(call[0] == "tile-click" for call in pw.page.calls)
