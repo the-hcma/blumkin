@@ -1007,6 +1007,12 @@ declared in `allowed_hosts`; with either missing nothing can be uploaded, so a p
 make an agent upload an arbitrary file or send a receipt to another site. Receipts stay on this
 machine and go only to the page you pointed the task at.
 
+`--receipt-ref REF --instance KEY` (from `receipts rehome --private`) uploads the filed receipt
+instead of a path, so neither its path nor its amount-bearing name is on a command line or in the
+result; `--private` does the same for a path. The result then says `attached` (whether the page
+holds the intended file) and `persisted`, never a file name. All the folder, host, regular-file
+and single-link rules apply unchanged.
+
 `ok` only means the file was handed to the input. The command then waits half a second and
 reads what the page shows: `persisted` is `shown` (the file's name is on the page near the
 field), `missing` (a re-render dropped it) or `unknown` (the input holds it but the page does
@@ -2646,6 +2652,13 @@ Examples:
   blumkin receipts rehome ./fixed.pdf --task expense-report --instance trip-lisbon \\
     --date 2026-10-21 --vendor Hotel --total 210.00 --currency EUR --yes \\
     --replace 2026-10-21_hotel_210.00-EUR_ab12cd34.pdf
+
+To keep the amount out of command logs, leave `--total` off (a hidden prompt asks) or pass
+`--total-stdin`, and add `--private`: the result is then only an opaque `ref` (12 hex digits of
+the file's SHA-256), with no path, file name or amount, and a failure names only its kind. The
+archive naming and the journal are unchanged, and a run without `--private` prints everything
+as before. Upload the receipt with `blumkin browser upload TASK LABEL --receipt-ref REF
+--instance KEY`.
 
 Requires `--yes`, passed only after the user confirmed the `receipts summarize` table and
 grand total. `--replace` files the new receipt and then sets the named earlier one (file name

@@ -136,6 +136,8 @@ def file_sha256(path: Path) -> str:
 def find_filed(config_dir: Path, task: str, instance: str, ref: str) -> RehomeResult:
     """The filed receipt named ``ref`` (its file name, or at least 8 hex digits of its SHA-256)."""
     wanted = ref.strip().lower()
+    if not _INSTANCE.fullmatch(instance):
+        raise RehomeError("Expected an instance key of lowercase letters, digits, - and _")
     filed = _completed_by_hash(config_dir, task, instance)
     matches = [
         result
