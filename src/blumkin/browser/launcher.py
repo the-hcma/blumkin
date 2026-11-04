@@ -9,6 +9,7 @@ its `DevToolsActivePort` file.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import signal
 import subprocess
@@ -67,6 +68,10 @@ def build_launch_args(
 ) -> list[str]:
     """Command line: dedicated profile, DevTools on loopback, OS-allocated port.
 
+    `--hide-crash-restore-bubble` keeps Chrome and Edge from offering to restore the pages of a
+    session that ended without a clean exit, which a task browser's usual end (closed from the
+    terminal, or killed) always looks like.
+
     The extra arguments come first and the fixed ones last, because Chrome keeps the last
     occurrence of a repeated switch: a caller cannot override the profile or the DevTools
     switches. `--remote-debugging-address` is advisory (headful Chrome ignores it and binds
@@ -91,6 +96,7 @@ def build_launch_args(
         f"--remote-debugging-address={DEBUG_HOST}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--hide-crash-restore-bubble",
     ]
 
 
@@ -225,6 +231,7 @@ def launch(
             remove_session(profile.path)
             with contextlib.suppress(FileNotFoundError):
                 (profile.path / PORT_FILENAME).unlink()
+            mark_clean_exit(profile.path)
 
             proc = popen(
                 build_launch_args(browser.path, profile.path, extra_args),
@@ -252,6 +259,41 @@ def launch(
             f"Expected no other launch for task {profile.task!r} in progress, "
             "got another launch still running"
         ) from exc
+
+
+def mark_clean_exit(profile_dir: Path) -> bool:
+    """Record in the profile's preferences that its last session ended cleanly.
+
+    A task browser is closed from the terminal or killed, so Chrome and Edge write
+    `exit_type: Crashed` and offer to restore the pages on the next launch, a bubble that can
+    cover the page the user has to sign in on. Only those two keys are changed (the rest of the
+    file is kept, and so is its mode), and nothing is done when the file is missing, is not a
+    JSON object, or already says the exit was clean. Returns whether the file was changed. The
+    profile is blumkin's own, never the user's regular browser profile.
+    """
+    path = profile_dir / "Default" / "Preferences"
+    try:
+        raw = path.read_text(encoding="utf-8")
+        prefs = json.loads(raw)
+    except OSError, ValueError:
+        return False
+    section = prefs.get("profile") if isinstance(prefs, dict) else None
+    if not isinstance(section, dict):
+        return False
+    if section.get("exit_type") == "Normal" and section.get("exited_cleanly") is True:
+        return False
+    section["exit_type"] = "Normal"
+    section["exited_cleanly"] = True
+    temporary = path.with_name(path.name + ".blumkin-tmp")
+    try:
+        temporary.write_text(json.dumps(prefs, separators=(",", ":")), encoding="utf-8")
+        temporary.chmod(path.stat().st_mode & 0o777)
+        temporary.replace(path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        return False
+    return True
 
 
 def read_devtools_port(profile_dir: Path) -> int | None:

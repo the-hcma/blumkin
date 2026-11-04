@@ -1086,6 +1086,40 @@ one), set the file last: fill the row's other fields first, because a later edit
 row loses a file chosen earlier.
 """
 
+BROWSER_CELL_EPILOG = """
+Examples:
+
+\b
+  blumkin browser cell time-sheet 1 "Wed,Nov 04"
+  blumkin browser cell time-sheet 1 "Wed,Nov 04" 8
+  blumkin browser cell time-sheet 2 "Time Reporting Code" "Paid Time Off"
+  blumkin browser cell time-sheet 3 5 "" --json
+
+Reads or edits one cell of an Oracle JET data grid (a page with an `oj-data-grid`), which draws
+its cells as plain divs with no roles, labels or fields, so `fill` and `press` cannot reach
+them. ROW and COLUMN are 1-based numbers or header texts (a row header, a column header such
+as a day; the columns count the frozen ones first, such as Project, Task and Time Reporting
+Code, then the scrolling ones). With no VALUE the cell is only read: nothing is clicked or typed.
+With a VALUE it is selected and typed in; a list-of-values cell (a project, a time reporting
+code) shows a dropdown, and the one option that matches is clicked, any other cell is committed
+with Tab. An empty VALUE ("") clears the cell, and a value is at most 80 printable characters.
+Enter is never pressed, so nothing is submitted. Nothing is clicked if a control (a button, a
+link, a checkbox) or a cover sits at the click point of the cell, and keys go only to the cell
+or an editor inside the grid: the first key is typed alone, and the rest only once it has
+opened an editor, so a space can never reach a focused button. The cell is vetted like a click
+on that element (a submit control, a form action or a script link is refused) and the page
+must be on an allowed host. A dropdown option is vetted before it is clicked: one that
+begins with a finalizing word (`Submit`, `Pay now`), or that is a submit control, is refused, and
+so is a value that begins that way, while `Regular Pay` is fine. A value
+is checked after the
+commit: if an editor is still open the
+edit is cancelled and the command fails. A number is always a position, so a header whose text
+is only digits cannot be named by it. Rows and columns count what the grid has drawn, and a
+grid inside a frame is not supported. `--grid N` picks the Nth data grid on the page. The text
+that comes back is what the cell shows afterwards, page text, untrusted: check it against what
+you meant to enter.
+"""
+
 BROWSER_GRID_EPILOG = """
 Examples:
 

@@ -39,6 +39,7 @@ from blumkin.browser.cdp import (
     FIELD_ROLES,
     AccountPick,
     BrowserActionError,
+    CellEdit,
     ControlInfo,
     DownloadedFile,
     FieldReading,
@@ -85,6 +86,9 @@ DESTRUCTIVE_DENY_NAMES: tuple[str, ...] = (
     "remove",
     "void",
 )
+
+#: Longest value `edit_cell` types into a grid cell.
+MAX_CELL_VALUE_CHARS = 80
 
 #: Fixed letters or digits a control pattern must keep (a bare `*` would declare everything).
 MIN_PATTERN_LITERAL = 4
@@ -229,6 +233,37 @@ class GuardedDriver:
             lambda info: self._vet_control(action, info),
             save_to=save_to,
             timeout_s=DEFAULT_ACTION_TIMEOUT_S,
+        )
+
+    def edit_cell(
+        self, row: str, column: str, value: str | None = None, *, grid: int = 1
+    ) -> CellEdit:
+        """Read one cell of an Oracle JET data grid; with a `value`, select it, type and commit.
+
+        The cell is vetted like a click on the element itself and the keys go only to the grid;
+        the value is a short printable line (an empty one clears the cell), and a read clicks
+        nothing. Enter is never pressed, so nothing is submitted.
+        """
+        action = f"edit the cell at row {row!r}, column {column!r}"
+        if isinstance(grid, bool) or not isinstance(grid, int) or grid < 1:
+            raise ValueError(f"Expected grid to be a positive whole number, got {grid!r}")
+        if value is not None and not _is_cell_value(value):
+            raise self._refuse(action, "the value must be at most 80 printable characters")
+        if value is not None and _begins_with_denied(value, self._deny):
+            raise self._refuse(action, "the value starts like a finalizing action")
+
+        def vet_option(name: str) -> None:
+            """Refuse a dropdown option whose text begins with a finalizing word."""
+            if _begins_with_denied(name, self._deny):
+                raise self._refuse(action, "the option starts like a finalizing action")
+
+        return self._raw.edit_cell(
+            row,
+            column,
+            value,
+            grid,
+            lambda info: self._vet_control(action, info),
+            vet_option,
         )
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:
@@ -773,6 +808,21 @@ def vet_control(
     return None
 
 
+def _begins_with_denied(text: str, stems: tuple[str, ...]) -> bool:
+    """Whether `text` opens with a finalizing word (`Submit`, `Pay now`), not merely holds one.
+
+    A data value typed into a cell, or a dropdown option, is not a control: `Regular Pay` is a
+    time reporting code, while `Submit` or `Pay now` read as the action itself.
+    """
+    words = re.findall(r"[^\W_]+", _folded(text))
+    if not words:
+        return False
+    spaced = " ".join(words)
+    return any(
+        spaced.startswith(stem) if " " in stem else words[0].startswith(stem) for stem in stems
+    )
+
+
 def _deny_stems(words: tuple[str, ...]) -> tuple[str, ...]:
     """Reduce each deny word to the form names are matched in: lower-case words joined by
     single spaces with punctuation removed, so `e-mail` matches the name `E-mail it`."""
@@ -806,6 +856,11 @@ def _is_button_element(info: ControlInfo) -> bool:
     if info.tag == "button":
         return True
     return info.tag == "input" and info.input_type in _BUTTON_LIKE_INPUT_TYPES
+
+
+def _is_cell_value(value: str) -> bool:
+    """A value fit to type into a grid cell: one short line of printable characters."""
+    return len(value) <= MAX_CELL_VALUE_CHARS and all(ch.isprintable() for ch in value)
 
 
 def _is_denied(name: str, stems: tuple[str, ...]) -> bool:

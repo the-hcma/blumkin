@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import signal
 import subprocess
@@ -19,6 +20,7 @@ from blumkin.browser.launcher import (
     build_launch_args,
     close_browser,
     launch,
+    mark_clean_exit,
 )
 from blumkin.browser.profiles import (
     BrowserProfile,
@@ -123,6 +125,97 @@ def test_launch_args_bind_loopback_on_an_os_allocated_port_with_the_task_profile
     assert "--remote-debugging-port=0" in args
     assert "--remote-debugging-address=127.0.0.1" in args
     assert not any("0.0.0.0" in a for a in args)
+
+
+def test_the_crash_restore_bubble_is_hidden_and_cannot_be_switched_back_on() -> None:
+    args = build_launch_args(Path("/opt/chrome/chrome"), Path("/data/p"))
+    assert "--hide-crash-restore-bubble" in args
+    args = build_launch_args(
+        Path("/opt/chrome/chrome"), Path("/data/p"), ["--restore-last-session"]
+    )
+    assert args.index("--restore-last-session") < args.index("--hide-crash-restore-bubble")
+
+
+def _preferences(profile_dir: Path, content: Any, mode: int = 0o600) -> Path:
+    path = profile_dir / "Default" / "Preferences"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content if isinstance(content, str) else json.dumps(content), encoding="utf-8")
+    path.chmod(mode)
+    return path
+
+
+def test_a_crashed_exit_is_recorded_as_clean_and_nothing_else_changes(tmp_path: Path) -> None:
+    prefs = {
+        "profile": {"exit_type": "Crashed", "name": "blumkin", "avatar_index": 26},
+        "session": {"restore_on_startup": 1},
+    }
+    path = _preferences(tmp_path, prefs, mode=0o640)
+
+    assert mark_clean_exit(tmp_path) is True
+
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["profile"] == {
+        "exit_type": "Normal",
+        "exited_cleanly": True,
+        "name": "blumkin",
+        "avatar_index": 26,
+    }
+    assert after["session"] == {"restore_on_startup": 1}
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert [p.name for p in path.parent.iterdir()] == ["Preferences"]
+
+
+def test_an_exit_already_recorded_as_clean_is_left_alone(tmp_path: Path) -> None:
+    path = _preferences(tmp_path, {"profile": {"exit_type": "Normal", "exited_cleanly": True}})
+    before = path.stat().st_mtime_ns
+    assert mark_clean_exit(tmp_path) is False
+    assert path.stat().st_mtime_ns == before
+
+
+@pytest.mark.parametrize(
+    "content", ["not json {", "[1, 2]", '{"profile": "x"}', '{"other": {}}', ""]
+)
+def test_preferences_that_are_not_the_expected_shape_are_never_rewritten(
+    tmp_path: Path, content: str
+) -> None:
+    path = _preferences(tmp_path, content)
+    assert mark_clean_exit(tmp_path) is False
+    assert path.read_text(encoding="utf-8") == content
+
+
+def test_a_profile_without_preferences_is_fine(tmp_path: Path) -> None:
+    assert mark_clean_exit(tmp_path) is False
+    assert not (tmp_path / "Default").exists()
+
+
+def test_launch_marks_the_exit_clean_before_the_browser_starts(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    path = _preferences(profile.path, {"profile": {"exit_type": "Crashed"}})
+    seen: list[str] = []
+
+    class _Checking(_Popen):
+        def __call__(self, args: list[str], **kwargs: Any) -> _Proc:
+            seen.append(json.loads(path.read_text(encoding="utf-8"))["profile"]["exit_type"])
+            return super().__call__(args, **kwargs)
+
+    clock = _Clock()
+    launch(profile, _BROWSER, popen=_Checking(), now=clock.monotonic, sleep=clock.sleep)
+
+    assert seen == ["Normal"]
+
+
+def test_launch_does_not_touch_the_preferences_of_a_browser_already_running(tmp_path: Path) -> None:
+    profile = create_profile(tmp_path, "expense-report")
+    path = _preferences(profile.path, {"profile": {"exit_type": "Crashed"}})
+    write_session(
+        profile.path,
+        BrowserSession(
+            browser="chrome", pid=os.getpid(), port=41000, started_at="2026-01-01T00:00:00Z"
+        ),
+    )
+    result = launch(profile, _BROWSER, popen=_Popen(), pid_alive=lambda pid: True)
+    assert result.already_running is True
+    assert json.loads(path.read_text(encoding="utf-8"))["profile"]["exit_type"] == "Crashed"
 
 
 def test_launch_starts_the_browser_detached_and_records_the_endpoint(tmp_path: Path) -> None:
