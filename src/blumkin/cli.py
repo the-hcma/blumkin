@@ -46,6 +46,7 @@ from blumkin.auth_setup import (
     remove_first_run_config,
 )
 from blumkin.browser.actions import (
+    DEFAULT_PICK_WAIT_S,
     DEFAULT_SIGN_IN_WAIT_S,
     MAX_READ_CHARS,
     MAX_READ_LIMIT,
@@ -53,6 +54,8 @@ from blumkin.browser.actions import (
     AddressNotSetError,
     DownloadBlockedError,
     HostBlockedError,
+    SignInNotAuthorizedError,
+    SignInRefusedError,
     SignInTimeoutError,
     UploadBlockedError,
     address_task,
@@ -66,6 +69,7 @@ from blumkin.browser.actions import (
     read_task,
     refresh_tab_task,
     select_task,
+    sign_in_task,
     transcript_task,
     upload_task,
 )
@@ -683,6 +687,15 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
     if isinstance(exc, TaskNotFoundError):
         slug, code = "not_found", EXIT_NOT_FOUND
         hint = f"Create it first: `blumkin browser profile create {task or 'TASK'}`."
+    elif isinstance(exc, SignInNotAuthorizedError):
+        slug, code = "sign_in_not_authorized", EXIT_OTHER
+        hint = (
+            f"Set `sign_in_account = true` under [browser.tasks.{task or 'TASK'}] in config.toml, "
+            "and make sure the profile has its address (`profiles set-email`)."
+        )
+    elif isinstance(exc, SignInRefusedError):
+        slug, code = "sign_in_refused", EXIT_OTHER
+        hint = "Pick the account yourself in the browser window; blumkin never types credentials."
     elif isinstance(exc, AddressNotAuthorizedError):
         slug, code = "address_not_authorized", EXIT_OTHER
         hint = (
@@ -3030,6 +3043,37 @@ def browser_goto(
         lambda: goto_task(load_browser_setup(), task, url, sign_in_wait_s=sign_in_wait_s),
         "opened",
     )
+
+
+@browser.command("sign-in", epilog=help_text.BROWSER_SIGN_IN_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--wait",
+    "wait_s",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=DEFAULT_PICK_WAIT_S,
+    show_default=True,
+    help="Seconds to wait, after the click, for the page to reach one of the task's hosts.",
+)
+@click.pass_context
+def browser_sign_in(ctx: click.Context, task: str, as_json_flag: bool, wait_s: float) -> None:
+    """Pick the profile's own account on an identity provider's account picker (never types)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = sign_in_task(
+            load_browser_setup(), task, email=_load_config().email, wait_s=wait_s
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    lines = [f"{task}: selected the account {payload['account']} on {payload['host']}"]
+    if payload.get("next"):
+        lines.append(sanitize_terminal(str(payload["next"])))
+    emit_lines(lines)
 
 
 @browser.command("handoff", epilog=help_text.BROWSER_HANDOFF_EPILOG)

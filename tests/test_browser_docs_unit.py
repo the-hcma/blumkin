@@ -130,6 +130,7 @@ _POLICY_KEYS = (
     "draft_controls",
     "extra_deny_names",
     "form_url",
+    "sign_in_account",
     "sign_in_hosts",
     "upload_dirs",
     "use_profile_address",
