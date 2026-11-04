@@ -3953,6 +3953,15 @@ def test_an_address_in_text_ends_before_a_quote_bracket_or_backslash() -> None:
     assert redact_addresses("no address here") == "no address here"
 
 
+def test_an_address_with_an_apostrophe_inside_it_is_removed_whole() -> None:
+    from blumkin.browser.actions import redact_addresses
+
+    assert redact_addresses("at https://idp.example/o'connor/cb?code=SECRET now") == (
+        "at [address removed] now"
+    )
+    assert redact_addresses("'see https://a.example/x'") == "'see [address removed]'"
+
+
 def test_a_read_returns_nothing_when_the_page_changes_host_while_it_is_read(
     raw: _Raw, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

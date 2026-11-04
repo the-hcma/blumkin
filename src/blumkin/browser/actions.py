@@ -66,10 +66,11 @@ _LOGGER = logging.getLogger(__name__)
 
 #: The plain address shape the account picker can match as a whole token.
 _ADDRESS_SYNTAX = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
-# An address stops at whitespace, a quote, a backslash or an angle bracket, so redacting it from
+# An apostrophe followed by more address belongs to the address (o'connor); an address otherwise
+# stops at whitespace, a quote, a backslash or an angle bracket, so redacting it from
 # a serialized ARIA snapshot never eats the quote that closes an accessible name or the
 # backslash of an escaped one.
-_ADDRESS_IN_TEXT = re.compile(r"(?i)\b(?:https?|wss?|ftp)://[^\s\"'`<>\\]+")
+_ADDRESS_IN_TEXT = re.compile(r"(?i)\b(?:https?|wss?|ftp)://(?:[^\s\"'`<>\\]|'(?=[^\s\"'`<>\\]))+")
 _ARIA_FIELD_ROLES = r"(?:combobox|searchbox|slider|spinbutton|textbox)"
 
 # A field line's key, plain (`- textbox "Name" [attr]`) or, when the name needs it, wrapped in
