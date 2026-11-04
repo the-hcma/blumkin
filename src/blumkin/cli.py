@@ -675,19 +675,29 @@ def _field_action(
             lines.append("  the field does not hold what was set (its value is not shown)")
     if "persisted" in payload:  # an upload: what the page shows of the file
         lines.append(f"  the page shows the file: {payload['persisted']}")
+        if "attached" in payload:
+            lines.append(f"  the intended file is attached: {payload['attached']}")
         lines.extend(
             f"  warning: {sanitize_terminal(text)}" for text in payload.get("warnings", ())
         )
     emit_lines(lines)
 
 
-def _private_value(value: str | None, from_stdin: bool, prompt: str, *, as_json: bool) -> str:
+def _private_value(
+    value: str | None,
+    from_stdin: bool,
+    prompt: str,
+    *,
+    as_json: bool,
+    stdin_flag: str = "--stdin",
+    value_noun: str = "a value argument",
+) -> str:
     """A value given as an argument, on stdin (bounded, one trailing newline dropped), or asked
     for at a hidden prompt, so a sensitive value need not land in shell history or `ps`."""
     if value is not None and from_stdin:
         _emit_error(
             error="usage_error",
-            message="Expected a value argument or --stdin, got both",
+            message=f"Expected {value_noun} or {stdin_flag}, got both",
             as_json=as_json,
         )
         raise SystemExit(EXIT_USAGE)
@@ -707,11 +717,22 @@ def _private_value(value: str | None, from_stdin: bool, prompt: str, *, as_json:
     if not sys.stdin.isatty():
         _emit_error(
             error="usage_error",
-            message="Expected a value argument or --stdin, got neither (stdin is not a TTY)",
+            message=f"Expected {value_noun} or {stdin_flag}, got neither (stdin is not a TTY)",
             as_json=as_json,
         )
         raise SystemExit(EXIT_USAGE)
     return click.prompt(prompt, hide_input=True, default="", show_default=False, err=True)
+
+
+def _rehome_message(exc: BaseException, private: bool) -> str:
+    """A rehome failure's text; a private run names the kind of failure, never a path or amount."""
+    if not private:
+        return str(exc)
+    if isinstance(exc, AlreadyFiledError):
+        return "This receipt is already filed (the same content); use its existing reference"
+    return (
+        f"The receipt could not be filed ({type(exc).__name__}); rerun without --private to see why"
+    )
 
 
 def _require_value(value: str, what: str, *, as_json: bool) -> str:
@@ -735,6 +756,9 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
     if isinstance(exc, TaskNotFoundError):
         slug, code = "not_found", EXIT_NOT_FOUND
         hint = f"Create it first: `blumkin browser profile create {task or 'TASK'}`."
+    elif isinstance(exc, RehomeError):
+        slug, code = "usage_error", EXIT_USAGE
+        hint = "Use the `ref` that `receipts rehome --private` printed, with its --instance."
     elif isinstance(exc, SignInNotAuthorizedError):
         slug, code = "sign_in_not_authorized", EXIT_OTHER
         hint = (
@@ -3963,15 +3987,31 @@ def browser_select(
 @browser.command("upload", epilog=help_text.BROWSER_UPLOAD_EPILOG)
 @click.argument("task")
 @click.argument("label")
-@click.argument("path", type=click.Path(path_type=Path))
+@click.argument("path", type=click.Path(path_type=Path), required=False)
 @_field_options
+@click.option(
+    "--receipt-ref",
+    "receipt_ref",
+    default=None,
+    help="Upload the filed receipt with this reference (from `receipts rehome --private`) "
+    "instead of a path; needs --instance.",
+)
+@click.option("--instance", default=None, help="With --receipt-ref: the instance it was filed in.")
+@click.option(
+    "--private",
+    is_flag=True,
+    help="Keep the file's name, and the names the page holds, out of the result.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_upload(
     ctx: click.Context,
     task: str,
     label: str,
-    path: Path,
+    path: Path | None,
+    receipt_ref: str | None,
+    instance: str | None,
+    private: bool,
     as_json_flag: bool,
     exact: bool,
     frame: int | None,
@@ -3995,6 +4035,9 @@ def browser_upload(
             host=host,
             nth=nth,
             role=role,
+            receipt_ref=receipt_ref,
+            instance=instance,
+            private=private,
         ),
         "uploaded",
     )
@@ -4725,7 +4768,18 @@ def receipts_summarize(
 @click.option("--instance", required=True, help="Instance key (trip id, report id).")
 @click.option("--date", "receipt_date", required=True, help="Confirmed receipt date YYYY-MM-DD.")
 @click.option("--vendor", required=True, help="Confirmed vendor name.")
-@click.option("--total", required=True, help="Confirmed total amount (e.g. 12.50).")
+@click.option(
+    "--total",
+    default=None,
+    help="Confirmed total amount (e.g. 12.50). Lands in shell history and `ps`: omit it to be "
+    "asked at a hidden prompt, or use --total-stdin.",
+)
+@click.option("--total-stdin", is_flag=True, help="Read the confirmed total from standard input.")
+@click.option(
+    "--private",
+    is_flag=True,
+    help="Print only an opaque reference: no path, file name or amount.",
+)
 @click.option("--currency", required=True, help="Confirmed ISO currency code (e.g. USD).")
 @click.option(
     "--message-id",
@@ -4747,7 +4801,9 @@ def receipts_rehome(
     instance: str,
     receipt_date: str,
     vendor: str,
-    total: str,
+    total: str | None,
+    total_stdin: bool,
+    private: bool,
     currency: str,
     message_id: str | None,
     replace: str | None,
@@ -4767,6 +4823,15 @@ def receipts_rehome(
             ),
         )
         raise SystemExit(EXIT_USAGE)
+    total = _private_value(
+        total,
+        total_stdin,
+        "Total",
+        as_json=as_json,
+        stdin_flag="--total-stdin",
+        value_noun="--total",
+    )
+    _require_value(total, "a total", as_json=as_json)
     config = _load_config()
     policy = config.browser.tasks.get(task)
     if policy is None:
@@ -4794,19 +4859,32 @@ def receipts_rehome(
             replace=replace,
         )
     except AlreadyFiledError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        _emit_error(error="usage_error", message=_rehome_message(exc, private), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except UnconfirmedError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        _emit_error(error="usage_error", message=_rehome_message(exc, private), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
     except (BrowserProfileError, RehomeError, LedgerError, LedgerNotFoundError) as exc:
         error = "not_found" if isinstance(exc, LedgerNotFoundError) else "usage_error"
         code = EXIT_NOT_FOUND if isinstance(exc, LedgerNotFoundError) else EXIT_USAGE
-        _emit_error(error=error, message=str(exc), as_json=as_json)
+        _emit_error(error=error, message=_rehome_message(exc, private), as_json=as_json)
         raise SystemExit(code) from exc
     except OSError as exc:
-        _emit_error(error="usage_error", message=str(exc), as_json=as_json)
+        _emit_error(error="usage_error", message=_rehome_message(exc, private), as_json=as_json)
         raise SystemExit(EXIT_USAGE) from exc
+    if private:
+        redacted = {
+            "copied": result.copied,
+            "ok": True,
+            "ref": result.sha256[:12],
+            "replaced": result.replaced is not None,
+        }
+        if as_json:
+            emit_json(redacted)
+        else:
+            action = "copied" if result.copied else "moved"
+            emit_lines([f"{action} receipt {result.sha256[:12]}"])
+        return
     payload = result.as_dict() | {"ok": True}
     if as_json:
         emit_json(payload)

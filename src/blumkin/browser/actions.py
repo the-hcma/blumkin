@@ -46,6 +46,7 @@ from blumkin.browser.guard import (
 )
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.profiles import load_profile
+from blumkin.browser.receipt_rehome import file_sha256, find_filed
 from blumkin.browser.teams import merge_chunks, transcription_stopped_after_capture
 from blumkin.browser.transcript import assess, format_text
 from blumkin.config import BrowserSetup
@@ -756,15 +757,24 @@ def upload_task(
     config: BrowserSetup,
     task: str,
     label: str,
-    path: Path,
+    path: Path | None = None,
     *,
     exact: bool = False,
     frame: int | None = None,
     host: str | None = None,
     nth: int | None = None,
     role: str | None = None,
+    receipt_ref: str | None = None,
+    instance: str | None = None,
+    private: bool = False,
 ) -> dict[str, Any]:
     """Attach an existing file to the file field labelled `label`.
+
+    With `receipt_ref` (and `instance`) the file is the filed receipt that reference names,
+    found in the task's receipt journal, so neither its path nor its name has to appear on a
+    command line. `private` (implied by a reference) keeps the file's name and the names the
+    page holds out of the result and the errors; `attached` says whether the page now holds the
+    intended file.
 
     `exact`, `role`, `nth` and `frame` (pinned to `host`) work as for `fill_task`; an upload
     inside a child frame also needs that frame on an allowed host, and the folder checks
@@ -782,16 +792,46 @@ def upload_task(
             "uploading, got none"
         )
     target = _field_target(config, task, "uploading", exact, frame, host, nth, role)
-    resolved = _expand_home(os.fspath(path)).resolve()
+    if receipt_ref is not None:
+        if path is not None or not instance:
+            raise UploadBlockedError(
+                "Expected either a path or a receipt reference with its instance, got both or "
+                "no instance"
+            )
+        if not re.fullmatch(r"[0-9a-f]{8,64}", receipt_ref.strip().lower()):
+            raise UploadBlockedError(
+                "Expected a receipt reference of 8 or more hex digits (from `receipts rehome "
+                "--private`), got something else"
+            )
+        filed = find_filed(config.config_dir, task, instance, receipt_ref)
+        path = filed.dest
+        filed_digest = filed.sha256
+        private = True
+    else:
+        filed_digest = None
+    if path is None:
+        raise UploadBlockedError("Expected a file path or a receipt reference, got neither")
+    try:
+        resolved = _expand_home(os.fspath(path)).resolve()
+    except UploadBlockedError, OSError, RuntimeError:
+        if not private:
+            raise
+        raise UploadBlockedError(
+            "Expected an absolute path or one starting with ~/ for the receipt, got another form"
+        ) from None
+    shown = "the receipt" if private else repr(resolved.name)
     try:
         info = resolved.stat()
     except OSError:
         info = None
     if info is None or not stat.S_ISREG(info.st_mode):
-        raise UploadBlockedError(f"Expected an existing regular file to upload, got {str(path)!r}")
+        raise UploadBlockedError(
+            "Expected an existing regular file to upload, got "
+            + ("a missing or irregular receipt" if private else repr(str(path)))
+        )
     if info.st_nlink > 1:
         raise UploadBlockedError(
-            f"Expected a file with a single link to upload, got {resolved.name!r} with "
+            f"Expected a file with a single link to upload, got {shown} with "
             f"{info.st_nlink} (a hard link can point at a file outside upload_dirs)"
         )
     hosts = declared.allowed_hosts if declared else ()
@@ -804,8 +844,19 @@ def upload_task(
     if not any(resolved.is_relative_to(root) for root in roots):
         raise UploadBlockedError(
             f"Expected the file inside an upload_dirs folder of task {task!r}, "
-            f"got {resolved.name!r} outside them"
+            f"got {shown} outside them"
         )
+
+    if filed_digest is not None:
+        try:
+            unchanged = file_sha256(resolved) == filed_digest
+        except OSError:  # the message would carry the file's path
+            unchanged = False
+        if not unchanged:
+            raise UploadBlockedError(
+                "Expected the filed receipt to be readable and unchanged since it was filed, "
+                "got a missing, unreadable or different file"
+            )
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         page_host = urlsplit(driver.url).hostname or ""
@@ -814,12 +865,29 @@ def upload_task(
                 f"Expected the page on an allowed_hosts host of task {task!r} before uploading, "
                 f"got {page_host or 'no host'!r}"
             )
-        seen = driver.upload(label, resolved, target)
+        try:
+            seen = driver.upload(label, resolved, target)
+        except BrowserActionError as exc:
+            if not private:
+                raise
+            # A driver message can quote the file's path; a private upload names neither.
+            raise BrowserActionError(
+                f"Expected the receipt to be attached, got a failure ({type(exc).__name__})"
+            ) from None
         payload = _field_payload("upload", task, label, target, None, None)
-        payload["file"] = resolved.name
-        payload["files_held"] = list(seen.files)
-        if seen.files:
-            payload["untrusted"] = UNTRUSTED_NOTE  # the page supplies these names
+        intended = " ".join(resolved.name.split()).casefold()
+        held = {" ".join(name.split()).casefold() for name in seen.files}
+        # The page's names are capped at 100 characters, so a capped name cannot be told from a
+        # longer one with the same start, and a page that could not be read says nothing: both
+        # are unknown (None), not a match or a miss.
+        capped = len(intended) >= 100 or any(len(name) >= 100 for name in seen.files)
+        unread = not seen.files and seen.persisted == "unknown"
+        payload["attached"] = None if capped or unread else intended in held
+        if not private:
+            payload["file"] = resolved.name
+            payload["files_held"] = list(seen.files)
+            if seen.files:
+                payload["untrusted"] = UNTRUSTED_NOTE  # the page supplies these names
         payload["input_hidden"] = seen.input_hidden
         payload["persisted"] = seen.persisted
         warnings = _upload_warnings(seen)

@@ -2712,3 +2712,293 @@ def test_an_empty_value_from_stdin_is_refused(raw: _Raw) -> None:
 
         assert result.exit_code != EXIT_SUCCESS
         assert raw.calls == []
+
+
+def _file_receipt(config_dir: Path, tmp_path: Path, *extra: str) -> dict[str, Any]:
+    """File a synthetic receipt through `receipts rehome --private`; the total comes on stdin."""
+    from blumkin.browser.ledger import begin_instance
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir(exist_ok=True)
+    begin_instance(config_dir, "expense-report", "trip")
+    _policy(config_dir, f'upload_dirs = ["{uploads}"]\nallowed_hosts = ["erp.example.com"]')
+    scan = tmp_path / "scan.jpg"
+    scan.write_bytes(b"\xff\xd8 synthetic receipt")
+    result = CliRunner().invoke(
+        main,
+        [
+            "--json", "receipts", "rehome", str(scan), "--task", "expense-report",
+            "--instance", "trip", "--date", "2026-10-20", "--vendor", "Taxi Co",
+            "--currency", "USD", "--yes", "--total-stdin", "--private", *extra,
+        ],
+        input="1234.56\n",
+    )  # fmt: skip
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "1234" not in result.output and "scan.jpg" not in result.output
+    assert str(tmp_path) not in result.output and "Taxi" not in result.output
+    return _json(result)
+
+
+def test_a_private_rehome_prints_only_an_opaque_reference(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    filed = _file_receipt(_config_dir, tmp_path)
+
+    assert set(filed) == {"copied", "ok", "ref", "replaced"}
+    assert len(filed["ref"]) == 12
+
+
+def test_upload_by_reference_attaches_the_filed_receipt_without_naming_it(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    ref = _file_receipt(_config_dir, tmp_path)["ref"]
+
+    result = _run(
+        "browser", "upload", "expense-report", "Receipt", "--receipt-ref", ref, "--instance", "trip"
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["attached"] is True
+    assert "file" not in payload and "files_held" not in payload
+    assert "1234" not in result.output and "Taxi" not in result.output
+    assert str(tmp_path) not in result.output
+    (call,) = [c for c in raw.calls if c[0] == "upload"]
+    assert call[2].startswith(str(tmp_path / "uploads")) and "1234.56" in call[2]
+
+
+def test_upload_by_reference_says_when_the_page_does_not_hold_the_file(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    ref = _file_receipt(_config_dir, tmp_path)["ref"]
+    raw.upload_result = UploadObservation("missing", False, ())
+
+    result = _run(
+        "browser", "upload", "expense-report", "Receipt", "--receipt-ref", ref, "--instance", "trip"
+    )
+
+    payload = _json(result)
+    assert payload["attached"] is False and payload["persisted"] == "missing"
+
+
+def test_upload_by_reference_needs_an_instance_and_no_path(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    ref = _file_receipt(_config_dir, tmp_path)["ref"]
+
+    no_instance = _run("browser", "upload", "expense-report", "Receipt", "--receipt-ref", ref)
+    both = _run(
+        "browser", "upload", "expense-report", "Receipt", str(tmp_path / "x"),
+        "--receipt-ref", ref, "--instance", "trip",
+    )  # fmt: skip
+
+    assert no_instance.exit_code != EXIT_SUCCESS and both.exit_code != EXIT_SUCCESS
+    assert [c for c in raw.calls if c[0] == "upload"] == []
+
+
+def test_an_unknown_reference_is_refused_without_echoing_a_path(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    _file_receipt(_config_dir, tmp_path)
+
+    result = _run(
+        "browser", "upload", "expense-report", "Receipt", "--receipt-ref", "deadbeef0000",
+        "--instance", "trip",
+    )  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert str(tmp_path) not in result.output
+    assert [c for c in raw.calls if c[0] == "upload"] == []
+
+
+def test_a_private_rehome_failure_names_neither_the_path_nor_the_amount(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    from blumkin.browser.ledger import begin_instance
+
+    begin_instance(_config_dir, "expense-report", "trip")
+    _policy(_config_dir, f'upload_dirs = ["{tmp_path / "uploads"}"]')
+    missing = tmp_path / "invoice-9876.00.jpg"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--json", "receipts", "rehome", str(missing), "--task", "expense-report",
+            "--instance", "trip", "--date", "2026-10-20", "--vendor", "Taxi",
+            "--currency", "USD", "--yes", "--total-stdin", "--private",
+        ],
+        input="9876.00\n",
+    )  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "9876" not in result.output and str(tmp_path) not in result.output
+
+
+def test_a_private_upload_does_not_leak_the_path_through_a_driver_error(
+    raw: _Raw, _config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ref = _file_receipt(_config_dir, tmp_path)["ref"]
+
+    def failing(label: str, path: Path, target: Any = None) -> UploadObservation:
+        raise BrowserActionError(f"Expected to upload, got ENOENT: {path}")
+
+    monkeypatch.setattr(raw, "upload", failing)
+
+    result = _run(
+        "browser", "upload", "expense-report", "Receipt", "--receipt-ref", ref, "--instance", "trip"
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert str(tmp_path) not in result.output and "1234" not in result.output
+
+
+def test_a_reference_is_refused_when_the_filed_file_changed(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    ref = _file_receipt(_config_dir, tmp_path)["ref"]
+    (filed,) = (tmp_path / "uploads").rglob("*1234.56*")
+    filed.write_bytes(b"something else entirely")
+
+    result = _run(
+        "browser", "upload", "expense-report", "Receipt", "--receipt-ref", ref, "--instance", "trip"
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert [c for c in raw.calls if c[0] == "upload"] == []
+
+
+@pytest.mark.parametrize(
+    ("ref", "instance"),
+    [("not-hex-1234.56", "trip"), ("abcdef012345", "../other"), ("abcdef012345", "TRIP")],
+)
+def test_a_reference_must_be_hex_and_the_instance_a_plain_key(
+    raw: _Raw, _config_dir: Path, tmp_path: Path, ref: str, instance: str
+) -> None:
+    _file_receipt(_config_dir, tmp_path)
+
+    result = _run(
+        "browser", "upload", "expense-report", "Receipt", "--receipt-ref", ref, "--instance",
+        instance,
+    )  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "1234" not in result.output
+    assert [c for c in raw.calls if c[0] == "upload"] == []
+
+
+def test_a_private_rehome_of_an_already_filed_receipt_says_so_without_details(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    _file_receipt(_config_dir, tmp_path)
+    again = tmp_path / "again.jpg"
+    again.write_bytes(b"\xff\xd8 synthetic receipt")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--json", "receipts", "rehome", str(again), "--task", "expense-report",
+            "--instance", "trip", "--date", "2026-10-20", "--vendor", "Taxi Co",
+            "--currency", "USD", "--yes", "--total-stdin", "--private",
+        ],
+        input="1234.56\n",
+    )  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "already filed" in result.output
+    assert "1234" not in result.output and str(tmp_path) not in result.output
+
+
+def test_a_text_mode_private_upload_reports_whether_the_intended_file_is_attached(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    ref = _file_receipt(_config_dir, tmp_path)["ref"]
+    raw.upload_result = UploadObservation("missing", False, ())
+
+    result = CliRunner().invoke(
+        main,
+        ["browser", "upload", "expense-report", "Receipt", "--receipt-ref", ref,
+         "--instance", "trip"],
+    )  # fmt: skip
+
+    assert "intended file is attached: False" in result.output
+    assert "1234" not in result.output
+
+
+def test_a_long_name_is_unknown_not_a_match(raw: _Raw, _config_dir: Path, tmp_path: Path) -> None:
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    _policy(_config_dir, f'upload_dirs = ["{uploads}"]\nallowed_hosts = ["erp.example.com"]')
+    long_file = uploads / (("a" * 120) + ".png")
+    long_file.write_bytes(b"x")
+    raw.upload_result = UploadObservation("shown", False, (("a" * 120)[:100],))
+
+    result = _run("browser", "upload", "expense-report", "Receipt", str(long_file), "--private")
+
+    assert _json(result)["attached"] is None
+
+
+def test_a_hash_read_failure_does_not_leak_the_path(
+    raw: _Raw, _config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ref = _file_receipt(_config_dir, tmp_path)["ref"]
+
+    def unreadable(path: Path) -> str:
+        raise PermissionError(13, "denied", str(path))
+
+    monkeypatch.setattr("blumkin.browser.actions.file_sha256", unreadable)
+
+    result = _run(
+        "browser", "upload", "expense-report", "Receipt", "--receipt-ref", ref, "--instance", "trip"
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert str(tmp_path) not in result.output and "1234" not in result.output
+
+
+def test_rehome_without_a_total_names_its_own_stdin_option(raw: _Raw, tmp_path: Path) -> None:
+    scan = tmp_path / "s.jpg"
+    scan.write_bytes(b"x")
+
+    result = CliRunner().invoke(
+        main,
+        ["--json", "receipts", "rehome", str(scan), "--task", "expense-report",
+         "--instance", "trip", "--date", "2026-10-20", "--vendor", "Taxi",
+         "--currency", "USD", "--yes"],
+        input="",
+    )  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "--total-stdin" in result.output and "--stdin" not in result.output.replace(
+        "--total-stdin", ""
+    )
+
+
+def test_a_private_upload_does_not_echo_a_rejected_path(raw: _Raw, _config_dir: Path) -> None:
+    result = _run("browser", "upload", "expense-report", "Receipt", "~other/invoice-1234.56.pdf",
+                  "--private")  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "1234" not in result.output and "invoice" not in result.output
+
+
+def test_attached_is_unknown_for_an_unreadable_page_and_for_a_capped_lookalike(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    _policy(_config_dir, f'upload_dirs = ["{uploads}"]\nallowed_hosts = ["erp.example.com"]')
+    target = uploads / ("b" * 99)
+    target.write_bytes(b"x")
+
+    raw.upload_result = UploadObservation("unknown", False, ())
+    unread = _json(_run("browser", "upload", "expense-report", "Receipt", str(target), "--private"))
+    # The page's names are cut at 100 characters: this one is the 99-character name plus a space
+    # that a longer, different name continued after.
+    raw.upload_result = UploadObservation("shown", False, (("b" * 99) + " ",))
+    capped = _json(_run("browser", "upload", "expense-report", "Receipt", str(target), "--private"))
+    raw.upload_result = UploadObservation("shown", False, ("other.png",))
+    missed = _json(_run("browser", "upload", "expense-report", "Receipt", str(target), "--private"))
+
+    assert unread["attached"] is None
+    assert capped["attached"] is None
+    assert missed["attached"] is False
