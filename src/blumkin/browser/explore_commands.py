@@ -32,6 +32,7 @@ from blumkin.browser.explore import (
     attach_exploring,
     decide_click,
 )
+from blumkin.browser.guard import validate_control_patterns
 from blumkin.browser.model import (
     SiteModel,
     discard_draft,
@@ -56,6 +57,9 @@ def explore_click(
 ) -> dict[str, Any]:
     """Follow or press one control under the exploration rules; see `Explorer.click`."""
     hosts, extra_deny = explore_policy(config, task)
+    declared = declared_controls(config, task)
+    # The same refusal `browser click` gives a pattern that is too loose, before the browser.
+    validate_control_patterns(declared, extra_deny)
     profile = require_profile(config.config_dir, task)
     # A step is recorded after the click, so a models folder that would be refused must be
     # found out before the browser is touched, not after a state-changing click.
@@ -68,7 +72,7 @@ def explore_click(
             driver,
             confirmer,
             allowed_hosts=hosts,
-            declared_controls=declared_controls(config, task),
+            declared_controls=declared,
             extra_deny=extra_deny,
         )
         clicked = explorer.click(role, name)

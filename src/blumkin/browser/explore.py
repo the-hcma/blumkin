@@ -171,19 +171,26 @@ class Explorer:
         if problem is not None:
             self.last_outcome = f"refused: {problem}"
             return False
-        if decision is ClickDecision.CLICK and _href_looks_destructive(inspection.href):
+        href_asks = decision is ClickDecision.CLICK and _href_looks_destructive(inspection.href)
+        if href_asks:
             decision = ClickDecision.ASK
-        if decision is ClickDecision.ASK and is_declared_control(name, self._declared):
-            # The user declared this control in config.toml, the same trust `browser click`
-            # rests on, so no question is asked; the inspection above and the vetting in
-            # `click_vetted` still apply, and a finalizing name never reaches here.
-            self.last_approval = "allowed_controls"
+        approval = ""
+        # A declared control (config.toml, the same trust `browser click` rests on) is clicked
+        # without a question, but a link whose address the page makes look destructive still
+        # asks; the inspection above and `click_vetted` still apply, and a finalizing name
+        # never reaches here.
+        if (
+            decision is ClickDecision.ASK
+            and not href_asks
+            and is_declared_control(name, self._declared, role)
+        ):
+            approval = "allowed_controls"
         elif decision is ClickDecision.ASK:
             host = urlsplit(self._driver.url).hostname or "this page"
             if not self._confirmer.confirm(_prompt(role, name, host, inspection.href)):
                 self.last_outcome = "declined"
                 return False
-            self.last_approval = "terminal"
+            approval = "terminal"
             self._require_host("after the answer and before the click")
         try:
             self._driver.click_vetted(role, name, inspection)
@@ -196,6 +203,7 @@ class Explorer:
             raise ExploreRefusedError(
                 f"The click happened, and the page is now off the allowed hosts: {exc}"
             ) from exc
+        self.last_approval = approval
         self.last_outcome = "clicked"
         return True
 

@@ -289,6 +289,46 @@ def test_declaring_a_control_never_lets_a_finalizing_name_through() -> None:
     assert confirmer.asked == []
 
 
+def test_a_pattern_never_authorizes_a_menu_item_but_an_exact_name_does() -> None:
+    driver = _Driver()
+    explorer, confirmer = _explorer(
+        driver, [False], declared_controls=("Actions for *", "Edit row")
+    )
+    assert explorer.click("menuitem", "Actions for Report 7") is False
+    assert len(confirmer.asked) == 1
+    assert explorer.click("menuitem", "Edit row") is True
+    assert explorer.last_approval == "allowed_controls"
+
+
+def test_a_declared_name_matches_as_the_guard_does_case_and_width_included() -> None:
+    driver = _Driver()
+    explorer, confirmer = _explorer(driver, [False], declared_controls=("Add line",))
+    assert explorer.click("button", "add line") is False
+    assert len(confirmer.asked) == 1
+    explorer, confirmer = _explorer(driver, declared_controls=("Add line",))
+    assert explorer.click("button", "Add\u200b  line") is True
+    assert confirmer.asked == []
+
+
+def test_a_declared_link_whose_address_looks_destructive_still_asks() -> None:
+    driver = _Driver()
+    driver.href = "/account/delete/7"
+    explorer, confirmer = _explorer(driver, [False], declared_controls=("Open report",))
+    assert explorer.click("link", "Open report") is False
+    assert len(confirmer.asked) == 1
+    assert explorer.last_approval == ""
+
+
+def test_the_approval_is_reported_only_for_a_click_that_happened() -> None:
+    class _Refusing(_Driver):
+        def click_vetted(self, role: str, name: str, expected: Inspection) -> None:
+            raise ExploreRefusedError("changed")
+
+    explorer, _ = _explorer(_Refusing(), declared_controls=("Add line",))
+    assert explorer.click("button", "Add line") is False
+    assert explorer.last_approval == ""
+
+
 def test_a_declared_control_is_still_refused_when_the_page_inspection_refuses_it() -> None:
     driver = _Driver()
     driver.submit_control = True

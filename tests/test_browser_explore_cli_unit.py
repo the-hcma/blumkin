@@ -227,6 +227,15 @@ def test_a_declared_finalizing_name_is_refused_and_not_clicked(
     assert driver.clicks == []
 
 
+def test_a_loose_declared_pattern_is_refused_before_the_browser_is_touched(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nallowed_controls = ["*"]')
+    result = _run("browser", "explore", "click", "expense-report", "Archive")
+    assert result.exit_code != EXIT_SUCCESS
+    assert driver.clicks == []
+
+
 def test_the_no_terminal_hint_names_allowed_controls_as_the_alternative(
     driver: _Driver,
 ) -> None:

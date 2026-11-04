@@ -545,24 +545,26 @@ _SCRIPT_SCHEMES = ("data:", "javascript:", "vbscript:")
 _ZERO_WIDTH = dict.fromkeys(map(ord, "​‌‍⁠﻿"))
 
 
+def is_declared_control(name: str, declared: Iterable[str], role: str | None = None) -> bool:
+    """Whether `name` is one the task declared, by exact name or by a `*` pattern.
+
+    The same rule as `browser click`: a menu item is never reached by a pattern (each stays
+    individually declared) and a pattern only matches a name of up to `_MAX_PATTERN_NAME`
+    characters. A finalizing name is never declared (see `validate_control_patterns`), and
+    callers still check `is_finalizing_name` themselves.
+    """
+    wanted = _exact(name)
+    names = tuple(declared)
+    if any("*" not in item and _exact(item) == wanted for item in names):
+        return True
+    if role in _MENU_ROLES or len(wanted) > _MAX_PATTERN_NAME:
+        return False
+    return any("*" in item and _pattern_regex(item).fullmatch(wanted) for item in names)
+
+
 def is_finalizing_name(name: str, extra_deny: Sequence[str] = ()) -> bool:
     """Whether a control name starts a finalizing word (submit, send, pay, ...)."""
     return _is_denied(name, _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny)))
-
-
-def is_declared_control(name: str, declared: Iterable[str]) -> bool:
-    """Whether `name` is one the task declared, by exact name or by a `*` pattern.
-
-    Matches as the guard does for `browser click`; a finalizing name is never declared (see
-    `validate_control_patterns`), and callers still check `is_finalizing_name` themselves.
-    """
-    wanted = _exact(name)
-    return any(
-        _pattern_regex(item).fullmatch(wanted) is not None
-        if "*" in item
-        else _exact(item) == wanted
-        for item in declared
-    )
 
 
 def validate_control_patterns(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
