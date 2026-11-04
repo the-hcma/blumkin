@@ -46,6 +46,8 @@ _OPTION_PARENTS = frozenset({"combobox", "listbox"})
 #: How many names a "nothing matched" error lists, and how long each may be.
 _LISTED = 10
 _NAME_CHARS = 60
+#: Most characters of a field name kept whole, for targeting it.
+_TARGET_NAME_CHARS = 500
 
 
 def collapse_options(snapshot: str) -> str:
@@ -270,15 +272,23 @@ def _cells(
             index += 1
             continue
         cell_end = _subtree_end(lines, index)
+        # The name a field is targeted by is kept whole (up to a generous cap): a shortened one
+        # could single out a different field with the same start.
         fields = [
-            {"name": _one_line(inner.name or ""), "nth": nth[at], "role": inner.role}
+            {
+                "name": _one_line(inner.name or "", _TARGET_NAME_CHARS),
+                "nth": nth[at],
+                "role": inner.role,
+                **({"name_truncated": True} if len(inner.name or "") > _TARGET_NAME_CHARS else {}),
+            }
             for at in range(index + 1, cell_end)
             if (inner := nodes[at]) is not None and inner.role in _FIELD_ROLES
         ]
         # A cell's own name repeats the value of a field inside it, which is never shown, so a
-        # cell with anything inside is described by its plain text children alone (and the
-        # text a custom field shows as its value is skipped with that field).
-        if cell_end > index + 1:
+        # cell holding an editable field is described by its plain text children alone (and the
+        # text a custom field shows as its value is skipped with that field). Any other cell
+        # (a header with a button in it, a static cell with a link) is described by its name.
+        if any(field["role"] not in _ACTION_ROLES for field in fields):
             texts: list[str] = []
             skip_until = index + 1
             for at in range(index + 1, cell_end):
@@ -291,10 +301,6 @@ def _cells(
                 if (found := _TEXT_LINE.match(lines[at])) is not None:
                     texts.append(found["text"])
             text = _one_line(" ".join(texts))
-            if not text and all(field["role"] in _ACTION_ROLES for field in fields):
-                # Rich content (`paragraph`, `strong`) and no field that could echo a value:
-                # the cell's own name is the text.
-                text = _one_line(node.name or "")
         else:
             text = _one_line(node.name or "")
         cells.append(
@@ -328,10 +334,10 @@ def _closing_quote(body: str) -> int | None:
     return None
 
 
-def _one_line(text: str) -> str:
-    """A page-supplied name as one printable line of at most `_NAME_CHARS` characters."""
+def _one_line(text: str, limit: int = _NAME_CHARS) -> str:
+    """A page-supplied name as one printable line of at most `limit` characters."""
     printable = "".join(char if char.isprintable() else " " for char in text)
-    return " ".join(printable.split())[:_NAME_CHARS]
+    return " ".join(printable.split())[:limit]
 
 
 def _quote(name: str | None) -> str:

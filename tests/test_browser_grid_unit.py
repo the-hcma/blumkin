@@ -58,7 +58,7 @@ def test_a_cell_holding_a_field_is_not_named_by_the_value_it_repeats() -> None:
 
     cells = [cell for row in view["rows"] for cell in row["cells"]]
     assert all("Alpha" not in cell["text"] and "Beta" not in cell["text"] for cell in cells)
-    assert cells[-1]["text"] == "Regular Pay"  # the button is a field, not text
+    assert cells[-1]["text"] == "Regular Pay Edit"  # a button echoes no value
 
 
 def test_a_table_is_picked_by_role_and_the_nth_counts_the_whole_page() -> None:
@@ -108,3 +108,16 @@ def test_a_cell_of_rich_content_without_a_field_keeps_its_own_name() -> None:
     )
 
     assert grid_view(snapshot)["rows"][0]["cells"][0]["text"] == "Foo bar"
+
+
+def test_a_header_with_a_button_keeps_its_label_and_a_long_name_is_kept_whole() -> None:
+    long_name = "Project " + "x" * 80
+    snapshot = (
+        '- grid "g":\n  - row "h":\n    - columnheader "Project":\n      - button "Project"\n'
+        f'  - row "r":\n    - gridcell "v":\n      - textbox "{long_name}"\n'
+    )
+
+    view = grid_view(snapshot)
+
+    assert view["columns"] == ["Project"]
+    assert view["rows"][0]["cells"][0]["fields"][0]["name"] == long_name

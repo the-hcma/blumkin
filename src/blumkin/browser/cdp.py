@@ -1018,8 +1018,12 @@ class PlaywrightDriver:
             if vet is not None:
                 vet(self._describe(opener))
             self._still_allowed(scope, target)
-            opener.click(timeout=self._timeout_ms, no_wait_after=True)
-            return self._read_open_list(scope, opener, target)
+            # A combobox the page already opened is read where it is and left open: a click
+            # on one that toggles would close it and the list would come back empty.
+            expanded = str(opener.get_attribute("aria-expanded") or "").lower() == "true"
+            if not expanded:
+                opener.click(timeout=self._timeout_ms, no_wait_after=True)
+            return self._read_open_list(scope, opener, target, close=not expanded)
         except _playwright_error() as exc:
             raise self._action_error(
                 f"list the options of the field labelled {label!r}", exc
@@ -1354,18 +1358,23 @@ class PlaywrightDriver:
             options = popup.get_by_role("option")
             with contextlib.suppress(_playwright_error()):
                 options.first.wait_for(state="visible", timeout=self._timeout_ms)
+            lists = (
+                popup
+                if controls.split() or not close
+                else scope.locator('[role="listbox"]:visible')
+            )
+            # A virtualized list can open part way down (at the selected item): go to the
+            # top first, so the walk down reaches every option.
+            lists.first.evaluate(_SCROLL_TOP_JS)
+            self._page.wait_for_timeout(120)
             for _ in range(_MAX_OPTION_SCROLLS):
                 self._still_allowed(scope, target)
                 names = options.evaluate_all(_OPTION_NAMES_JS)
+                self._still_allowed(scope, target)  # a frame can navigate during the read
                 fresh = [str(n) for n in names if str(n) and str(n) not in seen]
                 seen.extend(fresh)
                 if len(seen) >= _MAX_OPTIONS:
                     break
-                lists = (
-                    popup
-                    if controls.split() or not close
-                    else scope.locator('[role="listbox"]:visible')
-                )
                 moved = lists.first.evaluate(_SCROLL_LIST_JS)
                 if not moved:
                     complete = True
@@ -1902,16 +1911,37 @@ _MAX_OPTION_SCROLLS = 60
 
 _NATIVE_OPTIONS_JS = "(e) => Array.from(e.options || []).map((o) => o.label || o.text || '')"
 
+#: Each option's accessible name as `select` matches it: its `aria-label`, the text of the
+#: elements it is labelled by, or its own text.
 _OPTION_NAMES_JS = (
-    "(els) => els.map((e) => (e.innerText || e.textContent || '').replace(/\\s+/g, ' ').trim())"
+    "(els) => els.map((e) => { const by = (e.getAttribute('aria-labelledby') || '').split(/\\s+/)"
+    ".map((id) => { const n = id ? document.getElementById(id) : null; "
+    "return n ? (n.innerText || n.textContent || '') : ''; }).join(' '); "
+    "return (e.getAttribute('aria-label') || by || e.innerText || e.textContent || '')"
+    ".replace(/\\s+/g, ' ').trim(); })"
 )
 
-#: Scroll the list (or a scrollable thing in it) one page down; true when something moved.
+#: The elements a list scrolls in: itself, what is inside it, and the containers around it up
+#: to (not including) the page, since a popup's scrollbar is often on a wrapper.
+_SCROLLERS_JS = (
+    "const scrollers = (p) => { const out = [p, ...p.querySelectorAll('*')]; "
+    "for (let a = p.parentElement; a && a !== document.body && a !== document.documentElement; "
+    "a = a.parentElement) out.push(a); "
+    "return out.filter((e) => ['auto', 'scroll'].includes(getComputedStyle(e).overflowY)); }; "
+)
+
+#: Scroll the list one page down; true when something moved.
 _SCROLL_LIST_JS = (
-    "(p) => { for (const e of [p, ...p.querySelectorAll('*')]) { "
-    "if (!['auto', 'scroll'].includes(getComputedStyle(e).overflowY)) continue; "
+    "(p) => { " + _SCROLLERS_JS + "for (const e of scrollers(p)) { "
     "const before = e.scrollTop; e.scrollTop = before + e.clientHeight; "
     "if (e.scrollTop !== before) return true; } return false; }"
+)
+
+#: Scroll the list back to its first rows.
+_SCROLL_TOP_JS = (
+    "(p) => { "
+    + _SCROLLERS_JS
+    + "for (const e of scrollers(p)) { e.scrollTop = 0; } return true; }"
 )
 
 _SELECTED_TEXT_JS = (

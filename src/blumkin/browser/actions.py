@@ -813,7 +813,7 @@ def options_task(
         payload["untrusted"] = UNTRUSTED_NOTE
         return payload
 
-    return _with_driver(config, task, act)
+    return _with_driver(config, task, act, check_after=True)
 
 
 def transcript_task(

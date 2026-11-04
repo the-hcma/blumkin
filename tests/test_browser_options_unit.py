@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pytest
 
@@ -254,5 +255,98 @@ def test_press_checks_and_presses_the_same_element() -> None:
 
             assert seen == ["input"]
             assert page.evaluate("window.keys") == ["c2:Tab"]
+        finally:
+            browser.close()
+
+
+def _driver_page(playwright: Any, html: str) -> tuple[Any, Any, Any]:
+    from blumkin.browser.cdp import PlaywrightDriver
+    from blumkin.browser.discovery import resolve_browser
+
+    browser = playwright.chromium.launch(
+        executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+    )
+    page = browser.new_page()
+    page.set_content(html)
+    return browser, page, PlaywrightDriver(browser=browser, page=page, playwright=None, timeout_s=3)
+
+
+def test_a_list_that_opens_part_way_down_is_read_from_the_top() -> None:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser, page, driver = _driver_page(playwright, _PAGE)
+        try:
+            page.evaluate(
+                "document.getElementById('cb').addEventListener('click', () => "
+                "{ setTimeout(() => { document.getElementById('lb').scrollTop = 24 * 20; }, 0); })"
+            )
+
+            listing = driver.list_options("Time Reporting Code")
+
+            assert listing.options[0] == "Code 01" and len(listing.options) == 33
+            assert listing.complete
+        finally:
+            browser.close()
+
+
+def test_a_combobox_the_page_already_opened_is_read_and_left_open() -> None:
+    from playwright.sync_api import sync_playwright
+
+    html = _PAGE.replace("aria-expanded=false id=cb>", "aria-expanded=true id=cb>").replace(
+        'id=lb role=listbox style="display:none"', 'id=lb role=listbox style="display:block"'
+    )
+    html = html.replace("lb.style.display = 'block'; render();", "lb.style.display = 'none';")
+    with sync_playwright() as playwright:
+        browser, page, driver = _driver_page(playwright, html)
+        try:
+            page.evaluate("window.dispatchEvent(new Event('scroll'))")
+            listing = driver.list_options("Time Reporting Code")
+
+            # The click handler of this page would have closed the list: it was not clicked.
+            assert page.locator("#lb").is_visible()
+            assert listing.closed
+        finally:
+            browser.close()
+
+
+def test_options_are_listed_by_the_name_select_would_match() -> None:
+    from playwright.sync_api import sync_playwright
+
+    html = """
+    <label id=l>Code</label>
+    <div role=combobox tabindex=0 aria-labelledby=l aria-controls=lb aria-expanded=false id=cb
+      onclick="document.getElementById('lb').style.display='block'">x</div>
+    <div id=lb role=listbox style="display:none">
+      <div role=option aria-label="Regular Pay">RP</div>
+      <div role=option aria-label="Holiday"></div>
+      <div role=option>Plain</div>
+    </div>"""
+    with sync_playwright() as playwright:
+        browser, _page, driver = _driver_page(playwright, html)
+        try:
+            listing = driver.list_options("Code")
+
+            assert listing.options == ("Regular Pay", "Holiday", "Plain")
+        finally:
+            browser.close()
+
+
+def test_a_popup_whose_scrollbar_is_on_a_wrapper_is_read_to_the_end() -> None:
+    from playwright.sync_api import sync_playwright
+
+    rows = "".join(f"<div role=option style='height:24px'>Row {i:02d}</div>" for i in range(30))
+    html = f"""
+    <label id=l>Code</label>
+    <div role=combobox tabindex=0 aria-labelledby=l aria-controls=lb aria-expanded=false id=cb
+      onclick="document.getElementById('wrap').style.display='block'">x</div>
+    <div id=wrap style="display:none;height:100px;overflow-y:auto">
+      <div id=lb role=listbox>{rows}</div></div>"""
+    with sync_playwright() as playwright:
+        browser, _page, driver = _driver_page(playwright, html)
+        try:
+            listing = driver.list_options("Code")
+
+            assert len(listing.options) == 30 and listing.complete
         finally:
             browser.close()

@@ -4091,6 +4091,7 @@ def browser_options(
         emit_json(payload)
         return
     lines = [f"{task}: {payload['count']} option(s) in {sanitize_terminal(label)!r}"]
+    lines.extend(["", payload["untrusted"], ""])
     lines.extend(f"  {sanitize_terminal(name)}" for name in payload["options"])
     if not payload["complete"]:
         lines.append("  (the list may hold more: the scroll or option cap was reached)")
