@@ -605,11 +605,14 @@ class PlaywrightDriver:
         value: str | None,
         grid: int,
         vet: Callable[[ControlInfo], None],
+        vet_name: Callable[[str], None],
     ) -> CellEdit:
         """Read one cell of an Oracle JET data grid; with a `value`, select it, type and commit.
 
         The cell is found by row and column (see `_CELL_JS`) and inspected by `vet` as the very
-        element that is clicked. With no `value` nothing is clicked or typed, so a read cannot
+        element that is clicked, and a dropdown option is vetted the same way (its element by
+        `vet`, its text by `vet_name`) before it is clicked. With no `value` nothing is clicked
+        or typed, so a read cannot
         change the cell's mode. With one, nothing is clicked if a control sits at the click
         point, and keys go only where an editor (or the cell itself) has focus inside the data
         grid. Enter, which could submit a form, is never pressed. The cell is read again
@@ -620,7 +623,7 @@ class PlaywrightDriver:
             handle, meta = self._find_cell(row, column, grid)
             vet(self._describe(handle))
             if value is not None:
-                self._write_cell(handle, value, grid)
+                self._write_cell(handle, value, grid, vet, vet_name)
                 handle, meta = self._read_cell_after_edit(row, column, grid)
             text = str(handle.evaluate(_CELL_TEXT_JS))
         except _playwright_error() as exc:
@@ -1235,7 +1238,12 @@ class PlaywrightDriver:
         """Where focus is: `cell`, `editor`, `other` (a control inside the grid) or `outside`."""
         return str(self._page.evaluate(_CELL_FOCUS_JS, grid))
 
-    def _commit_typed_cell(self, value: str) -> None:
+    def _commit_typed_cell(
+        self,
+        value: str,
+        vet: Callable[[ControlInfo], None],
+        vet_name: Callable[[str], None],
+    ) -> None:
         """Commit typed text: pick the matching option of a search-select, else press Tab.
 
         A list-of-values cell (a project, a time reporting code) opens a dropdown of matches
@@ -1243,8 +1251,11 @@ class PlaywrightDriver:
         and Tab alone does not choose one. The options load a moment after the typing, so they
         are waited for, and the same list must be seen twice before anything is clicked. The
         one option whose text equals the typed text (or, failing that, the only one that starts
-        with it) is clicked, by its position and only if it still reads the same; anything
-        else is refused with the options listed, leaving the editor open. Two visible lists are
+        with it) is clicked, by its position and only if it still reads the same, and Tab then
+        moves focus on, which closes the editor; anything
+        else is refused with the options listed, leaving the editor open. The option is vetted
+        like a click first: its text by `vet_name` and its element by `vet`, so a submit-type
+        control or an option named like a finalizing action is never clicked. Two visible lists are
         refused too, since the options could belong to another widget. A plain cell (hours)
         shows no dropdown and is committed with Tab, and so is a value with nothing to match on
         (only punctuation). Enter is never pressed.
@@ -1277,8 +1288,14 @@ class PlaywrightDriver:
             )
             if chosen and texts == previous:
                 index, text = listed[chosen[0]]
-                if rows.nth(index).inner_text(timeout=self._timeout_ms).strip() == text:
-                    rows.nth(index).click(timeout=self._timeout_ms)
+                option = rows.nth(index)
+                if option.inner_text(timeout=self._timeout_ms).strip() == text:
+                    vet_name(text)
+                    vet(self._describe(option.element_handle(timeout=self._timeout_ms)))
+                    option.click(timeout=self._timeout_ms)
+                    # The chosen option stays in the editor until focus leaves the cell, so the
+                    # commit is finished with Tab, as for a plain cell.
+                    self._page.keyboard.press("Tab")
                     return
             if texts and len(exact) > 1:
                 break
@@ -1317,7 +1334,14 @@ class PlaywrightDriver:
                 f"{exc}; the edit itself was made, so check the cell before editing it again"
             ) from exc
 
-    def _write_cell(self, handle: Any, value: str, grid: int) -> None:
+    def _write_cell(
+        self,
+        handle: Any,
+        value: str,
+        grid: int,
+        vet: Callable[[ControlInfo], None],
+        vet_name: Callable[[str], None],
+    ) -> None:
         """Select the cell, type `value` into its editor and commit; clear it when empty.
 
         Nothing is clicked if a control (a button, a link, a checkbox) is what the click would
@@ -1351,7 +1375,7 @@ class PlaywrightDriver:
             )
         if len(value) > 1:
             self._page.keyboard.type(value[1:])
-        self._commit_typed_cell(value)
+        self._commit_typed_cell(value, vet, vet_name)
         if self._editor_open(grid):
             self._page.keyboard.press("Escape")
             raise BrowserActionError(
@@ -1817,6 +1841,7 @@ class RawBrowserDriver(Protocol):
         value: str | None,
         grid: int,
         vet: Callable[[ControlInfo], None],
+        vet_name: Callable[[str], None],
     ) -> CellEdit: ...
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None: ...

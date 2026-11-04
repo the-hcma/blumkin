@@ -249,8 +249,15 @@ class GuardedDriver:
             raise ValueError(f"Expected grid to be a positive whole number, got {grid!r}")
         if value is not None and not _is_cell_value(value):
             raise self._refuse(action, "the value must be at most 80 printable characters")
+        if value is not None and _is_denied(value, self._deny):
+            raise self._refuse(action, "the value is named like a finalizing action")
         return self._raw.edit_cell(
-            row, column, value, grid, lambda info: self._vet_control(action, info)
+            row,
+            column,
+            value,
+            grid,
+            lambda info: self._vet_control(action, info),
+            lambda name: self._vet_field_name(action, name),
         )
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:

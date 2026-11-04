@@ -44,6 +44,8 @@ class _Raw:
         #: The names a picked tile shows the guard's vet callback.
         self.tile_names: list[str] = ["ada@example.com"]
         self.controls: dict[str, ControlInfo] = {}
+        #: The text of the dropdown option `edit_cell` would click, shown to the name check.
+        self.cell_option: str | None = None
         self.fields: dict[str, ControlInfo] = {}
         #: What the guard's vet callback is shown when `select` clicks something.
         self.select_probe: ControlInfo | None = None
@@ -119,8 +121,11 @@ class _Raw:
         value: str | None,
         grid: int,
         vet: Callable[[ControlInfo], None],
+        vet_name: Callable[[str], None],
     ) -> CellEdit:
         vet(self.controls.get(f"cell:{row}:{column}", _CELL))
+        if self.cell_option is not None:
+            vet_name(self.cell_option)
         self.calls.append(("edit_cell", row, column, value, grid))
         return CellEdit(
             column=5,
@@ -669,6 +674,26 @@ def test_a_grid_cell_value_must_be_a_short_printable_line(value: str) -> None:
         driver.edit_cell("1", "5", value)
     assert "80 printable characters" in str(excinfo.value)
     assert raw.calls == []
+
+
+def test_a_grid_cell_value_named_like_a_finalizing_action_is_refused() -> None:
+    raw, driver = _guard()
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.edit_cell("1", "5", "Submit")
+    assert "finalizing" in str(excinfo.value)
+    assert raw.calls == []
+
+
+def test_a_dropdown_option_named_like_a_finalizing_action_is_refused_by_the_guard() -> None:
+    raw, driver = _guard()
+    raw.cell_option = "Submit"
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.edit_cell("1", "5", "Sub")
+    assert "finalizing" in str(excinfo.value)
+    assert raw.calls == []
+    raw.cell_option = "Paid Time Off"
+    driver.edit_cell("1", "5", "Paid")
+    assert raw.calls == [("edit_cell", "1", "5", "Paid", 1)]
 
 
 @pytest.mark.parametrize("grid", [0, -1, True])

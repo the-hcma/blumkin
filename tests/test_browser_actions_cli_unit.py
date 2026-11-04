@@ -189,7 +189,9 @@ class _Raw:
     def describe_field(self, label: str, target: Any = None) -> ControlInfo:
         return ControlInfo(tag="input", input_type="text", in_form=True)
 
-    def edit_cell(self, row: str, column: str, value: str | None, grid: int, vet: Any) -> CellEdit:
+    def edit_cell(
+        self, row: str, column: str, value: str | None, grid: int, vet: Any, vet_name: Any
+    ) -> CellEdit:
         vet(ControlInfo(tag="div", input_type="", in_form=False))
         self.calls.append(("edit_cell", row, column, value, grid))
         return CellEdit(

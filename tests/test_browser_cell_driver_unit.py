@@ -49,6 +49,9 @@ class _Row:
         texts = self._page.current_options()
         return self._page.row_override.get(self._index, texts[self._index])
 
+    def element_handle(self, *, timeout: float) -> _Handle:
+        return _Handle(self._page, as_option=True)
+
 
 class _Rows:
     def __init__(self, page: _Page) -> None:
@@ -82,8 +85,9 @@ class _Drop:
 
 
 class _Handle:
-    def __init__(self, page: _Page) -> None:
+    def __init__(self, page: _Page, *, as_option: bool = False) -> None:
         self._page = page
+        self._as_option = as_option
 
     def scroll_into_view_if_needed(self, *, timeout: float) -> None:
         self._page.events.append(("scroll", ""))
@@ -93,7 +97,7 @@ class _Handle:
 
     def evaluate(self, script: str, arg: Any = None) -> Any:
         if script is cdp._DESCRIBE_CONTROL_JS:
-            return self._page.cell_info
+            return self._page.option_info if self._as_option else self._page.cell_info
         if script is cdp._CELL_CLICK_TARGET_JS:
             return self._page.click_target
         if script is cdp._CELL_TEXT_JS:
@@ -130,6 +134,8 @@ class _Page:
         self.keyboard = _Keyboard(self.events)
         self.context = SimpleNamespace()
         self.cell_info: dict[str, Any] = dict(_CELL_INFO)
+        #: What the dropdown option element reports when it is described.
+        self.option_info: dict[str, Any] = {**_CELL_INFO, "tag": "li"}
         self.cell_text = "8"
         self.click_target = "ok"
         #: Successive answers to the focus question; the last one repeats.
@@ -183,9 +189,26 @@ def _driver(page: _Page) -> PlaywrightDriver:
     )
 
 
-def _edit(page: _Page, value: str | None, vetted: list[ControlInfo] | None = None) -> Any:
+def _refuse_name(name: str) -> None:
+    raise BrowserActionError(f"refused {name!r}")
+
+
+def _edit(
+    page: _Page,
+    value: str | None,
+    vetted: list[ControlInfo] | None = None,
+    names: list[str] | None = None,
+    refuse_names: tuple[str, ...] = (),
+) -> Any:
     seen = vetted if vetted is not None else []
-    return _driver(page).edit_cell("2", "5", value, 1, seen.append)
+    named = names if names is not None else []
+
+    def vet_name(name: str) -> None:
+        named.append(name)
+        if name in refuse_names:
+            _refuse_name(name)
+
+    return _driver(page).edit_cell("2", "5", value, 1, seen.append, vet_name)
 
 
 def _kinds(page: _Page) -> list[str]:
@@ -273,7 +296,8 @@ def test_a_dropdown_option_is_clicked_by_its_position_not_by_its_text() -> None:
     page.options = [["Paid Time Off - Holiday", "Paid Time Off", "Paid Time Off Extra"]]
     _edit(page, "Paid Time Off")
     assert ("option-click", "1") in page.events
-    assert ("press", "Tab") not in page.events
+    order = [(k, v) for k, v in page.events if k in ("option-click", "press")]
+    assert order == [("option-click", "1"), ("press", "Tab")]
 
 
 def test_a_prefix_is_enough_only_when_exactly_one_option_starts_with_it() -> None:
@@ -362,3 +386,41 @@ def test_enter_is_never_pressed(value: str | None) -> None:
     page.focus = ["cell", "editor"] if value else ["cell"]
     _edit(page, value)
     assert ("press", "Enter") not in page.events
+
+
+def test_the_chosen_dropdown_option_is_vetted_by_element_and_by_text_before_the_click() -> None:
+    page = _Page()
+    page.drop_visible = True
+    page.options = [["Paid Time Off"]]
+    seen: list[ControlInfo] = []
+    names: list[str] = []
+    _edit(page, "Paid Time Off", seen, names)
+    assert names == ["Paid Time Off"]
+    assert [info.tag for info in seen] == ["div", "li"]
+    assert ("option-click", "0") in page.events
+
+
+def test_an_option_named_like_a_finalizing_action_is_not_clicked() -> None:
+    page = _Page()
+    page.drop_visible = True
+    page.options = [["Submit"]]
+    with pytest.raises(BrowserActionError) as excinfo:
+        _edit(page, "Sub", refuse_names=("Submit",))
+    assert "refused 'Submit'" in str(excinfo.value)
+    assert not any(kind == "option-click" for kind in _kinds(page))
+
+
+def test_an_option_that_is_a_submit_control_is_not_clicked() -> None:
+    page = _Page()
+    page.drop_visible = True
+    page.options = [["Paid Time Off"]]
+    page.option_info = {**_CELL_INFO, "tag": "input", "type": "submit"}
+
+    def refuse_submit(info: ControlInfo) -> None:
+        if info.input_type == "submit":
+            raise BrowserActionError("a submit control")
+
+    with pytest.raises(BrowserActionError) as excinfo:
+        _driver(page).edit_cell("2", "5", "Paid Time Off", 1, refuse_submit, lambda name: None)
+    assert "a submit control" in str(excinfo.value)
+    assert not any(kind == "option-click" for kind in _kinds(page))
