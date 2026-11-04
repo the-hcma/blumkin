@@ -7,11 +7,13 @@ and always reports ``submitted: false``.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from blumkin.browser.flow_params import validate_params
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.ledger import (
     ItemKind,
@@ -90,17 +92,6 @@ def apply_item(
     existing = _find(status, kind, item)
     if existing is not None and existing.state is ItemState.VERIFIED:
         return ApplyResult(item=existing, noop=True, status=status)
-    if existing is None or existing.state is ItemState.FAILED:
-        stage_item(
-            config_dir,
-            task,
-            instance,
-            kind,
-            item,
-            sha256=sha256,
-            low_confidence=low_confidence,
-            model_version=(model.version if model is not None else None),
-        )
     site = (
         model
         if model is not None
@@ -111,9 +102,23 @@ def apply_item(
     if site is None:
         raise LedgerError(f"Expected a saved site model for task {task!r}, got none")
     flow = _require_flow(site, flow_name)
+    # Checked before the item is staged or the browser touched: a refused run changes nothing.
+    validate_params(flow, values or {})
+    if existing is None or existing.state is ItemState.FAILED:
+        stage_item(
+            config_dir,
+            task,
+            instance,
+            kind,
+            item,
+            sha256=sha256,
+            low_confidence=low_confidence,
+            model_version=site.version,
+        )
     runner = run_step or _default_run_step(task)
     bindings = dict(values or {})
-    bindings.setdefault("item", item)
+    # The item being applied, whatever the caller passed: a value cannot rename it.
+    bindings["item"] = item
     try:
         for step in flow.steps:
             runner(step, bindings)
@@ -318,10 +323,10 @@ def _default_run_step(task: str) -> StepRunner:
         if action == "fill":
             if not step.control:
                 raise LedgerError("Flow step 'fill' needs a control")
-            key = step.control
+            key = step.bind or step.control
             if key not in values:
-                raise LedgerError(f"Expected a value for control {key!r}, got none")
-            actions.fill_task(config, task, key, values[key])
+                raise LedgerError(f"Expected a value for {key!r}, got none")
+            actions.fill_task(config, task, step.control, values[key])
             return
         if action == "goto":
             url = values.get("url") or values.get("page_url")
@@ -332,10 +337,15 @@ def _default_run_step(task: str) -> StepRunner:
         if action == "upload":
             if not step.control:
                 raise LedgerError("Flow step 'upload' needs a control")
-            path = values.get("path") or values.get("file")
+            path = values.get(step.bind) if step.bind else values.get("path") or values.get("file")
             if not path:
                 raise LedgerError("Flow step 'upload' needs a path value")
-            actions.upload_task(config, task, step.control, Path(path))
+            # A bound file was validated as written, so it goes on as that same path made
+            # absolute by prefixing the working directory, never by collapsing `..` (which
+            # would ignore a symlinked folder before it): `upload_task` expands a leading `~`,
+            # which would pick a different file.
+            target = Path(os.path.join(os.getcwd(), path)) if step.bind else Path(path)
+            actions.upload_task(config, task, step.control, target)
             return
         if action in {"expect", "check", "landmark"}:
             return

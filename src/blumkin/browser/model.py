@@ -67,6 +67,18 @@ class ControlSafety(StrEnum):
 class Flow:
     name: str
     steps: tuple[FlowStep, ...]
+    #: The inputs the flow takes; a flow with none keeps the older, unchecked bindings.
+    params: tuple[FlowParam, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class FlowParam:
+    """One declared input of a flow: its name, what it must be and, for a choice, the options."""
+
+    name: str
+    kind: ParamKind
+    #: The recorded options of a `choice` parameter (empty for every other kind).
+    choices: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +89,8 @@ class FlowStep:
     control: str | None
     expect: str | None
     page: str | None
+    #: The flow parameter whose value a `fill` or `upload` step uses.
+    bind: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +108,15 @@ class LocatorStrategy(StrEnum):
     LABEL = "label"
     ATTRIBUTE = "attribute"
     CSS = "css"
+
+
+class ParamKind(StrEnum):
+    """What a flow parameter must be when a run supplies it."""
+
+    CHOICE = "choice"
+    DATE = "date"
+    FILE = "file"
+    TEXT = "text"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,21 +146,7 @@ class SiteModel:
     def to_payload(self) -> dict[str, Any]:
         return {
             "blumkin_version": self.blumkin_version,
-            "flows": [
-                {
-                    "name": flow.name,
-                    "steps": [
-                        {
-                            "action": step.action,
-                            "control": step.control,
-                            "expect": step.expect,
-                            "page": step.page,
-                        }
-                        for step in flow.steps
-                    ],
-                }
-                for flow in self.flows
-            ],
+            "flows": [_flow_payload(flow) for flow in self.flows],
             "hosts": list(self.hosts),
             "pages": [
                 {
@@ -454,13 +463,18 @@ _HOST = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"
 )
 _LOCK_FILENAME = ".lock"
+#: The steps a flow parameter can feed: a value typed into a field or a file chosen for upload.
+_BOUND_ACTIONS = frozenset({"fill", "upload"})
 _LOGICAL_NAME = re.compile(r"[a-z][a-z0-9_.\[\]-]{0,63}")
+_MAX_CHOICES = 100
+_MAX_CHOICE_CHARS = 80
 _MAX_CONTROLS = 500
 _MAX_FILE_BYTES = 2 * 1024 * 1024
 _MAX_FINGERPRINT = 200
 _MAX_FLOWS = 50
 _MAX_LOCATORS = 10
 _MAX_PAGES = 200
+_MAX_PARAMS = 12
 _MAX_STEPS = 200
 _MAX_TEXT = 200
 _STORE_DIRNAME = "browser-models"
@@ -568,16 +582,47 @@ def _filesystem(action: str) -> Iterator[None]:
 
 
 def _flow(data: Any, where: str, pages: Mapping[str, Page]) -> Flow:
-    data = _keys(data, where, {"name", "steps"})
+    data = _keys(data, where, {"name", "steps"}, optional={"params"})
     steps = _list(data["steps"], f"{where}.steps")
     _at_most(steps, _MAX_STEPS, f"{where}.steps")
+    raw_params = _list(data.get("params", []), f"{where}.params")
+    _at_most(raw_params, _MAX_PARAMS, f"{where}.params")
+    params = tuple(_param(item, f"{where}.params[{n}]") for n, item in enumerate(raw_params))
+    if len({param.name for param in params}) != len(params):
+        raise SiteModelError(f"Expected {where}.params with distinct names, got a repeat")
     controls = {c.name for page in pages.values() for c in page.controls}
     return Flow(
         name=_text(data["name"], f"{where}.name", pattern=_LOGICAL_NAME, what="a logical name"),
+        params=params,
         steps=tuple(
-            _step(item, f"{where}.steps[{n}]", pages, controls) for n, item in enumerate(steps)
+            _step(item, f"{where}.steps[{n}]", pages, controls, {p.name: p.kind for p in params})
+            for n, item in enumerate(steps)
         ),
     )
+
+
+def _flow_payload(flow: Flow) -> dict[str, Any]:
+    """A flow as stored; `params` and `bind` appear only when used, so older models stay as is."""
+    payload: dict[str, Any] = {
+        "name": flow.name,
+        "steps": [
+            {
+                "action": step.action,
+                "control": step.control,
+                "expect": step.expect,
+                "page": step.page,
+            }
+            | ({"bind": step.bind} if step.bind is not None else {})
+            for step in flow.steps
+        ],
+    }
+    if flow.params:
+        payload["params"] = [
+            {"kind": param.kind.value, "name": param.name}
+            | ({"choices": list(param.choices)} if param.choices else {})
+            for param in flow.params
+        ]
+    return payload
 
 
 def _fsync_dir(path: Path) -> None:
@@ -612,13 +657,18 @@ def _is_unprintable(char: str) -> bool:
     )
 
 
-def _keys(data: Any, where: str, allowed: set[str]) -> Mapping[str, Any]:
+def _keys(
+    data: Any, where: str, allowed: set[str], *, optional: set[str] | None = None
+) -> Mapping[str, Any]:
+    """`data` as an object holding every key of `allowed` and, besides, only `optional` ones."""
     if not isinstance(data, dict):
         raise SiteModelError(f"Expected {where} to be an object, got {type(data).__name__}")
+    extra = optional or set()
     for key in data:
-        if key not in allowed:
+        if key not in allowed and key not in extra:
             raise SiteModelError(
-                f"Expected only {sorted(allowed)} in {where}, got unexpected key {_shown(key)}"
+                f"Expected only {sorted(allowed | extra)} in {where}, "
+                f"got unexpected key {_shown(key)}"
             )
     missing = sorted(allowed - set(data))
     if missing:
@@ -704,6 +754,27 @@ def _page(data: Any, where: str) -> Page:
         ),
         url_template=_url_template(data["url_template"], f"{where}.url_template"),
     )
+
+
+def _param(data: Any, where: str) -> FlowParam:
+    data = _keys(data, where, {"kind", "name"}, optional={"choices"})
+    kind = _enum(ParamKind, data["kind"], f"{where}.kind")
+    raw = _list(data.get("choices", []), f"{where}.choices")
+    _at_most(raw, _MAX_CHOICES, f"{where}.choices")
+    if raw and kind is not ParamKind.CHOICE:
+        raise SiteModelError(f"Expected {where}.choices only for a choice parameter, got some")
+    if kind is ParamKind.CHOICE and not raw:
+        raise SiteModelError(f"Expected {where}.choices to list the options, got none")
+    choices = tuple(
+        _text(item, f"{where}.choices[{n}]", max_len=_MAX_CHOICE_CHARS, plain=True)
+        for n, item in enumerate(raw)
+    )
+    if len(set(choices)) != len(choices):
+        raise SiteModelError(f"Expected {where}.choices without repeats, got a repeat")
+    name = _text(data["name"], f"{where}.name", pattern=_LOGICAL_NAME, what="a logical name")
+    if name == "item":
+        raise SiteModelError(f"Expected {where}.name other than 'item' (the ledger item), got it")
+    return FlowParam(choices=choices, kind=kind, name=name)
 
 
 def _parse(payload: Any, task: str) -> SiteModel:
@@ -835,8 +906,37 @@ def _shown(value: Any) -> str:
     return f"a {type(value).__name__}"
 
 
-def _step(data: Any, where: str, pages: Mapping[str, Page], controls: set[str]) -> FlowStep:
-    data = _keys(data, where, {"action", "control", "expect", "page"})
+def _step(
+    data: Any,
+    where: str,
+    pages: Mapping[str, Page],
+    controls: set[str],
+    params: Mapping[str, ParamKind] | None = None,
+) -> FlowStep:
+    data = _keys(data, where, {"action", "control", "expect", "page"}, optional={"bind"})
+    declared = params or {}
+    action = _text(data["action"], f"{where}.action", pattern=_LOGICAL_NAME, what="an action name")
+    bind = data.get("bind")
+    if bind is not None:
+        bind = _text(bind, f"{where}.bind", pattern=_LOGICAL_NAME, what="a logical name")
+        if action not in _BOUND_ACTIONS:
+            raise SiteModelError(
+                f"Expected {where}.bind only on a fill or upload step, got it on {action!r}"
+            )
+        if bind not in declared:
+            raise SiteModelError(
+                f"Expected {where}.bind to name a parameter of the flow, got {_shown(bind)}"
+            )
+        # A file path is checked as one and never typed into a field; text never uploads.
+        if (declared[bind] is ParamKind.FILE) != (action == "upload"):
+            raise SiteModelError(
+                f"Expected {where}.bind of a {'file' if action == 'upload' else 'non-file'} "
+                f"parameter for a {action} step, got {_shown(bind)}"
+            )
+    elif declared and action in _BOUND_ACTIONS:
+        raise SiteModelError(
+            f"Expected {where} to bind a parameter (the flow declares params), got none"
+        )
     control = data["control"]
     page = data["page"]
     if control is not None:
@@ -857,9 +957,8 @@ def _step(data: Any, where: str, pages: Mapping[str, Page], controls: set[str]) 
     if expect is not None:
         expect = _text(expect, f"{where}.expect", plain=True)
     return FlowStep(
-        action=_text(
-            data["action"], f"{where}.action", pattern=_LOGICAL_NAME, what="an action name"
-        ),
+        action=action,
+        bind=bind,
         control=control,
         expect=expect,
         page=page,

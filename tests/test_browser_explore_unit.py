@@ -1187,3 +1187,39 @@ def test_forgetting_a_middle_page_reports_which_flow_lost_steps() -> None:
     assert draft.forget("middle-page") == {"recorded": 1}
     assert draft.forget("last-page") == {"recorded": 1}
     assert draft.forget("first-page") == {"recorded": 1}
+
+
+def test_a_draft_continuing_a_model_keeps_each_flows_parameters_and_bindings() -> None:
+    from blumkin.browser.explore import ModelDraft
+    from blumkin.browser.model import Flow, FlowParam, FlowStep, ParamKind, SiteModel
+
+    base = ModelDraft("expense-report", ("erp.example.com",))
+    base.add_page(
+        "expense-list",
+        "https://erp.example.com/expenses",
+        parse_aria_snapshot('- button "Add line"\n- heading "Expenses"'),
+    )
+    page = base.to_model(recorded_at="2026-10-30T00:00:00Z", blumkin_version="1.0.0").pages
+    control = page[0].controls[0].name
+    flow = Flow(
+        name="add-item",
+        params=(FlowParam(name="when", kind=ParamKind.DATE),),
+        steps=(
+            FlowStep(action="fill", control=control, expect=None, page="expense-list", bind="when"),
+        ),
+    )
+    model = SiteModel(
+        blumkin_version="1.0.0",
+        flows=(flow,),
+        hosts=("erp.example.com",),
+        pages=page,
+        recorded_at="2026-10-30T00:00:00Z",
+        task="expense-report",
+        version=1,
+    )
+
+    rebuilt = ModelDraft.from_model(model).to_model(
+        recorded_at="2026-10-31T00:00:00Z", blumkin_version="1.0.0"
+    )
+
+    assert rebuilt.flows == (flow,)
