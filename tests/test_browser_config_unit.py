@@ -135,6 +135,8 @@ def test_no_task_policies_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyP
 @pytest.mark.parametrize(
     ("body", "needle"),
     [
+        ('[browser.tasks.expense-report]\nallow_all_controls = "yes"\n\n', "allow_all_controls"),
+        ("[browser.tasks.expense-report]\nallow_all_controls = 1\n\n", "allow_all_controls"),
         ('[browser.tasks.expense-report]\nallowed_controls = "Add line"\n\n', "allowed_controls"),
         ("[browser.tasks.expense-report]\nallowed_controls = [1]\n\n", "allowed_controls"),
         ('[browser.tasks.expense-report]\nextra_deny_names = "x"\n\n', "extra_deny_names"),
@@ -379,6 +381,22 @@ def test_dialog_confirm_names_are_parsed_and_default_to_none(
 
     assert tasks["expense-report"].dialog_confirm == ("OK", "Done")
     assert tasks["time-sheet"].dialog_confirm == ()
+
+
+def test_allow_all_controls_is_parsed_and_defaults_to_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        "[browser.tasks.expense-report]\nallow_all_controls = true\n\n"
+        "[browser.tasks.time-sheet]\n\n",
+    )
+
+    tasks = load_config().browser.tasks
+
+    assert tasks["expense-report"].allow_all_controls is True
+    assert tasks["time-sheet"].allow_all_controls is False
 
 
 def test_draft_controls_are_parsed_and_default_to_none(

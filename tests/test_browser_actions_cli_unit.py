@@ -1629,6 +1629,21 @@ def test_the_guard_policy_carries_the_tasks_strict_mode() -> None:
     assert _policy_for(setup(strict), "other").block_background_writes is False
 
 
+def test_the_guard_policy_carries_the_tasks_deny_list_mode() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.actions import _policy_for
+    from blumkin.config import BrowserTaskPolicy
+
+    def setup(policy: BrowserTaskPolicy) -> Any:
+        return SimpleNamespace(browser=SimpleNamespace(tasks={"t": policy}))
+
+    assert _policy_for(setup(BrowserTaskPolicy()), "t").allow_all_controls is False
+    open_task = BrowserTaskPolicy(allow_all_controls=True)
+    assert _policy_for(setup(open_task), "t").allow_all_controls is True
+    assert _policy_for(setup(open_task), "other").allow_all_controls is False
+
+
 def test_fill_passes_nth_exact_and_role_to_the_driver(raw: _Raw) -> None:
     result = _run(
         "browser", "fill", "expense-report", "Date", "2026-10-23",
