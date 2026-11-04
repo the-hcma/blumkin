@@ -675,19 +675,29 @@ def _field_action(
             lines.append("  the field does not hold what was set (its value is not shown)")
     if "persisted" in payload:  # an upload: what the page shows of the file
         lines.append(f"  the page shows the file: {payload['persisted']}")
+        if "attached" in payload:
+            lines.append(f"  the intended file is attached: {payload['attached']}")
         lines.extend(
             f"  warning: {sanitize_terminal(text)}" for text in payload.get("warnings", ())
         )
     emit_lines(lines)
 
 
-def _private_value(value: str | None, from_stdin: bool, prompt: str, *, as_json: bool) -> str:
+def _private_value(
+    value: str | None,
+    from_stdin: bool,
+    prompt: str,
+    *,
+    as_json: bool,
+    stdin_flag: str = "--stdin",
+    value_noun: str = "a value argument",
+) -> str:
     """A value given as an argument, on stdin (bounded, one trailing newline dropped), or asked
     for at a hidden prompt, so a sensitive value need not land in shell history or `ps`."""
     if value is not None and from_stdin:
         _emit_error(
             error="usage_error",
-            message="Expected a value argument or --stdin, got both",
+            message=f"Expected {value_noun} or {stdin_flag}, got both",
             as_json=as_json,
         )
         raise SystemExit(EXIT_USAGE)
@@ -707,7 +717,7 @@ def _private_value(value: str | None, from_stdin: bool, prompt: str, *, as_json:
     if not sys.stdin.isatty():
         _emit_error(
             error="usage_error",
-            message="Expected a value argument or --stdin, got neither (stdin is not a TTY)",
+            message=f"Expected {value_noun} or {stdin_flag}, got neither (stdin is not a TTY)",
             as_json=as_json,
         )
         raise SystemExit(EXIT_USAGE)
@@ -4813,7 +4823,14 @@ def receipts_rehome(
             ),
         )
         raise SystemExit(EXIT_USAGE)
-    total = _private_value(total, total_stdin, "Total", as_json=as_json)
+    total = _private_value(
+        total,
+        total_stdin,
+        "Total",
+        as_json=as_json,
+        stdin_flag="--total-stdin",
+        value_noun="--total",
+    )
     _require_value(total, "a total", as_json=as_json)
     config = _load_config()
     policy = config.browser.tasks.get(task)

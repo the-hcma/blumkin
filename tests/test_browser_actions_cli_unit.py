@@ -2906,3 +2906,68 @@ def test_a_private_rehome_of_an_already_filed_receipt_says_so_without_details(
     assert result.exit_code != EXIT_SUCCESS
     assert "already filed" in result.output
     assert "1234" not in result.output and str(tmp_path) not in result.output
+
+
+def test_a_text_mode_private_upload_reports_whether_the_intended_file_is_attached(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    ref = _file_receipt(_config_dir, tmp_path)["ref"]
+    raw.upload_result = UploadObservation("missing", False, ())
+
+    result = CliRunner().invoke(
+        main,
+        ["browser", "upload", "expense-report", "Receipt", "--receipt-ref", ref,
+         "--instance", "trip"],
+    )  # fmt: skip
+
+    assert "intended file is attached: False" in result.output
+    assert "1234" not in result.output
+
+
+def test_a_long_name_is_unknown_not_a_match(raw: _Raw, _config_dir: Path, tmp_path: Path) -> None:
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    _policy(_config_dir, f'upload_dirs = ["{uploads}"]\nallowed_hosts = ["erp.example.com"]')
+    long_file = uploads / (("a" * 120) + ".png")
+    long_file.write_bytes(b"x")
+    raw.upload_result = UploadObservation("shown", False, (("a" * 120)[:100],))
+
+    result = _run("browser", "upload", "expense-report", "Receipt", str(long_file), "--private")
+
+    assert _json(result)["attached"] is None
+
+
+def test_a_hash_read_failure_does_not_leak_the_path(
+    raw: _Raw, _config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ref = _file_receipt(_config_dir, tmp_path)["ref"]
+
+    def unreadable(path: Path) -> str:
+        raise PermissionError(13, "denied", str(path))
+
+    monkeypatch.setattr("blumkin.browser.actions.file_sha256", unreadable)
+
+    result = _run(
+        "browser", "upload", "expense-report", "Receipt", "--receipt-ref", ref, "--instance", "trip"
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert str(tmp_path) not in result.output and "1234" not in result.output
+
+
+def test_rehome_without_a_total_names_its_own_stdin_option(raw: _Raw, tmp_path: Path) -> None:
+    scan = tmp_path / "s.jpg"
+    scan.write_bytes(b"x")
+
+    result = CliRunner().invoke(
+        main,
+        ["--json", "receipts", "rehome", str(scan), "--task", "expense-report",
+         "--instance", "trip", "--date", "2026-10-20", "--vendor", "Taxi",
+         "--currency", "USD", "--yes"],
+        input="",
+    )  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "--total-stdin" in result.output and "--stdin" not in result.output.replace(
+        "--total-stdin", ""
+    )

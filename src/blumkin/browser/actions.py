@@ -840,10 +840,16 @@ def upload_task(
             f"got {shown} outside them"
         )
 
-    if filed_digest is not None and file_sha256(resolved) != filed_digest:
-        raise UploadBlockedError(
-            "Expected the filed receipt to be unchanged since it was filed, got different content"
-        )
+    if filed_digest is not None:
+        try:
+            unchanged = file_sha256(resolved) == filed_digest
+        except OSError:  # the message would carry the file's path
+            unchanged = False
+        if not unchanged:
+            raise UploadBlockedError(
+                "Expected the filed receipt to be readable and unchanged since it was filed, "
+                "got a missing, unreadable or different file"
+            )
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         page_host = urlsplit(driver.url).hostname or ""
@@ -862,8 +868,11 @@ def upload_task(
                 f"Expected the receipt to be attached, got a failure ({type(exc).__name__})"
             ) from None
         payload = _field_payload("upload", task, label, target, None, None)
+        intended = " ".join(resolved.name.split()).casefold()
         held = {" ".join(name.split()).casefold() for name in seen.files}
-        payload["attached"] = " ".join(resolved.name.split())[:100].casefold() in held
+        # The page's names are capped at 100 characters, so a name that long cannot be told
+        # from a longer one with the same start: that is unknown (None), not a match.
+        payload["attached"] = (intended in held) if len(intended) < 100 else None
         if not private:
             payload["file"] = resolved.name
             payload["files_held"] = list(seen.files)
