@@ -643,12 +643,13 @@ def test_the_guard_refuses_clear_time_card_even_when_it_is_also_declared() -> No
     guard = GuardedDriver(
         _NoPage(),  # type: ignore[arg-type]
         GuardPolicy(
-            allowed_controls=frozenset({"Save"}),
+            allowed_controls=frozenset({"Clear Time Card", "Save"}),
             extra_deny_names=TEMPLATES["time-sheet"].extra_deny_names,
         ),
     )
 
-    with pytest.raises(SubmitBlockedError):
+    # Declared on purpose: the extra deny name must win over the allow list.
+    with pytest.raises(SubmitBlockedError, match="finalizing"):
         guard.check_click("Clear Time Card")
     guard.check_click("Save")
 
@@ -659,3 +660,11 @@ def test_every_templates_table_passes_the_real_config_validation(name: str) -> N
 
     parsed = tomllib.loads(table)
     validate_browser_task_table(name, parsed["browser"]["tasks"][name])
+
+
+def test_the_next_steps_name_a_handoff_command_that_takes_its_required_step(config: Path) -> None:
+    for name in ("expense-report", "time-sheet"):
+        result = _run("--template", name, "--host", "erp.example.com")
+
+        handoffs = [step for step in _payload(result)["next_steps"] if "handoff" in step]
+        assert handoffs and all("--step" in step for step in handoffs)

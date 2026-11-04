@@ -89,7 +89,7 @@ TEMPLATES: dict[str, TaskTemplate] = {
             "File a receipt: `blumkin receipts summarize` the files, confirm the table and the "
             "total with the user, `blumkin receipts rehome ... --yes`, then fill the item with "
             "`blumkin browser fill`, `select` and `upload` (one run per receipt). The task never "
-            "submits: end with `blumkin browser handoff {task}`.",
+            'submits: end with `blumkin browser handoff {task} --filled "..." --step "..."`.',
         ),
         summary="File receipts into an expense report through the task browser (never submits).",
         upload_dirs=("~/Documents/receipts-archive",),
@@ -129,7 +129,8 @@ TEMPLATES: dict[str, TaskTemplate] = {
             "`--form-url` here or `form_url` in config.toml), then sign in by hand.",
             "Read the card's `Time Card Period` and start the period on its first day (Oracle's "
             "can start on a Sunday), then follow the time-sheet skill: ledger first, fill, "
-            "save, and hand the final click to the user with `blumkin browser handoff {task}`.",
+            "save, and hand the final click to the user with `blumkin browser ledger handoff "
+            '{task} <instance> --step "..."` (the ledger is not optional).',
         ),
         summary="Fill in a time card through the task browser (never submits).",
         takes_form_url=True,
