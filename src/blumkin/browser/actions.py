@@ -774,6 +774,7 @@ def read_task(
             if frame is not None or not _on_sign_in_page(driver, sign_in_hosts):
                 raise
             on_sign_in = True
+        start_host = _page_host(driver)
         within_matches = 0
         if aria:
             snapshot = _redact_aria(
@@ -799,6 +800,13 @@ def read_task(
                 driver.read_text()
                 if frame is None
                 else driver.read_frame_text(frame, allowed, host, wait_s=wait_s)
+            )
+        if frame is None and _page_host(driver) != start_host:
+            # The page navigated while it was read, so what was captured may belong to a page
+            # the first check never saw (this narrows the window; it cannot close it).
+            raise HostBlockedError(
+                f"Expected the page to stay on {start_host!r} while it is read, got a change; "
+                "nothing was returned"
             )
         if on_sign_in and not aria:
             # An identity-provider error page often echoes the redirect address and request ids,
@@ -1247,6 +1255,9 @@ def where_task(config: BrowserSetup, task: str) -> dict[str, Any]:
     try:
         url = page.url
         title = page.title()
+        # The page can navigate between the two calls, and the title would then belong to a
+        # page the address never described: it is dropped rather than shown under that address.
+        changed = page.url != url
     finally:
         page.close()
     parts = urlsplit(url)
@@ -1263,7 +1274,8 @@ def where_task(config: BrowserSetup, task: str) -> dict[str, Any]:
         "path": _where_path(parts.path) if known else "",
         "scheme": parts.scheme,
         "task": task,
-        "title": redact_addresses(_one_line(title)) if known else "",
+        "title": redact_addresses(_one_line(title)) if known and not changed else "",
+        "title_withheld": changed,
         "untrusted": UNTRUSTED_NOTE,
     }
 
@@ -1556,6 +1568,12 @@ def _on_sign_in_page(driver: GuardedDriver, sign_in_hosts: Sequence[str]) -> boo
     """Whether the page is on a recognized sign-in host over http(s)."""
     parts = urlsplit(driver.url)
     return parts.scheme in ("http", "https") and host_allowed(parts.hostname or "", sign_in_hosts)
+
+
+def _page_host(driver: GuardedDriver) -> str:
+    """The lowercase host of the page over http(s), else empty."""
+    parts = urlsplit(driver.url)
+    return (parts.hostname or "").lower() if parts.scheme in ("http", "https") else ""
 
 
 def _overlay_count(driver: GuardedDriver, roles: Sequence[str]) -> int:
