@@ -26,6 +26,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import stat
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -36,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from blumkin.browser.profiles import ensure_private_dir, validate_task_name, write_private
+from blumkin.config import BrowserSetup
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,11 +170,96 @@ class SiteModelError(ValueError):
     """A model that cannot be stored or loaded, with the expectation it broke."""
 
 
-def discard_draft(config_dir: Path, task: str) -> bool:
+def _overlaps(where: Path, root: Path) -> bool:
+    """Whether one path is the other or inside it; case is ignored, so a case-insensitive
+    filesystem (macOS) cannot spell its way past the check."""
+    a, b = Path(str(where).casefold()), Path(str(root).casefold())
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+
+
+def default_store(config_dir: Path) -> Path:
+    """Where models live unless `[browser] models_dir` says otherwise."""
+    return config_dir / _STORE_DIRNAME
+
+
+def resolve_store(config: BrowserSetup) -> Path:
+    """The directory that holds the recorded models: `[browser] models_dir`, or the default.
+
+    A configured location must be absolute (or start with `~/`) and resolves through any
+    symlink it is given as. Its parent must exist; it is refused when it is the filesystem
+    root, the home directory, or inside (or the same as) a folder a task may upload from or
+    download into, and, when it already exists, unless it is a directory owned by this user
+    that no one else can read or write (mode 0700). Inside it the store's own protections
+    are unchanged: no symlinked task, `history` or model files, private modes, regular files.
+    """
+    configured = config.browser.models_dir
+    if configured is None:
+        return default_store(config.config_dir)
+    text = os.fspath(configured)
+    if not (text.startswith("/") or text.startswith("~/")):
+        raise SiteModelError(
+            f"Expected [browser] models_dir to be absolute or start with ~/, got {text!r}"
+        )
+    try:
+        where = Path(text).expanduser().resolve()
+        home = Path.home().resolve()
+    except OSError, RuntimeError, ValueError:
+        raise SiteModelError(
+            "Expected [browser] models_dir to be a usable path, got one that cannot be resolved"
+        ) from None
+    if where in (Path(where.anchor), home) or str(where).casefold() == str(home).casefold():
+        raise SiteModelError(
+            f"Expected [browser] models_dir to be a folder of its own, got {str(where)!r}"
+        )
+    for policy in config.browser.tasks.values():
+        for folder in (*policy.upload_dirs, *policy.download_dirs):
+            root = Path(folder).expanduser().resolve()
+            if _overlaps(where, root):
+                raise SiteModelError(
+                    "Expected [browser] models_dir apart from every upload_dirs and "
+                    "download_dirs folder (not inside one, not around one), got an overlap"
+                )
+    try:
+        state = config.config_dir.resolve()
+    except OSError, RuntimeError, ValueError:
+        raise SiteModelError("Expected the config directory to resolve, got a failure") from None
+    folded_where, folded_state = Path(str(where).casefold()), Path(str(state).casefold())
+    if folded_where == folded_state or folded_state.is_relative_to(folded_where):
+        raise SiteModelError(
+            "Expected [browser] models_dir to be a folder of its own, apart from the config "
+            "directory that holds blumkin's other state"
+        )
+    if not where.parent.is_dir():
+        raise SiteModelError(
+            f"Expected the parent of [browser] models_dir to exist, got none for {str(where)!r}"
+        )
+    try:
+        info = where.lstat()
+    except FileNotFoundError:
+        return where
+    except OSError as exc:
+        raise SiteModelError(
+            f"Expected to inspect [browser] models_dir, got {type(exc).__name__}"
+        ) from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise SiteModelError(f"Expected [browser] models_dir to be a directory, got {str(where)!r}")
+    if info.st_uid != os.getuid():
+        raise SiteModelError(
+            f"Expected [browser] models_dir to be owned by you, got another owner: {str(where)!r}"
+        )
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise SiteModelError(
+            f"Expected [browser] models_dir to be private (mode 0700), got "
+            f"{stat.S_IMODE(info.st_mode):04o}: run `chmod 700 {shlex.quote(str(where))}`"
+        )
+    return where
+
+
+def discard_draft(store: Path, task: str) -> bool:
     """Delete the task's in-progress draft; False when there was none."""
     validate_task_name(task)
     with _filesystem("discard the draft"):
-        task_dir = _existing_dir(config_dir, task)
+        task_dir = _existing_dir(store, task)
         if task_dir is None:
             return False
         with _locked(task_dir):
@@ -192,25 +279,25 @@ def is_storable_label(text: str) -> bool:
     return True
 
 
-def list_versions(config_dir: Path, task: str) -> list[int]:
+def list_versions(store: Path, task: str) -> list[int]:
     """The saved versions of the task's model, oldest first."""
     validate_task_name(task)
-    with _filesystem("list the saved model versions"), _shared_lock(config_dir, task):
-        return _versions(config_dir, task)
+    with _filesystem("list the saved model versions"), _shared_lock(store, task):
+        return _versions(store, task)
 
 
-def load_draft(config_dir: Path, task: str) -> SiteModel | None:
+def load_draft(store: Path, task: str) -> SiteModel | None:
     """The task's in-progress exploration draft, or None when there is none."""
     validate_task_name(task)
-    with _filesystem("read the draft"), _shared_lock(config_dir, task):
-        task_dir = _existing_dir(config_dir, task)
+    with _filesystem("read the draft"), _shared_lock(store, task):
+        task_dir = _existing_dir(store, task)
         if task_dir is None or not _exists(task_dir / _DRAFT_FILENAME):
             return None
         return _read_model(task_dir / _DRAFT_FILENAME, task)
 
 
 def load_model(
-    config_dir: Path,
+    store: Path,
     task: str,
     *,
     host_allowed: Callable[[str], bool] | None = None,
@@ -222,11 +309,11 @@ def load_model(
     next save repairs the file.
     """
     validate_task_name(task)
-    with _filesystem("read the model"), _shared_lock(config_dir, task):
-        task_dir = _existing_dir(config_dir, task)
+    with _filesystem("read the model"), _shared_lock(store, task):
+        task_dir = _existing_dir(store, task)
         if task_dir is None:
             return None
-        newest = _versions(config_dir, task)
+        newest = _versions(store, task)
         if not _exists(task_dir / _CURRENT_FILENAME):
             if not newest:
                 return None
@@ -245,7 +332,7 @@ def load_model(
 
 
 def load_version(
-    config_dir: Path,
+    store: Path,
     task: str,
     version: int,
     *,
@@ -253,8 +340,8 @@ def load_version(
 ) -> SiteModel:
     """One saved version of the task's model."""
     validate_task_name(task)
-    with _filesystem("read the model"), _shared_lock(config_dir, task):
-        history = _existing_dir(config_dir, task, _HISTORY_DIRNAME)
+    with _filesystem("read the model"), _shared_lock(store, task):
+        history = _existing_dir(store, task, _HISTORY_DIRNAME)
         path = None if history is None else history / _history_name(version)
         if path is None or not _exists(path):
             raise SiteModelError(
@@ -267,11 +354,11 @@ def load_version(
     return model
 
 
-def save_draft(config_dir: Path, model: SiteModel) -> None:
+def save_draft(store: Path, model: SiteModel) -> None:
     """Keep `model` as the task's in-progress draft (checked like a model, never a version)."""
     text = _draft_text(model)
     with _filesystem("store the draft"):
-        root = ensure_private_dir(config_dir / _STORE_DIRNAME)
+        root = ensure_private_dir(store)
         task_dir = ensure_private_dir(root / model.task)
         with _locked(task_dir):
             write_private(task_dir / _DRAFT_FILENAME, text)
@@ -279,7 +366,7 @@ def save_draft(config_dir: Path, model: SiteModel) -> None:
 
 
 def save_model(
-    config_dir: Path,
+    store: Path,
     model: SiteModel,
     *,
     host_allowed: Callable[[str], bool] | None = None,
@@ -296,11 +383,11 @@ def save_model(
     _check_hosts(parsed, host_allowed)
     _check_size(_render(parsed))
     with _filesystem("store the model"):
-        root = ensure_private_dir(config_dir / _STORE_DIRNAME)
+        root = ensure_private_dir(store)
         task_dir = ensure_private_dir(root / model.task)
         history = ensure_private_dir(task_dir / _HISTORY_DIRNAME)
         with _locked(task_dir):
-            previous = _versions(config_dir, model.task)
+            previous = _versions(store, model.task)
             version = (previous[-1] if previous else 0) + 1
             stored = replace(parsed, version=version)
             text = _render(stored)
@@ -310,7 +397,7 @@ def save_model(
             write_private(task_dir / _CURRENT_FILENAME, text)
             _fsync_dir(task_dir)
             _fsync_dir(root)
-            _fsync_dir(config_dir)
+            _fsync_dir(store.parent)
     return stored
 
 
@@ -320,7 +407,7 @@ def is_logical_name(value: str) -> bool:
 
 
 def update_draft(
-    config_dir: Path,
+    store: Path,
     task: str,
     change: Callable[[SiteModel | None], SiteModel | None],
 ) -> SiteModel | None:
@@ -334,7 +421,7 @@ def update_draft(
     """
     validate_task_name(task)
     with _filesystem("update the draft"):
-        root = ensure_private_dir(config_dir / _STORE_DIRNAME)
+        root = ensure_private_dir(store)
         task_dir = ensure_private_dir(root / task)
         with _locked(task_dir):
             draft_path = task_dir / _DRAFT_FILENAME
@@ -447,9 +534,9 @@ def _enum[E: StrEnum](kind: type[E], value: Any, where: str) -> E:
         ) from None
 
 
-def _existing_dir(config_dir: Path, *parts: str) -> Path | None:
+def _existing_dir(store: Path, *parts: str) -> Path | None:
     """The store directory for the task (and `parts`), None if absent; a symlink is an error."""
-    path = config_dir / _STORE_DIRNAME
+    path = store
     for name in (None, *parts):
         path = path if name is None else path / name
         try:
@@ -725,9 +812,9 @@ def _render(model: SiteModel) -> str:
 
 
 @contextlib.contextmanager
-def _shared_lock(config_dir: Path, task: str) -> Iterator[None]:
+def _shared_lock(store: Path, task: str) -> Iterator[None]:
     """Hold the store's lock for reading, so a save cannot be seen half done."""
-    task_dir = _existing_dir(config_dir, task)
+    task_dir = _existing_dir(store, task)
     if task_dir is None or not _exists(task_dir / _LOCK_FILENAME):
         yield
         return
@@ -779,8 +866,8 @@ def _step(data: Any, where: str, pages: Mapping[str, Page], controls: set[str]) 
     )
 
 
-def _task_dir(config_dir: Path, task: str) -> Path:
-    return config_dir / _STORE_DIRNAME / task
+def _task_dir(store: Path, task: str) -> Path:
+    return store / task
 
 
 def _text(
@@ -855,9 +942,9 @@ def _url_template(value: Any, where: str) -> str:
     return text
 
 
-def _versions(config_dir: Path, task: str) -> list[int]:
+def _versions(store: Path, task: str) -> list[int]:
     """The saved versions: regular files with the exact canonical name, each counted once."""
-    history = _existing_dir(config_dir, task, _HISTORY_DIRNAME)
+    history = _existing_dir(store, task, _HISTORY_DIRNAME)
     if history is None:
         return []
     versions: set[int] = set()

@@ -14,6 +14,7 @@ import re
 import shlex
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -36,6 +37,7 @@ from blumkin.browser.model import (
     discard_draft,
     is_logical_name,
     load_draft,
+    resolve_store,
     save_model,
     update_draft,
 )
@@ -49,6 +51,9 @@ def explore_click(
     """Follow or press one control under the exploration rules; see `Explorer.click`."""
     hosts, extra_deny = explore_policy(config, task)
     profile = require_profile(config.config_dir, task)
+    # A step is recorded after the click, so a models folder that would be refused must be
+    # found out before the browser is touched, not after a state-changing click.
+    store = resolve_store(config) if page_id is not None else None
     confirmer = TerminalConfirmer()
     decision = decide_click(role, name, extra_deny=extra_deny)
     with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
@@ -59,7 +64,12 @@ def explore_click(
     outcome = explorer.last_outcome
     unavailable = bool(getattr(confirmer, "unavailable", False))
     timed_out = bool(getattr(confirmer, "timed_out", False))
-    recorded = clicked and page_id is not None and _record_step(config, task, page_id, role, name)
+    recorded = (
+        clicked
+        and page_id is not None
+        and store is not None
+        and _record_step(store, task, page_id, role, name)
+    )
     return {
         "clicked": clicked,
         "decision": decision.value,
@@ -77,7 +87,7 @@ def explore_click(
 
 def explore_discard(config: BrowserSetup, task: str) -> dict[str, Any]:
     """Drop the task's in-progress draft."""
-    return {"discarded": discard_draft(config.config_dir, task), "ok": True, "task": task}
+    return {"discarded": discard_draft(resolve_store(config), task), "ok": True, "task": task}
 
 
 def explore_forget(config: BrowserSetup, task: str, page_id: str) -> dict[str, Any]:
@@ -109,7 +119,7 @@ def explore_forget(config: BrowserSetup, task: str, page_id: str) -> dict[str, A
         seen["steps_dropped"] = dropped
         return _to_model(draft)
 
-    update_draft(config.config_dir, task, change)
+    update_draft(resolve_store(config), task, change)
     payload: dict[str, Any] = {
         "forgotten": seen["forgotten"],
         "ok": True,
@@ -153,7 +163,7 @@ def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, 
         }
         return model
 
-    update_draft(config.config_dir, task, change)
+    update_draft(resolve_store(config), task, change)
     payload: dict[str, Any] = {
         "controls": seen["controls"],
         "ok": True,
@@ -193,14 +203,14 @@ def explore_save(config: BrowserSetup, task: str, *, yes: bool) -> dict[str, Any
             f"{_describe(draft)} Run `blumkin browser explore show {task}` to review it, then "
             f"`blumkin browser explore save {task} --yes`"
         )
-    saved = save_model(config.config_dir, draft, host_allowed=lambda h: host_allowed(h, hosts))
-    discard_draft(config.config_dir, task)
+    saved = save_model(resolve_store(config), draft, host_allowed=lambda h: host_allowed(h, hosts))
+    discard_draft(resolve_store(config), task)
     return {"ok": True, "pages": len(saved.pages), "task": task, "version": saved.version}
 
 
 def explore_show(config: BrowserSetup, task: str) -> dict[str, Any]:
     """Summarize the task's draft: what would be saved."""
-    draft = load_draft(config.config_dir, task)
+    draft = load_draft(resolve_store(config), task)
     if draft is None:
         return {"hosts": [], "ok": True, "pages": [], "steps": 0, "task": task}
     return {
@@ -248,7 +258,7 @@ def _describe(draft: SiteModel) -> str:
     return f"The draft has {len(draft.pages)} page(s) and {controls} control(s)."
 
 
-def _record_step(config: BrowserSetup, task: str, page_id: str, role: str, name: str) -> bool:
+def _record_step(store: Path, task: str, page_id: str, role: str, name: str) -> bool:
     recorded: list[bool] = []
 
     def change(current: SiteModel | None) -> SiteModel | None:
@@ -262,12 +272,12 @@ def _record_step(config: BrowserSetup, task: str, page_id: str, role: str, name:
         recorded.append(True)
         return _to_model(draft)
 
-    update_draft(config.config_dir, task, change)
+    update_draft(store, task, change)
     return bool(recorded)
 
 
 def _require_draft(config: BrowserSetup, task: str) -> SiteModel:
-    draft = load_draft(config.config_dir, task)
+    draft = load_draft(resolve_store(config), task)
     if draft is None:
         raise DraftNotFoundError(f"Expected an exploration draft for task {task!r}, got none")
     return draft

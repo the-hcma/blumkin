@@ -37,6 +37,7 @@ from blumkin.browser.ledger_ops import (
     stage_item,
     verify_item,
 )
+from blumkin.browser.model import resolve_store
 from blumkin.browser.receipt_rehome import RehomeError, restore_rehomed
 from blumkin.config import BrowserSetup
 
@@ -62,6 +63,7 @@ def ledger_apply(
         flow_name=flow,
         values=_value_map(value),
         sha256=sha256,
+        models_store=resolve_store(config),
     )
     return result.as_dict() | {"ok": True}
 

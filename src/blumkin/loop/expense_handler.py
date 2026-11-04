@@ -43,6 +43,7 @@ from blumkin.browser.ledger import (
     instance_status,
 )
 from blumkin.browser.ledger_ops import ApplyResult, apply_item
+from blumkin.browser.model import SiteModelError
 from blumkin.browser.receipt_rehome import (
     AlreadyFiledError,
     RehomeError,
@@ -111,11 +112,16 @@ def file_receipts(
         return _needs_user("receipt intake folder is not readable")
     if not files:
         return _needs_user("no receipt attachments saved for the message")
+    try:
+        models_store = _models_store()
+    except SiteModelError:
+        return _needs_user("the configured browser models_dir cannot be used; see `blumkin doctor`")
     filer = _Filer(
         apply_fn=apply_fn,
         config_dir=config_dir,
         instance=instance,
         message_id=context.message_id,
+        models_store=models_store,
         read_fn=read_fn or _read_sync,
         rehome_fn=rehome_fn,
         task=task,
@@ -138,6 +144,8 @@ class _Filer:
     config_dir: Path
     instance: str
     message_id: str
+    #: Where the recorded models live when `[browser] models_dir` moves them; None otherwise.
+    models_store: Path | None
     read_fn: ReadFn
     rehome_fn: RehomeFn
     task: str
@@ -182,6 +190,7 @@ class _Filer:
                 low_confidence=low,
                 sha256=sha256,
                 values=_flow_values(reading, dest),
+                **({"models_store": self.models_store} if self.models_store is not None else {}),
             )
         except Exception:  # noqa: BLE001 - browser/ledger trouble is an operator problem
             return _Result(_Kind.BLOCKED, low)
@@ -315,6 +324,22 @@ def _summarize(
     if not done or not intake_ok:
         return _needs_user("; ".join(parts) or "no receipt could be filed")
     return HandlerResult(outcome=RunOutcome.DONE, reason="; ".join(parts))
+
+
+def _models_store() -> Path | None:
+    """The configured models folder, or None when none is configured.
+
+    A configured folder that is refused raises `SiteModelError`, so the run stops instead of
+    filling forms from the default store's (older or missing) model.
+    """
+    from blumkin.browser.model import resolve_store
+    from blumkin.config import load_browser_setup
+
+    try:
+        setup = load_browser_setup()
+    except Exception:  # noqa: BLE001 - a config problem is reported by the steps that follow
+        return None
+    return resolve_store(setup) if setup.browser.models_dir is not None else None
 
 
 def _upload_dirs(task: str) -> Sequence[str]:

@@ -435,7 +435,7 @@ def test_forget_can_drop_a_stored_page_whose_id_exploration_would_not_make(
 ) -> None:
     import dataclasses
 
-    from blumkin.browser.model import save_model
+    from blumkin.browser.model import default_store, save_model
 
     draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
     draft.add_page("expense-list", "https://erp.example.com/a", parse_aria_snapshot(_SNAPSHOT))
@@ -447,7 +447,7 @@ def test_forget_can_drop_a_stored_page_whose_id_exploration_would_not_make(
         else page
         for page in model.pages
     )
-    save_model(_config_dir, dataclasses.replace(model, pages=pages))
+    save_model(default_store(_config_dir), dataclasses.replace(model, pages=pages))
 
     result = _run("browser", "explore", "forget", "expense-report", "expense-item-2")
 
