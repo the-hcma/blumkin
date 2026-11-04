@@ -811,7 +811,14 @@ def upload_task(
         filed_digest = None
     if path is None:
         raise UploadBlockedError("Expected a file path or a receipt reference, got neither")
-    resolved = _expand_home(os.fspath(path)).resolve()
+    try:
+        resolved = _expand_home(os.fspath(path)).resolve()
+    except UploadBlockedError, OSError, RuntimeError:
+        if not private:
+            raise
+        raise UploadBlockedError(
+            "Expected an absolute path or one starting with ~/ for the receipt, got another form"
+        ) from None
     shown = "the receipt" if private else repr(resolved.name)
     try:
         info = resolved.stat()
@@ -870,9 +877,12 @@ def upload_task(
         payload = _field_payload("upload", task, label, target, None, None)
         intended = " ".join(resolved.name.split()).casefold()
         held = {" ".join(name.split()).casefold() for name in seen.files}
-        # The page's names are capped at 100 characters, so a name that long cannot be told
-        # from a longer one with the same start: that is unknown (None), not a match.
-        payload["attached"] = (intended in held) if len(intended) < 100 else None
+        # The page's names are capped at 100 characters, so a capped name cannot be told from a
+        # longer one with the same start, and a page that could not be read says nothing: both
+        # are unknown (None), not a match or a miss.
+        capped = len(intended) >= 100 or any(len(name) >= 100 for name in seen.files)
+        unread = not seen.files and seen.persisted == "unknown"
+        payload["attached"] = None if capped or unread else intended in held
         if not private:
             payload["file"] = resolved.name
             payload["files_held"] = list(seen.files)

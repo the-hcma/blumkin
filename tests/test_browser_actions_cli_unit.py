@@ -2971,3 +2971,34 @@ def test_rehome_without_a_total_names_its_own_stdin_option(raw: _Raw, tmp_path: 
     assert "--total-stdin" in result.output and "--stdin" not in result.output.replace(
         "--total-stdin", ""
     )
+
+
+def test_a_private_upload_does_not_echo_a_rejected_path(raw: _Raw, _config_dir: Path) -> None:
+    result = _run("browser", "upload", "expense-report", "Receipt", "~other/invoice-1234.56.pdf",
+                  "--private")  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "1234" not in result.output and "invoice" not in result.output
+
+
+def test_attached_is_unknown_for_an_unreadable_page_and_for_a_capped_lookalike(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    _policy(_config_dir, f'upload_dirs = ["{uploads}"]\nallowed_hosts = ["erp.example.com"]')
+    target = uploads / ("b" * 99)
+    target.write_bytes(b"x")
+
+    raw.upload_result = UploadObservation("unknown", False, ())
+    unread = _json(_run("browser", "upload", "expense-report", "Receipt", str(target), "--private"))
+    # The page's names are cut at 100 characters: this one is the 99-character name plus a space
+    # that a longer, different name continued after.
+    raw.upload_result = UploadObservation("shown", False, (("b" * 99) + " ",))
+    capped = _json(_run("browser", "upload", "expense-report", "Receipt", str(target), "--private"))
+    raw.upload_result = UploadObservation("shown", False, ("other.png",))
+    missed = _json(_run("browser", "upload", "expense-report", "Receipt", str(target), "--private"))
+
+    assert unread["attached"] is None
+    assert capped["attached"] is None
+    assert missed["attached"] is False
