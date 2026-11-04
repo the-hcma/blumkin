@@ -94,6 +94,22 @@ TEMPLATES: dict[str, TaskTemplate] = {
         summary="File receipts into an expense report through the task browser (never submits).",
         upload_dirs=("~/Documents/receipts-archive",),
     ),
+    "teams-transcript": TaskTemplate(
+        allowed_controls=("Notes", "Transcript"),
+        allowed_hosts=("teams.cloud.microsoft", "teams.microsoft.com", "*.sharepoint.com"),
+        name="teams-transcript",
+        next_steps=(
+            "Narrow `*.sharepoint.com` to your tenant's SharePoint host (for example "
+            "`yourtenant-my.sharepoint.com`) in config.toml once you know it: the wildcard "
+            "covers every organization's SharePoint.",
+            "Launch the browser: `blumkin browser launch {task}`, then sign in to Teams by hand "
+            "(SSO and MFA included), open the meeting and show its Transcript view.",
+            "Check what the page shows: `blumkin browser frames {task}`.",
+            "Capture it: `blumkin browser transcript {task} --duration 34m06s --out "
+            "transcript.txt` (use the meeting's length so the coverage report can check the tail).",
+        ),
+        summary="Capture a Teams meeting transcript through the task browser (read-only).",
+    ),
     "time-sheet": TaskTemplate(
         # Oracle Fusion time card: `Copy Previous Time Card` seeds a period from the last one and
         # `Save` keeps the draft. Neither is a finalizing name; `Submit` is never declared and
@@ -117,22 +133,6 @@ TEMPLATES: dict[str, TaskTemplate] = {
         ),
         summary="Fill in a time card through the task browser (never submits).",
         takes_form_url=True,
-    ),
-    "teams-transcript": TaskTemplate(
-        allowed_controls=("Notes", "Transcript"),
-        allowed_hosts=("teams.cloud.microsoft", "teams.microsoft.com", "*.sharepoint.com"),
-        name="teams-transcript",
-        next_steps=(
-            "Narrow `*.sharepoint.com` to your tenant's SharePoint host (for example "
-            "`yourtenant-my.sharepoint.com`) in config.toml once you know it: the wildcard "
-            "covers every organization's SharePoint.",
-            "Launch the browser: `blumkin browser launch {task}`, then sign in to Teams by hand "
-            "(SSO and MFA included), open the meeting and show its Transcript view.",
-            "Check what the page shows: `blumkin browser frames {task}`.",
-            "Capture it: `blumkin browser transcript {task} --duration 34m06s --out "
-            "transcript.txt` (use the meeting's length so the coverage report can check the tail).",
-        ),
-        summary="Capture a Teams meeting transcript through the task browser (read-only).",
     ),
 }
 

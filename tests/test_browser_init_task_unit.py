@@ -14,9 +14,10 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
+from blumkin.browser.init_task import TEMPLATES, render_table
 from blumkin.browser.profiles import list_profiles
 from blumkin.cli import main
-from blumkin.config import load_browser_setup
+from blumkin.config import load_browser_setup, validate_browser_task_table
 from blumkin.exit_codes import EXIT_SUCCESS, EXIT_USAGE
 
 _BASE = '[profiles.default]\nclient_id = "abc-123"\n'
@@ -600,3 +601,61 @@ def test_the_teams_template_still_takes_no_form_url(config: Path) -> None:
 
     assert result.exit_code == EXIT_USAGE
     assert "--form-url" in _payload(result)["message"]
+
+
+def test_a_task_named_like_a_template_uses_that_template_without_the_option(
+    config: Path,
+) -> None:
+    result = _run(
+        "time-sheet", "--host", "erp.example.com",
+        "--form-url", "https://erp.example.com/timecards", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _payload(result)["template"] == "time-sheet"
+    policy = load_browser_setup().browser.tasks["time-sheet"]
+    assert policy.allowed_controls == ("Copy Previous Time Card", "Save")
+    assert policy.extra_deny_names == ("Clear Time Card",)
+
+
+def test_a_task_name_that_is_not_a_template_still_defaults_to_teams_transcript(
+    config: Path,
+) -> None:
+    result = _run("weekly-sync", "--yes")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _payload(result)["template"] == "teams-transcript"
+
+
+def test_an_explicit_template_wins_over_a_task_named_like_another_template(config: Path) -> None:
+    result = _run("time-sheet", "--template", "teams-transcript")
+
+    assert _payload(result)["template"] == "teams-transcript"
+
+
+def test_the_guard_refuses_clear_time_card_even_when_it_is_also_declared() -> None:
+    from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError
+
+    class _NoPage:
+        def block_form_submission(self, *, background_writes: bool = False) -> None:
+            return None
+
+    guard = GuardedDriver(
+        _NoPage(),  # type: ignore[arg-type]
+        GuardPolicy(
+            allowed_controls=frozenset({"Save"}),
+            extra_deny_names=TEMPLATES["time-sheet"].extra_deny_names,
+        ),
+    )
+
+    with pytest.raises(SubmitBlockedError):
+        guard.check_click("Clear Time Card")
+    guard.check_click("Save")
+
+
+@pytest.mark.parametrize("name", sorted(TEMPLATES))
+def test_every_templates_table_passes_the_real_config_validation(name: str) -> None:
+    table = render_table(name, TEMPLATES[name], hosts=("erp.example.com",))
+
+    parsed = tomllib.loads(table)
+    validate_browser_task_table(name, parsed["browser"]["tasks"][name])
