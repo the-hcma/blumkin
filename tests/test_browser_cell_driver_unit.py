@@ -37,7 +37,9 @@ class _Keyboard:
         self._events.append(("type", text))
 
 
-class _Row:
+class _OptionHandle:
+    """One dropdown option element: read, described and clicked through the same handle."""
+
     def __init__(self, page: _Page, index: int) -> None:
         self._page = page
         self._index = index
@@ -45,12 +47,24 @@ class _Row:
     def click(self, *, timeout: float) -> None:
         self._page.events.append(("option-click", str(self._index)))
 
-    def inner_text(self, *, timeout: float) -> str:
+    def evaluate(self, script: str, arg: Any = None) -> Any:
+        assert script is cdp._DESCRIBE_CONTROL_JS
+        self._page.events.append(("option-describe", str(self._index)))
+        return self._page.option_info
+
+    def inner_text(self) -> str:
         texts = self._page.current_options()
         return self._page.row_override.get(self._index, texts[self._index])
 
-    def element_handle(self, *, timeout: float) -> _Handle:
-        return _Handle(self._page, as_option=True)
+
+class _Row:
+    def __init__(self, page: _Page, index: int) -> None:
+        self._page = page
+        self._index = index
+
+    def element_handle(self, *, timeout: float) -> _OptionHandle:
+        self._page.option_handles += 1
+        return _OptionHandle(self._page, self._index)
 
 
 class _Rows:
@@ -85,9 +99,8 @@ class _Drop:
 
 
 class _Handle:
-    def __init__(self, page: _Page, *, as_option: bool = False) -> None:
+    def __init__(self, page: _Page) -> None:
         self._page = page
-        self._as_option = as_option
 
     def scroll_into_view_if_needed(self, *, timeout: float) -> None:
         self._page.events.append(("scroll", ""))
@@ -97,7 +110,7 @@ class _Handle:
 
     def evaluate(self, script: str, arg: Any = None) -> Any:
         if script is cdp._DESCRIBE_CONTROL_JS:
-            return self._page.option_info if self._as_option else self._page.cell_info
+            return self._page.cell_info
         if script is cdp._CELL_CLICK_TARGET_JS:
             return self._page.click_target
         if script is cdp._CELL_TEXT_JS:
@@ -148,6 +161,8 @@ class _Page:
         self.options: list[list[str]] = [[]]
         self.row_override: dict[int, str] = {}
         self.finds = 0
+        #: How many option handles were taken from the dropdown rows.
+        self.option_handles = 0
         #: The error `_find_cell` reports from this call on (1-based), if any.
         self.find_error_from: int | None = None
         self.waits = 0
@@ -424,3 +439,69 @@ def test_an_option_that_is_a_submit_control_is_not_clicked() -> None:
         _driver(page).edit_cell("2", "5", "Paid Time Off", 1, refuse_submit, lambda name: None)
     assert "a submit control" in str(excinfo.value)
     assert not any(kind == "option-click" for kind in _kinds(page))
+
+
+def test_the_option_is_read_vetted_and_clicked_through_one_handle() -> None:
+    page = _Page()
+    page.drop_visible = True
+    page.options = [["Paid Time Off"]]
+    _edit(page, "Paid Time Off")
+    assert page.option_handles == 1
+    steps = [(k, v) for k, v in page.events if k in ("option-describe", "option-click")]
+    assert steps == [("option-describe", "0"), ("option-click", "0")]
+
+
+def test_an_editor_left_open_is_emptied_before_a_retry_types_into_it() -> None:
+    page = _Page()
+    page.focus = ["editor", "editor"]
+    _edit(page, "8")
+    keys = [(k, v) for k, v in page.events if k in ("press", "type")]
+    assert keys[0] == ("press", "ControlOrMeta+A")
+    assert keys[1] == ("type", "8")
+
+
+def test_a_cell_that_is_not_in_an_editor_is_not_emptied_first() -> None:
+    page = _Page()
+    _edit(page, "8")
+    assert ("press", "ControlOrMeta+A") not in page.events
+
+
+def test_clearing_an_editor_that_stays_open_cancels_and_says_so() -> None:
+    page = _Page()
+    page.focus = ["editor"]
+    page.editing = [True]
+    with pytest.raises(BrowserActionError) as excinfo:
+        _edit(page, "")
+    assert "still open" in str(excinfo.value)
+    assert ("press", "Escape") in page.events
+
+
+def test_clearing_selects_an_open_editor_before_delete() -> None:
+    page = _Page()
+    page.focus = ["editor"]
+    _edit(page, "")
+    keys = [v for k, v in page.events if k == "press"]
+    assert keys[:3] == ["ControlOrMeta+A", "Delete", "Tab"]
+
+
+def test_a_non_ascii_value_is_matched_to_its_option_not_committed_blind() -> None:
+    page = _Page()
+    page.drop_visible = True
+    page.options = [["休暇", "休暇申請"]]
+    _edit(page, "休暇")
+    assert ("option-click", "0") in page.events
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [("休暇", "休暇", True), ("项目", "工时", False), ("A-B", "ab", True), ("-", "", True)],
+)
+def test_option_keys_keep_letters_of_any_script_and_drop_punctuation(
+    a: str, b: str, same: bool
+) -> None:
+    assert (cdp._option_key(a) == cdp._option_key(b)) is same
+    assert cdp._option_key("休暇") != ""
+
+
+def test_the_page_script_keeps_unicode_letters_and_digits_when_comparing_headers() -> None:
+    assert "[^\\p{L}\\p{N}]" in cdp._CELL_JS

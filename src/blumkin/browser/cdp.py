@@ -1288,10 +1288,12 @@ class PlaywrightDriver:
             )
             if chosen and texts == previous:
                 index, text = listed[chosen[0]]
-                option = rows.nth(index)
-                if option.inner_text(timeout=self._timeout_ms).strip() == text:
+                # One handle is read, vetted and clicked, so a list that is redrawn in between
+                # makes it fail (a detached element) and never clicks the row that replaced it.
+                option = rows.nth(index).element_handle(timeout=self._timeout_ms)
+                if option.inner_text().strip() == text:
                     vet_name(text)
-                    vet(self._describe(option.element_handle(timeout=self._timeout_ms)))
+                    vet(self._describe(option))
                     option.click(timeout=self._timeout_ms)
                     # The chosen option stays in the editor until focus leaves the cell, so the
                     # commit is finished with Tab, as for a plain cell.
@@ -1334,6 +1336,15 @@ class PlaywrightDriver:
                 f"{exc}; the edit itself was made, so check the cell before editing it again"
             ) from exc
 
+    def _require_committed(self, grid: int) -> None:
+        """Cancel the edit and fail if an editor is still open after the commit."""
+        if self._editor_open(grid):
+            self._page.keyboard.press("Escape")
+            raise BrowserActionError(
+                "Expected the cell to be committed, got an editor still open; "
+                "the edit was cancelled"
+            )
+
     def _write_cell(
         self,
         handle: Any,
@@ -1363,9 +1374,13 @@ class PlaywrightDriver:
                 f"Expected focus on the cell or its editor inside the data grid, got {focus}; "
                 "nothing was typed"
             )
+        if focus == "editor":
+            # An editor left open by an earlier attempt still holds its text: replace it.
+            self._page.keyboard.press("ControlOrMeta+A")
         if not value:
             self._page.keyboard.press("Delete")
             self._page.keyboard.press("Tab")
+            self._require_committed(grid)
             return
         self._page.keyboard.type(value[0])
         if self._cell_focus(grid) != "editor":
@@ -1376,12 +1391,7 @@ class PlaywrightDriver:
         if len(value) > 1:
             self._page.keyboard.type(value[1:])
         self._commit_typed_cell(value, vet, vet_name)
-        if self._editor_open(grid):
-            self._page.keyboard.press("Escape")
-            raise BrowserActionError(
-                "Expected the cell to be committed, got an editor still open; "
-                "the edit was cancelled"
-            )
+        self._require_committed(grid)
 
     def _describe(self, handle: Any) -> ControlInfo:
         raw = handle.evaluate(_DESCRIBE_CONTROL_JS)
@@ -2358,7 +2368,7 @@ _CELL_JS = r"""
   const grids = [...document.querySelectorAll('oj-data-grid')];
   const grid = grids[args.grid - 1];
   if (!grid) return {error: `Expected data grid ${args.grid}, got ${grids.length} on the page`};
-  const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const norm = (s) => (s || '').normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
   // A header is nested: a frozen column's group holds the period, then Scheduled Hours, then its
   // own name (Project, Task, ...), so its label is the deepest text; a day's group starts with
   // the day, so its label is the first.
@@ -2754,7 +2764,7 @@ def _clean(text: str, limit: int) -> str:
 
 def _option_key(text: str) -> str:
     """A dropdown option or typed value in the form they are compared in."""
-    return re.sub(r"[^a-z0-9]+", "", text.lower())
+    return re.sub(r"[\W_]+", "", text.casefold())
 
 
 def _printable(text: str) -> str:

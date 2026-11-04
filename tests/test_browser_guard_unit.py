@@ -676,12 +676,20 @@ def test_a_grid_cell_value_must_be_a_short_printable_line(value: str) -> None:
     assert raw.calls == []
 
 
-def test_a_grid_cell_value_named_like_a_finalizing_action_is_refused() -> None:
+@pytest.mark.parametrize("value", ["Submit", "Pay now", "send it", "Place order"])
+def test_a_grid_cell_value_that_starts_like_a_finalizing_action_is_refused(value: str) -> None:
     raw, driver = _guard()
     with pytest.raises(SubmitBlockedError) as excinfo:
-        driver.edit_cell("1", "5", "Submit")
+        driver.edit_cell("1", "5", value)
     assert "finalizing" in str(excinfo.value)
     assert raw.calls == []
+
+
+@pytest.mark.parametrize("value", ["Regular Pay", "Paid Time Off", "Holiday", "8", "休暇"])
+def test_a_grid_cell_value_that_only_holds_a_finalizing_word_is_allowed(value: str) -> None:
+    raw, driver = _guard()
+    driver.edit_cell("1", "5", value)
+    assert raw.calls == [("edit_cell", "1", "5", value, 1)]
 
 
 def test_a_dropdown_option_named_like_a_finalizing_action_is_refused_by_the_guard() -> None:
@@ -693,7 +701,9 @@ def test_a_dropdown_option_named_like_a_finalizing_action_is_refused_by_the_guar
     assert raw.calls == []
     raw.cell_option = "Paid Time Off"
     driver.edit_cell("1", "5", "Paid")
-    assert raw.calls == [("edit_cell", "1", "5", "Paid", 1)]
+    raw.cell_option = "Regular Pay"
+    driver.edit_cell("1", "5", "Regular")
+    assert raw.calls == [("edit_cell", "1", "5", "Paid", 1), ("edit_cell", "1", "5", "Regular", 1)]
 
 
 @pytest.mark.parametrize("grid", [0, -1, True])

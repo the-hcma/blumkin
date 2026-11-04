@@ -249,15 +249,20 @@ class GuardedDriver:
             raise ValueError(f"Expected grid to be a positive whole number, got {grid!r}")
         if value is not None and not _is_cell_value(value):
             raise self._refuse(action, "the value must be at most 80 printable characters")
-        if value is not None and _is_denied(value, self._deny):
-            raise self._refuse(action, "the value is named like a finalizing action")
+        if value is not None and _begins_with_denied(value, self._deny):
+            raise self._refuse(action, "the value starts like a finalizing action")
+
+        def vet_option(name: str) -> None:
+            if _begins_with_denied(name, self._deny):
+                raise self._refuse(action, "the option starts like a finalizing action")
+
         return self._raw.edit_cell(
             row,
             column,
             value,
             grid,
             lambda info: self._vet_control(action, info),
-            lambda name: self._vet_field_name(action, name),
+            vet_option,
         )
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:
@@ -800,6 +805,21 @@ def vet_control(
     if "submit" in info.inline_handler.casefold():
         return "its click handler submits a form"
     return None
+
+
+def _begins_with_denied(text: str, stems: tuple[str, ...]) -> bool:
+    """Whether `text` opens with a finalizing word (`Submit`, `Pay now`), not merely holds one.
+
+    A data value typed into a cell, or a dropdown option, is not a control: `Regular Pay` is a
+    time reporting code, while `Submit` or `Pay now` read as the action itself.
+    """
+    words = re.findall(r"[^\W_]+", _folded(text))
+    if not words:
+        return False
+    spaced = " ".join(words)
+    return any(
+        spaced.startswith(stem) if " " in stem else words[0].startswith(stem) for stem in stems
+    )
 
 
 def _deny_stems(words: tuple[str, ...]) -> tuple[str, ...]:

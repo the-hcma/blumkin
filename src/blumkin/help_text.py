@@ -1105,8 +1105,9 @@ link, a checkbox) or a cover sits at the click point of the cell, and keys go on
 or an editor inside the grid: the first key is typed alone, and the rest only once it has
 opened an editor, so a space can never reach a focused button. The cell is vetted like a click
 on that element (a submit control, a form action or a script link is refused) and the page
-must be on an allowed host. A dropdown option is vetted before it is clicked, like a `select`
-option: one named like a finalizing action, or that is a submit control, is refused. A value
+must be on an allowed host. A dropdown option is vetted before it is clicked: one that
+begins with a finalizing word (`Submit`, `Pay now`), or that is a submit control, is refused, and
+so is a value that begins that way, while `Regular Pay` is fine. A value
 is checked after the
 commit: if an editor is still open the
 edit is cancelled and the command fails. A number is always a position, so a header whose text
