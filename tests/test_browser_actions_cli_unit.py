@@ -3916,3 +3916,38 @@ def test_a_task_page_read_keeps_its_full_url_and_title(raw: _Raw, _config_dir: P
     payload = _json(_run("browser", "read", "expense-report"))
 
     assert payload["url"] == "https://erp.example.com/expenses?id=7"
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        '- dialog "Error: https://sso.example/":\n  - button "OK"\n',
+        '- \'dialog "Error: https://sso.example/"\':\n  - button "OK"\n',
+        '- dialog "Error: https://sso.example/a\\"b":\n  - button "OK"\n',
+    ],
+    ids=["plain", "yaml-quoted", "escaped-quote"],
+)
+def test_removing_addresses_from_a_sign_in_snapshot_keeps_the_structure_scopable(
+    raw: _Raw, _config_dir: Path, snapshot: str
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = "https://login.microsoftonline.com/common/x"
+    raw.aria_text = snapshot
+
+    result = _run("browser", "read", "expense-report", "--aria", "--within", "dialog")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["within_matches"] == 1
+    assert "sso.example" not in payload["text"] and "[address removed]" in payload["text"]
+    assert 'button "OK"' in payload["text"]
+
+
+def test_an_address_in_text_ends_before_a_quote_bracket_or_backslash() -> None:
+    from blumkin.browser.actions import redact_addresses
+
+    assert redact_addresses('say "https://a.example/x" now') == 'say "[address removed]" now'
+    assert redact_addresses("see <https://a.example/x> and https://b.example/y?q=1 end") == (
+        "see <[address removed]> and [address removed] end"
+    )
+    assert redact_addresses("no address here") == "no address here"
