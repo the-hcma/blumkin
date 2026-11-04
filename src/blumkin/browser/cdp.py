@@ -1358,11 +1358,9 @@ class PlaywrightDriver:
             options = popup.get_by_role("option")
             with contextlib.suppress(_playwright_error()):
                 options.first.wait_for(state="visible", timeout=self._timeout_ms)
-            lists = (
-                popup
-                if controls.split() or not close
-                else scope.locator('[role="listbox"]:visible')
-            )
+            # With no list named by `aria-controls` the popup is the whole page or frame, and
+            # the list to scroll is the one visible listbox.
+            lists = scope.locator('[role="listbox"]:visible') if popup is scope else popup
             # A virtualized list can open part way down (at the selected item): go to the
             # top first, so the walk down reaches every option.
             lists.first.evaluate(_SCROLL_TOP_JS)

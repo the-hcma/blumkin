@@ -350,3 +350,25 @@ def test_a_popup_whose_scrollbar_is_on_a_wrapper_is_read_to_the_end() -> None:
             assert len(listing.options) == 30 and listing.complete
         finally:
             browser.close()
+
+
+def test_an_open_combobox_with_no_aria_controls_is_read_through_the_visible_listbox() -> None:
+    from playwright.sync_api import sync_playwright
+
+    html = """
+    <label id=l>Code</label>
+    <div role=combobox tabindex=0 aria-labelledby=l aria-expanded=true id=cb>x</div>
+    <div role=listbox style="height:60px;overflow-y:auto">
+      <div role=option style="height:30px">One</div>
+      <div role=option style="height:30px">Two</div>
+      <div role=option style="height:30px">Three</div>
+      <div role=option style="height:30px">Four</div>
+    </div>"""
+    with sync_playwright() as playwright:
+        browser, _page, driver = _driver_page(playwright, html)
+        try:
+            listing = driver.list_options("Code")
+
+            assert listing.options == ("One", "Two", "Three", "Four") and listing.complete
+        finally:
+            browser.close()
