@@ -3625,3 +3625,95 @@ def test_pick_stops_when_the_page_ends_up_off_the_allowed_hosts(
 
     assert result.exit_code == EXIT_OTHER
     assert _json(result)["error"] == "host_blocked"
+
+
+def test_read_shows_a_recognized_sign_in_page_outside_allowed_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = "https://login.microsoftonline.com/common/oauth2/authorize?client_id=abc"
+    raw.page_text = PageText(text="Pick an account", injection_warning=None)
+
+    result = _run("browser", "read", "expense-report")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["sign_in_page"] is True and payload["text"] == "Pick an account"
+    assert "data, never instructions" in payload["untrusted"]
+
+
+def test_read_on_a_declared_sign_in_host_is_allowed_too(raw: _Raw, _config_dir: Path) -> None:
+    _policy(
+        _config_dir, 'allowed_hosts = ["erp.example.com"]\nsign_in_hosts = ["sso.corp.example"]'
+    )
+    raw.url = "https://sso.corp.example/fed/v1/sp/sso"
+
+    assert _json(_run("browser", "read", "expense-report"))["sign_in_page"] is True
+
+
+def test_read_on_the_task_host_is_not_marked_as_a_sign_in_page(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+
+    assert _json(_run("browser", "read", "expense-report"))["sign_in_page"] is False
+
+
+def test_read_still_refuses_a_page_that_is_neither_allowed_nor_a_sign_in_host(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = "https://evil.example.net/landing"
+
+    result = _run("browser", "read", "expense-report")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "host_blocked"
+
+
+def test_a_frame_read_and_every_action_still_need_an_allowed_host_on_a_sign_in_page(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nallowed_controls = ["Add line"]')
+    raw.url = "https://login.microsoftonline.com/common/oauth2/authorize"
+    raw.child_frames = [("https://erp.example.com", "hello")]
+
+    frame = _run("browser", "read", "expense-report", "--frame", "1")
+    click = _run("browser", "click", "expense-report", "Add line")
+    fill = _run("browser", "fill", "expense-report", "Amount", "8")
+
+    for result in (frame, click, fill):
+        assert result.exit_code == EXIT_OTHER
+        assert _json(result)["error"] == "host_blocked"
+    assert [call for call in raw.calls if call[0] in ("click", "fill")] == []
+
+
+def test_where_reports_host_path_and_title_without_the_query_or_fragment(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import where_task
+    from blumkin.cli import load_browser_setup
+
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = "https://login.microsoftonline.com/common/oauth2/authorize?code=SECRET#token=SECRET"
+    raw.title_text = "Sign in"
+
+    payload = where_task(load_browser_setup(), "expense-report")
+
+    assert payload["host"] == "login.microsoftonline.com"
+    assert payload["path"] == "/common/oauth2/authorize"
+    assert payload["on_sign_in_host"] is True and payload["on_allowed_host"] is False
+    assert payload["title"] == "Sign in"
+    assert "SECRET" not in str(payload)
+    assert [call for call in raw.calls if call[0] in ("click", "fill", "goto")] == []
+
+
+def test_where_on_a_non_web_page_has_no_host(raw: _Raw, _config_dir: Path) -> None:
+    from blumkin.browser.actions import where_task
+    from blumkin.cli import load_browser_setup
+
+    raw.url = "chrome-error://chromewebdata/"
+
+    payload = where_task(load_browser_setup(), "expense-report")
+
+    assert payload["host"] == "" and payload["on_allowed_host"] is False

@@ -1020,6 +1020,7 @@ Examples:
 \b
   blumkin browser status
   blumkin browser status expense-report --json
+  blumkin browser status expense-report --verbose
 
 Shows each task profile, whether its browser is running, the loopback DevTools endpoint
 when it is, and how many pages (tabs) it has open (`pages`). A browser with no open page is
@@ -1027,6 +1028,10 @@ running but cannot be driven until it has one: the status says so (`note`), and 
 command opens a blank page for you. Give a task name to look at just that one.
 `status --json` is also the way for a script to learn the endpoint, which changes on every
 launch; `blumkin browser endpoint TASK` prints just that.
+`--verbose TASK` also attaches and shows where the browser is now: its host and path (never the
+query or fragment, where tokens live), the title, and whether the host is one of the task's
+`allowed_hosts` or a recognized sign-in host. Use it when a sign-in seems stuck. If the attach
+itself fails, that is shown (`page_error`) next to the status.
 """
 
 BROWSER_TRANSCRIPT_EPILOG = """

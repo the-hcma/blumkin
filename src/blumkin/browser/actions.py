@@ -116,6 +116,9 @@ MAX_READ_LIMIT = 200_000
 
 MAX_TITLE_CHARS = 200
 
+#: How much of a page's path `where_task` shows (never the query or fragment).
+WHERE_PATH_CHARS = 100
+
 
 #: How long `goto` waits for the user to sign in when the site sends the page to an identity
 #: provider (seconds); the page address is polled once a second.
@@ -749,10 +752,22 @@ def read_task(
             "reading a frame, got none"
         )
 
+    sign_in_hosts = sign_in_hosts_for(config, task)
+
     def act(driver: GuardedDriver) -> dict[str, Any]:
         def allowed(name: str) -> bool:
             return host_allowed(name, hosts)
 
+        # The page itself may be a recognized sign-in page outside `allowed_hosts`: reading it
+        # lets the state be seen, and nothing else is allowed there (a frame read, every
+        # click and every fill still need an allowed host).
+        on_sign_in = False
+        try:
+            _require_allowed_page(driver, task, hosts, "acting")
+        except HostBlockedError:
+            if frame is not None or not _on_sign_in_page(driver, sign_in_hosts):
+                raise
+            on_sign_in = True
         within_matches = 0
         if aria:
             snapshot = _redact_aria(
@@ -787,6 +802,7 @@ def read_task(
             "next_offset": next_offset,
             "offset": offset,
             "ok": True,
+            "sign_in_page": on_sign_in,
             "task": task,
             "text": shown,
             "title": _one_line(driver.title()),
@@ -798,7 +814,7 @@ def read_task(
             "within_matches": within_matches,
         }
 
-    return _with_driver(config, task, act)
+    return _with_driver(config, task, act, check_before=False)
 
 
 def grid_task(
@@ -949,6 +965,35 @@ def options_task(
         return payload
 
     return _with_driver(config, task, act, check_after=True)
+
+
+def where_task(config: BrowserSetup, task: str) -> dict[str, Any]:
+    """Where the task's browser is now: host, path, title and what the task may do there.
+
+    A diagnostic for a stuck sign-in. It reads nothing from the page and shows no query or
+    fragment (that is where tokens live); the path is cut to a short length. The page may be on
+    any host, so no host check stands in the way.
+    """
+    hosts = _declared_hosts(config, task)
+    sign_in_hosts = sign_in_hosts_for(config, task)
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        parts = urlsplit(driver.url)
+        host = (parts.hostname or "") if parts.scheme in ("http", "https") else ""
+        return {
+            "action": "where",
+            "host": host,
+            "ok": True,
+            "on_allowed_host": bool(host) and (not hosts or host_allowed(host, hosts)),
+            "on_sign_in_host": bool(host) and host_allowed(host, sign_in_hosts),
+            "path": _one_line(parts.path)[:WHERE_PATH_CHARS],
+            "scheme": parts.scheme,
+            "task": task,
+            "title": _one_line(driver.title()),
+            "untrusted": UNTRUSTED_NOTE,
+        }
+
+    return _with_driver(config, task, act, check_before=False)
 
 
 def transcript_task(
@@ -1495,6 +1540,12 @@ def _overlays_at_baseline(
     """Whether no role shows more overlays than it did before anything was opened."""
     now = _overlay_counts(driver, roles)
     return all(now[role] <= baseline.get(role, 0) for role in now)
+
+
+def _on_sign_in_page(driver: GuardedDriver, sign_in_hosts: Sequence[str]) -> bool:
+    """Whether the page is on a recognized sign-in host over http(s)."""
+    parts = urlsplit(driver.url)
+    return parts.scheme in ("http", "https") and host_allowed(parts.hostname or "", sign_in_hosts)
 
 
 def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
