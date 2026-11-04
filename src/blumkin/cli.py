@@ -70,6 +70,7 @@ from blumkin.browser.actions import (
     grid_task,
     handoff_task,
     options_task,
+    pick_task,
     press_task,
     read_task,
     refresh_tab_task,
@@ -113,7 +114,7 @@ from blumkin.browser.explore_commands import (
     explore_save,
     explore_show,
 )
-from blumkin.browser.guard import CLICKABLE_ROLES, SubmitBlockedError
+from blumkin.browser.guard import CLICKABLE_ROLES, PICK_ROLES, SubmitBlockedError
 from blumkin.browser.handoff import HandoffError, format_handoff_human
 from blumkin.browser.init_task import TEMPLATES, InitTaskError, init_task
 from blumkin.browser.launcher import DEFAULT_CLOSE_TIMEOUT_S, BrowserCloseError, BrowserLaunchError
@@ -3825,6 +3826,40 @@ def browser_model_versions(ctx: click.Context, task: str, as_json_flag: bool) ->
         return
     listed = ", ".join(str(number) for number in payload["versions"])
     emit_lines([f"{task}: versions {listed} (current {payload['current']})", store_line])
+
+
+@browser.command("pick", epilog=help_text.BROWSER_PICK_EPILOG)
+@click.argument("task")
+@click.argument("text")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--nth",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Which match to choose, 1-based in DOM order, when several rows have the same text.",
+)
+@click.option(
+    "--role",
+    type=click.Choice(sorted(PICK_ROLES)),
+    default="row",
+    show_default=True,
+    help="What the thing to choose is.",
+)
+@click.pass_context
+def browser_pick(
+    ctx: click.Context, task: str, text: str, as_json_flag: bool, nth: int | None, role: str
+) -> None:
+    """Choose a row, option or cell by its exact text, such as a search result."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = pick_task(load_browser_setup(), task, text, nth=nth, role=role)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    which = f" (match {nth})" if nth is not None else ""
+    emit_lines([f"{task}: picked {role} {sanitize_terminal(text)!r}{which}"])
 
 
 @browser.command("press", epilog=help_text.BROWSER_PRESS_EPILOG)

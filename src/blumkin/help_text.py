@@ -886,6 +886,23 @@ Examples:
 Lists the saved versions of the task's model, oldest first, and which one is current.
 """
 
+BROWSER_PICK_EPILOG = """
+Examples:
+
+\b
+  blumkin browser pick expense-report "Boston, MA, United States"
+  blumkin browser pick expense-report "Boston, MA, United States" --nth 2 --json
+  blumkin browser pick time-sheet "Holiday" --role option
+
+Chooses one row (or option, tree item or cell with `--role`) by its exact text, the way you
+choose a search result in a list-of-values dialog: fill the search field, read the rows with
+`browser grid` or `browser read --aria`, then pick one. Rows are page data, so they are not
+declared in `allowed_controls`; instead a row whose text is a finalizing action is refused, the
+element is vetted like a click, and a row that holds a button, link or field of its own is
+refused (click that control by its own name instead). `--nth` picks one of several rows with the
+same text. Confirming the dialog is still an ordinary declared `click` (for example `OK`).
+"""
+
 BROWSER_PRESS_EPILOG = """
 Examples:
 

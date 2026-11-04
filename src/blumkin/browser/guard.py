@@ -284,6 +284,26 @@ class GuardedDriver:
 
         return self._raw.pick_account(email, hosts, blocked, clean)
 
+    def pick(self, text: str, role: str = "row", nth: int | None = None) -> None:
+        """Choose the row, option, tree item or cell whose text is exactly `text`.
+
+        A result of a search (a list-of-values dialog) is page data, so it cannot be declared
+        in advance. It is refused when its text is a finalizing action, when the element is
+        not an ordinary one (the same vetting as a click) and, in the raw driver, when the row
+        holds a control of its own; `nth` (1-based, DOM order) narrows a repeated text. The
+        dialog's own `OK` is still an ordinary declared click.
+        """
+        action = f"pick {text!r}"
+        if role not in PICK_ROLES:
+            raise self._refuse(action, f"the role {role!r} is not a row, option, tree item or cell")
+        if nth is not None and (isinstance(nth, bool) or not isinstance(nth, int) or nth < 1):
+            raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
+        if _is_denied(text, self._deny):
+            raise self._refuse(action, "its text is a finalizing action")
+        self._raw.checked_pick(
+            text, role, lambda info: self._vet_control(action, info, None, role), nth=nth
+        )
+
     def press(self, label: str, key: str, target: FieldTarget | None = None) -> None:
         action = f"press {key!r} in {label!r}"
         if not _key_is_safe(key):
@@ -597,6 +617,9 @@ CLICKABLE_ROLES = frozenset(
         "treeitem",
     }
 )
+
+#: What `pick` may choose: data in a result list, never a control.
+PICK_ROLES = frozenset({"gridcell", "option", "row", "treeitem"})
 _NAVIGATION_KEYS = frozenset(
     {
         "ArrowDown",
