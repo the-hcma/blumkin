@@ -200,8 +200,13 @@ def resolve_store(config: BrowserSetup) -> Path:
         raise SiteModelError(
             f"Expected [browser] models_dir to be absolute or start with ~/, got {text!r}"
         )
-    where = Path(text).expanduser().resolve()
-    home = Path.home().resolve()
+    try:
+        where = Path(text).expanduser().resolve()
+        home = Path.home().resolve()
+    except OSError, RuntimeError, ValueError:
+        raise SiteModelError(
+            "Expected [browser] models_dir to be a usable path, got one that cannot be resolved"
+        ) from None
     if where in (Path(where.anchor), home) or str(where).casefold() == str(home).casefold():
         raise SiteModelError(
             f"Expected [browser] models_dir to be a folder of its own, got {str(where)!r}"
@@ -214,7 +219,10 @@ def resolve_store(config: BrowserSetup) -> Path:
                     "Expected [browser] models_dir apart from every upload_dirs and "
                     "download_dirs folder (not inside one, not around one), got an overlap"
                 )
-    state = config.config_dir.resolve()
+    try:
+        state = config.config_dir.resolve()
+    except OSError, RuntimeError, ValueError:
+        raise SiteModelError("Expected the config directory to resolve, got a failure") from None
     folded_where, folded_state = Path(str(where).casefold()), Path(str(state).casefold())
     if folded_where == folded_state or folded_state.is_relative_to(folded_where):
         raise SiteModelError(

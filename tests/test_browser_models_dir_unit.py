@@ -381,3 +381,9 @@ def test_a_refused_location_stops_explore_click_before_the_browser_is_touched(
 
     with pytest.raises(SiteModelError):
         explore_commands.explore_click(setup, "expense-report", "Add", page_id="list", role="link")
+
+
+@pytest.mark.parametrize("text", ["/tmp/models\x00", "~/models\x00x"])
+def test_an_unresolvable_path_is_a_refusal_not_a_crash(tmp_path: Path, text: str) -> None:
+    with pytest.raises(SiteModelError, match="usable path"):
+        resolve_store(_setup(tmp_path, text))
