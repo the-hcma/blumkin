@@ -149,6 +149,14 @@ class BrowserDriver(Protocol):
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture: ...
 
+    def list_options(
+        self,
+        label: str,
+        target: FieldTarget | None = None,
+        vet: Callable[[ControlInfo], None] | None = None,
+        vet_name: Callable[[str], None] | None = None,
+    ) -> OptionsListing: ...
+
     def select(
         self,
         label: str,
@@ -186,6 +194,19 @@ class FieldReading:
 
     status: str
     value: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OptionsListing:
+    """What `list_options` read from a dropdown without choosing anything.
+
+    `complete` is False when the cap on scrolling or on options was reached (the list may hold
+    more); `closed` says whether the list was closed again afterwards.
+    """
+
+    options: tuple[str, ...]
+    complete: bool = True
+    closed: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -507,11 +528,20 @@ class PlaywrightDriver:
             filename=str(download.suggested_filename), path=target, url=str(download.url)
         )
 
-    def describe_field(self, label: str) -> ControlInfo:
-        """Describe the element a label resolves to (for example to see it is a button)."""
+    def describe_field(self, label: str, target: FieldTarget | None = None) -> ControlInfo:
+        """Describe the element a label resolves to (for example to see it is a button).
+
+        With `target` the field is found as `fill` finds it (exact, role, `nth`, frame).
+        """
         self._require_open()
         try:
-            handle = self._page.get_by_label(label).element_handle(timeout=self._timeout_ms)
+            if target is None:
+                handle = self._page.get_by_label(label).element_handle(timeout=self._timeout_ms)
+            else:
+                scope = self._scope(target)
+                locator = self._field(scope, label, target, prefer_visible=True)
+                self._still_allowed(scope, target)
+                handle = locator.element_handle(timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"find the field labelled {label!r}", exc) from exc
         try:
@@ -665,10 +695,40 @@ class PlaywrightDriver:
                 return tuple(found)
             self._pause()
 
-    def raw_press(self, label: str, key: str) -> None:
+    def raw_press(self, label: str, key: str, target: FieldTarget | None = None) -> None:
         self._require_open()
         try:
-            self._page.get_by_label(label).press(key, timeout=self._timeout_ms)
+            if target is None:
+                self._page.get_by_label(label).press(key, timeout=self._timeout_ms)
+            else:
+                scope = self._scope(target)
+                locator = self._field(scope, label, target, prefer_visible=True)
+                self._still_allowed(scope, target)
+                locator.press(key, timeout=self._timeout_ms)
+        except _playwright_error() as exc:
+            raise self._action_error(f"press {key!r} in the field labelled {label!r}", exc) from exc
+
+    def press_field(
+        self,
+        label: str,
+        key: str,
+        target: FieldTarget | None,
+        vet: Callable[[ControlInfo], None],
+    ) -> None:
+        """Press `key` in the field `label` names, after `vet` has seen that same element.
+
+        One handle is inspected and pressed, so a re-render between the check and the key
+        cannot put the key into a different element (which `--nth` makes likelier).
+        """
+        self._require_open()
+        target = target or FieldTarget()
+        try:
+            scope = self._scope(target)
+            locator = self._field(scope, label, target, prefer_visible=True)
+            handle = locator.element_handle(timeout=self._timeout_ms)
+            vet(self._describe(handle))
+            self._still_allowed(scope, target)
+            handle.press(key, timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"press {key!r} in the field labelled {label!r}", exc) from exc
 
@@ -911,6 +971,63 @@ class PlaywrightDriver:
             self._page.wait_for_url(lambda url: url != previous_url, timeout=1000)
         with contextlib.suppress(_playwright_error()):
             self._page.wait_for_load_state("load", timeout=timeout_s * 1000)
+
+    def list_options(
+        self,
+        label: str,
+        target: FieldTarget | None = None,
+        vet: Callable[[ControlInfo], None] | None = None,
+        vet_name: Callable[[str], None] | None = None,
+    ) -> OptionsListing:
+        """List every option of a native dropdown or an ARIA combobox, choosing none.
+
+        A native `<select>` is only read. An ARIA combobox is opened like `select` opens it
+        (so `vet` and `vet_name` see it first), its list is scrolled until nothing new appears
+        (a virtualized list renders a few rows at a time), and it is closed again with Escape,
+        whatever happens in between. At most `_MAX_OPTIONS` options and `_MAX_OPTION_SCROLLS`
+        scrolls are taken; `complete` says whether the end was reached.
+        """
+        self._require_open()
+        target = target or FieldTarget()
+        opener = None
+        try:
+            scope = self._scope(target)
+            locator = self._field(scope, label, target, prefer_visible=True)
+            opener = locator.element_handle(timeout=self._timeout_ms)
+            self._still_allowed(scope, target)
+            kind = opener.evaluate(_DROPDOWN_INFO_JS)
+            if vet_name is not None:
+                vet_name(str(opener.evaluate(_MATCH_INFO_JS).get("name", "")))
+            if str(kind.get("tag")) == "select":
+                self._still_allowed(scope, target)
+                names = opener.evaluate(_NATIVE_OPTIONS_JS)
+                return OptionsListing(
+                    tuple(_clean(str(n), 200) for n in names[:_MAX_OPTIONS]),
+                    complete=len(names) <= _MAX_OPTIONS,
+                )
+            if str(kind.get("role")) == "listbox":
+                # A listbox that is already there is only read: clicking it would land on one
+                # of its items, so it is neither clicked nor closed.
+                self._still_allowed(scope, target)
+                return self._read_open_list(scope, opener, target, popup=locator, close=False)
+            if not kind.get("dropdown"):
+                role = _clean(str(kind.get("role")), 30)
+                raise BrowserActionError(
+                    f"Expected a dropdown labelled {label!r}, got a {role} that is not one"
+                )
+            if vet is not None:
+                vet(self._describe(opener))
+            self._still_allowed(scope, target)
+            # A combobox the page already opened is read where it is and left open: a click
+            # on one that toggles would close it and the list would come back empty.
+            expanded = str(opener.get_attribute("aria-expanded") or "").lower() == "true"
+            if not expanded:
+                opener.click(timeout=self._timeout_ms, no_wait_after=True)
+            return self._read_open_list(scope, opener, target, close=not expanded)
+        except _playwright_error() as exc:
+            raise self._action_error(
+                f"list the options of the field labelled {label!r}", exc
+            ) from exc
 
     def select(
         self,
@@ -1216,6 +1333,75 @@ class PlaywrightDriver:
             )
         return scope
 
+    def _read_open_list(
+        self,
+        scope: Any,
+        opener: Any,
+        target: FieldTarget,
+        *,
+        popup: Any = None,
+        close: bool = True,
+    ) -> OptionsListing:
+        """Collect the options of the list `opener` just opened, then close it with Escape.
+
+        With `popup` and no `close` the list is one that was already on the page: it is read
+        where it is and left alone.
+        """
+        seen: list[str] = []
+        complete = False
+        try:
+            controls = ""
+            if popup is None:
+                opened = opener.evaluate(_DROPDOWN_INFO_JS)
+                controls = str(opened.get("controls", ""))
+                popup = self._popup(scope, controls)
+            options = popup.get_by_role("option")
+            with contextlib.suppress(_playwright_error()):
+                options.first.wait_for(state="visible", timeout=self._timeout_ms)
+            # With no list named by `aria-controls` the popup is the whole page or frame, and
+            # the list to scroll is the one visible listbox.
+            lists = scope.locator('[role="listbox"]:visible') if popup is scope else popup
+            # A virtualized list can open part way down (at the selected item): go to the
+            # top first, so the walk down reaches every option.
+            lists.first.evaluate(_SCROLL_TOP_JS)
+            self._page.wait_for_timeout(120)
+            for _ in range(_MAX_OPTION_SCROLLS):
+                self._still_allowed(scope, target)
+                names = options.evaluate_all(_OPTION_NAMES_JS)
+                self._still_allowed(scope, target)  # a frame can navigate during the read
+                fresh = [str(n) for n in names if str(n) and str(n) not in seen]
+                seen.extend(fresh)
+                if len(seen) >= _MAX_OPTIONS:
+                    break
+                moved = lists.first.evaluate(_SCROLL_LIST_JS)
+                if not moved:
+                    complete = True
+                    break
+                self._page.wait_for_timeout(120)
+        finally:
+            closed = self._close_list(scope, opener, target) if close else True
+        return OptionsListing(
+            tuple(_clean(name, 200) for name in seen[:_MAX_OPTIONS]),
+            complete=complete,
+            closed=closed,
+        )
+
+    def _close_list(self, scope: Any, opener: Any, target: FieldTarget) -> bool:
+        """Close an open list without choosing; True when no list is visible afterwards.
+
+        No key is sent into a frame that has left the allowed hosts.
+        """
+        try:
+            self._still_allowed(scope, target)
+        except BrowserActionError:
+            return False
+        with contextlib.suppress(_playwright_error()):
+            opener.press("Escape", timeout=self._timeout_ms)
+        try:
+            return int(scope.locator('[role="listbox"]:visible').count()) == 0
+        except _playwright_error():
+            return False
+
     def _selected_text(self, locator: Any) -> str | None:
         try:
             return str(locator.evaluate(_SELECTED_TEXT_JS))[:_MAX_READ_BACK]
@@ -1377,7 +1563,7 @@ class RawBrowserDriver(Protocol):
 
     def close(self) -> None: ...
 
-    def describe_field(self, label: str) -> ControlInfo: ...
+    def describe_field(self, label: str, target: FieldTarget | None = None) -> ControlInfo: ...
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None: ...
 
@@ -1404,7 +1590,15 @@ class RawBrowserDriver(Protocol):
         self, name: str, roles: Sequence[str], wait_s: float, nth: int | None = None
     ) -> tuple[str, ...]: ...
 
-    def raw_press(self, label: str, key: str) -> None: ...
+    def raw_press(self, label: str, key: str, target: FieldTarget | None = None) -> None: ...
+
+    def press_field(
+        self,
+        label: str,
+        key: str,
+        target: FieldTarget | None,
+        vet: Callable[[ControlInfo], None],
+    ) -> None: ...
 
     def pick_account(
         self,
@@ -1436,6 +1630,14 @@ class RawBrowserDriver(Protocol):
     def scroll_frame_text(
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture: ...
+
+    def list_options(
+        self,
+        label: str,
+        target: FieldTarget | None = None,
+        vet: Callable[[ControlInfo], None] | None = None,
+        vet_name: Callable[[str], None] | None = None,
+    ) -> OptionsListing: ...
 
     def select(
         self,
@@ -1699,6 +1901,45 @@ _UPLOAD_STATE_JS = _UPLOAD_COUNT_HEAD + (
     "return {connected: connected, "
     "files: connected && e.files ? Array.from(e.files).map((f) => f.name) : [], "
     "near: count(near), body: count(document.body)}; }"
+)
+
+#: Most options and scrolls `list_options` takes from one list.
+_MAX_OPTIONS = 500
+_MAX_OPTION_SCROLLS = 60
+
+_NATIVE_OPTIONS_JS = "(e) => Array.from(e.options || []).map((o) => o.label || o.text || '')"
+
+#: Each option's accessible name as `select` matches it: its `aria-label`, the text of the
+#: elements it is labelled by, or its own text.
+_OPTION_NAMES_JS = (
+    "(els) => els.map((e) => { const by = (e.getAttribute('aria-labelledby') || '').split(/\\s+/)"
+    ".map((id) => { const n = id ? document.getElementById(id) : null; "
+    "return n ? (n.innerText || n.textContent || '') : ''; }).join(' '); "
+    "return (e.getAttribute('aria-label') || by || e.innerText || e.textContent || '')"
+    ".replace(/\\s+/g, ' ').trim(); })"
+)
+
+#: The elements a list scrolls in: itself, what is inside it, and the containers around it up
+#: to (not including) the page, since a popup's scrollbar is often on a wrapper.
+_SCROLLERS_JS = (
+    "const scrollers = (p) => { const out = [p, ...p.querySelectorAll('*')]; "
+    "for (let a = p.parentElement; a && a !== document.body && a !== document.documentElement; "
+    "a = a.parentElement) out.push(a); "
+    "return out.filter((e) => ['auto', 'scroll'].includes(getComputedStyle(e).overflowY)); }; "
+)
+
+#: Scroll the list one page down; true when something moved.
+_SCROLL_LIST_JS = (
+    "(p) => { " + _SCROLLERS_JS + "for (const e of scrollers(p)) { "
+    "const before = e.scrollTop; e.scrollTop = before + e.clientHeight; "
+    "if (e.scrollTop !== before) return true; } return false; }"
+)
+
+#: Scroll the list back to its first rows.
+_SCROLL_TOP_JS = (
+    "(p) => { "
+    + _SCROLLERS_JS
+    + "for (const e of scrollers(p)) { e.scrollTop = 0; } return true; }"
 )
 
 _SELECTED_TEXT_JS = (

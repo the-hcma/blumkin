@@ -19,7 +19,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from blumkin.browser.aria_view import collapse_options, parse_within, scope, window
+from blumkin.browser.aria_view import (
+    collapse_options,
+    grid_view,
+    parse_within,
+    scope,
+    window,
+)
 from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
     DEFAULT_CLICK_WAIT_S,
@@ -87,6 +93,8 @@ class DownloadBlockedError(BrowserActionError):
 class HostBlockedError(BrowserActionError):
     """The page is on a host the task did not declare in `allowed_hosts`."""
 
+
+MAX_GRID_ROWS = 500
 
 MAX_READ_CHARS = 20_000
 #: The most characters one `read` window may ask for.
@@ -507,12 +515,30 @@ def host_allowed(host: str, patterns: Sequence[str]) -> bool:
     return False
 
 
-def press_task(config: BrowserSetup, task: str, label: str, key: str) -> dict[str, Any]:
-    """Press a key in a field; Enter (which submits a form) is refused."""
+def press_task(
+    config: BrowserSetup,
+    task: str,
+    label: str,
+    key: str,
+    *,
+    exact: bool = False,
+    frame: int | None = None,
+    host: str | None = None,
+    nth: int | None = None,
+    role: str | None = None,
+) -> dict[str, Any]:
+    """Press a key in a field; Enter (which submits a form) is refused.
+
+    `exact`, `role`, `nth` (1-based, DOM order) and `frame` (pinned to `host`) narrow a label
+    the page repeats, exactly as for `fill_task`.
+    """
+    target = _field_target(config, task, "pressing a key", exact, frame, host, nth, role)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        driver.press(label, key)
-        return {"action": "press", "key": key, "label": label, "ok": True, "task": task}
+        driver.press(label, key, target)
+        payload = _field_payload("press", task, label, target, None, None)
+        payload["key"] = key
+        return payload
 
     return _with_driver(config, task, act)
 
@@ -640,6 +666,66 @@ def read_task(
     return _with_driver(config, task, act)
 
 
+def grid_task(
+    config: BrowserSetup,
+    task: str,
+    *,
+    within: str | None = None,
+    frame: int | None = None,
+    host: str | None = None,
+    wait_s: float = 0.0,
+    max_rows: int = MAX_GRID_ROWS,
+) -> dict[str, Any]:
+    """The rows, columns and fields of a grid or table on the page, read-only (untrusted).
+
+    A data grid reads as one blob of text, so which `Project` field is on which row is lost.
+    This lists each row (its label, when it has a row header) and each cell's fields with the
+    `nth` that `--role ROLE --nth N` takes in `fill`, `press`, `select` and `options`, so a
+    cell can be addressed by its row. `within` (`ROLE` or `ROLE:NAME`, for example
+    `grid:Time card`) picks the grid; by default the first grid or table. Field values are
+    never shown. `frame` and `host` work as for `read_task`.
+    """
+    if max_rows < 1 or max_rows > MAX_GRID_ROWS:
+        raise ValueError(f"Expected 1 to {MAX_GRID_ROWS} rows, got {max_rows}")
+    grid_role, grid_name = parse_within(within) if within is not None else (None, None)
+    hosts = _declared_hosts(config, task)
+    if frame is not None and not hosts:
+        raise HostBlockedError(
+            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
+            "reading a frame, got none"
+        )
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        def allowed(name: str) -> bool:
+            return host_allowed(name, hosts)
+
+        snapshot = _redact_aria(
+            driver.aria_snapshot()
+            if frame is None
+            else driver.frame_aria_snapshot(frame, allowed, host, wait_s=wait_s)
+        )
+        warning = scan_for_injection(snapshot, location="page.aria").to_payload()
+        try:
+            view = grid_view(snapshot, grid_role, grid_name, max_rows=max_rows)
+        except LookupError as exc:
+            raise BrowserActionError(
+                _scope_failure(str(exc), grid_role or "grid", grid_name)
+            ) from exc
+        return {
+            "action": "grid",
+            **view,
+            "frame": frame,
+            "injection_warning": warning,
+            "ok": True,
+            "task": task,
+            "title": _one_line(driver.title()),
+            "untrusted": UNTRUSTED_NOTE,
+            "url": driver.url,
+        }
+
+    return _with_driver(config, task, act)
+
+
 def refresh_tab_task(
     config: BrowserSetup, task: str, tab: str, via: str, wait_s: float | None = None
 ) -> dict[str, Any]:
@@ -694,6 +780,40 @@ def select_task(
         return _field_payload("select", task, label, target, read_back, option)
 
     return _with_driver(config, task, act)
+
+
+def options_task(
+    config: BrowserSetup,
+    task: str,
+    label: str,
+    *,
+    exact: bool = False,
+    frame: int | None = None,
+    host: str | None = None,
+    nth: int | None = None,
+    role: str | None = None,
+) -> dict[str, Any]:
+    """List every option of the dropdown labelled `label`, choosing none.
+
+    Read-only: a native select is read, an ARIA combobox is opened, scrolled to the end of its
+    (possibly virtualized) list and closed again with Escape. Narrowing and frames work as
+    for `fill_task`, and a field named like a finalizing action is refused. The names are page
+    text and are marked untrusted; `complete` is false when the caps were reached, `closed`
+    false when the list could not be closed (look at the page before going on).
+    """
+    target = _field_target(config, task, "listing options", exact, frame, host, nth, role)
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        listing = driver.list_options(label, target)
+        payload = _field_payload("options", task, label, target, None, None)
+        payload["options"] = [_one_line(name) for name in listing.options]
+        payload["count"] = len(listing.options)
+        payload["complete"] = listing.complete
+        payload["closed"] = listing.closed
+        payload["untrusted"] = UNTRUSTED_NOTE
+        return payload
+
+    return _with_driver(config, task, act, check_after=True)
 
 
 def transcript_task(
@@ -987,7 +1107,7 @@ def _field_payload(
             payload[key] = value
     if target.exact:
         payload["exact"] = True
-    if action != "upload":
+    if action not in ("upload", "press", "options"):
         # What was set is never echoed back; the field's value is reported only when it
         # differs (an autocomplete expanded it, or left it as typed), which is what matters.
         # `matches` is null when the field cannot be read (a password, rich text).

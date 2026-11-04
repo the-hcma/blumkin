@@ -856,8 +856,12 @@ Examples:
 \b
   blumkin browser press expense-report "Category" ArrowDown
   blumkin browser press expense-report "Amount" Tab
+  blumkin browser press time-sheet "Regular Pay" Tab --nth 3 --json
+  blumkin browser press expense-report "Date" Tab --role textbox --exact
 
-Presses a key in the field with that label. Only navigation keys (Tab, the arrows,
+Presses a key in the field with that label. `--exact`, `--role`, `--nth` and `--frame` (with
+`--host`) single out one field as for `browser fill`, so a label a grid repeats on every row can
+be reached; with none of them the label must match one field. Only navigation keys (Tab, the arrows,
 Escape, Backspace, Delete, Home, End, Page Up and Down) and single printable characters
 are allowed. Enter, Space, a newline and any modifier combination are refused, and so
 is any key aimed at a button, because they can submit a form.
@@ -1022,6 +1026,42 @@ or zero-size input, such as a drop zone's, which may not be the one the form sav
 list says what to check. On a form that re-renders after a field changes (Oracle ADF, for
 one), set the file last: fill the row's other fields first, because a later edit of the same
 row loses a file chosen earlier.
+"""
+
+BROWSER_GRID_EPILOG = """
+Examples:
+
+\b
+  blumkin browser grid time-sheet --json
+  blumkin browser grid time-sheet --within "grid:Time card"
+  blumkin browser grid expense-report --frame 1 --host attachments.example.com
+
+Lists the rows of a data grid or table (the first one, or the one `--within ROLE:NAME` names)
+and, in each cell, its text and fields. A grid reads as one blob in `browser read`, so which
+`Project` field is on which row is lost; here every field carries the `--nth` that
+`--role ROLE --exact --nth N` takes in `browser fill`, `press`, `select` and `options` (use
+`--exact`: the number counts that exact role and name), so a cell is reached by the row it is
+on. Field values are never shown, a header row gives the column names and a row header the
+row's label (a date, say). Read-only; names are page text, marked untrusted. `--frame` (with
+`--host`) reads a child frame on an allowed host.
+"""
+
+BROWSER_OPTIONS_EPILOG = """
+Examples:
+
+\b
+  blumkin browser options time-sheet "Time Reporting Code" --json
+  blumkin browser options time-sheet "Time Reporting Code" --role combobox --nth 2
+  blumkin browser options expense-report "Type" --frame 1 --host attachments.example.com
+
+Lists every option of a dropdown without choosing one. A native select is only read. A combobox
+is opened like `browser select` opens it, its list is scrolled to the end (a virtualized list
+renders a few rows at a time, so one `browser read` can miss options) and it is closed again
+with Escape. `complete` is false when the cap on scrolls or options was reached, and `closed`
+false when the list could not be closed: check the page before going on. `--exact`, `--role`,
+`--nth` and `--frame` (with `--host`) single out one field as for `browser fill`; a field named
+like a finalizing action is refused and the combobox is vetted like a click. The names are page
+text, marked untrusted, and nothing is ever chosen or typed.
 """
 
 BROWSER_SELECT_EPILOG = """

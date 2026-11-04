@@ -45,6 +45,7 @@ from blumkin.browser.cdp import (
     FieldTarget,
     FrameCapture,
     FrameInfo,
+    OptionsListing,
     PageText,
     RawBrowserDriver,
     UploadObservation,
@@ -250,14 +251,17 @@ class GuardedDriver:
 
         return self._raw.pick_account(email, hosts, blocked, clean)
 
-    def press(self, label: str, key: str) -> None:
+    def press(self, label: str, key: str, target: FieldTarget | None = None) -> None:
         action = f"press {key!r} in {label!r}"
         if not _key_is_safe(key):
             raise self._refuse(action, "only navigation keys and single printable characters")
-        info = self._raw.describe_field(label)
-        if _is_button_like(info):
-            raise self._refuse(action, "the field is a button, not a text field")
-        self._raw.raw_press(label, key)
+        self._check_target(target)
+
+        def vet(info: ControlInfo) -> None:
+            if _is_button_like(info):
+                raise self._refuse(action, "the field is a button, not a text field")
+
+        self._raw.press_field(label, key, target, vet)
 
     def read_frame_text(
         self,
@@ -291,6 +295,21 @@ class GuardedDriver:
         return self._raw.select(
             label,
             option,
+            target,
+            lambda info: self._vet_control(action, info),
+            lambda name: self._vet_field_name(action, name),
+        )
+
+    def list_options(self, label: str, target: FieldTarget | None = None) -> OptionsListing:
+        """List a dropdown's options without choosing any; the field is vetted like a select."""
+        action = f"list the options of {label!r}"
+        if _is_denied(label, self._deny):
+            raise self._refuse(action, "its name is a finalizing action")
+        if target is not None and target.role is not None and target.role not in _SELECT_ROLES:
+            raise self._refuse(action, f"the role {target.role!r} is not one a dropdown has")
+        self._check_target(target)
+        return self._raw.list_options(
+            label,
             target,
             lambda info: self._vet_control(action, info),
             lambda name: self._vet_field_name(action, name),

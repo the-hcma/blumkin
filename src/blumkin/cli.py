@@ -48,6 +48,7 @@ from blumkin.auth_setup import (
 from blumkin.browser.actions import (
     DEFAULT_PICK_WAIT_S,
     DEFAULT_SIGN_IN_WAIT_S,
+    MAX_GRID_ROWS,
     MAX_READ_CHARS,
     MAX_READ_LIMIT,
     AddressNotAuthorizedError,
@@ -64,7 +65,9 @@ from blumkin.browser.actions import (
     fill_task,
     frames_task,
     goto_task,
+    grid_task,
     handoff_task,
+    options_task,
     press_task,
     read_task,
     refresh_tab_task,
@@ -3737,17 +3740,121 @@ def browser_model_versions(ctx: click.Context, task: str, as_json_flag: bool) ->
 @click.argument("task")
 @click.argument("label")
 @click.argument("key")
+@_field_options
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
-def browser_press(ctx: click.Context, task: str, label: str, key: str, as_json_flag: bool) -> None:
+def browser_press(
+    ctx: click.Context,
+    task: str,
+    label: str,
+    key: str,
+    as_json_flag: bool,
+    exact: bool,
+    frame: int | None,
+    host: str | None,
+    nth: int | None,
+    role: str | None,
+) -> None:
     """Press a key in a field (Enter is refused: it submits a form)."""
+    _require_frame_for_host(frame, host)
     _browser_action(
         ctx,
         as_json_flag,
         task,
-        lambda: press_task(load_browser_setup(), task, label, key),
+        lambda: press_task(
+            load_browser_setup(),
+            task,
+            label,
+            key,
+            exact=exact,
+            frame=frame,
+            host=host,
+            nth=nth,
+            role=role,
+        ),
         "pressed",
     )
+
+
+@browser.command("grid", epilog=help_text.BROWSER_GRID_EPILOG)
+@click.argument("task")
+@click.option(
+    "--within",
+    "within",
+    default=None,
+    help="Which grid, ROLE or ROLE:NAME (for example `grid:Time card`); default the first.",
+)
+@click.option(
+    "--frame",
+    "frame",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Read child frame N (see `browser frames`); needs allowed_hosts.",
+)
+@click.option(
+    "--host",
+    "host",
+    default=None,
+    help="With --frame: refuse unless that frame is on this host (numbers can shift).",
+)
+@click.option(
+    "--max-rows",
+    "max_rows",
+    type=click.IntRange(min=1, max=MAX_GRID_ROWS),
+    default=200,
+    show_default=True,
+    help="Rows to list.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_grid(
+    ctx: click.Context,
+    task: str,
+    within: str | None,
+    frame: int | None,
+    host: str | None,
+    max_rows: int,
+    as_json_flag: bool,
+) -> None:
+    """List a grid's rows and the fields in each cell, so a cell can be reached by its row."""
+    as_json = _as_json(ctx, as_json_flag)
+    _require_frame_for_host(frame, host)
+    if within is not None:
+        try:
+            parse_within(within)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
+    try:
+        payload = grid_task(
+            load_browser_setup(), task, within=within, frame=frame, host=host, max_rows=max_rows
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    grid = payload["grid"]
+    lines = [f"{sanitize_terminal(payload['title'])} - {sanitize_terminal(payload['url'])}"]
+    lines.extend(format_injection_warning_banner(payload["injection_warning"]))
+    lines.extend(["", payload["untrusted"], ""])
+    lines.append(
+        f"{grid['role']} {sanitize_terminal(grid['name'])!r}: {len(payload['rows'])} row(s)"
+    )
+    if payload["columns"]:
+        lines.append("  columns: " + " | ".join(sanitize_terminal(c) for c in payload["columns"]))
+    for row in payload["rows"]:
+        lines.append(f"  row {row['row']}: {sanitize_terminal(row['label'])}")
+        for cell in row["cells"]:
+            parts = [sanitize_terminal(str(cell["text"]))] if cell["text"] else []
+            parts.extend(
+                f"--role {f['role']} --exact {shlex.quote(sanitize_terminal(f['name']))} "
+                f"--nth {f['nth']}"
+                for f in cell["fields"]
+            )
+            lines.append(f"    {sanitize_terminal(str(cell['column']))}: {'; '.join(parts)}")
+    if payload["truncated"]:
+        lines.append("  (more rows follow: raise --max-rows)")
+    emit_lines(lines)
 
 
 @browser.command("read", epilog=help_text.BROWSER_READ_EPILOG)
@@ -3944,6 +4051,52 @@ def browser_transcript(
         f"{len(coverage['speakers'])} speakers{where}"
     )
     lines.extend(f"  problem: {problem}" for problem in coverage["problems"])
+    emit_lines(lines)
+
+
+@browser.command("options", epilog=help_text.BROWSER_OPTIONS_EPILOG)
+@click.argument("task")
+@click.argument("label")
+@_field_options
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_options(
+    ctx: click.Context,
+    task: str,
+    label: str,
+    as_json_flag: bool,
+    exact: bool,
+    frame: int | None,
+    host: str | None,
+    nth: int | None,
+    role: str | None,
+) -> None:
+    """List every option of the dropdown with that label, choosing none."""
+    _require_frame_for_host(frame, host)
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = options_task(
+            load_browser_setup(),
+            task,
+            label,
+            exact=exact,
+            frame=frame,
+            host=host,
+            nth=nth,
+            role=role,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    lines = [f"{task}: {payload['count']} option(s) in {sanitize_terminal(label)!r}"]
+    lines.extend(["", payload["untrusted"], ""])
+    lines.extend(f"  {sanitize_terminal(name)}" for name in payload["options"])
+    if not payload["complete"]:
+        lines.append("  (the list may hold more: the scroll or option cap was reached)")
+    if not payload["closed"]:
+        lines.append("  warning: the list could not be closed; look at the page before going on")
     emit_lines(lines)
 
 
