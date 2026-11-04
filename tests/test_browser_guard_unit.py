@@ -1969,10 +1969,15 @@ def test_without_a_dialog_or_a_landmark_container_the_confirm_is_still_refused()
 
 @pytest.mark.parametrize(
     "names",
-    [("Add",), ("Add", "Add"), ("Add", "Submit"), ("Add", "Del*"), ("Add", " ")],
+    [("Add",), ("Add", "Add"), ("Add", "add"), ("Add", "Submit"), ("Add", "Del*"), ("Add", " ")],
 )
 def test_dialog_landmarks_need_two_distinct_exact_non_finalizing_names(
     names: tuple[str, ...],
 ) -> None:
     with pytest.raises(SubmitBlockedError, match="dialog_landmarks"):
         _guard(confirm=("OK",), landmarks=names)
+
+
+def test_dialog_landmarks_without_a_dialog_confirm_are_refused() -> None:
+    with pytest.raises(SubmitBlockedError, match="alongside dialog_landmarks"):
+        _guard(landmarks=("Add", "Delete"))

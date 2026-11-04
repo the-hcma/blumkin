@@ -143,6 +143,11 @@ class GuardedDriver:
         self._destructive = _deny_stems(DESTRUCTIVE_DENY_NAMES)
         validate_dialog_confirm(policy.dialog_confirm, policy.extra_deny_names)
         validate_dialog_landmarks(policy.dialog_landmarks, policy.extra_deny_names)
+        if policy.dialog_landmarks and not policy.dialog_confirm:
+            raise SubmitBlockedError(
+                "Expected dialog_confirm names alongside dialog_landmarks, got none; "
+                "the landmarks only locate the popup a dialog confirm is clicked in"
+            )
         self._confirm = frozenset(_exact(name) for name in policy.dialog_confirm)
         self._draft_names = tuple(sorted(set(policy.draft_controls)))
         validate_draft_controls(policy.draft_controls, policy.extra_deny_names)
@@ -783,14 +788,17 @@ def validate_dialog_confirm(names: Iterable[str], extra_deny_names: Iterable[str
 
 
 def validate_dialog_landmarks(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
-    """Refuse landmarks that are too few to mark a popup, a pattern, or a finalizing name."""
+    """Refuse landmarks that are too few to mark a popup, a pattern, or a finalizing name.
+
+    Names are compared without case, as the page is searched: `Add` and `add` are one landmark.
+    """
     listed = [name for name in names]
     if not listed:
         return
     bad = [name for name in listed if not name.strip() or "*" in name]
     deny = _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny_names))
     bad += [name for name in listed if name.strip() and _is_denied(name, deny)]
-    if bad or len({_exact(name) for name in listed}) < 2:
+    if bad or len({_exact(name).casefold() for name in listed}) < 2:
         raise SubmitBlockedError(
             "Expected dialog_landmarks of at least two distinct exact names that are not "
             f"finalizing actions, got {', '.join(repr(name) for name in listed)}"
