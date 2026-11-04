@@ -8,6 +8,7 @@ controls, and nothing here can finalize a form.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -65,6 +66,12 @@ _ARIA_FIELD_ROLES = r"(?:combobox|searchbox|slider|spinbutton|textbox)"
 
 # A field line's key, plain (`- textbox "Name" [attr]`) or, when the name needs it, wrapped in
 # YAML single quotes with inner quotes doubled (`- 'textbox "Name: x"'`); the value follows `: `.
+_DIALOG_CONTROL = re.compile(
+    r"^\s*- (?P<role>button|checkbox|link|menuitem|menuitemcheckbox|menuitemradio|radio|tab)"
+    r' "(?P<name>(?:[^"\\]|\\.)*)"(?P<rest>.*)$'
+)
+_DIALOG_POLL_MS = 250
+_DIALOG_POLLS = 8
 _ARIA_FIELD_VALUE = re.compile(
     r"^(\s*- (?:"
     + rf"'{_ARIA_FIELD_ROLES}(?:[^']|'')*'"
@@ -94,6 +101,7 @@ class HostBlockedError(BrowserActionError):
     """The page is on a host the task did not declare in `allowed_hosts`."""
 
 
+MAX_DIALOG_STEPS = 4
 MAX_GRID_ROWS = 500
 
 MAX_READ_CHARS = 20_000
@@ -202,6 +210,61 @@ def click_task(
         if nth is not None:
             payload["nth"] = nth
         return payload
+
+    return _with_driver(config, task, act, check_after=True)
+
+
+def dialog_task(
+    config: BrowserSetup,
+    task: str,
+    steps: Sequence[tuple[str, str | None]],
+    *,
+    close: tuple[str, str | None] | None = None,
+    expand_options: bool = False,
+    wait_s: float = 5.0,
+    within: str = "dialog",
+) -> dict[str, Any]:
+    """Open a dialog (or menu) through declared controls, read what it shows and close it.
+
+    Each of `steps` (a control name and optional role) is clicked in order, exactly as
+    `click_task` clicks it, so each must be declared and a finalizing name is refused. The
+    `within` subtree (`ROLE` or `ROLE:NAME`, a `dialog` by default) is then read as `read
+    --aria --within` reads it, with field values and addresses removed, and its buttons are
+    listed with whether each is disabled. Nothing inside is clicked. The dialog is always
+    closed afterwards, even when a step or the read failed: with the declared `close` control
+    if one was named, otherwise (or when that did not work) with Escape. `closed` says
+    whether it is gone; when it is not, look at the page before going on.
+    """
+    if not steps or len(steps) > MAX_DIALOG_STEPS:
+        raise ValueError(f"Expected 1 to {MAX_DIALOG_STEPS} controls to open, got {len(steps)}")
+    scope_role, scope_name = parse_within(within)
+    for name, _ in (*steps, *([close] if close is not None else [])):
+        _require_declared_controls(config, task, name)
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        opened: list[str] = []
+        try:
+            for name, role in steps:
+                opened.append(driver.click(name, role, _default_wait(role)))
+            text, matches, warning = _dialog_read(
+                driver, scope_role, scope_name, wait_s, expand_options
+            )
+        finally:
+            closed, via = _dialog_close(driver, scope_role, scope_name, close)
+        return {
+            "action": "dialog",
+            "buttons": _dialog_buttons(text),
+            "closed": closed,
+            "closed_with": via,
+            "injection_warning": warning,
+            "ok": True,
+            "opened": opened,
+            "task": task,
+            "text": text,
+            "untrusted": UNTRUSTED_NOTE,
+            "within": within,
+            "within_matches": matches,
+        }
 
     return _with_driver(config, task, act, check_after=True)
 
@@ -1085,6 +1148,70 @@ def _checked_output(out: Path) -> Path:
             f"Expected an existing folder for the transcript, got {str(target.parent)!r}"
         )
     return target
+
+
+def _dialog_buttons(text: str) -> list[dict[str, Any]]:
+    """The pressable controls of a scoped ARIA snapshot, with whether each is disabled."""
+    found: list[dict[str, Any]] = []
+    for line in text.split("\n"):
+        match = _DIALOG_CONTROL.match(line)
+        if match is not None:
+            found.append(
+                {
+                    "disabled": "[disabled]" in match.group("rest"),
+                    "name": _one_line(match.group("name")),
+                    "role": match.group("role"),
+                }
+            )
+    return found
+
+
+def _dialog_close(
+    driver: GuardedDriver, role: str, name: str | None, close: tuple[str, str | None] | None
+) -> tuple[bool, str | None]:
+    """Close what a dialog read opened: the declared control, then Escape; whether it is gone."""
+    via: str | None = None
+    if close is not None:
+        with contextlib.suppress(BrowserActionError):
+            driver.click(close[0], close[1], _default_wait(close[1]))
+            via = "control"
+    if not _dialog_gone(driver, role, name):
+        with contextlib.suppress(BrowserActionError):
+            driver.dismiss()
+            via = "escape"
+    return _dialog_gone(driver, role, name), via
+
+
+def _dialog_gone(driver: GuardedDriver, role: str, name: str | None) -> bool:
+    for _ in range(_DIALOG_POLLS):
+        try:
+            scope(driver.aria_snapshot(), role, name)
+        except LookupError:
+            return True
+        except BrowserActionError:
+            return False
+        with contextlib.suppress(BrowserActionError):
+            driver.wait_ms(_DIALOG_POLL_MS)
+    return False
+
+
+def _dialog_read(
+    driver: GuardedDriver, role: str, name: str | None, wait_s: float, expand_options: bool
+) -> tuple[str, int, dict[str, Any]]:
+    """The redacted `role` subtree once it shows, waiting up to `wait_s` for it to open."""
+    polls = max(1, int(wait_s * 1000 / _DIALOG_POLL_MS))
+    for attempt in range(polls):
+        snapshot = _redact_aria(driver.aria_snapshot())
+        try:
+            text, matches = scope(snapshot, role, name)
+        except LookupError as exc:
+            if attempt == polls - 1:
+                raise BrowserActionError(_scope_failure(str(exc), role, name)) from exc
+            driver.wait_ms(_DIALOG_POLL_MS)
+            continue
+        warning = scan_for_injection(snapshot, location="page.aria").to_payload()
+        return (text if expand_options else collapse_options(text)), matches, warning
+    raise AssertionError("unreachable")
 
 
 def _default_wait(role: str | None) -> float:

@@ -81,9 +81,17 @@ class _Raw:
         self.download_url = "https://erp.example.com/files/meeting.vtt"
         self.save_dirs: list[Path] = []
         self.probes: list[tuple[str, float]] = []
+        #: Called with the control name after each click and with "" after Escape: a test
+        #: changes `aria_text` here to open and close a dialog.
+        self.on_event: Callable[[str], None] | None = None
 
     def close(self) -> None:
         self.closed += 1
+
+    def dismiss(self) -> None:
+        self.calls.append(("dismiss",))
+        if self.on_event is not None:
+            self.on_event("")
 
     def block_form_submission(self, *, background_writes: bool = False) -> None:
         self.net_installed += 1
@@ -96,6 +104,8 @@ class _Raw:
         self.calls.append(("click", role, name) if nth is None else ("click", role, name, nth))
         if self.lands_on is not None:
             self.url = self.lands_on
+        if self.on_event is not None:
+            self.on_event(name)
 
     def matching_roles(
         self, name: str, roles: Any, wait_s: float, nth: int | None = None
@@ -3125,3 +3135,151 @@ def test_grid_text_hint_quotes_a_hostile_field_name_for_the_shell(raw: _Raw) -> 
     result = CliRunner().invoke(main, ["browser", "grid", "expense-report"])
 
     assert "--exact 'x$(touch pwned)'\"'\"''" in result.output or "'\"'\"'" in result.output
+
+
+_DIALOG_OPEN = """\
+- dialog "Apply Template":
+  - text: No templates exist
+  - combobox "Template": Weekly
+  - button "Cancel"
+  - button "Apply" [disabled]
+- button "Templates"
+"""
+_DIALOG_CLOSED = '- button "Templates"\n'
+
+
+def _dialog_page(raw: _Raw, *, closes_on: str | None = "Cancel") -> None:
+    """A page whose Apply opens a dialog; `closes_on` (or Escape, for "") closes it."""
+    raw.aria_text = _DIALOG_CLOSED
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = _DIALOG_OPEN
+        elif name == closes_on or name == "":
+            raw.aria_text = _DIALOG_CLOSED
+
+    raw.on_event = event
+
+
+def test_dialog_opens_reads_and_closes_with_the_declared_control(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+
+    result = _run(
+        "browser",
+        "dialog",
+        "expense-report",
+        "--open",
+        "Templates",
+        "--open",
+        "Apply",
+        "--close",
+        "Cancel",
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["closed"] is True and payload["closed_with"] == "control"
+    assert payload["untrusted"] and payload["within_matches"] == 1
+    assert {"disabled": True, "name": "Apply", "role": "button"} in payload["buttons"]
+    assert {"disabled": False, "name": "Cancel", "role": "button"} in payload["buttons"]
+    assert "Weekly" not in payload["text"]
+    clicks = [call[2] for call in raw.calls if call[0] == "click"]
+    assert clicks == ["Templates", "Apply", "Cancel"]
+
+
+def test_dialog_closes_with_escape_when_no_close_control_is_named(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply"]')
+    _dialog_page(raw)
+
+    payload = _json(_run("browser", "dialog", "expense-report", "--open", "Apply"))
+
+    assert payload["closed"] is True and payload["closed_with"] == "escape"
+    assert ("dismiss",) in raw.calls
+
+
+def test_dialog_closes_with_escape_when_the_close_control_does_not_work(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Apply", "Cancel"]')
+    _dialog_page(raw, closes_on="")
+
+    payload = _json(
+        _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+    )
+
+    assert payload["closed"] is True and payload["closed_with"] == "escape"
+
+
+def test_dialog_reports_that_it_is_still_open_when_nothing_closes_it(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Apply"]')
+    _dialog_page(raw, closes_on="never")
+    raw.on_event = lambda name: setattr(raw, "aria_text", _DIALOG_OPEN) if name == "Apply" else None
+
+    result = CliRunner().invoke(main, ["browser", "dialog", "expense-report", "--open", "Apply"])
+
+    assert "STILL OPEN" in result.output
+    assert _json(_run("browser", "dialog", "expense-report", "--open", "Apply"))["closed"] is False
+
+
+def test_dialog_still_closes_when_the_dialog_never_appears(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates"]')
+    raw.aria_text = _DIALOG_CLOSED
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Templates", "--wait", "0")
+
+    assert result.exit_code == EXIT_OTHER
+    # Nothing was open, so there is nothing to dismiss and the page was left as it was.
+    assert ("dismiss",) not in raw.calls
+    assert raw.aria_text == _DIALOG_CLOSED
+
+
+def test_dialog_refuses_an_undeclared_or_finalizing_control_before_clicking(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Apply"]')
+    _dialog_page(raw)
+
+    undeclared = _run("browser", "dialog", "expense-report", "--open", "Apply", "--open", "Delete")
+
+    assert undeclared.exit_code == EXIT_OTHER
+    assert _json(undeclared)["error"] == "submit_blocked"
+    assert ("dismiss",) in raw.calls
+    assert not [call for call in raw.calls if call[0] == "click" and call[2] == "Delete"]
+
+
+def test_dialog_takes_a_role_before_the_name_and_reads_a_menu(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Actions", "Edit row"]')
+    raw.aria_text = (
+        '- menu "Actions":\n  - menuitem "Edit row"\n  - menuitem "Copy row" [disabled]\n'
+    )
+
+    payload = _json(
+        _run(
+            "browser",
+            "dialog",
+            "expense-report",
+            "--open",
+            "button:Actions",
+            "--open",
+            "menuitem:Edit row",
+            "--within",
+            "menu",
+        )
+    )
+
+    assert [call[1] for call in raw.calls if call[0] == "click"] == ["button", "menuitem"]
+    assert [item["name"] for item in payload["buttons"]] == ["Edit row", "Copy row"]
+    assert payload["buttons"][1]["disabled"] is True
+
+
+def test_dialog_needs_at_least_one_open_control() -> None:
+    result = _run("browser", "dialog", "expense-report")
+
+    assert result.exit_code == EXIT_USAGE

@@ -176,6 +176,10 @@ class GuardedDriver:
     def close(self) -> None:
         self._raw.close()
 
+    def dismiss(self) -> None:
+        """Press Escape on the page to close an open dialog or menu; it types nothing."""
+        self._raw.dismiss()
+
     def download(
         self,
         name: str,

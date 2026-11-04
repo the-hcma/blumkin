@@ -338,6 +338,25 @@ The browser comes from `[browser] default = "chrome" | "edge" | "chromium"` in
 config.toml and falls back to Chrome when unset or not installed.
 """
 
+BROWSER_DIALOG_EPILOG = """
+Examples:
+
+\b
+  blumkin browser dialog time-sheet --open Templates --open menuitem:Apply
+  blumkin browser dialog time-sheet --open Templates --open Apply --close Cancel --json
+  blumkin browser dialog time-sheet --open "More actions" --within menu
+
+Opens a dialog (or a menu, with `--within menu`) by clicking the declared controls given with
+`--open`, in order, then reads the subtree the way `browser read --aria --within` does (field
+values and addresses removed) and lists its buttons and whether each is disabled. Nothing
+inside is clicked. Each control must be declared in `allowed_controls` and a finalizing name
+is refused, as for `browser click`; give a role as `ROLE:NAME` when a name exists in more than
+one (a menu item and a button called `Apply`). A menu item is never covered by a `*` pattern.
+It is always closed afterwards, even when a step or the read failed: with the declared
+`--close` control if given, otherwise with Escape. `closed` is false when it could not be
+closed (look at the page before going on). The text is page content, marked untrusted.
+"""
+
 BROWSER_DOWNLOAD_EPILOG = """
 Examples:
 

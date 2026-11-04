@@ -92,6 +92,8 @@ class BrowserDriver(Protocol):
 
     def close(self) -> None: ...
 
+    def dismiss(self) -> None: ...
+
     def download(
         self,
         name: str,
@@ -548,6 +550,14 @@ class PlaywrightDriver:
             return self._describe(handle)
         except _playwright_error() as exc:
             raise self._action_error(f"inspect the field labelled {label!r}", exc) from exc
+
+    def dismiss(self) -> None:
+        """Press Escape on the page, which closes an open dialog or menu; nothing else."""
+        self._require_open()
+        try:
+            self._page.keyboard.press("Escape")
+        except _playwright_error() as exc:
+            raise self._action_error("press Escape on the page", exc) from exc
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:
         """Fill one field and return the value it holds afterwards (None when not readable).
@@ -1564,6 +1574,8 @@ class RawBrowserDriver(Protocol):
     def close(self) -> None: ...
 
     def describe_field(self, label: str, target: FieldTarget | None = None) -> ControlInfo: ...
+
+    def dismiss(self) -> None: ...
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None: ...
 
