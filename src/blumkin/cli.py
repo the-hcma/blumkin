@@ -113,7 +113,7 @@ from blumkin.browser.explore_commands import (
     explore_save,
     explore_show,
 )
-from blumkin.browser.guard import SubmitBlockedError
+from blumkin.browser.guard import CLICKABLE_ROLES, SubmitBlockedError
 from blumkin.browser.handoff import HandoffError, format_handoff_human
 from blumkin.browser.init_task import TEMPLATES, InitTaskError, init_task
 from blumkin.browser.launcher import DEFAULT_CLOSE_TIMEOUT_S, BrowserCloseError, BrowserLaunchError
@@ -1601,6 +1601,14 @@ def _dispatch_local(
     raise SystemExit(EXIT_SUCCESS)
 
 
+def _control_spec(spec: str) -> tuple[str, str | None]:
+    """`NAME` or `ROLE:NAME` as (name, role); only a known role before the colon is a role."""
+    head, sep, tail = spec.partition(":")
+    if sep and head.strip().lower() in CLICKABLE_ROLES and tail.strip():
+        return tail.strip(), head.strip().lower()
+    return spec.strip(), None
+
+
 def _dispatch_soft(
     ctx: click.Context,
     skill_id: str,
@@ -1630,31 +1638,6 @@ def _dispatch_soft(
     else:
         emit_lines(human(payload))
     raise SystemExit(fail_exit if failed else EXIT_SUCCESS)
-
-
-_CONTROL_ROLES = frozenset(
-    {
-        "button",
-        "checkbox",
-        "link",
-        "menuitem",
-        "menuitemcheckbox",
-        "menuitemradio",
-        "option",
-        "radio",
-        "switch",
-        "tab",
-        "treeitem",
-    }
-)
-
-
-def _control_spec(spec: str) -> tuple[str, str | None]:
-    """`NAME` or `ROLE:NAME` as (name, role); only a known role before the colon is a role."""
-    head, sep, tail = spec.partition(":")
-    if sep and head.strip().lower() in _CONTROL_ROLES and tail.strip():
-        return tail.strip(), head.strip().lower()
-    return spec.strip(), None
 
 
 _GLOBAL_ONLY_OPTIONS = frozenset({"--profile", "--tz"})
@@ -3058,11 +3041,17 @@ def browser_dialog(
         emit_json(payload)
         return
     state = "closed" if payload["closed"] else "STILL OPEN: look at the page before going on"
-    emit_lines([f"{task}: read the {payload['within']} ({state})", payload["untrusted"]])
-    emit_lines([sanitize_terminal(payload["text"].rstrip("\n"))])
-    for item in payload["buttons"]:
+    lines = [f"{task}: read the {payload['within']} ({state})", payload["untrusted"]]
+    lines.extend(format_injection_warning_banner(payload["injection_warning"]))
+    if payload["within_matches"] > 1:
+        lines.append(f"Note: {payload['within_matches']} matches; only the first is shown.")
+    lines.append(sanitize_terminal(payload["text"].rstrip("\n")))
+    if payload["truncated"]:
+        lines.append("(the text was cut at the read limit)")
+    for item in payload["controls"]:
         flag = " (disabled)" if item["disabled"] else ""
-        emit_lines([f"  {item['role']} {sanitize_terminal(item['name'])!r}{flag}"])
+        lines.append(f"  {item['role']} {sanitize_terminal(item['name'])!r}{flag}")
+    emit_lines(lines)
 
 
 @browser.command("download", epilog=help_text.BROWSER_DOWNLOAD_EPILOG)

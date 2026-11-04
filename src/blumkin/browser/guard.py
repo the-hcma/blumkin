@@ -134,7 +134,7 @@ class GuardedDriver:
         confirm, so it takes `allowed_controls` names alone.
         """
         action = f"click {name!r}"
-        if role is not None and role not in _CLICKABLE_ROLES:
+        if role is not None and role not in CLICKABLE_ROLES:
             raise self._refuse(action, f"the role {role!r} is not one a task may click")
         if _is_denied(name, self._deny):
             raise self._refuse(action, "its name is a finalizing action")
@@ -367,7 +367,7 @@ class GuardedDriver:
         """Check the policy, then find `name` on the page: (the role it is in, the action)."""
         action = f"click {name!r}"
         self.check_click(name, role, confirm_ok=confirm_ok)
-        roles = (role,) if role is not None else tuple(sorted(_CLICKABLE_ROLES))
+        roles = (role,) if role is not None else tuple(sorted(CLICKABLE_ROLES))
         found = self._raw.matching_roles(name, roles, wait_s, nth=nth)
         label = role if role is not None else "control"
         if not found:
@@ -513,7 +513,7 @@ _BUTTON_LIKE_INPUT_TYPES = frozenset({"button", "image", "reset", "submit"})
 #: Roles a dropdown has; `select` never goes through a button, link or other clickable role.
 _SELECT_ROLES = frozenset({"combobox", "listbox", "searchbox", "textbox"})
 
-_CLICKABLE_ROLES = frozenset(
+CLICKABLE_ROLES = frozenset(
     {
         "button",
         "checkbox",
