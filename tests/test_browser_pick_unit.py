@@ -34,6 +34,13 @@ _PAGE = """
 <div role=row contenteditable=true onclick="window.chosen = 'editable'">Editable row</div>
 <div id=host role=row aria-label="Host row" onclick="window.chosen = 'host'"></div>
 <div id=host2></div>
+<div role=row contenteditable onclick="window.chosen = 'bare'">Bare editable</div>
+<div role=row contenteditable=plaintext-only onclick="window.chosen = 'plain'">Plain editable</div>
+<table><tr onclick="window.chosen = 'with-multi'"><td>With</td><td>Multi</td>
+  <td><span id=multi role="button checkbox">x</span></td></tr></table>
+<div id=wrap role="button checkbox">
+  <table><tr onclick="window.chosen = 'in-multi'"><td>In</td><td>Multi</td></tr></table>
+</div>
 <div role=treeitem id=tree>
   <table><tr onclick="window.chosen = 'in-tree'"><td>In</td><td>Tree</td></tr></table>
 </div>
@@ -43,6 +50,9 @@ _PAGE = """
     '<button onclick="window.pressed = true">Inner</button>';
   const root = document.getElementById('host2').attachShadow({mode: 'open'});
   root.innerHTML = '<div role=row onclick="window.chosen = 1">Shadow row</div>';
+  for (const id of ['multi', 'wrap']) {
+    document.getElementById(id).addEventListener('click', () => { window.pressed = true; });
+  }
   document.getElementById('tree').addEventListener('click', () => { window.pressed = true; });
 </script>
 """
@@ -86,6 +96,10 @@ def test_pick_clicks_one_plain_row_and_refuses_everything_that_is_or_holds_a_con
                 "Host row",
                 "In Tree",
                 "Shadow row",
+                "Bare editable",
+                "Plain editable",
+                "With Multi x",
+                "In Multi",
             ):
                 page.evaluate("window.chosen = null")
                 with pytest.raises(SubmitBlockedError):

@@ -2085,12 +2085,14 @@ _PICK_ACCOUNT_JS = r"""(args) => {
 #: content in a shadow root, whether it hosts one, has one inside or sits in one (none of which
 #: can be searched). The row's own click handler is not a control: a result list is built so.
 _PICK_BLOCKERS_JS = r"""(e) => {
+  // `role` is a token list (`button checkbox`) and `contenteditable` may be bare or
+  // `plaintext-only`, so roles match by token and an editor is anything but `false`.
+  const roles = ['button', 'link', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+    'checkbox', 'radio', 'switch', 'tab', 'combobox', 'textbox', 'slider', 'spinbutton',
+    'option', 'treeitem'].map((r) => '[role~=' + r + ']').join(', ');
   const own = 'button, a, area, input:not([type=hidden]), select, textarea, summary, label, '
-    + 'iframe, object, embed, [contenteditable=true]';
-  const controls = own + ', [onclick], [role=button], [role=link], [role=menuitem], '
-    + '[role=menuitemcheckbox], [role=menuitemradio], [role=checkbox], [role=radio], '
-    + '[role=switch], [role=tab], [role=combobox], [role=textbox], [role=slider], '
-    + '[role=spinbutton], [role=option], [role=treeitem]';
+    + 'iframe, object, embed, [contenteditable]:not([contenteditable=false])';
+  const controls = own + ', [onclick], ' + roles;
   if (e.matches(own)) return true;
   if (e.querySelector(controls)) return true;
   if (e.querySelector('[tabindex]:not([tabindex="-1"])')) return true;
