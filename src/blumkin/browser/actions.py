@@ -37,6 +37,7 @@ from blumkin.browser.cdp import (
     FieldTarget,
     PageText,
     UploadObservation,
+    attach,
     checked_http_url,
     field_display,
     field_matches,
@@ -777,6 +778,8 @@ def read_task(
                 if frame is None
                 else driver.frame_aria_snapshot(frame, allowed, host, wait_s=wait_s)
             )
+            if on_sign_in:
+                snapshot = redact_addresses(snapshot)
             warning = scan_for_injection(snapshot, location="page.aria").to_payload()
             if within is not None:
                 try:
@@ -795,9 +798,12 @@ def read_task(
                 else driver.read_frame_text(frame, allowed, host, wait_s=wait_s)
             )
         if on_sign_in and not aria:
-            # An identity-provider error page often echoes the redirect address and request ids.
+            # An identity-provider error page often echoes the redirect address and request ids,
+            # so the text goes on without them and is scanned again without them.
+            cleaned = redact_addresses(page.text)
             page = PageText(
-                text=redact_addresses(page.text), injection_warning=page.injection_warning
+                text=cleaned,
+                injection_warning=scan_for_injection(cleaned, location="page.text").to_payload(),
             )
         shown, more, next_offset = window(page.text, offset, limit)
         return {
@@ -812,11 +818,13 @@ def read_task(
             "sign_in_page": on_sign_in,
             "task": task,
             "text": shown,
-            "title": _one_line(driver.title()),
+            "title": redact_addresses(_one_line(driver.title()))
+            if on_sign_in
+            else _one_line(driver.title()),
             "total_chars": len(page.text),
             "truncated": more,
             "untrusted": UNTRUSTED_NOTE,
-            "url": driver.url,
+            "url": _display_url(driver.url) if on_sign_in else driver.url,
             "within": within,
             "within_matches": within_matches,
         }
@@ -1219,35 +1227,42 @@ def verify_task(
 def where_task(config: BrowserSetup, task: str) -> dict[str, Any]:
     """Where the task's browser is now: host, path, title and what the task may do there.
 
-    A diagnostic for a stuck sign-in. It reads nothing from the page body and shows no query or
-    fragment (that is where tokens live), no `;` parameters, and masks a long path segment (an
-    opaque id). A page on a host that is neither allowed nor a sign-in host is a stranger's:
-    only its host is shown, never its path or title, since the agent should not get words from
-    a page it may not read. The page may be on any host, so no host check stands in the way.
+    A diagnostic for a stuck sign-in. It attaches without the form-submission guard that every
+    task command installs, so looking cannot swallow the identity provider's POST and stall the
+    very sign-in being inspected, and it does nothing to the page: no mark, no click, no read of
+    its body. No query, fragment or `;` parameter is shown (that is where tokens live) and a long
+    path segment (an opaque id) is masked. A page on a host that is neither allowed nor a sign-in
+    host is a stranger's: only its host is shown, never its path or title, since the agent should
+    not get words from a page it may not read.
     """
     hosts = _declared_hosts(config, task)
     sign_in_hosts = sign_in_hosts_for(config, task)
-
-    def act(driver: GuardedDriver) -> dict[str, Any]:
-        parts = urlsplit(driver.url)
-        host = (parts.hostname or "") if parts.scheme in ("http", "https") else ""
-        allowed = bool(host) and (not hosts or host_allowed(host, hosts))
-        sign_in = bool(host) and host_allowed(host, sign_in_hosts)
-        known = allowed or sign_in
-        return {
-            "action": "where",
-            "host": host,
-            "ok": True,
-            "on_allowed_host": allowed,
-            "on_sign_in_host": sign_in,
-            "path": _where_path(parts.path) if known else "",
-            "scheme": parts.scheme,
-            "task": task,
-            "title": _one_line(driver.title()) if known else "",
-            "untrusted": UNTRUSTED_NOTE,
-        }
-
-    return _with_driver(config, task, act, check_before=False)
+    profile = load_profile(config.config_dir, task)
+    if profile is None:
+        raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
+    page = attach(profile, timeout_s=DEFAULT_ACTION_TIMEOUT_S)
+    try:
+        url = page.url
+        title = page.title()
+    finally:
+        page.close()
+    parts = urlsplit(url)
+    host = (parts.hostname or "") if parts.scheme in ("http", "https") else ""
+    allowed = bool(host) and (not hosts or host_allowed(host, hosts))
+    sign_in = bool(host) and host_allowed(host, sign_in_hosts)
+    known = allowed or sign_in
+    return {
+        "action": "where",
+        "host": host,
+        "ok": True,
+        "on_allowed_host": allowed,
+        "on_sign_in_host": sign_in,
+        "path": _where_path(parts.path) if known else "",
+        "scheme": parts.scheme,
+        "task": task,
+        "title": redact_addresses(_one_line(title)) if known else "",
+        "untrusted": UNTRUSTED_NOTE,
+    }
 
 
 def _upload_warnings(seen: UploadObservation) -> list[str]:
@@ -1685,6 +1700,14 @@ def _require_allowed_page(
             f"Expected the page to be on an allowed_hosts host of task {task!r} after {when}, "
             f"got {host or 'no host'!r}"
         )
+
+
+def _display_url(url: str) -> str:
+    """An address with no query, fragment or `;` parameters (where tokens live), the path masked."""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return ""
+    return f"{parts.scheme}://{parts.hostname}{_where_path(parts.path)}"
 
 
 def _where_path(path: str) -> str:
