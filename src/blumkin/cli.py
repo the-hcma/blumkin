@@ -3723,16 +3723,14 @@ def browser_model_versions(ctx: click.Context, task: str, as_json_flag: bool) ->
     if as_json:
         emit_json(payload)
         return
+    store_line = f"  store: {sanitize_terminal(payload['store'])}"
     if not payload["versions"]:
-        emit_lines([f"{task}: no saved model (start with `blumkin browser explore observe`)"])
+        emit_lines(
+            [f"{task}: no saved model (start with `blumkin browser explore observe`)", store_line]
+        )
         return
     listed = ", ".join(str(number) for number in payload["versions"])
-    emit_lines(
-        [
-            f"{task}: versions {listed} (current {payload['current']})",
-            f"  store: {sanitize_terminal(payload['store'])}",
-        ]
-    )
+    emit_lines([f"{task}: versions {listed} (current {payload['current']})", store_line])
 
 
 @browser.command("press", epilog=help_text.BROWSER_PRESS_EPILOG)
@@ -5502,7 +5500,12 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
                 f"source_tree: {tree if tree is not None else '(installed release)'}",
             ]
         )
-        emit_lines([f"browser_models: {models_dir['dir']} ({models_dir['source']})"])
+        emit_lines(
+            [
+                f"browser_models: {sanitize_terminal(str(models_dir['dir']))} "
+                f"({models_dir['source']})"
+            ]
+        )
         emit_lines([f"account_type: {cfg.account_type}"])
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])

@@ -387,3 +387,17 @@ def test_a_refused_location_stops_explore_click_before_the_browser_is_touched(
 def test_an_unresolvable_path_is_a_refusal_not_a_crash(tmp_path: Path, text: str) -> None:
     with pytest.raises(SiteModelError, match="usable path"):
         resolve_store(_setup(tmp_path, text))
+
+
+def test_model_versions_text_shows_the_store_even_with_no_saved_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models = tmp_path / "empty-models"
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path / "config"))
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.toml").write_text(f'[browser]\nmodels_dir = "{models}"\n')
+
+    result = CliRunner().invoke(main, ["browser", "model", "versions", "expense-report"])
+
+    assert "no saved model" in result.output
+    assert f"store: {models.resolve()}" in result.output
