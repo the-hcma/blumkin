@@ -2586,9 +2586,9 @@ def browser() -> None:
     "--template",
     "template",
     type=click.Choice(sorted(TEMPLATES)),
-    default="teams-transcript",
-    show_default=True,
-    help="The built-in task template to start from.",
+    default=None,
+    help="The built-in task template to start from (default: the one named TASK when TASK is a "
+    "template name, otherwise teams-transcript).",
 )
 @click.option(
     "--yes", "yes", is_flag=True, help="Write the table to config.toml (never overwrites)."
@@ -2598,7 +2598,7 @@ def browser() -> None:
     "hosts",
     multiple=True,
     help="A host the task's pages may be on (repeatable); replaces the template's hosts. "
-    "Required for templates whose site differs per organization (expense-report).",
+    "Required for templates whose site differs per organization (expense-report, time-sheet).",
 )
 @click.option(
     "--upload-dir",
@@ -2618,7 +2618,7 @@ def browser() -> None:
 def browser_init_task(
     ctx: click.Context,
     task: str | None,
-    template: str,
+    template: str | None,
     yes: bool,
     hosts: tuple[str, ...],
     upload_dirs: tuple[str, ...],
@@ -2627,6 +2627,8 @@ def browser_init_task(
 ) -> None:
     """Create a task's browser profile and its starting policy from a built-in template."""
     as_json = _as_json(ctx, as_json_flag)
+    if template is None:
+        template = task if task in TEMPLATES else "teams-transcript"
     name = task or template
     try:
         payload = init_task(

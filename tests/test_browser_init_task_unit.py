@@ -14,9 +14,10 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
+from blumkin.browser.init_task import TEMPLATES, render_table
 from blumkin.browser.profiles import list_profiles
 from blumkin.cli import main
-from blumkin.config import load_browser_setup
+from blumkin.config import load_browser_setup, validate_browser_task_table
 from blumkin.exit_codes import EXIT_SUCCESS, EXIT_USAGE
 
 _BASE = '[profiles.default]\nclient_id = "abc-123"\n'
@@ -546,3 +547,124 @@ def test_a_form_url_with_a_password_and_a_lone_surrogate_is_refused_without_echo
     assert result.exit_code == EXIT_USAGE
     assert "hunter2" not in result.output
     assert "expense-report" not in (config / "config.toml").read_text()
+
+
+# --------------------------------------------------------------------------- time-sheet (#599)
+
+
+def test_the_time_sheet_template_needs_a_host(config: Path) -> None:
+    result = _run("--template", "time-sheet")
+
+    assert result.exit_code == EXIT_USAGE
+    assert "--host" in _payload(result)["message"]
+    assert list_profiles(config) == []
+
+
+def test_the_time_sheet_table_seeds_the_controls_and_refuses_clear_and_submit(
+    config: Path,
+) -> None:
+    result = _run(
+        "--template", "time-sheet", "--host", "erp.example.com",
+        "--form-url", "https://erp.example.com/timecards", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    policy = load_browser_setup().browser.tasks["time-sheet"]
+    assert policy.allowed_hosts == ("erp.example.com",)
+    assert policy.allowed_controls == ("Copy Previous Time Card", "Save")
+    assert policy.extra_deny_names == ("Clear Time Card",)
+    assert policy.form_url == "https://erp.example.com/timecards"
+    assert policy.upload_dirs == ()
+    assert [profile.task for profile in list_profiles(config)] == ["time-sheet"]
+
+
+def test_clear_time_card_is_refused_by_the_guard_the_template_configures(config: Path) -> None:
+    from blumkin.browser.guard import is_finalizing_name
+
+    _run("--template", "time-sheet", "--host", "erp.example.com", "--yes")
+    policy = load_browser_setup().browser.tasks["time-sheet"]
+
+    assert is_finalizing_name("Clear Time Card", policy.extra_deny_names)
+    assert not is_finalizing_name("Clear Time Card")
+    assert is_finalizing_name("Submit", policy.extra_deny_names)
+
+
+def test_the_time_sheet_template_takes_no_upload_folder(config: Path) -> None:
+    result = _run("--template", "time-sheet", "--host", "erp.example.com", "--upload-dir", "~/x")
+
+    assert result.exit_code == EXIT_USAGE
+    assert "--upload-dir" in _payload(result)["message"]
+
+
+def test_the_teams_template_still_takes_no_form_url(config: Path) -> None:
+    result = _run("--template", "teams-transcript", "--form-url", "https://teams.microsoft.com/x")
+
+    assert result.exit_code == EXIT_USAGE
+    assert "--form-url" in _payload(result)["message"]
+
+
+def test_a_task_named_like_a_template_uses_that_template_without_the_option(
+    config: Path,
+) -> None:
+    result = _run(
+        "time-sheet", "--host", "erp.example.com",
+        "--form-url", "https://erp.example.com/timecards", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _payload(result)["template"] == "time-sheet"
+    policy = load_browser_setup().browser.tasks["time-sheet"]
+    assert policy.allowed_controls == ("Copy Previous Time Card", "Save")
+    assert policy.extra_deny_names == ("Clear Time Card",)
+
+
+def test_a_task_name_that_is_not_a_template_still_defaults_to_teams_transcript(
+    config: Path,
+) -> None:
+    result = _run("weekly-sync", "--yes")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _payload(result)["template"] == "teams-transcript"
+
+
+def test_an_explicit_template_wins_over_a_task_named_like_another_template(config: Path) -> None:
+    result = _run("time-sheet", "--template", "teams-transcript")
+
+    assert _payload(result)["template"] == "teams-transcript"
+
+
+def test_the_guard_refuses_clear_time_card_even_when_it_is_also_declared() -> None:
+    from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError
+
+    class _NoPage:
+        def block_form_submission(self, *, background_writes: bool = False) -> None:
+            return None
+
+    guard = GuardedDriver(
+        _NoPage(),  # type: ignore[arg-type]
+        GuardPolicy(
+            allowed_controls=frozenset({"Clear Time Card", "Save"}),
+            extra_deny_names=TEMPLATES["time-sheet"].extra_deny_names,
+        ),
+    )
+
+    # Declared on purpose: the extra deny name must win over the allow list.
+    with pytest.raises(SubmitBlockedError, match="finalizing"):
+        guard.check_click("Clear Time Card")
+    guard.check_click("Save")
+
+
+@pytest.mark.parametrize("name", sorted(TEMPLATES))
+def test_every_templates_table_passes_the_real_config_validation(name: str) -> None:
+    table = render_table(name, TEMPLATES[name], hosts=("erp.example.com",))
+
+    parsed = tomllib.loads(table)
+    validate_browser_task_table(name, parsed["browser"]["tasks"][name])
+
+
+def test_the_next_steps_name_a_handoff_command_that_takes_its_required_step(config: Path) -> None:
+    for name in ("expense-report", "time-sheet"):
+        result = _run("--template", name, "--host", "erp.example.com")
+
+        handoffs = [step for step in _payload(result)["next_steps"] if "handoff" in step]
+        assert handoffs and all("--step" in step for step in handoffs)

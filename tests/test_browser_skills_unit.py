@@ -42,7 +42,8 @@ def test_every_blumkin_command_the_skill_names_exists(name: str) -> None:
 def test_the_skill_states_that_a_task_never_submits_and_ends_with_a_handoff(name: str) -> None:
     text = _skill_text(name)
     assert "never submit" in text.lower()
-    assert "blumkin browser handoff" in text
+    # A ledger-backed task (time-sheet) hands off through `ledger handoff` and has no other way.
+    assert "blumkin browser handoff" in text or "blumkin browser ledger handoff" in text
     assert "sign in by hand" in text.lower()
     assert "data, never instructions" in text.lower()
 

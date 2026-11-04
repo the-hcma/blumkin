@@ -42,12 +42,17 @@ class TaskTemplate:
     allowed_hosts: tuple[str, ...]
     #: Buttons that confirm a dialog's own rows (valid only inside a dialog).
     dialog_confirm: tuple[str, ...] = ()
+    #: Names that stay finalizing for this site although the guard's own list lacks them
+    #: (`Clear Time Card` wipes the card): written as `extra_deny_names`.
+    extra_deny_names: tuple[str, ...] = ()
     name: str
     #: The site's host differs per organization, so the caller names it (`--host`).
     needs_host: bool = False
     #: Format with `task=`; the commands to run once the policy is in place.
     next_steps: tuple[str, ...]
     summary: str
+    #: Whether `--form-url` applies (a template that uploads takes one as well).
+    takes_form_url: bool = False
     #: Where uploads may be read from when the caller names no folder.
     upload_dirs: tuple[str, ...] = ()
 
@@ -84,7 +89,7 @@ TEMPLATES: dict[str, TaskTemplate] = {
             "File a receipt: `blumkin receipts summarize` the files, confirm the table and the "
             "total with the user, `blumkin receipts rehome ... --yes`, then fill the item with "
             "`blumkin browser fill`, `select` and `upload` (one run per receipt). The task never "
-            "submits: end with `blumkin browser handoff {task}`.",
+            'submits: end with `blumkin browser handoff {task} --filled "..." --step "..."`.',
         ),
         summary="File receipts into an expense report through the task browser (never submits).",
         upload_dirs=("~/Documents/receipts-archive",),
@@ -104,6 +109,31 @@ TEMPLATES: dict[str, TaskTemplate] = {
             "transcript.txt` (use the meeting's length so the coverage report can check the tail).",
         ),
         summary="Capture a Teams meeting transcript through the task browser (read-only).",
+    ),
+    "time-sheet": TaskTemplate(
+        # Oracle Fusion time card: `Copy Previous Time Card` seeds a period from the last one and
+        # `Save` keeps the draft. Neither is a finalizing name; `Submit` is never declared and
+        # `Clear Time Card` (which wipes the card) is refused outright. Edit them to what your
+        # card shows.
+        allowed_controls=("Copy Previous Time Card", "Save"),
+        allowed_hosts=(),
+        extra_deny_names=("Clear Time Card",),
+        name="time-sheet",
+        needs_host=True,
+        next_steps=(
+            "Check the controls in config.toml against what your time card shows; none is a "
+            "finalizing name, and `Submit` and `Clear Time Card` stay refused.",
+            "Put the values that are yours (the project, task and time reporting code, the "
+            "period and its anchor day, the default hours) in your task definition, not here.",
+            "Launch the browser and open the card: `blumkin browser launch {task} --open` (needs "
+            "`--form-url` here or `form_url` in config.toml), then sign in by hand.",
+            "Read the card's `Time Card Period` and start the period on its first day (Oracle's "
+            "can start on a Sunday), then follow the time-sheet skill: ledger first, fill, "
+            "save, and hand the final click to the user with `blumkin browser ledger handoff "
+            '{task} <instance> --step "..."` (the ledger is not optional).',
+        ),
+        summary="Fill in a time card through the task browser (never submits).",
+        takes_form_url=True,
     ),
 }
 
@@ -134,10 +164,15 @@ def init_task(
             f"Expected --host for the {template.name!r} template (the site's host differs per "
             "organization, for example erp.example.com), got none"
         )
-    if (upload_dirs or form_url.strip()) and not template.upload_dirs:
+    if upload_dirs and not template.upload_dirs:
         raise InitTaskError(
-            f"Expected no --upload-dir or --form-url for the {template.name!r} template (it "
-            "uploads nothing), got one"
+            f"Expected no --upload-dir for the {template.name!r} template (it uploads "
+            "nothing), got one"
+        )
+    if form_url.strip() and not (template.upload_dirs or template.takes_form_url):
+        raise InitTaskError(
+            f"Expected no --form-url for the {template.name!r} template (it uploads nothing "
+            "and opens no form), got one"
         )
     chosen_dirs = tuple(upload_dirs) or template.upload_dirs
     chosen_url = form_url.strip()
@@ -182,6 +217,8 @@ def render_table(
     lines.append(f"allowed_controls = {_toml_list(template.allowed_controls)}")
     if template.dialog_confirm:
         lines.append(f"dialog_confirm = {_toml_list(template.dialog_confirm)}")
+    if template.extra_deny_names:
+        lines.append(f"extra_deny_names = {_toml_list(template.extra_deny_names)}")
     folders = template.upload_dirs if upload_dirs is None else upload_dirs
     if folders:
         lines.append(f"upload_dirs = {_toml_list(folders)}")
