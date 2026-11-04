@@ -352,8 +352,8 @@ values and addresses removed) and lists its controls and whether each is disable
 inside is clicked. Each control must be declared in `allowed_controls` and a finalizing name
 is refused, as for `browser click`; give a role as `ROLE:NAME` when a name exists in more than
 one (a menu item and a button called `Apply`). A menu item is never covered by a `*` pattern.
-Every control is vetted before the first click, and a dialog already open is refused, not
-touched. It is always closed afterwards, even when a step or the read failed: with the declared
+Every control is vetted before the first click, and any dialog already open is refused, not
+touched; `--close` is used only if the dialog that was read shows that control. It is always closed afterwards, even when a step or the read failed: with the declared
 `--close` control if given, otherwise with Escape (neither is used when nothing opened).
 `closed` is false when it could not be closed (look at the page before going on). The text is
 page content, marked untrusted.

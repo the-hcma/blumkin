@@ -3299,22 +3299,117 @@ def test_dialog_refuses_to_start_when_one_is_already_open(raw: _Raw, _config_dir
     assert not [call for call in raw.calls if call[0] in ("click", "dismiss")]
 
 
-def test_dialog_failure_says_whether_the_dialog_is_still_open(raw: _Raw, _config_dir: Path) -> None:
+def test_dialog_failure_closes_an_overlay_the_read_did_not_match(
+    raw: _Raw, _config_dir: Path
+) -> None:
     _policy(_config_dir, 'allowed_controls = ["Apply"]')
-    _dialog_page(raw, closes_on="never")
-    raw.on_event = lambda name: setattr(raw, "aria_text", _DIALOG_OPEN) if name == "Apply" else None
-    raw.aria_text = _DIALOG_CLOSED
+    _dialog_page(raw)
 
-    def open_then_fail(name: str) -> None:
-        raw.aria_text = _DIALOG_OPEN
-
-    raw.on_event = open_then_fail
     result = _run(
-        "browser", "dialog", "expense-report", "--open", "Apply", "--within", "dialog:Other"
+        "browser",
+        "dialog",
+        "expense-report",
+        "--open",
+        "Apply",
+        "--within",
+        "dialog:Other",
+        "--wait",
+        "0",
     )
 
     assert result.exit_code == EXIT_OTHER
-    assert "the dialog:Other is closed" in _json(result)["message"]
+    assert "the dialog is closed" in _json(result)["message"]
+    assert ("dismiss",) in raw.calls and raw.aria_text == _DIALOG_CLOSED
+
+
+def test_dialog_refuses_when_another_dialog_is_open_whatever_its_name(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Apply"]')
+    raw.aria_text = '- dialog "Edit item":\n  - button "Save"\n'
+
+    result = _run(
+        "browser",
+        "dialog",
+        "expense-report",
+        "--open",
+        "Apply",
+        "--within",
+        "dialog:Apply Template",
+    )
+
+    assert result.exit_code == EXIT_OTHER
+    assert not [call for call in raw.calls if call[0] in ("click", "dismiss")]
+
+
+def test_dialog_uses_a_close_control_only_when_the_overlay_shows_it(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Apply", "Back"]')
+    _dialog_page(raw, closes_on="")
+
+    payload = _json(
+        _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Back")
+    )
+
+    assert payload["closed_with"] == "escape"
+    assert [call[2] for call in raw.calls if call[0] == "click"] == ["Apply"]
+
+
+def test_dialog_stops_and_presses_nothing_when_an_opener_leaves_the_allowed_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(
+        _config_dir, 'allowed_controls = ["Apply", "Cancel"]\nallowed_hosts = ["erp.example.com"]'
+    )
+    _dialog_page(raw)
+    raw.lands_on = "https://evil.example.net/landing"
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "host_blocked"
+    assert [call[2] for call in raw.calls if call[0] == "click"] == ["Apply"]
+    assert ("dismiss",) not in raw.calls
+
+
+def test_dialog_closes_the_overlay_even_when_the_run_is_interrupted(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import dialog_task
+    from blumkin.cli import load_browser_setup
+
+    _policy(_config_dir, 'allowed_controls = ["Apply"]')
+    _dialog_page(raw)
+    opened = raw.on_event
+
+    def interrupt(name: str) -> None:
+        assert opened is not None
+        opened(name)
+        if name == "Apply":
+            raise KeyboardInterrupt
+
+    raw.on_event = interrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        dialog_task(load_browser_setup(), "expense-report", [("Apply", None)], wait_s=0)
+
+    assert ("dismiss",) in raw.calls and raw.aria_text == _DIALOG_CLOSED
+
+
+def test_dialog_undoes_a_doubled_apostrophe_in_a_quoted_name(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Apply"]')
+    _dialog_page(raw)
+    snapshot = "- dialog \"Apply Template\":\n  - 'button \"Manager''s: weekly\"'\n"
+    raw.on_event = lambda name: setattr(
+        raw, "aria_text", snapshot if name == "Apply" else _DIALOG_CLOSED
+    )
+
+    payload = _json(_run("browser", "dialog", "expense-report", "--open", "Apply"))
+
+    assert payload["controls"] == [
+        {"disabled": False, "name": "Manager's: weekly", "role": "button"}
+    ]
 
 
 def test_dialog_text_mode_shows_the_injection_banner_and_extra_matches(

@@ -78,11 +78,13 @@ _ARIA_FIELD_VALUE = re.compile(
 
 
 _DIALOG_CONTROL = re.compile(
-    r"^\s*- '?(?P<role>" + "|".join(sorted(CLICKABLE_ROLES)) + r")"
+    r"^\s*- (?P<quoted>')?(?P<role>" + "|".join(sorted(CLICKABLE_ROLES)) + r")"
     r' "(?P<name>(?:[^"\\]|\\.)*)"(?P<rest>.*)$'
 )
+_DIALOG_BLOCKERS = ("alertdialog", "dialog")
 _DIALOG_POLL_MS = 250
 _DIALOG_POLLS = 8
+_OVERLAY_ROLES = ("alertdialog", "dialog", "menu")
 _DOWNLOAD_EXTENSIONS = frozenset({".csv", ".md", ".srt", ".txt", ".vtt"})
 _DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
 _DOWNLOAD_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ ()-]{0,119}")
@@ -247,33 +249,43 @@ def dialog_task(
     for name, _ in controls:
         _require_declared_controls(config, task, name)
 
+    hosts = _declared_hosts(config, task)
+
     def act(driver: GuardedDriver) -> dict[str, Any]:
         # Every control is vetted before the first click, so a refused one leaves the page as
-        # it was, and a dialog the user already has open is never ours to close.
+        # it was, and an overlay the user already has open is never ours to touch.
         for name, role in controls:
             driver.check_click(name, role)
-        if _dialog_present(driver, scope_role, scope_name):
+        if _overlay_count(driver, (*_DIALOG_BLOCKERS, scope_role)):
             raise BrowserActionError(
-                f"Expected no open {within} before opening one, got one already; "
+                "Expected no dialog open before opening one, got one already; "
                 "close or finish it first"
             )
+        baseline = _overlay_count(driver, (*_OVERLAY_ROLES, scope_role))
         opened: list[str] = []
-        failure: Exception | None = None
+        failure: BaseException | None = None
         text, matches = "", 0
         warning: dict[str, Any] | None = None
         try:
             for name, role in steps:
                 opened.append(driver.click(name, role, _default_wait(role)))
+                _require_allowed_page(driver, task, hosts, f"opening {name!r}")
             text, matches, warning = _dialog_read(
                 driver, scope_role, scope_name, wait_s, expand_options
             )
-        except Exception as exc:  # noqa: BLE001 - closed first, then raised unchanged
+        except BaseException as exc:  # noqa: BLE001 - closed first (Ctrl-C too), then raised
             failure = exc
-        closed, via = _dialog_close(driver, scope_role, scope_name, close)
+        if _on_allowed_page(driver, hosts):
+            closed, via = _dialog_close(
+                driver, (*_OVERLAY_ROLES, scope_role), baseline, close, _dialog_controls(text)
+            )
+        else:
+            # Nothing is pressed on a page outside the task's hosts.
+            closed, via = False, None
         if failure is not None:
             if isinstance(failure, BrowserActionError):
                 state = "closed" if closed else "still open: look at the page before going on"
-                failure.args = (f"{failure}; the {within} is {state}",)
+                failure.args = (f"{failure}; the dialog is {state}",)
             raise failure
         shown, truncated, _ = window(text, 0, MAX_READ_CHARS)
         return {
@@ -1250,6 +1262,12 @@ def _clean_download_name(suggested: str) -> str:
     return f"{stem or 'download'}{extension}" if extension else stem
 
 
+def _dialog_name(match: re.Match[str]) -> str:
+    """A control's accessible name from its line: unescaped, with YAML's doubled quotes undone."""
+    name = re.sub(r"\\(.)", r"\1", match.group("name"))
+    return name.replace("''", "'") if match.group("quoted") else name
+
+
 def _dialog_controls(text: str) -> list[dict[str, Any]]:
     """The pressable controls of a scoped ARIA snapshot, with whether each is disabled."""
     found: list[dict[str, Any]] = []
@@ -1259,7 +1277,7 @@ def _dialog_controls(text: str) -> list[dict[str, Any]]:
             found.append(
                 {
                     "disabled": "[disabled]" in match.group("rest"),
-                    "name": _one_line(re.sub(r"\\(.)", r"\1", match.group("name"))),
+                    "name": _one_line(_dialog_name(match)),
                     "role": match.group("role"),
                 }
             )
@@ -1267,48 +1285,47 @@ def _dialog_controls(text: str) -> list[dict[str, Any]]:
 
 
 def _dialog_close(
-    driver: GuardedDriver, role: str, name: str | None, close: tuple[str, str | None] | None
+    driver: GuardedDriver,
+    roles: Sequence[str],
+    baseline: int,
+    close: tuple[str, str | None] | None,
+    shown: Sequence[dict[str, Any]],
 ) -> tuple[bool, str | None]:
     """Close what a dialog read opened, without raising; whether it is gone and how.
 
-    Nothing is clicked or pressed unless the scope is still on the page, so a declared close
-    control (a page-level `Cancel`) is never pressed when nothing opened. The declared
-    control goes first, then Escape.
+    Nothing is clicked or pressed once the page is back to `baseline` overlays, so a declared
+    close control (a page-level `Cancel`) is never pressed when nothing opened. The control
+    is used only when it is one of the `shown` controls of the overlay that was read, never
+    one that merely shares its name elsewhere on the page; otherwise, or when it did not
+    work, Escape closes it.
     """
     via: str | None = None
     try:
-        if close is not None and not _dialog_gone(driver, role, name):
+        if (
+            close is not None
+            and _overlay_count(driver, roles) > baseline
+            and any(item["name"] == close[0] and close[1] in (None, item["role"]) for item in shown)
+        ):
             driver.click(close[0], close[1], _default_wait(close[1]))
             via = "control"
     except Exception:  # noqa: BLE001 - closing must not hide what went wrong first
         _LOGGER.info("browser dialog: the declared close control did not work")
     try:
-        if not _dialog_gone(driver, role, name):
+        if not _dialog_gone(driver, roles, baseline):
             driver.dismiss()
             via = "escape"
-        return _dialog_gone(driver, role, name), via
+        return _dialog_gone(driver, roles, baseline), via
     except Exception:  # noqa: BLE001 - see above
         return False, via
 
 
-def _dialog_gone(driver: GuardedDriver, role: str, name: str | None) -> bool:
-    """Whether no node of the scope is on the page (polled for about two seconds)."""
+def _dialog_gone(driver: GuardedDriver, roles: Sequence[str], baseline: int) -> bool:
+    """Whether the page is back to `baseline` overlays (polled for about two seconds)."""
     for _ in range(_DIALOG_POLLS):
-        try:
-            scope(driver.aria_snapshot(), role, name)
-        except LookupError:
+        if _overlay_count(driver, roles) <= baseline:
             return True
         driver.wait_ms(_DIALOG_POLL_MS)
     return False
-
-
-def _dialog_present(driver: GuardedDriver, role: str, name: str | None) -> bool:
-    """Whether a node of the scope is on the page right now (one look, no waiting)."""
-    try:
-        scope(driver.aria_snapshot(), role, name)
-    except LookupError:
-        return False
-    return True
 
 
 def _dialog_read(
@@ -1410,6 +1427,26 @@ def _one_line(text: str) -> str:
     """One short printable line: no control or bidirectional characters, whitespace collapsed."""
     stripped = re.sub("[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]", "", text)
     return " ".join(sanitize_terminal(stripped).split())[:MAX_TITLE_CHARS]
+
+
+def _on_allowed_page(driver: GuardedDriver, hosts: Sequence[str]) -> bool:
+    """Whether the page is on one of `hosts` over http(s) (always, with none declared)."""
+    if not hosts:
+        return True
+    parts = urlsplit(driver.url)
+    return parts.scheme in ("http", "https") and host_allowed(parts.hostname or "", hosts)
+
+
+def _overlay_count(driver: GuardedDriver, roles: Sequence[str]) -> int:
+    """How many nodes of any of `roles` (whatever their names) the page shows now."""
+    snapshot = driver.aria_snapshot()
+    total = 0
+    for role in sorted(set(roles)):
+        try:
+            total += scope(snapshot, role, None)[1]
+        except LookupError:
+            continue
+    return total
 
 
 def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
