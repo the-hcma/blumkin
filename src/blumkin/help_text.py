@@ -1081,11 +1081,17 @@ Code, then the scrolling ones). With no VALUE the cell is only read: nothing is 
 With a VALUE it is selected and typed in; a list-of-values cell (a project, a time reporting
 code) shows a dropdown, and the one option that matches is clicked, any other cell is committed
 with Tab. An empty VALUE ("") clears the cell, and a value is at most 80 printable characters.
-Enter is never pressed, so nothing is submitted, and the keys go only to the grid: if focus is
-not inside it after the click, nothing is typed. The cell is vetted like a click on that
-element (a submit control, a form action or a script link is refused) and the page must be on
-an allowed host. `--grid N` picks the Nth data grid on the page. The text that comes back is
-what the cell shows afterwards, page text, untrusted: check it against what you meant to enter.
+Enter is never pressed, so nothing is submitted. Nothing is clicked if a control (a button, a
+link, a checkbox) or a cover sits at the click point of the cell, and keys go only to the cell
+or an editor inside the grid: the first key is typed alone, and the rest only once it has
+opened an editor, so a space can never reach a focused button. The cell is vetted like a click
+on that element (a submit control, a form action or a script link is refused) and the page
+must be on an allowed host. A value is checked after the commit: if an editor is still open the
+edit is cancelled and the command fails. A number is always a position, so a header whose text
+is only digits cannot be named by it. Rows and columns count what the grid has drawn, and a
+grid inside a frame is not supported. `--grid N` picks the Nth data grid on the page. The text
+that comes back is what the cell shows afterwards, page text, untrusted: check it against what
+you meant to enter.
 """
 
 BROWSER_GRID_EPILOG = """

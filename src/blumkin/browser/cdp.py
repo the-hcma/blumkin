@@ -595,36 +595,18 @@ class PlaywrightDriver:
 
         The cell is found by row and column (see `_CELL_JS`) and inspected by `vet` as the very
         element that is clicked. With no `value` nothing is clicked or typed, so a read cannot
-        change the cell's mode. With one, the keys go only to the grid: if focus is not inside
-        the data grid after the click, nothing is typed. Enter, which could submit a form, is
-        never pressed. The cell is read again afterwards.
+        change the cell's mode. With one, nothing is clicked if a control sits at the click
+        point, and keys go only where an editor (or the cell itself) has focus inside the data
+        grid. Enter, which could submit a form, is never pressed. The cell is read again
+        afterwards.
         """
         self._require_open()
         try:
             handle, meta = self._find_cell(row, column, grid)
             vet(self._describe(handle))
             if value is not None:
-                handle.scroll_into_view_if_needed(timeout=self._timeout_ms)
-                handle.click(timeout=self._timeout_ms)
-                # Asked of the page, not of the clicked element: selecting a cell can make JET
-                # draw it again, which leaves that element detached.
-                held = self._page.evaluate(
-                    "n => { const g = document.querySelectorAll('oj-data-grid')[n - 1];"
-                    " return !!g && g.contains(document.activeElement); }",
-                    grid,
-                )
-                if not held:
-                    raise BrowserActionError(
-                        "Expected focus to stay in the data grid after selecting the cell, "
-                        "got focus elsewhere; nothing was typed"
-                    )
-                if value:
-                    self._page.keyboard.type(value)
-                    self._commit_typed_cell(value)
-                else:
-                    self._page.keyboard.press("Delete")
-                    self._page.keyboard.press("Tab")
-                handle, meta = self._find_cell(row, column, grid)
+                self._write_cell(handle, value, grid)
+                handle, meta = self._read_cell_after_edit(row, column, grid)
             text = str(handle.evaluate(_CELL_TEXT_JS))
         except _playwright_error() as exc:
             raise self._action_error(
@@ -640,59 +622,6 @@ class PlaywrightDriver:
             rows=int(meta["rows"]),
             text=text,
         )
-
-    def _commit_typed_cell(self, value: str) -> None:
-        """Commit typed text: pick the matching option of a search-select, else press Tab.
-
-        A list-of-values cell (a project, a time reporting code) opens a dropdown of matches
-        while the text is typed and keeps the typed text uncommitted until an option is chosen,
-        and Tab alone does not choose one. The options load a moment after the typing, so they
-        are waited for; the one option whose text equals the typed text (or, failing that, the
-        only one that starts with it) is clicked, and anything else is refused with the options
-        listed, leaving the editor open for the next command or the user. A plain cell (hours)
-        shows no dropdown and is committed with Tab. Enter is never pressed.
-        """
-        drop = self._page.locator(".oj-listbox-drop:visible").first
-        try:
-            drop.wait_for(state="visible", timeout=_CELL_DROP_WAIT_MS)
-        except _playwright_error():
-            self._page.keyboard.press("Tab")
-            return
-        wanted = _option_key(value)
-        texts: list[str] = []
-        rows = drop.locator("li[role=row]")
-        for _ in range(_CELL_OPTION_POLLS):
-            # Each option keeps its position among all the rows, so the one chosen is the one
-            # clicked: a text filter would take the first row that merely contains it.
-            listed = [(i, t.strip()) for i, t in enumerate(rows.all_inner_texts()) if t.strip()]
-            texts = [t for _, t in listed]
-            keys = [_option_key(t) for t in texts]
-            exact = [i for i, k in enumerate(keys) if k == wanted]
-            starts = [i for i, k in enumerate(keys) if k.startswith(wanted)]
-            chosen = (
-                exact if len(exact) == 1 else (starts if not exact and len(starts) == 1 else [])
-            )
-            if chosen:
-                rows.nth(listed[chosen[0]][0]).click(timeout=self._timeout_ms)
-                return
-            if texts and len(exact) > 1:
-                break
-            self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
-        shown = "; ".join(repr(t[:60]) for t in texts[:5]) or "none"
-        raise BrowserActionError(
-            f"Expected one dropdown option matching {value!r}, got {len(texts)}: {shown}"
-        )
-
-    def _find_cell(self, row: str, column: str, grid: int) -> tuple[Any, dict[str, Any]]:
-        """The cell element at `row` and `column` of the `grid`-th data grid, and its position."""
-        found = self._page.evaluate_handle(_CELL_JS, {"column": column, "grid": grid, "row": row})
-        error = found.evaluate("o => o.error || ''")
-        if error:
-            raise BrowserActionError(str(error))
-        element = found.get_property("element").as_element()
-        if element is None:
-            raise BrowserActionError(f"Expected a cell at row {row!r}, column {column!r}, got none")
-        return element, dict(found.evaluate("o => o.meta"))
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:
         """Fill one field and return the value it holds afterwards (None when not readable).
@@ -1286,6 +1215,134 @@ class PlaywrightDriver:
             self._page.wait_for_timeout(milliseconds)
         except _playwright_error() as exc:
             raise self._action_error("wait for the page", exc) from exc
+
+    def _cell_focus(self, grid: int) -> str:
+        """Where focus is: `cell`, `editor`, `other` (a control inside the grid) or `outside`."""
+        return str(self._page.evaluate(_CELL_FOCUS_JS, grid))
+
+    def _commit_typed_cell(self, value: str) -> None:
+        """Commit typed text: pick the matching option of a search-select, else press Tab.
+
+        A list-of-values cell (a project, a time reporting code) opens a dropdown of matches
+        while the text is typed and keeps the typed text uncommitted until an option is chosen,
+        and Tab alone does not choose one. The options load a moment after the typing, so they
+        are waited for, and the same list must be seen twice before anything is clicked. The
+        one option whose text equals the typed text (or, failing that, the only one that starts
+        with it) is clicked, by its position and only if it still reads the same; anything
+        else is refused with the options listed, leaving the editor open. Two visible lists are
+        refused too, since the options could belong to another widget. A plain cell (hours)
+        shows no dropdown and is committed with Tab, and so is a value with nothing to match on
+        (only punctuation). Enter is never pressed.
+        """
+        wanted = _option_key(value)
+        drops = self._page.locator(".oj-listbox-drop:visible")
+        if wanted:
+            try:
+                drops.first.wait_for(state="visible", timeout=_CELL_DROP_WAIT_MS)
+            except _playwright_error():
+                wanted = ""
+        if not wanted:
+            self._page.keyboard.press("Tab")
+            return
+        if int(drops.count()) > 1:
+            raise BrowserActionError(
+                f"Expected one dropdown list for the cell, got {int(drops.count())} on the page"
+            )
+        rows = drops.first.locator("li[role=row]")
+        previous: list[str] | None = None
+        texts: list[str] = []
+        for _ in range(_CELL_OPTION_POLLS):
+            listed = [(i, t.strip()) for i, t in enumerate(rows.all_inner_texts()) if t.strip()]
+            texts = [t for _, t in listed]
+            keys = [_option_key(t) for t in texts]
+            exact = [i for i, k in enumerate(keys) if k == wanted]
+            starts = [i for i, k in enumerate(keys) if k.startswith(wanted)]
+            chosen = (
+                exact if len(exact) == 1 else (starts if not exact and len(starts) == 1 else [])
+            )
+            if chosen and texts == previous:
+                index, text = listed[chosen[0]]
+                if rows.nth(index).inner_text(timeout=self._timeout_ms).strip() == text:
+                    rows.nth(index).click(timeout=self._timeout_ms)
+                    return
+            if texts and len(exact) > 1:
+                break
+            previous = texts
+            self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
+        shown = "; ".join(repr(_printable(t)[:60]) for t in texts[:5]) or "none"
+        raise BrowserActionError(
+            f"Expected one dropdown option matching {value!r}, got {len(texts)}: {shown}"
+        )
+
+    def _editor_open(self, grid: int) -> bool:
+        """Whether a text editor is still open in the grid, after a commit had time to land."""
+        for _ in range(_CELL_COMMIT_POLLS):
+            if not self._page.evaluate(_CELL_EDITING_JS, grid):
+                return False
+            self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
+        return True
+
+    def _find_cell(self, row: str, column: str, grid: int) -> tuple[Any, dict[str, Any]]:
+        """The cell element at `row` and `column` of the `grid`-th data grid, and its position."""
+        found = self._page.evaluate_handle(_CELL_JS, {"column": column, "grid": grid, "row": row})
+        error = found.evaluate("o => o.error || ''")
+        if error:
+            raise BrowserActionError(str(error))
+        element = found.get_property("element").as_element()
+        if element is None:
+            raise BrowserActionError(f"Expected a cell at row {row!r}, column {column!r}, got none")
+        return element, dict(found.evaluate("o => o.meta"))
+
+    def _read_cell_after_edit(self, row: str, column: str, grid: int) -> tuple[Any, dict[str, Any]]:
+        """Find the cell again after an edit; if that fails, say that the edit was made."""
+        try:
+            return self._find_cell(row, column, grid)
+        except BrowserActionError as exc:
+            raise BrowserActionError(
+                f"{exc}; the edit itself was made, so check the cell before editing it again"
+            ) from exc
+
+    def _write_cell(self, handle: Any, value: str, grid: int) -> None:
+        """Select the cell, type `value` into its editor and commit; clear it when empty.
+
+        Nothing is clicked if a control (a button, a link, a checkbox) is what the click would
+        hit inside the cell, or if something else covers it. Typing starts only when the cell
+        itself or an editor has focus inside the data grid, and the rest of the value only
+        after the first key has opened an editor, so a space can never reach a focused button.
+        """
+        handle.scroll_into_view_if_needed(timeout=self._timeout_ms)
+        target = str(handle.evaluate(_CELL_CLICK_TARGET_JS))
+        if target != "ok":
+            raise BrowserActionError(
+                f"Expected the click on the cell to hit the cell itself, got {target}; "
+                "nothing was clicked"
+            )
+        handle.click(timeout=self._timeout_ms)
+        focus = self._cell_focus(grid)
+        if focus not in ("cell", "editor"):
+            raise BrowserActionError(
+                f"Expected focus on the cell or its editor inside the data grid, got {focus}; "
+                "nothing was typed"
+            )
+        if not value:
+            self._page.keyboard.press("Delete")
+            self._page.keyboard.press("Tab")
+            return
+        self._page.keyboard.type(value[0])
+        if self._cell_focus(grid) != "editor":
+            raise BrowserActionError(
+                "Expected typing to open an editor inside the data grid, got none; "
+                "the rest of the value was not typed"
+            )
+        if len(value) > 1:
+            self._page.keyboard.type(value[1:])
+        self._commit_typed_cell(value)
+        if self._editor_open(grid):
+            self._page.keyboard.press("Escape")
+            raise BrowserActionError(
+                "Expected the cell to be committed, got an editor still open; "
+                "the edit was cancelled"
+            )
 
     def _describe(self, handle: Any) -> ControlInfo:
         raw = handle.evaluate(_DESCRIBE_CONTROL_JS)
@@ -2182,29 +2239,47 @@ _PICK_ACCOUNT_JS = r"""(args) => {
   return ['ok', tiles[0], 1, seen];
 }"""
 
+#: What would take the click on a cell: `ok` when the point at its centre is the cell itself or
+#: plain content inside it, else what is there (a control inside the cell, something covering it).
+_CELL_CLICK_TARGET_JS = """
+(el) => {
+  const box = el.getBoundingClientRect();
+  const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+  if (!hit) return 'nothing at the click point';
+  if (!el.contains(hit)) return 'another element on top of the cell';
+  const control = hit.closest(
+    'button, a, [role=button], [role=link], [role=menuitem], [role=checkbox], [role=radio],'
+    + ' input[type=button], input[type=submit], input[type=image], input[type=reset],'
+    + ' input[type=checkbox], input[type=radio]');
+  return control && el.contains(control) ? 'a control inside the cell' : 'ok';
+}
+"""
+
 #: How long a typed cell value waits for a dropdown to appear before it is committed as plain text.
 _CELL_DROP_WAIT_MS = 1500
-#: How often and how long the options of a typed cell value are polled while they load.
-_CELL_OPTION_POLL_MS = 500
-_CELL_OPTION_POLLS = 16
 
+#: Whether a visible text editor is open inside the `grid`-th data grid.
+_CELL_EDITING_JS = """
+(n) => {
+  const g = document.querySelectorAll('oj-data-grid')[n - 1];
+  if (!g) return false;
+  return [...g.querySelectorAll('input, textarea, [contenteditable=true]')].some((e) =>
+    e.offsetParent && !/^(button|submit|checkbox|radio|image|reset|hidden)$/.test(e.type || ''));
+}
+"""
 
-def _option_key(text: str) -> str:
-    """A dropdown option or typed value in the form they are compared in."""
-    return re.sub(r"[^a-z0-9]+", "", text.lower())
-
-
-#: What a cell shows: the value of its editor while it is being edited, else its text without
-#: the screen-reader-only status JET keeps inside an edited cell ("1 matches found"), which is
-#: not part of the value.
-_CELL_TEXT_JS = """
-(el) => {
-  const editor = el.querySelector('input');
-  if (editor && editor.value) return editor.value.replace(/\\s+/g, ' ').trim();
-  const copy = el.cloneNode(true);
-  copy.querySelectorAll('.oj-helper-hidden-accessible, [aria-live], [role=status]')
-    .forEach((n) => n.remove());
-  return (copy.textContent || '').replace(/\\s+/g, ' ').trim();
+#: Where focus is, for the `grid`-th data grid: `cell`, `editor`, `other` (a control inside the
+#: grid) or `outside`.
+_CELL_FOCUS_JS = """
+(n) => {
+  const g = document.querySelectorAll('oj-data-grid')[n - 1];
+  const a = document.activeElement;
+  if (!g || !a || !g.contains(a)) return 'outside';
+  const editable = 'input:not([type=button]):not([type=submit]):not([type=checkbox])'
+    + ':not([type=radio]):not([type=image]):not([type=reset]):not([type=hidden]), textarea,'
+    + ' [contenteditable=true]';
+  if (a.matches(editable)) return 'editor';
+  return a.classList.contains('oj-datagrid-cell') ? 'cell' : 'other';
 }
 """
 
@@ -2276,6 +2351,26 @@ _CELL_JS = r"""
     meta: {column: c.index + 1, columnLabel: columns[c.index], columns: columns.length,
            row: r.index + 1, rowLabel: rowHeads[r.index], rows: rowHeads.length},
   };
+}
+"""
+
+#: How often and how long a commit is waited for, and how often the options of a typed cell value
+#: are polled while they load.
+_CELL_COMMIT_POLLS = 4
+_CELL_OPTION_POLL_MS = 500
+_CELL_OPTION_POLLS = 16
+
+#: What a cell shows: the value of its editor while it is being edited, else its text without
+#: the screen-reader-only status JET keeps inside an edited cell ("1 matches found"), which is
+#: not part of the value.
+_CELL_TEXT_JS = """
+(el) => {
+  const editor = el.querySelector('input:not([type=hidden]):not([type=password])');
+  if (editor && editor.value) return editor.value.replace(/\\s+/g, ' ').trim();
+  const copy = el.cloneNode(true);
+  copy.querySelectorAll('.oj-helper-hidden-accessible, [aria-live], [role=status]')
+    .forEach((n) => n.remove());
+  return (copy.textContent || '').replace(/\\s+/g, ' ').trim();
 }
 """
 
@@ -2567,6 +2662,16 @@ def _clean(text: str, limit: int) -> str:
     """Page-supplied text as one printable line of at most `limit` characters."""
     printable = "".join(char if char.isprintable() else " " for char in text)
     return " ".join(printable.split())[:limit]
+
+
+def _option_key(text: str) -> str:
+    """A dropdown option or typed value in the form they are compared in."""
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def _printable(text: str) -> str:
+    """`text` without its control, bidirectional and other unprintable characters."""
+    return "".join(ch for ch in text if ch.isprintable())
 
 
 def _playwright_error() -> type[Exception]:
