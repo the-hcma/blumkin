@@ -14,6 +14,7 @@ import re
 import shlex
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -50,6 +51,9 @@ def explore_click(
     """Follow or press one control under the exploration rules; see `Explorer.click`."""
     hosts, extra_deny = explore_policy(config, task)
     profile = require_profile(config.config_dir, task)
+    # A step is recorded after the click, so a models folder that would be refused must be
+    # found out before the browser is touched, not after a state-changing click.
+    store = resolve_store(config) if page_id is not None else None
     confirmer = TerminalConfirmer()
     decision = decide_click(role, name, extra_deny=extra_deny)
     with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
@@ -60,7 +64,12 @@ def explore_click(
     outcome = explorer.last_outcome
     unavailable = bool(getattr(confirmer, "unavailable", False))
     timed_out = bool(getattr(confirmer, "timed_out", False))
-    recorded = clicked and page_id is not None and _record_step(config, task, page_id, role, name)
+    recorded = (
+        clicked
+        and page_id is not None
+        and store is not None
+        and _record_step(store, task, page_id, role, name)
+    )
     return {
         "clicked": clicked,
         "decision": decision.value,
@@ -249,7 +258,7 @@ def _describe(draft: SiteModel) -> str:
     return f"The draft has {len(draft.pages)} page(s) and {controls} control(s)."
 
 
-def _record_step(config: BrowserSetup, task: str, page_id: str, role: str, name: str) -> bool:
+def _record_step(store: Path, task: str, page_id: str, role: str, name: str) -> bool:
     recorded: list[bool] = []
 
     def change(current: SiteModel | None) -> SiteModel | None:
@@ -263,7 +272,7 @@ def _record_step(config: BrowserSetup, task: str, page_id: str, role: str, name:
         recorded.append(True)
         return _to_model(draft)
 
-    update_draft(resolve_store(config), task, change)
+    update_draft(store, task, change)
     return bool(recorded)
 
 

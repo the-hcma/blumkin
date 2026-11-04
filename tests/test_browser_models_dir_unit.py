@@ -354,3 +354,30 @@ def test_a_refused_location_stops_the_loop_instead_of_using_the_default_store(
 
     with pytest.raises(SiteModelError):
         _models_store()
+
+
+def test_the_config_directory_is_refused_in_any_letter_case(tmp_path: Path) -> None:
+    (tmp_path / "Config").mkdir()
+    setup = BrowserSetup(
+        browser=BrowserConfig(models_dir=str(tmp_path / "CONFIG")), config_dir=tmp_path / "Config"
+    )
+
+    with pytest.raises(SiteModelError, match="apart from the config"):
+        resolve_store(setup)
+
+
+def test_a_refused_location_stops_explore_click_before_the_browser_is_touched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import explore_commands
+
+    setup = _setup(tmp_path, str(tmp_path / "config"), allowed_hosts=("erp.example.com",))
+    monkeypatch.setattr(explore_commands, "require_profile", lambda *a, **k: object())
+
+    def attached(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the browser must not be attached")
+
+    monkeypatch.setattr(explore_commands, "attach_exploring", attached)
+
+    with pytest.raises(SiteModelError):
+        explore_commands.explore_click(setup, "expense-report", "Add", page_id="list", role="link")

@@ -215,7 +215,8 @@ def resolve_store(config: BrowserSetup) -> Path:
                     "download_dirs folder (not inside one, not around one), got an overlap"
                 )
     state = config.config_dir.resolve()
-    if where == state or state.is_relative_to(where):
+    folded_where, folded_state = Path(str(where).casefold()), Path(str(state).casefold())
+    if folded_where == folded_state or folded_state.is_relative_to(folded_where):
         raise SiteModelError(
             "Expected [browser] models_dir to be a folder of its own, apart from the config "
             "directory that holds blumkin's other state"
