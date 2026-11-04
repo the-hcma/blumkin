@@ -122,6 +122,7 @@ def test_the_docs_explain_upload_dirs_and_the_limit_of_the_safety_net() -> None:
 
 
 _POLICY_KEYS = (
+    "allow_all_controls",
     "allowed_controls",
     "allowed_hosts",
     "block_background_writes",

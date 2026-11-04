@@ -220,12 +220,14 @@ class _Raw:
 
 def _guard(
     *allowed: str,
+    allow_all: bool = False,
     deny: tuple[str, ...] = (),
     confirm: tuple[str, ...] = (),
     draft: tuple[str, ...] = (),
 ) -> tuple[_Raw, GuardedDriver]:
     raw = _Raw()
     policy = GuardPolicy(
+        allow_all_controls=allow_all,
         allowed_controls=frozenset(allowed),
         dialog_confirm=frozenset(confirm),
         draft_controls=frozenset(draft),
@@ -422,6 +424,204 @@ def test_ordinary_names_are_not_mistaken_for_finalizing_ones(name: str) -> None:
     raw, driver = _guard(name)
     driver.click(name)
     assert raw.calls == [("click", "button", name)]
+
+
+@pytest.mark.parametrize("role", ["checkbox", "link", "option", "tab", "treeitem"])
+def test_deny_list_mode_clicks_an_undeclared_navigation_control(role: str) -> None:
+    raw, driver = _guard(allow_all=True)
+    raw.present["10/27/2026"] = (role,)
+    raw.controls["10/27/2026"] = ControlInfo(tag="a", input_type="", in_form=False, href="/x")
+    assert driver.click("10/27/2026", role) == role
+    assert raw.calls == [("click", role, "10/27/2026")]
+
+
+@pytest.mark.parametrize("name", ["Save and Close", "Save", "Calculate", "Create Item"])
+def test_deny_list_mode_never_opens_up_a_button(name: str) -> None:
+    raw, driver = _guard(allow_all=True)
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click(name, "button")
+    assert "not declared" in str(excinfo.value)
+    with pytest.raises(SubmitBlockedError):
+        driver.click(name)
+    assert raw.calls == []
+    raw, driver = _guard(name, allow_all=True)
+    assert driver.click(name) == "button"
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        ControlInfo(tag="button", input_type="button", in_form=False),
+        ControlInfo(tag="input", input_type="button", in_form=False),
+    ],
+)
+@pytest.mark.parametrize("role", ["link", "tab", "option", "checkbox", "treeitem"])
+def test_deny_list_mode_treats_a_button_element_as_a_button_whatever_its_role(
+    role: str, info: ControlInfo
+) -> None:
+    raw, driver = _guard(allow_all=True)
+    raw.present["Save"] = (role,)
+    raw.controls["Save"] = info
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click("Save", role)
+    assert "is a button" in str(excinfo.value)
+    assert raw.calls == []
+    raw, driver = _guard("Save", allow_all=True)
+    raw.present["Save"] = (role,)
+    raw.controls["Save"] = info
+    assert driver.click("Save", role) == role
+
+
+def test_deny_list_mode_still_clicks_a_real_link_and_a_declared_confirm_button() -> None:
+    raw, driver = _guard(allow_all=True, confirm=("OK",))
+    raw.present["Details"] = ("link",)
+    raw.controls["Details"] = ControlInfo(tag="a", input_type="", in_form=False, href="/x")
+    assert driver.click("Details", "link") == "link"
+    raw.controls["OK"] = ControlInfo(
+        tag="button", input_type="button", in_form=False, in_dialog=True, form_in_dialog=True
+    )
+    assert driver.click("OK") == "button"
+
+
+def test_deny_list_mode_lets_the_found_role_decide_when_none_is_given() -> None:
+    raw, driver = _guard(allow_all=True)
+    raw.present["Next"] = ("link",)
+    raw.controls["Next"] = ControlInfo(tag="a", input_type="", in_form=False, href="/next")
+    assert driver.click("Next") == "link"
+    raw.present["Go on"] = ("button",)
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Go on")
+    assert [call[2] for call in raw.calls] == ["Next"]
+
+
+def test_deny_list_mode_still_refuses_a_finalizing_name() -> None:
+    raw, driver = _guard(allow_all=True)
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click("Submit")
+    assert "finalizing" in str(excinfo.value)
+    assert raw.calls == []
+
+
+def test_deny_list_mode_honors_the_tasks_extra_deny_names() -> None:
+    raw, driver = _guard(allow_all=True, deny=("release",))
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Release now")
+    assert raw.calls == []
+
+
+def test_deny_list_mode_never_reaches_a_menu_item_that_is_not_declared() -> None:
+    raw, driver = _guard("Open", allow_all=True)
+    raw.present["Duplicate"] = ("menuitem",)
+    raw.present["Open"] = ("menuitem",)
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click("Duplicate")
+    assert "not declared" in str(excinfo.value)
+    assert driver.click("Open") == "menuitem"
+    assert raw.calls == [("click", "menuitem", "Open")]
+
+
+@pytest.mark.parametrize("name", ["Delete", "Remove row", "Discard changes", "Duplicate", "Void"])
+@pytest.mark.parametrize("role", ["checkbox", "link", "option", "tab", "treeitem"])
+def test_deny_list_mode_refuses_a_destructive_name_unless_it_is_listed(
+    name: str, role: str
+) -> None:
+    raw, driver = _guard(allow_all=True)
+    raw.present[name] = (role,)
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click(name, role)
+    assert "not declared" in str(excinfo.value)
+    assert raw.calls == []
+    raw, driver = _guard(name, allow_all=True)
+    raw.present[name] = (role,)
+    assert driver.click(name, role) == role
+
+
+def test_deny_list_mode_refuses_a_destructive_name_a_pattern_does_not_name() -> None:
+    raw, driver = _guard("Actions for * Report", allow_all=True)
+    raw.present["Delete row"] = ("link",)
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Delete row", "link")
+    assert raw.calls == []
+
+
+def test_deny_list_mode_refuses_an_undeclared_menu_item_named_by_role() -> None:
+    raw, driver = _guard("Actions for * Report", allow_all=True)
+    with pytest.raises(SubmitBlockedError):
+        driver.check_click("Actions for Q4 Report", "menuitem")
+    driver.check_click("Actions for Q4 Report", "link")
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        ControlInfo(tag="input", input_type="submit", in_form=True),
+        ControlInfo(tag="a", input_type="", in_form=True, has_formaction=True),
+        ControlInfo(tag="a", input_type="", in_form=False, href="javascript:void(0)"),
+        ControlInfo(
+            tag="a",
+            input_type="",
+            in_form=True,
+            inline_handler="document.forms[0].submit()",
+        ),
+    ],
+)
+def test_deny_list_mode_still_vets_the_element_that_would_be_clicked(info: ControlInfo) -> None:
+    raw, driver = _guard(allow_all=True)
+    raw.present["Tidy"] = ("link",)
+    raw.controls["Tidy"] = info
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click("Tidy", "link")
+    assert "not declared" not in str(excinfo.value)
+    assert raw.calls == []
+
+
+def test_deny_list_mode_does_not_open_up_a_download_or_a_flows_tab(tmp_path: Path) -> None:
+    raw, driver = _guard("Export", allow_all=True)
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.download("Download", save_to=tmp_path)
+    assert "not declared" in str(excinfo.value)
+    with pytest.raises(SubmitBlockedError):
+        driver.check_click("Notes", "tab", declared_only=True)
+    driver.check_click("Notes", "tab")
+    assert raw.calls == []
+    driver.download("Export", save_to=tmp_path)
+    assert [call[:3] for call in raw.calls] == [("download", "button", "Export")]
+
+
+def test_a_tab_named_only_as_a_dialog_confirm_is_not_a_declared_flow_tab() -> None:
+    raw, driver = _guard(allow_all=True, confirm=("Notes",))
+    with pytest.raises(SubmitBlockedError):
+        driver.check_click("Notes", "tab", confirm_ok=False, declared_only=True)
+    assert raw.calls == []
+
+
+def test_deny_list_mode_leaves_dialog_confirm_and_draft_controls_as_they_are() -> None:
+    raw, driver = _guard(allow_all=True, confirm=("OK",), draft=("Calculate",))
+    raw.controls["OK"] = ControlInfo(
+        tag="button", input_type="submit", in_form=True, in_dialog=False
+    )
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click("OK")
+    assert "not in a dialog" in str(excinfo.value)
+    raw.controls["Calculate"] = ControlInfo(tag="button", input_type="submit", in_form=True)
+    driver.click("Calculate")
+    assert raw.calls[-1][-1] == "Calculate"
+
+
+def test_the_refusal_hint_for_a_deny_list_task_says_what_needs_declaring() -> None:
+    raw, driver = _guard(allow_all=True)
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.check_click("Delete row", "button")
+    assert "allow_all_controls" in str(excinfo.value)
+    assert "menu item" in str(excinfo.value)
+
+
+def test_the_default_is_still_deny_by_default() -> None:
+    raw, driver = _guard()
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click("Save and Close")
+    assert "not declared" in str(excinfo.value)
+    assert raw.calls == []
 
 
 def test_the_task_can_extend_the_deny_list() -> None:

@@ -154,6 +154,10 @@ class BrowserConfig:
 class BrowserTaskPolicy:
     """`[browser.tasks.<task>]`: the controls a task may click and extra names to refuse."""
 
+    #: Deny-list mode (off by default): the task may click any link, tab, tree item, option or
+    #: checkbox that is not a finalizing or destructive action or in `extra_deny_names`, without
+    #: declaring it. Buttons and menu items must still be declared in `allowed_controls`.
+    allow_all_controls: bool = False
     #: Exact accessible names of the controls the task may click.
     allowed_controls: tuple[str, ...] = ()
     #: Host names the task's pages may be on (`erp.example.com`, or `*.example.com` for any
@@ -694,6 +698,7 @@ _HOST_PATTERN = re.compile(
 )
 _TASK_POLICY_KEYS = frozenset(
     {
+        "allow_all_controls",
         "allowed_controls",
         "allowed_hosts",
         "block_background_writes",
@@ -855,6 +860,12 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 f"{prefix}.sign_in_account must be true or false in config.toml, "
                 f"got {picks_account!r}"
             )
+        allow_all = table.get("allow_all_controls", False)
+        if not isinstance(allow_all, bool):
+            raise ProviderConfigError(
+                f"{prefix}.allow_all_controls must be true or false in config.toml, "
+                f"got {allow_all!r}"
+            )
         wants_address = table.get("use_profile_address", False)
         if not isinstance(wants_address, bool):
             raise ProviderConfigError(
@@ -862,6 +873,7 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 f"got {wants_address!r}"
             )
         policies[str(name)] = BrowserTaskPolicy(
+            allow_all_controls=allow_all,
             allowed_hosts=hosts,
             block_background_writes=strict,
             sign_in_account=picks_account,

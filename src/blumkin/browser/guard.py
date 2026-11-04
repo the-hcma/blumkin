@@ -75,6 +75,17 @@ DEFAULT_DENY_NAMES: tuple[str, ...] = (
     "transmit",
 )
 
+#: Names a deny-list task (`allow_all_controls`) may not click unless it lists them by name in
+#: `allowed_controls`: actions that destroy or copy what the form holds. They never apply to a
+#: task that declares every control, which already chose each name.
+DESTRUCTIVE_DENY_NAMES: tuple[str, ...] = (
+    "delete",
+    "discard",
+    "duplicate",
+    "remove",
+    "void",
+)
+
 #: Fixed letters or digits a control pattern must keep (a bare `*` would declare everything).
 MIN_PATTERN_LITERAL = 4
 
@@ -90,6 +101,11 @@ class SubmitBlockedError(BrowserActionError):
 class GuardPolicy:
     """What a task may touch. `allowed_controls` are exact accessible names."""
 
+    #: Deny-list mode (off by default): a link, tab, tree item, option or checkbox need not be
+    #: declared, and everything that refuses a click still applies (the finalizing words,
+    #: `extra_deny_names`, the destructive names, the element vetting). A button and a menu item
+    #: stay individually declared.
+    allow_all_controls: bool = False
     allowed_controls: frozenset[str] = frozenset()
     #: Strict mode: also swallow background writes (see `block_form_submission`).
     block_background_writes: bool = False
@@ -107,6 +123,7 @@ class GuardedDriver:
 
     def __init__(self, raw: RawBrowserDriver, policy: GuardPolicy) -> None:
         validate_control_patterns(policy.allowed_controls, policy.extra_deny_names)
+        self._allow_all = policy.allow_all_controls
         self._allowed = frozenset(
             _exact(name) for name in policy.allowed_controls if "*" not in name
         )
@@ -116,6 +133,7 @@ class GuardedDriver:
         self._declared = tuple(sorted(set(policy.allowed_controls)))
         self._confirm_names = tuple(sorted(set(policy.dialog_confirm)))
         self._deny = _deny_stems((*DEFAULT_DENY_NAMES, *policy.extra_deny_names))
+        self._destructive = _deny_stems(DESTRUCTIVE_DENY_NAMES)
         validate_dialog_confirm(policy.dialog_confirm, policy.extra_deny_names)
         self._confirm = frozenset(_exact(name) for name in policy.dialog_confirm)
         self._draft_names = tuple(sorted(set(policy.draft_controls)))
@@ -127,11 +145,20 @@ class GuardedDriver:
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()
 
-    def check_click(self, name: str, role: str | None = None, *, confirm_ok: bool = True) -> None:
+    def check_click(
+        self,
+        name: str,
+        role: str | None = None,
+        *,
+        confirm_ok: bool = True,
+        declared_only: bool = False,
+    ) -> None:
         """Raise `SubmitBlockedError` unless a click on `name` is allowed (no page access).
 
         A dialog confirm name passes only with `confirm_ok`; a download is never a dialog's
-        confirm, so it takes `allowed_controls` names alone.
+        confirm, so it takes `allowed_controls` names alone. `declared_only` also leaves out
+        deny-list mode: the control must be listed in `allowed_controls` (a download, or a
+        tab a flow switches through).
         """
         action = f"click {name!r}"
         if role is not None and role not in CLICKABLE_ROLES:
@@ -142,7 +169,9 @@ class GuardedDriver:
         listed = _exact(name) in self._confirm or (
             _exact(name) in self._draft and role in (None, "button")
         )
-        if not self._is_declared(name, role) and not (confirm_ok and listed):
+        if not self._is_declared(name, role, declared_only=declared_only) and not (
+            confirm_ok and listed
+        ):
             raise self._refuse(
                 action, f"the control is not declared by the task{self._declared_hint()}"
             )
@@ -193,7 +222,7 @@ class GuardedDriver:
         The same policy as `click`, found and vetted the same way; where the file may go and
         whether it may be kept are the caller's checks.
         """
-        chosen, action = self._locate(name, role, wait_s, confirm_ok=False)
+        chosen, action = self._locate(name, role, wait_s, confirm_ok=False, declared_only=True)
         return self._raw.checked_download(
             name,
             chosen,
@@ -363,10 +392,11 @@ class GuardedDriver:
         nth: int | None = None,
         *,
         confirm_ok: bool = True,
+        declared_only: bool = False,
     ) -> tuple[str, str]:
         """Check the policy, then find `name` on the page: (the role it is in, the action)."""
         action = f"click {name!r}"
-        self.check_click(name, role, confirm_ok=confirm_ok)
+        self.check_click(name, role, confirm_ok=confirm_ok, declared_only=declared_only)
         roles = (role,) if role is not None else tuple(sorted(CLICKABLE_ROLES))
         found = self._raw.matching_roles(name, roles, wait_s, nth=nth)
         label = role if role is not None else "control"
@@ -381,12 +411,17 @@ class GuardedDriver:
             )
         resolved = next(iter(found))
         if role is None:
-            self.check_click(name, resolved, confirm_ok=confirm_ok)
+            self.check_click(name, resolved, confirm_ok=confirm_ok, declared_only=declared_only)
         return resolved, action
 
     def _declared_hint(self) -> str:
         """The task's declared control names and patterns, for a refusal that lists them."""
         if not self._declared and not self._confirm_names:
+            if self._allow_all:
+                return (
+                    " (the task declares no controls; with allow_all_controls a button, a menu"
+                    " item or a destructive name such as Delete still needs declaring)"
+                )
             return " (the task declares no controls)"
         shown = ", ".join(repr(name) for name in self._declared[:_HINT_NAMES])
         more = (
@@ -404,20 +439,33 @@ class GuardedDriver:
             )
         return f" ({'; '.join(parts)})"
 
-    def _is_declared(self, name: str, role: str | None = None) -> bool:
-        """Whether `name` is one of the declared controls, exactly or by a declared pattern.
+    def _is_declared(
+        self, name: str, role: str | None = None, *, declared_only: bool = False
+    ) -> bool:
+        """Whether `name` may be clicked: declared exactly, by a declared pattern, or (in
+        deny-list mode, unless `declared_only`) a link, tab, tree item, option or checkbox that
+        is not a destructive name.
 
         A menu item is never reached by a pattern: each one stays individually declared, so
-        `Dupl*` cannot authorize `Duplicate`.
+        `Dupl*` cannot authorize `Duplicate`. A button is never reached by deny-list mode. The
+        finalizing-name and element checks that run beside this one still refuse a click that
+        could finalize.
         """
         folded = _exact(name)
         if folded in self._allowed:
             return True
         if role in _MENU_ROLES:
             return False
-        return len(folded) <= _MAX_PATTERN_NAME and any(
+        if len(folded) <= _MAX_PATTERN_NAME and any(
             rule.fullmatch(folded) for rule in self._patterns
-        )
+        ):
+            return True
+        if not self._allow_all or declared_only:
+            return False
+        # With no role yet, the role the control is found in decides, right after the lookup.
+        if role is not None and role not in _DENY_LIST_ROLES:
+            return False
+        return not _is_denied(name, self._destructive)
 
     def _vet_field_name(self, action: str, name: str) -> None:
         """Refuse a field whose own accessible name is a finalizing action."""
@@ -452,11 +500,28 @@ class GuardedDriver:
 
         A name declared as a dialog confirm (and not as a plain control) is valid only inside a
         dialog; there it is spared the submit-control check when its form is the dialog's own.
+
+        In deny-list mode a button element must be declared whatever role the page gives it
+        (`<button role="link">` is still a button): the role only decides what the name check
+        let through, not what the element is.
         """
+        if (
+            name is not None
+            and self._allow_all
+            and _is_button_element(info)
+            and _exact(name) not in self._confirm
+            and _exact(name) not in self._draft
+            and not self._is_declared(name, role, declared_only=True)
+        ):
+            raise self._refuse(
+                action,
+                "the element is a button, and a button must be declared in allowed_controls "
+                "whatever role the page gives it",
+            )
         confirm = False
         if name is not None and _exact(name) in self._confirm:
             confirm = True
-            if not self._is_declared(name, role):
+            if not self._is_declared(name, role, declared_only=True):
                 # Declared only as a dialog confirm: valid in a dialog whose form is its own,
                 # whatever type of button it is.
                 if not info.in_dialog:
@@ -504,6 +569,10 @@ def attach_guarded(
 _HINT_NAMES = 10
 #: Longest name a pattern is tried against (page-supplied names can be arbitrarily long).
 _MAX_PATTERN_NAME = 300
+#: The roles deny-list mode (`allow_all_controls`) opens up: navigation and selection controls.
+#: A button is never one of them, so Save, Calculate and every other button stays declared by
+#: name: a handler a script installed on a button can write in the background unseen.
+_DENY_LIST_ROLES = frozenset({"checkbox", "link", "option", "tab", "treeitem"})
 #: Menu items are never reached by a pattern: each stays individually declared.
 _MENU_ROLES = frozenset({"menuitem", "menuitemcheckbox", "menuitemradio"})
 #: Stands in for an ASCII `*` while a pattern is normalized, so a fullwidth `＊` (which NFKC turns
@@ -688,6 +757,13 @@ def _folded(text: str) -> str:
 
 def _is_button_like(info: ControlInfo) -> bool:
     if info.tag == "button" or info.tag == "a":
+        return True
+    return info.tag == "input" and info.input_type in _BUTTON_LIKE_INPUT_TYPES
+
+
+def _is_button_element(info: ControlInfo) -> bool:
+    """A `<button>` or a button-type `<input>`; unlike `_is_button_like`, never a link."""
+    if info.tag == "button":
         return True
     return info.tag == "input" and info.input_type in _BUTTON_LIKE_INPUT_TYPES
 

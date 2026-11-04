@@ -843,8 +843,8 @@ def refresh_tab_task(
     hosts = _declared_hosts(config, task)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        driver.check_click(via, "tab")
-        driver.check_click(tab, "tab")
+        driver.check_click(via, "tab", confirm_ok=False, declared_only=True)
+        driver.check_click(tab, "tab", confirm_ok=False, declared_only=True)
         driver.click(via, "tab", waited)
         _require_allowed_page(driver, task, hosts, f"selecting the {via!r} tab")
         try:
@@ -1472,6 +1472,7 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
     validate_draft_controls(declared.draft_controls, declared.extra_deny_names)
     validate_control_patterns(declared.allowed_controls, declared.extra_deny_names)
     return GuardPolicy(
+        allow_all_controls=declared.allow_all_controls,
         allowed_controls=frozenset(declared.allowed_controls),
         block_background_writes=declared.block_background_writes,
         dialog_confirm=frozenset(declared.dialog_confirm),

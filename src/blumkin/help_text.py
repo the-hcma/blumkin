@@ -280,7 +280,12 @@ A declared name may contain `*` for any text (`"Actions for * Report"` covers a 
 actions link whatever the trip is called); a pattern needs at least four letters or digits of
 fixed text that is not a finalizing word, and the clicked name is still checked against the
 finalizing words. A refusal for an undeclared control lists the names and patterns the task
-declares.
+declares. A task that sets `allow_all_controls = true` flips this to a deny list for navigation:
+any link, tab, tree item, option or checkbox may be clicked unless its name is a finalizing action
+or in `extra_deny_names`, its element would submit a form, or its name has the word delete,
+discard, duplicate, remove or void in it (unless `allowed_controls` declares it). A button must
+still be declared (by name or pattern), whatever role the page gives it, a menu item by its
+exact name (a pattern never reaches one), and so must a download and the tabs of a flow.
 A button that confirms a dialog's own rows (an attachments dialog's `OK`) can be declared in
 `dialog_confirm` instead of `allowed_controls` (such a button is usually submit-type, which is
 why it is refused otherwise): it is clicked only inside a dialog whose form, if it has one,
@@ -298,9 +303,11 @@ stays on (it swallows a form post, not a background request). The page can still
 background request or run a script handler that blumkin cannot tell from a recalculation, so
 the declaration is yours: when unsure, leave it out and click the button yourself.
 Refused, without touching the page: an
-undeclared control, a submit control, and any control named like a finalizing action
-(submit, send, file, confirm, pay, ...), plus a control with a formaction, a link that runs
-script and a click handler that submits. A browser task never submits; the user does.
+undeclared control (a link, tab, tree item, option or checkbox is exempt when the task sets
+`allow_all_controls`, unless the element is really a button), a submit control, and any
+control named like a finalizing action (submit, send, file, confirm, pay, ...), plus a control
+with a formaction, a link that runs script and a click handler that submits. A browser task
+never submits; the user does.
 """
 
 BROWSER_CLOSE_EPILOG = """
