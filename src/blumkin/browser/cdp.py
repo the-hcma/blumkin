@@ -2492,7 +2492,7 @@ _PICK_BLOCKERS_JS = r"""(e) => {
 _DESCRIBE_CONTROL_JS = (
     "(e, landmarks) => { const sel = 'dialog, [role=dialog], [role=alertdialog]'; "
     "let d = e.closest(sel); let viaLandmark = false; "
-    "if (!d && landmarks && landmarks.length) { "
+    "if (!d && landmarks && landmarks.length && e.tagName !== 'LABEL' && !e.closest('label')) { "
     "const norm = (s) => String(s || '').replace(/\\s+/g, ' ').trim().toLowerCase(); "
     "const pick = 'button, a, [role=button], [role=link], [role=menuitem], "
     "input[type=button], input[type=submit]'; "
@@ -2510,6 +2510,10 @@ _DESCRIBE_CONTROL_JS = (
     "[role=button], [role=link], [role=menuitem], [role=menuitemradio], "
     "[role=menuitemcheckbox], [role=tab], [role=option], [role=switch], "
     '[role=checkbox], [role=radio]")); '
+    "if (viaLandmark) { if (d.matches('button, a, summary, [onclick], [role=button], [role=link], "
+    "[role=menuitem], input') || (d.parentElement && d.parentElement.closest("
+    "'button, a, summary, [onclick], [role=button], [role=link], [role=menuitem], label'))) "
+    "complete = false; } "
     "if (all.length > 200) complete = false; "
     "if (Array.from(d.querySelectorAll('*')).some((n) => n.shadowRoot)) complete = false; "
     "for (const b of all.slice(0, 200)) { "
@@ -2544,7 +2548,7 @@ _DESCRIBE_CONTROL_JS = (
     "href: String(e.getAttribute('href') || ''), "
     "onclick: String(e.getAttribute('onclick') || ''), "
     "target: String(e.getAttribute('target') || ''), "
-    "dialog: !!d, formInDialog: !!d && (!f || d.contains(f)), "
+    "dialog: !!d, formInDialog: !!d && (!f || (d.contains(f) && !(viaLandmark && d === f))), "
     "dialogControls: names, dialogComplete: complete, dialogLandmark: viaLandmark}; }"
 )
 

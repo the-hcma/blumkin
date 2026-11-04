@@ -26,6 +26,19 @@ _PAGE = """
     <a href="#" role=button onclick="window.otherPressed = true; return false">OK</a>
   </div>
 </form>
+<form id=whole onsubmit="window.wholeSubmitted = true; return false">
+  <a href="#" role=button>Add</a> <a href="#" role=button>Delete</a>
+  <button type=submit>OK</button>
+</form>
+<div id=wrapped title="Send" onclick="window.wrappedSubmit = true">
+  <a href="#" role=button>Add</a> <a href="#" role=button>Delete</a>
+  <a href="#" role=button onclick="return false">OK</a>
+</div>
+<div id=labelled>
+  <a href="#" role=button>Add</a> <a href="#" role=button>Delete</a>
+  <label role=button for=elsewhere>OK</label>
+</div>
+<button type=submit id=elsewhere form=report>Elsewhere</button>
 <div id=big>
   <button type=button>Add</button> <button type=button>Delete</button>
   <button type=submit form=report>Submit</button>
@@ -73,5 +86,13 @@ def test_ok_is_clicked_in_the_popup_with_the_landmarks_and_nowhere_else() -> Non
             with pytest.raises(SubmitBlockedError, match="finalizing control"):
                 driver.click("OK", nth=2)
             assert page.evaluate("window.otherPressed") is None
+
+            # Refused: the report form is itself the container, a container that is a control
+            # with a handler, and a label whose target lies outside the popup.
+            for nth in (3, 4, 5):
+                with pytest.raises(SubmitBlockedError):
+                    driver.click("OK", nth=nth)
+            assert page.evaluate("window.wholeSubmitted") is None
+            assert page.evaluate("window.wrappedSubmit") is None
         finally:
             browser.close()
