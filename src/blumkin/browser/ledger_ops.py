@@ -7,6 +7,7 @@ and always reports ``submitted: false``.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -339,7 +340,10 @@ def _default_run_step(task: str) -> StepRunner:
             path = values.get(step.bind) if step.bind else values.get("path") or values.get("file")
             if not path:
                 raise LedgerError("Flow step 'upload' needs a path value")
-            actions.upload_task(config, task, step.control, Path(path))
+            # A bound file was validated as written, so it goes on as that same absolute path:
+            # `upload_task` expands a leading `~`, which would pick a different file.
+            target = Path(os.path.abspath(path)) if step.bind else Path(path)
+            actions.upload_task(config, task, step.control, target)
             return
         if action in {"expect", "check", "landmark"}:
             return

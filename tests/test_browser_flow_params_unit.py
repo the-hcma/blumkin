@@ -271,3 +271,31 @@ def test_a_run_cannot_override_the_ledger_item_through_an_item_value(tmp_path: P
     )
 
     assert set(seen) == {"2026-10-30"}
+
+
+def test_a_bound_file_is_uploaded_as_the_same_absolute_path_that_was_validated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.config import BrowserSetup
+
+    literal = tmp_path / "~"
+    literal.mkdir()
+    (literal / "receipt.pdf").write_bytes(b"%PDF")
+    monkeypatch.chdir(tmp_path)
+    uploaded: list[Path] = []
+    monkeypatch.setattr(
+        actions, "upload_task", lambda config, task, label, path: uploaded.append(path)
+    )
+    monkeypatch.setattr(
+        "blumkin.config.load_browser_setup", lambda: BrowserSetup.__new__(BrowserSetup)
+    )
+    values = _values(tmp_path, file="~/receipt.pdf")
+    validate_params(_flow(), values)  # a literal "~" folder in the working directory is a file
+
+    run = ledger_ops._default_run_step("expense-report")  # type: ignore[attr-defined]
+    upload = next(step for step in _flow().steps if step.action == "upload")
+    run(upload, values)
+
+    assert uploaded == [tmp_path / "~" / "receipt.pdf"]
+    assert uploaded[0].is_absolute()
