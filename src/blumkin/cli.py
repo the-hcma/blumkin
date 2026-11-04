@@ -74,12 +74,14 @@ from blumkin.browser.actions import (
     pick_task,
     press_task,
     read_task,
+    redact_addresses,
     refresh_tab_task,
     select_task,
     sign_in_task,
     transcript_task,
     upload_task,
     verify_task,
+    where_task,
 )
 from blumkin.browser.aria_view import parse_within
 from blumkin.browser.cdp import (
@@ -4506,18 +4508,60 @@ def browser_endpoint(ctx: click.Context, task: str, as_json_flag: bool) -> None:
 @browser.command("status", epilog=help_text.BROWSER_STATUS_EPILOG)
 @click.argument("task", required=False)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Also attach and show where the browser is now (host, path, title); needs a TASK.",
+)
 @click.pass_context
-def browser_status(ctx: click.Context, task: str | None, as_json_flag: bool) -> None:
+def browser_status(ctx: click.Context, task: str | None, as_json_flag: bool, verbose: bool) -> None:
     """Show the task browser profiles, running state and DevTools endpoint."""
     as_json = _as_json(ctx, as_json_flag)
+    if verbose and task is None:
+        _emit_error(
+            error="usage_error",
+            message="Expected a TASK with --verbose (it attaches to that task's browser), got none",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
     try:
         payload = task_status(config_dir(), task)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task or "")
+    if verbose and task is not None and not payload["profiles"][0]["running"]:
+        payload["page"] = None
+        payload["page_error"] = "the browser is not running (start it with `browser launch`)"
+    elif verbose and task is not None:
+        # An attach that fails is itself the finding (the DevTools attach can break), so it is
+        # reported next to the status (exit 0) and does not hide it.
+        try:
+            payload["page"] = where_task(load_browser_setup(), task)
+        except Exception as exc:  # noqa: BLE001 - reported, not raised
+            payload["page"] = None
+            payload["page_error"] = redact_addresses(_clean_line(str(exc)))
     if as_json:
         emit_json(payload)
         return
-    emit_lines(_browser_profile_lines(payload))
+    lines = _browser_profile_lines(payload)
+    page = payload.get("page")
+    if page is not None:
+        where = f"{page['scheme']}://{page['host']}{page['path']}" if page["host"] else "(no page)"
+        marks = [
+            "allowed host" if page["on_allowed_host"] else "not an allowed host",
+            "sign-in host" if page["on_sign_in_host"] else "not a sign-in host",
+        ]
+        lines.append(f"  page: {sanitize_terminal(where)} ({', '.join(marks)})")
+        if page["title"]:
+            lines.append(f"  title: {sanitize_terminal(page['title'])}")
+        if (
+            page["host"]
+            and not page["path"]
+            and not (page["on_allowed_host"] or page["on_sign_in_host"])
+        ):
+            lines.append("  (path and title are not shown for a host the task may not use)")
+    elif payload.get("page_error"):
+        lines.append(f"  page: not shown: {payload['page_error']}")
+    emit_lines(lines)
 
 
 @main.group(epilog=help_text.LOOP_EPILOG)

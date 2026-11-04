@@ -650,3 +650,97 @@ def test_endpoint_without_a_running_browser_says_to_launch_it(_config_dir: Path)
 
 def test_endpoint_for_an_unknown_task_is_not_found() -> None:
     assert _run("browser", "endpoint", "nope").exit_code == EXIT_NOT_FOUND
+
+
+def test_status_verbose_shows_where_the_running_browser_is(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = create_profile(_config_dir, "expense-report")
+    write_session(running.path, _SESSION)
+    page = {
+        "host": "login.microsoftonline.com",
+        "on_allowed_host": False,
+        "on_sign_in_host": True,
+        "path": "/common/oauth2/authorize",
+        "scheme": "https",
+        "title": "Sign in",
+    }
+    monkeypatch.setattr("blumkin.cli.where_task", lambda config, task: page)
+
+    payload = _json(_run("browser", "status", "expense-report", "--verbose"))
+    text = CliRunner().invoke(main, ["browser", "status", "expense-report", "--verbose"]).output
+
+    assert payload["page"]["host"] == "login.microsoftonline.com"
+    assert "https://login.microsoftonline.com/common/oauth2/authorize" in text
+    assert "not an allowed host" in text and "sign-in host" in text
+
+
+def test_status_verbose_reports_an_attach_that_fails_next_to_the_status(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = create_profile(_config_dir, "expense-report")
+    write_session(running.path, _SESSION)
+
+    def broken(config: Any, task: str) -> dict[str, Any]:
+        raise RuntimeError("Browser context management is not supported")
+
+    monkeypatch.setattr("blumkin.cli.where_task", broken)
+
+    payload = _json(_run("browser", "status", "expense-report", "--verbose"))
+    text = CliRunner().invoke(main, ["browser", "status", "expense-report", "--verbose"]).output
+
+    assert payload["page"] is None and "not supported" in payload["page_error"]
+    assert payload["profiles"][0]["running"] is True
+    assert "not shown" in text
+
+
+def test_status_verbose_needs_a_task_and_a_running_browser(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_profile(_config_dir, "expense-report")
+    monkeypatch.setattr(
+        "blumkin.cli.where_task", lambda config, task: pytest.fail("attached to a stopped browser")
+    )
+
+    assert _run("browser", "status", "--verbose").exit_code == EXIT_USAGE
+    stopped = _json(_run("browser", "status", "expense-report", "--verbose"))
+    text = CliRunner().invoke(main, ["browser", "status", "expense-report", "--verbose"]).output
+
+    assert stopped["page"] is None and "not running" in stopped["page_error"]
+    assert "not running" in text
+
+
+def test_status_verbose_does_not_echo_an_address_from_an_attach_error(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = create_profile(_config_dir, "expense-report")
+    write_session(running.path, _SESSION)
+
+    def broken(config: Any, task: str) -> dict[str, Any]:
+        raise RuntimeError("Expected a page, got https://idp.example/cb?code=SECRET failing")
+
+    monkeypatch.setattr("blumkin.cli.where_task", broken)
+
+    payload = _json(_run("browser", "status", "expense-report", "--verbose"))
+
+    assert "SECRET" not in payload["page_error"] and "[address removed]" in payload["page_error"]
+
+
+def test_status_verbose_says_when_a_foreign_page_is_shown_without_path_or_title(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = create_profile(_config_dir, "expense-report")
+    write_session(running.path, _SESSION)
+    foreign = {
+        "host": "evil.example.net",
+        "on_allowed_host": False,
+        "on_sign_in_host": False,
+        "path": "",
+        "scheme": "https",
+        "title": "",
+    }
+    monkeypatch.setattr("blumkin.cli.where_task", lambda config, task: foreign)
+
+    text = CliRunner().invoke(main, ["browser", "status", "expense-report", "--verbose"]).output
+
+    assert "https://evil.example.net" in text and "may not use" in text
