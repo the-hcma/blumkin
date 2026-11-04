@@ -19,6 +19,7 @@ from blumkin.browser.cdp import (
     BrowserDependencyError,
     ControlInfo,
     DownloadedFile,
+    FieldReading,
     FrameCapture,
     FrameInfo,
     PageText,
@@ -54,6 +55,8 @@ class _Raw:
         self.targets: list[Any] = []
         #: Make fill and select report that the field cannot be read back (a password).
         self.returns_nothing = False
+        #: What `read_field` finds.
+        self.reading = FieldReading("read", "4111 1111")
         self.controls: dict[str, ControlInfo] = {}
         self.page_text = PageText(text="Total due 12.50", injection_warning=None)
         self._url = "https://erp.example.com/expenses"
@@ -168,6 +171,11 @@ class _Raw:
         if self.returns_nothing:
             return None
         return self.read_back if self.read_back is not None else value
+
+    def read_field(self, label: str, target: Any = None) -> FieldReading:
+        self.targets.append(target)
+        self.calls.append(("read_field", label))
+        return self.reading
 
     def select(
         self, label: str, option: str, target: Any = None, vet: Any = None, vet_name: Any = None
@@ -2608,3 +2616,99 @@ def test_an_interruption_during_the_pick_leaves_nothing_to_undo(
     assert result.exit_code != EXIT_SUCCESS
     assert (_config_dir / "config.toml").read_text() == before
     assert raw.closed == 1
+
+
+def test_verify_says_match_without_printing_the_value(raw: _Raw) -> None:
+    result = CliRunner().invoke(
+        main, ["--json", "browser", "verify", "expense-report", "Card", "4111 1111"]
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert (payload["status"], payload["ok"]) == ("match", True)
+    assert "4111" not in result.output
+
+
+@pytest.mark.parametrize("status", ["missing", "ambiguous", "unreadable"])
+def test_verify_reports_a_field_it_cannot_compare(raw: _Raw, status: str) -> None:
+    raw.reading = FieldReading(status)
+
+    result = CliRunner().invoke(
+        main, ["--json", "browser", "verify", "expense-report", "Card", "4111"]
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    payload = _json(result)
+    assert (payload["status"], payload["ok"]) == (status, False)
+
+
+def test_verify_a_mismatch_leaks_neither_value(raw: _Raw) -> None:
+    result = CliRunner().invoke(
+        main, ["--json", "browser", "verify", "expense-report", "Card"], input="9999 0000\n"
+    )  # no VALUE argument and not a TTY: refused, never read as a prompt
+
+    assert result.exit_code != EXIT_SUCCESS
+    result = CliRunner().invoke(
+        main,
+        ["--json", "browser", "verify", "expense-report", "Card", "--stdin"],
+        input="9999 0000\n",
+    )
+    payload = _json(result)
+    assert (payload["status"], payload["ok"]) == ("mismatch", False)
+    assert "9999" not in result.output
+    assert "4111" not in result.output
+
+
+def test_fill_from_stdin_never_prints_the_field_value(raw: _Raw) -> None:
+    raw.read_back = "4111 1111 (resolved)"
+
+    result = CliRunner().invoke(
+        main,
+        ["--json", "browser", "fill", "expense-report", "Card", "--stdin"],
+        input="4111 1111\n",
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.calls == [("fill", "Card", "4111 1111")]
+    payload = _json(result)
+    assert payload["matches"] is False
+    assert "read_back" not in payload
+    assert "4111" not in result.output
+
+
+def test_fill_no_read_back_keeps_a_given_value_hidden_too(raw: _Raw) -> None:
+    raw.read_back = "resolved"
+
+    payload = _json(_run("browser", "fill", "expense-report", "City", "x", "--no-read-back"))
+
+    assert payload["matches"] is False
+    assert "read_back" not in payload
+
+
+def test_fill_refuses_a_value_argument_together_with_stdin(raw: _Raw) -> None:
+    result = CliRunner().invoke(
+        main, ["--json", "browser", "fill", "expense-report", "A", "v", "--stdin"], input="w"
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert raw.calls == []
+
+
+def test_text_mode_fill_with_a_hidden_mismatch_does_not_crash(raw: _Raw) -> None:
+    raw.read_back = "resolved"
+
+    result = CliRunner().invoke(
+        main, ["browser", "fill", "expense-report", "Card", "--stdin"], input="4111\n"
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "does not hold what was set" in result.output
+    assert "resolved" not in result.output and "4111" not in result.output
+
+
+def test_an_empty_value_from_stdin_is_refused(raw: _Raw) -> None:
+    for args in (["fill", "expense-report", "Card"], ["verify", "expense-report", "Card"]):
+        result = CliRunner().invoke(main, ["--json", "browser", *args, "--stdin"], input="\n")
+
+        assert result.exit_code != EXIT_SUCCESS
+        assert raw.calls == []

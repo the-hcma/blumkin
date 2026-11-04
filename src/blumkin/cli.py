@@ -72,6 +72,7 @@ from blumkin.browser.actions import (
     sign_in_task,
     transcript_task,
     upload_task,
+    verify_task,
 )
 from blumkin.browser.aria_view import parse_within
 from blumkin.browser.cdp import (
@@ -665,15 +666,62 @@ def _field_action(
         return
     lines = [f"{task}: {done}"]
     if payload.get("matches") is False:
-        lines.append(
-            f"  the field now holds {sanitize_terminal(payload['read_back'])!r}, not what was set"
-        )
+        if "read_back" in payload:
+            lines.append(
+                f"  the field now holds {sanitize_terminal(payload['read_back'])!r}, "
+                "not what was set"
+            )
+        else:
+            lines.append("  the field does not hold what was set (its value is not shown)")
     if "persisted" in payload:  # an upload: what the page shows of the file
         lines.append(f"  the page shows the file: {payload['persisted']}")
         lines.extend(
             f"  warning: {sanitize_terminal(text)}" for text in payload.get("warnings", ())
         )
     emit_lines(lines)
+
+
+def _private_value(value: str | None, from_stdin: bool, prompt: str, *, as_json: bool) -> str:
+    """A value given as an argument, on stdin (bounded, one trailing newline dropped), or asked
+    for at a hidden prompt, so a sensitive value need not land in shell history or `ps`."""
+    if value is not None and from_stdin:
+        _emit_error(
+            error="usage_error",
+            message="Expected a value argument or --stdin, got both",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    if value is not None:
+        return value
+    if from_stdin:
+        limit = 1_000_000
+        raw = sys.stdin.read(limit + 1)
+        if len(raw) > limit:
+            _emit_error(
+                error="usage_error",
+                message=f"The value on stdin is longer than {limit} characters",
+                as_json=as_json,
+            )
+            raise SystemExit(EXIT_USAGE)
+        return raw.removesuffix("\n").removesuffix("\r")
+    if not sys.stdin.isatty():
+        _emit_error(
+            error="usage_error",
+            message="Expected a value argument or --stdin, got neither (stdin is not a TTY)",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_USAGE)
+    return click.prompt(prompt, hide_input=True, default="", show_default=False, err=True)
+
+
+def _require_value(value: str, what: str, *, as_json: bool) -> str:
+    """Refuse an empty value read from stdin or a prompt (it would clear a field or match one)."""
+    if not value:
+        _emit_error(
+            error="usage_error", message=f"Expected {what}, got an empty one", as_json=as_json
+        )
+        raise SystemExit(EXIT_USAGE)
+    return value
 
 
 def _require_frame_for_host(frame: int | None, host: str | None) -> None:
@@ -2941,15 +2989,24 @@ def browser_download(
 @browser.command("fill", epilog=help_text.BROWSER_FILL_EPILOG)
 @click.argument("task")
 @click.argument("label")
-@click.argument("value")
+@click.argument("value", required=False)
 @_field_options
+@click.option("--stdin", "from_stdin", is_flag=True, help="Read the value from standard input.")
+@click.option(
+    "--no-read-back",
+    "no_read_back",
+    is_flag=True,
+    help="Never print the field's value (use for a sensitive value); `matches` still says.",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_fill(
     ctx: click.Context,
     task: str,
     label: str,
-    value: str,
+    value: str | None,
+    from_stdin: bool,
+    no_read_back: bool,
     as_json_flag: bool,
     exact: bool,
     frame: int | None,
@@ -2959,6 +3016,10 @@ def browser_fill(
 ) -> None:
     """Fill the field with that label and report the value it holds afterwards."""
     _require_frame_for_host(frame, host)
+    json_mode = _as_json(ctx, as_json_flag)
+    secret = _private_value(value, from_stdin, "Value", as_json=json_mode)
+    if value is None:
+        _require_value(secret, "a value", as_json=json_mode)
     _field_action(
         ctx,
         as_json_flag,
@@ -2967,7 +3028,8 @@ def browser_fill(
             load_browser_setup(),
             task,
             label,
-            value,
+            secret,
+            show_read_back=not no_read_back and value is not None,
             exact=exact,
             frame=frame,
             host=host,
@@ -3936,6 +3998,54 @@ def browser_upload(
         ),
         "uploaded",
     )
+
+
+@browser.command("verify", epilog=help_text.BROWSER_VERIFY_EPILOG)
+@click.argument("task")
+@click.argument("label")
+@click.argument("expected", required=False)
+@_field_options
+@click.option("--stdin", "from_stdin", is_flag=True, help="Read the expected value from stdin.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_verify(
+    ctx: click.Context,
+    task: str,
+    label: str,
+    expected: str | None,
+    from_stdin: bool,
+    as_json_flag: bool,
+    exact: bool,
+    frame: int | None,
+    host: str | None,
+    nth: int | None,
+    role: str | None,
+) -> None:
+    """Check whether a field holds the expected value, without ever printing the value."""
+    _require_frame_for_host(frame, host)
+    as_json = _as_json(ctx, as_json_flag)
+    wanted = _private_value(expected, from_stdin, "Expected value", as_json=as_json)
+    _require_value(wanted, "a value to compare with", as_json=as_json)
+    try:
+        payload = verify_task(
+            load_browser_setup(),
+            task,
+            label,
+            wanted,
+            exact=exact,
+            frame=frame,
+            host=host,
+            nth=nth,
+            role=role,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+    else:
+        emit_lines([f"{task}: {label!r} is {payload['status']}"])
+    if not payload["ok"]:
+        raise SystemExit(EXIT_OTHER)
 
 
 @browser.group("profile", epilog=help_text.BROWSER_PROFILE_EPILOG)

@@ -289,6 +289,7 @@ def fill_task(
     host: str | None = None,
     nth: int | None = None,
     role: str | None = None,
+    show_read_back: bool = True,
 ) -> dict[str, Any]:
     """Fill the field labelled `label` and report the value the field holds afterwards.
 
@@ -296,13 +297,16 @@ def fill_task(
     (its number from `frames_task`, pinned to `host`) fills inside a child frame on an allowed
     host. `matches` says whether the field now holds exactly `value`; when it does not (an
     autocomplete resolved it to a canonical form, or rewrote it) the field's value is returned
-    as `read_back`. What was set is never echoed back, and a password field is never read.
+    as `read_back`, unless `show_read_back` is off (a sensitive value): `matches` still says
+    whether it does. What was set is never echoed back, and a password field is never read.
     """
     target = _field_target(config, task, "filling", exact, frame, host, nth, role)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         read_back = driver.fill(label, value, target)
-        return _field_payload("fill", task, label, target, read_back, value)
+        return _field_payload(
+            "fill", task, label, target, read_back, value, show_read_back=show_read_back
+        )
 
     return _with_driver(config, task, act)
 
@@ -826,6 +830,41 @@ def upload_task(
     return _with_driver(config, task, act, check_after=True, check_before=False)
 
 
+def verify_task(
+    config: BrowserSetup,
+    task: str,
+    label: str,
+    expected: str,
+    *,
+    exact: bool = False,
+    frame: int | None = None,
+    host: str | None = None,
+    nth: int | None = None,
+    role: str | None = None,
+) -> dict[str, Any]:
+    """Compare a field's value with `expected`, reporting only whether they match.
+
+    Read-only, and the value is never returned: `status` is `match`, `mismatch`, `missing` (no
+    such field), `ambiguous` (the label names several; narrow it as for `fill`) or `unreadable`
+    (a password or other secret field, or a widget with no readable value). The field is found
+    by the same label, role, `nth`, frame and host rules as `fill`, and `expected` is compared
+    the way `fill` compares.
+    """
+    target = _field_target(config, task, "verifying", exact, frame, host, nth, role)
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        reading = driver.read_field(label, target)
+        status = reading.status
+        if status == "read":
+            status = "match" if field_matches(reading.value or "", expected) else "mismatch"
+        payload = _field_payload("verify", task, label, target, None, None)
+        payload["ok"] = status == "match"
+        payload["status"] = status
+        return payload
+
+    return _with_driver(config, task, act)
+
+
 def _upload_warnings(seen: UploadObservation) -> list[str]:
     """What to tell the caller when the page does not plainly show the file it was given."""
     warnings: list[str] = []
@@ -871,6 +910,8 @@ def _field_payload(
     target: FieldTarget,
     read_back: str | None,
     wanted: str | None,
+    *,
+    show_read_back: bool = True,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"action": action, "label": label, "ok": True, "task": task}
     for key, value in (("nth", target.nth), ("role", target.role), ("frame", target.frame)):
@@ -884,7 +925,7 @@ def _field_payload(
         # `matches` is null when the field cannot be read (a password, rich text).
         matches = None if read_back is None else field_matches(read_back, wanted or "")
         payload["matches"] = matches
-        if matches is False and read_back is not None:
+        if matches is False and read_back is not None and show_read_back:
             payload["read_back"] = field_display(read_back)
             payload["untrusted"] = UNTRUSTED_NOTE
     return payload
