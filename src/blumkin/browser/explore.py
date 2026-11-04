@@ -37,7 +37,7 @@ from urllib.parse import urljoin, urlsplit
 
 from blumkin.browser.actions import host_allowed
 from blumkin.browser.cdp import DEFAULT_ACTION_TIMEOUT_S, BrowserActionError, ControlInfo, attach
-from blumkin.browser.guard import is_finalizing_name, vet_control
+from blumkin.browser.guard import is_declared_control, is_finalizing_name, vet_control
 from blumkin.browser.model import (
     Control,
     ControlKind,
@@ -135,10 +135,13 @@ class Explorer:
         confirmer: Confirmer,
         *,
         allowed_hosts: Sequence[str],
+        declared_controls: Sequence[str] = (),
         extra_deny: Sequence[str] = (),
     ) -> None:
         self.last_outcome = ""
+        self.last_approval = ""
         self._allowed_hosts = tuple(allowed_hosts)
+        self._declared = tuple(declared_controls)
         self._confirmer = confirmer
         self._driver = driver
         self._extra_deny = tuple(extra_deny)
@@ -150,6 +153,7 @@ class Explorer:
         said no) or `refused: <why>`. The element is inspected before anyone is asked, and
         the host is checked again after the answer, because the page may have moved on.
         """
+        self.last_approval = ""
         self._require_host("before the click")
         decision = decide_click(role, name, extra_deny=self._extra_deny)
         if decision is ClickDecision.RECORD_ONLY:
@@ -169,11 +173,17 @@ class Explorer:
             return False
         if decision is ClickDecision.CLICK and _href_looks_destructive(inspection.href):
             decision = ClickDecision.ASK
-        if decision is ClickDecision.ASK:
+        if decision is ClickDecision.ASK and is_declared_control(name, self._declared):
+            # The user declared this control in config.toml, the same trust `browser click`
+            # rests on, so no question is asked; the inspection above and the vetting in
+            # `click_vetted` still apply, and a finalizing name never reaches here.
+            self.last_approval = "allowed_controls"
+        elif decision is ClickDecision.ASK:
             host = urlsplit(self._driver.url).hostname or "this page"
             if not self._confirmer.confirm(_prompt(role, name, host, inspection.href)):
                 self.last_outcome = "declined"
                 return False
+            self.last_approval = "terminal"
             self._require_host("after the answer and before the click")
         try:
             self._driver.click_vetted(role, name, inspection)

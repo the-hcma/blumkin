@@ -550,6 +550,21 @@ def is_finalizing_name(name: str, extra_deny: Sequence[str] = ()) -> bool:
     return _is_denied(name, _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny)))
 
 
+def is_declared_control(name: str, declared: Iterable[str]) -> bool:
+    """Whether `name` is one the task declared, by exact name or by a `*` pattern.
+
+    Matches as the guard does for `browser click`; a finalizing name is never declared (see
+    `validate_control_patterns`), and callers still check `is_finalizing_name` themselves.
+    """
+    wanted = _exact(name)
+    return any(
+        _pattern_regex(item).fullmatch(wanted) is not None
+        if "*" in item
+        else _exact(item) == wanted
+        for item in declared
+    )
+
+
 def validate_control_patterns(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
     """Refuse a declared control pattern that is too loose or could name a finalizing action.
 

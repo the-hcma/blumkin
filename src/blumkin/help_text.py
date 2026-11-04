@@ -386,8 +386,10 @@ Examples:
 
 Follows a link or tab on an allowed host. For a control that may change state
 (a button, a checkbox) it asks on your terminal first; with no terminal it clicks nothing
-and prints the command for you to run. A finalizing control is never clicked. With `--page`
-a click that happened is recorded as a step of the flow.
+and prints the command for you to run. A control the task declared in `allowed_controls`
+(by exact name or `*` pattern) is clicked without a question, so an agent can explore it; the
+result says `approved_by`. A finalizing control is never clicked, declared or not. With
+`--page` a click that happened is recorded as a step of the flow.
 """
 
 BROWSER_EXPLORE_DISCARD_EPILOG = """

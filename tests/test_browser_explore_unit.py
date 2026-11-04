@@ -252,6 +252,52 @@ def test_a_state_changing_click_asks_first_and_clicks_only_on_yes() -> None:
     assert "Add line" in confirmer.asked[0]
 
 
+def test_a_declared_control_is_clicked_without_asking() -> None:
+    driver = _Driver()
+    explorer, confirmer = _explorer(driver, declared_controls=("Add line", "Actions for *"))
+    assert explorer.click("button", "Add line") is True
+    assert explorer.last_approval == "allowed_controls"
+    assert explorer.click("button", "Actions for Report 7") is True
+    assert driver.clicks == [("button", "Add line"), ("button", "Actions for Report 7")]
+    assert confirmer.asked == []
+
+
+def test_an_undeclared_control_still_asks_and_records_who_approved() -> None:
+    driver = _Driver()
+    explorer, confirmer = _explorer(driver, [True], declared_controls=("Add line",))
+    assert explorer.click("button", "Create report") is True
+    assert explorer.last_approval == "terminal"
+    assert len(confirmer.asked) == 1
+    assert explorer.click("button", "Add line") is True
+    assert explorer.last_approval == "allowed_controls"
+
+
+def test_a_declared_control_is_matched_by_exact_name_not_by_prefix() -> None:
+    driver = _Driver()
+    explorer, confirmer = _explorer(driver, [False], declared_controls=("Add",))
+    assert explorer.click("button", "Add line") is False
+    assert len(confirmer.asked) == 1
+    assert explorer.last_approval == ""
+
+
+def test_declaring_a_control_never_lets_a_finalizing_name_through() -> None:
+    driver = _Driver()
+    explorer, confirmer = _explorer(driver, declared_controls=("Submit", "Send *"))
+    assert explorer.click("button", "Submit") is False
+    assert explorer.click("button", "Send report") is False
+    assert driver.clicks == []
+    assert confirmer.asked == []
+
+
+def test_a_declared_control_is_still_refused_when_the_page_inspection_refuses_it() -> None:
+    driver = _Driver()
+    driver.submit_control = True
+    explorer, _ = _explorer(driver, declared_controls=("Add line",))
+    assert explorer.click("button", "Add line") is False
+    assert driver.clicks == []
+    assert explorer.last_outcome.startswith("refused: ")
+
+
 def test_a_finalizing_control_is_never_clicked_even_when_the_user_would_say_yes() -> None:
     driver = _Driver()
     explorer, confirmer = _explorer(driver, [True])

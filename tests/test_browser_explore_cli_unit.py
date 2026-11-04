@@ -201,6 +201,40 @@ def test_without_a_terminal_the_control_is_not_clicked_and_the_user_gets_the_com
     assert driver.clicks == []
 
 
+def test_a_declared_control_is_clicked_with_no_terminal_and_recorded_as_a_step(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nallowed_controls = ["Add line"]')
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    result = _run(
+        "browser", "explore", "click", "expense-report", "Add line", "--page", "expense-list"
+    )
+    payload = _json(result)
+    assert payload["clicked"] is True
+    assert payload["approved_by"] == "allowed_controls"
+    assert payload["recorded_step"] is True
+    assert driver.clicks == [("button", "Add line")]
+    assert _Confirmer.asked == []
+
+
+def test_a_declared_finalizing_name_is_refused_and_not_clicked(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nallowed_controls = ["Submit"]')
+    payload = _json(_run("browser", "explore", "click", "expense-report", "Submit"))
+    assert payload["clicked"] is False
+    assert payload["approved_by"] is None
+    assert driver.clicks == []
+
+
+def test_the_no_terminal_hint_names_allowed_controls_as_the_alternative(
+    driver: _Driver,
+) -> None:
+    payload = _json(_run("browser", "explore", "click", "expense-report", "Add line"))
+    assert payload["approved_by"] is None
+    assert "allowed_controls" in payload["hint"]
+
+
 def test_a_finalizing_control_is_never_clicked_or_asked_about(driver: _Driver) -> None:
     _Confirmer.answers = [True]
     result = _run("browser", "explore", "click", "expense-report", "Submit report")
