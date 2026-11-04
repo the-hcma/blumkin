@@ -546,3 +546,57 @@ def test_a_form_url_with_a_password_and_a_lone_surrogate_is_refused_without_echo
     assert result.exit_code == EXIT_USAGE
     assert "hunter2" not in result.output
     assert "expense-report" not in (config / "config.toml").read_text()
+
+
+# --------------------------------------------------------------------------- time-sheet (#599)
+
+
+def test_the_time_sheet_template_needs_a_host(config: Path) -> None:
+    result = _run("--template", "time-sheet")
+
+    assert result.exit_code == EXIT_USAGE
+    assert "--host" in _payload(result)["message"]
+    assert list_profiles(config) == []
+
+
+def test_the_time_sheet_table_seeds_the_controls_and_refuses_clear_and_submit(
+    config: Path,
+) -> None:
+    result = _run(
+        "--template", "time-sheet", "--host", "erp.example.com",
+        "--form-url", "https://erp.example.com/timecards", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    policy = load_browser_setup().browser.tasks["time-sheet"]
+    assert policy.allowed_hosts == ("erp.example.com",)
+    assert policy.allowed_controls == ("Copy Previous Time Card", "Save")
+    assert policy.extra_deny_names == ("Clear Time Card",)
+    assert policy.form_url == "https://erp.example.com/timecards"
+    assert policy.upload_dirs == ()
+    assert [profile.task for profile in list_profiles(config)] == ["time-sheet"]
+
+
+def test_clear_time_card_is_refused_by_the_guard_the_template_configures(config: Path) -> None:
+    from blumkin.browser.guard import is_finalizing_name
+
+    _run("--template", "time-sheet", "--host", "erp.example.com", "--yes")
+    policy = load_browser_setup().browser.tasks["time-sheet"]
+
+    assert is_finalizing_name("Clear Time Card", policy.extra_deny_names)
+    assert not is_finalizing_name("Clear Time Card")
+    assert is_finalizing_name("Submit", policy.extra_deny_names)
+
+
+def test_the_time_sheet_template_takes_no_upload_folder(config: Path) -> None:
+    result = _run("--template", "time-sheet", "--host", "erp.example.com", "--upload-dir", "~/x")
+
+    assert result.exit_code == EXIT_USAGE
+    assert "--upload-dir" in _payload(result)["message"]
+
+
+def test_the_teams_template_still_takes_no_form_url(config: Path) -> None:
+    result = _run("--template", "teams-transcript", "--form-url", "https://teams.microsoft.com/x")
+
+    assert result.exit_code == EXIT_USAGE
+    assert "--form-url" in _payload(result)["message"]
