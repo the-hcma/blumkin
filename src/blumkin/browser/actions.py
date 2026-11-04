@@ -644,6 +644,53 @@ def press_task(
     return _with_driver(config, task, act)
 
 
+def cell_task(
+    config: BrowserSetup,
+    task: str,
+    row: str,
+    column: str,
+    value: str | None = None,
+    *,
+    grid: int = 1,
+) -> dict[str, Any]:
+    """Read or edit one cell of an Oracle JET data grid, reached by its row and column.
+
+    A JET grid draws its cells as plain divs with no roles, labels or fields, so `fill` cannot
+    reach them. `row` and `column` are 1-based numbers or header texts (columns count the frozen
+    ones first). With no `value` the cell is only read: nothing is clicked or typed. With a
+    `value` it is selected and typed in; a list-of-values cell has its matching dropdown option
+    clicked and any other cell is committed with Tab (an empty value clears the cell). Enter is
+    never pressed. The text and labels that come back are page text: untrusted, so each is cut
+    to a line of at most `MAX_TITLE_CHARS` and scanned for injection.
+    """
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        edit = driver.edit_cell(row, column, value, grid=grid)
+        warning = scan_for_injection(
+            "\n".join((edit.row_label, edit.column_label, edit.text)), location="page.cell"
+        ).to_payload()
+        return {
+            "action": "cell",
+            "cell": {
+                "column": edit.column,
+                "column_label": _one_line(edit.column_label),
+                "columns": edit.columns,
+                "row": edit.row,
+                "row_label": _one_line(edit.row_label),
+                "rows": edit.rows,
+                "text": _one_line(edit.text),
+            },
+            "edited": edit.edited,
+            "injection_warning": warning,
+            "ok": True,
+            "task": task,
+            "untrusted": UNTRUSTED_NOTE,
+            "url": driver.url,
+        }
+
+    return _with_driver(config, task, act)
+
+
 def frames_task(config: BrowserSetup, task: str, wait_s: float = 0.0) -> dict[str, Any]:
     """List the page's child frames: number, host, origin and whether the task allows them.
 

@@ -13,6 +13,7 @@ import pytest
 from blumkin.browser.cdp import (
     AccountPick,
     BrowserActionError,
+    CellEdit,
     ControlInfo,
     DownloadedFile,
     FieldReading,
@@ -31,6 +32,7 @@ from blumkin.browser.guard import (
 )
 from blumkin.browser.profiles import BrowserProfile
 
+_CELL = ControlInfo(tag="div", input_type="", in_form=False)
 _PLAIN = ControlInfo(tag="button", input_type="button", in_form=False)
 
 
@@ -102,6 +104,27 @@ class _Raw:
 
     def describe_field(self, label: str, target: Any = None) -> ControlInfo:
         return self.fields.get(label, ControlInfo(tag="input", input_type="text", in_form=True))
+
+    def edit_cell(
+        self,
+        row: str,
+        column: str,
+        value: str | None,
+        grid: int,
+        vet: Callable[[ControlInfo], None],
+    ) -> CellEdit:
+        vet(self.controls.get(f"cell:{row}:{column}", _CELL))
+        self.calls.append(("edit_cell", row, column, value, grid))
+        return CellEdit(
+            column=5,
+            column_label="Mon,Nov 02",
+            columns=17,
+            edited=value is not None,
+            row=2,
+            row_label="2",
+            rows=12,
+            text="8 hours" if value is None else f"{value} hours",
+        )
 
     def fill(self, label: str, value: str, target: object = None) -> str | None:
         self.calls.append(("fill", label, value))
@@ -616,6 +639,55 @@ def test_the_refusal_hint_for_a_deny_list_task_says_what_needs_declaring() -> No
     assert "menu item" in str(excinfo.value)
 
 
+def test_a_grid_cell_is_read_without_clicking_or_typing() -> None:
+    raw, driver = _guard()
+    edit = driver.edit_cell("2", "Mon,Nov 02")
+    assert (edit.edited, edit.text) == (False, "8 hours")
+    assert raw.calls == [("edit_cell", "2", "Mon,Nov 02", None, 1)]
+
+
+def test_a_grid_cell_value_is_typed_and_the_grid_number_is_passed_on() -> None:
+    raw, driver = _guard()
+    edit = driver.edit_cell("1", "5", "8", grid=2)
+    assert (edit.edited, edit.text) == (True, "8 hours")
+    assert raw.calls == [("edit_cell", "1", "5", "8", 2)]
+    driver.edit_cell("1", "5", "")
+    assert raw.calls[-1] == ("edit_cell", "1", "5", "", 1)
+
+
+@pytest.mark.parametrize("value", ["x" * 81, "8\n", "8\t9", "a\x1bb"])
+def test_a_grid_cell_value_must_be_a_short_printable_line(value: str) -> None:
+    raw, driver = _guard()
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.edit_cell("1", "5", value)
+    assert "80 printable characters" in str(excinfo.value)
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize("grid", [0, -1, True])
+def test_a_grid_number_must_be_a_positive_whole_number(grid: int) -> None:
+    raw, driver = _guard()
+    with pytest.raises(ValueError):
+        driver.edit_cell("1", "5", "8", grid=grid)
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        ControlInfo(tag="input", input_type="submit", in_form=True),
+        ControlInfo(tag="div", input_type="", in_form=True, has_formaction=True),
+        ControlInfo(tag="a", input_type="", in_form=False, href="javascript:void(0)"),
+    ],
+)
+def test_a_grid_cell_is_vetted_like_a_click_on_that_element(info: ControlInfo) -> None:
+    raw, driver = _guard()
+    raw.controls["cell:1:5"] = info
+    with pytest.raises(SubmitBlockedError):
+        driver.edit_cell("1", "5", "8")
+    assert raw.calls == []
+
+
 def test_the_default_is_still_deny_by_default() -> None:
     raw, driver = _guard()
     with pytest.raises(SubmitBlockedError) as excinfo:
@@ -750,6 +822,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "dismiss",
         "download",
         "close",
+        "edit_cell",
         "fill",
         "frame_aria_snapshot",
         "frame_list",

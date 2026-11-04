@@ -39,6 +39,7 @@ from blumkin.browser.cdp import (
     FIELD_ROLES,
     AccountPick,
     BrowserActionError,
+    CellEdit,
     ControlInfo,
     DownloadedFile,
     FieldReading,
@@ -85,6 +86,9 @@ DESTRUCTIVE_DENY_NAMES: tuple[str, ...] = (
     "remove",
     "void",
 )
+
+#: Longest value `edit_cell` types into a grid cell.
+MAX_CELL_VALUE_CHARS = 80
 
 #: Fixed letters or digits a control pattern must keep (a bare `*` would declare everything).
 MIN_PATTERN_LITERAL = 4
@@ -229,6 +233,24 @@ class GuardedDriver:
             lambda info: self._vet_control(action, info),
             save_to=save_to,
             timeout_s=DEFAULT_ACTION_TIMEOUT_S,
+        )
+
+    def edit_cell(
+        self, row: str, column: str, value: str | None = None, *, grid: int = 1
+    ) -> CellEdit:
+        """Read one cell of an Oracle JET data grid; with a `value`, select it, type and commit.
+
+        The cell is vetted like a click on the element itself and the keys go only to the grid;
+        the value is a short printable line (an empty one clears the cell), and a read clicks
+        nothing. Enter is never pressed, so nothing is submitted.
+        """
+        action = f"edit the cell at row {row!r}, column {column!r}"
+        if isinstance(grid, bool) or not isinstance(grid, int) or grid < 1:
+            raise ValueError(f"Expected grid to be a positive whole number, got {grid!r}")
+        if value is not None and not _is_cell_value(value):
+            raise self._refuse(action, "the value must be at most 80 printable characters")
+        return self._raw.edit_cell(
+            row, column, value, grid, lambda info: self._vet_control(action, info)
         )
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:
@@ -766,6 +788,11 @@ def _is_button_element(info: ControlInfo) -> bool:
     if info.tag == "button":
         return True
     return info.tag == "input" and info.input_type in _BUTTON_LIKE_INPUT_TYPES
+
+
+def _is_cell_value(value: str) -> bool:
+    """A value fit to type into a grid cell: one short line of printable characters."""
+    return len(value) <= MAX_CELL_VALUE_CHARS and all(ch.isprintable() for ch in value)
 
 
 def _is_denied(name: str, stems: tuple[str, ...]) -> bool:

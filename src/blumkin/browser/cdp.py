@@ -103,6 +103,10 @@ class BrowserDriver(Protocol):
         wait_s: float = DEFAULT_CLICK_WAIT_S,
     ) -> DownloadedFile: ...
 
+    def edit_cell(
+        self, row: str, column: str, value: str | None = None, *, grid: int = 1
+    ) -> CellEdit: ...
+
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None: ...
 
     def frame_aria_snapshot(
@@ -187,6 +191,26 @@ class AccountPick:
 
     status: str
     tiles: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class CellEdit:
+    """What `edit_cell` did to one cell of an Oracle JET data grid.
+
+    `row` and `column` are 1-based positions (columns count the frozen ones first, then the
+    scrolling ones); the labels are the headers they resolved to. `text` is what the cell
+    shows afterwards, `edited` whether a value was typed, and `rows` / `columns` the grid's
+    size.
+    """
+
+    column: int
+    column_label: str
+    columns: int
+    edited: bool
+    row: int
+    row_label: str
+    rows: int
+    text: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,6 +582,117 @@ class PlaywrightDriver:
             self._page.keyboard.press("Escape")
         except _playwright_error() as exc:
             raise self._action_error("press Escape on the page", exc) from exc
+
+    def edit_cell(
+        self,
+        row: str,
+        column: str,
+        value: str | None,
+        grid: int,
+        vet: Callable[[ControlInfo], None],
+    ) -> CellEdit:
+        """Read one cell of an Oracle JET data grid; with a `value`, select it, type and commit.
+
+        The cell is found by row and column (see `_CELL_JS`) and inspected by `vet` as the very
+        element that is clicked. With no `value` nothing is clicked or typed, so a read cannot
+        change the cell's mode. With one, the keys go only to the grid: if focus is not inside
+        the data grid after the click, nothing is typed. Enter, which could submit a form, is
+        never pressed. The cell is read again afterwards.
+        """
+        self._require_open()
+        try:
+            handle, meta = self._find_cell(row, column, grid)
+            vet(self._describe(handle))
+            if value is not None:
+                handle.scroll_into_view_if_needed(timeout=self._timeout_ms)
+                handle.click(timeout=self._timeout_ms)
+                # Asked of the page, not of the clicked element: selecting a cell can make JET
+                # draw it again, which leaves that element detached.
+                held = self._page.evaluate(
+                    "n => { const g = document.querySelectorAll('oj-data-grid')[n - 1];"
+                    " return !!g && g.contains(document.activeElement); }",
+                    grid,
+                )
+                if not held:
+                    raise BrowserActionError(
+                        "Expected focus to stay in the data grid after selecting the cell, "
+                        "got focus elsewhere; nothing was typed"
+                    )
+                if value:
+                    self._page.keyboard.type(value)
+                    self._commit_typed_cell(value)
+                else:
+                    self._page.keyboard.press("Delete")
+                    self._page.keyboard.press("Tab")
+                handle, meta = self._find_cell(row, column, grid)
+            text = str(handle.evaluate(_CELL_TEXT_JS))
+        except _playwright_error() as exc:
+            raise self._action_error(
+                f"edit the cell at row {row!r}, column {column!r}", exc
+            ) from exc
+        return CellEdit(
+            column=int(meta["column"]),
+            column_label=str(meta["columnLabel"]),
+            columns=int(meta["columns"]),
+            edited=value is not None,
+            row=int(meta["row"]),
+            row_label=str(meta["rowLabel"]),
+            rows=int(meta["rows"]),
+            text=text,
+        )
+
+    def _commit_typed_cell(self, value: str) -> None:
+        """Commit typed text: pick the matching option of a search-select, else press Tab.
+
+        A list-of-values cell (a project, a time reporting code) opens a dropdown of matches
+        while the text is typed and keeps the typed text uncommitted until an option is chosen,
+        and Tab alone does not choose one. The options load a moment after the typing, so they
+        are waited for; the one option whose text equals the typed text (or, failing that, the
+        only one that starts with it) is clicked, and anything else is refused with the options
+        listed, leaving the editor open for the next command or the user. A plain cell (hours)
+        shows no dropdown and is committed with Tab. Enter is never pressed.
+        """
+        drop = self._page.locator(".oj-listbox-drop:visible").first
+        try:
+            drop.wait_for(state="visible", timeout=_CELL_DROP_WAIT_MS)
+        except _playwright_error():
+            self._page.keyboard.press("Tab")
+            return
+        wanted = _option_key(value)
+        texts: list[str] = []
+        rows = drop.locator("li[role=row]")
+        for _ in range(_CELL_OPTION_POLLS):
+            # Each option keeps its position among all the rows, so the one chosen is the one
+            # clicked: a text filter would take the first row that merely contains it.
+            listed = [(i, t.strip()) for i, t in enumerate(rows.all_inner_texts()) if t.strip()]
+            texts = [t for _, t in listed]
+            keys = [_option_key(t) for t in texts]
+            exact = [i for i, k in enumerate(keys) if k == wanted]
+            starts = [i for i, k in enumerate(keys) if k.startswith(wanted)]
+            chosen = (
+                exact if len(exact) == 1 else (starts if not exact and len(starts) == 1 else [])
+            )
+            if chosen:
+                rows.nth(listed[chosen[0]][0]).click(timeout=self._timeout_ms)
+                return
+            if texts and len(exact) > 1:
+                break
+            self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
+        shown = "; ".join(repr(t[:60]) for t in texts[:5]) or "none"
+        raise BrowserActionError(
+            f"Expected one dropdown option matching {value!r}, got {len(texts)}: {shown}"
+        )
+
+    def _find_cell(self, row: str, column: str, grid: int) -> tuple[Any, dict[str, Any]]:
+        """The cell element at `row` and `column` of the `grid`-th data grid, and its position."""
+        found = self._page.evaluate_handle(_CELL_JS, {"column": column, "grid": grid, "row": row})
+        error = found.evaluate("o => o.error || ''")
+        if error:
+            raise BrowserActionError(str(error))
+        element = found.get_property("element").as_element()
+        if element is None:
+            raise BrowserActionError(f"Expected a cell at row {row!r}, column {column!r}, got none")
+        return element, dict(found.evaluate("o => o.meta"))
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None:
         """Fill one field and return the value it holds afterwards (None when not readable).
@@ -1577,6 +1712,15 @@ class RawBrowserDriver(Protocol):
 
     def dismiss(self) -> None: ...
 
+    def edit_cell(
+        self,
+        row: str,
+        column: str,
+        value: str | None,
+        grid: int,
+        vet: Callable[[ControlInfo], None],
+    ) -> CellEdit: ...
+
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None: ...
 
     def frame_aria_snapshot(
@@ -2037,6 +2181,103 @@ _PICK_ACCOUNT_JS = r"""(args) => {
   }
   return ['ok', tiles[0], 1, seen];
 }"""
+
+#: How long a typed cell value waits for a dropdown to appear before it is committed as plain text.
+_CELL_DROP_WAIT_MS = 1500
+#: How often and how long the options of a typed cell value are polled while they load.
+_CELL_OPTION_POLL_MS = 500
+_CELL_OPTION_POLLS = 16
+
+
+def _option_key(text: str) -> str:
+    """A dropdown option or typed value in the form they are compared in."""
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+#: What a cell shows: the value of its editor while it is being edited, else its text without
+#: the screen-reader-only status JET keeps inside an edited cell ("1 matches found"), which is
+#: not part of the value.
+_CELL_TEXT_JS = """
+(el) => {
+  const editor = el.querySelector('input');
+  if (editor && editor.value) return editor.value.replace(/\\s+/g, ' ').trim();
+  const copy = el.cloneNode(true);
+  copy.querySelectorAll('.oj-helper-hidden-accessible, [aria-live], [role=status]')
+    .forEach((n) => n.remove());
+  return (copy.textContent || '').replace(/\\s+/g, ' ').trim();
+}
+"""
+
+#: Finds one cell of an Oracle JET data grid (`oj-data-grid`), whose cells are plain divs with no
+#: roles or labels. Columns count the frozen ones first (Project, Task, ...), then the scrolling
+#: ones (the days); a column is a 1-based number or its header text, a row a 1-based number or
+#: its row header text. The cell is the one drawn where that row and that column meet.
+_CELL_JS = r"""
+(args) => {
+  const grids = [...document.querySelectorAll('oj-data-grid')];
+  const grid = grids[args.grid - 1];
+  if (!grid) return {error: `Expected data grid ${args.grid}, got ${grids.length} on the page`};
+  const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  // A header is nested: a frozen column's group holds the period, then Scheduled Hours, then its
+  // own name (Project, Task, ...), so its label is the deepest text; a day's group starts with
+  // the day, so its label is the first.
+  const texts = (e) => [...e.querySelectorAll('.oj-datagrid-header-cell')]
+    .map((c) => (c.innerText || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const first = (e) => texts(e)[0] || (e.innerText || '').replace(/\s+/g, ' ').trim();
+  const last = (e) => texts(e).pop() || '';
+  const scroller = (sel) => grid.querySelector(sel + ' > .oj-datagrid-scroller');
+  const kids = (sc) => (sc ? [...sc.children] : []);
+  const frozenCols = kids(scroller('.oj-datagrid-column-header-frozen')).map(last);
+  const mainCols = kids(scroller('.oj-datagrid-column-header')).map(first);
+  const rowHeads = kids(scroller('.oj-datagrid-row-header')).map(first);
+  const columns = [...frozenCols, ...mainCols];
+  const resolve = (want, names, what) => {
+    const text = String(want).trim();
+    if (/^[0-9]+$/.test(text)) {
+      const n = parseInt(text, 10);
+      if (n < 1 || n > names.length) {
+        return {error: `Expected ${what} 1 to ${names.length}, got ${n}`};
+      }
+      return {index: n - 1};
+    }
+    const hits = names.map((n, i) => (norm(n) === norm(text) ? i : -1)).filter((i) => i >= 0);
+    if (hits.length === 1) return {index: hits[0]};
+    return {error: `Expected one ${what} named ${text}, got ${hits.length}`};
+  };
+  const c = resolve(args.column, columns, 'column');
+  if (c.error) return c;
+  const r = resolve(args.row, rowHeads, 'row');
+  if (r.error) return r;
+  const frozen = c.index < frozenCols.length;
+  const body = frozen
+    ? grid.querySelector('.oj-datagrid-databody-frozen-column')
+    : grid.querySelector('.oj-datagrid-databody');
+  const cells = [...(body ? body.querySelectorAll('.oj-datagrid-cell') : [])];
+  // JET moves a cell it has edited to the end of its container, so the DOM order stops being
+  // row-major after an edit; the cell is found by where it is drawn instead, in the row and
+  // column of the headers.
+  const cellOf = (e) => (e.querySelector('.oj-datagrid-header-cell') || e).getBoundingClientRect();
+  const top = cellOf(kids(scroller('.oj-datagrid-row-header'))[r.index]).top;
+  const headerSel = frozen ? '.oj-datagrid-column-header-frozen' : '.oj-datagrid-column-header';
+  const colHeads = kids(scroller(headerSel));
+  const left = cellOf(colHeads[frozen ? c.index : c.index - frozenCols.length]).left;
+  const near = (a, b) => Math.abs(a - b) <= 6;
+  const hits = cells.filter((e) => {
+    const box = e.getBoundingClientRect();
+    return near(box.top, top) && near(box.left, left);
+  });
+  if (hits.length !== 1) {
+    return {
+      error: `Expected one cell at row ${r.index + 1}, column ${c.index + 1}, got ${hits.length}`,
+    };
+  }
+  return {
+    element: hits[0],
+    meta: {column: c.index + 1, columnLabel: columns[c.index], columns: columns.length,
+           row: r.index + 1, rowLabel: rowHeads[r.index], rows: rowHeads.length},
+  };
+}
+"""
 
 _DESCRIBE_CONTROL_JS = (
     "(e) => { const sel = 'dialog, [role=dialog], [role=alertdialog]'; "

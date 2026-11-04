@@ -61,6 +61,7 @@ from blumkin.browser.actions import (
     SignInTimeoutError,
     UploadBlockedError,
     address_task,
+    cell_task,
     click_task,
     dialog_task,
     download_task,
@@ -3865,6 +3866,51 @@ def browser_press(
         ),
         "pressed",
     )
+
+
+@browser.command("cell", epilog=help_text.BROWSER_CELL_EPILOG)
+@click.argument("task")
+@click.argument("row")
+@click.argument("column")
+@click.argument("value", required=False)
+@click.option(
+    "--grid",
+    "grid",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Which data grid on the page, counting from 1.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_cell(
+    ctx: click.Context,
+    task: str,
+    row: str,
+    column: str,
+    value: str | None,
+    grid: int,
+    as_json_flag: bool,
+) -> None:
+    """Read or edit one cell of an Oracle JET data grid, reached by its row and column."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = cell_task(load_browser_setup(), task, row, column, value, grid=grid)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    cell = payload["cell"]
+    verb = "edited" if payload["edited"] else "read"
+    lines = [
+        f"{task}: {verb} row {cell['row']} ({sanitize_terminal(cell['row_label'])}), "
+        f"column {cell['column']} ({sanitize_terminal(cell['column_label'])}): "
+        f"{sanitize_terminal(cell['text'])!r}"
+    ]
+    lines.extend(format_injection_warning_banner(payload["injection_warning"]))
+    lines.append(payload["untrusted"])
+    emit_lines(lines)
 
 
 @browser.command("grid", epilog=help_text.BROWSER_GRID_EPILOG)
