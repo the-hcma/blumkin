@@ -427,6 +427,7 @@ def test_ordinary_names_are_not_mistaken_for_finalizing_ones(name: str) -> None:
 def test_deny_list_mode_clicks_an_undeclared_navigation_control(role: str) -> None:
     raw, driver = _guard(allow_all=True)
     raw.present["10/27/2026"] = (role,)
+    raw.controls["10/27/2026"] = ControlInfo(tag="a", input_type="", in_form=False, href="/x")
     assert driver.click("10/27/2026", role) == role
     assert raw.calls == [("click", role, "10/27/2026")]
 
@@ -444,9 +445,45 @@ def test_deny_list_mode_never_opens_up_a_button(name: str) -> None:
     assert driver.click(name) == "button"
 
 
+@pytest.mark.parametrize(
+    "info",
+    [
+        ControlInfo(tag="button", input_type="button", in_form=False),
+        ControlInfo(tag="input", input_type="button", in_form=False),
+    ],
+)
+@pytest.mark.parametrize("role", ["link", "tab", "option", "checkbox", "treeitem"])
+def test_deny_list_mode_treats_a_button_element_as_a_button_whatever_its_role(
+    role: str, info: ControlInfo
+) -> None:
+    raw, driver = _guard(allow_all=True)
+    raw.present["Save"] = (role,)
+    raw.controls["Save"] = info
+    with pytest.raises(SubmitBlockedError) as excinfo:
+        driver.click("Save", role)
+    assert "is a button" in str(excinfo.value)
+    assert raw.calls == []
+    raw, driver = _guard("Save", allow_all=True)
+    raw.present["Save"] = (role,)
+    raw.controls["Save"] = info
+    assert driver.click("Save", role) == role
+
+
+def test_deny_list_mode_still_clicks_a_real_link_and_a_declared_confirm_button() -> None:
+    raw, driver = _guard(allow_all=True, confirm=("OK",))
+    raw.present["Details"] = ("link",)
+    raw.controls["Details"] = ControlInfo(tag="a", input_type="", in_form=False, href="/x")
+    assert driver.click("Details", "link") == "link"
+    raw.controls["OK"] = ControlInfo(
+        tag="button", input_type="button", in_form=False, in_dialog=True, form_in_dialog=True
+    )
+    assert driver.click("OK") == "button"
+
+
 def test_deny_list_mode_lets_the_found_role_decide_when_none_is_given() -> None:
     raw, driver = _guard(allow_all=True)
     raw.present["Next"] = ("link",)
+    raw.controls["Next"] = ControlInfo(tag="a", input_type="", in_form=False, href="/next")
     assert driver.click("Next") == "link"
     raw.present["Go on"] = ("button",)
     with pytest.raises(SubmitBlockedError):

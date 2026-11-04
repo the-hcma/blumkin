@@ -496,7 +496,24 @@ class GuardedDriver:
 
         A name declared as a dialog confirm (and not as a plain control) is valid only inside a
         dialog; there it is spared the submit-control check when its form is the dialog's own.
+
+        In deny-list mode a button element must be declared whatever role the page gives it
+        (`<button role="link">` is still a button): the role only decides what the name check
+        let through, not what the element is.
         """
+        if (
+            name is not None
+            and self._allow_all
+            and _is_button_element(info)
+            and _exact(name) not in self._confirm
+            and _exact(name) not in self._draft
+            and not self._is_declared(name, role, declared_only=True)
+        ):
+            raise self._refuse(
+                action,
+                "the element is a button, and a button must be declared in allowed_controls "
+                "whatever role the page gives it",
+            )
         confirm = False
         if name is not None and _exact(name) in self._confirm:
             confirm = True
@@ -736,6 +753,13 @@ def _folded(text: str) -> str:
 
 def _is_button_like(info: ControlInfo) -> bool:
     if info.tag == "button" or info.tag == "a":
+        return True
+    return info.tag == "input" and info.input_type in _BUTTON_LIKE_INPUT_TYPES
+
+
+def _is_button_element(info: ControlInfo) -> bool:
+    """A `<button>` or a button-type `<input>`; unlike `_is_button_like`, never a link."""
+    if info.tag == "button":
         return True
     return info.tag == "input" and info.input_type in _BUTTON_LIKE_INPUT_TYPES
 
