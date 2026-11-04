@@ -106,7 +106,9 @@ class BrowserDriver(Protocol):
 
     def edit_cell(
         self, row: str, column: str, value: str | None = None, *, grid: int = 1
-    ) -> CellEdit: ...
+    ) -> CellEdit:
+        """Read one data-grid cell by row and column; with a `value`, edit it."""
+        ...
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None: ...
 
@@ -1852,7 +1854,9 @@ class RawBrowserDriver(Protocol):
         grid: int,
         vet: Callable[[ControlInfo], None],
         vet_name: Callable[[str], None],
-    ) -> CellEdit: ...
+    ) -> CellEdit:
+        """Read or edit one data-grid cell; `vet` and `vet_name` judge what is clicked."""
+        ...
 
     def fill(self, label: str, value: str, target: FieldTarget | None = None) -> str | None: ...
 

@@ -253,6 +253,7 @@ class GuardedDriver:
             raise self._refuse(action, "the value starts like a finalizing action")
 
         def vet_option(name: str) -> None:
+            """Refuse a dropdown option whose text begins with a finalizing word."""
             if _begins_with_denied(name, self._deny):
                 raise self._refuse(action, "the option starts like a finalizing action")
 
