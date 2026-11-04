@@ -171,7 +171,7 @@ class Explorer:
         if problem is not None:
             self.last_outcome = f"refused: {problem}"
             return False
-        href_asks = decision is ClickDecision.CLICK and _href_looks_destructive(inspection.href)
+        href_asks = _href_looks_destructive(inspection.href)
         if href_asks:
             decision = ClickDecision.ASK
         approval = ""

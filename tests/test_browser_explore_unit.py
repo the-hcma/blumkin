@@ -319,6 +319,15 @@ def test_a_declared_link_whose_address_looks_destructive_still_asks() -> None:
     assert explorer.last_approval == ""
 
 
+def test_a_declared_link_whose_name_asks_still_asks_when_its_address_looks_destructive() -> None:
+    driver = _Driver()
+    driver.href = "/account/delete/7"
+    explorer, confirmer = _explorer(driver, [False], declared_controls=("Archive",))
+    assert explorer.click("link", "Archive") is False
+    assert len(confirmer.asked) == 1
+    assert explorer.last_approval == ""
+
+
 def test_the_approval_is_reported_only_for_a_click_that_happened() -> None:
     class _Refusing(_Driver):
         def click_vetted(self, role: str, name: str, expected: Inspection) -> None:
