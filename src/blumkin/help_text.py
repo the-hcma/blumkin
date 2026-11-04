@@ -1009,9 +1009,10 @@ machine and go only to the page you pointed the task at.
 
 `--receipt-ref REF --instance KEY` (from `receipts rehome --private`) uploads the filed receipt
 instead of a path, so neither its path nor its amount-bearing name is on a command line or in the
-result. `--private` with a path argument only redacts the result and driver errors: the path itself is still on the command line (shell history, `ps`), so use `--receipt-ref` to keep it off. The result then says `attached` (whether the page
-holds the intended file) and `persisted`, never a file name. All the folder, host, regular-file
-and single-link rules apply unchanged.
+result. `--private` with a path argument only redacts the result and driver errors: the path
+itself is still on the command line (shell history, `ps`), so use `--receipt-ref` to keep it
+off. The result then says `attached` (whether the page holds the intended file) and `persisted`,
+never a file name. All the folder, host, regular-file and single-link rules apply unchanged.
 
 `ok` only means the file was handed to the input. The command then waits half a second and
 reads what the page shows: `persisted` is `shown` (the file's name is on the page near the
