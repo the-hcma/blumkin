@@ -537,7 +537,7 @@ class PlaywrightDriver:
             error = self._action_error(f"fill the field labelled {label!r}", exc)
             if value:  # a Playwright message can quote the typed text; keep it out of errors
                 error = BrowserActionError(str(error).replace(value, "<value>"))
-            raise error from exc
+            raise error from None  # the original message can quote the value
 
     def frame_aria_snapshot(
         self,
@@ -690,6 +690,7 @@ class PlaywrightDriver:
                 return FieldReading("missing")
             self._still_allowed(scope, target)
             value = self._read_value(locator)
+            self._still_allowed(scope, target)  # the frame must still be allowed after the read
         except _playwright_error() as exc:
             if _is_timeout(exc):
                 return FieldReading("missing")
@@ -1631,6 +1632,7 @@ _SAFE_VALUE_JS = (
     "if (String(e.type || '').toLowerCase() === 'password') return null; "
     "const tokens = String(e.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/); "
     "if (tokens.some((t) => secrets.includes(t))) return null; "
+    "if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.tagName)) return String(e.value); "
     "return (e.value !== undefined && e.value !== '') ? String(e.value) : "
     "String(e.getAttribute('aria-valuetext') || e.innerText || e.textContent || ''); }"
 )

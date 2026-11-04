@@ -15,6 +15,7 @@ _PAGE = """
 <label>Pass <input type=password value="hunter2"></label>
 <label>Code <input autocomplete="one-time-code" value="123456"></label>
 <label>Tokens <input autocomplete="section-b current-password" value="s3cret"></label>
+<label>Cleared <textarea id=cleared>12.50</textarea></label>
 <label>Long <input id=long></label>
 <label>Twin <input value="x"></label><label>Twin <input value="y"></label>
 """
@@ -44,6 +45,9 @@ def test_read_field_reports_each_outcome_in_a_real_page() -> None:
             assert driver.read_field("Twin", FieldTarget(nth=3)).status == "missing"
             page.evaluate("document.getElementById('long').value = 'a'.repeat(100001)")
             assert driver.read_field("Long").status == "unreadable"
+            page.evaluate("document.getElementById('cleared').value = ''")
+            cleared = driver.read_field("Cleared")
+            assert (cleared.status, cleared.value) == ("read", "")
             assert driver.read_field("Nothing here").status == "missing"
         finally:
             browser.close()
