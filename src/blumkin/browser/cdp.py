@@ -2080,21 +2080,23 @@ _PICK_ACCOUNT_JS = r"""(args) => {
 }"""
 
 #: Whether a row (or cell) holds, sits inside or is made of a control, which a click in its
-#: middle could hit or bubble to: any control or focusable thing inside it, a control or
-#: label around it, content in a shadow root (which cannot be searched). The row's own click
-#: handler is not a control: a result list is built that way.
+#: middle could hit, bubble to or be forwarded by: any control or focusable thing inside or
+#: around it, the element itself when it is one (a `label`, a `contenteditable` area), and
+#: content in a shadow root, whether it hosts one, has one inside or sits in one (none of which
+#: can be searched). The row's own click handler is not a control: a result list is built so.
 _PICK_BLOCKERS_JS = r"""(e) => {
-  const controls = 'button, a, area, input:not([type=hidden]), select, textarea, summary, '
-    + 'label, iframe, object, embed, [onclick], [contenteditable=true], [role=button], '
-    + '[role=link], [role=menuitem], [role=menuitemcheckbox], [role=menuitemradio], '
-    + '[role=checkbox], [role=radio], [role=switch], [role=tab], [role=combobox], '
-    + '[role=textbox], [role=slider], [role=spinbutton], [role=option], [role=treeitem]';
+  const own = 'button, a, area, input:not([type=hidden]), select, textarea, summary, label, '
+    + 'iframe, object, embed, [contenteditable=true]';
+  const controls = own + ', [onclick], [role=button], [role=link], [role=menuitem], '
+    + '[role=menuitemcheckbox], [role=menuitemradio], [role=checkbox], [role=radio], '
+    + '[role=switch], [role=tab], [role=combobox], [role=textbox], [role=slider], '
+    + '[role=spinbutton], [role=option], [role=treeitem]';
+  if (e.matches(own)) return true;
   if (e.querySelector(controls)) return true;
   if (e.querySelector('[tabindex]:not([tabindex="-1"])')) return true;
   if (e.getRootNode() instanceof ShadowRoot) return true;
-  if (Array.from(e.querySelectorAll('*')).some((n) => n.shadowRoot)) return true;
-  return !!(e.parentElement && e.parentElement.closest(
-    'a, label, button, summary, [onclick], [role=button], [role=link], [role=menuitem]'));
+  if ([e, ...e.querySelectorAll('*')].some((n) => n.shadowRoot)) return true;
+  return !!(e.parentElement && e.parentElement.closest(controls));
 }"""
 
 _DESCRIBE_CONTROL_JS = (

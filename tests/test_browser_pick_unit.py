@@ -29,11 +29,21 @@ _PAGE = """
 </table></label>
 <button role=row onclick="window.pressed = true">Add payee</button>
 <a href="#z" role=row onclick="window.pressed = true">Go there</a>
-<div id=host></div>
+<label role=row for=save>Label row</label>
+<button id=save onclick="window.pressed = true">Save</button>
+<div role=row contenteditable=true onclick="window.chosen = 'editable'">Editable row</div>
+<div id=host role=row aria-label="Host row" onclick="window.chosen = 'host'"></div>
+<div id=host2></div>
+<div role=treeitem id=tree>
+  <table><tr onclick="window.chosen = 'in-tree'"><td>In</td><td>Tree</td></tr></table>
+</div>
 <script>
   window.chosen = null; window.pressed = false;
-  const root = document.getElementById('host').attachShadow({mode: 'open'});
+  document.getElementById('host').attachShadow({mode: 'open'}).innerHTML =
+    '<button onclick="window.pressed = true">Inner</button>';
+  const root = document.getElementById('host2').attachShadow({mode: 'open'});
   root.innerHTML = '<div role=row onclick="window.chosen = 1">Shadow row</div>';
+  document.getElementById('tree').addEventListener('click', () => { window.pressed = true; });
 </script>
 """
 
@@ -71,11 +81,17 @@ def test_pick_clicks_one_plain_row_and_refuses_everything_that_is_or_holds_a_con
                 "Linked Row",
                 "Inside Link",
                 "Inside Label",
+                "Label row",
+                "Editable row",
+                "Host row",
+                "In Tree",
+                "Shadow row",
             ):
                 page.evaluate("window.chosen = null")
                 with pytest.raises(SubmitBlockedError):
                     driver.pick(text)
                 assert page.evaluate("window.chosen") is None, text
+            assert page.evaluate("window.pressed") is False
             for text in ("Add payee", "Go there"):
                 with pytest.raises(SubmitBlockedError):
                     driver.pick(text)
