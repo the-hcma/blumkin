@@ -22,7 +22,7 @@ from blumkin.browser.ledger import (
     instance_status,
     record_item,
 )
-from blumkin.browser.model import Flow, FlowStep, SiteModel, load_model
+from blumkin.browser.model import Flow, FlowStep, SiteModel, default_store, load_model
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +82,7 @@ def apply_item(
     sha256: str | None = None,
     low_confidence: bool | None = None,
     model: SiteModel | None = None,
+    models_store: Path | None = None,
     run_step: StepRunner | None = None,
 ) -> ApplyResult:
     """Run a recorded flow for ``item``, then mark it filled (or no-op if already verified)."""
@@ -100,7 +101,13 @@ def apply_item(
             low_confidence=low_confidence,
             model_version=(model.version if model is not None else None),
         )
-    site = model if model is not None else load_model(config_dir, task)
+    site = (
+        model
+        if model is not None
+        else load_model(
+            models_store if models_store is not None else default_store(config_dir), task
+        )
+    )
     if site is None:
         raise LedgerError(f"Expected a saved site model for task {task!r}, got none")
     flow = _require_flow(site, flow_name)

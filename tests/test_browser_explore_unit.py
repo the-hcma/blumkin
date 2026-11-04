@@ -31,6 +31,7 @@ from blumkin.browser.model import (
     ControlSafety,
     Flow,
     FlowStep,
+    default_store,
     load_model,
     save_model,
 )
@@ -102,8 +103,8 @@ def test_a_draft_turns_observations_into_a_valid_stored_model(tmp_path: Path) ->
     draft.add_page("expense-list", "https://erp.example.com/expenses", observed)
     draft.add_step("click", page_id="expense-list", control="expense-list.add-line")
     model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
-    saved = save_model(tmp_path, model)
-    loaded = load_model(tmp_path, "expense-report")
+    saved = save_model(default_store(tmp_path), model)
+    loaded = load_model(default_store(tmp_path), "expense-report")
     assert loaded == saved
     page = loaded.pages[0]  # type: ignore[union-attr]
     by_name = {c.name: c for c in page.controls}
@@ -440,7 +441,7 @@ def test_a_draft_can_be_rebuilt_from_a_stored_model_and_extended(tmp_path: Path)
     rebuilt = again.to_model(recorded_at="2026-10-25T12:30:00Z", blumkin_version="1.0.0")
     assert [p.page_id for p in rebuilt.pages] == ["expense-list", "expense-form"]
     assert rebuilt.flows[0].steps == model.flows[0].steps
-    save_model(tmp_path, rebuilt)
+    save_model(default_store(tmp_path), rebuilt)
 
 
 # --- second review of the exploration core ----------------------------------------------------
@@ -766,7 +767,7 @@ def test_observing_a_page_again_drops_steps_whose_control_is_gone(tmp_path: Path
     draft.add_page("home", "https://erp.example.com/", (ControlObservation("button", "Start"),))
     model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
     assert model.flows == ()
-    save_model(tmp_path, model)
+    save_model(default_store(tmp_path), model)
 
 
 def test_controls_beyond_the_draft_cap_are_counted_as_skipped() -> None:

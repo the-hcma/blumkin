@@ -10,7 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from blumkin.browser.explore import Inspection, ModelDraft, parse_aria_snapshot
-from blumkin.browser.model import save_model
+from blumkin.browser.model import default_store, save_model
 from blumkin.browser.profiles import create_profile
 from blumkin.cli import main
 from blumkin.exit_codes import EXIT_NOT_FOUND, EXIT_OTHER, EXIT_SUCCESS, EXIT_USAGE
@@ -76,7 +76,7 @@ def _store(config: Path, snapshot: str = _RECORDED) -> None:
         "expense-list", "https://erp.example.com/expenses", parse_aria_snapshot(snapshot)
     )
     model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
-    save_model(config, model)
+    save_model(default_store(config), model)
 
 
 def _run(*args: str) -> Any:
@@ -260,7 +260,10 @@ def _store_two_pages(config: Path) -> None:
     draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
     draft.add_page("expense-list", "https://erp.example.com/x", parse_aria_snapshot(_RECORDED))
     draft.add_page("report-edit", "https://erp.example.com/x", parse_aria_snapshot(_EDIT_PAGE))
-    save_model(config, draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0"))
+    save_model(
+        default_store(config),
+        draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0"),
+    )
 
 
 def test_checking_the_wrong_page_names_the_page_the_browser_is_on(

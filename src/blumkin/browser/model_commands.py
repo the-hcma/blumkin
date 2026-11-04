@@ -39,6 +39,7 @@ from blumkin.browser.model import (
     list_versions,
     load_model,
     load_version,
+    resolve_store,
 )
 from blumkin.config import BrowserSetup
 
@@ -103,10 +104,12 @@ def model_diff(config: BrowserSetup, task: str, old: int, new: int | None) -> di
 
 def model_versions(config: BrowserSetup, task: str) -> dict[str, Any]:
     """The saved versions of the task's model."""
-    versions = list_versions(config.config_dir, task)
+    store = resolve_store(config)
+    versions = list_versions(store, task)
     return {
         "current": versions[-1] if versions else None,
         "ok": True,
+        "store": str(store),
         "task": task,
         "versions": versions,
     }
@@ -146,13 +149,13 @@ def _diff_payload(task: str, old: int, new: int, diff: ModelDiff) -> dict[str, A
 def _stored(config: BrowserSetup, task: str, version: int | None) -> SiteModel:
     if version is not None:
         return _version(config, task, version)
-    model = load_model(config.config_dir, task)
+    model = load_model(resolve_store(config), task)
     if model is None:
         raise ModelNotFoundError(f"Expected a saved model for task {task!r}, got none")
     return model
 
 
 def _version(config: BrowserSetup, task: str, version: int) -> SiteModel:
-    if version not in list_versions(config.config_dir, task):
+    if version not in list_versions(resolve_store(config), task):
         raise ModelNotFoundError(f"Expected version {version} of the {task!r} model, got none")
-    return load_version(config.config_dir, task, version)
+    return load_version(resolve_store(config), task, version)

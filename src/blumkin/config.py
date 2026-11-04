@@ -143,6 +143,9 @@ class BrowserConfig:
 
     #: "chrome", "edge" or "chromium"; None means the Chrome default.
     default: str | None = None
+    #: Where recorded site models live (absolute, or starting with `~/`); None means
+    #: `<config dir>/browser-models`. Checked when it is used (issue #621).
+    models_dir: str | None = None
     #: `[browser.tasks.<task>]`: what each browser task may click (issue #474).
     tasks: dict[str, BrowserTaskPolicy] = field(default_factory=dict)
 
@@ -782,12 +785,21 @@ def _browser_config(file_data: dict[str, Any]) -> BrowserConfig:
     if not isinstance(raw, dict):
         raise ProviderConfigError(f"[browser] must be a table in config.toml, got {raw!r}")
     default: str | None = None
-    unknown = sorted(set(raw) - {"default", "tasks"})
+    unknown = sorted(set(raw) - {"default", "models_dir", "tasks"})
     if unknown:
         raise ProviderConfigError(
             f"browser has unknown key(s) {', '.join(unknown)} in config.toml; "
-            "expected default, tasks"
+            "expected default, models_dir, tasks"
         )
+    models_dir = raw.get("models_dir")
+    if models_dir is not None:
+        if not isinstance(models_dir, str) or not (
+            models_dir.startswith("/") or models_dir.startswith("~/")
+        ):
+            raise ProviderConfigError(
+                "browser.models_dir must be an absolute folder or one starting with ~/ "
+                f"in config.toml, got {models_dir!r}"
+            )
     value = raw.get("default")
     if value is not None:
         if not isinstance(value, str):
@@ -798,7 +810,9 @@ def _browser_config(file_data: dict[str, Any]) -> BrowserConfig:
             default = parse_browser_kind(value).value
         except BrowserConfigError as exc:
             raise ProviderConfigError(f"browser.default in config.toml: {exc}") from exc
-    return BrowserConfig(default=default, tasks=_browser_task_policies(raw.get("tasks")))
+    return BrowserConfig(
+        default=default, models_dir=models_dir, tasks=_browser_task_policies(raw.get("tasks"))
+    )
 
 
 def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:

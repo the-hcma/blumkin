@@ -3727,7 +3727,12 @@ def browser_model_versions(ctx: click.Context, task: str, as_json_flag: bool) ->
         emit_lines([f"{task}: no saved model (start with `blumkin browser explore observe`)"])
         return
     listed = ", ".join(str(number) for number in payload["versions"])
-    emit_lines([f"{task}: versions {listed} (current {payload['current']})"])
+    emit_lines(
+        [
+            f"{task}: versions {listed} (current {payload['current']})",
+            f"  store: {sanitize_terminal(payload['store'])}",
+        ]
+    )
 
 
 @browser.command("press", epilog=help_text.BROWSER_PRESS_EPILOG)
@@ -5443,8 +5448,10 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
                 "the blumkin-agent binary is older than the rust-agent sources in this checkout; "
                 "rebuild it: uv sync --reinstall-package blumkin"
             )
+    models_dir = _models_location(cfg, warnings)
     payload = {
         "ok": not problems,
+        "browser_models": models_dir,
         "keychain": {"locked": keychain_locked, "unlock_mode": cfg.keychain_unlock},
         "build": build,
         "agent_binary": agent_binary,
@@ -5495,6 +5502,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
                 f"source_tree: {tree if tree is not None else '(installed release)'}",
             ]
         )
+        emit_lines([f"browser_models: {models_dir['dir']} ({models_dir['source']})"])
         emit_lines([f"account_type: {cfg.account_type}"])
         emit_lines([f"wo1162425_scopes: {cfg.wo1162425_scopes}"])
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
@@ -5510,6 +5518,25 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"skills: {', '.join(payload['skills'])}"])
     if problems:
         raise SystemExit(EXIT_AUTH)
+
+
+def _models_location(cfg: BlumkinConfig, warnings: list[str]) -> dict[str, Any]:
+    """Where the recorded site models live, for `doctor`; a bad `models_dir` is a warning."""
+    from blumkin.browser.model import SiteModelError, resolve_store
+    from blumkin.config import BrowserSetup
+
+    custom = cfg.browser.models_dir is not None
+    setup = BrowserSetup(browser=cfg.browser, config_dir=cfg.config_dir)
+    try:
+        where = resolve_store(setup)
+    except SiteModelError as exc:
+        warnings.append(f"[browser] models_dir cannot be used: {exc}")
+        return {"dir": cfg.browser.models_dir, "source": "models_dir (refused)", "usable": False}
+    return {
+        "dir": str(where),
+        "source": "models_dir" if custom else "default",
+        "usable": True,
+    }
 
 
 @main.command(epilog=help_text.CAPABILITIES_EPILOG)

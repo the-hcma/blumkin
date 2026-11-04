@@ -25,6 +25,7 @@ from blumkin.browser.model import (
     Page,
     SiteModel,
     SiteModelError,
+    default_store,
     discard_draft,
     list_versions,
     load_draft,
@@ -100,9 +101,9 @@ def _model(task: str = "expense-report", **overrides: Any) -> SiteModel:
 
 
 def test_a_saved_model_round_trips_with_its_version_assigned(tmp_path: Path) -> None:
-    saved = save_model(tmp_path, _model())
+    saved = save_model(default_store(tmp_path), _model())
     assert saved.version == 1
-    loaded = load_model(tmp_path, "expense-report")
+    loaded = load_model(default_store(tmp_path), "expense-report")
     assert loaded == saved
     assert loaded is not None
     assert loaded.pages[1].controls[1].safety is ControlSafety.FINALIZING
@@ -110,33 +111,36 @@ def test_a_saved_model_round_trips_with_its_version_assigned(tmp_path: Path) -> 
 
 
 def test_saving_again_keeps_every_earlier_version_listable_and_loadable(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
-    second = save_model(tmp_path, _model(recorded_at="2026-10-25T12:00:00Z"))
-    save_model(tmp_path, _model(recorded_at="2026-10-26T12:00:00Z"))
-    assert list_versions(tmp_path, "expense-report") == [1, 2, 3]
-    assert load_version(tmp_path, "expense-report", 2) == second
-    assert load_version(tmp_path, "expense-report", 1).recorded_at == "2026-10-24T12:00:00Z"
-    current = load_model(tmp_path, "expense-report")
+    save_model(default_store(tmp_path), _model())
+    second = save_model(default_store(tmp_path), _model(recorded_at="2026-10-25T12:00:00Z"))
+    save_model(default_store(tmp_path), _model(recorded_at="2026-10-26T12:00:00Z"))
+    assert list_versions(default_store(tmp_path), "expense-report") == [1, 2, 3]
+    assert load_version(default_store(tmp_path), "expense-report", 2) == second
+    assert (
+        load_version(default_store(tmp_path), "expense-report", 1).recorded_at
+        == "2026-10-24T12:00:00Z"
+    )
+    current = load_model(default_store(tmp_path), "expense-report")
     assert current is not None
     assert current.version == 3
 
 
 def test_a_task_with_no_model_loads_as_none_and_lists_no_versions(tmp_path: Path) -> None:
-    assert load_model(tmp_path, "time-sheet") is None
-    assert list_versions(tmp_path, "time-sheet") == []
+    assert load_model(default_store(tmp_path), "time-sheet") is None
+    assert list_versions(default_store(tmp_path), "time-sheet") == []
     with pytest.raises(SiteModelError, match="Expected version 4"):
-        load_version(tmp_path, "time-sheet", 4)
+        load_version(default_store(tmp_path), "time-sheet", 4)
 
 
 def test_models_are_kept_per_task(tmp_path: Path) -> None:
-    save_model(tmp_path, _model("expense-report"))
-    save_model(tmp_path, _model("time-sheet", hosts=("hr.example.com",)))
-    assert load_model(tmp_path, "time-sheet").hosts == ("hr.example.com",)  # type: ignore[union-attr]
-    assert list_versions(tmp_path, "expense-report") == [1]
+    save_model(default_store(tmp_path), _model("expense-report"))
+    save_model(default_store(tmp_path), _model("time-sheet", hosts=("hr.example.com",)))
+    assert load_model(default_store(tmp_path), "time-sheet").hosts == ("hr.example.com",)  # type: ignore[union-attr]
+    assert list_versions(default_store(tmp_path), "expense-report") == [1]
 
 
 def test_the_store_is_private(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     root = tmp_path / "browser-models"
     task_dir = root / "expense-report"
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
@@ -150,47 +154,47 @@ def test_a_symlinked_store_directory_is_refused(tmp_path: Path) -> None:
     elsewhere.mkdir()
     (tmp_path / "browser-models").symlink_to(elsewhere)
     with pytest.raises(BrowserProfileError, match="symlink"):
-        save_model(tmp_path, _model())
+        save_model(default_store(tmp_path), _model())
     assert list(elsewhere.iterdir()) == []
 
 
 def test_a_symlinked_model_file_is_not_followed(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     current = tmp_path / "browser-models" / "expense-report" / "model.json"
     target = tmp_path / "other.json"
     target.write_text(current.read_text())
     current.unlink()
     current.symlink_to(target)
     with pytest.raises(SiteModelError, match="symlink|regular file"):
-        load_model(tmp_path, "expense-report")
+        load_model(default_store(tmp_path), "expense-report")
 
 
 def test_a_task_name_that_could_escape_the_store_is_refused(tmp_path: Path) -> None:
     with pytest.raises(BrowserProfileError):
-        save_model(tmp_path, _model("../escape"))
+        save_model(default_store(tmp_path), _model("../escape"))
     with pytest.raises(BrowserProfileError):
-        load_model(tmp_path, "Expense_Report")
+        load_model(default_store(tmp_path), "Expense_Report")
 
 
 def test_a_crash_leftover_temp_file_does_not_break_a_later_save(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     task_dir = tmp_path / "browser-models" / "expense-report"
     (task_dir / "model.json.tmp").write_text("{torn")
     (task_dir / "history" / "model-0002.json.tmp").write_text("{torn")
-    save_model(tmp_path, _model())
-    assert list_versions(tmp_path, "expense-report") == [1, 2]
-    assert load_model(tmp_path, "expense-report") is not None
+    save_model(default_store(tmp_path), _model())
+    assert list_versions(default_store(tmp_path), "expense-report") == [1, 2]
+    assert load_model(default_store(tmp_path), "expense-report") is not None
 
 
 def test_a_corrupt_current_file_is_an_error_not_a_silent_empty_model(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     (tmp_path / "browser-models" / "expense-report" / "model.json").write_text('{"schema_ver')
     with pytest.raises(SiteModelError, match="JSON"):
-        load_model(tmp_path, "expense-report")
+        load_model(default_store(tmp_path), "expense-report")
 
 
 def test_a_model_from_a_newer_blumkin_names_the_versions(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     path = tmp_path / "browser-models" / "expense-report" / "model.json"
     payload = json.loads(path.read_text())
     payload["schema_version"] = SCHEMA_VERSION + 1
@@ -198,11 +202,11 @@ def test_a_model_from_a_newer_blumkin_names_the_versions(tmp_path: Path) -> None
     with pytest.raises(
         SiteModelError, match=rf"schema_version {SCHEMA_VERSION}.*{SCHEMA_VERSION + 1}"
     ):
-        load_model(tmp_path, "expense-report")
+        load_model(default_store(tmp_path), "expense-report")
 
 
 def _payload(tmp_path: Path) -> dict[str, Any]:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     path = tmp_path / "browser-models" / "expense-report" / "model.json"
     return json.loads(path.read_text())
 
@@ -210,7 +214,7 @@ def _payload(tmp_path: Path) -> dict[str, Any]:
 def _load_payload(tmp_path: Path, payload: dict[str, Any]) -> SiteModel | None:
     path = tmp_path / "browser-models" / "expense-report" / "model.json"
     path.write_text(json.dumps(payload))
-    return load_model(tmp_path, "expense-report")
+    return load_model(default_store(tmp_path), "expense-report")
 
 
 @pytest.mark.parametrize(
@@ -338,11 +342,11 @@ def test_too_many_items_are_refused(tmp_path: Path) -> None:
 
 
 def test_an_oversize_file_is_refused_without_parsing_it(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     path = tmp_path / "browser-models" / "expense-report" / "model.json"
     path.write_text(" " * (3 * 1024 * 1024))
     with pytest.raises(SiteModelError, match="too large"):
-        load_model(tmp_path, "expense-report")
+        load_model(default_store(tmp_path), "expense-report")
 
 
 def test_hosts_must_pass_the_tasks_allowed_hosts_check(tmp_path: Path) -> None:
@@ -352,19 +356,19 @@ def test_hosts_must_pass_the_tasks_allowed_hosts_check(tmp_path: Path) -> None:
             _model(hosts=("erp.example.com", "evil.example.org")),
             host_allowed=lambda host: host.endswith(".example.com"),
         )
-    assert list_versions(tmp_path, "expense-report") == []
+    assert list_versions(default_store(tmp_path), "expense-report") == []
 
 
 def test_a_failed_save_leaves_the_previous_model_untouched(tmp_path: Path) -> None:
-    saved = save_model(tmp_path, _model())
+    saved = save_model(default_store(tmp_path), _model())
     with pytest.raises(SiteModelError):
-        save_model(tmp_path, _model(hosts=()))
-    assert load_model(tmp_path, "expense-report") == saved
-    assert list_versions(tmp_path, "expense-report") == [1]
+        save_model(default_store(tmp_path), _model(hosts=()))
+    assert load_model(default_store(tmp_path), "expense-report") == saved
+    assert list_versions(default_store(tmp_path), "expense-report") == [1]
 
 
 def test_files_are_written_atomically_without_leaving_temp_files(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     names = {p.name for p in (tmp_path / "browser-models" / "expense-report").rglob("*")}
     assert not any(name.endswith(".tmp") for name in names)
     assert os.listdir(tmp_path / "browser-models" / "expense-report" / "history") == [
@@ -373,9 +377,9 @@ def test_files_are_written_atomically_without_leaving_temp_files(tmp_path: Path)
 
 
 def test_the_stored_json_is_deterministic(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     first = (tmp_path / "browser-models" / "expense-report" / "model.json").read_text()
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     second = (tmp_path / "browser-models" / "expense-report" / "model.json").read_text()
     assert json.loads(first)["version"] == 1 and json.loads(second)["version"] == 2
     assert first.replace('"version": 1', '"version": 2') == second
@@ -455,17 +459,20 @@ def test_hosts_that_are_not_public_looking_names_are_refused(tmp_path: Path, hos
 
 
 def test_loading_can_check_hosts_against_the_tasks_allowed_hosts_too(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     with pytest.raises(SiteModelError, match="erp.example.com"):
-        load_model(tmp_path, "expense-report", host_allowed=lambda host: False)
-    assert load_model(tmp_path, "expense-report", host_allowed=lambda host: True) is not None
+        load_model(default_store(tmp_path), "expense-report", host_allowed=lambda host: False)
+    assert (
+        load_model(default_store(tmp_path), "expense-report", host_allowed=lambda host: True)
+        is not None
+    )
 
 
 def test_deeply_nested_json_is_a_model_error_not_a_crash(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     _write_current(tmp_path, "[" * 100_000 + "]" * 100_000)
     with pytest.raises(SiteModelError, match="Expected"):
-        load_model(tmp_path, "expense-report")
+        load_model(default_store(tmp_path), "expense-report")
 
 
 @pytest.mark.parametrize(
@@ -478,14 +485,14 @@ def test_deeply_nested_json_is_a_model_error_not_a_crash(tmp_path: Path) -> None
     ids=["duplicate-key", "nan", "infinity"],
 )
 def test_duplicate_keys_and_non_finite_numbers_are_refused(tmp_path: Path, text: str) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     _write_current(tmp_path, text)
     with pytest.raises(SiteModelError, match="Expected"):
-        load_model(tmp_path, "expense-report")
+        load_model(default_store(tmp_path), "expense-report")
 
 
 def test_a_fifo_in_place_of_the_model_file_does_not_hang_the_loader(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     path = tmp_path / "browser-models" / "expense-report" / "model.json"
     path.unlink()
     os.mkfifo(path)
@@ -493,7 +500,7 @@ def test_a_fifo_in_place_of_the_model_file_does_not_hang_the_loader(tmp_path: Pa
 
     def attempt() -> None:
         try:
-            load_model(tmp_path, "expense-report")
+            load_model(default_store(tmp_path), "expense-report")
         except BaseException as exc:  # noqa: BLE001 - the thread reports whatever it got
             outcome.append(exc)
 
@@ -509,7 +516,7 @@ def test_a_fifo_in_place_of_the_model_file_does_not_hang_the_loader(tmp_path: Pa
 def test_a_symlinked_store_or_task_directory_is_not_followed_when_loading(
     tmp_path: Path, which: str
 ) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     root = tmp_path / "browser-models"
     real = tmp_path / "real"
     if which == "root":
@@ -519,22 +526,22 @@ def test_a_symlinked_store_or_task_directory_is_not_followed_when_loading(
         (root / "expense-report").rename(real)
         (root / "expense-report").symlink_to(real)
     with pytest.raises(SiteModelError, match="symlink"):
-        load_model(tmp_path, "expense-report")
+        load_model(default_store(tmp_path), "expense-report")
     with pytest.raises(SiteModelError, match="symlink"):
-        list_versions(tmp_path, "expense-report")
+        list_versions(default_store(tmp_path), "expense-report")
 
 
 def test_filesystem_errors_while_saving_are_model_errors(tmp_path: Path) -> None:
     (tmp_path / "browser-models").write_text("a file where the store directory belongs")
     with pytest.raises(SiteModelError, match="Expected"):
-        save_model(tmp_path, _model())
+        save_model(default_store(tmp_path), _model())
 
 
 def test_a_temp_path_that_is_a_directory_is_a_model_error_not_a_crash(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     (tmp_path / "browser-models" / "expense-report" / "model.json.tmp").mkdir()
     with pytest.raises(SiteModelError, match="Expected"):
-        save_model(tmp_path, _model())
+        save_model(default_store(tmp_path), _model())
 
 
 @pytest.mark.parametrize("bad", ["a b", "a b", "a b", "é"])
@@ -546,10 +553,10 @@ def test_line_separators_nbsp_and_unnormalized_text_are_refused(tmp_path: Path, 
 
 
 def test_non_ascii_digits_do_not_count_as_a_version_or_a_timestamp(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     history = tmp_path / "browser-models" / "expense-report" / "history"
     (history / "model-٠٠٠٥.json").write_text("{}")
-    assert list_versions(tmp_path, "expense-report") == [1]
+    assert list_versions(default_store(tmp_path), "expense-report") == [1]
     payload = _payload(tmp_path)
     payload["recorded_at"] = "٢026-10-24T12:00:00Z"
     with pytest.raises(SiteModelError, match="Expected"):
@@ -557,37 +564,37 @@ def test_non_ascii_digits_do_not_count_as_a_version_or_a_timestamp(tmp_path: Pat
 
 
 def test_a_history_file_whose_version_disagrees_with_its_name_is_refused(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
+    save_model(default_store(tmp_path), _model())
     history = tmp_path / "browser-models" / "expense-report" / "history"
     payload = json.loads((history / "model-0002.json").read_text())
     payload["version"] = 7
     (history / "model-0002.json").write_text(json.dumps(payload))
     with pytest.raises(SiteModelError, match="Expected version 2"):
-        load_version(tmp_path, "expense-report", 2)
+        load_version(default_store(tmp_path), "expense-report", 2)
 
 
 def test_a_current_file_behind_the_newest_history_rolls_forward_to_the_newest_version(
     tmp_path: Path,
 ) -> None:
-    save_model(tmp_path, _model())
-    save_model(tmp_path, _model(recorded_at="2026-10-25T12:00:00Z"))
+    save_model(default_store(tmp_path), _model())
+    save_model(default_store(tmp_path), _model(recorded_at="2026-10-25T12:00:00Z"))
     task_dir = tmp_path / "browser-models" / "expense-report"
     (task_dir / "model.json").write_text((task_dir / "history" / "model-0001.json").read_text())
-    loaded = load_model(tmp_path, "expense-report")
+    loaded = load_model(default_store(tmp_path), "expense-report")
     assert loaded is not None
     assert loaded.version == 2
     assert loaded.recorded_at == "2026-10-25T12:00:00Z"
 
 
 def test_a_current_file_ahead_of_the_history_is_refused(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     task_dir = tmp_path / "browser-models" / "expense-report"
     payload = json.loads((task_dir / "model.json").read_text())
     payload["version"] = 5
     (task_dir / "model.json").write_text(json.dumps(payload))
     with pytest.raises(SiteModelError, match="Expected model.json to be version 1"):
-        load_model(tmp_path, "expense-report")
+        load_model(default_store(tmp_path), "expense-report")
 
 
 def test_the_returned_model_is_what_a_reload_returns(tmp_path: Path) -> None:
@@ -604,8 +611,8 @@ def test_the_returned_model_is_what_a_reload_returns(tmp_path: Path) -> None:
             messy.pages[1],
         )
     )
-    saved = save_model(tmp_path, messy)
-    assert saved == load_model(tmp_path, "expense-report")
+    saved = save_model(default_store(tmp_path), messy)
+    assert saved == load_model(default_store(tmp_path), "expense-report")
     assert saved.pages[0].fingerprint == ("button:Add line", "heading:Expenses")
 
 
@@ -621,7 +628,7 @@ def test_a_malformed_dataclass_is_a_model_error_not_an_attribute_error(tmp_path:
         )
     )
     with pytest.raises(SiteModelError, match="Expected"):
-        save_model(tmp_path, broken)
+        save_model(default_store(tmp_path), broken)
 
 
 def test_an_error_about_a_huge_value_does_not_render_the_whole_value(tmp_path: Path) -> None:
@@ -727,7 +734,7 @@ def test_a_model_too_large_to_load_is_refused_on_save_and_writes_nothing(
 ) -> None:
     monkeypatch.setattr("blumkin.browser.model._MAX_FILE_BYTES", 1000)
     with pytest.raises(SiteModelError, match="too large"):
-        save_model(tmp_path, _model())
+        save_model(default_store(tmp_path), _model())
     history = tmp_path / "browser-models" / "expense-report" / "history"
     assert not history.exists() or list(history.iterdir()) == []
 
@@ -735,14 +742,14 @@ def test_a_model_too_large_to_load_is_refused_on_save_and_writes_nothing(
 def test_loading_while_another_process_saves_never_reports_an_interrupted_save(
     tmp_path: Path,
 ) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     stop = threading.Event()
     errors: list[BaseException] = []
 
     def reader() -> None:
         while not stop.is_set():
             try:
-                load_model(tmp_path, "expense-report")
+                load_model(default_store(tmp_path), "expense-report")
             except BaseException as exc:  # noqa: BLE001 - the thread reports whatever it got
                 errors.append(exc)
                 return
@@ -750,7 +757,7 @@ def test_loading_while_another_process_saves_never_reports_an_interrupted_save(
     worker = threading.Thread(target=reader, daemon=True)
     worker.start()
     for _ in range(25):
-        save_model(tmp_path, _model())
+        save_model(default_store(tmp_path), _model())
     stop.set()
     worker.join(30)
     assert not worker.is_alive()
@@ -758,13 +765,13 @@ def test_loading_while_another_process_saves_never_reports_an_interrupted_save(
 
 
 def test_list_versions_ignores_directories_links_and_noncanonical_names(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     history = tmp_path / "browser-models" / "expense-report" / "history"
     (history / "model-0777.json").mkdir()
     (history / "model-00001.json").write_text("{}")
     (history / "model-0009.json").symlink_to(history / "model-0001.json")
-    assert list_versions(tmp_path, "expense-report") == [1]
-    assert save_model(tmp_path, _model()).version == 2
+    assert list_versions(default_store(tmp_path), "expense-report") == [1]
+    assert save_model(default_store(tmp_path), _model()).version == 2
 
 
 @pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16"])
@@ -773,36 +780,36 @@ def test_a_byte_order_mark_or_utf16_model_file_is_refused(tmp_path: Path, encodi
     path = tmp_path / "browser-models" / "expense-report" / "model.json"
     path.write_bytes(json.dumps(payload).encode(encoding))
     with pytest.raises(SiteModelError, match="Expected"):
-        load_model(tmp_path, "expense-report")
+        load_model(default_store(tmp_path), "expense-report")
 
 
 def test_a_non_text_task_in_a_model_is_a_model_error(tmp_path: Path) -> None:
     with pytest.raises(SiteModelError, match="Expected"):
-        save_model(tmp_path, _model(task=["a"]))  # type: ignore[arg-type]
+        save_model(default_store(tmp_path), _model(task=["a"]))  # type: ignore[arg-type]
 
 
 # --- first review of the store on GitHub ------------------------------------------------------
 
 
 def test_a_missing_current_file_recovers_the_newest_saved_version(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
-    second = save_model(tmp_path, _model(recorded_at="2026-10-25T12:00:00Z"))
+    save_model(default_store(tmp_path), _model())
+    second = save_model(default_store(tmp_path), _model(recorded_at="2026-10-25T12:00:00Z"))
     (tmp_path / "browser-models" / "expense-report" / "model.json").unlink()
-    assert load_model(tmp_path, "expense-report") == second
+    assert load_model(default_store(tmp_path), "expense-report") == second
 
 
 def test_a_first_save_interrupted_before_model_json_is_recovered(tmp_path: Path) -> None:
-    saved = save_model(tmp_path, _model())
+    saved = save_model(default_store(tmp_path), _model())
     (tmp_path / "browser-models" / "expense-report" / "model.json").unlink()
-    assert load_model(tmp_path, "expense-report") == saved
+    assert load_model(default_store(tmp_path), "expense-report") == saved
 
 
 def test_no_current_file_and_no_history_is_still_none(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     task_dir = tmp_path / "browser-models" / "expense-report"
     (task_dir / "model.json").unlink()
     (task_dir / "history" / "model-0001.json").unlink()
-    assert load_model(tmp_path, "expense-report") is None
+    assert load_model(default_store(tmp_path), "expense-report") is None
 
 
 def test_a_save_syncs_the_directories_it_may_have_created(
@@ -810,7 +817,7 @@ def test_a_save_syncs_the_directories_it_may_have_created(
 ) -> None:
     synced: list[Path] = []
     monkeypatch.setattr("blumkin.browser.model._fsync_dir", lambda path: synced.append(path))
-    save_model(tmp_path, _model())
+    save_model(default_store(tmp_path), _model())
     root = tmp_path / "browser-models"
     assert {root / "expense-report" / "history", root / "expense-report", root, tmp_path} <= set(
         synced
@@ -821,42 +828,42 @@ def test_a_save_syncs_the_directories_it_may_have_created(
 
 
 def test_a_draft_round_trips_and_is_not_a_saved_version(tmp_path: Path) -> None:
-    assert load_draft(tmp_path, "expense-report") is None
-    save_draft(tmp_path, _model())
-    assert load_draft(tmp_path, "expense-report") == _model()
-    assert list_versions(tmp_path, "expense-report") == []
-    assert load_model(tmp_path, "expense-report") is None
+    assert load_draft(default_store(tmp_path), "expense-report") is None
+    save_draft(default_store(tmp_path), _model())
+    assert load_draft(default_store(tmp_path), "expense-report") == _model()
+    assert list_versions(default_store(tmp_path), "expense-report") == []
+    assert load_model(default_store(tmp_path), "expense-report") is None
     path = tmp_path / "browser-models" / "expense-report" / "draft.json"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert discard_draft(tmp_path, "expense-report") is True
-    assert discard_draft(tmp_path, "expense-report") is False
-    assert load_draft(tmp_path, "expense-report") is None
+    assert discard_draft(default_store(tmp_path), "expense-report") is True
+    assert discard_draft(default_store(tmp_path), "expense-report") is False
+    assert load_draft(default_store(tmp_path), "expense-report") is None
 
 
 def test_saving_a_model_leaves_the_draft_alone(tmp_path: Path) -> None:
-    save_draft(tmp_path, _model())
-    save_model(tmp_path, _model())
-    assert load_draft(tmp_path, "expense-report") == _model()
+    save_draft(default_store(tmp_path), _model())
+    save_model(default_store(tmp_path), _model())
+    assert load_draft(default_store(tmp_path), "expense-report") == _model()
 
 
 def test_a_corrupt_draft_is_a_model_error(tmp_path: Path) -> None:
-    save_draft(tmp_path, _model())
+    save_draft(default_store(tmp_path), _model())
     (tmp_path / "browser-models" / "expense-report" / "draft.json").write_text("{bad")
     with pytest.raises(SiteModelError, match="JSON"):
-        load_draft(tmp_path, "expense-report")
+        load_draft(default_store(tmp_path), "expense-report")
 
 
 def test_an_invalid_draft_is_refused_and_a_symlinked_draft_is_not_followed(tmp_path: Path) -> None:
     with pytest.raises(SiteModelError, match="Expected"):
-        save_draft(tmp_path, _model(hosts=()))
-    save_draft(tmp_path, _model())
+        save_draft(default_store(tmp_path), _model(hosts=()))
+    save_draft(default_store(tmp_path), _model())
     path = tmp_path / "browser-models" / "expense-report" / "draft.json"
     other = tmp_path / "other.json"
     other.write_text(path.read_text())
     path.unlink()
     path.symlink_to(other)
     with pytest.raises(SiteModelError, match="regular file|symlink"):
-        load_draft(tmp_path, "expense-report")
+        load_draft(default_store(tmp_path), "expense-report")
 
 
 # --- updating the draft atomically -----------------------------------------------------------
@@ -885,34 +892,34 @@ def test_update_draft_gets_nothing_when_no_draft_or_model_exists_and_stores_the_
         seen.append(current)
         return _model()
 
-    update_draft(tmp_path, "expense-report", change)
+    update_draft(default_store(tmp_path), "expense-report", change)
     assert seen == [None]
-    assert load_draft(tmp_path, "expense-report") == _model()
+    assert load_draft(default_store(tmp_path), "expense-report") == _model()
 
 
 def test_update_draft_starts_from_the_stored_model_when_there_is_no_draft(tmp_path: Path) -> None:
-    saved = save_model(tmp_path, _model())
+    saved = save_model(default_store(tmp_path), _model())
     seen: list[SiteModel | None] = []
 
     def change(current: SiteModel | None) -> SiteModel:
         seen.append(current)
         return current  # type: ignore[return-value]
 
-    update_draft(tmp_path, "expense-report", change)
+    update_draft(default_store(tmp_path), "expense-report", change)
     assert seen == [saved]
-    assert load_draft(tmp_path, "expense-report") is not None
+    assert load_draft(default_store(tmp_path), "expense-report") is not None
 
 
 def test_update_draft_prefers_the_draft_over_the_stored_model(tmp_path: Path) -> None:
-    save_model(tmp_path, _model())
-    save_draft(tmp_path, _model(recorded_at="2026-10-26T00:00:00Z"))
+    save_model(default_store(tmp_path), _model())
+    save_draft(default_store(tmp_path), _model(recorded_at="2026-10-26T00:00:00Z"))
     seen: list[SiteModel | None] = []
 
     def change(current: SiteModel | None) -> SiteModel:
         seen.append(current)
         return current  # type: ignore[return-value]
 
-    update_draft(tmp_path, "expense-report", change)
+    update_draft(default_store(tmp_path), "expense-report", change)
     assert seen[0] is not None
     assert seen[0].recorded_at == "2026-10-26T00:00:00Z"
 
@@ -923,7 +930,7 @@ def test_concurrent_draft_updates_all_land(tmp_path: Path) -> None:
 
     def run(name: str) -> None:
         try:
-            update_draft(tmp_path, "expense-report", _with_page(name))
+            update_draft(default_store(tmp_path), "expense-report", _with_page(name))
         except BaseException as exc:  # noqa: BLE001 - the thread reports whatever it got
             errors.append(exc)
 
@@ -933,20 +940,20 @@ def test_concurrent_draft_updates_all_land(tmp_path: Path) -> None:
     for thread in threads:
         thread.join(30)
     assert errors == []
-    draft = load_draft(tmp_path, "expense-report")
+    draft = load_draft(default_store(tmp_path), "expense-report")
     assert draft is not None
     assert sorted(page.page_id for page in draft.pages) == sorted(names)
 
 
 def test_a_change_that_returns_nothing_writes_nothing(tmp_path: Path) -> None:
-    assert update_draft(tmp_path, "expense-report", lambda current: None) is None
-    assert load_draft(tmp_path, "expense-report") is None
+    assert update_draft(default_store(tmp_path), "expense-report", lambda current: None) is None
+    assert load_draft(default_store(tmp_path), "expense-report") is None
 
 
 def test_a_change_that_makes_an_invalid_draft_keeps_the_previous_one(tmp_path: Path) -> None:
-    save_draft(tmp_path, _model())
+    save_draft(default_store(tmp_path), _model())
     with pytest.raises(SiteModelError, match="Expected"):
-        update_draft(tmp_path, "expense-report", lambda current: _model(hosts=()))
-    assert load_draft(tmp_path, "expense-report") == _model()
+        update_draft(default_store(tmp_path), "expense-report", lambda current: _model(hosts=()))
+    assert load_draft(default_store(tmp_path), "expense-report") == _model()
     leftovers = [p.name for p in (tmp_path / "browser-models" / "expense-report").iterdir()]
     assert not any(name.endswith(".tmp") for name in leftovers)
