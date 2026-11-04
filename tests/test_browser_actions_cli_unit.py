@@ -107,6 +107,14 @@ class _Raw:
         if self.on_event is not None:
             self.on_event(name)
 
+    def checked_pick(
+        self, name: str, role: str, vet: Callable[[ControlInfo], None], nth: int | None = None
+    ) -> None:
+        vet(self.controls.get(name, ControlInfo(tag="tr", input_type="", in_form=False)))
+        self.calls.append(("pick", role, name) if nth is None else ("pick", role, name, nth))
+        if self.lands_on is not None:
+            self.url = self.lands_on
+
     def matching_roles(
         self, name: str, roles: Any, wait_s: float, nth: int | None = None
     ) -> tuple[str, ...]:
@@ -3536,3 +3544,84 @@ def test_a_control_spec_only_reads_a_known_role_before_the_colon() -> None:
     assert _control_spec("Tab: Details") == ("Details", "tab")
     assert _control_spec("Plan: weekly") == ("Plan: weekly", None)
     assert _control_spec("button:") == ("button:", None)
+
+
+def test_pick_chooses_a_row_by_its_text_without_it_being_declared(raw: _Raw) -> None:
+    result = _run("browser", "pick", "expense-report", "Boston, MA, United States")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert (payload["action"], payload["role"], payload["text"]) == (
+        "pick",
+        "row",
+        "Boston, MA, United States",
+    )
+    assert ("pick", "row", "Boston, MA, United States") in raw.calls
+
+
+def test_pick_passes_the_role_and_the_nth_match(raw: _Raw) -> None:
+    result = _run("browser", "pick", "expense-report", "Boston", "--role", "gridcell", "--nth", "2")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["nth"] == 2
+    assert ("pick", "gridcell", "Boston", 2) in raw.calls
+
+
+def test_pick_refuses_text_that_is_a_finalizing_action(raw: _Raw) -> None:
+    result = _run("browser", "pick", "expense-report", "Submit")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert [call for call in raw.calls if call[0] == "pick"] == []
+
+
+def test_pick_refuses_an_element_the_click_vetting_refuses(raw: _Raw) -> None:
+    raw.controls["Boston"] = ControlInfo(tag="input", input_type="submit", in_form=True)
+
+    result = _run("browser", "pick", "expense-report", "Boston")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert [call for call in raw.calls if call[0] == "pick"] == []
+
+
+@pytest.mark.parametrize("role", ["button", "option", "treeitem"])
+def test_pick_takes_only_rows_and_cells(raw: _Raw, role: str) -> None:
+    result = _run("browser", "pick", "expense-report", "Save", "--role", role)
+
+    assert result.exit_code == EXIT_USAGE
+    assert [call for call in raw.calls if call[0] == "pick"] == []
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        ControlInfo(tag="tr", input_type="", in_form=False, holds_controls=True),
+        ControlInfo(tag="button", input_type="button", in_form=False),
+        ControlInfo(tag="a", input_type="", in_form=False, href="/x"),
+        ControlInfo(tag="input", input_type="button", in_form=False),
+        ControlInfo(tag="a", input_type="", in_form=False),
+    ],
+)
+def test_pick_refuses_a_control_dressed_as_a_row_with_submit_blocked(
+    raw: _Raw, info: ControlInfo
+) -> None:
+    raw.controls["Add payee"] = info
+
+    result = _run("browser", "pick", "expense-report", "Add payee")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert [call for call in raw.calls if call[0] == "pick"] == []
+
+
+def test_pick_stops_when_the_page_ends_up_off_the_allowed_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.lands_on = "https://evil.example.net/landing"
+
+    result = _run("browser", "pick", "expense-report", "Boston")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "host_blocked"

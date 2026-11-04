@@ -616,6 +616,40 @@ def host_allowed(host: str, patterns: Sequence[str]) -> bool:
     return False
 
 
+def pick_task(
+    config: BrowserSetup,
+    task: str,
+    text: str,
+    *,
+    nth: int | None = None,
+    role: str = "row",
+) -> dict[str, Any]:
+    """Choose a row, option, tree item or cell by its exact text, such as a search result.
+
+    A list-of-values dialog shows its results as rows of a table, which are neither declared
+    controls nor clickable ones. The text is page data, so it is not declared: it is refused
+    when it names a finalizing action, when the element is one a click would refuse, and when
+    the row holds a control of its own. `nth` (1-based, DOM order) picks one of several rows
+    with the same text. Confirming the dialog is still an ordinary declared `click`.
+    """
+    _require_declared_controls(config, task, text)
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        driver.pick(text, role, nth)
+        payload: dict[str, Any] = {
+            "action": "pick",
+            "ok": True,
+            "role": role,
+            "task": task,
+            "text": _one_line(text),
+        }
+        if nth is not None:
+            payload["nth"] = nth
+        return payload
+
+    return _with_driver(config, task, act, check_after=True)
+
+
 def press_task(
     config: BrowserSetup,
     task: str,
