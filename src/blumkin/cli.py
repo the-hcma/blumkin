@@ -3847,7 +3847,8 @@ def browser_grid(
         for cell in row["cells"]:
             parts = [sanitize_terminal(str(cell["text"]))] if cell["text"] else []
             parts.extend(
-                f"--role {f['role']} --exact {sanitize_terminal(f['name'])!r} --nth {f['nth']}"
+                f"--role {f['role']} --exact {shlex.quote(sanitize_terminal(f['name']))} "
+                f"--nth {f['nth']}"
                 for f in cell["fields"]
             )
             lines.append(f"    {sanitize_terminal(str(cell['column']))}: {'; '.join(parts)}")

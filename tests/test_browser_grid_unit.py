@@ -99,3 +99,12 @@ def test_text_a_custom_field_shows_as_its_value_is_not_a_cells_text() -> None:
 
     assert cell["text"] == "Primary"
     assert cell["fields"] == [{"name": "Project", "nth": 1, "role": "combobox"}]
+
+
+def test_a_cell_of_rich_content_without_a_field_keeps_its_own_name() -> None:
+    snapshot = (
+        '- grid "g":\n  - row "h":\n    - columnheader "Note"\n  - row "r":\n'
+        '    - gridcell "Foo bar":\n      - paragraph: Foo bar\n'
+    )
+
+    assert grid_view(snapshot)["rows"][0]["cells"][0]["text"] == "Foo bar"

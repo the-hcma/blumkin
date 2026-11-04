@@ -38,6 +38,8 @@ _FIELD_ROLES = frozenset(
         "textbox",
     }
 )
+#: Field roles whose name is a label, never a value, so a cell with only these is safe to name.
+_ACTION_ROLES = frozenset({"button", "link", "menuitem"})
 _CELL_ROLES = frozenset({"cell", "columnheader", "gridcell", "rowheader"})
 #: Controls whose children are option lists a summary can stand in for.
 _OPTION_PARENTS = frozenset({"combobox", "listbox"})
@@ -283,16 +285,16 @@ def _cells(
                 if at < skip_until:
                     continue
                 inner = nodes[at]
-                if inner is not None and inner.role in _FIELD_ROLES - {
-                    "button",
-                    "link",
-                    "menuitem",
-                }:
+                if inner is not None and inner.role in _FIELD_ROLES - _ACTION_ROLES:
                     skip_until = _subtree_end(lines, at)
                     continue
                 if (found := _TEXT_LINE.match(lines[at])) is not None:
                     texts.append(found["text"])
             text = _one_line(" ".join(texts))
+            if not text and all(field["role"] in _ACTION_ROLES for field in fields):
+                # Rich content (`paragraph`, `strong`) and no field that could echo a value:
+                # the cell's own name is the text.
+                text = _one_line(node.name or "")
         else:
             text = _one_line(node.name or "")
         cells.append(

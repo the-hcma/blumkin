@@ -3099,7 +3099,7 @@ def test_grid_text_mode_prints_the_nth_for_each_field(raw: _Raw) -> None:
     result = CliRunner().invoke(main, ["browser", "grid", "expense-report"])
 
     assert "row 2: Tue" in result.output
-    assert "--role textbox --exact 'Project' --nth 2" in result.output
+    assert "--role textbox --exact Project --nth 2" in result.output
 
 
 def test_grid_says_which_grids_exist_when_none_matches(raw: _Raw) -> None:
@@ -3114,3 +3114,14 @@ def test_grid_says_which_grids_exist_when_none_matches(raw: _Raw) -> None:
 def test_grid_refuses_a_malformed_within_and_a_host_without_a_frame(raw: _Raw) -> None:
     assert _run("browser", "grid", "expense-report", "--within", "1 2").exit_code != EXIT_SUCCESS
     assert _run("browser", "grid", "expense-report", "--host", "x.example.com").exit_code != 0
+
+
+def test_grid_text_hint_quotes_a_hostile_field_name_for_the_shell(raw: _Raw) -> None:
+    raw.aria_text = (
+        '- grid "g":\n  - row "h":\n    - columnheader "A"\n  - row "r":\n'
+        '    - gridcell "x":\n      - textbox "x$(touch pwned)\'"\n'
+    )
+
+    result = CliRunner().invoke(main, ["browser", "grid", "expense-report"])
+
+    assert "--exact 'x$(touch pwned)'\"'\"''" in result.output or "'\"'\"'" in result.output
