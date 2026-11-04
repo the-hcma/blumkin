@@ -299,3 +299,32 @@ def test_a_bound_file_is_uploaded_as_the_same_absolute_path_that_was_validated(
 
     assert uploaded == [tmp_path / "~" / "receipt.pdf"]
     assert uploaded[0].is_absolute()
+
+
+def test_a_bound_file_through_a_folder_link_and_dotdot_is_the_one_that_was_validated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.config import BrowserSetup
+
+    nested = tmp_path / "actual" / "nested"
+    nested.mkdir(parents=True)
+    (tmp_path / "actual" / "receipt.pdf").write_bytes(b"%PDF actual")
+    (tmp_path / "receipt.pdf").write_bytes(b"%PDF other")
+    (tmp_path / "alias").symlink_to(nested)
+    monkeypatch.chdir(tmp_path)
+    uploaded: list[Path] = []
+    monkeypatch.setattr(
+        actions, "upload_task", lambda config, task, label, path: uploaded.append(path)
+    )
+    monkeypatch.setattr(
+        "blumkin.config.load_browser_setup", lambda: BrowserSetup.__new__(BrowserSetup)
+    )
+    values = _values(tmp_path, file="alias/../receipt.pdf")
+    validate_params(_flow(), values)  # the operating system reads actual/receipt.pdf
+
+    run = ledger_ops._default_run_step("expense-report")  # type: ignore[attr-defined]
+    run(next(step for step in _flow().steps if step.action == "upload"), values)
+
+    assert uploaded[0].is_absolute()
+    assert uploaded[0].resolve() == (tmp_path / "actual" / "receipt.pdf").resolve()
