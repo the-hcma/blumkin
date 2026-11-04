@@ -32,6 +32,7 @@ from blumkin.browser.explore import (
     attach_exploring,
     decide_click,
 )
+from blumkin.browser.guard import validate_control_patterns
 from blumkin.browser.model import (
     SiteModel,
     discard_draft,
@@ -45,11 +46,20 @@ from blumkin.browser.profiles import validate_task_name
 from blumkin.config import BrowserSetup
 
 
+def declared_controls(config: BrowserSetup, task: str) -> tuple[str, ...]:
+    """The control names the task declared in `allowed_controls` (none when not configured)."""
+    declared = config.browser.tasks.get(task)
+    return tuple(declared.allowed_controls) if declared is not None else ()
+
+
 def explore_click(
     config: BrowserSetup, task: str, name: str, *, page_id: str | None, role: str
 ) -> dict[str, Any]:
     """Follow or press one control under the exploration rules; see `Explorer.click`."""
     hosts, extra_deny = explore_policy(config, task)
+    declared = declared_controls(config, task)
+    # The same refusal `browser click` gives a pattern that is too loose, before the browser.
+    validate_control_patterns(declared, extra_deny)
     profile = require_profile(config.config_dir, task)
     # A step is recorded after the click, so a models folder that would be refused must be
     # found out before the browser is touched, not after a state-changing click.
@@ -58,7 +68,13 @@ def explore_click(
     decision = decide_click(role, name, extra_deny=extra_deny)
     with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
         driver.mark_window(task, hosts, sign_in_hosts_for(config, task))
-        explorer = Explorer(driver, confirmer, allowed_hosts=hosts, extra_deny=extra_deny)
+        explorer = Explorer(
+            driver,
+            confirmer,
+            allowed_hosts=hosts,
+            declared_controls=declared,
+            extra_deny=extra_deny,
+        )
         clicked = explorer.click(role, name)
         driver.mark_window(task, hosts, sign_in_hosts_for(config, task))
     outcome = explorer.last_outcome
@@ -71,6 +87,7 @@ def explore_click(
         and _record_step(store, task, page_id, role, name)
     )
     return {
+        "approved_by": explorer.last_approval or None,
         "clicked": clicked,
         "decision": decision.value,
         "hint": _click_hint(
@@ -246,7 +263,9 @@ def _click_hint(
         return (
             "There is no terminal to ask on, so nothing was clicked. To approve this click, "
             f"run `blumkin browser explore click {task} {shlex.quote(name)} --role {role}` "
-            "yourself in a terminal."
+            "yourself in a terminal, or declare the control in "
+            f"[browser.tasks.{task}] allowed_controls in config.toml and run it again: "
+            "a declared control is clicked without a question (never a finalizing one)."
         )
     if timed_out:
         return "Not clicked: no answer came from the terminal in time."
