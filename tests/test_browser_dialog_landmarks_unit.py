@@ -39,6 +39,11 @@ _PAGE = """
   <label role=button for=elsewhere>OK</label>
 </div>
 <button type=submit id=elsewhere form=report>Elsewhere</button>
+<div id=nested>
+  <a href="#" role=button>Add</a> <a href="#" role=button>Delete</a>
+  <button type=submit aria-label="Continue" form=report>
+    <span role=button tabindex=0>OK</span></button>
+</div>
 <div id=big>
   <button type=button>Add</button> <button type=button>Delete</button>
   <button type=submit form=report>Submit</button>
@@ -89,7 +94,7 @@ def test_ok_is_clicked_in_the_popup_with_the_landmarks_and_nowhere_else() -> Non
 
             # Refused: the report form is itself the container, a container that is a control
             # with a handler, and a label whose target lies outside the popup.
-            for nth in (3, 4, 5):
+            for nth in (3, 4, 5, 6):
                 with pytest.raises(SubmitBlockedError):
                     driver.click("OK", nth=nth)
             assert page.evaluate("window.wholeSubmitted") is None

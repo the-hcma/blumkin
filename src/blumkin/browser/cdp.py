@@ -2492,7 +2492,9 @@ _PICK_BLOCKERS_JS = r"""(e) => {
 _DESCRIBE_CONTROL_JS = (
     "(e, landmarks) => { const sel = 'dialog, [role=dialog], [role=alertdialog]'; "
     "let d = e.closest(sel); let viaLandmark = false; "
-    "if (!d && landmarks && landmarks.length && e.tagName !== 'LABEL' && !e.closest('label')) { "
+    "if (!d && landmarks && landmarks.length && e.tagName !== 'LABEL' && !e.closest('label') "
+    "&& !(e.parentElement && e.parentElement.closest('button, a, summary, [onclick], "
+    "[role=button], [role=link], [role=menuitem], input'))) { "
     "const norm = (s) => String(s || '').replace(/\\s+/g, ' ').trim().toLowerCase(); "
     "const pick = 'button, a, [role=button], [role=link], [role=menuitem], "
     "input[type=button], input[type=submit]'; "
