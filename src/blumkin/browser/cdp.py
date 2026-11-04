@@ -57,6 +57,10 @@ class AmbiguousFieldError(BrowserActionError):
     """More than one field matched the label, so none was used."""
 
 
+class MissingFieldError(BrowserActionError):
+    """Fewer fields matched than the `nth` asked for."""
+
+
 class BrowserAttachError(RuntimeError):
     """The task browser could not be attached to."""
 
@@ -682,13 +686,17 @@ class PlaywrightDriver:
                 locator = self._field(scope, label, target, prefer_visible=True)
             except AmbiguousFieldError:
                 return FieldReading("ambiguous")
+            except MissingFieldError:
+                return FieldReading("missing")
             self._still_allowed(scope, target)
-            value = self._read_back(locator, aria=True)
+            value = self._read_value(locator)
         except _playwright_error() as exc:
             if _is_timeout(exc):
                 return FieldReading("missing")
             raise self._action_error(f"read the field labelled {label!r}", exc) from exc
-        return FieldReading("unreadable") if value is None else FieldReading("read", value)
+        if value is None or len(value) >= _MAX_READ_BACK:  # a clipped value is not the value
+            return FieldReading("unreadable")
+        return FieldReading("read", value)
 
     def read_frame_text(
         self,
@@ -1076,7 +1084,7 @@ class PlaywrightDriver:
                 )
             return base
         if count < target.nth:
-            raise BrowserActionError(
+            raise MissingFieldError(
                 f"Expected at least {target.nth} fields labelled {label!r}, got {count}"
             )
         return base.nth(target.nth - 1)
@@ -1161,6 +1169,18 @@ class PlaywrightDriver:
             return str(locator.evaluate(_ARIA_VALUE_JS))[:_MAX_READ_BACK]
         except _playwright_error():
             return None
+
+    def _read_value(self, locator: Any) -> str | None:
+        """A field's value, with the secret check and the read made on the same element at once.
+
+        None for a password or a field marked as a one-time or password code, and for anything
+        that cannot be read: a failure closes the read instead of opening it.
+        """
+        try:
+            value = locator.evaluate(_SAFE_VALUE_JS, sorted(_SECRET_AUTOCOMPLETE))
+        except _playwright_error():
+            return None
+        return None if value is None else str(value)[:_MAX_READ_BACK]
 
     def _scope(self, target: FieldTarget) -> Any:
         """The page, or the child frame `target` names (refused unless its host is allowed)."""
@@ -1602,6 +1622,17 @@ _SCROLL_SETTLE_MS = 250
 _ARIA_VALUE_JS = (
     "(e) => (e.value !== undefined && e.value !== '') ? String(e.value) : "
     "String(e.getAttribute('aria-valuetext') || e.innerText || e.textContent || '')"
+)
+
+#: A field's value, or null when it is a password or a secret code field (checked on the same
+#: element, in the same turn, so a re-render cannot swap one in between the check and the read).
+_SAFE_VALUE_JS = (
+    "(e, secrets) => { "
+    "if (String(e.type || '').toLowerCase() === 'password') return null; "
+    "const tokens = String(e.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/); "
+    "if (tokens.some((t) => secrets.includes(t))) return null; "
+    "return (e.value !== undefined && e.value !== '') ? String(e.value) : "
+    "String(e.getAttribute('aria-valuetext') || e.innerText || e.textContent || ''); }"
 )
 
 _DROPDOWN_INFO_JS = (
