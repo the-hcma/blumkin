@@ -89,6 +89,13 @@ class _Raw:
         self.net_installed += 1
         self.background_writes = background_writes
 
+    def checked_pick(
+        self, name: str, role: str, vet: Callable[[ControlInfo], None], nth: int | None = None
+    ) -> None:
+        vet(self.controls.get(name, _PLAIN))
+        self.nths.append(nth)
+        self.calls.append(("pick", role, name))
+
     def checked_click(
         self, name: str, role: str, vet: Callable[[ControlInfo], None], nth: int | None = None
     ) -> None:
@@ -829,6 +836,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "goto",
         "list_options",
         "mark_window",
+        "pick",
         "pick_account",
         "press",
         "read_field",
@@ -1829,3 +1837,22 @@ def test_press_with_a_target_describes_and_presses_the_narrowed_field() -> None:
     driver.press("Regular Pay", "Tab", FieldTarget(nth=2))
 
     assert ("press", "Regular Pay", "Tab") in raw.calls
+
+
+def test_pick_refuses_a_role_that_is_a_control_and_a_bad_nth() -> None:
+    raw, driver = _guard()
+    for role in ("button", "option", "treeitem"):
+        with pytest.raises(SubmitBlockedError):
+            driver.pick("Save", role)
+    with pytest.raises(ValueError, match="positive whole number"):
+        driver.pick("Boston", "row", 0)
+    assert raw.calls == []
+
+
+def test_pick_refuses_a_finalizing_text_and_needs_no_declaration() -> None:
+    raw, driver = _guard()
+    raw.controls["Boston, MA"] = ControlInfo(tag="tr", input_type="", in_form=False)
+    with pytest.raises(SubmitBlockedError):
+        driver.pick("Submit report")
+    driver.pick("Boston, MA")
+    assert raw.calls == [("pick", "row", "Boston, MA")]

@@ -15,6 +15,7 @@ drivers here are for synchronous callers such as the CLI.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import math
 import re
@@ -127,6 +128,8 @@ class BrowserDriver(Protocol):
     def mark_window(
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
     ) -> None: ...
+
+    def pick(self, text: str, role: str = "row", nth: int | None = None) -> None: ...
 
     def pick_account(
         self,
@@ -282,6 +285,8 @@ class ControlInfo:
     #: False when the dialog held more controls, or longer names, than were collected: nothing
     #: can then be said about what the dialog holds.
     dialog_controls_complete: bool = True
+    #: Set by `checked_pick` only: the element holds, sits inside or is made of a control.
+    holds_controls: bool = False
     #: Every name the clicked element itself goes by, beyond the accessible name it was found
     #: by (aria-labelledby, aria-label, text, value, title, alt, id, name and the labels of
     #: its children), so a draft control cannot be a finalizing button renamed by the page.
@@ -498,21 +503,7 @@ class PlaywrightDriver:
         DOM order) a name the page legitimately repeats is narrowed to that one match; without
         it, more than one match is refused.
         """
-        self._require_open()
-        try:
-            locator = self._page.get_by_role(role, name=name, exact=True)
-            if nth is not None:
-                # `nth` is not strict like a plain lookup, so look again right before the
-                # click: the page may have changed since `matching_roles` counted.
-                count = int(locator.count())
-                if count < nth:
-                    raise BrowserActionError(
-                        f"Expected at least {nth} {role}s named {name!r}, got {count}"
-                    )
-                locator = locator.nth(nth - 1)
-            handle = locator.element_handle(timeout=self._timeout_ms)
-        except _playwright_error() as exc:
-            raise self._action_error(f"find the {role} named {name!r}", exc) from exc
+        handle = self._resolve(name, role, nth)
         try:
             vet(self._describe(handle))
             # A swallowed submit never commits a navigation, so do not wait for one.
@@ -553,6 +544,30 @@ class PlaywrightDriver:
         return DownloadedFile(
             filename=str(download.suggested_filename), path=target, url=str(download.url)
         )
+
+    def checked_pick(
+        self,
+        name: str,
+        role: str,
+        vet: Callable[[ControlInfo], None],
+        nth: int | None = None,
+    ) -> None:
+        """Choose a row (or cell) by its text; `vet` also learns whether it holds a control.
+
+        Like `checked_click`, the very element that was vetted is the one clicked. A click on a
+        row lands in its middle, where a control of its own could sit, and a control around
+        it would take the click too, so `holds_controls` tells the guard when the row holds,
+        sits inside or is made of one (see `_PICK_BLOCKERS_JS`).
+        """
+        handle = self._resolve(name, role, nth)
+        try:
+            info = dataclasses.replace(
+                self._describe(handle), holds_controls=bool(handle.evaluate(_PICK_BLOCKERS_JS))
+            )
+            vet(info)
+            handle.click(timeout=self._timeout_ms, no_wait_after=True)
+        except _playwright_error() as exc:
+            raise self._action_error(f"pick the {role} named {name!r}", exc) from exc
 
     def describe_field(self, label: str, target: FieldTarget | None = None) -> ControlInfo:
         """Describe the element a label resolves to (for example to see it is a button).
@@ -1362,6 +1377,24 @@ class PlaywrightDriver:
             own_names_complete=bool(raw.get("ownComplete", True)),
         )
 
+    def _resolve(self, name: str, role: str, nth: int | None) -> Any:
+        """The one element of `role` named exactly `name` (the `nth` match when given)."""
+        self._require_open()
+        try:
+            locator = self._page.get_by_role(role, name=name, exact=True)
+            if nth is not None:
+                # `nth` is not strict like a plain lookup, so look again right before the
+                # click: the page may have changed since `matching_roles` counted.
+                count = int(locator.count())
+                if count < nth:
+                    raise BrowserActionError(
+                        f"Expected at least {nth} {role}s named {name!r}, got {count}"
+                    )
+                locator = locator.nth(nth - 1)
+            return locator.element_handle(timeout=self._timeout_ms)
+        except _playwright_error() as exc:
+            raise self._action_error(f"find the {role} named {name!r}", exc) from exc
+
     def _field(
         self, scope: Any, label: str, target: FieldTarget, *, prefer_visible: bool = False
     ) -> Any:
@@ -1762,6 +1795,14 @@ class RawBrowserDriver(Protocol):
         save_to: Path,
         timeout_s: float,
     ) -> DownloadedFile: ...
+
+    def checked_pick(
+        self,
+        name: str,
+        role: str,
+        vet: Callable[[ControlInfo], None],
+        nth: int | None = None,
+    ) -> None: ...
 
     def close(self) -> None: ...
 
@@ -2373,6 +2414,28 @@ _CELL_TEXT_JS = """
   return (copy.textContent || '').replace(/\\s+/g, ' ').trim();
 }
 """
+
+#: Whether a row (or cell) holds, sits inside or is made of a control, which a click in its
+#: middle could hit, bubble to or be forwarded by: any control or focusable thing inside or
+#: around it, the element itself when it is one (a `label`, a `contenteditable` area), and
+#: content in a shadow root, whether it hosts one, has one inside or sits in one (none of which
+#: can be searched). The row's own click handler is not a control: a result list is built so.
+_PICK_BLOCKERS_JS = r"""(e) => {
+  // `role` is a token list (`button checkbox`) and `contenteditable` may be bare or
+  // `plaintext-only`, so roles match by token and an editor is anything but `false`.
+  const roles = ['button', 'link', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+    'checkbox', 'radio', 'switch', 'tab', 'combobox', 'textbox', 'slider', 'spinbutton',
+    'option', 'treeitem'].map((r) => '[role~=' + r + ']').join(', ');
+  const own = 'button, a, area, input:not([type=hidden]), select, textarea, summary, label, '
+    + 'iframe, object, embed, [contenteditable]:not([contenteditable=false])';
+  const controls = own + ', [onclick], ' + roles;
+  if (e.matches(own)) return true;
+  if (e.querySelector(controls)) return true;
+  if (e.querySelector('[tabindex]:not([tabindex="-1"])')) return true;
+  if (e.getRootNode() instanceof ShadowRoot) return true;
+  if ([e, ...e.querySelectorAll('*')].some((n) => n.shadowRoot)) return true;
+  return !!(e.parentElement && e.parentElement.closest(controls));
+}"""
 
 _DESCRIBE_CONTROL_JS = (
     "(e) => { const sel = 'dialog, [role=dialog], [role=alertdialog]'; "
