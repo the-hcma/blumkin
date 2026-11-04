@@ -957,3 +957,65 @@ def test_a_change_that_makes_an_invalid_draft_keeps_the_previous_one(tmp_path: P
     assert load_draft(default_store(tmp_path), "expense-report") == _model()
     leftovers = [p.name for p in (tmp_path / "browser-models" / "expense-report").iterdir()]
     assert not any(name.endswith(".tmp") for name in leftovers)
+
+
+def _with_params(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = copy.deepcopy(payload)
+    flow = payload["flows"][0]
+    flow["params"] = [
+        {"kind": "date", "name": "date"},
+        {"choices": ["Meals", "Taxi"], "kind": "choice", "name": "type"},
+        {"kind": "file", "name": "file"},
+        {"kind": "text", "name": "merchant"},
+    ]
+    flow["steps"][0]["bind"] = "date"
+    return payload
+
+
+def test_flow_parameters_and_bindings_round_trip(tmp_path: Path) -> None:
+    loaded = _load_payload(tmp_path, _with_params(_payload(tmp_path)))
+    assert loaded is not None
+    flow = loaded.flows[0]
+    assert [(p.name, p.kind.value) for p in flow.params] == [
+        ("date", "date"),
+        ("type", "choice"),
+        ("file", "file"),
+        ("merchant", "text"),
+    ]
+    assert flow.params[1].choices == ("Meals", "Taxi")
+    assert flow.steps[0].bind == "date" and flow.steps[1].bind is None
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.flows == saved.flows
+
+
+def test_a_model_without_parameters_keeps_its_stored_shape(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    assert all("params" not in flow for flow in payload["flows"])
+    assert all("bind" not in step for flow in payload["flows"] for step in flow["steps"])
+    loaded = _load_payload(tmp_path, payload)
+    assert loaded is not None and loaded.flows[0].params == ()
+    assert loaded.flows[0].steps[0].bind is None
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda f: f["steps"][0].update(bind="nothing"), "name a parameter"),
+        (lambda f: f["params"][1].pop("choices"), "list the options"),
+        (lambda f: f["params"][0].update(choices=["x"]), "only for a choice"),
+        (lambda f: f["params"][3].update(name="date"), "distinct names"),
+        (lambda f: f["params"][1].update(choices=["Meals", "Meals"]), "without repeats"),
+        (lambda f: f["params"][0].update(kind="number"), "one of"),
+        (lambda f: f["params"][0].update(amount="12.50"), "unexpected key"),
+        (lambda f: f.update(params=f["params"] * 4), "Expected at most"),
+    ],
+    ids=["bind", "no-choices", "stray-choices", "repeat", "repeat-choice", "kind", "field", "many"],
+)
+def test_a_malformed_parameter_declaration_is_refused(
+    tmp_path: Path, mutate: Any, message: str
+) -> None:
+    payload = _with_params(_payload(tmp_path))
+    mutate(payload["flows"][0])
+    with pytest.raises(SiteModelError, match=message):
+        _load_payload(tmp_path, payload)

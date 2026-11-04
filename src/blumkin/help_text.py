@@ -668,6 +668,9 @@ Examples:
 
 Runs one recorded site-model flow for one ledger item, binding values with --value KEY=VALUE
 (repeatable). It fills and uploads; it never submits. A receipt needs the SHA-256 of its file.
+A flow that declares parameters (a date, a choice, a file, text) is checked first: every one must
+be supplied, none undeclared, each valid, and a refusal lists the problems without showing any
+value and changes nothing. Applying a verified item again is a no-op.
 """
 
 BROWSER_LEDGER_BEGIN_EPILOG = """
