@@ -3342,6 +3342,27 @@ def test_dialog_refuses_when_another_dialog_is_open_whatever_its_name(
     assert not [call for call in raw.calls if call[0] in ("click", "dismiss")]
 
 
+def test_dialog_closes_a_dialog_that_replaced_a_menu_that_was_already_open(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Apply"]')
+    menu = '- menu "Templates":\n  - menuitem "Apply"\n'
+    raw.aria_text = menu
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = _DIALOG_OPEN
+        elif name == "":
+            raw.aria_text = menu
+
+    raw.on_event = event
+
+    payload = _json(_run("browser", "dialog", "expense-report", "--open", "menuitem:Apply"))
+
+    assert payload["closed"] is True and payload["closed_with"] == "escape"
+    assert ("dismiss",) in raw.calls and raw.aria_text == menu
+
+
 def test_dialog_uses_a_close_control_only_when_the_overlay_shows_it(
     raw: _Raw, _config_dir: Path
 ) -> None:

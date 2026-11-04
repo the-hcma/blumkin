@@ -261,7 +261,7 @@ def dialog_task(
                 "Expected no dialog open before opening one, got one already; "
                 "close or finish it first"
             )
-        baseline = _overlay_count(driver, (*_OVERLAY_ROLES, scope_role))
+        baseline = _overlay_counts(driver, (*_OVERLAY_ROLES, scope_role))
         opened: list[str] = []
         failure: BaseException | None = None
         text, matches = "", 0
@@ -1287,13 +1287,14 @@ def _dialog_controls(text: str) -> list[dict[str, Any]]:
 def _dialog_close(
     driver: GuardedDriver,
     roles: Sequence[str],
-    baseline: int,
+    baseline: dict[str, int],
     close: tuple[str, str | None] | None,
     shown: Sequence[dict[str, Any]],
 ) -> tuple[bool, str | None]:
     """Close what a dialog read opened, without raising; whether it is gone and how.
 
-    Nothing is clicked or pressed once the page is back to `baseline` overlays, so a declared
+    Nothing is clicked or pressed once every overlay role is back to its `baseline` count (a
+    menu replaced by a dialog is not back: the dialog count is above its own), so a declared
     close control (a page-level `Cancel`) is never pressed when nothing opened. The control
     is used only when it is one of the `shown` controls of the overlay that was read, never
     one that merely shares its name elsewhere on the page; otherwise, or when it did not
@@ -1303,7 +1304,7 @@ def _dialog_close(
     try:
         if (
             close is not None
-            and _overlay_count(driver, roles) > baseline
+            and not _overlays_at_baseline(driver, roles, baseline)
             and any(item["name"] == close[0] and close[1] in (None, item["role"]) for item in shown)
         ):
             driver.click(close[0], close[1], _default_wait(close[1]))
@@ -1319,10 +1320,10 @@ def _dialog_close(
         return False, via
 
 
-def _dialog_gone(driver: GuardedDriver, roles: Sequence[str], baseline: int) -> bool:
-    """Whether the page is back to `baseline` overlays (polled for about two seconds)."""
+def _dialog_gone(driver: GuardedDriver, roles: Sequence[str], baseline: dict[str, int]) -> bool:
+    """Whether the page is back to its `baseline` overlays (polled for about two seconds)."""
     for _ in range(_DIALOG_POLLS):
-        if _overlay_count(driver, roles) <= baseline:
+        if _overlays_at_baseline(driver, roles, baseline):
             return True
         driver.wait_ms(_DIALOG_POLL_MS)
     return False
@@ -1439,14 +1440,27 @@ def _on_allowed_page(driver: GuardedDriver, hosts: Sequence[str]) -> bool:
 
 def _overlay_count(driver: GuardedDriver, roles: Sequence[str]) -> int:
     """How many nodes of any of `roles` (whatever their names) the page shows now."""
+    return sum(_overlay_counts(driver, roles).values())
+
+
+def _overlay_counts(driver: GuardedDriver, roles: Sequence[str]) -> dict[str, int]:
+    """For each of `roles`, how many nodes of it (whatever their names) the page shows now."""
     snapshot = driver.aria_snapshot()
-    total = 0
+    counts: dict[str, int] = {}
     for role in sorted(set(roles)):
         try:
-            total += scope(snapshot, role, None)[1]
+            counts[role] = scope(snapshot, role, None)[1]
         except LookupError:
-            continue
-    return total
+            counts[role] = 0
+    return counts
+
+
+def _overlays_at_baseline(
+    driver: GuardedDriver, roles: Sequence[str], baseline: dict[str, int]
+) -> bool:
+    """Whether no role shows more overlays than it did before anything was opened."""
+    now = _overlay_counts(driver, roles)
+    return all(now[role] <= baseline.get(role, 0) for role in now)
 
 
 def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
