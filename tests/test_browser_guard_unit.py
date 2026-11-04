@@ -18,6 +18,7 @@ from blumkin.browser.cdp import (
     FieldReading,
     FrameCapture,
     FrameInfo,
+    OptionsListing,
     PageText,
     UploadObservation,
 )
@@ -96,7 +97,7 @@ class _Raw:
     def close(self) -> None:
         self.calls.append(("close",))
 
-    def describe_field(self, label: str) -> ControlInfo:
+    def describe_field(self, label: str, target: Any = None) -> ControlInfo:
         return self.fields.get(label, ControlInfo(tag="input", input_type="text", in_form=True))
 
     def fill(self, label: str, value: str, target: object = None) -> str | None:
@@ -129,7 +130,11 @@ class _Raw:
     def goto(self, url: str) -> None:
         self.calls.append(("goto", url))
 
-    def raw_press(self, label: str, key: str) -> None:
+    def raw_press(self, label: str, key: str, target: Any = None) -> None:
+        self.calls.append(("press", label, key))
+
+    def press_field(self, label: str, key: str, target: Any, vet: Any) -> None:
+        vet(self.describe_field(label))
         self.calls.append(("press", label, key))
 
     def read_frame_text(
@@ -174,6 +179,16 @@ class _Raw:
         if self.select_probe is not None and vet is not None:
             vet(self.select_probe)
         return option
+
+    def list_options(
+        self, label: str, target: object = None, vet: Any = None, vet_name: Any = None
+    ) -> OptionsListing:
+        self.calls.append(("list_options", label))
+        if vet_name is not None and self.select_field_name is not None:
+            vet_name(self.select_field_name)
+        if self.select_probe is not None and vet is not None:
+            vet(self.select_probe)
+        return OptionsListing(("Regular Pay", "Holiday"))
 
     def upload(self, label: str, path: Path, target: object = None) -> UploadObservation:
         self.calls.append(("upload", label, str(path)))
@@ -535,6 +550,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "frame_aria_snapshot",
         "frame_list",
         "goto",
+        "list_options",
         "mark_window",
         "pick_account",
         "press",
@@ -1500,3 +1516,39 @@ def test_pick_account_lets_a_plain_account_tile_through() -> None:
     raw.tile_names = ["Ada Lovelace\nada@example.com"]
 
     assert driver.pick_account("ada@example.com", ["login.example.net"], []).status == "ok"
+
+
+def test_list_options_refuses_a_finalizing_label_before_the_page_is_touched() -> None:
+    raw, driver = _guard()
+
+    with pytest.raises(SubmitBlockedError):
+        driver.list_options("Submit")
+
+    assert raw.calls == []
+
+
+def test_list_options_vets_the_combobox_like_a_select() -> None:
+    raw, driver = _guard()
+    raw.select_field_name = "Submit action"
+
+    with pytest.raises(SubmitBlockedError, match="field's own name"):
+        driver.list_options("Action")
+
+
+def test_list_options_rejects_a_role_a_dropdown_does_not_have() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    raw, driver = _guard()
+
+    with pytest.raises(SubmitBlockedError, match="not one a dropdown has"):
+        driver.list_options("Code", FieldTarget(role="button"))
+
+
+def test_press_with_a_target_describes_and_presses_the_narrowed_field() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    raw, driver = _guard()
+
+    driver.press("Regular Pay", "Tab", FieldTarget(nth=2))
+
+    assert ("press", "Regular Pay", "Tab") in raw.calls

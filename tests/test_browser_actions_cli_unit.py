@@ -22,6 +22,7 @@ from blumkin.browser.cdp import (
     FieldReading,
     FrameCapture,
     FrameInfo,
+    OptionsListing,
     PageText,
     UploadObservation,
 )
@@ -55,6 +56,8 @@ class _Raw:
         self.targets: list[Any] = []
         #: Make fill and select report that the field cannot be read back (a password).
         self.returns_nothing = False
+        #: What `list_options` finds.
+        self.listing = OptionsListing(("Regular Pay", "Paid Time Off", "Holiday"))
         #: What `read_field` finds.
         self.reading = FieldReading("read", "4111 1111")
         self.controls: dict[str, ControlInfo] = {}
@@ -162,7 +165,7 @@ class _Raw:
         self.calls.append(("frame-text", index, is_allowed(self.child_frames[index - 1][0][8:])))
         return PageText(text=self.child_frames[index - 1][1], injection_warning=None)
 
-    def describe_field(self, label: str) -> ControlInfo:
+    def describe_field(self, label: str, target: Any = None) -> ControlInfo:
         return ControlInfo(tag="input", input_type="text", in_form=True)
 
     def fill(self, label: str, value: str, target: Any = None) -> str | None:
@@ -186,6 +189,13 @@ class _Raw:
             return None
         return self.read_back if self.read_back is not None else option
 
+    def list_options(
+        self, label: str, target: Any = None, vet: Any = None, vet_name: Any = None
+    ) -> OptionsListing:
+        self.targets.append(target)
+        self.calls.append(("list_options", label))
+        return self.listing
+
     def goto(self, url: str) -> None:
         self.calls.append(("goto", url))
         self.url = self.lands_on or url
@@ -202,8 +212,13 @@ class _Raw:
     def url(self, value: str) -> None:
         self._url = value
 
-    def raw_press(self, label: str, key: str) -> None:
+    def raw_press(self, label: str, key: str, target: Any = None) -> None:
+        self.targets.append(target)
         self.calls.append(("press", label, key))
+
+    def press_field(self, label: str, key: str, target: Any, vet: Any) -> None:
+        vet(self.describe_field(label))
+        self.raw_press(label, key, target)
 
     def read_text(self) -> PageText:
         return self.page_text
@@ -3002,3 +3017,100 @@ def test_attached_is_unknown_for_an_unreadable_page_and_for_a_capped_lookalike(
     assert unread["attached"] is None
     assert capped["attached"] is None
     assert missed["attached"] is False
+
+
+def test_press_takes_the_same_narrowing_as_fill(raw: _Raw) -> None:
+    result = _run(
+        "browser", "press", "time-sheet", "Regular Pay", "Tab", "--nth", "3", "--role", "textbox"
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    target = raw.targets[-1]
+    assert (target.nth, target.role, target.exact) == (3, "textbox", False)
+    payload = _json(result)
+    assert (payload["key"], payload["nth"], payload["role"]) == ("Tab", 3, "textbox")
+    assert "matches" not in payload
+
+
+def test_options_lists_every_option_and_marks_them_untrusted(raw: _Raw) -> None:
+    result = _run("browser", "options", "time-sheet", "Time Reporting Code", "--nth", "2")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["options"] == ["Regular Pay", "Paid Time Off", "Holiday"]
+    assert (payload["count"], payload["complete"], payload["closed"]) == (3, True, True)
+    assert payload["untrusted"] and payload["nth"] == 2
+    assert raw.targets[-1].nth == 2
+    assert [call[0] for call in raw.calls if call[0] != "close"] == ["list_options"]
+
+
+def test_options_text_mode_warns_when_the_list_is_cut_short_or_left_open(raw: _Raw) -> None:
+    raw.listing = OptionsListing(("A", "B"), complete=False, closed=False)
+
+    result = CliRunner().invoke(main, ["browser", "options", "time-sheet", "Code"])
+
+    assert "2 option(s)" in result.output
+    assert "may hold more" in result.output and "could not be closed" in result.output
+
+
+def test_options_refuses_a_field_named_like_a_finalizing_action(raw: _Raw) -> None:
+    result = _run("browser", "options", "time-sheet", "Submit")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
+    assert [call for call in raw.calls if call[0] == "list_options"] == []
+
+
+_GRID_SNAPSHOT = """\
+- grid "Time card":
+  - row "Day Project":
+    - columnheader "Day"
+    - columnheader "Project"
+  - row "Mon Alpha":
+    - rowheader "Mon"
+    - gridcell "Alpha":
+      - textbox "Project": Alpha
+  - row "Tue Beta":
+    - rowheader "Tue"
+    - gridcell "Beta":
+      - textbox "Project": Beta
+"""
+
+
+def test_grid_lists_rows_with_the_nth_to_pass_and_never_a_value(raw: _Raw) -> None:
+    raw.aria_text = _GRID_SNAPSHOT
+
+    result = _run("browser", "grid", "expense-report")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["columns"] == ["Day", "Project"]
+    assert [r["label"] for r in payload["rows"]] == ["Mon", "Tue"]
+    assert payload["rows"][1]["cells"][0]["fields"] == [
+        {"name": "Project", "nth": 2, "role": "textbox"}
+    ]
+    assert payload["untrusted"]
+    assert "Alpha" not in result.output and "Beta" not in result.output
+
+
+def test_grid_text_mode_prints_the_nth_for_each_field(raw: _Raw) -> None:
+    raw.aria_text = _GRID_SNAPSHOT
+
+    result = CliRunner().invoke(main, ["browser", "grid", "expense-report"])
+
+    assert "row 2: Tue" in result.output
+    assert "--role textbox --exact 'Project' --nth 2" in result.output
+
+
+def test_grid_says_which_grids_exist_when_none_matches(raw: _Raw) -> None:
+    raw.aria_text = _GRID_SNAPSHOT
+
+    result = _run("browser", "grid", "expense-report", "--within", "grid:Other")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "Time card" in _json(result)["message"]
+
+
+def test_grid_refuses_a_malformed_within_and_a_host_without_a_frame(raw: _Raw) -> None:
+    assert _run("browser", "grid", "expense-report", "--within", "1 2").exit_code != EXIT_SUCCESS
+    assert _run("browser", "grid", "expense-report", "--host", "x.example.com").exit_code != 0

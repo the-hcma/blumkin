@@ -8,7 +8,7 @@ transformations on the snapshot already read, so none of them touches the page.
 from __future__ import annotations
 
 import re
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 #: One snapshot line: indentation, `- `, then the node (a role, an optional quoted name, then
 #: attributes or text). Playwright wraps the whole node in single quotes, doubling any single
@@ -16,9 +16,29 @@ from typing import NamedTuple
 _LINE = re.compile(r"^(?P<indent> *)- (?P<body>.*)$")
 _NODE = re.compile(r'^(?P<role>[A-Za-z]+)(?: "(?P<name>(?:[^"\\]|\\.)*)")?(?P<rest>.*)$')
 _ROLE = re.compile(r"[A-Za-z]+")
+_TEXT_LINE = re.compile(r"^ *- text: (?P<text>.*)$")
 #: The bracketed state attributes right after a node's name (`[selected] [expanded]`), before
 #: any `:` and inline text, which a page controls.
 _ATTRIBUTES = re.compile(r"^(?:\s*\[[^\]]*\])*")
+#: Roles a grid or table can have, and the controls whose place `grid_view` numbers.
+_GRID_ROLES = frozenset({"grid", "table", "treegrid"})
+_FIELD_ROLES = frozenset(
+    {
+        "button",
+        "checkbox",
+        "combobox",
+        "link",
+        "listbox",
+        "menuitem",
+        "radio",
+        "searchbox",
+        "slider",
+        "spinbutton",
+        "switch",
+        "textbox",
+    }
+)
+_CELL_ROLES = frozenset({"cell", "columnheader", "gridcell", "rowheader"})
 #: Controls whose children are option lists a summary can stand in for.
 _OPTION_PARENTS = frozenset({"combobox", "listbox"})
 #: How many names a "nothing matched" error lists, and how long each may be.
@@ -108,6 +128,85 @@ def scope(snapshot: str, role: str, name: str | None = None) -> tuple[str, int]:
     raise LookupError(f"Expected {asked}, got {listed + more if seen else 'none'}")
 
 
+def grid_view(
+    snapshot: str, role: str | None = None, name: str | None = None, *, max_rows: int = 200
+) -> dict[str, Any]:
+    """Rows, columns and the fields in each cell of the first grid (or table) in `snapshot`.
+
+    A grid renders as one blob of text, so a caller cannot tell which `Project` field is on
+    which row. Each field here carries `nth`: its 1-based place among every field of that role
+    and name on the page, which is what `--role ROLE --nth N` counts in `fill`, `press`,
+    `select` and `options`. Field values are never shown (the snapshot has none), and a cell
+    that holds a field is not given its own name, which would repeat the value. Raises
+    `LookupError`, naming the grids there are, when nothing matches.
+    """
+    lines = snapshot.split("\n")
+    nodes = [_parse(line) for line in lines]
+    counts: dict[tuple[str, str], int] = {}
+    nth: dict[int, int] = {}
+    for index, node in enumerate(nodes):
+        if node is not None and node.role in _FIELD_ROLES:
+            key = (node.role, node.name or "")
+            counts[key] = counts.get(key, 0) + 1
+            nth[index] = counts[key]
+    kinds = {role} if role else _GRID_ROLES
+    found = [
+        index
+        for index, node in enumerate(nodes)
+        if node is not None and node.role in kinds and (name is None or node.name == name)
+    ]
+    if not found:
+        listed = ", ".join(
+            repr(_one_line(node.name or node.role))
+            for node in nodes
+            if node is not None and node.role in _GRID_ROLES
+        )
+        asked = "a grid or table" if role is None else f"a {role}"
+        raise LookupError(f"Expected {asked}, got {listed or 'none'}")
+    top = found[0]
+    end = _subtree_end(lines, top)
+    columns: list[str] = []
+    rows: list[dict[str, Any]] = []
+    truncated = False
+    for index in range(top + 1, end):
+        node = nodes[index]
+        if node is None or node.role != "row":
+            continue
+        cells = _cells(lines, nodes, nth, index)
+        headers = [cell for cell in cells if cell["header"]]
+        if headers and not columns:
+            columns = [str(cell["text"]) for cell in cells]
+            continue
+        if len(rows) >= max_rows:
+            truncated = True
+            break
+        label = next((str(c["text"]) for c in cells if c["row_header"]), "")
+        rows.append(
+            {
+                "row": len(rows) + 1,
+                "label": label,
+                "cells": [
+                    {
+                        "column": columns[position] if position < len(columns) else position + 1,
+                        "text": cell["text"],
+                        "fields": cell["fields"],
+                    }
+                    for position, cell in enumerate(cells)
+                    if not cell["row_header"]
+                ],
+            }
+        )
+    top_node = nodes[top]
+    assert top_node is not None
+    return {
+        "columns": columns,
+        "grid": {"name": _one_line(top_node.name or ""), "role": top_node.role},
+        "matches": len(found),
+        "rows": rows,
+        "truncated": truncated,
+    }
+
+
 def window(text: str, offset: int, limit: int) -> tuple[str, bool, int | None]:
     """`text[offset:offset+limit]`, whether more follows, and where the next window starts."""
     if offset < 0:
@@ -152,6 +251,60 @@ def _parse(line: str) -> _Node | None:
         name=_unquote(node["name"]),
         selected="[selected]" in _attributes(rest),
     )
+
+
+def _cells(
+    lines: list[str], nodes: list[_Node | None], nth: dict[int, int], row: int
+) -> list[dict[str, Any]]:
+    """The cells that sit directly in the row at `row`, each with its fields and plain text."""
+    row_node = nodes[row]
+    assert row_node is not None
+    end = _subtree_end(lines, row)
+    cells: list[dict[str, Any]] = []
+    index = row + 1
+    while index < end:
+        node = nodes[index]
+        if node is None or node.role not in _CELL_ROLES or node.indent <= row_node.indent:
+            index += 1
+            continue
+        cell_end = _subtree_end(lines, index)
+        fields = [
+            {"name": _one_line(inner.name or ""), "nth": nth[at], "role": inner.role}
+            for at in range(index + 1, cell_end)
+            if (inner := nodes[at]) is not None and inner.role in _FIELD_ROLES
+        ]
+        # A cell's own name repeats the value of a field inside it, which is never shown, so a
+        # cell with anything inside is described by its plain text children alone (and the
+        # text a custom field shows as its value is skipped with that field).
+        if cell_end > index + 1:
+            texts: list[str] = []
+            skip_until = index + 1
+            for at in range(index + 1, cell_end):
+                if at < skip_until:
+                    continue
+                inner = nodes[at]
+                if inner is not None and inner.role in _FIELD_ROLES - {
+                    "button",
+                    "link",
+                    "menuitem",
+                }:
+                    skip_until = _subtree_end(lines, at)
+                    continue
+                if (found := _TEXT_LINE.match(lines[at])) is not None:
+                    texts.append(found["text"])
+            text = _one_line(" ".join(texts))
+        else:
+            text = _one_line(node.name or "")
+        cells.append(
+            {
+                "fields": fields,
+                "header": node.role == "columnheader",
+                "row_header": node.role == "rowheader",
+                "text": text,
+            }
+        )
+        index = cell_end
+    return cells
 
 
 def _attributes(rest: str) -> str:
