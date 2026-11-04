@@ -10,34 +10,40 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("BLUMKIN_BROWSER_TESTS") != "1", reason="needs BLUMKIN_BROWSER_TESTS=1"
 )
 
-# A list-of-values dialog: result rows are table rows, not clickable controls. One row holds a
-# button of its own, and two rows share a text; choosing records `window.chosen`.
+# A list-of-values dialog: result rows are table rows with their own click handlers, not
+# controls. The rest are things dressed as rows, or rows that hold, or sit in, a control.
 _PAGE = """
 <table>
-  <tr onclick="window.chosen = 'boston'"><td>Boston</td><td>MA</td></tr>
+  <tr onclick="window.chosen = 'boston'"><td>Boston</td><td>MA</td>
+    <td><input type=hidden value=7></td></tr>
   <tr onclick="window.chosen = 'austin-1'"><td>Austin</td><td>TX</td></tr>
   <tr onclick="window.chosen = 'austin-2'"><td>Austin</td><td>TX</td></tr>
-  <tr onclick="window.chosen = 'row-with-button'"><td>Denver</td><td>CO</td>
+  <tr onclick="window.chosen = 'denver'"><td>Denver</td><td>CO</td>
     <td><button onclick="window.pressed = true; event.stopPropagation()">Remove</button></td></tr>
+  <tr onclick="window.chosen = 'tab'"><td tabindex=0>Reno</td><td>NV</td></tr>
+  <tr><td><a href="#x">Linked</a></td><td>Row</td></tr>
 </table>
-<script>window.chosen = null; window.pressed = false;</script>
+<a href="#y"><table><tr onclick="window.chosen = 'inside-link'"><td>Inside</td><td>Link</td></tr>
+</table></a>
+<label><table><tr onclick="window.chosen = 'inside-label'"><td>Inside</td><td>Label</td></tr>
+</table></label>
+<button role=row onclick="window.pressed = true">Add payee</button>
+<a href="#z" role=row onclick="window.pressed = true">Go there</a>
+<div id=host></div>
+<script>
+  window.chosen = null; window.pressed = false;
+  const root = document.getElementById('host').attachShadow({mode: 'open'});
+  root.innerHTML = '<div role=row onclick="window.chosen = 1">Shadow row</div>';
+</script>
 """
 
 
-def _driver(playwright: object, browser: object, page: object) -> object:
-    from blumkin.browser.cdp import PlaywrightDriver
-
-    return PlaywrightDriver(browser=browser, page=page, playwright=None, timeout_s=3)  # type: ignore[arg-type]
-
-
-def test_pick_clicks_the_one_row_with_that_text_and_refuses_the_ambiguous_and_the_busy() -> None:
+def test_pick_clicks_one_plain_row_and_refuses_everything_that_is_or_holds_a_control() -> None:
     from playwright.sync_api import sync_playwright
 
-    from blumkin.browser.cdp import BrowserActionError, ControlInfo
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
     from blumkin.browser.discovery import resolve_browser
-
-    def vet(info: ControlInfo) -> None:
-        assert info.tag == "tr"
+    from blumkin.browser.guard import GuardedDriver, GuardPolicy, SubmitBlockedError
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -46,23 +52,33 @@ def test_pick_clicks_the_one_row_with_that_text_and_refuses_the_ambiguous_and_th
         try:
             page = browser.new_page()
             page.set_content(_PAGE)
-            driver = _driver(playwright, browser, page)
+            raw = PlaywrightDriver(browser=browser, page=page, playwright=None, timeout_s=3)
+            driver = GuardedDriver(raw, GuardPolicy())
 
-            driver.checked_pick("Boston MA", "row", vet)  # type: ignore[attr-defined]
+            driver.pick("Boston MA")
             assert page.evaluate("window.chosen") == "boston"
 
             page.evaluate("window.chosen = null")
             with pytest.raises(BrowserActionError):
-                driver.checked_pick("Austin TX", "row", vet)  # type: ignore[attr-defined]
+                driver.pick("Austin TX")
             assert page.evaluate("window.chosen") is None
-
-            driver.checked_pick("Austin TX", "row", vet, nth=2)  # type: ignore[attr-defined]
+            driver.pick("Austin TX", nth=2)
             assert page.evaluate("window.chosen") == "austin-2"
 
-            page.evaluate("window.chosen = null")
-            with pytest.raises(BrowserActionError, match="no controls"):
-                driver.checked_pick("Denver CO Remove", "row", vet)  # type: ignore[attr-defined]
-            assert page.evaluate("window.chosen") is None
+            for text in (
+                "Denver CO Remove",
+                "Reno NV",
+                "Linked Row",
+                "Inside Link",
+                "Inside Label",
+            ):
+                page.evaluate("window.chosen = null")
+                with pytest.raises(SubmitBlockedError):
+                    driver.pick(text)
+                assert page.evaluate("window.chosen") is None, text
+            for text in ("Add payee", "Go there"):
+                with pytest.raises(SubmitBlockedError):
+                    driver.pick(text)
             assert page.evaluate("window.pressed") is False
         finally:
             browser.close()

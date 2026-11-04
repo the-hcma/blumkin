@@ -1768,8 +1768,9 @@ def test_press_with_a_target_describes_and_presses_the_narrowed_field() -> None:
 
 def test_pick_refuses_a_role_that_is_a_control_and_a_bad_nth() -> None:
     raw, driver = _guard()
-    with pytest.raises(SubmitBlockedError):
-        driver.pick("Save", "button")
+    for role in ("button", "option", "treeitem"):
+        with pytest.raises(SubmitBlockedError):
+            driver.pick("Save", role)
     with pytest.raises(ValueError, match="positive whole number"):
         driver.pick("Boston", "row", 0)
     assert raw.calls == []
@@ -1777,6 +1778,7 @@ def test_pick_refuses_a_role_that_is_a_control_and_a_bad_nth() -> None:
 
 def test_pick_refuses_a_finalizing_text_and_needs_no_declaration() -> None:
     raw, driver = _guard()
+    raw.controls["Boston, MA"] = ControlInfo(tag="tr", input_type="", in_form=False)
     with pytest.raises(SubmitBlockedError):
         driver.pick("Submit report")
     driver.pick("Boston, MA")

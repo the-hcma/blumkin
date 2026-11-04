@@ -265,6 +265,41 @@ class GuardedDriver:
         """Show the task's indicator on the page blumkin is attached to (on `hosts` only)."""
         self._raw.mark_window(task, hosts, blocked)
 
+    def pick(self, text: str, role: str = "row", nth: int | None = None) -> None:
+        """Choose the row or cell whose text is exactly `text`, such as a search result.
+
+        A result of a search (a list-of-values dialog) is page data, so it cannot be declared
+        in advance, and that is why `pick` is for rows and cells only: an option or a tree item
+        is something `click` makes the task declare. It is refused when its text is a
+        finalizing action and when the element is, holds or sits inside a control (a button or
+        link given a row role, a row with a button of its own, a row inside a link), and the
+        element is vetted like a click. `nth` (1-based, DOM order) narrows a repeated text. The
+        dialog's own `OK` is still an ordinary declared click.
+        """
+        action = f"pick {text!r}"
+        if role not in PICK_ROLES:
+            raise self._refuse(action, f"the role {role!r} is not a row or a cell")
+        if nth is not None and (isinstance(nth, bool) or not isinstance(nth, int) or nth < 1):
+            raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
+        if _is_denied(text, self._deny):
+            raise self._refuse(action, "its text is a finalizing action")
+
+        def vet(info: ControlInfo) -> None:
+            if (
+                info.holds_controls
+                or info.tag in _PICK_CONTROL_TAGS
+                or info.href
+                or _is_button_element(info)
+            ):
+                raise self._refuse(
+                    action,
+                    "the element is, holds or sits inside a control; a control is clicked by "
+                    "its own declared name",
+                )
+            self._vet_control(action, info, None, role)
+
+        self._raw.checked_pick(text, role, vet, nth=nth)
+
     def pick_account(
         self,
         email: str,
@@ -283,26 +318,6 @@ class GuardedDriver:
             return not any(_is_denied(line, self._deny) for line in lines)
 
         return self._raw.pick_account(email, hosts, blocked, clean)
-
-    def pick(self, text: str, role: str = "row", nth: int | None = None) -> None:
-        """Choose the row, option, tree item or cell whose text is exactly `text`.
-
-        A result of a search (a list-of-values dialog) is page data, so it cannot be declared
-        in advance. It is refused when its text is a finalizing action, when the element is
-        not an ordinary one (the same vetting as a click) and, in the raw driver, when the row
-        holds a control of its own; `nth` (1-based, DOM order) narrows a repeated text. The
-        dialog's own `OK` is still an ordinary declared click.
-        """
-        action = f"pick {text!r}"
-        if role not in PICK_ROLES:
-            raise self._refuse(action, f"the role {role!r} is not a row, option, tree item or cell")
-        if nth is not None and (isinstance(nth, bool) or not isinstance(nth, int) or nth < 1):
-            raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
-        if _is_denied(text, self._deny):
-            raise self._refuse(action, "its text is a finalizing action")
-        self._raw.checked_pick(
-            text, role, lambda info: self._vet_control(action, info, None, role), nth=nth
-        )
 
     def press(self, label: str, key: str, target: FieldTarget | None = None) -> None:
         action = f"press {key!r} in {label!r}"
@@ -618,8 +633,10 @@ CLICKABLE_ROLES = frozenset(
     }
 )
 
-#: What `pick` may choose: data in a result list, never a control.
-PICK_ROLES = frozenset({"gridcell", "option", "row", "treeitem"})
+#: What `pick` may choose: data in a result list, never a control. An option or a tree item
+#: is something `click` makes the task declare, so neither is here.
+PICK_ROLES = frozenset({"gridcell", "row"})
+_PICK_CONTROL_TAGS = frozenset({"a", "button", "input", "select", "summary", "textarea"})
 _NAVIGATION_KEYS = frozenset(
     {
         "ArrowDown",

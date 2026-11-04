@@ -3560,11 +3560,11 @@ def test_pick_chooses_a_row_by_its_text_without_it_being_declared(raw: _Raw) -> 
 
 
 def test_pick_passes_the_role_and_the_nth_match(raw: _Raw) -> None:
-    result = _run("browser", "pick", "expense-report", "Holiday", "--role", "option", "--nth", "2")
+    result = _run("browser", "pick", "expense-report", "Boston", "--role", "gridcell", "--nth", "2")
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert _json(result)["nth"] == 2
-    assert ("pick", "option", "Holiday", 2) in raw.calls
+    assert ("pick", "gridcell", "Boston", 2) in raw.calls
 
 
 def test_pick_refuses_text_that_is_a_finalizing_action(raw: _Raw) -> None:
@@ -3585,10 +3585,33 @@ def test_pick_refuses_an_element_the_click_vetting_refuses(raw: _Raw) -> None:
     assert [call for call in raw.calls if call[0] == "pick"] == []
 
 
-def test_pick_takes_only_the_roles_of_data(raw: _Raw) -> None:
-    result = _run("browser", "pick", "expense-report", "Save", "--role", "button")
+@pytest.mark.parametrize("role", ["button", "option", "treeitem"])
+def test_pick_takes_only_rows_and_cells(raw: _Raw, role: str) -> None:
+    result = _run("browser", "pick", "expense-report", "Save", "--role", role)
 
     assert result.exit_code == EXIT_USAGE
+    assert [call for call in raw.calls if call[0] == "pick"] == []
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        ControlInfo(tag="tr", input_type="", in_form=False, holds_controls=True),
+        ControlInfo(tag="button", input_type="button", in_form=False),
+        ControlInfo(tag="a", input_type="", in_form=False, href="/x"),
+        ControlInfo(tag="input", input_type="button", in_form=False),
+        ControlInfo(tag="a", input_type="", in_form=False),
+    ],
+)
+def test_pick_refuses_a_control_dressed_as_a_row_with_submit_blocked(
+    raw: _Raw, info: ControlInfo
+) -> None:
+    raw.controls["Add payee"] = info
+
+    result = _run("browser", "pick", "expense-report", "Add payee")
+
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "submit_blocked"
     assert [call for call in raw.calls if call[0] == "pick"] == []
 
 

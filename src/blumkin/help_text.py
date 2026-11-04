@@ -892,15 +892,17 @@ Examples:
 \b
   blumkin browser pick expense-report "Boston, MA, United States"
   blumkin browser pick expense-report "Boston, MA, United States" --nth 2 --json
-  blumkin browser pick time-sheet "Holiday" --role option
+  blumkin browser pick expense-report "Boston MA" --role gridcell
 
-Chooses one row (or option, tree item or cell with `--role`) by its exact text, the way you
-choose a search result in a list-of-values dialog: fill the search field, read the rows with
-`browser grid` or `browser read --aria`, then pick one. Rows are page data, so they are not
-declared in `allowed_controls`; instead a row whose text is a finalizing action is refused, the
-element is vetted like a click, and a row that holds a button, link or field of its own is
-refused (click that control by its own name instead). `--nth` picks one of several rows with the
-same text. Confirming the dialog is still an ordinary declared `click` (for example `OK`).
+Chooses one row (or cell, with `--role gridcell`) by its exact text, the way you choose a search
+result in a list-of-values dialog: fill the search field, read the rows with `browser grid` or
+`browser read --aria`, then pick one. Rows are page data, so they are not declared in
+`allowed_controls`; instead a row whose text is a finalizing action is refused (so is a place
+that merely starts with such a word, such as Payne: fill the exact value instead), the element is
+vetted like a click, and anything that is, holds or sits inside a button, link, field or other
+control is refused (click that control by its own declared name instead). An option or a tree
+item is never picked this way: `click` makes the task declare those. `--nth` picks one of
+several rows with the same text. Confirming the dialog is still an ordinary declared `click`.
 """
 
 BROWSER_PRESS_EPILOG = """
