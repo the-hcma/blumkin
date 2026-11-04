@@ -259,7 +259,8 @@ def dialog_task(
             )
         opened: list[str] = []
         failure: Exception | None = None
-        text, matches, warning = "", 0, {}
+        text, matches = "", 0
+        warning: dict[str, Any] | None = None
         try:
             for name, role in steps:
                 opened.append(driver.click(name, role, _default_wait(role)))
@@ -1312,7 +1313,7 @@ def _dialog_present(driver: GuardedDriver, role: str, name: str | None) -> bool:
 
 def _dialog_read(
     driver: GuardedDriver, role: str, name: str | None, wait_s: float, expand_options: bool
-) -> tuple[str, int, dict[str, Any]]:
+) -> tuple[str, int, dict[str, Any] | None]:
     """The redacted `role` subtree once it shows, waiting up to `wait_s` for it to open."""
     polls = max(1, int(wait_s * 1000 / _DIALOG_POLL_MS))
     for attempt in range(polls):
