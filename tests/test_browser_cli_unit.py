@@ -691,7 +691,7 @@ def test_status_verbose_reports_an_attach_that_fails_next_to_the_status(
 
     assert payload["page"] is None and "not supported" in payload["page_error"]
     assert payload["profiles"][0]["running"] is True
-    assert "could not attach" in text
+    assert "not shown" in text
 
 
 def test_status_verbose_needs_a_task_and_a_running_browser(
@@ -704,5 +704,43 @@ def test_status_verbose_needs_a_task_and_a_running_browser(
 
     assert _run("browser", "status", "--verbose").exit_code == EXIT_USAGE
     stopped = _json(_run("browser", "status", "expense-report", "--verbose"))
+    text = CliRunner().invoke(main, ["browser", "status", "expense-report", "--verbose"]).output
 
-    assert "page" not in stopped
+    assert stopped["page"] is None and "not running" in stopped["page_error"]
+    assert "not running" in text
+
+
+def test_status_verbose_does_not_echo_an_address_from_an_attach_error(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = create_profile(_config_dir, "expense-report")
+    write_session(running.path, _SESSION)
+
+    def broken(config: Any, task: str) -> dict[str, Any]:
+        raise RuntimeError("Expected a page, got https://idp.example/cb?code=SECRET failing")
+
+    monkeypatch.setattr("blumkin.cli.where_task", broken)
+
+    payload = _json(_run("browser", "status", "expense-report", "--verbose"))
+
+    assert "SECRET" not in payload["page_error"] and "[address removed]" in payload["page_error"]
+
+
+def test_status_verbose_says_when_a_foreign_page_is_shown_without_path_or_title(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = create_profile(_config_dir, "expense-report")
+    write_session(running.path, _SESSION)
+    foreign = {
+        "host": "evil.example.net",
+        "on_allowed_host": False,
+        "on_sign_in_host": False,
+        "path": "",
+        "scheme": "https",
+        "title": "",
+    }
+    monkeypatch.setattr("blumkin.cli.where_task", lambda config, task: foreign)
+
+    text = CliRunner().invoke(main, ["browser", "status", "expense-report", "--verbose"]).output
+
+    assert "https://evil.example.net" in text and "may not use" in text
