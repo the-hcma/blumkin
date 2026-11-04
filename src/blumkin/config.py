@@ -181,6 +181,12 @@ class BrowserTaskPolicy:
     #: one, lies inside that dialog; the same name anywhere else is refused. A finalizing name
     #: (`Submit`, `Pay`, ...) can never be declared here.
     dialog_confirm: tuple[str, ...] = ()
+    #: Exact names of controls that together mark a popup the page does not flag as a dialog (an
+    #: Oracle ADF attachments popup with its `Add` and `Delete` toolbar): the smallest container
+    #: around a `dialog_confirm` button that holds a control of each name is judged as a dialog,
+    #: by what it holds, so a container that also holds `Submit` never qualifies. At least two
+    #: names, so one common word cannot mark a whole page.
+    dialog_landmarks: tuple[str, ...] = ()
     #: Exact accessible names of buttons the user has verified only recalculate what is on the
     #: page (the mileage form's `Calculate`). Such a button may be clicked although it is a
     #: submit-type control in the page's form; a formaction override, a script link, a
@@ -703,6 +709,7 @@ _TASK_POLICY_KEYS = frozenset(
         "allowed_hosts",
         "block_background_writes",
         "dialog_confirm",
+        "dialog_landmarks",
         "download_dirs",
         "draft_controls",
         "extra_deny_names",
@@ -882,6 +889,9 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 table.get("allowed_controls"), f"{prefix}.allowed_controls"
             ),
             dialog_confirm=_string_list(table.get("dialog_confirm"), f"{prefix}.dialog_confirm"),
+            dialog_landmarks=_string_list(
+                table.get("dialog_landmarks"), f"{prefix}.dialog_landmarks"
+            ),
             draft_controls=_string_list(table.get("draft_controls"), f"{prefix}.draft_controls"),
             form_url=form_url,
             sign_in_hosts=sign_in_hosts,
