@@ -51,6 +51,7 @@ from blumkin.browser.guard import (
     attach_guarded,
     validate_control_patterns,
     validate_dialog_confirm,
+    validate_dialog_landmarks,
     validate_draft_controls,
 )
 from blumkin.browser.handoff import HandoffResult
@@ -1655,6 +1656,7 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
         return GuardPolicy()
     # Before any browser is touched: a finalizing name cannot be a dialog confirm.
     validate_dialog_confirm(declared.dialog_confirm, declared.extra_deny_names)
+    validate_dialog_landmarks(declared.dialog_landmarks, declared.extra_deny_names)
     validate_draft_controls(declared.draft_controls, declared.extra_deny_names)
     validate_control_patterns(declared.allowed_controls, declared.extra_deny_names)
     return GuardPolicy(
@@ -1662,6 +1664,7 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
         allowed_controls=frozenset(declared.allowed_controls),
         block_background_writes=declared.block_background_writes,
         dialog_confirm=frozenset(declared.dialog_confirm),
+        dialog_landmarks=tuple(declared.dialog_landmarks),
         draft_controls=frozenset(declared.draft_controls),
         extra_deny_names=declared.extra_deny_names,
     )

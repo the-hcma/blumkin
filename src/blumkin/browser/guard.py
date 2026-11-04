@@ -115,6 +115,9 @@ class GuardPolicy:
     block_background_writes: bool = False
     #: Exact names of buttons that confirm a dialog's own rows; see `vet_control`.
     dialog_confirm: frozenset[str] = frozenset()
+    #: Exact names of controls that together mark a popup the page does not flag as a dialog;
+    #: see `BrowserTaskPolicy.dialog_landmarks`.
+    dialog_landmarks: tuple[str, ...] = ()
     #: Exact names of buttons the user declared as draft calculations (`Calculate`): a
     #: submit-type button of that name is spared the submit check and nothing else; see
     #: `vet_control`.
@@ -139,12 +142,16 @@ class GuardedDriver:
         self._deny = _deny_stems((*DEFAULT_DENY_NAMES, *policy.extra_deny_names))
         self._destructive = _deny_stems(DESTRUCTIVE_DENY_NAMES)
         validate_dialog_confirm(policy.dialog_confirm, policy.extra_deny_names)
+        validate_dialog_landmarks(policy.dialog_landmarks, policy.extra_deny_names)
         self._confirm = frozenset(_exact(name) for name in policy.dialog_confirm)
         self._draft_names = tuple(sorted(set(policy.draft_controls)))
         validate_draft_controls(policy.draft_controls, policy.extra_deny_names)
         self._draft = frozenset(_exact(name) for name in policy.draft_controls)
         self._raw = raw
         raw.block_form_submission(background_writes=policy.block_background_writes)
+        setter = getattr(raw, "set_dialog_landmarks", None)
+        if policy.dialog_landmarks and setter is not None:
+            setter(policy.dialog_landmarks)
 
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()
@@ -598,7 +605,11 @@ class GuardedDriver:
                     raise self._refuse(
                         action, "it is declared as a dialog confirm and is not in a dialog"
                     )
-                if not info.form_in_dialog:
+                # A popup found by its landmarks sits in the page's own form, so a button that
+                # cannot submit anything (not a submit control) is judged by what the popup holds.
+                if not info.form_in_dialog and not (
+                    info.dialog_landmark and not _is_submit_control(info)
+                ):
                     raise self._refuse(
                         action,
                         "it is declared as a dialog confirm and its form is not the dialog's",
@@ -768,6 +779,21 @@ def validate_dialog_confirm(names: Iterable[str], extra_deny_names: Iterable[str
             "Expected dialog_confirm names that are not finalizing actions, got "
             f"{', '.join(repr(name) for name in finalizing)}. A browser task never submits; "
             "a confirm button can only close a dialog"
+        )
+
+
+def validate_dialog_landmarks(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
+    """Refuse landmarks that are too few to mark a popup, a pattern, or a finalizing name."""
+    listed = [name for name in names]
+    if not listed:
+        return
+    bad = [name for name in listed if not name.strip() or "*" in name]
+    deny = _deny_stems((*DEFAULT_DENY_NAMES, *extra_deny_names))
+    bad += [name for name in listed if name.strip() and _is_denied(name, deny)]
+    if bad or len({_exact(name) for name in listed}) < 2:
+        raise SubmitBlockedError(
+            "Expected dialog_landmarks of at least two distinct exact names that are not "
+            f"finalizing actions, got {', '.join(repr(name) for name in listed)}"
         )
 
 

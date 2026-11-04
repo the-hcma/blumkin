@@ -287,6 +287,9 @@ class ControlInfo:
     #: False when the dialog held more controls, or longer names, than were collected: nothing
     #: can then be said about what the dialog holds.
     dialog_controls_complete: bool = True
+    #: The "dialog" is not marked as one by the page: it is the smallest container around the
+    #: element that holds every control the task declared as a dialog landmark.
+    dialog_landmark: bool = False
     #: Set by `checked_pick` only: the element holds, sits inside or is made of a control.
     holds_controls: bool = False
     #: Every name the clicked element itself goes by, beyond the accessible name it was found
@@ -422,6 +425,7 @@ class PlaywrightDriver:
         self._browser = browser
         self._closed = False
         self._context = page.context
+        self._dialog_landmarks: tuple[str, ...] = ()
         self._existing_frames = existing_frames
         self._navigation_handler: Any = None
         self._net_handler: Any = None
@@ -1051,6 +1055,14 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error("scroll the frame", exc) from exc
 
+    def set_dialog_landmarks(self, names: Sequence[str]) -> None:
+        """Treat the smallest container holding a control of each of these names as a dialog.
+
+        For a popup the page does not mark as one (`role=dialog`): the guard still judges what
+        the container holds before a declared dialog confirm may be clicked inside it.
+        """
+        self._dialog_landmarks = tuple(names)
+
     def settle(self, previous_url: str, timeout_s: float = 5.0) -> None:
         """Wait for a navigation the last action started: the URL moving on, then the load.
 
@@ -1396,7 +1408,7 @@ class PlaywrightDriver:
         self._require_committed(grid)
 
     def _describe(self, handle: Any) -> ControlInfo:
-        raw = handle.evaluate(_DESCRIBE_CONTROL_JS)
+        raw = handle.evaluate(_DESCRIBE_CONTROL_JS, list(self._dialog_landmarks))
         return ControlInfo(
             tag=str(raw["tag"]),
             input_type=str(raw["type"]),
@@ -1409,6 +1421,7 @@ class PlaywrightDriver:
             form_in_dialog=bool(raw.get("formInDialog", False)),
             dialog_controls=tuple(str(text) for text in raw.get("dialogControls", ()) or ()),
             dialog_controls_complete=bool(raw.get("dialogComplete", True)),
+            dialog_landmark=bool(raw.get("dialogLandmark", False)),
             own_names=tuple(str(text) for text in raw.get("ownNames", ()) or ()),
             own_names_complete=bool(raw.get("ownComplete", True)),
         )
@@ -2477,8 +2490,18 @@ _PICK_BLOCKERS_JS = r"""(e) => {
 }"""
 
 _DESCRIBE_CONTROL_JS = (
-    "(e) => { const sel = 'dialog, [role=dialog], [role=alertdialog]'; "
-    "const d = e.closest(sel); "
+    "(e, landmarks) => { const sel = 'dialog, [role=dialog], [role=alertdialog]'; "
+    "let d = e.closest(sel); let viaLandmark = false; "
+    "if (!d && landmarks && landmarks.length) { "
+    "const norm = (s) => String(s || '').replace(/\\s+/g, ' ').trim().toLowerCase(); "
+    "const pick = 'button, a, [role=button], [role=link], [role=menuitem], "
+    "input[type=button], input[type=submit]'; "
+    "let a = e.parentElement; "
+    "while (a && a !== document.body && a !== document.documentElement) { "
+    "const have = new Set(Array.from(a.querySelectorAll(pick)).flatMap((b) => "
+    "[norm(b.innerText), norm(b.getAttribute('aria-label')), norm(b.value), norm(b.title)])); "
+    "if (landmarks.every((l) => have.has(norm(l)))) { d = a; viaLandmark = true; break; } "
+    "a = a.parentElement; } } "
     "const text = (n) => (n ? String(n.innerText || n.textContent || '').trim() : ''); "
     "const names = []; let complete = true; "
     "if (d) { const all = Array.from(d.querySelectorAll("
@@ -2522,7 +2545,7 @@ _DESCRIBE_CONTROL_JS = (
     "onclick: String(e.getAttribute('onclick') || ''), "
     "target: String(e.getAttribute('target') || ''), "
     "dialog: !!d, formInDialog: !!d && (!f || d.contains(f)), "
-    "dialogControls: names, dialogComplete: complete}; }"
+    "dialogControls: names, dialogComplete: complete, dialogLandmark: viaLandmark}; }"
 )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import logging
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -86,6 +87,9 @@ class _Raw:
     def aria_snapshot(self) -> str:
         self.calls.append(("aria",))
         return '- button "Go"'
+
+    def set_dialog_landmarks(self, names: Sequence[str]) -> None:
+        self.landmarks = tuple(names)
 
     def block_form_submission(self, *, background_writes: bool = False) -> None:
         self.net_installed += 1
@@ -259,12 +263,14 @@ def _guard(
     deny: tuple[str, ...] = (),
     confirm: tuple[str, ...] = (),
     draft: tuple[str, ...] = (),
+    landmarks: tuple[str, ...] = (),
 ) -> tuple[_Raw, GuardedDriver]:
     raw = _Raw()
     policy = GuardPolicy(
         allow_all_controls=allow_all,
         allowed_controls=frozenset(allowed),
         dialog_confirm=frozenset(confirm),
+        dialog_landmarks=landmarks,
         draft_controls=frozenset(draft),
         extra_deny_names=deny,
     )
@@ -1891,3 +1897,82 @@ def test_pick_refuses_a_finalizing_text_and_needs_no_declaration() -> None:
         driver.pick("Submit report")
     driver.pick("Boston, MA")
     assert raw.calls == [("pick", "row", "Boston, MA")]
+
+
+# ------------------------------------------------------- popups found by landmarks (#624)
+
+
+def _landmark_ok(*, submit: bool, dialog_controls: tuple[str, ...] = ("Add", "Delete", "OK")):
+    return ControlInfo(
+        tag="button" if submit else "a",
+        input_type="submit" if submit else "",
+        in_form=submit,
+        in_dialog=True,
+        form_in_dialog=False,
+        dialog_landmark=True,
+        dialog_controls=dialog_controls,
+    )
+
+
+def test_the_landmarks_are_handed_to_the_driver_only_when_declared() -> None:
+    raw, _ = _guard(confirm=("OK",), landmarks=("Add", "Delete"))
+    assert raw.landmarks == ("Add", "Delete")
+    plain, _ = _guard(confirm=("OK",))
+    assert not hasattr(plain, "landmarks")
+
+
+def test_a_confirm_that_cannot_submit_is_clicked_in_a_popup_found_by_its_landmarks() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"))
+    raw.controls["OK"] = _landmark_ok(submit=False)
+
+    driver.click("OK")
+
+    assert raw.calls == [("click", "button", "OK")]
+
+
+def test_a_submit_type_confirm_in_a_landmark_popup_inside_the_page_form_is_refused() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"))
+    raw.controls["OK"] = _landmark_ok(submit=True)
+
+    with pytest.raises(SubmitBlockedError, match="its form is not the dialog's"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+def test_a_landmark_container_that_also_holds_submit_never_qualifies() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"))
+    raw.controls["OK"] = _landmark_ok(submit=False, dialog_controls=("Add", "Delete", "Submit"))
+
+    with pytest.raises(SubmitBlockedError, match="finalizing control"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+def test_a_landmark_container_too_big_to_check_never_qualifies() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"))
+    info = _landmark_ok(submit=False)
+    raw.controls["OK"] = dataclasses.replace(info, dialog_controls_complete=False)
+
+    with pytest.raises(SubmitBlockedError, match="more controls than can be checked"):
+        driver.click("OK")
+
+
+def test_without_a_dialog_or_a_landmark_container_the_confirm_is_still_refused() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"))
+    raw.controls["OK"] = ControlInfo(tag="a", input_type="", in_form=False, in_dialog=False)
+
+    with pytest.raises(SubmitBlockedError, match="not in a dialog"):
+        driver.click("OK")
+
+
+@pytest.mark.parametrize(
+    "names",
+    [("Add",), ("Add", "Add"), ("Add", "Submit"), ("Add", "Del*"), ("Add", " ")],
+)
+def test_dialog_landmarks_need_two_distinct_exact_non_finalizing_names(
+    names: tuple[str, ...],
+) -> None:
+    with pytest.raises(SubmitBlockedError, match="dialog_landmarks"):
+        _guard(confirm=("OK",), landmarks=names)
