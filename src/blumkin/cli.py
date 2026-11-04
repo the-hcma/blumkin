@@ -48,6 +48,7 @@ from blumkin.auth_setup import (
 from blumkin.browser.actions import (
     DEFAULT_PICK_WAIT_S,
     DEFAULT_SIGN_IN_WAIT_S,
+    MAX_DIALOG_STEPS,
     MAX_GRID_ROWS,
     MAX_READ_CHARS,
     MAX_READ_LIMIT,
@@ -61,6 +62,7 @@ from blumkin.browser.actions import (
     UploadBlockedError,
     address_task,
     click_task,
+    dialog_task,
     download_task,
     fill_task,
     frames_task,
@@ -111,7 +113,7 @@ from blumkin.browser.explore_commands import (
     explore_save,
     explore_show,
 )
-from blumkin.browser.guard import SubmitBlockedError
+from blumkin.browser.guard import CLICKABLE_ROLES, SubmitBlockedError
 from blumkin.browser.handoff import HandoffError, format_handoff_human
 from blumkin.browser.init_task import TEMPLATES, InitTaskError, init_task
 from blumkin.browser.launcher import DEFAULT_CLOSE_TIMEOUT_S, BrowserCloseError, BrowserLaunchError
@@ -1599,6 +1601,14 @@ def _dispatch_local(
     raise SystemExit(EXIT_SUCCESS)
 
 
+def _control_spec(spec: str) -> tuple[str, str | None]:
+    """`NAME` or `ROLE:NAME` as (name, role); only a known role before the colon is a role."""
+    head, sep, tail = spec.partition(":")
+    if sep and head.strip().lower() in CLICKABLE_ROLES and tail.strip():
+        return tail.strip(), head.strip().lower()
+    return spec.strip(), None
+
+
 def _dispatch_soft(
     ctx: click.Context,
     skill_id: str,
@@ -2962,6 +2972,85 @@ def browser_explore_show(ctx: click.Context, task: str, as_json_flag: bool) -> N
         lines.append(
             f"  {page['page_id']} {page['url_template']} - {page['controls']} control(s){marked}"
         )
+    emit_lines(lines)
+
+
+@browser.command("dialog", epilog=help_text.BROWSER_DIALOG_EPILOG)
+@click.argument("task")
+@click.option(
+    "--close",
+    "close_spec",
+    default=None,
+    help="Declared control that closes it, as NAME or ROLE:NAME (default: Escape).",
+)
+@click.option(
+    "--expand-options",
+    is_flag=True,
+    help="List the options of each dropdown the dialog holds (default: a one-line summary).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option(
+    "--open",
+    "open_specs",
+    multiple=True,
+    required=True,
+    help=f"Declared control to click to open it, as NAME or ROLE:NAME; repeat up to "
+    f"{MAX_DIALOG_STEPS} times, in order (a menu, then its item).",
+)
+@click.option(
+    "--wait",
+    "wait_s",
+    type=click.FloatRange(min=0.0, max=MAX_WAIT_S),
+    callback=_finite_wait,
+    default=5.0,
+    show_default=True,
+    help="Seconds to wait for the dialog to appear.",
+)
+@click.option(
+    "--within",
+    default="dialog",
+    show_default=True,
+    help="The subtree to read, ROLE or ROLE:NAME (a `menu` for a menu with no dialog).",
+)
+@click.pass_context
+def browser_dialog(
+    ctx: click.Context,
+    task: str,
+    close_spec: str | None,
+    expand_options: bool,
+    as_json_flag: bool,
+    open_specs: tuple[str, ...],
+    wait_s: float,
+    within: str,
+) -> None:
+    """Open a dialog through declared controls, read what it shows and close it again."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = dialog_task(
+            load_browser_setup(),
+            task,
+            [_control_spec(spec) for spec in open_specs],
+            close=_control_spec(close_spec) if close_spec is not None else None,
+            expand_options=expand_options,
+            wait_s=wait_s,
+            within=within,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    state = "closed" if payload["closed"] else "STILL OPEN: look at the page before going on"
+    lines = [f"{task}: read the {payload['within']} ({state})", payload["untrusted"]]
+    lines.extend(format_injection_warning_banner(payload["injection_warning"]))
+    if payload["within_matches"] > 1:
+        lines.append(f"Note: {payload['within_matches']} matches; only the first is shown.")
+    lines.append(sanitize_terminal(payload["text"].rstrip("\n")))
+    if payload["truncated"]:
+        lines.append("(the text was cut at the read limit)")
+    for item in payload["controls"]:
+        flag = " (disabled)" if item["disabled"] else ""
+        lines.append(f"  {item['role']} {sanitize_terminal(item['name'])!r}{flag}")
     emit_lines(lines)
 
 

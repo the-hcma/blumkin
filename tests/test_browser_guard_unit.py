@@ -94,6 +94,9 @@ class _Raw:
         self.nths.append(nth)
         self.calls.append(("click", role, name))
 
+    def dismiss(self) -> None:
+        self.calls.append(("dismiss",))
+
     def close(self) -> None:
         self.calls.append(("close",))
 
@@ -544,6 +547,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "aria_snapshot",
         "check_click",
         "click",
+        "dismiss",
         "download",
         "close",
         "fill",
