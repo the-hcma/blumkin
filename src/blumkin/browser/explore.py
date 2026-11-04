@@ -43,6 +43,7 @@ from blumkin.browser.model import (
     ControlKind,
     ControlSafety,
     Flow,
+    FlowParam,
     FlowStep,
     Locator,
     LocatorStrategy,
@@ -310,6 +311,8 @@ class ModelDraft:
         self._flows: dict[str, list[FlowStep]] = {}
         self._hosts = tuple(hosts)
         self._pages: dict[str, Page] = {}
+        #: The declared parameters of each flow that has any, carried through unchanged.
+        self._params: dict[str, tuple[FlowParam, ...]] = {}
         self._task = task
 
     @classmethod
@@ -318,6 +321,7 @@ class ModelDraft:
         draft = cls(task=model.task, hosts=model.hosts, extra_deny=extra_deny)
         draft._pages = {page.page_id: page for page in model.pages}
         draft._flows = {flow.name: list(flow.steps) for flow in model.flows}
+        draft._params = {flow.name: flow.params for flow in model.flows if flow.params}
         return draft
 
     def add_host(self, host: str) -> None:
@@ -432,7 +436,9 @@ class ModelDraft:
                 f"got none for {empty[0]!r}"
             )
         flows = tuple(
-            Flow(name=name, steps=tuple(steps)) for name, steps in self._flows.items() if steps
+            Flow(name=name, params=self._params.get(name, ()), steps=tuple(steps))
+            for name, steps in self._flows.items()
+            if steps
         )
         return SiteModel(
             blumkin_version=blumkin_version,

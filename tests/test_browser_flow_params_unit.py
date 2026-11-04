@@ -57,7 +57,7 @@ def test_every_problem_is_listed_at_once_and_no_value_is_shown(tmp_path: Path) -
     message = str(caught.value)
     for part in (
         "missing file",
-        "not parameters of this flow: extra",
+        "not parameters of this flow: 'extra'",
         "date:",
         "type:",
         "merchant:",
@@ -223,3 +223,51 @@ def test_a_verified_item_is_a_noop_the_second_time_even_without_parameters(
     again = apply_item(tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-30", **kwargs)
 
     assert again.noop is True
+
+
+def test_an_undeclared_key_is_shown_quoted_so_control_characters_cannot_reach_the_terminal(
+    tmp_path: Path,
+) -> None:
+    values = _values(tmp_path) | {"bad\x1b[2Jkey": "x"}
+
+    with pytest.raises(LedgerError) as caught:
+        validate_params(_flow(), values)
+
+    assert "\x1b" not in str(caught.value)
+    assert "\\x1b" in str(caught.value)
+
+
+def test_a_missing_model_leaves_the_ledger_empty(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    with pytest.raises(LedgerError, match="saved site model"):
+        apply_item(
+            tmp_path,
+            "expense-report",
+            "trip-1",
+            ItemKind.DAY,
+            "2026-10-30",
+            flow_name="add-receipt",
+            models_store=tmp_path / "no-models",
+        )
+
+    assert instance_status(tmp_path, "expense-report", "trip-1").items == ()
+
+
+def test_a_run_cannot_override_the_ledger_item_through_an_item_value(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    seen: list[str] = []
+
+    apply_item(
+        tmp_path,
+        "expense-report",
+        "trip-1",
+        ItemKind.DAY,
+        "2026-10-30",
+        flow_name="add-receipt",
+        values=_values(tmp_path) | {"item": "someone-else"},
+        model=_model(_flow()),
+        run_step=lambda step, values: seen.append(values["item"]),
+    )
+
+    assert set(seen) == {"2026-10-30"}

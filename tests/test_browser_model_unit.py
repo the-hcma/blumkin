@@ -968,7 +968,7 @@ def _with_params(payload: dict[str, Any]) -> dict[str, Any]:
         {"kind": "file", "name": "file"},
         {"kind": "text", "name": "merchant"},
     ]
-    flow["steps"][0]["bind"] = "date"
+    flow["steps"][1]["bind"] = "date"
     return payload
 
 
@@ -983,7 +983,7 @@ def test_flow_parameters_and_bindings_round_trip(tmp_path: Path) -> None:
         ("merchant", "text"),
     ]
     assert flow.params[1].choices == ("Meals", "Taxi")
-    assert flow.steps[0].bind == "date" and flow.steps[1].bind is None
+    assert flow.steps[1].bind == "date" and flow.steps[0].bind is None
     saved = save_model(default_store(tmp_path), loaded)
     again = load_model(default_store(tmp_path), "expense-report")
     assert again is not None and again.flows == saved.flows
@@ -1001,7 +1001,7 @@ def test_a_model_without_parameters_keeps_its_stored_shape(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
-        (lambda f: f["steps"][0].update(bind="nothing"), "name a parameter"),
+        (lambda f: f["steps"][1].update(bind="nothing"), "name a parameter"),
         (lambda f: f["params"][1].pop("choices"), "list the options"),
         (lambda f: f["params"][0].update(choices=["x"]), "only for a choice"),
         (lambda f: f["params"][3].update(name="date"), "distinct names"),
@@ -1009,8 +1009,31 @@ def test_a_model_without_parameters_keeps_its_stored_shape(tmp_path: Path) -> No
         (lambda f: f["params"][0].update(kind="number"), "one of"),
         (lambda f: f["params"][0].update(amount="12.50"), "unexpected key"),
         (lambda f: f.update(params=f["params"] * 4), "Expected at most"),
+        (lambda f: f["steps"][0].update(bind="date"), "only on a fill or upload"),
+        (lambda f: f["steps"][1].update(bind="file"), "non-file"),
+        (lambda f: f["steps"][1].update(action="upload"), "of a file"),
+        (lambda f: f["steps"][1].pop("bind"), "to bind a parameter"),
+        (lambda f: f["params"][3].update(name="item"), "other than 'item'"),
+        (lambda f: f["params"][1].update(choices=["Meals", "Acme Cafe 12=50"]), "typed value"),
+        (lambda f: f["params"][1].update(choices=["Meals", "a@b.com"]), "typed value"),
     ],
-    ids=["bind", "no-choices", "stray-choices", "repeat", "repeat-choice", "kind", "field", "many"],
+    ids=[
+        "bind",
+        "no-choices",
+        "stray-choices",
+        "repeat",
+        "repeat-choice",
+        "kind",
+        "field",
+        "many",
+        "bind-on-click",
+        "fill-bound-to-file",
+        "upload-bound-to-text",
+        "unbound-fill",
+        "item-name",
+        "choice-equals",
+        "choice-at",
+    ],
 )
 def test_a_malformed_parameter_declaration_is_refused(
     tmp_path: Path, mutate: Any, message: str

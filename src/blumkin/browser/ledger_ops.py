@@ -112,11 +112,12 @@ def apply_item(
             item,
             sha256=sha256,
             low_confidence=low_confidence,
-            model_version=(model.version if model is not None else None),
+            model_version=site.version,
         )
     runner = run_step or _default_run_step(task)
     bindings = dict(values or {})
-    bindings.setdefault("item", item)
+    # The item being applied, whatever the caller passed: a value cannot rename it.
+    bindings["item"] = item
     try:
         for step in flow.steps:
             runner(step, bindings)

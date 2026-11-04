@@ -18,10 +18,10 @@ from pathlib import Path
 from blumkin.browser.ledger import LedgerError
 from blumkin.browser.model import Flow, FlowParam, ParamKind
 
+MAX_TEXT_CHARS = 500
+
 #: Bindings the run adds itself (the ledger item being applied).
 RESERVED_BINDINGS = frozenset({"item"})
-
-MAX_TEXT_CHARS = 500
 
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -42,7 +42,7 @@ def validate_params(flow: Flow, values: Mapping[str, str]) -> dict[str, str]:
         name for name in values if name not in declared and name not in RESERVED_BINDINGS
     )
     if unknown:
-        problems.append(f"not parameters of this flow: {', '.join(unknown)}")
+        problems.append(f"not parameters of this flow: {', '.join(repr(name) for name in unknown)}")
     for name, param in declared.items():
         if name in values:
             reason = _refusal(param, values[name])
