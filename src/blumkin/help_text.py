@@ -318,8 +318,9 @@ control named like a finalizing action (submit, send, file, confirm, pay, ...), 
 with a formaction, a link that runs script and a click handler that submits. A browser task
 never submits; the user does.
 `--record PAGE` also records the click as the next step of the exploration draft, on that page
-(observe it first with `blumkin browser explore observe`): the page must hold a control of that
-name, which is checked before the click is made, and the step carries `--expect-heading` when
+(observe it first with `blumkin browser explore observe`): the page must hold exactly one
+control of that name (and role) that is not finalizing, checked before the click is made, and
+`--nth` is refused with it. The step carries `--expect-heading` when
 given, so a flow can be built from the clicks an agent makes without a terminal. A step is
 recorded only for a click that succeeded, and a failure to record it after the click is reported
 next to it (`recorded_step: false`), never raised.

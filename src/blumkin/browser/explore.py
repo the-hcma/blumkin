@@ -421,15 +421,19 @@ class ModelDraft:
             )
         )
 
-    def has_control_named(self, page_id: str, name: str) -> bool:
-        """Whether the page is recorded with a control of this accessible name, in any role."""
+    def controls_named(self, page_id: str, name: str, role: str | None = None) -> list[Control]:
+        """The page's recorded controls of this accessible name (of this role, when given)."""
         page = self._pages.get(page_id)
-        return any(
-            loc.value.partition(":")[2] == name
-            for control in (page.controls if page else ())
-            for loc in control.locators
-            if loc.strategy is LocatorStrategy.ROLE_NAME
-        )
+        found: list[Control] = []
+        for control in page.controls if page else ():
+            for loc in control.locators:
+                if loc.strategy is not LocatorStrategy.ROLE_NAME:
+                    continue
+                found_role, _, found_name = loc.value.partition(":")
+                if found_name == name and role in (None, found_role):
+                    found.append(control)
+                    break
+        return found
 
     def forget(self, page_id: str) -> dict[str, int] | None:
         """Drop a page and the recorded steps that used it.

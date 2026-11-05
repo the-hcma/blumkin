@@ -2897,19 +2897,22 @@ def browser_click(
 ) -> None:
     """Click a control the task declared (never a submit or finalizing control)."""
     as_json = _as_json(ctx, as_json_flag)
-    setup = load_browser_setup()
     try:
+        setup = load_browser_setup()
         if record_page is not None:
-            require_recordable_click(setup, task, record_page, name)
+            require_recordable_click(
+                setup, task, record_page, name, expect_heading=expect_heading, nth=nth, role=role
+            )
         payload = click_task(setup, task, name, role, wait_s, nth, expect_heading)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     if record_page is not None:
         # The click was made, so a failure to record it is reported next to it, not raised.
         try:
-            payload["recorded_step"] = record_browser_click(
+            record_browser_click(
                 setup, task, record_page, payload["role"], name, expect_heading=expect_heading
             )
+            payload["recorded_step"] = True
         except Exception as exc:  # noqa: BLE001 - reported, not raised
             payload["recorded_step"] = False
             payload["record_error"] = redact_addresses(_clean_line(str(exc)))

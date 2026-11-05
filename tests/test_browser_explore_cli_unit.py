@@ -745,3 +745,43 @@ def test_a_recording_that_fails_after_the_click_is_reported_next_to_it(
     assert result.exit_code == EXIT_SUCCESS and payload["recorded_step"] is False
     assert "disk full" in payload["record_error"] and "secret" not in result.output
     assert "the click was made but not recorded" in text
+
+
+def test_a_click_is_refused_before_it_is_made_when_its_step_could_be_misrecorded(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    clicked = _fake_click(monkeypatch)
+    base = ["browser", "click", "expense-report", "Add line", "--record", "expense-list"]
+
+    with_nth = _run(*base, "--nth", "2")
+    wrong_role = _run(*base, "--role", "link")
+    bad_heading = _run(*base, "--expect-heading", 'Edit "Report" a=b')
+
+    for refused in (with_nth, wrong_role, bad_heading):
+        assert refused.exit_code != EXIT_SUCCESS, refused.output
+    assert clicked == [] and _draft_steps(_config_dir) == []
+
+
+def test_a_finalizing_control_is_not_recorded_as_a_click_step(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver.snapshot = '- button "Submit report"\n- button "Add line"\n'
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    clicked = _fake_click(monkeypatch)
+
+    result = _run("browser", "click", "expense-report", "Submit report", "--record", "expense-list")
+
+    assert result.exit_code != EXIT_SUCCESS and clicked == []
+
+
+def test_a_recording_miss_after_the_click_says_why(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    _fake_click(monkeypatch, role="link")
+
+    result = _run("browser", "click", "expense-report", "Add line", "--record", "expense-list")
+
+    payload = _json(result)
+    assert payload["recorded_step"] is False and "Add line" in payload["record_error"]
