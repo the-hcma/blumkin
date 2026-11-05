@@ -571,3 +571,13 @@ def test_number_only_buttons_do_not_make_two_pages_look_alike() -> None:
     best = best_matching_page(model.pages, live, prefer="one")
 
     assert best is not None and best[0] == "two"
+
+
+def test_a_small_page_whose_only_landmark_count_moved_is_not_another_page() -> None:
+    recorded = '- button "Attachments (2)"\n- link "Help"\n'
+    live = recorded.replace("(2)", "(3)")
+
+    grade, controls = _checked(recorded, live)
+
+    assert grade is Grade.COMPATIBLE
+    assert controls == []

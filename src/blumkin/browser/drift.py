@@ -280,7 +280,7 @@ def _appearance_findings(page: Page, observed: Sequence[ControlObservation]) -> 
     recorded = {_canonical(mark) for mark in page.fingerprint if not mark.startswith("link:")}
     if len(recorded) < _MIN_LANDMARKS:
         live_marks = {_canonical(mark) for mark in landmark_marks(observed)}
-        if recorded and not recorded & live_marks:
+        if recorded and not _matched_marks(recorded, live_marks):
             return [
                 _looks_different(
                     f"None of the recorded landmarks of {page.page_id} are on the page; it may "
