@@ -287,6 +287,7 @@ def test_dollar_signs_do_not_outvote_an_explicit_currency_code() -> None:
 def test_a_read_with_an_integer_total_is_not_beaten_by_one_with_only_a_tax_amount() -> None:
     assert docs_read._has_amount("TOTAL $12") and docs_read._has_amount("Tax $1.50")
     assert not docs_read._has_amount("Thank you, total pending")
+    assert not docs_read._has_amount("Total 8.62%") and not docs_read._has_amount("Total 8 %")
 
 
 def test_a_tip_table_with_the_percentage_after_the_word_tip_is_dropped() -> None:

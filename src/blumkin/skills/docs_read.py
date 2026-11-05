@@ -115,8 +115,9 @@ _MAX_FILE_BYTES = 25_000_000
 #: A money amount with its decimals (`11.80`, `11,80`) in a read of a photo; a rate (`8.62%`) or
 #: a date (`10.28.2026`) is not one.
 _AMOUNT = re.compile(r"(?<![\d/])(?:\d{1,3}(?:[.,]\d{3})+|\d{1,6})[.,]\d{2}\b(?!\s*%)(?![./-]\d)")
-#: A figure right after the word total (`TOTAL $12`): a total printed without decimals.
-_TOTAL_FIGURE = re.compile(r"\btotal\w*\W{0,4}[^\d\s]?\s*\d", re.IGNORECASE)
+#: A figure right after the word total (`TOTAL $12`): a total printed without decimals, never a
+#: percentage (`Total 8.62%`).
+_TOTAL_FIGURE = re.compile(r"\btotal\w*\W{0,4}[^\d\s]?\s*\d[\d.,]*+(?!\s*%)", re.IGNORECASE)
 _NEGATIVE_EVIDENCE = re.compile(
     r"(?<![\d/])[-\u2212\u2013]\s*[$\u20ac\u00a3]?\s*\d|\d\s*[-\u2212\u2013]\s*(?:$|\s)|"
     r"\(\s*[$\u20ac\u00a3]?\s*\d|\bCR\b|\bcredit\s+(?:note|memo)\b|\d\s*credit\b(?!\s+cards?)|"
