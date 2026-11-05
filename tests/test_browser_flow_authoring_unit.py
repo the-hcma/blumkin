@@ -84,6 +84,55 @@ def test_params_and_steps_are_read_from_their_specs() -> None:
     assert (fourth.action, fourth.instruction) == ("handoff", "Click OK, then Save")
 
 
+def test_starts_on_and_verify_are_read_from_their_specs() -> None:
+    flow = build_flow(
+        "check-amount",
+        ["amount:text"],
+        [
+            "verify expense.amount page=expense-list bind=amount starts_on='Edit Report'",
+            "click expense.add starts_on='Edit Report'",
+        ],
+    )
+
+    check, add = flow.steps
+    assert (check.action, check.control, check.bind) == ("verify", "expense.amount", "amount")
+    assert check.starts_on == "Edit Report" and add.starts_on == "Edit Report"
+
+
+def test_starts_on_and_verify_are_saved_and_read_back(_config_dir: Path) -> None:
+    names = _store(_config_dir)
+    amount = next(n for n in names if "amount" in n)
+    add_line = next(n for n in names if "add" in n)
+
+    result = _run(
+        "expense-report", "check-then-add", "--yes",
+        "--param", "amount:text",
+        "--step", f"verify {amount} page=expense-list bind=amount starts_on=Expenses",
+        "--step", f"click {add_line} page=expense-list starts_on=Expenses",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    stored = load_model(default_store(_config_dir), "expense-report")
+    assert stored is not None
+    (flow,) = [f for f in stored.flows if f.name == "check-then-add"]
+    assert [(s.action, s.starts_on) for s in flow.steps] == [
+        ("verify", "Expenses"),
+        ("click", "Expenses"),
+    ]
+
+
+def test_a_verify_step_must_bind_a_parameter_the_flow_declares(_config_dir: Path) -> None:
+    names = _store(_config_dir)
+    amount = next(n for n in names if "amount" in n)
+
+    result = _run(
+        "expense-report", "bad", "--param", "amount:text",
+        "--step", f"verify {amount} page=expense-list",
+    )  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+
+
 @pytest.mark.parametrize(
     ("params", "steps", "match"),
     [

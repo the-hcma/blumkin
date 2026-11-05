@@ -1009,7 +1009,10 @@ def test_a_model_without_parameters_keeps_its_stored_shape(tmp_path: Path) -> No
         (lambda f: f["params"][0].update(kind="number"), "one of"),
         (lambda f: f["params"][0].update(amount="12.50"), "unexpected key"),
         (lambda f: f.update(params=f["params"] * 4), "Expected at most"),
-        (lambda f: f["steps"][0].update(bind="date"), "only on a fill, upload, cell or pick"),
+        (
+            lambda f: f["steps"][0].update(bind="date"),
+            "only on a fill, upload, verify, cell or pick",
+        ),
         (lambda f: f["steps"][1].update(bind="file"), "non-file"),
         (lambda f: f["steps"][1].update(action="upload"), "of a file"),
         (lambda f: f["steps"][1].pop("bind"), "to bind a parameter"),
