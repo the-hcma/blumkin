@@ -217,7 +217,13 @@ def _two_page_reader(*, ocr_available: bool) -> tuple[list[bool], Any]:
     seen: list[bool] = []
 
     async def reader(
-        *, config: Any, path: str, pages: Any = None, sheet: Any = None, ocr: bool = False
+        *,
+        config: Any,
+        path: str,
+        pages: Any = None,
+        sheet: Any = None,
+        ocr: bool = False,
+        photo: bool = False,
     ) -> dict[str, Any]:
         seen.append(ocr)
         if ocr and not ocr_available:

@@ -188,7 +188,7 @@ async def read_receipt(
         blank_pages = _blank_pages(payload)
         if suffix == ".pdf" and blank_pages:
             try:
-                payload = await reader(config=config, path=str(path), ocr=True)
+                payload = await reader(config=config, path=str(path), ocr=True, photo=True)
                 text = _joined_text(payload)
                 blank_pages = _blank_pages(payload)
             except DocsReadOcrUnavailableError, DocsReadExtraMissingError:
@@ -331,6 +331,11 @@ _NEGATIVE_AMOUNT = re.compile(
     r"\d\s*[-\u2212]\s*$|\b(?:cr|credit)\b"
 )
 _NOISE_LETTERS = "OoIlSBZ|"
+#: A line that says what was charged to a card or handed over: it holds the amount paid.
+_PAID_LINE = re.compile(
+    r"\b(?:amex|american\s+express|card|debit|mastercard|visa)\b|\b(?:tendered|amount\s+paid)\b",
+    re.IGNORECASE,
+)
 _REFUND_WORDS = re.compile(r"\b(?:credit\s+(?:memo|note)|refund(?:ed)?|reversal|void(?:ed)?)\b")
 _INCLUDING = re.compile(r"\b(?:inc|incl|including|inclusive)\b")
 _MAX_AMOUNT_RUN = 30
@@ -655,6 +660,13 @@ def _parse_total(text: str) -> ReceiptField:
 
 
 def _guess_total(text: str) -> ReceiptField:
+    paid = _paid_amounts(text)
+    if paid:
+        return ReceiptField(
+            confidence=Confidence.LOW,
+            value=max(paid, key=Decimal),
+            note="no total line found; this is the amount charged to a card or tendered",
+        )
     amounts = [_parse_amount(run) for run in _AMOUNT_RUN.findall(text)]
     guesses = [a.value for a in amounts if a.value is not None and a.has_decimals]
     if not guesses:
@@ -664,6 +676,19 @@ def _guess_total(text: str) -> ReceiptField:
         value=max(guesses, key=Decimal),
         note="no total line found; this is the largest amount on the receipt",
     )
+
+
+def _paid_amounts(text: str) -> list[str]:
+    """The amounts on the lines that say how the bill was paid (a card line, a tender line)."""
+    paid: list[str] = []
+    for raw in text.splitlines():
+        if not _PAID_LINE.search(raw):
+            continue
+        for run in _AMOUNT_RUN.findall(raw):
+            amount = _parse_amount(run)
+            if amount.value is not None and amount.has_decimals and not amount.doubtful:
+                paid.append(amount.value)
+    return paid
 
 
 def _parse_vendor(text: str, sender: str | None = None) -> ReceiptField:

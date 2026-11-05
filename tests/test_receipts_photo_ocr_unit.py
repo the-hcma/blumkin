@@ -310,3 +310,71 @@ def test_a_currency_symbol_among_letters_is_noise_but_beside_a_digit_is_an_amoun
 
     assert noise.value is None
     assert amount.value == "GBP" and spaced.value == "EUR"
+
+
+def _pdf_page_ocr(monkeypatch: Any, replies: dict[str | None, str]) -> tuple[Any, list[str | None]]:
+    """`_ocr_pdf_page` with a one-page rendering and a fake Tesseract (#677)."""
+    fake, calls = _fake(replies)
+    pdf2image = SimpleNamespace(convert_from_path=lambda *a, **k: [_lined()])
+    exceptions = SimpleNamespace()
+    monkeypatch.setattr(docs_read, "_require_ocr_binaries", lambda: None)
+    monkeypatch.setattr(docs_read, "_import_ocr_modules", lambda: (pdf2image, exceptions, fake))
+    return fake, calls
+
+
+def test_a_pdf_page_is_read_in_one_plain_pass_unless_it_is_a_photo(monkeypatch: Any) -> None:
+    _, calls = _pdf_page_ocr(monkeypatch, {None: "plain words"})
+
+    text, passes, conflict = docs_read._ocr_pdf_page(Path("x.pdf"), page_index=1)
+
+    assert (text, passes, conflict) == ("plain words", 1, False)
+    assert calls == [None]
+
+
+def test_a_pdf_page_that_is_a_photo_gets_the_photo_pipeline(monkeypatch: Any) -> None:
+    prose = "Clipper card Virtual card replaced your card details for this purchase"
+    _, calls = _pdf_page_ocr(
+        monkeypatch, {None: prose, "--psm 6": prose, "--psm 11": prose + "\n$11.80"}
+    )
+
+    text, passes, _ = docs_read._ocr_pdf_page(Path("x.pdf"), page_index=1, photo=True)
+
+    assert "$11.80" in text and "--psm 11" in calls and passes == 3
+
+
+def test_a_receipt_pdf_is_read_with_the_photo_pipeline_and_a_document_is_not() -> None:
+    seen: list[dict[str, Any]] = []
+
+    async def reader(**kw: Any) -> dict[str, Any]:
+        seen.append(kw)
+        blank = not kw["ocr"]
+        return {
+            "ocr_used": not blank,
+            "pages": [{"index": 1, "tables": [], "text": "" if blank else "Total $9.50"}],
+        }
+
+    asyncio.run(read_receipt(Path("scan.pdf"), config=None, reader=reader))
+
+    assert [(kw["ocr"], kw.get("photo")) for kw in seen] == [(False, None), (True, True)]
+
+
+def test_without_a_total_line_the_amount_charged_to_a_card_is_the_guess() -> None:
+    """A tip table's orphaned `: $40.91` is the largest amount but not what was paid (#677)."""
+    from blumkin.receipts import parse_receipt_text
+
+    text = (
+        "Subtotal $27.90\nTip $5.02\nTotalihit $35.33\nCard(****4678) $35.33\n"
+        "Tip Suggestions\n16% Tip:$4.46 Total: $39.79\n20% Tip:$5.58 | Total: $40.91\n: $40.91\n"
+    )
+
+    total = parse_receipt_text(text).total
+
+    assert total.value == "35.33" and "card" in total.note
+
+
+def test_a_card_line_with_a_refund_sign_does_not_become_the_total_guess() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    total = parse_receipt_text("Item $5.00\nCard refund -$5.00\n").total
+
+    assert total.value != "-5.00"
