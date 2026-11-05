@@ -165,13 +165,22 @@ def _refuse_finalizing_clicks(model: SiteModel, flow: Flow) -> None:
     written one could, and `click` would refuse it only when the flow runs.
     """
     finalizing = {
-        control.name
+        (page.page_id, control.name)
         for page in model.pages
         for control in page.controls
         if control.safety.value == "finalizing"
     }
     for number, step in enumerate(flow.steps, start=1):
-        if step.action in ("click", "press") and step.control in finalizing:
+        if step.action not in ("click", "press") or step.control is None:
+            continue
+        # A step that names its page is judged by that page's control (names repeat across
+        # pages); one that does not is judged by every page, so none can slip through.
+        hit = (
+            (step.page, step.control) in finalizing
+            if step.page is not None
+            else any(name == step.control for _page, name in finalizing)
+        )
+        if hit:
             raise FlowSpecError(
                 f"Expected step {number} not to click {step.control!r}, got a control the "
                 "model records as finalizing; blumkin never submits, so hand that step to the "

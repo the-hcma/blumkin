@@ -106,6 +106,8 @@ def _step(spec: str, number: int) -> FlowStep:
             raise FlowSpecError(
                 f"Expected step {number} words as key=value with key one of {keys}, got {word!r}"
             )
+    if action in _CONTROL_ACTIONS and "control" not in fields:
+        raise FlowSpecError(f"Expected step {number} ({action}) to name the control it acts on")
     return FlowStep(
         action=action,
         bind=fields.get("bind"),

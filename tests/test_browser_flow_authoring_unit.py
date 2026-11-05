@@ -322,3 +322,89 @@ def test_a_step_runs_on_the_accessible_name_the_model_records_for_its_control(
     assert seen[0] == ("click", "Add line", "button")
     assert seen[1][:2] == ("fill", "Amount")
     assert seen[2] == ("click", "Unrecorded name", "button")  # a name the model lacks, as before
+
+
+def _two_page_model() -> Any:
+    from blumkin.browser.model import (
+        Control,
+        ControlKind,
+        ControlSafety,
+        Locator,
+        LocatorStrategy,
+        Page,
+        SiteModel,
+    )
+
+    def control(safety: ControlSafety, role_name: str) -> Control:
+        return Control(
+            name="save",
+            kind=ControlKind.BUTTON,
+            safety=safety,
+            locators=(Locator(strategy=LocatorStrategy.ROLE_NAME, value=role_name),),
+        )
+
+    def page(page_id: str, safety: ControlSafety, role_name: str) -> Page:
+        return Page(
+            page_id=page_id,
+            url_template="/x",
+            fingerprint=("button:a", "button:b", "button:c"),
+            controls=(control(safety, role_name),),
+        )
+
+    return SiteModel(
+        blumkin_version="1.0.0",
+        flows=(),
+        hosts=("erp.example.com",),
+        pages=(
+            page("draft", ControlSafety.SAFE, "button:Save Draft"),
+            page("final", ControlSafety.FINALIZING, "button:Submit Report"),
+        ),
+        recorded_at="2026-10-25T12:00:00Z",
+        task="expense-report",
+        version=1,
+    )
+
+
+def test_a_spec_that_names_no_control_for_a_click_fill_press_or_upload_is_refused() -> None:
+    for action in ("click", "fill", "press", "upload"):
+        with pytest.raises(FlowSpecError, match=f"{action}\\) to name the control"):
+            build_flow("f", [], [f"{action} page=expense-list"])
+    build_flow("f", [], ["goto", 'handoff instruction="x"'])  # these need none
+
+
+def test_the_finalizing_check_follows_the_page_a_step_names() -> None:
+    from blumkin.browser.model_commands import _refuse_finalizing_clicks
+
+    model = _two_page_model()
+
+    _refuse_finalizing_clicks(model, build_flow("ok", [], ["click save page=draft"]))
+    with pytest.raises(FlowSpecError, match="finalizing"):
+        _refuse_finalizing_clicks(model, build_flow("no", [], ["click save page=final"]))
+    with pytest.raises(FlowSpecError, match="finalizing"):  # unscoped: any page counts
+        _refuse_finalizing_clicks(model, build_flow("any", [], ["click save"]))
+
+
+def test_a_step_resolves_its_control_on_the_page_it_names_and_matches_the_whole_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.model import FlowStep
+
+    seen: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        actions, "click_task", lambda c, t, name, role=None, **k: seen.append((name, role))
+    )
+    fields: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        actions, "fill_task", lambda c, t, label, value, **k: fields.append({"label": label, **k})
+    )
+    run = ledger_ops._default_run_step("expense-report", _two_page_model())
+
+    run(FlowStep(action="click", control="save", expect=None, page="final"), {})
+    run(FlowStep(action="click", control="save", expect=None, page="draft"), {})
+    run(FlowStep(action="fill", control="save", expect=None, page="draft", bind="v"), {"v": "1"})
+    run(FlowStep(action="fill", control="Unrecorded", expect=None, page=None, bind="v"), {"v": "1"})
+
+    assert seen == [("Submit Report", "button"), ("Save Draft", "button")]
+    assert fields[0] == {"label": "Save Draft", "role": "button", "exact": True, "settle": False}
+    assert fields[1] == {"label": "Unrecorded", "settle": False}  # as written: substring match

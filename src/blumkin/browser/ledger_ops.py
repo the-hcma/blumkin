@@ -420,32 +420,49 @@ def _scrubbed(message: str, step: FlowStep, values: Mapping[str, str]) -> str:
     return message
 
 
-def _role_kw(role: str | None) -> dict[str, Any]:
-    """`role=` for a field action only when the model recorded one."""
-    return {"role": role} if role else {}
+def _field_kw(role: str | None, recorded: bool) -> dict[str, Any]:
+    """How a field action finds what the model recorded: its role, and the whole name.
+
+    A recorded name is matched in full (`Amount` is not `Tax Amount`); a name the model does not
+    record keeps the substring match flows have always used.
+    """
+    found: dict[str, Any] = {}
+    if role:
+        found["role"] = role
+    if recorded:
+        found["exact"] = True
+    return found
 
 
 def _control_ref(
-    site: SiteModel | None, control: str, *, default_role: str | None = None
-) -> tuple[str, str | None]:
+    site: SiteModel | None,
+    control: str,
+    page: str | None = None,
+    *,
+    default_role: str | None = None,
+) -> tuple[str, str | None, bool]:
     """The accessible name (and role) a flow step's control is found by on the page.
 
     A step names its control by the model's logical name (`expense.add`); the page knows it by
-    its role and accessible name or its label, which the model records. A name the model does
-    not record is used as written, as flows have always done.
+    its role and accessible name or its label, which the model records. Names repeat across
+    pages, so a step that names its page is resolved on that page only. The last value says
+    whether the model recorded the control; one it does not record is used as written, as
+    flows have always done.
     """
     if site is not None:
-        for page in site.pages:
-            for known in page.controls:
+        for known_page in site.pages:
+            if page is not None and known_page.page_id != page:
+                continue
+            for known in known_page.controls:
                 if known.name != control:
                     continue
                 for locator in known.locators:
                     if locator.strategy is LocatorStrategy.ROLE_NAME:
                         role, _, name = locator.value.partition(":")
-                        return name, role
+                        return name, role, True
                     if locator.strategy is LocatorStrategy.LABEL:
-                        return locator.value, default_role if default_role else None
-    return control, default_role
+                        return locator.value, default_role if default_role else None, True
+    return control, default_role, False
 
 
 def _cell_ref(ref: str | None, values: Mapping[str, str], what: str) -> str:
@@ -494,7 +511,9 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
         if action in {"click", "press"}:
             if not step.control:
                 raise LedgerError(f"Flow step {action!r} needs a control")
-            name, role = _control_ref(site, step.control, default_role="button")
+            name, role, _recorded = _control_ref(
+                site, step.control, step.page, default_role="button"
+            )
             actions.click_task(config, task, name, role=role)
             return
         if action == "cell":
@@ -522,9 +541,9 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             key = step.bind or step.control
             if key not in values:
                 raise LedgerError(f"Expected a value for {key!r}, got none")
-            label, field_role = _control_ref(site, step.control)
+            label, field_role, recorded = _control_ref(site, step.control, step.page)
             actions.fill_task(
-                config, task, label, values[key], settle=False, **_role_kw(field_role)
+                config, task, label, values[key], settle=False, **_field_kw(field_role, recorded)
             )
             return
         if action == "goto":
@@ -544,8 +563,10 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             # would ignore a symlinked folder before it): `upload_task` expands a leading `~`,
             # which would pick a different file.
             target = Path(os.path.join(os.getcwd(), path)) if step.bind else Path(path)
-            label, field_role = _control_ref(site, step.control)
-            actions.upload_task(config, task, label, target, settle=False, **_role_kw(field_role))
+            label, field_role, recorded = _control_ref(site, step.control, step.page)
+            actions.upload_task(
+                config, task, label, target, settle=False, **_field_kw(field_role, recorded)
+            )
             return
         if action in {"expect", "check", "landmark"}:
             return
