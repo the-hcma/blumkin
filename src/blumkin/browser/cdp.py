@@ -978,6 +978,21 @@ class PlaywrightDriver:
             injection_warning=scan_for_injection(text, location="page.text").to_payload(),
         )
 
+    def clear_session(self) -> int:
+        """Delete every cookie the browser holds, returning how many there were.
+
+        This signs the profile out of every site, the identity provider included, and nothing
+        else: its folder, its extensions and its other saved site data stay.
+        """
+        self._require_open()
+        try:
+            context = self._page.context
+            count = len(context.cookies())
+            context.clear_cookies()
+        except _playwright_error() as exc:
+            raise self._action_error("clear the saved sign-in", exc) from exc
+        return count
+
     def restrict_navigation(self, is_allowed: Callable[[str], bool]) -> None:
         """Abort every main-frame navigation to a host `is_allowed` refuses, before it loads.
 

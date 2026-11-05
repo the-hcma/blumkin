@@ -336,6 +336,22 @@ ever signalled. With no browser running it says so and exits 0. A browser that d
 reported; `--force` kills it, and its profile may then need to recover.
 """
 
+BROWSER_RESET_SESSION_EPILOG = """
+Examples:
+
+\b
+  blumkin browser reset-session expense-report --yes
+  blumkin browser reset-session expense-report --yes --json
+
+A way out of a sign-in that loops or hands back a stale session, without deleting the profile.
+Every cookie of the task's running browser is deleted, which signs it out of every site in that
+profile (the identity provider too), and the command says how many there were. The profile's
+folder, its settings and any site data kept outside cookies stay, so `profile delete` remains
+the last resort. Nothing is read from or done to a page. Afterwards open the site with
+`blumkin browser goto TASK` and sign in by hand again. `--yes` is required, since the sign-in
+is gone for good; with the browser not running it fails and asks you to launch it first.
+"""
+
 BROWSER_EPILOG = """
 Examples:
 

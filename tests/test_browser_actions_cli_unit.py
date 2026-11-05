@@ -95,8 +95,15 @@ class _Raw:
         #: The addresses a goto moved through, as the driver recorded them.
         self.chain: list[str] = []
         self.tracking = 0
+        #: What `clear_session` reports, and how many times it ran.
+        self.cleared_calls = 0
+        self.cookie_count = 0
         #: The address the headings are read from, when not the page's own.
         self.settled_url: str | None = None
+
+    def clear_session(self) -> int:
+        self.cleared_calls += 1
+        return self.cookie_count
 
     def track_navigations(self) -> None:
         self.tracking += 1
@@ -4456,3 +4463,50 @@ def test_a_long_redirect_loop_keeps_its_first_and_last_steps(raw: _Raw) -> None:
     assert len(payload["chain"]) == 13
     assert payload["chain"][0].endswith("/hop0") and payload["chain"][-1].endswith("/hop29")
     assert "..." in payload["chain"]
+
+
+def test_reset_session_without_yes_changes_nothing(raw: _Raw) -> None:
+
+    result = _run("browser", "reset-session", "expense-report")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "nothing was changed" in result.output
+    assert raw.cleared_calls == 0
+
+
+def test_reset_session_clears_the_cookies_and_keeps_the_profile(raw: _Raw) -> None:
+    raw.cookie_count = 7
+
+    result = _run("browser", "reset-session", "expense-report", "--yes")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["cookies_cleared"] == 7
+    assert raw.cleared_calls == 1
+    assert raw.closed == 1
+    assert raw.net_installed == 0
+
+
+def test_reset_session_text_says_how_to_sign_in_again(raw: _Raw) -> None:
+    raw.cookie_count = 3
+
+    result = CliRunner().invoke(main, ["browser", "reset-session", "expense-report", "--yes"])
+
+    assert "cleared 3 cookies (profile kept)" in result.output
+    assert "browser goto expense-report" in result.output
+
+
+def test_a_sign_in_page_is_read_inside_the_sign_in_allowance_and_an_ordinary_page_is_not(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = "https://login.microsoftonline.com/common/oauth2/authorize"
+
+    _run("browser", "read", "expense-report")
+    during_sign_in = list(raw.sign_ins)
+    raw.sign_ins.clear()
+    raw.url = "https://erp.example.com/expenses"
+    _run("browser", "read", "expense-report")
+
+    assert during_sign_in == [True]
+    assert raw.sign_ins == []

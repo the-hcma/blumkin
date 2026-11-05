@@ -76,6 +76,7 @@ from blumkin.browser.actions import (
     read_task,
     redact_addresses,
     refresh_tab_task,
+    reset_session_task,
     select_task,
     sign_in_task,
     transcript_task,
@@ -2872,6 +2873,38 @@ def browser_close(
         return
     how = "killed" if payload["forced"] else "closed"
     emit_lines([f"{task}: browser {how} (profile kept; `browser launch {task}` opens it again)"])
+
+
+@browser.command("reset-session", epilog=help_text.BROWSER_RESET_SESSION_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--yes", is_flag=True, help="Confirm: this signs the profile out of every site.")
+@click.pass_context
+def browser_reset_session(ctx: click.Context, task: str, as_json_flag: bool, yes: bool) -> None:
+    """Delete TASK's saved sign-in (its cookies), keeping the profile; sign in again by hand."""
+    as_json = _as_json(ctx, as_json_flag)
+    if not yes:
+        _browser_fail(
+            click.UsageError(
+                "Expected --yes to sign the profile out of every site, got none; "
+                "nothing was changed"
+            ),
+            as_json=as_json,
+            task=task,
+        )
+    try:
+        payload = reset_session_task(load_browser_setup(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines(
+        [
+            f"{task}: cleared {payload['cookies_cleared']} cookies (profile kept)",
+            f"sign in again: `blumkin browser goto {task}`, then sign in by hand",
+        ]
+    )
 
 
 @browser.group("explore", epilog=help_text.BROWSER_EXPLORE_EPILOG)
