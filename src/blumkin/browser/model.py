@@ -421,6 +421,17 @@ def save_model(
     return stored
 
 
+def check_model(model: SiteModel, *, host_allowed: Callable[[str], bool] | None = None) -> None:
+    """Raise `SiteModelError` unless `model` could be saved; nothing is written."""
+    try:
+        payload = model.to_payload()
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SiteModelError(f"Expected a well-formed model, got {type(exc).__name__}") from exc
+    parsed = _parse(payload, model.task)
+    _check_hosts(parsed, host_allowed)
+    _check_size(_render(parsed))
+
+
 def is_logical_name(value: str) -> bool:
     """Whether `value` is an acceptable page, control or action name in a stored model."""
     return _LOGICAL_NAME.fullmatch(value) is not None and not _looks_like_a_token(value)

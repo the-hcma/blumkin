@@ -120,6 +120,7 @@ from blumkin.browser.explore_commands import (
     explore_save,
     explore_show,
 )
+from blumkin.browser.flow_authoring import FlowSpecError
 from blumkin.browser.guard import CLICKABLE_ROLES, PICK_ROLES, SubmitBlockedError
 from blumkin.browser.handoff import HandoffError, format_handoff_human
 from blumkin.browser.init_task import TEMPLATES, InitTaskError, init_task
@@ -146,6 +147,7 @@ from blumkin.browser.model_commands import (
     ModelNotFoundError,
     model_check,
     model_diff,
+    model_flow_add,
     model_versions,
 )
 from blumkin.browser.profiles import (
@@ -878,6 +880,8 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         hint = (
             f"Explore and save one first: `blumkin browser explore observe {task or 'TASK'} PAGE`."
         )
+    elif isinstance(exc, FlowSpecError):
+        slug, code = "usage_error", EXIT_USAGE
     elif isinstance(exc, SiteModelError):
         slug, code = "model_invalid", EXIT_OTHER
     elif isinstance(exc, HandoffError):
@@ -4002,6 +4006,72 @@ def browser_model_diff(
         [f"{task}: version {payload['old']} -> {payload['new']}"]
         + [sanitize_terminal(line) for line in payload["lines"]]
     )
+
+
+@browser_model.group("flow", epilog=help_text.BROWSER_MODEL_FLOW_EPILOG)
+def browser_model_flow() -> None:
+    """Write a flow into the site model from short specs, without recording it by clicking."""
+
+
+@browser_model_flow.command("add", epilog=help_text.BROWSER_MODEL_FLOW_ADD_EPILOG)
+@click.argument("task")
+@click.argument("name")
+@click.option(
+    "--param",
+    "params",
+    multiple=True,
+    help="A parameter as NAME:KIND (date, file, text) or NAME:choice=A|B (repeatable).",
+)
+@click.option(
+    "--step",
+    "steps",
+    multiple=True,
+    required=True,
+    help='A step, in order (repeatable): ACTION [CONTROL] key=value ..., e.g. "fill amount '
+    'page=form bind=amount".',
+)
+@click.option("--replace", is_flag=True, help="Replace a flow of the same name.")
+@click.option(
+    "--yes", is_flag=True, help="Save it as the next model version (default: check only)."
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_model_flow_add(
+    ctx: click.Context,
+    task: str,
+    name: str,
+    params: tuple[str, ...],
+    steps: tuple[str, ...],
+    replace: bool,
+    yes: bool,
+    as_json_flag: bool,
+) -> None:
+    """Add a flow to the task's model; without --yes it only checks the flow."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = model_flow_add(
+            load_browser_setup(),
+            task,
+            name,
+            params=params,
+            replace=replace,
+            steps=steps,
+            yes=yes,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    verb = "replaced" if payload["replaced"] else "added"
+    if payload["saved"]:
+        lines = [f"{task}: {verb} flow {payload['flow']} (model version {payload['version']})"]
+    else:
+        lines = [
+            f"{task}: flow {payload['flow']} is valid ({payload['steps']} steps); "
+            "run again with --yes to save it as the next model version"
+        ]
+    emit_lines(lines)
 
 
 @browser_model.command("versions", epilog=help_text.BROWSER_MODEL_VERSIONS_EPILOG)

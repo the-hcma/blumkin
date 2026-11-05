@@ -8,10 +8,14 @@ compares two of them.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import re
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 
-from blumkin.browser.actions import sign_in_hosts_for
+from blumkin import __version__
+from blumkin.browser.actions import host_allowed, sign_in_hosts_for
 from blumkin.browser.commands import require_profile
 from blumkin.browser.drift import (
     Finding,
@@ -33,13 +37,16 @@ from blumkin.browser.explore import (
     url_template,
 )
 from blumkin.browser.explore_commands import explore_policy
+from blumkin.browser.flow_authoring import FlowSpecError, build_flow
 from blumkin.browser.model import (
     Page,
     SiteModel,
+    check_model,
     list_versions,
     load_model,
     load_version,
     resolve_store,
+    save_model,
 )
 from blumkin.config import BrowserSetup
 
@@ -100,6 +107,57 @@ def model_diff(config: BrowserSetup, task: str, old: int, new: int | None) -> di
     before = _version(config, task, old)
     after = _stored(config, task, new)
     return _diff_payload(task, old, after.version, diff_models(before, after))
+
+
+def model_flow_add(
+    config: BrowserSetup,
+    task: str,
+    name: str,
+    *,
+    params: Sequence[str],
+    replace: bool,
+    steps: Sequence[str],
+    yes: bool,
+) -> dict[str, Any]:
+    """Add a flow written as specs to the stored model; only with `yes` is a version saved.
+
+    The flow is built from its parameter and step specs, put into a copy of the current model
+    and checked as any model is (its steps must name controls and pages the model records, its
+    bindings must be declared parameters, a handoff names no control), so a spec cannot say what
+    a recorded flow could not. Without `yes` that check is all that happens and nothing is
+    written. A flow of the same name is replaced only with `replace`.
+    """
+    hosts, _ = explore_policy(config, task)
+    model = _stored(config, task, None)
+    flow = build_flow(name, list(params), list(steps))
+    exists = any(existing.name == name for existing in model.flows)
+    if exists and not replace:
+        raise FlowSpecError(
+            f"Expected a new flow name, got {name!r} which the model already has; "
+            "add --replace to replace it"
+        )
+    others = tuple(existing for existing in model.flows if existing.name != name)
+    candidate = dataclasses.replace(
+        model,
+        blumkin_version=re.sub(r"[^0-9A-Za-z.+-]", "-", __version__)[:40] or "unknown",
+        flows=(*others, flow),
+        recorded_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    allowed = lambda host: host_allowed(host, hosts)  # noqa: E731
+    check_model(candidate, host_allowed=allowed)
+    payload: dict[str, Any] = {
+        "action": "model-flow-add",
+        "flow": name,
+        "ok": True,
+        "params": [param.name for param in flow.params],
+        "replaced": exists,
+        "steps": len(flow.steps),
+        "task": task,
+    }
+    if not yes:
+        return payload | {"saved": False, "version": None}
+    saved = save_model(resolve_store(config), candidate, host_allowed=allowed)
+    return payload | {"saved": True, "version": saved.version}
 
 
 def model_versions(config: BrowserSetup, task: str) -> dict[str, Any]:
