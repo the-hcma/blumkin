@@ -595,8 +595,8 @@ command finishes as soon as the page is on an allowed host (`waited_for_sign_in_
 long, `sign_in_host` where). If the page is still on the sign-in page when the time is up
 (`sign_in_timeout`), sign in and run the command again; the browser keeps running.
 With `--json`, `chain` lists the addresses the page moved through when there was more than one
-(host and path only; a segment that may be an id or an address is masked, and a host that is neither allowed
-nor a sign-in host shows only its name), so a redirect loop can be seen.
+(host and path only; a segment that may be an id or an address is masked, and a host that is
+neither allowed nor a sign-in host shows only its name), so a redirect loop can be seen.
 """
 
 BROWSER_SIGN_IN_EPILOG = """
