@@ -326,7 +326,7 @@ def _default_run_step(task: str) -> StepRunner:
             key = step.bind or step.control
             if key not in values:
                 raise LedgerError(f"Expected a value for {key!r}, got none")
-            actions.fill_task(config, task, step.control, values[key])
+            actions.fill_task(config, task, step.control, values[key], settle=False)
             return
         if action == "goto":
             url = values.get("url") or values.get("page_url")
@@ -345,7 +345,7 @@ def _default_run_step(task: str) -> StepRunner:
             # would ignore a symlinked folder before it): `upload_task` expands a leading `~`,
             # which would pick a different file.
             target = Path(os.path.join(os.getcwd(), path)) if step.bind else Path(path)
-            actions.upload_task(config, task, step.control, target)
+            actions.upload_task(config, task, step.control, target, settle=False)
             return
         if action in {"expect", "check", "landmark"}:
             return

@@ -173,12 +173,12 @@ def test_the_default_runner_fills_and_uploads_the_bound_values(
     monkeypatch.setattr(
         actions,
         "fill_task",
-        lambda config, task, label, value: calls.append(("fill", (label, value))),
+        lambda config, task, label, value, settle=True: calls.append(("fill", (label, value))),
     )
     monkeypatch.setattr(
         actions,
         "upload_task",
-        lambda config, task, label, path: calls.append(("upload", (label, path))),
+        lambda config, task, label, path, settle=True: calls.append(("upload", (label, path))),
     )
     monkeypatch.setattr(
         "blumkin.config.load_browser_setup", lambda: BrowserSetup.__new__(BrowserSetup)
@@ -285,7 +285,7 @@ def test_a_bound_file_is_uploaded_as_the_same_absolute_path_that_was_validated(
     monkeypatch.chdir(tmp_path)
     uploaded: list[Path] = []
     monkeypatch.setattr(
-        actions, "upload_task", lambda config, task, label, path: uploaded.append(path)
+        actions, "upload_task", lambda config, task, label, path, settle=True: uploaded.append(path)
     )
     monkeypatch.setattr(
         "blumkin.config.load_browser_setup", lambda: BrowserSetup.__new__(BrowserSetup)
@@ -315,7 +315,7 @@ def test_a_bound_file_through_a_folder_link_and_dotdot_is_the_one_that_was_valid
     monkeypatch.chdir(tmp_path)
     uploaded: list[Path] = []
     monkeypatch.setattr(
-        actions, "upload_task", lambda config, task, label, path: uploaded.append(path)
+        actions, "upload_task", lambda config, task, label, path, settle=True: uploaded.append(path)
     )
     monkeypatch.setattr(
         "blumkin.config.load_browser_setup", lambda: BrowserSetup.__new__(BrowserSetup)

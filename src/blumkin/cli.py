@@ -620,6 +620,18 @@ def _browser_action(
     emit_lines([f"{task}: {done}"])
 
 
+def _settle_option[F: Callable[..., Any]](command: F) -> F:
+    """`--no-settle` for the field commands that wait for the page afterwards by default."""
+    return click.option(
+        "--settle/--no-settle",
+        "settle",
+        default=True,
+        show_default=True,
+        help="After the action, wait (briefly, bounded) for the page to settle and report "
+        "where it ended.",
+    )(command)
+
+
 def _field_options[F: Callable[..., Any]](command: F) -> F:
     """The options `browser fill`, `select` and `upload` share to single out one field."""
     options = [
@@ -682,6 +694,12 @@ def _field_action(
             )
         else:
             lines.append("  the field does not hold what was set (its value is not shown)")
+    if payload.get("settled") is False:
+        lines.append("  warning: the page was still changing, so what is shown may be stale")
+    if payload.get("url"):
+        lines.append(f"  now on: {payload['url']}")
+    if payload.get("heading"):
+        lines.append(f"  heading (page text, untrusted): {sanitize_terminal(payload['heading'])}")
     if "persisted" in payload:  # an upload: what the page shows of the file
         lines.append(f"  the page shows the file: {payload['persisted']}")
         if "attached" in payload:
@@ -3138,6 +3156,7 @@ def browser_download(
     help="Never print the field's value (use for a sensitive value); `matches` still says.",
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@_settle_option
 @click.pass_context
 def browser_fill(
     ctx: click.Context,
@@ -3152,6 +3171,7 @@ def browser_fill(
     host: str | None,
     nth: int | None,
     role: str | None,
+    settle: bool,
 ) -> None:
     """Fill the field with that label and report the value it holds afterwards."""
     _require_frame_for_host(frame, host)
@@ -3169,6 +3189,7 @@ def browser_fill(
             label,
             secret,
             show_read_back=not no_read_back and value is not None,
+            settle=settle,
             exact=exact,
             frame=frame,
             host=host,
@@ -4297,6 +4318,7 @@ def browser_options(
 @click.argument("option")
 @_field_options
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@_settle_option
 @click.pass_context
 def browser_select(
     ctx: click.Context,
@@ -4309,6 +4331,7 @@ def browser_select(
     host: str | None,
     nth: int | None,
     role: str | None,
+    settle: bool,
 ) -> None:
     """Choose an option in the dropdown (native select or combobox) with that label."""
     _require_frame_for_host(frame, host)
@@ -4321,6 +4344,7 @@ def browser_select(
             task,
             label,
             option,
+            settle=settle,
             exact=exact,
             frame=frame,
             host=host,
@@ -4350,6 +4374,7 @@ def browser_select(
     help="Keep the file's name, and the names the page holds, out of the result.",
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@_settle_option
 @click.pass_context
 def browser_upload(
     ctx: click.Context,
@@ -4365,6 +4390,7 @@ def browser_upload(
     host: str | None,
     nth: int | None,
     role: str | None,
+    settle: bool,
 ) -> None:
     """Attach an existing file to the file field with that label."""
     _require_frame_for_host(frame, host)
@@ -4377,6 +4403,7 @@ def browser_upload(
             task,
             label,
             path,
+            settle=settle,
             exact=exact,
             frame=frame,
             host=host,
