@@ -285,6 +285,8 @@ The `ocr` extra also needs system binaries on macOS - `tesseract` for both PDF a
 brew install tesseract poppler
 ```
 
+A photo is prepared before it is read: turned upright by its EXIF orientation, shrunk when wider than 2400 pixels, straightened when the print runs a few degrees off level, and read both cleaned up and as it is. When both reads leave next to nothing (a shadow or a bed sheet behind the paper), it is retried with the background flattened and with other page-layout modes before giving up. A receipt photo that still reads empty is reported as `needs_manual` with `No text was detected in this photo after N OCR passes`, so an agent knows that a manual reading is needed rather than that the fields were merely doubtful.
+
 **Prompt-injection flagging.** `docs read` and `mail get` scan extracted text/body content for common prompt-injection patterns (instruction-override phrasing, zero-width/bidi-override characters, link-label/URL mismatches, role-impersonation blocks, base64 blobs next to "decode/execute" triggers). Detection is heuristic and advisory only: it never blocks, redacts, or alters the returned content. A match adds an `injection_warning` field to the JSON payload (`null` when clean) and a `⚠️ POSSIBLE PROMPT INJECTION DETECTED` banner to human-formatted output, so the caller can decide whether to act on the content. See issue #282 for the full design and deferred scope (no LLM-based detection, no hard-block/confirmation wiring in v1).
 
 ## Browser-assisted tasks

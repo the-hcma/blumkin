@@ -119,8 +119,16 @@ _NEGATIVE_EVIDENCE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _OCR_EXTRA_HINT = "docs read --ocr needs the ocr extra: uv tool install -e '.[pdf,ocr]'"
+_OCR_DESKEW_ANGLES = tuple(step / 2 for step in range(-20, 21))
+_OCR_DESKEW_WIDTH = 400
 _OCR_MAX_PIXELS = 25_000_000
+_OCR_MAX_WIDTH = 2400
 _OCR_MIN_WIDTH = 1500
+#: A read with fewer letters and digits than this is retried with other settings.
+_OCR_RETRY_BELOW = 8
+#: Page-segmentation modes tried, in order, when the first reads leave almost nothing:
+#: a single column of text, sparse text, then fully automatic.
+_OCR_RETRY_MODES = ("4", "11", "3")
 _POPPLER_HINT = "poppler not found on PATH, install via `brew install tesseract poppler`"
 _TESSERACT_HINT = "tesseract not found on PATH, install via `brew install tesseract poppler`"
 
@@ -286,33 +294,51 @@ def _read_docx(path: Path) -> list[dict[str, Any]]:
 
 
 def _best_ocr_text(image: Any, pytesseract: Any) -> str:
-    """OCR a photo twice (cleaned up for a till receipt, then as it is) and keep the fuller read.
+    """The fuller read of a photo; see `_ocr_photo` for the passes it makes."""
+    return _ocr_photo(image, pytesseract)[0]
 
-    A failure of the cleaned-up pass (other than tesseract being missing) leaves the plain read.
-    When either read shows negative evidence (a minus sign, brackets, CR or a credit near an
-    amount), both are kept: the receipt parser then sees any disagreement between the two as
-    different totals and asks instead of guessing.
+
+def _deskew(grey: Any) -> Any:
+    """Straighten a photo whose lines of print run a few degrees off level.
+
+    The angle is the one (within 10 degrees) at which the rows of a shrunken copy differ most
+    in darkness, which is when the lines of text are level. A photo with no clear lines is
+    returned as it is.
     """
-    candidates = []
-    not_found = getattr(pytesseract, "TesseractNotFoundError", RuntimeError)
-    try:
-        candidates.append(
-            str(pytesseract.image_to_string(_prepare_for_ocr(image), config="--psm 6")).strip()
-        )
-    except not_found:
-        raise
-    except Exception:  # noqa: BLE001 - the plain read below still stands
-        pass
-    candidates.append(str(pytesseract.image_to_string(image)).strip())
-    same = " ".join(candidates[0].split()) == " ".join(candidates[-1].split())
-    if (
-        len(candidates) == 2
-        and not same
-        and any(_has_negative_evidence(text) for text in candidates)
-    ):
-        return "\n".join(candidates)
-    # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
-    return max(candidates, key=lambda text: sum(char.isalnum() for char in text))
+    from PIL import Image, ImageStat  # noqa: PLC0415 - Pillow is only needed for image reads
+
+    small = grey.copy()
+    small.thumbnail((_OCR_DESKEW_WIDTH, _OCR_DESKEW_WIDTH))
+    # Corners the turn leaves empty are filled with the photo's own average, so they add no
+    # false lines of their own.
+    fill = round(ImageStat.Stat(small).mean[0])
+    best_angle, best_score, flat_score = 0.0, -1.0, 0.0
+    for angle in _OCR_DESKEW_ANGLES:
+        turned = small.rotate(angle, expand=False, fillcolor=fill)
+        rows = list(turned.resize((1, turned.height), Image.Resampling.BOX).get_flattened_data())
+        mean = sum(rows) / len(rows)
+        score = sum((row - mean) ** 2 for row in rows)
+        if angle == 0.0:
+            flat_score = score
+        if score > best_score:
+            best_angle, best_score = angle, score
+    # Only turn the photo when the best angle is clearly better than level.
+    if best_angle == 0.0 or best_score <= flat_score * 1.05:
+        return grey
+    return grey.rotate(best_angle, expand=True, fillcolor=255, resample=Image.Resampling.BICUBIC)
+
+
+def _flatten_background(grey: Any) -> Any:
+    """Even out the light across a photo, so print is dark on white wherever the paper lies.
+
+    Each pixel is compared with a heavily blurred copy (the local background); what is darker
+    than its surroundings stays dark and everything else turns white.
+    """
+    from PIL import ImageChops, ImageFilter, ImageOps  # noqa: PLC0415
+
+    background = grey.filter(ImageFilter.GaussianBlur(max(8, grey.width // 40)))
+    flat = ImageChops.subtract(grey, background, 1.0, 255)
+    return ImageOps.autocontrast(flat, cutoff=1).point([0] * 200 + [255] * 56)
 
 
 def _has_negative_evidence(text: str) -> bool:
@@ -321,11 +347,72 @@ def _has_negative_evidence(text: str) -> bool:
     return bool(_NEGATIVE_EVIDENCE.search(text))
 
 
+def _letters(text: str) -> int:
+    return sum(char.isalnum() for char in text)
+
+
+def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int]:
+    """OCR a photo (cleaned up for a till receipt, then as it is) and keep the fuller read.
+
+    When both reads leave next to nothing, the photo is tried again with the background
+    flattened (a shadow or a bed sheet behind the paper) and with other page-segmentation
+    modes before giving up. Returns the text and how many OCR passes it took.
+
+    A failure of the cleaned-up pass (other than tesseract being missing) leaves the plain read.
+    When either read shows negative evidence (a minus sign, brackets, CR or a credit near an
+    amount), both are kept: the receipt parser then sees any disagreement between the two as
+    different totals and asks instead of guessing.
+    """
+    candidates = []
+    passes = 0
+    not_found = getattr(pytesseract, "TesseractNotFoundError", RuntimeError)
+    prepared: Any = None
+    try:
+        prepared = _prepare_for_ocr(image)
+        passes += 1
+        candidates.append(str(pytesseract.image_to_string(prepared, config="--psm 6")).strip())
+    except not_found:
+        raise
+    except Exception:  # noqa: BLE001 - the plain read below still stands
+        pass
+    passes += 1
+    candidates.append(str(pytesseract.image_to_string(image)).strip())
+    if prepared is not None and max(_letters(text) for text in candidates) < _OCR_RETRY_BELOW:
+        for variant, mode in _retry_passes(prepared):
+            try:
+                passes += 1
+                candidates.append(
+                    str(pytesseract.image_to_string(variant, config=f"--psm {mode}")).strip()
+                )
+            except not_found:
+                raise
+            except Exception:  # noqa: BLE001 - another pass may still read it
+                continue
+            if _letters(candidates[-1]) >= _OCR_RETRY_BELOW:
+                break
+    same = " ".join(candidates[0].split()) == " ".join(candidates[-1].split())
+    if (
+        len(candidates) == 2
+        and not same
+        and any(_has_negative_evidence(text) for text in candidates)
+    ):
+        return "\n".join(candidates), passes
+    # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
+    return max(candidates, key=_letters), passes
+
+
 def _prepare_for_ocr(image: Any) -> Any:
     """Greyscale, stretch the contrast and enlarge a small photo so thin print is readable."""
-    from PIL import ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
+    from PIL import Image, ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
 
-    grey = ImageOps.autocontrast(ImageOps.exif_transpose(image).convert("L"))
+    grey = ImageOps.exif_transpose(image).convert("L")
+    if grey.width > _OCR_MAX_WIDTH:
+        # A 3000 pixel phone photo is slower to read and no clearer than a 2400 pixel one.
+        grey = grey.resize(
+            (_OCR_MAX_WIDTH, max(1, round(grey.height * _OCR_MAX_WIDTH / grey.width))),
+            Image.Resampling.LANCZOS,
+        )
+    grey = ImageOps.autocontrast(_deskew(grey))
     if grey.width < _OCR_MIN_WIDTH:
         scale = _OCR_MIN_WIDTH / grey.width
         height = round(grey.height * scale)
@@ -342,7 +429,7 @@ def _read_image(path: Path) -> list[dict[str, Any]]:
         with pil_image.open(path) as image:
             image.load()
             try:
-                text = _best_ocr_text(image, pytesseract)
+                text, passes = _ocr_photo(image, pytesseract)
             except getattr(pytesseract, "TesseractNotFoundError", RuntimeError) as exc:
                 raise DocsReadOcrUnavailableError(_TESSERACT_HINT) from exc
     except DocsReadOcrUnavailableError:
@@ -351,7 +438,9 @@ def _read_image(path: Path) -> list[dict[str, Any]]:
         raise ValueError(f"cannot read image file {path}: {exc}") from exc
     budget = _BudgetGuard()
     budget.add(text)
-    page = {"index": 1, "tables": [], "text": text}
+    page: dict[str, Any] = {"index": 1, "tables": [], "text": text}
+    if not text.strip():
+        page["ocr_passes"] = passes  # lets the caller say that nothing was detected, and how hard
     return [page]
 
 
@@ -456,6 +545,12 @@ def _resolve_sheet(workbook: Any, sheet: str | None) -> Any:
         raise ValueError(
             f"worksheet {wanted!r} not found; available sheets: {workbook.sheetnames}"
         ) from exc
+
+
+def _retry_passes(prepared: Any) -> list[tuple[Any, str]]:
+    """The images and page-segmentation modes tried when the first reads found next to nothing."""
+    flat = _flatten_background(prepared)
+    return [(flat, "6"), *[(prepared, mode) for mode in _OCR_RETRY_MODES], (flat, "4")]
 
 
 def _scan_pages_for_injection(pages: list[dict[str, Any]]) -> dict[str, object] | None:

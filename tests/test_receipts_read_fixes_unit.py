@@ -65,10 +65,13 @@ def test_a_small_photo_is_enlarged_and_flattened_before_ocr() -> None:
     assert prepared.height / prepared.width == pytest.approx(900 / 600, rel=0.01)
 
 
-def test_a_large_photo_is_not_enlarged() -> None:
-    photo = Image.new("RGB", (3000, 2000), (255, 255, 255))
+def test_a_very_large_photo_is_downscaled_and_a_large_one_is_not_enlarged() -> None:
+    big = docs_read._prepare_for_ocr(Image.new("RGB", (3000, 2000), (255, 255, 255)))
+    large = docs_read._prepare_for_ocr(Image.new("RGB", (2000, 1500), (255, 255, 255)))
 
-    assert docs_read._prepare_for_ocr(photo).width == 3000
+    assert big.width == 2400
+    assert big.height == 1600
+    assert large.width == 2000
 
 
 def test_find_reports_when_each_file_arrived_and_filters_by_new_since(tmp_path: Path) -> None:

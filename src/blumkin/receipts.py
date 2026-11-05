@@ -216,10 +216,17 @@ async def read_receipt(
             "tell me the vendor, date and total.",
         )
     if not text.strip():
+        passes = sum(int(page.get("ocr_passes") or 0) for page in payload.get("pages") or [])
+        detail = (
+            f"No text was detected in this photo after {passes} OCR passes (straightened, "
+            "background flattened, other page layouts); it needs a manual reading"
+            if passes
+            else "No text could be read from this receipt"
+        )
         return _manual(
             path,
             ReceiptStatus.NEEDS_MANUAL,
-            "No text could be read from this receipt; tell me the vendor, date and total.",
+            f"{detail}; tell me the vendor, date and total.",
         )
     fields = parse_receipt_text(text)
     message = ""
