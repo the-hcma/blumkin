@@ -4469,7 +4469,7 @@ def test_reset_session_without_yes_changes_nothing(raw: _Raw) -> None:
 
     result = _run("browser", "reset-session", "expense-report")
 
-    assert result.exit_code != EXIT_SUCCESS
+    assert result.exit_code == EXIT_USAGE
     assert "nothing was changed" in result.output
     assert raw.cleared_calls == 0
 

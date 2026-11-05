@@ -2894,7 +2894,7 @@ def browser_reset_session(ctx: click.Context, task: str, as_json_flag: bool, yes
     as_json = _as_json(ctx, as_json_flag)
     if not yes:
         _browser_fail(
-            click.UsageError(
+            ValueError(
                 "Expected --yes to sign the profile out of every site, got none; "
                 "nothing was changed"
             ),

@@ -43,6 +43,6 @@ def test_a_hung_evaluation_hits_the_deadline_and_the_driver_still_closes() -> No
                 driver.aria_snapshot()
             started = time.monotonic()
             driver.close()
-            assert time.monotonic() - started < 15
+            assert time.monotonic() - started < 2
         finally:
             browser.close()

@@ -3145,3 +3145,44 @@ def test_a_driver_whose_deadline_expired_refuses_further_page_calls_and_skips_th
     with pytest.raises(BrowserActionError, match="stopped answering"):
         driver.aria_snapshot()
     driver.mark_window("task")  # cosmetic: skipped, never raises
+
+
+def test_an_ordinary_failure_in_a_bounded_block_does_not_mark_the_driver_expired() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+
+    driver = PlaywrightDriver(
+        browser=object(), page=SimpleNamespace(context=object()), playwright=None, timeout_s=1
+    )
+
+    with pytest.raises(BrowserActionError, match="refused"):
+        with driver._bounded(5.0, "do it"):
+            raise BrowserActionError("the page refused")
+
+    assert driver._expired is False
+
+
+def test_closing_an_expired_driver_touches_nothing_on_the_connection() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import PlaywrightDriver
+
+    touched: list[str] = []
+
+    def hang(name: str) -> object:
+        def call(*_args: object, **_kw: object) -> None:
+            touched.append(name)
+
+        return call
+
+    browser = SimpleNamespace(close=hang("browser.close"))
+    playwright = SimpleNamespace(stop=hang("playwright.stop"))
+    page = SimpleNamespace(context=SimpleNamespace(unroute=hang("unroute")))
+    driver = PlaywrightDriver(browser=browser, page=page, playwright=playwright, timeout_s=1)
+    driver._expired = True
+
+    driver.close()
+    driver.close()
+
+    assert touched == []

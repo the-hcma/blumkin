@@ -309,8 +309,6 @@ DEFAULT_ACTION_TIMEOUT_S = 30.0
 HEADING_REPORT_CHARS = 200
 #: Most addresses a recorded navigation chain keeps.
 _MAX_CHAIN = 40
-#: The longest disconnecting from a browser that stopped answering may take.
-_CLOSE_DEADLINE_S = 10.0
 #: The longest the cosmetic window mark may take.
 _INDICATOR_DEADLINE_S = 5.0
 HEADINGS_REPORTED = 20
@@ -472,12 +470,15 @@ class PlaywrightDriver:
         if self._closed:
             return
         self._closed = True
-        # After a deadline expired the connection may no longer answer: disconnecting must not
-        # hang on it either (the process ends right after, which drops the connection anyway).
-        limit = _CLOSE_DEADLINE_S if self._expired else None
-        with contextlib.suppress(BrowserActionError):
-            with _deadline(limit, "disconnect from the browser") if limit else _no_deadline():
-                self._disconnect()
+        if self._expired:
+            # The connection stopped answering after a deadline, and every teardown call would
+            # wait on it: only the frame sockets, which are blumkin's own, are closed. The
+            # process ends right after a command, which drops the connection.
+            if self._existing_frames is not None:
+                with contextlib.suppress(Exception):
+                    self._existing_frames.close()
+            return
+        self._disconnect()
 
     def _disconnect(self) -> None:
         try:
@@ -1992,7 +1993,7 @@ class PlaywrightDriver:
         try:
             with _deadline(seconds, what):
                 yield
-        except BrowserActionError:
+        except _DeadlineExpired:
             self._expired = True
             raise
 
@@ -2775,9 +2776,8 @@ _DESCRIBE_CONTROL_JS = (
 )
 
 
-@contextlib.contextmanager
-def _no_deadline() -> Iterator[None]:
-    yield
+class _DeadlineExpired(BrowserActionError):
+    """A `_deadline` ran out: the page did not answer in time (as opposed to refusing)."""
 
 
 @contextlib.contextmanager
@@ -2799,7 +2799,7 @@ def _deadline(seconds: float, what: str) -> Iterator[None]:
     def expired(signum: int, frame: Any) -> None:
         if not live[0]:  # the block already ended: a late alarm must not raise outside it
             return
-        raise BrowserActionError(
+        raise _DeadlineExpired(
             f"Expected to {what} within {seconds:g} seconds, got no answer from the page; "
             "the action may or may not have happened, so look at the page before repeating it"
         )
