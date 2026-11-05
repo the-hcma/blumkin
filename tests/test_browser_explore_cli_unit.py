@@ -785,3 +785,21 @@ def test_a_recording_miss_after_the_click_says_why(
 
     payload = _json(result)
     assert payload["recorded_step"] is False and "Add line" in payload["record_error"]
+
+
+def test_a_full_flow_refuses_the_click_before_it_is_made(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    clicked = _fake_click(monkeypatch)
+    base = ["browser", "click", "expense-report", "Add line", "--record", "expense-list"]
+    assert _run(*base).exit_code == EXIT_SUCCESS
+    stored = json.loads(_draft_path(_config_dir).read_text())
+    stored["flows"][0]["steps"] *= 200
+    _draft_path(_config_dir).write_text(json.dumps(stored))
+    clicked.clear()
+
+    result = _run(*base)
+
+    assert result.exit_code != EXIT_SUCCESS and clicked == [], result.output
+    assert "steps" in result.output, result.output

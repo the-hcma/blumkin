@@ -35,6 +35,7 @@ from blumkin.browser.explore import (
 from blumkin.browser.guard import validate_control_patterns, validate_dialog_landmarks
 from blumkin.browser.model import (
     SiteModel,
+    check_model,
     discard_draft,
     is_logical_name,
     is_storable_label,
@@ -369,6 +370,11 @@ def require_recordable_click(
             f"Expected a control that is not finalizing to record a click as, got {name!r}, "
             "which the model records as finalizing"
         )
+    draft = ModelDraft.from_model(current)
+    draft.add_step("click", page_id=page_id, control=found[0].name, expect_heading=expect_heading)
+    check_model(
+        _to_model(draft)
+    )  # a step the model would refuse (a full flow, say) is found out here
 
 
 def record_browser_click(
@@ -409,10 +415,12 @@ def _record_step(
         if current is None:
             return None
         draft = ModelDraft.from_model(current)
-        control = draft.control_for(page_id, role, name)
-        if control is None:
+        found = draft.controls_named(page_id, name, role)
+        if len(found) != 1 or found[0].safety.value == "finalizing":
             return None
-        draft.add_step("click", page_id=page_id, control=control, expect_heading=expect_heading)
+        draft.add_step(
+            "click", page_id=page_id, control=found[0].name, expect_heading=expect_heading
+        )
         recorded.append(True)
         return _to_model(draft)
 
