@@ -351,12 +351,13 @@ def _letters(text: str) -> int:
     return sum(char.isalnum() for char in text)
 
 
-def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int]:
+def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
     """OCR a photo (cleaned up for a till receipt, then as it is) and keep the fuller read.
 
     When both reads leave next to nothing, the photo is tried again with the background
     flattened (a shadow or a bed sheet behind the paper) and with other page-segmentation
-    modes before giving up. Returns the text and how many OCR passes it took.
+    modes before giving up. Returns the text, how many OCR passes it took and whether the
+    passes disagree about a sign (negative evidence in one read, a different read in another).
 
     A failure of the cleaned-up pass (other than tesseract being missing) leaves the plain read.
     When any read shows negative evidence (a minus sign, brackets, CR or a credit near an
@@ -397,9 +398,9 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int]:
     if len(distinct) > 1 and any(_has_negative_evidence(text) for text in distinct):
         # A minus sign or brackets seen by any pass must reach the receipt parser, even when a
         # fuller read of another pass lacks them: the parser then sees the disagreement.
-        return "\n".join(distinct), passes
+        return "\n".join(distinct), passes, True
     # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
-    return max(candidates, key=_letters), passes
+    return max(candidates, key=_letters), passes, False
 
 
 def _prepare_for_ocr(image: Any) -> Any:
@@ -430,7 +431,7 @@ def _read_image(path: Path) -> list[dict[str, Any]]:
         with pil_image.open(path) as image:
             image.load()
             try:
-                text, passes = _ocr_photo(image, pytesseract)
+                text, passes, conflict = _ocr_photo(image, pytesseract)
             except getattr(pytesseract, "TesseractNotFoundError", RuntimeError) as exc:
                 raise DocsReadOcrUnavailableError(_TESSERACT_HINT) from exc
     except DocsReadOcrUnavailableError:
@@ -442,6 +443,8 @@ def _read_image(path: Path) -> list[dict[str, Any]]:
     page: dict[str, Any] = {"index": 1, "tables": [], "text": text}
     if not text.strip():
         page["ocr_passes"] = passes  # lets the caller say that nothing was detected, and how hard
+    if conflict:
+        page["sign_conflict"] = True  # a minus or brackets in one read and not in another
     return [page]
 
 

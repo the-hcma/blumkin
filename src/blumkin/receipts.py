@@ -230,6 +230,12 @@ async def read_receipt(
         )
     fields = parse_receipt_text(text)
     message = ""
+    if any(page.get("sign_conflict") for page in payload.get("pages") or []):
+        message = (
+            "The OCR passes disagree about a minus sign or brackets, so this may be a refund "
+            "or credit; check every amount against the receipt."
+        )
+        fields = _distrust(fields, message)
     if blank_pages:
         total_pages = len(payload.get("pages") or [])
         message = (

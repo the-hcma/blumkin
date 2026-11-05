@@ -70,7 +70,7 @@ def _fake(replies: dict[str | None, str]) -> tuple[Any, list[str | None]]:
 def test_a_photo_that_reads_empty_is_retried_with_other_page_layouts() -> None:
     fake, calls = _fake({"--psm 11": "CORNER CAFE\nTOTAL 12.50 USD 2026-10-23"})
 
-    text, passes = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
+    text, passes, _ = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
 
     assert text.startswith("CORNER CAFE")
     assert calls == ["--psm 6", None, "--psm 6", "--psm 4", "--psm 11"]
@@ -80,7 +80,7 @@ def test_a_photo_that_reads_empty_is_retried_with_other_page_layouts() -> None:
 def test_a_photo_that_reads_fine_is_not_retried() -> None:
     fake, calls = _fake({"--psm 6": "CORNER CAFE\nTOTAL 12.50 USD 2026-10-23"})
 
-    text, passes = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
+    text, passes, _ = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
 
     assert text.startswith("CORNER CAFE")
     assert calls == ["--psm 6", None]
@@ -90,7 +90,7 @@ def test_a_photo_that_reads_fine_is_not_retried() -> None:
 def test_a_photo_with_no_text_reports_how_many_passes_found_nothing() -> None:
     fake, calls = _fake({})
 
-    text, passes = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
+    text, passes, _ = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
 
     assert text == ""
     assert passes == len(calls) == 7
@@ -127,7 +127,7 @@ def test_a_photo_read_with_text_does_not_carry_the_pass_count(tmp_path: Path, mo
 def test_a_bracketed_amount_seen_by_one_pass_is_kept_when_a_retry_reads_more() -> None:
     fake, _ = _fake({"--psm 6": "($12.50)", None: "12.50", "--psm 4": "TOTAL 12.50 VISA 4242"})
 
-    text, _passes = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
+    text, _passes, _ = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
 
     assert "($12.50)" in text
     assert "TOTAL 12.50 VISA 4242" in text
@@ -136,7 +136,7 @@ def test_a_bracketed_amount_seen_by_one_pass_is_kept_when_a_retry_reads_more() -
 def test_identical_reads_with_a_minus_are_not_doubled() -> None:
     fake, _ = _fake({"--psm 6": "TOTAL -12.50 USD CAFE", None: "TOTAL -12.50 USD CAFE"})
 
-    text, _passes = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
+    text, _passes, _ = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
 
     assert text == "TOTAL -12.50 USD CAFE"
 
@@ -161,3 +161,32 @@ def test_tesseract_missing_during_a_retry_is_not_swallowed() -> None:
     except _Missing:
         return
     raise AssertionError("expected the missing binary to surface")
+
+
+def test_a_sign_conflict_between_passes_is_flagged_and_makes_the_total_doubtful(
+    tmp_path: Path,
+) -> None:
+    from blumkin.receipts import Confidence
+
+    fake, _ = _fake({"--psm 6": "($12.50)", None: "12.50", "--psm 4": "TOTAL 12.50 VISA 4242"})
+    text, _passes, conflict = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
+    assert conflict is True
+    photo = tmp_path / "till.jpg"
+    photo.write_bytes(b"x")
+
+    async def reader(**_kw: Any) -> dict[str, Any]:
+        return {"pages": [{"index": 1, "text": text, "sign_conflict": conflict}]}
+
+    reading = asyncio.run(read_receipt(photo, config=None, reader=reader))
+
+    assert reading.fields.total.value == "12.50"
+    assert reading.fields.total.confidence is Confidence.LOW
+    assert "disagree about a minus sign" in reading.message
+
+
+def test_reads_that_agree_do_not_raise_a_sign_conflict() -> None:
+    fake, _ = _fake({"--psm 6": "TOTAL -12.50 USD CAFE", None: "TOTAL -12.50 USD CAFE"})
+
+    _text, _passes, conflict = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
+
+    assert conflict is False
