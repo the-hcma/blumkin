@@ -952,6 +952,42 @@ These commands check that it still matches the site and compare saved versions. 
 here clicks or types: `check` only reads the page the task's browser is on.
 """
 
+BROWSER_MODEL_FLOW_EPILOG = """
+Examples:
+
+\b
+  blumkin browser model flow add expense-report add-receipt --param file:file --step "click ..."
+
+Flows are the plans `blumkin browser ledger apply --flow NAME` runs. `flow add` writes one from
+short specs instead of recording it click by click; see `blumkin browser model flow add --help`.
+"""
+
+BROWSER_MODEL_FLOW_ADD_EPILOG = """
+Examples:
+
+\b
+  blumkin browser model flow add time-sheet fill-day \\
+    --param hours:text --param day:text \\
+    --step "cell row=1 column=\\$day bind=hours" \\
+    --step "handoff instruction='Review the card, then Save' expect_heading='Time Card'"
+  blumkin browser model flow add expense-report add-receipt --replace --yes \\
+    --param type:choice=Meals|Taxi --param file:file \\
+    --step "click expense.add page=list" \\
+    --step "upload expense.file page=item bind=file expect_heading='Edit Expense Item'"
+
+Writes a flow into the task's stored site model as the next version, from short specs. The flow
+is put into a copy of the current model and checked as any model is, so a spec cannot say what a
+recorded flow could not: a step must name a control and a page the model records, a binding must
+name a declared parameter, a handoff names no control, and a heading is at most 100 characters.
+Without `--yes` that check is all that happens and nothing is written. A flow of the same name is
+replaced only with `--replace`; `blumkin browser model diff TASK N` shows what a save changed.
+A parameter is NAME:KIND with KIND one of date, file, text, or NAME:choice=A|B|C. A step is its
+action, then its control when it acts on one (click, press, fill, upload), then key=value words
+(page, bind, expect, expect_heading, instruction, row, column, value; quote a value with spaces
+in the shell's own way). The actions are click, press, fill, upload, goto, cell and handoff. It
+needs a saved model (`blumkin browser explore`), and nothing here touches the browser.
+"""
+
 BROWSER_MODEL_VERSIONS_EPILOG = """
 Examples:
 

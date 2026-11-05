@@ -8,10 +8,11 @@ compares two of them.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 from collections.abc import Sequence
 from typing import Any
 
-from blumkin.browser.actions import sign_in_hosts_for
+from blumkin.browser.actions import host_allowed, sign_in_hosts_for
 from blumkin.browser.commands import require_profile
 from blumkin.browser.drift import (
     Finding,
@@ -33,13 +34,17 @@ from blumkin.browser.explore import (
     url_template,
 )
 from blumkin.browser.explore_commands import explore_policy
+from blumkin.browser.flow_authoring import FlowSpecError, build_flow
 from blumkin.browser.model import (
+    Flow,
     Page,
     SiteModel,
+    check_model,
     list_versions,
     load_model,
     load_version,
     resolve_store,
+    save_model,
 )
 from blumkin.config import BrowserSetup
 
@@ -100,6 +105,87 @@ def model_diff(config: BrowserSetup, task: str, old: int, new: int | None) -> di
     before = _version(config, task, old)
     after = _stored(config, task, new)
     return _diff_payload(task, old, after.version, diff_models(before, after))
+
+
+def model_flow_add(
+    config: BrowserSetup,
+    task: str,
+    name: str,
+    *,
+    params: Sequence[str],
+    replace: bool,
+    steps: Sequence[str],
+    yes: bool,
+) -> dict[str, Any]:
+    """Add a flow written as specs to the stored model; only with `yes` is a version saved.
+
+    The flow is built from its parameter and step specs, put into a copy of the current model
+    and checked as any model is (its steps must name controls and pages the model records, its
+    bindings must be declared parameters, a handoff names no control), so a spec cannot say what
+    a recorded flow could not. Without `yes` that check is all that happens and nothing is
+    written. A flow of the same name is replaced only with `replace`.
+    """
+    hosts, _ = explore_policy(config, task)
+    model = _stored(config, task, None)
+    flow = build_flow(name, list(params), list(steps))
+    exists = any(existing.name == name for existing in model.flows)
+    if exists and not replace:
+        raise FlowSpecError(
+            f"Expected a new flow name, got {name!r} which the model already has; "
+            "add --replace to replace it"
+        )
+    _refuse_finalizing_clicks(model, flow)
+    # A replaced flow keeps its place, so `model diff` shows the change and not a reordering;
+    # the pages were not re-recorded, so their `recorded_at` and version stay as they were.
+    flows = tuple(flow if existing.name == name else existing for existing in model.flows)
+    candidate = dataclasses.replace(model, flows=flows if exists else (*flows, flow))
+    allowed = lambda host: host_allowed(host, hosts)  # noqa: E731
+    check_model(candidate, host_allowed=allowed)
+    payload: dict[str, Any] = {
+        "action": "model-flow-add",
+        "flow": name,
+        "ok": True,
+        "params": [param.name for param in flow.params],
+        "replaced": exists,
+        "steps": len(flow.steps),
+        "task": task,
+    }
+    if not yes:
+        return payload | {"saved": False, "version": None}
+    saved = save_model(
+        resolve_store(config), candidate, base_version=model.version, host_allowed=allowed
+    )
+    return payload | {"saved": True, "version": saved.version}
+
+
+def _refuse_finalizing_clicks(model: SiteModel, flow: Flow) -> None:
+    """A flow cannot click or press a control the model records as finalizing.
+
+    A recorded flow only holds clicks that were made through the guard, so it never has one; a
+    written one could, and `click` would refuse it only when the flow runs.
+    """
+    finalizing = {
+        (page.page_id, control.name)
+        for page in model.pages
+        for control in page.controls
+        if control.safety.value == "finalizing"
+    }
+    for number, step in enumerate(flow.steps, start=1):
+        if step.action not in ("click", "press") or step.control is None:
+            continue
+        # A step that names its page is judged by that page's control (names repeat across
+        # pages); one that does not is judged by every page, so none can slip through.
+        hit = (
+            (step.page, step.control) in finalizing
+            if step.page is not None
+            else any(name == step.control for _page, name in finalizing)
+        )
+        if hit:
+            raise FlowSpecError(
+                f"Expected step {number} not to click {step.control!r}, got a control the "
+                "model records as finalizing; blumkin never submits, so hand that step to the "
+                "person with a handoff step"
+            )
 
 
 def model_versions(config: BrowserSetup, task: str) -> dict[str, Any]:

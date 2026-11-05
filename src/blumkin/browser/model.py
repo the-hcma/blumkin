@@ -390,24 +390,26 @@ def save_model(
     model: SiteModel,
     *,
     host_allowed: Callable[[str], bool] | None = None,
+    base_version: int | None = None,
 ) -> SiteModel:
-    """Validate and store `model` as the task's next version; returns it with that version."""
-    if not isinstance(model.task, str):
-        raise SiteModelError(f"Expected the task to be text, got {type(model.task).__name__}")
-    validate_task_name(model.task)
-    try:
-        payload = model.to_payload()
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise SiteModelError(f"Expected a well-formed model, got {type(exc).__name__}") from exc
-    parsed = _parse(payload, model.task)
-    _check_hosts(parsed, host_allowed)
-    _check_size(_render(parsed))
+    """Validate and store `model` as the task's next version; returns it with that version.
+
+    With `base_version` (the version the model was built from) the save is refused when a newer
+    version appeared meanwhile, so a change made from a stale read cannot silently undo another.
+    """
+    parsed = _validated(model, host_allowed)
     with _filesystem("store the model"):
         root = ensure_private_dir(store)
         task_dir = ensure_private_dir(root / model.task)
         history = ensure_private_dir(task_dir / _HISTORY_DIRNAME)
         with _locked(task_dir):
             previous = _versions(store, model.task)
+            if base_version is not None and (previous[-1] if previous else 0) != base_version:
+                raise SiteModelError(
+                    f"Expected version {base_version} to still be the newest model of "
+                    f"{model.task!r}, got {previous[-1] if previous else 0}; run the command "
+                    "again so it starts from the newer model"
+                )
             version = (previous[-1] if previous else 0) + 1
             stored = replace(parsed, version=version)
             text = _render(stored)
@@ -419,6 +421,26 @@ def save_model(
             _fsync_dir(root)
             _fsync_dir(store.parent)
     return stored
+
+
+def check_model(model: SiteModel, *, host_allowed: Callable[[str], bool] | None = None) -> None:
+    """Raise `SiteModelError` unless `model` could be saved; nothing is written."""
+    _validated(model, host_allowed)
+
+
+def _validated(model: SiteModel, host_allowed: Callable[[str], bool] | None) -> SiteModel:
+    """`model` parsed as a stored model is, so `save_model` and `check_model` cannot differ."""
+    if not isinstance(model.task, str):
+        raise SiteModelError(f"Expected the task to be text, got {type(model.task).__name__}")
+    validate_task_name(model.task)
+    try:
+        payload = model.to_payload()
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SiteModelError(f"Expected a well-formed model, got {type(exc).__name__}") from exc
+    parsed = _parse(payload, model.task)
+    _check_hosts(parsed, host_allowed)
+    _check_size(_render(parsed))
+    return parsed
 
 
 def is_logical_name(value: str) -> bool:
