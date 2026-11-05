@@ -316,7 +316,50 @@ def _describe(draft: SiteModel) -> str:
     return f"The draft has {len(draft.pages)} page(s) and {controls} control(s)."
 
 
-def _record_step(store: Path, task: str, page_id: str, role: str, name: str) -> bool:
+def require_recordable_click(config: BrowserSetup, task: str, page_id: str, name: str) -> None:
+    """Refuse, before a click is made, when it could not be recorded as a step of `page_id`.
+
+    The page must be in the draft (or the stored model that `observe` continues) and hold a
+    control of that accessible name, so a click is never made and then found not recordable.
+    """
+    store = resolve_store(config)
+    current = load_draft(store, task) or load_model(store, task)
+    if current is None:
+        raise DraftNotFoundError(
+            f"Expected an exploration draft or a saved model for task {task!r} to record the "
+            "click in, got none; observe the page first"
+        )
+    if not ModelDraft.from_model(current).has_control_named(page_id, name):
+        raise PageIdError(
+            f"Expected page {page_id!r} to hold a control named {name!r} to record the click "
+            "as, got none; observe the page first (`blumkin browser explore observe`)"
+        )
+
+
+def record_browser_click(
+    config: BrowserSetup,
+    task: str,
+    page_id: str,
+    role: str,
+    name: str,
+    *,
+    expect_heading: str | None = None,
+) -> bool:
+    """Record a click that `browser click` made as the next step of the recorded flow."""
+    return _record_step(
+        resolve_store(config), task, page_id, role, name, expect_heading=expect_heading
+    )
+
+
+def _record_step(
+    store: Path,
+    task: str,
+    page_id: str,
+    role: str,
+    name: str,
+    *,
+    expect_heading: str | None = None,
+) -> bool:
     recorded: list[bool] = []
 
     def change(current: SiteModel | None) -> SiteModel | None:
@@ -326,7 +369,7 @@ def _record_step(store: Path, task: str, page_id: str, role: str, name: str) -> 
         control = draft.control_for(page_id, role, name)
         if control is None:
             return None
-        draft.add_step("click", page_id=page_id, control=control)
+        draft.add_step("click", page_id=page_id, control=control, expect_heading=expect_heading)
         recorded.append(True)
         return _to_model(draft)
 

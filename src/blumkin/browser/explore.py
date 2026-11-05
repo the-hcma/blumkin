@@ -402,11 +402,33 @@ class ModelDraft:
         self._prune_steps()
 
     def add_step(
-        self, action: str, *, page_id: str | None, control: str | None, expect: str | None = None
+        self,
+        action: str,
+        *,
+        page_id: str | None,
+        control: str | None,
+        expect: str | None = None,
+        expect_heading: str | None = None,
     ) -> None:
         """Record one step of the flow being explored."""
         self._flows.setdefault("recorded", []).append(
-            FlowStep(action=action, control=control, expect=expect, page=page_id)
+            FlowStep(
+                action=action,
+                control=control,
+                expect=expect,
+                expect_heading=expect_heading,
+                page=page_id,
+            )
+        )
+
+    def has_control_named(self, page_id: str, name: str) -> bool:
+        """Whether the page is recorded with a control of this accessible name, in any role."""
+        page = self._pages.get(page_id)
+        return any(
+            loc.value.partition(":")[2] == name
+            for control in (page.controls if page else ())
+            for loc in control.locators
+            if loc.strategy is LocatorStrategy.ROLE_NAME
         )
 
     def forget(self, page_id: str) -> dict[str, int] | None:
