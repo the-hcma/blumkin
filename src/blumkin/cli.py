@@ -694,6 +694,12 @@ def _field_action(
             )
         else:
             lines.append("  the field does not hold what was set (its value is not shown)")
+    if payload.get("settled") is False:
+        lines.append("  warning: the page was still changing, so what is shown may be stale")
+    if payload.get("url"):
+        lines.append(f"  now on: {payload['url']}")
+    if payload.get("heading"):
+        lines.append(f"  heading (page text, untrusted): {sanitize_terminal(payload['heading'])}")
     if "persisted" in payload:  # an upload: what the page shows of the file
         lines.append(f"  the page shows the file: {payload['persisted']}")
         if "attached" in payload:

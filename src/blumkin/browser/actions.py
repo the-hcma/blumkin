@@ -459,7 +459,8 @@ def fill_task(
             "fill", task, label, target, read_back, value, show_read_back=show_read_back
         )
         if settle:
-            payload.update(_settled_page(config, task, driver))
+            # A value kept out of the result (a sensitive one) can come back in a heading.
+            payload.update(_settled_page(config, task, driver, "fill", private=not show_read_back))
         return payload
 
     return _with_driver(config, task, act)
@@ -1044,7 +1045,7 @@ def select_task(
         read_back = driver.select(label, option, target)
         payload = _field_payload("select", task, label, target, read_back, option)
         if settle:
-            payload.update(_settled_page(config, task, driver))
+            payload.update(_settled_page(config, task, driver, "selection"))
         return payload
 
     return _with_driver(config, task, act)
@@ -1284,7 +1285,7 @@ def upload_task(
             payload["warnings"] = warnings
         if settle:
             # A private upload shows no page text or address, only whether the page went quiet.
-            payload.update(_settled_page(config, task, driver, private=private))
+            payload.update(_settled_page(config, task, driver, "upload", private=private))
         return payload
 
     return _with_driver(config, task, act, check_after=True, check_before=False)
@@ -1821,7 +1822,7 @@ def _require_allowed_url(url: str, task: str, hosts: Sequence[str], when: str) -
 
 
 def _settled_page(
-    config: BrowserSetup, task: str, driver: GuardedDriver, *, private: bool = False
+    config: BrowserSetup, task: str, driver: GuardedDriver, what: str, *, private: bool = False
 ) -> dict[str, Any]:
     """Wait for the page after a field action, as `click` does, within the task's hosts.
 
@@ -1830,9 +1831,14 @@ def _settled_page(
     """
     declared = config.browser.tasks.get(task)
     hosts = declared.allowed_hosts if declared else ()
-    report = _settled_report(
-        driver, None, lambda url: _require_allowed_url(url, task, hosts, "the action")
-    )
+    try:
+        report = _settled_report(
+            driver, None, lambda url: _require_allowed_url(url, task, hosts, f"the {what}")
+        )
+    except HostBlockedError as exc:
+        raise HostBlockedError(
+            f"{exc}; the {what} WAS made, so read the page instead of repeating it"
+        ) from None
     if private:
         return {"settled": report["settled"]} if "settled" in report else {}
     return report

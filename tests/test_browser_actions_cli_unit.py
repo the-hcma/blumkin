@@ -4326,3 +4326,40 @@ def test_a_field_action_that_moves_the_page_off_the_allowed_hosts_shows_nothing_
     assert result.exit_code != EXIT_SUCCESS
     assert "password" not in result.output
     assert "/login" not in result.output
+
+
+def test_a_host_failure_after_a_field_action_says_the_action_was_made(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.settled_url = "https://evil.example/login"
+
+    fill = _run("browser", "fill", "expense-report", "Amount", "12.50")
+    select = _run("browser", "select", "expense-report", "Type", "Taxi")
+
+    for result, what in ((fill, "fill"), (select, "selection")):
+        assert result.exit_code != EXIT_SUCCESS
+        assert f"the {what} WAS made" in result.output
+        assert "/login" not in result.output
+
+
+def test_a_fill_that_hides_its_read_back_shows_no_heading_either(raw: _Raw) -> None:
+    raw.headings = ("Results for 4111 1111 1111 1111",)
+
+    result = _run("browser", "fill", "expense-report", "Amount", "12.50", "--no-read-back")
+
+    payload = _json(result)
+    assert payload["settled"] is True
+    assert "heading" not in payload and "url" not in payload
+    assert "4111" not in result.output
+
+
+def test_text_output_of_a_field_action_shows_where_the_page_ended(raw: _Raw) -> None:
+    raw.headings = ("Edit Expense Report",)
+    raw.quiet = False
+
+    result = CliRunner().invoke(main, ["browser", "select", "expense-report", "Type", "Taxi"])
+
+    assert "now on: https://erp.example.com/expenses" in result.output
+    assert "heading (page text, untrusted): Edit Expense Report" in result.output
+    assert "may be stale" in result.output
