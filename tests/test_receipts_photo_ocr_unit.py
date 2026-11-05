@@ -273,3 +273,18 @@ def test_one_printed_dollar_line_does_not_make_a_single_currency_receipt_doubtfu
 def test_amounts_with_thousands_or_a_minus_count_as_amounts() -> None:
     for text in ("Total 1,234.56", "Total 1.234,56", "Total -11.80", "Total 11.80"):
         assert docs_read._AMOUNT.search(text) is not None, text
+
+
+def test_dollar_signs_do_not_outvote_an_explicit_currency_code() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    currency = parse_receipt_text(
+        "Currency CAD\nSubtotal $27.90\nTax $2.41\nTotal $30.31\n"
+    ).currency
+
+    assert currency.value == "CAD"
+
+
+def test_a_read_with_an_integer_total_is_not_beaten_by_one_with_only_a_tax_amount() -> None:
+    assert docs_read._has_amount("TOTAL $12") and docs_read._has_amount("Tax $1.50")
+    assert not docs_read._has_amount("Thank you, total pending")

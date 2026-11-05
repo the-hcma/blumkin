@@ -115,6 +115,8 @@ _MAX_FILE_BYTES = 25_000_000
 #: A money amount with its decimals (`11.80`, `11,80`) in a read of a photo; a rate (`8.62%`) or
 #: a date (`10.28.2026`) is not one.
 _AMOUNT = re.compile(r"(?<![\d/])(?:\d{1,3}(?:[.,]\d{3})+|\d{1,6})[.,]\d{2}\b(?!\s*%)(?![./-]\d)")
+#: A figure right after the word total (`TOTAL $12`): a total printed without decimals.
+_TOTAL_FIGURE = re.compile(r"\btotal\w*\W{0,4}[^\d\s]?\s*\d", re.IGNORECASE)
 _NEGATIVE_EVIDENCE = re.compile(
     r"(?<![\d/])[-\u2212\u2013]\s*[$\u20ac\u00a3]?\s*\d|\d\s*[-\u2212\u2013]\s*(?:$|\s)|"
     r"\(\s*[$\u20ac\u00a3]?\s*\d|\bCR\b|\bcredit\s+(?:note|memo)\b|\d\s*credit\b(?!\s+cards?)|"
@@ -344,6 +346,11 @@ def _flatten_background(grey: Any) -> Any:
     return ImageOps.autocontrast(flat, cutoff=1).point([0] * 200 + [255] * 56)
 
 
+def _has_amount(text: str) -> bool:
+    """Whether a read of a photo holds an amount: one with decimals or a figure after `total`."""
+    return bool(_AMOUNT.search(text) or _TOTAL_FIGURE.search(text))
+
+
 def _has_negative_evidence(text: str) -> bool:
     """Whether an amount looks negative: a leading or trailing minus (also the Unicode one),
     brackets, CR, or the words credit and refund."""
@@ -399,7 +406,7 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
                 continue
             if _letters(candidates[-1]) >= _OCR_RETRY_BELOW:
                 break
-    if prepared is not None and not retried and not any(_AMOUNT.search(t) for t in candidates):
+    if prepared is not None and not retried and not any(_has_amount(t) for t in candidates):
         # Plenty of words and no amount: an app screenshot or a receipt with its total in large
         # print is read best as sparse text.
         try:
@@ -420,7 +427,7 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
     # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
     # A read that holds an amount beats a longer one that holds none.
     return (
-        max(candidates, key=lambda text: (bool(_AMOUNT.search(text)), _letters(text))),
+        max(candidates, key=lambda text: (_has_amount(text), _letters(text))),
         passes,
         False,
     )

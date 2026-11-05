@@ -477,13 +477,14 @@ def _parse_currency(text: str) -> ReceiptField:
         code = _CURRENCY_PREFIX_TO_CODE[match.group(1)]
         found.append((match.start(), code))
         near.add(code)
+    explicit = bool(found or near)  # a printed code or a labelled one: `$` cannot argue with it
     for symbol, code in _CURRENCY_SYMBOLS.items():
         for match in re.finditer(re.escape(symbol), text):
             found.append((match.start(), code))
             near.add(code)
     found.extend((0, code) for code in sorted(near) if all(code != seen for _, seen in found))
     dollars = [m.start() for m in _BARE_DOLLAR.finditer(text)]
-    if found and len(dollars) >= _STRAY_SYMBOL_DOLLARS:
+    if found and not explicit and len(dollars) >= _STRAY_SYMBOL_DOLLARS:
         # A bare `$` is no currency on its own (USD, CAD or AUD), but a `$` on most lines is
         # evidence against one other symbol read out of noise (a `£` for a smudge). A line or
         # two of `$` beside a printed code (`CA$`, `EUR`) says nothing.
