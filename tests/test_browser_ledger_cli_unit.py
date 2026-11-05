@@ -392,3 +392,19 @@ def test_apply_refuses_a_from_step_below_one(monkeypatch: pytest.MonkeyPatch) ->
     )  # fmt: skip
 
     assert result.exit_code == EXIT_USAGE
+
+
+def test_a_step_condition_failure_is_a_runtime_error_not_a_usage_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser.ledger_ops import StepConditionError
+
+    def fail(*_a: Any, **_k: Any) -> dict:
+        raise StepConditionError("Flow step 2 (click) was made, but its condition failed")
+
+    monkeypatch.setattr("blumkin.cli.ledger_apply", fail)
+
+    result = _run("browser", "ledger", "apply", "timesheet", "2026-p21", "day", "d1", "--flow", "f")
+
+    assert result.exit_code == EXIT_OTHER
+    assert "usage_error" not in result.output + (result.stderr or "")

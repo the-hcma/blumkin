@@ -71,8 +71,8 @@ class HandoffRequired(Exception):  # noqa: N818 - a pause the run reports, not a
         self.instruction = instruction
 
 
-class StepConditionError(LedgerError):
-    """A step ran, but the heading it states never showed."""
+class StepConditionError(BrowserActionError):
+    """A step ran, but the heading it states never showed (a runtime failure, not a bad request)."""
 
 
 @dataclass(frozen=True, slots=True)
