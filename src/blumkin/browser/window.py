@@ -22,30 +22,32 @@ RETRY_AFTER_S = 1.0
 #: The longest window title kept.
 _MAX_TITLE_CHARS = 200
 
-# `{pid}` is replaced by an integer only. The script un-hides the process, un-minimizes its
-# windows and raises them from the rearmost to the frontmost, so the window that was in front
-# ends up in front again, and returns the title of that frontmost window.
+# `{pid}` is replaced by an integer only. The script un-hides the process, un-minimizes all its
+# windows and then raises the one that was in front (found again by its title, since raising
+# reorders the windows), so that window ends up in front, and returns its title. A process
+# with no window is an error: nothing was raised.
 _RAISE_SCRIPT = """
 tell application "System Events"
     set proc to first process whose unix id is {pid}
     set visible of proc to true
     set frontmost of proc to true
+    if (count of windows of proc) is 0 then error "no windows"
     set shown to ""
-    set total to count of windows of proc
-    if total > 0 then
+    try
+        set shown to name of window 1 of proc
+    end try
+    repeat with candidate in windows of proc
         try
-            set shown to name of window 1 of proc
+            set value of attribute "AXMinimized" of candidate to false
         end try
-        repeat with slot from total to 1 by -1
-            set candidate to window slot of proc
-            try
-                set value of attribute "AXMinimized" of candidate to false
-            end try
-            try
-                perform action "AXRaise" of candidate
-            end try
-        end repeat
-    end if
+    end repeat
+    try
+        if shown is "" then
+            perform action "AXRaise" of window 1 of proc
+        else
+            perform action "AXRaise" of (first window of proc whose name is shown)
+        end if
+    end try
     return shown
 end tell
 """
@@ -142,6 +144,12 @@ def _osascript(script: str, pid: int, run: Runner | None) -> str:
         raise WindowRaiseError(f"Expected osascript to run, got {type(exc).__name__}") from exc
     if result.returncode != 0:
         detail = _clean(str(result.stderr))[:120] or "no detail"
+        if "no windows" in detail:
+            raise WindowRaiseError(
+                f"Expected the browser process {pid} to have a window, got none ({detail}); "
+                "open one in the browser",
+                not_listed=True,
+            )
         if "-1728" in detail or "Can't get" in detail or "Can\u2019t get" in detail:
             raise WindowRaiseError(
                 f"Expected System Events to list the browser process {pid}, got none ({detail}); "

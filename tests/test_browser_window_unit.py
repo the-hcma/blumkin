@@ -200,15 +200,15 @@ def test_raise_for_an_unknown_task_is_not_found() -> None:
 
 
 def test_raise_off_macos_is_a_clear_failure_and_leaves_the_browser_alone(
-    _config_dir: Path,
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr("blumkin.cli.sys.platform", "linux")
     write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
 
     result = _run("browser", "raise", "expense-report")
 
-    if os.uname().sysname != "Darwin":
-        assert result.exit_code == EXIT_OTHER
-        assert json.loads(result.stderr or result.output)["error"] == "window_raise_failed"
+    assert result.exit_code == EXIT_OTHER
+    assert json.loads(result.stderr or result.output)["error"] == "window_raise_failed"
 
 
 def test_launch_raises_the_window_by_default_and_no_raise_skips_it(
@@ -248,7 +248,10 @@ def test_a_window_that_cannot_be_raised_never_fails_the_launch(
     assert raised["raised"] is False and "System Events" in raised["reason"]
 
 
-def test_off_macos_a_launch_has_no_raised_entry_at_all(_config_dir: Path) -> None:
+def test_off_macos_a_launch_has_no_raised_entry_at_all(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("blumkin.cli.sys.platform", "linux")
     write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
 
     result = _run("browser", "launch", "expense-report")
@@ -280,7 +283,7 @@ def test_status_shows_the_process_and_verbose_the_window_title(
         "blumkin.cli.where_task",
         lambda config, task: {
             "host": "erp.example.com", "on_allowed_host": True, "on_sign_in_host": False,
-            "path": "/x", "scheme": "https", "title": "",
+            "path": "/x", "scheme": "https", "title": "Expense Report",
         },
     )  # fmt: skip
 
@@ -323,6 +326,16 @@ def test_a_process_system_events_does_not_list_yet_is_tried_again_once() -> None
     assert raised.title == "Edge" and run.calls == 2 and waits == [1.0]
 
 
+def test_a_process_with_no_window_is_tried_again_and_then_reported_not_claimed_raised() -> None:
+    run = _Sequence(("", 1, "execution error: no windows (-2700)"))
+    waits: list[float] = []
+
+    with pytest.raises(WindowRaiseError, match="to have a window") as caught:
+        raise_window(4242, platform="darwin", run=run, sleep=waits.append)
+
+    assert "Accessibility" not in str(caught.value) and run.calls == 2 and waits == [1.0]
+
+
 def test_a_process_that_stays_unlisted_is_reported_as_gone_not_as_a_permission_problem() -> None:
     run = _Sequence(("", 1, "execution error: Can't get process (-1728)"))
 
@@ -355,3 +368,41 @@ def test_osascript_is_asked_for_utf8_so_a_non_ascii_title_is_not_a_crash() -> No
     raise_window(4242, platform="darwin", run=run)
 
     assert captured["encoding"] == "utf-8" and captured["errors"] == "replace"
+
+
+def test_status_withholds_a_window_title_that_is_not_the_checked_pages(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+    # An allowed page in the background, a stranger's page in front of it.
+    monkeypatch.setattr("blumkin.cli.window_title", lambda pid: "Words from another tab - Edge")
+    monkeypatch.setattr(
+        "blumkin.cli.where_task",
+        lambda config, task: {
+            "host": "erp.example.com", "on_allowed_host": True, "on_sign_in_host": False,
+            "path": "/x", "scheme": "https", "title": "Expense Report",
+        },
+    )  # fmt: skip
+
+    result = _run("browser", "status", "expense-report", "--verbose")
+
+    assert "window_title" not in json.loads(result.output)
+    assert "Words from another tab" not in result.output
+
+
+def test_status_withholds_the_window_title_when_the_page_title_was_withheld(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+    monkeypatch.setattr("blumkin.cli.window_title", lambda pid: "Anything - Edge")
+    monkeypatch.setattr(
+        "blumkin.cli.where_task",
+        lambda config, task: {
+            "host": "erp.example.com", "on_allowed_host": True, "on_sign_in_host": False,
+            "path": "/x", "scheme": "https", "title": "", "title_withheld": True,
+        },
+    )  # fmt: skip
+
+    result = _run("browser", "status", "expense-report", "--verbose")
+
+    assert "window_title" not in json.loads(result.output)

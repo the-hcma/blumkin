@@ -4719,11 +4719,13 @@ def browser_status(ctx: click.Context, task: str | None, as_json_flag: bool, ver
             payload["page_error"] = redact_addresses(_clean_line(str(exc)))
         pid = payload["profiles"][0].get("pid")
         page_info = payload.get("page")
-        # The window title is the page title read through the OS: it is shown only for a page
-        # the task may use (an allowed or sign-in host), as the title in `page` is.
-        if pid and page_info and (page_info["on_allowed_host"] or page_info["on_sign_in_host"]):
+        # The window title is the page title read through the OS, from the front window, which
+        # need not be the page that was checked: it is shown only when it carries the title of
+        # the page that was (an allowed or sign-in host, title not withheld), else withheld.
+        page_title = (page_info or {}).get("title") or ""
+        if pid and page_info and page_title:
             title_text = window_title(pid)
-            if title_text:
+            if title_text and page_title.casefold() in title_text.casefold():
                 payload["window_title"] = redact_addresses(title_text)
                 payload["window_title_note"] = WINDOW_TITLE_NOTE
     if as_json:
