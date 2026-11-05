@@ -1110,3 +1110,26 @@ def test_a_handoff_step_needs_an_instruction_and_names_no_control(tmp_path: Path
     payload["flows"][0]["steps"][-1]["control"] = payload["flows"][0]["steps"][0]["control"]
     with pytest.raises(SiteModelError, match="without a control"):
         _load_payload(tmp_path, payload)
+
+
+def test_a_handoff_step_names_no_page_or_expect_either(tmp_path: Path) -> None:
+    for key, value in (("page", "list"), ("expect", "button:Save")):
+        payload = _with_conditions(_payload(tmp_path))
+        payload["flows"][0]["steps"][-1][key] = value
+        with pytest.raises(SiteModelError, match="without a control, a bind, a page or an expect"):
+            _load_payload(tmp_path, payload)
+
+
+def test_a_heading_can_only_be_stated_on_a_step_that_acts(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    payload["flows"][0]["steps"][0]["action"] = "landmark"
+    payload["flows"][0]["steps"][0]["expect_heading"] = "Edit Expense Report"
+    with pytest.raises(SiteModelError, match="only on a click, press, fill, upload, goto or"):
+        _load_payload(tmp_path, payload)
+
+
+def test_the_model_and_the_actions_agree_on_the_longest_heading() -> None:
+    from blumkin.browser import model
+    from blumkin.browser.actions import EXPECT_HEADING_CHARS
+
+    assert model._MAX_HEADING == EXPECT_HEADING_CHARS

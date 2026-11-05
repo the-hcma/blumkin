@@ -471,6 +471,8 @@ _LOCK_FILENAME = ".lock"
 #: The steps a flow parameter can feed: a value typed into a field or a file chosen for upload.
 _BOUND_ACTIONS = frozenset({"fill", "upload"})
 _HANDOFF = "handoff"
+#: The steps that can state a heading the page must show afterwards.
+_HEADING_ACTIONS = frozenset({"click", "fill", "goto", "handoff", "press", "upload"})
 _LOGICAL_NAME = re.compile(r"[a-z][a-z0-9_.\[\]-]{0,63}")
 _MAX_CHOICES = 100
 _MAX_CHOICE_CHARS = 80
@@ -946,8 +948,20 @@ def _step(
         instruction = _text(
             instruction, f"{where}.instruction", max_len=_MAX_INSTRUCTION, plain=True
         )
-        if data["control"] is not None or data.get("bind") is not None:
-            raise SiteModelError(f"Expected a handoff step without a control or a bind in {where}")
+        if (
+            data["control"] is not None
+            or data.get("bind") is not None
+            or data["page"] is not None
+            or data["expect"] is not None
+        ):
+            raise SiteModelError(
+                f"Expected a handoff step without a control, a bind, a page or an expect in {where}"
+            )
+    if expect_heading is not None and action not in _HEADING_ACTIONS:
+        raise SiteModelError(
+            f"Expected {where}.expect_heading only on a click, press, fill, upload, goto or "
+            f"handoff step, got it on {action!r}"
+        )
     bind = data.get("bind")
     if bind is not None:
         bind = _text(bind, f"{where}.bind", pattern=_LOGICAL_NAME, what="a logical name")
