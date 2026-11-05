@@ -4207,16 +4207,18 @@ def test_where_shows_the_title_when_the_page_stayed_put(raw: _Raw, _config_dir: 
 def test_click_that_lands_on_another_host_shows_nothing_from_that_page(
     raw: _Raw, _config_dir: Path
 ) -> None:
-    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nallowed_controls = ["Add line"]')
     raw.headings = ("Please enter your password",)
     raw.lands_on = "https://evil.example/login"
 
     result = _run("browser", "click", "expense-report", "Add line", "--expect-heading", "Report")
 
-    assert result.exit_code != EXIT_SUCCESS
-    assert "password" not in result.output
-    assert "evil.example/login" not in result.output
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "host_blocked"
+    assert raw.calls == [("click", "button", "Add line")]
     assert raw.settle_calls == []
+    assert "password" not in result.output
+    assert "/login" not in result.output
 
 
 def test_click_expect_heading_fails_when_the_driver_cannot_wait_for_a_heading(
@@ -4243,15 +4245,18 @@ def test_click_says_a_withheld_heading_was_withheld_in_the_failure(raw: _Raw) ->
 def test_click_discards_headings_read_from_a_document_on_another_host(
     raw: _Raw, _config_dir: Path
 ) -> None:
-    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nallowed_controls = ["Add line"]')
     raw.headings = ("Please enter your password",)
     raw.settled_url = "https://evil.example/login"
 
     result = _run("browser", "click", "expense-report", "Add line", "--expect-heading", "password")
 
-    assert result.exit_code != EXIT_SUCCESS
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "host_blocked"
+    assert raw.calls == [("click", "button", "Add line")]
+    assert raw.settle_calls == ["password"]
     assert "password" not in result.output
-    assert "evil.example" not in result.output
+    assert "/login" not in result.output
 
 
 def test_click_text_output_warns_when_the_page_never_settled(raw: _Raw) -> None:
