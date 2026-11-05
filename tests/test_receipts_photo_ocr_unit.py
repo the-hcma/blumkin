@@ -190,3 +190,20 @@ def test_reads_that_agree_do_not_raise_a_sign_conflict() -> None:
     _text, _passes, conflict = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
 
     assert conflict is False
+
+
+def test_every_pass_reads_the_photo_turned_the_way_its_exif_says() -> None:
+    """A phone photo stored sideways reads as garbage unless it is turned upright first (#627)."""
+    sideways = Image.new("L", (800, 600), 255)
+    exif = sideways.getexif()
+    exif[274] = 6  # EXIF orientation: turn 90 degrees clockwise to view
+    sideways.info["exif"] = exif.tobytes()
+    seen: list[tuple[int, int]] = []
+
+    def image_to_string(image: Image.Image, config: str | None = None) -> str:
+        seen.append(image.size)
+        return ""
+
+    docs_read._ocr_photo(sideways, SimpleNamespace(image_to_string=image_to_string))
+
+    assert seen and all(width < height for width, height in seen)

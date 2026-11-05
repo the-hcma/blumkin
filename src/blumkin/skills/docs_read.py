@@ -364,6 +364,10 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
     amount), both are kept: the receipt parser then sees any disagreement between the two as
     different totals and asks instead of guessing.
     """
+    # A phone stores a photo as the sensor saw it and says in EXIF how to turn it: every pass
+    # reads the upright photo, or the plain read of a sideways one is long garbage that outweighs
+    # the cleaned-up read of the same photo.
+    image = _upright(image)
     candidates = []
     passes = 0
     not_found = getattr(pytesseract, "TesseractNotFoundError", RuntimeError)
@@ -407,7 +411,7 @@ def _prepare_for_ocr(image: Any) -> Any:
     """Greyscale, stretch the contrast and enlarge a small photo so thin print is readable."""
     from PIL import Image, ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
 
-    grey = ImageOps.exif_transpose(image).convert("L")
+    grey = _upright(image).convert("L")
     if grey.width > _OCR_MAX_WIDTH:
         # A 3000 pixel phone photo is slower to read and no clearer than a 2400 pixel one.
         grey = grey.resize(
@@ -610,6 +614,13 @@ def _trim_row(row: list[str]) -> list[str]:
     while trimmed and not trimmed[-1]:
         trimmed.pop()
     return trimmed
+
+
+def _upright(image: Any) -> Any:
+    """The photo turned the way its EXIF orientation says (the photo as it is without one)."""
+    from PIL import ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
+
+    return ImageOps.exif_transpose(image)
 
 
 def _validate_flags(kind: str, *, ocr: bool, pages: str | None, sheet: str | None) -> None:
