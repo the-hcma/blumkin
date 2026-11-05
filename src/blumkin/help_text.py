@@ -966,13 +966,13 @@ BROWSER_MODEL_FLOW_ADD_EPILOG = """
 Examples:
 
 \b
-  blumkin browser model flow add time-sheet fill-day \
-    --param hours:text --param day:text \
-    --step "cell row=1 column=\\$day bind=hours" \
+  blumkin browser model flow add time-sheet fill-day \\
+    --param hours:text --param day:text \\
+    --step "cell row=1 column=\\$day bind=hours" \\
     --step "handoff instruction='Review the card, then Save' expect_heading='Time Card'"
-  blumkin browser model flow add expense-report add-receipt --replace --yes \
-    --param type:choice=Meals|Taxi --param file:file \
-    --step "click expense.add page=list" \
+  blumkin browser model flow add expense-report add-receipt --replace --yes \\
+    --param type:choice=Meals|Taxi --param file:file \\
+    --step "click expense.add page=list" \\
     --step "upload expense.file page=item bind=file expect_heading='Edit Expense Item'"
 
 Writes a flow into the task's stored site model as the next version, from short specs. The flow

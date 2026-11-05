@@ -28,6 +28,11 @@ STEP_KEYS = frozenset(
         "value",
     }
 )
+#: The actions a flow step can have: what the ledger runner knows how to do.
+ACTIONS = frozenset({"cell", "click", "fill", "goto", "handoff", "press", "upload"})
+#: The most steps and parameters a spec may carry (the model's own limits are checked on save).
+_MAX_PARAMS = 12
+_MAX_STEPS = 200
 #: Actions whose second word, when it has no `=`, is the control they act on.
 _CONTROL_ACTIONS = frozenset({"click", "fill", "press", "upload"})
 
@@ -40,6 +45,11 @@ def build_flow(name: str, params: list[str], steps: list[str]) -> Flow:
     """A `Flow` from its name, its parameter specs and its step specs, in order."""
     if not steps:
         raise FlowSpecError("Expected at least one --step, got none")
+    if len(steps) > _MAX_STEPS or len(params) > _MAX_PARAMS:
+        raise FlowSpecError(
+            f"Expected at most {_MAX_STEPS} steps and {_MAX_PARAMS} parameters, got "
+            f"{len(steps)} and {len(params)}"
+        )
     return Flow(
         name=name,
         params=tuple(_param(spec) for spec in params),
@@ -75,12 +85,19 @@ def _step(spec: str, number: int) -> FlowStep:
     if not words:
         raise FlowSpecError(f"Expected step {number} to name an action, got nothing")
     action, rest = words[0].lower(), words[1:]
+    if action not in ACTIONS:
+        raise FlowSpecError(
+            f"Expected step {number} to start with one of {', '.join(sorted(ACTIONS))}, "
+            f"got {words[0]!r}"
+        )
     fields: dict[str, str] = {}
     for word in rest:
         key, sep, value = word.partition("=")
         if sep and key in STEP_KEYS:
             if key in fields:
                 raise FlowSpecError(f"Expected {key} once in step {number}, got it twice")
+            if not value and not (action == "cell" and key == "value"):
+                raise FlowSpecError(f"Expected {key}= in step {number} to have a value, got none")
             fields[key] = value
         elif not sep and action in _CONTROL_ACTIONS and "control" not in fields:
             fields["control"] = word

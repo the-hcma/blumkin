@@ -9,12 +9,9 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-import re
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from typing import Any
 
-from blumkin import __version__
 from blumkin.browser.actions import host_allowed, sign_in_hosts_for
 from blumkin.browser.commands import require_profile
 from blumkin.browser.drift import (
@@ -39,6 +36,7 @@ from blumkin.browser.explore import (
 from blumkin.browser.explore_commands import explore_policy
 from blumkin.browser.flow_authoring import FlowSpecError, build_flow
 from blumkin.browser.model import (
+    Flow,
     Page,
     SiteModel,
     check_model,
@@ -136,13 +134,11 @@ def model_flow_add(
             f"Expected a new flow name, got {name!r} which the model already has; "
             "add --replace to replace it"
         )
-    others = tuple(existing for existing in model.flows if existing.name != name)
-    candidate = dataclasses.replace(
-        model,
-        blumkin_version=re.sub(r"[^0-9A-Za-z.+-]", "-", __version__)[:40] or "unknown",
-        flows=(*others, flow),
-        recorded_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    )
+    _refuse_finalizing_clicks(model, flow)
+    # A replaced flow keeps its place, so `model diff` shows the change and not a reordering;
+    # the pages were not re-recorded, so their `recorded_at` and version stay as they were.
+    flows = tuple(flow if existing.name == name else existing for existing in model.flows)
+    candidate = dataclasses.replace(model, flows=flows if exists else (*flows, flow))
     allowed = lambda host: host_allowed(host, hosts)  # noqa: E731
     check_model(candidate, host_allowed=allowed)
     payload: dict[str, Any] = {
@@ -156,8 +152,31 @@ def model_flow_add(
     }
     if not yes:
         return payload | {"saved": False, "version": None}
-    saved = save_model(resolve_store(config), candidate, host_allowed=allowed)
+    saved = save_model(
+        resolve_store(config), candidate, base_version=model.version, host_allowed=allowed
+    )
     return payload | {"saved": True, "version": saved.version}
+
+
+def _refuse_finalizing_clicks(model: SiteModel, flow: Flow) -> None:
+    """A flow cannot click or press a control the model records as finalizing.
+
+    A recorded flow only holds clicks that were made through the guard, so it never has one; a
+    written one could, and `click` would refuse it only when the flow runs.
+    """
+    finalizing = {
+        control.name
+        for page in model.pages
+        for control in page.controls
+        if control.safety.value == "finalizing"
+    }
+    for number, step in enumerate(flow.steps, start=1):
+        if step.action in ("click", "press") and step.control in finalizing:
+            raise FlowSpecError(
+                f"Expected step {number} not to click {step.control!r}, got a control the "
+                "model records as finalizing; blumkin never submits, so hand that step to the "
+                "person with a handoff step"
+            )
 
 
 def model_versions(config: BrowserSetup, task: str) -> dict[str, Any]:

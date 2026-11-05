@@ -204,3 +204,121 @@ def test_the_text_output_says_what_happened(_config_dir: Path) -> None:
 
     assert "is valid (1 steps)" in checked.output and "--yes" in checked.output
     assert "added flow go (model version 2)" in saved.output
+
+
+def test_the_rendered_help_keeps_its_example_lines_and_the_quoting_of_a_dollar() -> None:
+    from blumkin import help_text
+
+    text = help_text.BROWSER_MODEL_FLOW_ADD_EPILOG
+
+    assert " \\\n" in text  # a backslash then a newline: the examples are not joined into one line
+    assert "column=\\$day" in text
+    result = CliRunner().invoke(main, ["browser", "model", "flow", "add", "--help"])
+    assert "--param hours:text --param day:text" in result.output
+
+
+def test_an_unknown_action_an_empty_value_and_too_many_steps_are_usage_errors() -> None:
+    for steps, match in (
+        (["sumbit expense.add"], "start with one of"),
+        (["click a page="], "to have a value"),
+        (["click a bind="], "to have a value"),
+        (["click a"] * 201, "at most 200 steps"),
+    ):
+        with pytest.raises(FlowSpecError, match=match):
+            build_flow("f", [], steps)
+    build_flow("f", [], ["cell row=1 column=2 value="])  # the one empty value that means something
+
+
+def test_the_cli_says_usage_error_for_a_bad_spec_and_model_invalid_for_a_bad_flow(
+    _config_dir: Path,
+) -> None:
+    _store(_config_dir)
+
+    spec = _run("expense-report", "f", "--step", "sumbit x")
+    model = _run("expense-report", "f", "--step", "click not.recorded page=expense-list")
+
+    assert spec.exit_code == EXIT_USAGE and "usage_error" in spec.output + (spec.stderr or "")
+    assert model.exit_code == EXIT_OTHER and "model_invalid" in model.output + (model.stderr or "")
+
+
+def test_a_click_on_a_finalizing_control_is_refused_when_the_flow_is_written(
+    _config_dir: Path,
+) -> None:
+    names = _store(_config_dir)
+    submit = next(n for n in names if "submit" in n)
+
+    for action in ("click", "press"):
+        result = _run(
+            "expense-report", "f", "--yes", "--step", f"{action} {submit} page=expense-list"
+        )
+        assert result.exit_code == EXIT_USAGE, result.output
+        assert "finalizing" in result.output + (result.stderr or "")
+    assert list_versions(default_store(_config_dir), "expense-report") == [1]
+
+
+def test_a_replaced_flow_keeps_its_place_and_the_pages_keep_their_recorded_at(
+    _config_dir: Path,
+) -> None:
+    names = _store(_config_dir)
+    add_line = next(n for n in names if "add" in n)
+    step = f"click {add_line} page=expense-list"
+    for flow in ("one", "two", "three"):
+        assert _run("expense-report", flow, "--yes", "--step", step).exit_code == EXIT_SUCCESS
+
+    assert _run("expense-report", "two", "--yes", "--replace", "--step", step).exit_code == 0
+
+    stored = load_model(default_store(_config_dir), "expense-report")
+    assert stored is not None
+    assert [f.name for f in stored.flows] == ["one", "two", "three"]
+    assert stored.recorded_at == "2026-10-25T12:00:00Z" and stored.blumkin_version == "1.0.0"
+
+
+def test_a_save_from_a_stale_read_is_refused_instead_of_undoing_a_newer_version(
+    _config_dir: Path,
+) -> None:
+    from blumkin.browser.model import SiteModelError
+
+    names = _store(_config_dir)
+    store = default_store(_config_dir)
+    stale = load_model(store, "expense-report")
+    assert stale is not None
+    save_model(store, stale)  # a concurrent writer saved version 2
+
+    with pytest.raises(SiteModelError, match="still be the newest model"):
+        save_model(store, stale, base_version=stale.version)
+
+    assert list_versions(store, "expense-report") == [1, 2]
+    assert names
+
+
+def test_a_step_runs_on_the_accessible_name_the_model_records_for_its_control(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.model import FlowStep
+
+    names = _store(_config_dir)
+    model = load_model(default_store(_config_dir), "expense-report")
+    add_line = next(n for n in names if "add" in n)
+    amount = next(n for n in names if "amount" in n)
+    seen: list[tuple[str, str, Any]] = []
+    monkeypatch.setattr(
+        actions, "click_task", lambda c, t, name, role=None, **k: seen.append(("click", name, role))
+    )
+    monkeypatch.setattr(
+        actions,
+        "fill_task",
+        lambda c, t, label, value, **k: seen.append(("fill", label, k.get("role"))),
+    )
+    run = ledger_ops._default_run_step("expense-report", model)
+
+    run(FlowStep(action="click", control=add_line, expect=None, page="expense-list"), {})
+    run(
+        FlowStep(action="fill", control=amount, expect=None, page="expense-list", bind="x"),
+        {"x": "1"},
+    )
+    run(FlowStep(action="click", control="Unrecorded name", expect=None, page=None), {})
+
+    assert seen[0] == ("click", "Add line", "button")
+    assert seen[1][:2] == ("fill", "Amount")
+    assert seen[2] == ("click", "Unrecorded name", "button")  # a name the model lacks, as before
