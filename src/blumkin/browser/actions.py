@@ -512,8 +512,12 @@ def goto_task(
     sign_in_wait_s: float = DEFAULT_SIGN_IN_WAIT_S,
     sleep: Callable[[float], None] | None = None,
     now: Callable[[], float] = time.monotonic,
+    on_sign_in: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Open an http or https page, waiting out a redirect to the identity provider.
+
+    `on_sign_in` is called once when the page lands on a sign-in host and the user is being
+    waited for (the CLI raises the browser window then); a failure in it never fails the goto.
 
     Without `url` the task's `form_url` is opened. A site that redirects to a sign-in page (an
     identity provider on the built-in list or the task's `sign_in_hosts`) is waited on for up to
@@ -546,7 +550,7 @@ def goto_task(
             ):
                 driver.goto(target)
                 waited = _wait_through_sign_in(
-                    driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now
+                    driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now, on_sign_in
                 )
             _require_allowed_page(driver, task, hosts, "the action")
         except BrowserActionError as exc:
@@ -1854,6 +1858,7 @@ def _wait_through_sign_in(
     wait_s: float,
     sleep: Callable[[float], None],
     now: Callable[[], float],
+    on_wait: Callable[[], None] | None = None,
 ) -> tuple[float, str] | None:
     """Poll the page address while it sits on a sign-in host: (seconds waited, that host).
 
@@ -1874,6 +1879,9 @@ def _wait_through_sign_in(
     if host_allowed(host, hosts) or not host_allowed(host, sign_in_hosts):
         return None
     waiting_on = host
+    if on_wait is not None and wait_s > 0:
+        with contextlib.suppress(Exception):
+            on_wait()  # best effort: raising the window never fails the goto
     while now() - started < wait_s:
         sleep(SIGN_IN_POLL_S)
         host = host_of(driver.url)

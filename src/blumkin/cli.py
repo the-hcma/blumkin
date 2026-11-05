@@ -100,6 +100,7 @@ from blumkin.browser.commands import (
     delete_task_profile,
     launch_task_browser,
     list_task_profiles,
+    raise_task_window,
     task_endpoint,
     task_status,
 )
@@ -159,6 +160,7 @@ from blumkin.browser.receipt_rehome import (
     rehome_receipt,
 )
 from blumkin.browser.transcript import parse_duration
+from blumkin.browser.window import WindowRaiseError, window_title
 from blumkin.capabilities import capability_summary
 from blumkin.config import (
     MAX_ADDRESS_CHARS,
@@ -621,6 +623,17 @@ def _browser_action(
     emit_lines([f"{task}: {done}"])
 
 
+def _raise_option[F: Callable[..., Any]](command: F) -> F:
+    """`--no-raise` for the commands that wait for you to sign in in the task's window."""
+    return click.option(
+        "--raise/--no-raise",
+        "raise_window",
+        default=True,
+        show_default=True,
+        help="Bring the task's browser window to the front when you are needed there (macOS).",
+    )(command)
+
+
 def _settle_option[F: Callable[..., Any]](command: F) -> F:
     """`--no-settle` for the field commands that wait for the page afterwards by default."""
     return click.option(
@@ -869,6 +882,9 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "usage_error", EXIT_USAGE
     elif isinstance(exc, BrowserNotFoundError):
         slug, code = "browser_not_found", EXIT_NOT_FOUND
+    elif isinstance(exc, WindowRaiseError):
+        slug, code = "window_raise_failed", EXIT_OTHER
+        hint = "Raise the browser window by hand; the task's browser keeps running."
     elif isinstance(exc, BrowserCloseError):
         slug, code = "browser_close_failed", EXIT_OTHER
         hint = (
@@ -899,6 +915,20 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
     raise SystemExit(code) from exc
 
 
+def _raise_quietly(task: str) -> None:
+    """Raise the task's window and drop the answer (for a hook that wants no value)."""
+    _try_raise(task)
+
+
+def _try_raise(task: str) -> dict[str, Any]:
+    """Raise the task's window without ever failing the command that asked for it."""
+    try:
+        payload = raise_task_window(config_dir(), task)
+    except Exception as exc:  # noqa: BLE001 - best effort: the browser is running either way
+        return {"raised": False, "reason": _clean_line(str(exc))}
+    return {"raised": True, "title": payload["title"], "untrusted": payload["untrusted"]}
+
+
 def _browser_profile_lines(payload: dict[str, Any]) -> list[str]:
     profiles = payload["profiles"]
     if not profiles:
@@ -906,6 +936,8 @@ def _browser_profile_lines(payload: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     for entry in profiles:
         state = f"running ({entry['endpoint']})" if entry["running"] else "not running"
+        if entry["running"] and entry.get("pid"):
+            state += f", process {entry['pid']}"
         lines.append(f"{entry['task']}: {state}")
         if entry.get("note"):
             lines.append(f"  note: {entry['note']}")
@@ -2714,6 +2746,7 @@ def browser_init_task(
     default=None,
     help=f"With --open: seconds to wait for you to sign in (default {DEFAULT_SIGN_IN_WAIT_S:g}).",
 )
+@_raise_option
 @click.pass_context
 def browser_launch(
     ctx: click.Context,
@@ -2721,6 +2754,7 @@ def browser_launch(
     as_json_flag: bool,
     open_page: bool,
     sign_in_wait_s: float | None,
+    raise_window: bool,
 ) -> None:
     """Launch the task's browser on its profile so you can sign in by hand."""
     as_json = _as_json(ctx, as_json_flag)
@@ -2731,6 +2765,8 @@ def browser_launch(
         payload = launch_task_browser(setup, task)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
+    if raise_window:
+        payload["raised"] = _try_raise(task)
     if open_page:
         try:
             payload["opened"] = goto_task(
@@ -2754,6 +2790,11 @@ def browser_launch(
         f"{task}: browser {'already running' if payload['already_running'] else 'launched'} "
         f"({payload['browser']}, {payload['endpoint']})"
     ]
+    raised = payload.get("raised")
+    if raised and raised.get("raised"):
+        lines.append(f"window raised: {sanitize_terminal(raised.get('title') or '(untitled)')}")
+    elif raised and sys.platform == "darwin":
+        lines.append(f"window not raised: {sanitize_terminal(str(raised.get('reason') or ''))}")
     if payload["fallback_from"]:
         lines.append(
             f"note: {payload['fallback_from']} is not installed; using {payload['browser']}"
@@ -3291,6 +3332,7 @@ def browser_frames(ctx: click.Context, task: str, as_json_flag: bool, wait_s: fl
     help="Seconds to wait for you to sign in when the site redirects to an identity provider "
     "(0 to not wait).",
 )
+@_raise_option
 @click.pass_context
 def browser_goto(
     ctx: click.Context,
@@ -3298,15 +3340,40 @@ def browser_goto(
     url: str | None,
     as_json_flag: bool,
     sign_in_wait_s: float,
+    raise_window: bool,
 ) -> None:
     """Open an http or https page (default: the task's form_url) in the task's browser."""
     _browser_action(
         ctx,
         as_json_flag,
         task,
-        lambda: goto_task(load_browser_setup(), task, url, sign_in_wait_s=sign_in_wait_s),
+        lambda: goto_task(
+            load_browser_setup(),
+            task,
+            url,
+            sign_in_wait_s=sign_in_wait_s,
+            on_sign_in=(lambda: _raise_quietly(task)) if raise_window else None,
+        ),
         "opened",
     )
+
+
+@browser.command("raise", epilog=help_text.BROWSER_RAISE_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_raise(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Bring TASK's browser window to the front (macOS), found by its recorded process."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = raise_task_window(config_dir(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    title = sanitize_terminal(payload["title"]) if payload["title"] else "(untitled)"
+    emit_lines([f"{task}: raised the window {title!r} (process {payload['pid']})"])
 
 
 @browser.command("sign-in", epilog=help_text.BROWSER_SIGN_IN_EPILOG)
@@ -4642,6 +4709,9 @@ def browser_status(ctx: click.Context, task: str | None, as_json_flag: bool, ver
         except Exception as exc:  # noqa: BLE001 - reported, not raised
             payload["page"] = None
             payload["page_error"] = redact_addresses(_clean_line(str(exc)))
+        pid = payload["profiles"][0].get("pid")
+        if pid:
+            payload["window_title"] = window_title(pid)
     if as_json:
         emit_json(payload)
         return
@@ -4664,6 +4734,9 @@ def browser_status(ctx: click.Context, task: str | None, as_json_flag: bool, ver
             lines.append("  (path and title are not shown for a host the task may not use)")
     elif payload.get("page_error"):
         lines.append(f"  page: not shown: {payload['page_error']}")
+    window = payload.get("window_title")
+    if window:
+        lines.append(f"  window: {sanitize_terminal(str(window))}")
     emit_lines(lines)
 
 

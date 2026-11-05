@@ -4621,3 +4621,65 @@ def test_heading_task_refuses_empty_and_overlong_text(raw: _Raw, bad: str) -> No
     with pytest.raises(ValueError, match="1 to 100 characters"):
         _heading(text=bad)
     assert raw.settle_calls == []
+
+
+def test_goto_calls_the_sign_in_hook_once_when_it_starts_waiting_for_the_user(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import goto_task
+    from blumkin.config import load_browser_setup
+
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url_script = [_IDP, _IDP, _IDP, _FORM]
+    clock = _Clock()
+    asked: list[int] = []
+
+    goto_task(
+        load_browser_setup(), "expense-report", _FORM,
+        sign_in_wait_s=120.0, sleep=clock.sleep, now=clock.now,
+        on_sign_in=lambda: asked.append(clock.sleeps),
+    )  # fmt: skip
+
+    assert asked == [0]  # before the first pause: the user is needed now, not when it is over
+
+
+def test_the_sign_in_hook_is_not_called_for_a_page_that_needs_no_sign_in_or_no_wait(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import HostBlockedError, goto_task
+    from blumkin.config import load_browser_setup
+
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    asked: list[int] = []
+
+    goto_task(
+        load_browser_setup(), "expense-report", _FORM, sign_in_wait_s=120.0,
+        sleep=_Clock().sleep, now=_Clock().now, on_sign_in=lambda: asked.append(1),
+    )  # fmt: skip
+    raw.url_script = [_IDP]
+    with pytest.raises(HostBlockedError):
+        goto_task(
+            load_browser_setup(), "expense-report", _FORM, sign_in_wait_s=0.0,
+            sleep=_Clock().sleep, now=_Clock().now, on_sign_in=lambda: asked.append(2),
+        )  # fmt: skip
+
+    assert asked == []
+
+
+def test_a_failing_sign_in_hook_never_fails_the_goto(raw: _Raw, _config_dir: Path) -> None:
+    from blumkin.browser.actions import goto_task
+    from blumkin.config import load_browser_setup
+
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url_script = [_IDP, _FORM]
+    clock = _Clock()
+
+    def boom() -> None:
+        raise RuntimeError("no accessibility permission")
+
+    payload = goto_task(
+        load_browser_setup(), "expense-report", _FORM,
+        sign_in_wait_s=120.0, sleep=clock.sleep, now=clock.now, on_sign_in=boom,
+    )  # fmt: skip
+
+    assert payload["url"] == _FORM
