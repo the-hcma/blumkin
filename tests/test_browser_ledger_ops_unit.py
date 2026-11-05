@@ -520,6 +520,79 @@ def test_a_step_whose_heading_never_shows_leaves_the_item_staged_and_names_the_w
     assert [i.state for i in items] == [ItemState.STAGED]
 
 
+def test_a_paused_handoff_that_is_neither_done_nor_where_it_starts_pauses_again(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import instance_status
+    from blumkin.browser.ledger_ops import StepNotMadeError
+
+    model = _handoff_model()
+    flow = model.flows[0]
+    checked = dataclasses.replace(
+        flow,
+        steps=(
+            flow.steps[0],
+            dataclasses.replace(flow.steps[1], expect_heading="Report saved"),
+            flow.steps[2],
+        ),
+    )
+    model = dataclasses.replace(model, flows=(checked,))
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=model,
+        run_step=lambda s, v: (_ for _ in ()).throw(HandoffRequired("x"))
+        if s.action == "handoff" else None,
+    )  # fmt: skip
+
+    def run(step: Any, values: Any) -> None:
+        if step.action == "handoff":
+            raise StepNotMadeError("the page does not show the heading the step starts on")
+
+    again = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=model, run_step=run, start_at=3,
+    )  # fmt: skip
+
+    # Still the person's step: it pauses again where it did, not "resume at the handoff".
+    assert again.paused is not None and again.paused.resume_from_step == 3
+    (held,) = instance_status(tmp_path, "expense-report", "trip-1").items
+    assert (held.resume_flow, held.resume_step) == ("attach", 3)
+
+
+def test_step_one_not_made_replaces_a_stale_resume_point_and_a_plain_run_is_allowed(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import instance_status
+    from blumkin.browser.ledger_ops import StepNotMadeError
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=_handoff_model(),
+        run_step=lambda s, v: (_ for _ in ()).throw(HandoffRequired("x"))
+        if s.action == "handoff" else None,
+    )  # fmt: skip
+
+    def not_made(step: Any, values: Any) -> None:
+        raise StepNotMadeError("the page does not show the heading the step starts on")
+
+    with pytest.raises(StepNotMadeError, match="step 1 .*was not made.*--from-step 1"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="attach", model=_handoff_model(), run_step=not_made, restart=True,
+        )  # fmt: skip
+
+    (held,) = instance_status(tmp_path, "expense-report", "trip-1").items
+    assert held.resume_step == 1  # no longer the stale "resume at step 3"
+    ran: list[str] = []
+    done = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=_handoff_model(), run_step=lambda s, v: ran.append(s.action),
+    )  # fmt: skip
+    assert ran == ["click", "handoff", "fill"] and done.item.state is ItemState.FILLED
+
+
 def test_a_step_that_was_not_made_leaves_the_item_staged_and_resumes_at_that_step(
     tmp_path: Path,
 ) -> None:

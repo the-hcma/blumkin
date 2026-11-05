@@ -121,6 +121,18 @@ def test_starts_on_and_verify_are_saved_and_read_back(_config_dir: Path) -> None
     ]
 
 
+def test_a_verify_step_without_a_bind_is_refused_even_when_the_flow_has_no_params(
+    _config_dir: Path,
+) -> None:
+    names = _store(_config_dir)
+    amount = next(n for n in names if "amount" in n)
+
+    result = _run("expense-report", "bad", "--step", f"verify {amount} page=expense-list")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "verify step to name a control and bind a parameter" in result.output
+
+
 def test_a_verify_step_must_bind_a_parameter_the_flow_declares(_config_dir: Path) -> None:
     names = _store(_config_dir)
     amount = next(n for n in names if "amount" in n)

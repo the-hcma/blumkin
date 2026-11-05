@@ -515,6 +515,7 @@ _BOUND_ACTIONS = frozenset({"fill", "upload", "verify"})
 _CELL = "cell"
 _HANDOFF = "handoff"
 _PICK = "pick"
+_VERIFY = "verify"
 #: The steps that can state a heading the page must show afterwards.
 _HEADING_ACTIONS = frozenset(
     {"cell", "click", "fill", "goto", "handoff", "pick", "press", "upload"}
@@ -1077,6 +1078,10 @@ def _step(
     elif declared and action in _BOUND_ACTIONS:
         raise SiteModelError(
             f"Expected {where} to bind a parameter (the flow declares params), got none"
+        )
+    if action == _VERIFY and (bind is None or data["control"] is None):
+        raise SiteModelError(
+            f"Expected a verify step to name a control and bind a parameter in {where}"
         )
     if action == _PICK and bind is None and literal is None:
         raise SiteModelError(f"Expected a pick step to have a bind or a value in {where}, got none")

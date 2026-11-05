@@ -185,7 +185,7 @@ def apply_item(
         if existing is not None and existing.state is ItemState.STAGED
         else None
     )
-    if pending_step is not None and not restart:
+    if pending_step is not None and pending_step > 1 and not restart:
         stopped_in = existing.resume_flow if existing is not None else None
         if start_at is None and pending_step > len(flow.steps) + 1:
             raise LedgerError(
@@ -197,8 +197,9 @@ def apply_item(
             raise LedgerError(
                 f"Expected {item!r} to go on from step {pending_step} of flow {stopped_in!r}, "
                 f"where it stopped, got a run from the start; look at the page (a handoff step is "
-                f"the person's to do, and a step whose heading never showed was made but did not "
-                f"land as expected), then run again with --from-step {pending_step}, or with "
+                f"the person's to do, a step whose heading never showed was made but did not "
+                f"land as expected, and a step that was not made is still to do), then run "
+                f"again with --from-step {pending_step}, or with "
                 "--restart to run the flow again from step 1 (steps already done are repeated)"
             )
         if stopped_in != flow_name:
@@ -234,6 +235,20 @@ def apply_item(
     bindings = dict(values or {})
     # The item being applied, whatever the caller passed: a value cannot rename it.
     bindings["item"] = item
+
+    def paused_at(number: int, instruction: str) -> ApplyResult:
+        _remember_stop(config_dir, task, instance, kind, item, flow_name, number + 1)
+        paused_status = instance_status(config_dir, task, instance)
+        held = _find(paused_status, kind, item)
+        if held is None:
+            raise LedgerError(f"Expected {kind.value} {item!r} in the ledger, got none")
+        return ApplyResult(
+            item=held,
+            noop=False,
+            status=paused_status,
+            paused=Paused(instruction=instruction, resume_from_step=number + 1, step=number),
+        )
+
     try:
         for number, step in enumerate(flow.steps, start=1):
             # The handoff the run paused at (the step just before the resume point), when it
@@ -245,6 +260,10 @@ def apply_item(
             try:
                 runner(step, bindings)
             except StepNotMadeError as stopped:
+                if outstanding:
+                    # The paused handoff is looked at again and is neither done nor where it
+                    # starts: it is still the person's, so it pauses again where it did.
+                    return paused_at(number, step.instruction or "Finish this step by hand.")
                 # Nothing was done by this step, so the way on is this same step once the page
                 # (or the field) is as the plan expects; the item is not marked failed.
                 _remember_stop(config_dir, task, instance, kind, item, flow_name, number)
@@ -264,19 +283,7 @@ def apply_item(
                     f"with --from-step {number + 1}"
                 ) from failed
             except HandoffRequired as pause:
-                _remember_stop(config_dir, task, instance, kind, item, flow_name, number + 1)
-                paused_status = instance_status(config_dir, task, instance)
-                held = _find(paused_status, kind, item)
-                if held is None:
-                    raise LedgerError(f"Expected {kind.value} {item!r} in the ledger, got none")
-                return ApplyResult(
-                    item=held,
-                    noop=False,
-                    status=paused_status,
-                    paused=Paused(
-                        instruction=pause.instruction, resume_from_step=number + 1, step=number
-                    ),
-                )
+                return paused_at(number, pause.instruction)
     except StepConditionError:
         raise
     except Exception:

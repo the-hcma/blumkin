@@ -754,7 +754,7 @@ def test_a_stop_can_only_be_recorded_for_a_staged_item_in_an_open_instance(
     with pytest.raises(LedgerError, match="staged"):
         record_resume(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "nope", "f", 2)
     record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.STAGED)
-    for flow, step in (("Bad Flow", 2), ("f", 1), ("f", 999), ("f", True)):
+    for flow, step in (("Bad Flow", 2), ("f", 0), ("f", 999), ("f", True)):
         with pytest.raises(LedgerError):
             record_resume(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", flow, step)
     record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.FILLED)
@@ -769,7 +769,7 @@ def test_a_stop_can_only_be_recorded_for_a_staged_item_in_an_open_instance(
     "bad",
     [
         {"flow": "f", "item": "ghost", "kind": "day", "step": 3},  # no such item
-        {"flow": "f", "item": "d1", "kind": "day", "step": 1},  # step before the next one
+        {"flow": "f", "item": "d1", "kind": "day", "step": 0},  # no step at all before the first
         {"flow": "f", "item": "d1", "kind": "day", "step": 999},
         {"flow": "Bad Flow", "item": "d1", "kind": "day", "step": 3},
         {"flow": "f", "item": "d1", "kind": "day"},  # no step at all
