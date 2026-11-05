@@ -154,6 +154,13 @@ def apply_item(
     existing = _find(status, kind, item)
     if existing is not None and existing.state is ItemState.VERIFIED:
         return ApplyResult(item=existing, noop=True, status=status)
+    if existing is not None and existing.state is ItemState.FILLED:
+        # Running the flow again would repeat what already filled the item, and the ledger has
+        # no step from filled back to staged: refused before the browser is touched.
+        raise LedgerError(
+            f"Expected {item!r} to be staged or failed to apply a flow, got one that is already "
+            "filled; check it against the page with `ledger verify`"
+        )
     site = (
         model
         if model is not None
@@ -661,7 +668,7 @@ def _remember_stop(
     and the original outcome goes on. The refusal it enables is checked when a run starts, not
     held across a run, so two runs for one item at the same time are not serialized by it.
     """
-    with contextlib.suppress(LedgerError):
+    with contextlib.suppress(LedgerError, OSError):
         record_resume(config_dir, task, instance, kind, item, flow, step)
 
 

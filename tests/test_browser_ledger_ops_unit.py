@@ -1050,3 +1050,43 @@ def test_the_refusal_tells_the_person_to_look_at_the_page_before_going_on(
             tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
             flow_name="attach", model=_handoff_model(), run_step=_pausing_run([]),
         )  # fmt: skip
+
+
+def test_a_filled_item_is_refused_before_the_browser_is_touched(tmp_path: Path) -> None:
+    from blumkin.browser.ledger import LedgerError
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    ran: list[str] = []
+    apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="add-line", model=_model(), run_step=lambda s, v: None, values={"Amount": "8"},
+    )  # fmt: skip
+
+    with pytest.raises(LedgerError, match="already filled.*ledger verify"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="add-line", model=_model(), run_step=lambda s, v: ran.append(s.action),
+            values={"Amount": "8"},
+        )  # fmt: skip
+
+    assert ran == [] and instance_status_items(tmp_path)[0].state is ItemState.FILLED
+
+
+def test_a_disk_error_while_saving_the_stop_never_hides_why_the_flow_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import ledger_ops
+
+    def disk_full(*_a: Any, **_k: Any) -> None:
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(ledger_ops, "record_resume", disk_full)
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    paused = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=_handoff_model(), run_step=_pausing_run([]),
+    )  # fmt: skip
+
+    assert paused.paused is not None
+    assert instance_status_items(tmp_path)[0].state is ItemState.STAGED

@@ -974,6 +974,13 @@ def _emit_ledger(payload: dict[str, Any], *, as_json: bool, items: bool = False)
                 f"  on the server (read back): {len(payload['on_server'])}; "
                 f"only local or not read back: {len(payload['local_only'])}"
             )
+    for held in payload.get("items", ()):
+        if held.get("resume"):  # a flow that stopped part way: where, so it is not repeated
+            lines.append(
+                f"  {held['kind']} {held['item']}: stopped in flow "
+                f"{sanitize_terminal(held['resume']['flow'])}, go on with "
+                f"--from-step {held['resume']['step']}"
+            )
     if payload.get("resume"):
         lines.append(f"  {payload['resume']}")
     for warning in payload.get("warnings") or ():

@@ -466,3 +466,16 @@ def test_apply_passes_restart_on_and_refuses_it_with_from_step(
     _run(*base)
 
     assert seen == [(None, True), (3, False), (None, False)]
+
+
+def test_the_plain_status_text_shows_where_a_flow_stopped(tmp_path: Path) -> None:
+    from blumkin.browser.ledger import ItemKind, ItemState, record_item, record_resume
+
+    _begin()
+    config = tmp_path / "config"
+    record_item(config, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.STAGED)
+    record_resume(config, "timesheet", "2026-p21", ItemKind.DAY, "d1", "fill-day", 4)
+
+    result = _text("browser", "ledger", "status", "timesheet", "2026-p21")
+
+    assert "day d1: stopped in flow fill-day, go on with --from-step 4" in result.output
