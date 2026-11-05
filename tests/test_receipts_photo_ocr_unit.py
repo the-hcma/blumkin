@@ -288,3 +288,14 @@ def test_dollar_signs_do_not_outvote_an_explicit_currency_code() -> None:
 def test_a_read_with_an_integer_total_is_not_beaten_by_one_with_only_a_tax_amount() -> None:
     assert docs_read._has_amount("TOTAL $12") and docs_read._has_amount("Tax $1.50")
     assert not docs_read._has_amount("Thank you, total pending")
+
+
+def test_a_tip_table_with_the_percentage_after_the_word_tip_is_dropped() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    text = (
+        "Subtotal $27.90\nTip $5.02\nTotalihit $35.33\n"
+        "Suggested Tip 18%: $5.02 Total $40.35\nSuggested Tip 20%: $5.58 Total $40.91\n"
+    )
+
+    assert parse_receipt_text(text).total.value == "35.33"

@@ -344,7 +344,8 @@ _SEPARATORS = " .,'\u2019\u00a0\u202f"
 #: Dollar signs it takes to outvote another currency symbol.
 _STRAY_SYMBOL_DOLLARS = 3
 _TIP_SUGGESTION = re.compile(
-    r"\b\d{1,2}\s*%\s*tip|\btip\w*\W{0,3}[^\d\s]?\s*\d[\d.,]*\W+(?:total|tetal)", re.IGNORECASE
+    r"\b\d{1,2}\s*%\s*tip|\btips?\W{0,3}\d{1,2}\s*%|\btip\w*\W{0,3}[^\d\s]?\s*\d[\d.,]*\W+(?:total|tetal)",
+    re.IGNORECASE,
 )
 _TAX_WORDS = re.compile(r"\b(?:gst|hst|tax|vat)\b")
 #: A vendor name counts only near the top, where a receipt prints its letterhead.
