@@ -336,25 +336,40 @@ class ModelDraft:
         url: str,
         controls: Sequence[ControlObservation],
         *,
-        page_kind: str = "page",
+        page_kind: str | None = None,
         landmarks: Sequence[str] = (),
     ) -> None:
         """Record (or update) a page from what was observed on it.
 
         A `dialog` page also records the `landmarks` that mark its container, each of which
-        must be a control that was observed on it; a `list-of-values` page records none.
+        must be a control that was observed on it; a `list-of-values` page records none. Without
+        a `page_kind`, a page that is already recorded keeps its kind (and, for a dialog, its
+        landmarks), so observing it again to refresh its controls does not demote it.
         """
         validate_page_id(page_id)
+        existing = self._pages.get(page_id)
+        if page_kind is None:
+            page_kind = existing.kind if existing is not None else "page"
+            if not landmarks and existing is not None and page_kind == "dialog":
+                landmarks = existing.landmarks
         if page_kind not in PAGE_KINDS:
             raise PageIdError(f"Expected a page kind of {', '.join(PAGE_KINDS)}, got {page_kind!r}")
         if landmarks and page_kind != "dialog":
             raise PageIdError("Expected landmarks only for a dialog page, got some")
-        observed = {item.name for item in controls}
-        unseen = [name for name in landmarks if name not in observed]
+        # A landmark is a control that will be stored: one with a control kind and a label that
+        # is not skipped as typed data. Names are compared without case, as the guard does.
+        observed = {
+            item.name.casefold()
+            for item in controls
+            if _KIND_BY_ROLE.get(item.role) is not None
+            and is_storable_label(item.name)
+            and is_storable_label(f"{item.role}:{item.name}")
+        }
+        unseen = [name for name in landmarks if name.casefold() not in observed]
         if unseen:
             raise PageIdError(
-                f"Expected every landmark to be a control seen on the page, got "
-                f"{', '.join(repr(name) for name in unseen)} which is not there"
+                f"Expected every landmark to be a control seen on the page and storable, got "
+                f"{', '.join(repr(name) for name in unseen)} which is not"
             )
         marks: list[str] = []
         built: list[Control] = []

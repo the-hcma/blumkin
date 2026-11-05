@@ -3045,10 +3045,10 @@ def browser_explore_forget(ctx: click.Context, task: str, page_id: str, as_json_
 @click.option(
     "--kind",
     type=click.Choice(["page", "dialog", "list-of-values"]),
-    default="page",
-    show_default=True,
+    default=None,
     help="What the page is: a popup the page does not mark as a dialog, or a list-of-values "
-    "dialog whose rows are chosen by their text.",
+    "dialog whose rows are chosen by their text (default: an already recorded page keeps its "
+    "kind).",
 )
 @click.option(
     "--landmark",
@@ -3062,7 +3062,7 @@ def browser_explore_observe(
     ctx: click.Context,
     task: str,
     page_id: str,
-    kind: str,
+    kind: str | None,
     landmarks: tuple[str, ...],
     as_json_flag: bool,
 ) -> None:

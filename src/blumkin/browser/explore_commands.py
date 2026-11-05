@@ -38,6 +38,7 @@ from blumkin.browser.model import (
     discard_draft,
     is_logical_name,
     load_draft,
+    load_model,
     resolve_store,
     save_model,
     update_draft,
@@ -157,10 +158,12 @@ def explore_observe(
     task: str,
     page_id: str,
     *,
-    kind: str = "page",
+    kind: str | None = None,
     landmarks: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Add the page the task's browser is on to the draft (continuing a stored model).
+
+    Without `kind`, a page that is already recorded keeps its kind and landmarks.
 
     `kind` says what the page is: an ordinary `page`, a `dialog` (a popup the page does not
     mark as one, such as an Oracle ADF attachments popup) or a `list-of-values` dialog whose
@@ -168,9 +171,9 @@ def explore_observe(
     seen on it that are not finalizing actions, which are what the task's `dialog_landmarks`
     policy key takes (`explore show` prints it).
     """
-    if landmarks and kind != "dialog":
+    if landmarks and kind is not None and kind != "dialog":
         raise PageIdError("Expected --landmark only with --kind dialog, got it with another kind")
-    if kind == "dialog" and not landmarks:
+    if kind == "dialog" and not landmarks and not _recorded_dialog(config, task, page_id):
         raise PageIdError("Expected at least two --landmark controls for a dialog page, got none")
     hosts, extra_deny = explore_policy(config, task)
     if landmarks:
@@ -192,7 +195,12 @@ def explore_observe(
         draft.add_page(page_id, url, controls, page_kind=kind, landmarks=landmarks)
         model = _to_model(draft)
         page = next(p for p in model.pages if p.page_id == page_id)
-        seen.update(controls=len(page.controls), skipped=draft.skipped, template=page.url_template)
+        seen.update(
+            controls=len(page.controls),
+            kind=page.kind,
+            skipped=draft.skipped,
+            template=page.url_template,
+        )
         seen["shared"] = {
             address: list(ids)
             for address, ids in draft.shared_addresses().items()
@@ -203,7 +211,7 @@ def explore_observe(
     update_draft(resolve_store(config), task, change)
     payload: dict[str, Any] = {
         "controls": seen["controls"],
-        "kind": kind,
+        "kind": seen["kind"],
         "ok": True,
         "page": page_id,
         "skipped": seen["skipped"],
@@ -244,6 +252,14 @@ def explore_save(config: BrowserSetup, task: str, *, yes: bool) -> dict[str, Any
     saved = save_model(resolve_store(config), draft, host_allowed=lambda h: host_allowed(h, hosts))
     discard_draft(resolve_store(config), task)
     return {"ok": True, "pages": len(saved.pages), "task": task, "version": saved.version}
+
+
+def _recorded_dialog(config: BrowserSetup, task: str, page_id: str) -> bool:
+    """Whether the draft (or the stored model) already holds `page_id` as a dialog."""
+    current = load_draft(resolve_store(config), task) or load_model(resolve_store(config), task)
+    return current is not None and any(
+        page.page_id == page_id and page.kind == "dialog" for page in current.pages
+    )
 
 
 def explore_show(config: BrowserSetup, task: str) -> dict[str, Any]:

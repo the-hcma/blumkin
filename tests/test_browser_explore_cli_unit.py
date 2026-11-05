@@ -560,3 +560,45 @@ def test_a_dialog_without_good_landmarks_is_refused_and_leaves_no_draft(
 
     assert result.exit_code != EXIT_SUCCESS
     assert not _draft_path(_config_dir).exists()
+
+
+def test_observing_a_dialog_page_again_without_a_kind_keeps_its_kind_and_landmarks(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    first = ["browser", "explore", "observe", "expense-report", "attachments"]
+    _run(*first, "--kind", "dialog", "--landmark", "Add line", "--landmark", "Help")
+    driver.snapshot = _SNAPSHOT + '- button "Extra"\n'
+
+    again = _run(*first)
+
+    assert again.exit_code == EXIT_SUCCESS, again.output
+    assert _json(again)["kind"] == "dialog"
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+    assert page["kind"] == "dialog" and page["landmarks"] == ["Add line", "Help"]
+    assert any("Extra" in str(control) for control in page["controls"])
+
+
+def test_a_kind_that_is_given_again_replaces_the_old_one_and_page_demotes_on_purpose(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    first = ["browser", "explore", "observe", "expense-report", "attachments"]
+    _run(*first, "--kind", "dialog", "--landmark", "Add line", "--landmark", "Help")
+
+    demoted = _run(*first, "--kind", "page")
+
+    assert demoted.exit_code == EXIT_SUCCESS and _json(demoted)["kind"] == "page"
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+    assert "kind" not in page and "landmarks" not in page
+
+
+def test_a_landmark_must_be_a_storable_control_not_a_heading_and_ignores_case(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    base = ["browser", "explore", "observe", "expense-report", "attachments", "--kind", "dialog"]
+
+    heading = _run(*base, "--landmark", "Add line", "--landmark", "Expenses")  # a heading
+    typed = _run(*base, "--landmark", "Add line", "--landmark", "Report 20261024123")  # skipped
+    cased = _run(*base, "--landmark", "add LINE", "--landmark", "help")
+
+    assert heading.exit_code != EXIT_SUCCESS and typed.exit_code != EXIT_SUCCESS
+    assert cased.exit_code == EXIT_SUCCESS, cased.output

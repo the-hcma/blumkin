@@ -603,3 +603,25 @@ def test_a_live_control_an_exact_match_claims_cannot_stand_in_for_another_record
 
     assert grade is not Grade.COMPATIBLE
     assert any(control and "delete-row" in control for control in controls)
+
+
+def test_diff_reports_a_page_whose_kind_or_landmarks_changed() -> None:
+    import dataclasses
+
+    from blumkin.browser.drift import diff_models
+
+    def model(kind: str, landmarks: tuple[str, ...]):
+        draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+        draft.add_page("attachments", "https://erp.example.com/a", _obs())
+        built = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+        page = dataclasses.replace(built.pages[0], kind=kind, landmarks=landmarks)
+        return dataclasses.replace(built, pages=(page,))
+
+    plain = model("page", ())
+    dialog = model("dialog", ("Add line", "Help"))
+
+    assert diff_models(plain, dialog).pages_changed == ("attachments",)
+    assert diff_models(dialog, model("dialog", ("Add line", "Reports"))).pages_changed == (
+        "attachments",
+    )
+    assert diff_models(dialog, dialog).pages_changed == ()
