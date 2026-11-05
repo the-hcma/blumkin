@@ -599,6 +599,25 @@ With `--json`, `chain` lists the addresses the page moved through when there was
 neither allowed nor a sign-in host shows only its name), so a redirect loop can be seen.
 """
 
+BROWSER_RAISE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser raise expense-report
+  blumkin browser raise expense-report --json
+
+Brings the task's browser window to the front, for the moment you are asked to sign in or to
+act by hand and cannot find it. Each task profile runs as its own Edge or Chrome process under
+the same application name, so activating the application by name raises whichever one the system
+picks (often your regular mail window); this finds the process blumkin recorded when it launched
+the task's browser, un-minimizes its windows, raises them and says which window (`title`, page
+text, so untrusted, and `pid`). macOS only, through System Events: the first use may ask you to
+allow your terminal under System Settings > Privacy & Security > Accessibility. Elsewhere, or
+with the browser not running, it fails and the browser is left alone. `browser launch` raises
+the window too, and `browser goto` does when it is waiting for you to sign in (`--no-raise`
+turns either off). `browser status TASK --verbose` shows the window title and process id.
+"""
+
 BROWSER_SIGN_IN_EPILOG = """
 Examples:
 
