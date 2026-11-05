@@ -459,3 +459,57 @@ def test_a_page_with_few_landmarks_inside_a_richer_page_does_not_win_a_tie() -> 
     drifted = parse_aria_snapshot(rich.replace('- checkbox "Billable"\n', ""))
     best = best_matching_page(pages, drifted, prefer="rich-page")
     assert best is not None and best[0] == "rich-page"
+
+
+_WITH_COUNT = _RECORDED + '  - link "(7 more...)"\n  - button "Attachments (2)"\n'
+
+
+def _checked(recorded: str, live: str) -> tuple[Grade, list[str | None]]:
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    draft.add_page("expense-list", "https://erp.example.com/expenses", _obs(recorded))
+    page = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0").pages[0]
+    check = check_page(page, _obs(live))
+    return check.grade, [finding.control for finding in check.findings]
+
+
+def test_a_link_or_button_whose_count_changed_is_the_same_control() -> None:
+    live = _WITH_COUNT.replace("(7 more...)", "(8 more...)").replace("(2)", "(10)")
+
+    grade, controls = _checked(_WITH_COUNT, live)
+
+    assert grade is Grade.COMPATIBLE
+    assert controls == []
+
+
+def test_a_date_or_an_amount_in_a_name_is_data_too() -> None:
+    recorded = _RECORDED + '  - link "Report of Oct 30"\n  - button "Pay 12.50 USD"\n'
+    live = recorded.replace("Oct 30", "Oct 31").replace("12.50", "1,200")
+
+    grade, _ = _checked(recorded, live)
+
+    assert grade is Grade.COMPATIBLE
+
+
+def test_a_count_link_that_is_really_gone_is_still_reported() -> None:
+    live = _WITH_COUNT.replace('  - link "(7 more...)"\n', "")
+
+    grade, controls = _checked(_WITH_COUNT, live)
+
+    assert grade is not Grade.COMPATIBLE
+    assert any(control and "more" in control for control in controls) or controls
+
+
+def test_a_renamed_word_around_the_number_is_still_drift() -> None:
+    live = _WITH_COUNT.replace("(7 more...)", "(7 fewer...)")
+
+    grade, _ = _checked(_WITH_COUNT, live)
+
+    assert grade is not Grade.COMPATIBLE
+
+
+def test_the_count_comparison_never_mixes_roles() -> None:
+    live = _WITH_COUNT.replace('link "(7 more...)"', 'textbox "(8 more...)"')
+
+    grade, _ = _checked(_WITH_COUNT, live)
+
+    assert grade is not Grade.COMPATIBLE

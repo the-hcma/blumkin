@@ -17,6 +17,7 @@ was observed, and `diff_models` compares two stored versions of a model.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -240,6 +241,8 @@ _ALIASES = {
     "searchbox": ("textbox",),
     "textbox": ("searchbox",),
 }
+#: Roles whose names carry data often enough to compare them with the numbers folded.
+_COUNT_ROLES = frozenset({"button", "link", "menuitem", "tab"})
 _FIELD_ROLES = frozenset(
     {
         "checkbox",
@@ -257,6 +260,7 @@ _FIELD_ROLES = frozenset(
 )
 #: Fewer recorded landmarks than this say too little to judge a page by their share.
 _MIN_LANDMARKS = 3
+_NUMBER = re.compile(r"\d+(?:[.,:/]\d+)*")
 _RANK = {Grade.COMPATIBLE: 0, Grade.DEGRADED: 1, Grade.INCOMPATIBLE: 2}
 #: A page whose recorded landmarks are mostly gone is no longer the recorded page.
 _SAME_PAGE = 0.5
@@ -356,6 +360,11 @@ def _control_findings(control: Control, live: set[tuple[str, str]]) -> list[Find
     ]
 
 
+def _fold_counts(name: str) -> str:
+    """`name` with every number (a count, a day, an amount, a time) replaced by `#`."""
+    return _NUMBER.sub("#", name)
+
+
 def _locator_verdict(
     strategy: LocatorStrategy, value: str, live: set[tuple[str, str]]
 ) -> str | None:
@@ -366,6 +375,12 @@ def _locator_verdict(
             return "found"
         if any((alias, name) in live for alias in _ALIASES.get(role, ())):
             return "alias"
+        if role in _COUNT_ROLES and _fold_counts(name) != name:
+            # A count, date or amount in a link or button name is data: `(7 more...)` is the
+            # same control as `(8 more...)`, so only the shape around the number is compared.
+            folded = _fold_counts(name)
+            if any(r == role and _fold_counts(n) == folded for r, n in live):
+                return "found"
         return "absent"
     if strategy is LocatorStrategy.LABEL:
         found = any(role in LABELLED_ROLES and name == value for role, name in live)
