@@ -162,3 +162,56 @@ def test_google_view_that_hits_the_cap_says_it_is_incomplete(monkeypatch) -> Non
 
     assert len(payload["items"]) == 2
     assert payload["complete"] is False
+
+
+def test_graph_view_with_exactly_the_cap_of_pages_and_no_next_link_is_complete(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(graph_calendar, "_VIEW_MAX_PAGES", 3)
+    first = SimpleNamespace(value=[_graph_event(1)], odata_next_link="more")
+    middle = SimpleNamespace(value=[_graph_event(2)], odata_next_link="more")
+    last = SimpleNamespace(value=[_graph_event(3)], odata_next_link=None)
+    _graph(monkeypatch, first, [middle, last])
+
+    payload = asyncio.run(calendar_view(start=_START, end=_START.replace(day=15)))
+
+    assert len(payload["items"]) == 3
+    assert payload["complete"] is True
+
+
+def test_graph_next_links_are_requested_as_given_without_the_first_query(monkeypatch) -> None:
+    first = SimpleNamespace(value=[_graph_event(1)], odata_next_link="https://graph/next?x=1")
+    client = _graph(monkeypatch, first, [SimpleNamespace(value=[], odata_next_link=None)])
+
+    asyncio.run(calendar_view(start=_START, end=_START.replace(day=15)))
+
+    assert client.seen_links == ["https://graph/next?x=1"]
+
+
+def test_google_view_with_a_token_on_the_only_allowed_page_is_incomplete(monkeypatch) -> None:
+    monkeypatch.setattr(google_calendar, "_VIEW_MAX_PAGES", 1)
+    _service, patched = _google([{"items": [_google_event(1)], "nextPageToken": "more"}])
+    with patched:
+        payload = asyncio.run(
+            google_calendar.calendar_view(
+                start=_START,
+                end=_START.replace(day=15),
+                config=cast("BlumkinConfig", SimpleNamespace(default_tz=_NY)),
+            )
+        )
+    assert payload["complete"] is False and len(payload["items"]) == 1
+
+
+def test_the_today_listing_warns_when_it_is_incomplete() -> None:
+    from blumkin.skills.calendar import format_today_human
+
+    lines = format_today_human(
+        {"complete": False, "date": "2026-09-01", "items": [], "timezone": _NY}
+    )
+    assert any("incomplete" in line for line in lines)
+    assert not any(
+        "incomplete" in line
+        for line in format_today_human(
+            {"complete": True, "date": "2026-09-01", "items": [], "timezone": _NY}
+        )
+    )

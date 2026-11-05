@@ -458,6 +458,8 @@ def format_suggest_human(payload: dict[str, Any]) -> list[str]:
 def format_today_human(payload: dict[str, Any]) -> list[str]:
     date_label = payload.get("date") or payload.get("start", "")[:10]
     lines = [f"Calendar ({date_label}, {payload['timezone']}): {len(payload['items'])} event(s)"]
+    if payload.get("complete") is False:
+        lines.append("  warning: more events exist than were read; this list is incomplete")
     if not payload["items"]:
         lines.append("  (none)")
         return lines

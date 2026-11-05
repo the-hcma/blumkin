@@ -862,6 +862,11 @@ async def _calendar_rsvp(
     if today_pending:
         tz = ZoneInfo(tz_name or cfg.default_tz)
         payload = await calendar_today(tz_name=str(tz), config=cfg)
+        if payload.get("complete") is False:
+            raise ValueError(
+                "Expected today's events to be read in full before accepting the pending ones, "
+                "got a day with more events than one read allows; accept by --event-id"
+            )
         event_ids = [
             str(item["id"]) for item in payload["items"] if item.get("id") and _needs_accept(item)
         ]
