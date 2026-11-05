@@ -375,6 +375,16 @@ def test_without_a_total_line_the_amount_charged_to_a_card_is_the_guess() -> Non
 def test_a_card_line_with_a_refund_sign_does_not_become_the_total_guess() -> None:
     from blumkin.receipts import parse_receipt_text
 
-    total = parse_receipt_text("Item $5.00\nCard refund -$5.00\n").total
+    refunded = parse_receipt_text("Subtotal $20.00\nCard -$5.00\n").total
+    credited = parse_receipt_text("Subtotal $20.00\nCard refund $5.00\n").total
 
-    assert total.value != "-5.00"
+    assert refunded.value == "20.00" and "card" not in refunded.note
+    assert credited.value is None and "refund" in credited.note
+
+
+def test_a_card_balance_or_gift_card_line_is_not_the_amount_paid() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    total = parse_receipt_text("Gift card balance $2.00\nItem $20.00\n").total
+
+    assert total.value == "20.00" and "card" not in total.note

@@ -331,6 +331,10 @@ _NEGATIVE_AMOUNT = re.compile(
     r"\d\s*[-\u2212]\s*$|\b(?:cr|credit)\b"
 )
 _NOISE_LETTERS = "OoIlSBZ|"
+#: A card line that is a balance or a reference, not a payment (`Gift card balance $2.00`).
+_NOT_PAID_LINE = re.compile(
+    r"\b(?:balance|gift|remaining|reward|rewards|points?|saving|savings)\b", re.IGNORECASE
+)
 #: A line that says what was charged to a card or handed over: it holds the amount paid.
 _PAID_LINE = re.compile(
     r"\b(?:amex|american\s+express|card|debit|mastercard|visa)\b|\b(?:tendered|amount\s+paid)\b",
@@ -682,8 +686,10 @@ def _paid_amounts(text: str) -> list[str]:
     """The amounts on the lines that say how the bill was paid (a card line, a tender line)."""
     paid: list[str] = []
     for raw in text.splitlines():
-        if not _PAID_LINE.search(raw):
+        if not _PAID_LINE.search(raw) or _NOT_PAID_LINE.search(raw):
             continue
+        if _NEGATIVE_AMOUNT.search(raw) or _REFUND_WORDS.search(raw.casefold()):
+            continue  # a refund or credit is money back, not the amount paid
         for run in _AMOUNT_RUN.findall(raw):
             amount = _parse_amount(run)
             if amount.value is not None and amount.has_decimals and not amount.doubtful:
