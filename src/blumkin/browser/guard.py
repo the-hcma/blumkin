@@ -47,6 +47,7 @@ from blumkin.browser.cdp import (
     FrameCapture,
     FrameInfo,
     OptionsListing,
+    PageSettled,
     PageText,
     RawBrowserDriver,
     UploadObservation,
@@ -395,6 +396,16 @@ class GuardedDriver:
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture:
         return self._raw.scroll_frame_text(is_allowed, max_steps=max_steps, wait_s=wait_s)
+
+    def settle_page(self, *, expect_heading: str | None = None) -> PageSettled | None:
+        """Wait for the page the last action started to settle and say which headings it shows.
+
+        Reads and waits only; it clicks nothing. None when the driver cannot do it.
+        """
+        settle = getattr(self._raw, "settle_page", None)
+        if settle is None:
+            return None
+        return settle(expect_heading=expect_heading)  # type: ignore[no-any-return]
 
     def title(self) -> str:
         return self._raw.title()

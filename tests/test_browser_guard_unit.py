@@ -885,6 +885,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "read_text",
         "scroll_frame_text",
         "select",
+        "settle_page",
         "sign_in_pass",
         "title",
         "upload",
@@ -1981,3 +1982,9 @@ def test_dialog_landmarks_need_two_distinct_exact_non_finalizing_names(
 def test_dialog_landmarks_without_a_dialog_confirm_are_refused() -> None:
     with pytest.raises(SubmitBlockedError, match="alongside dialog_landmarks"):
         _guard(landmarks=("Add", "Delete"))
+
+
+def test_settle_page_only_reads_and_is_none_for_a_driver_that_cannot_settle() -> None:
+    _, driver = _guard()
+
+    assert driver.settle_page() is None

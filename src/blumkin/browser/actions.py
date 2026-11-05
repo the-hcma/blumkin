@@ -33,6 +33,7 @@ from blumkin.browser.cdp import (
     DEFAULT_FRAME_WAIT_S,
     DEFAULT_SCROLL_MAX_STEPS,
     FIELD_ROLES,
+    SETTLE_EXPECT_WAIT_S,
     BrowserActionError,
     FieldTarget,
     PageText,
@@ -113,6 +114,9 @@ class HostBlockedError(BrowserActionError):
     """The page is on a host the task did not declare in `allowed_hosts`."""
 
 
+#: The longest heading text `click --expect-heading` takes or reports, and how long it waits.
+EXPECT_HEADING_CHARS = 100
+EXPECT_HEADING_WAIT_S = SETTLE_EXPECT_WAIT_S
 MAX_DIALOG_STEPS = 4
 MAX_GRID_ROWS = 500
 
@@ -202,6 +206,7 @@ def click_task(
     role: str | None = None,
     wait_s: float | None = None,
     nth: int | None = None,
+    expect_heading: str | None = None,
 ) -> dict[str, Any]:
     """Click a control the task declared (never a submit control or a finalizing name).
 
@@ -210,9 +215,26 @@ def click_task(
     when finding it by name, the full action timeout when the role is given. `nth` (1-based,
     DOM order) picks one of several controls the page legitimately gives the same name; it is
     reported back, and nothing else about the policy changes.
+
+    A click returns before the page it started has finished, so a read straight afterwards
+    can still show the page that was left. After the click this waits (bounded) for the page to
+    settle, then reports `url` (no query or fragment), `heading` (the first visible heading,
+    which is page text and so untrusted) and `settled`. `expect_heading` waits up to
+    `EXPECT_HEADING_WAIT_S` for a heading containing that text and, when none shows, fails
+    saying the click WAS made, so the caller reads the page instead of clicking again.
     """
     waited = wait_s if wait_s is not None else _default_wait(role)
     _require_declared_controls(config, task, name)
+    if expect_heading is not None:
+        expect_heading = " ".join(expect_heading.split())
+        if not expect_heading or len(expect_heading) > EXPECT_HEADING_CHARS:
+            raise ValueError(
+                f"Expected a heading text of 1 to {EXPECT_HEADING_CHARS} characters, "
+                f"got {len(expect_heading)}"
+            )
+
+    declared = config.browser.tasks.get(task)
+    hosts = declared.allowed_hosts if declared else ()
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         found = driver.click(name, role, waited, nth=nth)
@@ -225,6 +247,11 @@ def click_task(
         }
         if nth is not None:
             payload["nth"] = nth
+
+        def on_allowed_host(url: str) -> None:
+            _require_allowed_url(url, task, hosts, "the click")
+
+        payload.update(_settled_report(driver, expect_heading, on_allowed_host))
         return payload
 
     return _with_driver(config, task, act, check_after=True)
@@ -1763,15 +1790,69 @@ def _require_allowed_page(
     link has already loaded the other page (a GET; nothing from it is returned), and the
     error stops the task before anything is typed into or read from it.
     """
+    _require_allowed_url(driver.url, task, hosts, when)
+
+
+def _require_allowed_url(url: str, task: str, hosts: Sequence[str], when: str) -> None:
+    """The same check on an address captured with the text it must vouch for."""
     if not hosts:
         return
-    parts = urlsplit(driver.url)
+    parts = urlsplit(url)
     host = parts.hostname or "" if parts.scheme in ("http", "https") else ""
     if not host_allowed(host, hosts):
         raise HostBlockedError(
             f"Expected the page to be on an allowed_hosts host of task {task!r} after {when}, "
             f"got {host or 'no host'!r}"
         )
+
+
+def _settled_report(
+    driver: GuardedDriver, expect_heading: str | None, on_allowed_host: Callable[[str], None]
+) -> dict[str, Any]:
+    """Wait for the page a click started to settle and say where it ended up.
+
+    The heading is page text: addresses are removed, it is cut short, and it is withheld when
+    it reads like an instruction to an agent. A missing expected heading is an error that says
+    the click was made. `on_allowed_host` raises when the page is on a host the task may not
+    use: it runs on the page before it is waited on and then on the address of the very document
+    the headings were read from, so no word or address of a foreign page reaches the output or
+    an error, even if the page moved while it was polled.
+    """
+    on_allowed_host(driver.url)
+    settled = driver.settle_page(expect_heading=expect_heading)
+    if settled is None:
+        if expect_heading is not None:
+            raise BrowserActionError(
+                "Expected a browser that can wait for a heading, got one that cannot; "
+                "the click WAS made, so read the page instead of clicking again"
+            )
+        return {}
+    on_allowed_host(settled.url)
+    on_allowed_host(driver.url)
+    report: dict[str, Any] = {"settled": settled.quiet}
+    shown = _display_url(settled.url)
+    if shown:
+        report["url"] = shown
+    headings = [
+        redact_addresses(_one_line(text))[:EXPECT_HEADING_CHARS] for text in settled.headings
+    ]
+    first = headings[0] if headings else None
+    if first and scan_for_injection(first, location="page.text").to_payload():
+        report["heading_withheld"] = True
+        first = None
+    report["heading"] = first
+    report["untrusted"] = UNTRUSTED_NOTE
+    if expect_heading is not None:
+        report["expect_heading"] = settled.matched
+        if not settled.matched:
+            raise BrowserActionError(
+                f"Expected a heading containing {expect_heading!r} within "
+                f"{EXPECT_HEADING_WAIT_S:g} seconds of the click, got "
+                f"{'a withheld heading' if report.get('heading_withheld') else first or 'none'!r} "
+                f"on {shown or 'a page'}; "
+                "the click WAS made, so read the page instead of clicking again"
+            )
+    return report
 
 
 def _display_url(url: str) -> str:
