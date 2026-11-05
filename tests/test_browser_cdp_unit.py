@@ -3131,3 +3131,17 @@ def test_a_very_long_chain_keeps_its_first_hops_and_its_latest() -> None:
     assert len(chain) == 40
     assert chain[0] == "https://a.example/0"
     assert chain[-1] == "https://a.example/99"
+
+
+def test_a_driver_whose_deadline_expired_refuses_further_page_calls_and_skips_the_mark() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+
+    page = SimpleNamespace(context=object())
+    driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=1)
+    driver._expired = True
+
+    with pytest.raises(BrowserActionError, match="stopped answering"):
+        driver.aria_snapshot()
+    driver.mark_window("task")  # cosmetic: skipped, never raises

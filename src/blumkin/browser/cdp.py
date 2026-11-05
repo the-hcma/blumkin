@@ -309,6 +309,8 @@ DEFAULT_ACTION_TIMEOUT_S = 30.0
 HEADING_REPORT_CHARS = 200
 #: Most addresses a recorded navigation chain keeps.
 _MAX_CHAIN = 40
+#: The longest disconnecting from a browser that stopped answering may take.
+_CLOSE_DEADLINE_S = 10.0
 #: The longest the cosmetic window mark may take.
 _INDICATOR_DEADLINE_S = 5.0
 HEADINGS_REPORTED = 20
@@ -455,6 +457,7 @@ class PlaywrightDriver:
         self._context = page.context
         self._chain: list[str] = []
         self._chain_listening = False
+        self._expired = False
         self._dialog_landmarks: tuple[str, ...] = ()
         self._existing_frames = existing_frames
         self._navigation_handler: Any = None
@@ -469,6 +472,14 @@ class PlaywrightDriver:
         if self._closed:
             return
         self._closed = True
+        # After a deadline expired the connection may no longer answer: disconnecting must not
+        # hang on it either (the process ends right after, which drops the connection anyway).
+        limit = _CLOSE_DEADLINE_S if self._expired else None
+        with contextlib.suppress(BrowserActionError):
+            with _deadline(limit, "disconnect from the browser") if limit else _no_deadline():
+                self._disconnect()
+
+    def _disconnect(self) -> None:
         try:
             if self._existing_frames is not None:
                 with contextlib.suppress(Exception):
@@ -756,11 +767,13 @@ class PlaywrightDriver:
         The page's own address is checked in the evaluation that adds the pill: off `hosts`, or
         on a `blocked` host, nothing is added.
         """
+        if self._expired:
+            return  # the page stopped answering: nothing cosmetic is worth another wait
         self._require_open()
         # Cosmetic: a page that refuses it, or hangs, is skipped, and never for more than a few
         # seconds (a bare page evaluation has no timeout of its own).
         with contextlib.suppress(_playwright_error(), BrowserActionError):
-            with _deadline(_INDICATOR_DEADLINE_S, "mark the window"):
+            with self._bounded(_INDICATOR_DEADLINE_S, "mark the window"):
                 self._page.evaluate(INDICATOR_JS, indicator_args(task, hosts, blocked))
 
     def goto(self, url: str) -> None:
@@ -933,7 +946,7 @@ class PlaywrightDriver:
         """
         self._require_open()
         try:
-            with _deadline(self._timeout_s, "pick the account on the sign-in page"):
+            with self._bounded(self._timeout_s, "pick the account on the sign-in page"):
                 return self._pick_account(email, hosts, blocked, vet_names)
         except _playwright_error() as exc:
             raise self._action_error("pick the account on the sign-in page", exc) from exc
@@ -1973,9 +1986,24 @@ class PlaywrightDriver:
                 f"Expected the frame to stay on an allowed host, got {detail!r}"
             )
 
+    @contextlib.contextmanager
+    def _bounded(self, seconds: float, what: str) -> Iterator[None]:
+        """`_deadline` that also marks this driver as no longer trustworthy once it expires."""
+        try:
+            with _deadline(seconds, what):
+                yield
+        except BrowserActionError:
+            self._expired = True
+            raise
+
     def _require_open(self) -> None:
         if self._closed:
             raise BrowserActionError("Expected an attached browser, got a closed driver")
+        if self._expired:
+            raise BrowserActionError(
+                "Expected the page to answer, got a connection that stopped answering after a "
+                "deadline; close it and look at the page before trying again"
+            )
 
 
 class RawBrowserDriver(Protocol):
@@ -2745,6 +2773,11 @@ _DESCRIBE_CONTROL_JS = (
     "dialog: !!d, formInDialog: !!d && (!f || (d.contains(f) && !(viaLandmark && d === f))), "
     "dialogControls: names, dialogComplete: complete, dialogLandmark: viaLandmark}; }"
 )
+
+
+@contextlib.contextmanager
+def _no_deadline() -> Iterator[None]:
+    yield
 
 
 @contextlib.contextmanager
