@@ -130,6 +130,7 @@ from blumkin.browser.ledger_commands import (
     ledger_begin,
     ledger_close,
     ledger_discard,
+    ledger_expect,
     ledger_handoff,
     ledger_list,
     ledger_reconcile,
@@ -3530,6 +3531,30 @@ def browser_ledger_begin(
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = ledger_begin(load_browser_setup(), task, instance, expect=expect)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json)
+
+
+@browser_ledger.command("expect", epilog=help_text.BROWSER_LEDGER_EXPECT_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.option(
+    "--expect",
+    "expect",
+    multiple=True,
+    required=True,
+    help="New expected items as KIND=COUNT (repeatable); other kinds keep their count.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_ledger_expect(
+    ctx: click.Context, task: str, instance: str, expect: tuple[str, ...], as_json_flag: bool
+) -> None:
+    """Change how many items an open instance expects, when the plan changed."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_expect(load_browser_setup(), task, instance, expect=expect)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     _emit_ledger(payload, as_json=as_json)

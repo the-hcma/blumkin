@@ -408,3 +408,27 @@ def test_a_step_condition_failure_is_a_runtime_error_not_a_usage_error(
 
     assert result.exit_code == EXIT_OTHER
     assert "usage_error" not in result.output + (result.stderr or "")
+
+
+def test_expect_changes_the_count_and_status_reads_it(tmp_path: Path) -> None:
+    _begin("--expect", "day=3")
+
+    changed = _run("browser", "ledger", "expect", "timesheet", "2026-p21", "--expect", "day=14")
+    status = _text("browser", "ledger", "status", "timesheet", "2026-p21")
+
+    assert changed.exit_code == EXIT_SUCCESS, changed.output
+    assert "0 of 14 days filed" in _json(changed)["summary"]
+    assert "0 of 14 days filed" in status.output
+
+
+def test_expect_needs_an_expectation_and_an_open_instance() -> None:
+    _begin()
+
+    assert _run("browser", "ledger", "expect", "timesheet", "2026-p21").exit_code == EXIT_USAGE
+    assert (
+        _run("browser", "ledger", "expect", "timesheet", "nope", "--expect", "day=3").exit_code
+        == EXIT_NOT_FOUND
+    )
+    _run("browser", "ledger", "discard", "timesheet", "2026-p21", "--yes")
+    closed = _run("browser", "ledger", "expect", "timesheet", "2026-p21", "--expect", "day=3")
+    assert closed.exit_code == EXIT_USAGE

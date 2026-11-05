@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from blumkin.browser.cdp import BrowserActionError, BrowserAttachError
-from blumkin.browser.flow_params import validate_params
+from blumkin.browser.cdp import BrowserActionError, BrowserAttachError, CellEditedError
+from blumkin.browser.flow_params import validate_cell_values, validate_params
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.ledger import (
     ItemKind,
@@ -148,6 +148,7 @@ def apply_item(
     flow = _require_flow(site, flow_name)
     # Checked before the item is staged or the browser touched: a refused run changes nothing.
     validate_params(flow, values or {})
+    validate_cell_values(flow, values or {})
     # One past the last step is allowed: a flow whose last step is a handoff resumes there, with
     # nothing left to run but the item to be marked filled.
     if not 1 <= start_at <= len(flow.steps) + 1:
@@ -392,6 +393,40 @@ def verify_item(
     )
 
 
+def _rescrubbed(exc: BrowserActionError, step: FlowStep, values: Mapping[str, str]) -> Exception:
+    """`exc` again with every value a parameter supplied to the step replaced by its name."""
+    message = _scrubbed(str(exc), step, values)
+    try:
+        return type(exc)(message)
+    except TypeError:
+        return BrowserActionError(message)
+
+
+def _scrubbed(message: str, step: FlowStep, values: Mapping[str, str]) -> str:
+    """`message` with the values of the parameters a cell step used shown as `<name>`."""
+    names = [step.bind] if step.bind else []
+    names += [ref[1:] for ref in (step.row, step.column) if ref and ref.startswith("$")
+              and not ref.startswith("$$")]  # fmt: skip
+    for name in sorted({n for n in names if n in values}, key=lambda n: -len(values[n])):
+        if values[name]:
+            message = message.replace(values[name], f"<{name}>")
+    return message
+
+
+def _cell_ref(ref: str | None, values: Mapping[str, str], what: str) -> str:
+    """A cell step's row or column: the text as written, or the value of the `$name` it names."""
+    if not ref:
+        raise LedgerError(f"Flow step 'cell' needs a {what}")
+    if ref.startswith("$$"):
+        return ref[1:]  # `$$name` is the literal header `$name`, not a parameter
+    if not ref.startswith("$"):
+        return ref
+    name = ref[1:]
+    if name not in values:
+        raise LedgerError(f"Expected a value for {name!r} (the cell {what}), got none")
+    return values[name]
+
+
 def _default_run_step(task: str) -> StepRunner:
     from blumkin.browser import actions
     from blumkin.config import load_browser_setup
@@ -425,6 +460,25 @@ def _default_run_step(task: str) -> StepRunner:
             if not step.control:
                 raise LedgerError(f"Flow step {action!r} needs a control")
             actions.click_task(config, task, step.control, role="button")
+            return
+        if action == "cell":
+            row = _cell_ref(step.row, values, "row")
+            column = _cell_ref(step.column, values, "column")
+            if step.bind is not None:
+                if step.bind not in values:
+                    raise LedgerError(f"Expected a value for {step.bind!r}, got none")
+                cell_value: str | None = values[step.bind]
+            else:
+                cell_value = step.value  # a literal (empty clears the cell), or None to read
+            try:
+                actions.cell_task(config, task, row, column, cell_value)
+            except CellEditedError as exc:
+                # The edit was made: the item must stay resumable, not be marked failed.
+                raise StepConditionError(_scrubbed(str(exc), step, values)) from None
+            except BrowserActionError as exc:
+                # What a parameter supplied (a header, a value) is the user's data: it is named
+                # by its parameter in the error, not echoed.
+                raise _rescrubbed(exc, step, values) from None
             return
         if action == "fill":
             if not step.control:

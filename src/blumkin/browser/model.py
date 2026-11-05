@@ -96,6 +96,12 @@ class FlowStep:
     expect_heading: str | None = None
     #: What a `handoff` step tells the human to do before the run goes on.
     instruction: str | None = None
+    #: A `cell` step's grid cell: the row and the column (1-based numbers, header texts, or
+    #: `$name` for the value of a flow parameter), and the literal text to put in it (empty
+    #: clears the cell). With neither a literal nor a `bind`, the step only reads the cell.
+    column: str | None = None
+    row: str | None = None
+    value: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,10 +476,13 @@ _HOST = re.compile(
 _LOCK_FILENAME = ".lock"
 #: The steps a flow parameter can feed: a value typed into a field or a file chosen for upload.
 _BOUND_ACTIONS = frozenset({"fill", "upload"})
+_CELL = "cell"
 _HANDOFF = "handoff"
 #: The steps that can state a heading the page must show afterwards.
-_HEADING_ACTIONS = frozenset({"click", "fill", "goto", "handoff", "press", "upload"})
+_HEADING_ACTIONS = frozenset({"cell", "click", "fill", "goto", "handoff", "press", "upload"})
 _LOGICAL_NAME = re.compile(r"[a-z][a-z0-9_.\[\]-]{0,63}")
+_MAX_CELL_REF = 80
+_MAX_CELL_VALUE = 80
 _MAX_CHOICES = 100
 _MAX_CHOICE_CHARS = 80
 _MAX_CONTROLS = 500
@@ -625,6 +634,9 @@ def _flow_payload(flow: Flow) -> dict[str, Any]:
             | ({"bind": step.bind} if step.bind is not None else {})
             | ({"expect_heading": step.expect_heading} if step.expect_heading is not None else {})
             | ({"instruction": step.instruction} if step.instruction is not None else {})
+            | ({"row": step.row} if step.row is not None else {})
+            | ({"column": step.column} if step.column is not None else {})
+            | ({"value": step.value} if step.value is not None else {})
             for step in flow.steps
         ],
     }
@@ -929,7 +941,7 @@ def _step(
         data,
         where,
         {"action", "control", "expect", "page"},
-        optional={"bind", "expect_heading", "instruction"},
+        optional={"bind", "column", "expect_heading", "instruction", "row", "value"},
     )
     declared = params or {}
     action = _text(data["action"], f"{where}.action", pattern=_LOGICAL_NAME, what="an action name")
@@ -964,19 +976,24 @@ def _step(
             f"Expected {where}.expect_heading only on a click, press, fill, upload, goto or "
             f"handoff step, got it on {action!r}"
         )
+    row, column, literal = _cell_keys(data, where, action, declared)
     bind = data.get("bind")
     if bind is not None:
         bind = _text(bind, f"{where}.bind", pattern=_LOGICAL_NAME, what="a logical name")
-        if action not in _BOUND_ACTIONS:
+        if action not in _BOUND_ACTIONS and action != _CELL:
             raise SiteModelError(
-                f"Expected {where}.bind only on a fill or upload step, got it on {action!r}"
+                f"Expected {where}.bind only on a fill, upload or cell step, got it on {action!r}"
             )
+        if action == _CELL and literal is not None:
+            raise SiteModelError(f"Expected {where} with a bind or a value, not both")
         if bind not in declared:
             raise SiteModelError(
                 f"Expected {where}.bind to name a parameter of the flow, got {_shown(bind)}"
             )
         # A file path is checked as one and never typed into a field; text never uploads.
-        if (declared[bind] is ParamKind.FILE) != (action == "upload"):
+        if action == _CELL and declared[bind] is ParamKind.FILE:
+            raise SiteModelError(f"Expected {where}.bind of a non-file parameter, got a file one")
+        if action != _CELL and (declared[bind] is ParamKind.FILE) != (action == "upload"):
             raise SiteModelError(
                 f"Expected {where}.bind of a {'file' if action == 'upload' else 'non-file'} "
                 f"parameter for a {action} step, got {_shown(bind)}"
@@ -1007,12 +1024,54 @@ def _step(
     return FlowStep(
         action=action,
         bind=bind,
+        column=column,
         control=control,
         expect=expect,
         expect_heading=expect_heading,
         instruction=instruction,
         page=page,
+        row=row,
+        value=literal,
     )
+
+
+def _cell_keys(
+    data: Mapping[str, Any], where: str, action: str, declared: Mapping[str, ParamKind]
+) -> tuple[str | None, str | None, str | None]:
+    """The row, column and literal value of a `cell` step; none of them on any other step."""
+    present = [key for key in ("row", "column", "value") if data.get(key) is not None]
+    if action != _CELL:
+        if present:
+            raise SiteModelError(
+                f"Expected {where}.{present[0]} only on a cell step, got it on {action!r}"
+            )
+        return None, None, None
+    if data["control"] is not None:
+        raise SiteModelError(f"Expected a cell step without a control in {where}")
+    resolved: dict[str, str] = {}
+    for key in ("row", "column"):
+        raw = data.get(key)
+        if raw is None:
+            raise SiteModelError(f"Expected {where}.{key} on a cell step, got none")
+        text = _text(raw, f"{where}.{key}", max_len=_MAX_CELL_REF, plain=True)
+        if text.startswith("text:") and not text[5:].strip():
+            raise SiteModelError(f"Expected {where}.{key} with header text after 'text:', got none")
+        if text.startswith("$") and not text.startswith("$$"):
+            name = text[1:]
+            if declared.get(name) in (None, ParamKind.FILE):
+                raise SiteModelError(
+                    f"Expected {where}.{key} to name a non-file parameter of the flow after "
+                    f"'$', got {_shown(text)}"
+                )
+        resolved[key] = text
+    literal = data.get("value")
+    if literal is not None:
+        literal = (
+            ""
+            if literal == ""
+            else _text(literal, f"{where}.value", max_len=_MAX_CELL_VALUE, plain=True)
+        )
+    return resolved["row"], resolved["column"], literal
 
 
 def _task_dir(store: Path, task: str) -> Path:

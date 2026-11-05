@@ -18,6 +18,7 @@ from pathlib import Path
 from blumkin.browser.ledger import LedgerError
 from blumkin.browser.model import Flow, FlowParam, ParamKind
 
+MAX_CELL_CHARS = 80
 MAX_TEXT_CHARS = 500
 
 #: Bindings the run adds itself (the ledger item being applied).
@@ -54,6 +55,38 @@ def validate_params(flow: Flow, values: Mapping[str, str]) -> dict[str, str]:
             f"(values are not shown), got: {'; '.join(problems)}"
         )
     return dict(values)
+
+
+def validate_cell_values(flow: Flow, values: Mapping[str, str]) -> None:
+    """Refuse a value a `cell` step would type, or a row or column it names, that is too long.
+
+    The grid refuses a cell value of more than `MAX_CELL_CHARS` characters, and a header of more
+    than that cannot exist, but only when the step runs, after earlier steps changed the page.
+    Checked with the rest of the parameters, before anything is staged or touched. Nothing here
+    shows a value.
+    """
+    problems: list[str] = []
+    for number, step in enumerate(flow.steps, start=1):
+        if step.action != "cell":
+            continue
+        names: dict[str, str] = {}
+        if step.bind is not None:
+            names["its value"] = step.bind
+        for what, ref in (("row", step.row), ("column", step.column)):
+            if ref and ref.startswith("$") and not ref.startswith("$$"):
+                names[what] = ref[1:]
+        for what, name in names.items():
+            supplied = values.get(name)
+            if supplied is not None and len(supplied) > MAX_CELL_CHARS:
+                problems.append(
+                    f"step {number} ({what}) from {name}: expected at most {MAX_CELL_CHARS} "
+                    "characters"
+                )
+    if problems:
+        raise LedgerError(
+            f"Expected every cell value and reference of flow {flow.name!r} to fit the grid "
+            f"(values are not shown), got: {'; '.join(problems)}"
+        )
 
 
 def _refusal(param: FlowParam, value: str) -> str | None:

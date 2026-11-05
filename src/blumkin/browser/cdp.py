@@ -56,6 +56,10 @@ class BrowserActionError(RuntimeError):
     """A page action failed or was refused."""
 
 
+class CellEditedError(BrowserActionError):
+    """A grid cell was edited, but the cell could not be read again afterwards."""
+
+
 class AmbiguousFieldError(BrowserActionError):
     """More than one field matched the label, so none was used."""
 
@@ -1510,7 +1514,7 @@ class PlaywrightDriver:
         try:
             return self._find_cell(row, column, grid)
         except BrowserActionError as exc:
-            raise BrowserActionError(
+            raise CellEditedError(
                 f"{exc}; the edit itself was made, so check the cell before editing it again"
             ) from exc
 
@@ -2599,8 +2603,15 @@ _CELL_JS = r"""
   const rowHeads = kids(scroller('.oj-datagrid-row-header')).map(first);
   const columns = [...frozenCols, ...mainCols];
   const resolve = (want, names, what) => {
-    const text = String(want).trim();
-    if (/^[0-9]+$/.test(text)) {
+    let text = String(want).trim();
+    // `text:` names a header by its text even when that is only digits (a year, a day number),
+    // which would otherwise be read as a position.
+    const byText = text.startsWith('text:');
+    if (byText) text = text.slice(5).trim();
+    if (byText && !text) {
+      return {error: `Expected header text after text: for the ${what}, got none`};
+    }
+    if (!byText && /^[0-9]+$/.test(text)) {
       const n = parseInt(text, 10);
       if (n < 1 || n > names.length) {
         return {error: `Expected ${what} 1 to ${names.length}, got ${n}`};

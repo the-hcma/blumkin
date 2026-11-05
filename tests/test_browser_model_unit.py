@@ -225,7 +225,7 @@ def _load_payload(tmp_path: Path, payload: dict[str, Any]) -> SiteModel | None:
         lambda p: p["pages"][0]["controls"][0].update(typed_value="secret"),
         lambda p: p["pages"][0]["controls"][0]["locators"][0].update(text_content="x"),
         lambda p: p["flows"][0].update(example_input="y"),
-        lambda p: p["flows"][0]["steps"][0].update(value="z"),
+        lambda p: p["flows"][0]["steps"][0].update(typed_text="z"),
     ],
     ids=["top", "page", "control", "locator", "flow", "step"],
 )
@@ -1009,7 +1009,7 @@ def test_a_model_without_parameters_keeps_its_stored_shape(tmp_path: Path) -> No
         (lambda f: f["params"][0].update(kind="number"), "one of"),
         (lambda f: f["params"][0].update(amount="12.50"), "unexpected key"),
         (lambda f: f.update(params=f["params"] * 4), "Expected at most"),
-        (lambda f: f["steps"][0].update(bind="date"), "only on a fill or upload"),
+        (lambda f: f["steps"][0].update(bind="date"), "only on a fill, upload or cell"),
         (lambda f: f["steps"][1].update(bind="file"), "non-file"),
         (lambda f: f["steps"][1].update(action="upload"), "of a file"),
         (lambda f: f["steps"][1].pop("bind"), "to bind a parameter"),
@@ -1140,3 +1140,87 @@ def test_a_blank_heading_is_refused_when_the_model_loads(tmp_path: Path) -> None
     payload["flows"][0]["steps"][0]["expect_heading"] = "   "
     with pytest.raises(SiteModelError, match="some text"):
         _load_payload(tmp_path, payload)
+
+
+def _with_cell(payload: dict[str, Any], **step: Any) -> dict[str, Any]:
+    payload = copy.deepcopy(payload)
+    flow = payload["flows"][0]
+    flow["params"] = [
+        {"kind": "text", "name": "hours"},
+        {"kind": "text", "name": "day"},
+        {"kind": "file", "name": "receipt"},
+    ]
+    for existing in flow["steps"]:
+        if existing["action"] in ("fill", "upload"):
+            existing["bind"] = "hours"
+    flow["steps"].append({"action": "cell", "control": None, "expect": None, "page": None, **step})
+    return payload
+
+
+def test_a_cell_step_round_trips_with_a_bound_value_a_literal_or_a_read(tmp_path: Path) -> None:
+    payload = _with_cell(_payload(tmp_path), row="1", column="$day", bind="hours")
+    payload["flows"][0]["steps"].append(
+        {"action": "cell", "control": None, "expect": None, "page": None,
+         "row": "Project", "column": "text:2027", "value": ""}
+    )  # fmt: skip
+    payload["flows"][0]["steps"].append(
+        {"action": "cell", "control": None, "expect": None, "page": None,
+         "row": "2", "column": "3", "expect_heading": "Time Card"}
+    )  # fmt: skip
+    loaded = _load_payload(tmp_path, payload)
+    assert loaded is not None
+    first, cleared, read = loaded.flows[0].steps[-3:]
+    assert (first.row, first.column, first.bind, first.value) == ("1", "$day", "hours", None)
+    assert (cleared.row, cleared.column, cleared.value) == ("Project", "text:2027", "")
+    assert (read.bind, read.value, read.expect_heading) == (None, None, "Time Card")
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.flows == saved.flows
+
+
+@pytest.mark.parametrize(
+    ("step", "match"),
+    [
+        ({"row": "1"}, "column on a cell step, got none"),
+        ({"column": "1"}, "row on a cell step, got none"),
+        ({"row": "1", "column": "$nobody"}, "non-file parameter of the flow after"),
+        ({"row": "1", "column": "$receipt"}, "non-file parameter of the flow after"),
+        ({"row": "1", "column": "2", "bind": "receipt"}, "non-file parameter"),
+        ({"row": "1", "column": "2", "bind": "hours", "value": "8"}, "bind or a value, not both"),
+        ({"row": "1", "column": "2", "value": "x" * 81}, "at most|Expected"),
+        ({"row": "1", "column": "2", "control": "expense.add"}, "without a control"),
+    ],
+)
+def test_a_bad_cell_step_is_refused(tmp_path: Path, step: dict[str, Any], match: str) -> None:
+    with pytest.raises(SiteModelError, match=match):
+        _load_payload(tmp_path, _with_cell(_payload(tmp_path), **step))
+
+
+def test_row_column_and_value_belong_to_cell_steps_only(tmp_path: Path) -> None:
+    for key in ("row", "column", "value"):
+        payload = _payload(tmp_path)
+        payload["flows"][0]["steps"][0][key] = "1"
+        with pytest.raises(SiteModelError, match=f"{key} only on a cell step"):
+            _load_payload(tmp_path, payload)
+
+
+def test_a_model_without_cell_steps_keeps_its_stored_shape(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    assert all(
+        not ({"row", "column", "value"} & set(step))
+        for flow in payload["flows"]
+        for step in flow["steps"]
+    )
+    loaded = _load_payload(tmp_path, payload)
+    assert loaded is not None and loaded.flows[0].steps[0].row is None
+
+
+def test_text_with_nothing_after_it_and_a_double_dollar_are_handled_in_a_cell_step(
+    tmp_path: Path,
+) -> None:
+    for empty in ("text:", "text:   "):
+        with pytest.raises(SiteModelError, match="header text after 'text:'"):
+            _load_payload(tmp_path, _with_cell(_payload(tmp_path), row="1", column=empty))
+    # `$$name` is a literal header, not a reference to a parameter that might not exist.
+    loaded = _load_payload(tmp_path, _with_cell(_payload(tmp_path), row="1", column="$$Budget"))
+    assert loaded is not None and loaded.flows[0].steps[-1].column == "$$Budget"

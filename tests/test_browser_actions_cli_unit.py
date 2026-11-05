@@ -4705,3 +4705,17 @@ def test_a_silent_sso_hop_that_forwards_at_once_does_not_raise_the_window(
     )  # fmt: skip
 
     assert asked == []
+
+
+def test_a_cell_value_that_starts_like_a_finalizing_action_is_refused_on_any_path(
+    raw: _Raw,
+) -> None:
+    from blumkin.browser.actions import cell_task
+    from blumkin.browser.guard import SubmitBlockedError
+    from blumkin.config import load_browser_setup
+
+    for value in ("Submit", " submit report", "Pay now"):
+        with pytest.raises(SubmitBlockedError):
+            cell_task(load_browser_setup(), "expense-report", "1", "2", value)
+
+    assert [call for call in raw.calls if call[0] == "edit_cell"] == []

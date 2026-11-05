@@ -218,6 +218,34 @@ def discard_instance(config_dir: Path, task: str, instance: str) -> LedgerStatus
     return _close(config_dir, task, instance, "discarded", "discard")
 
 
+def expect_items(
+    config_dir: Path, task: str, instance: str, expected: Mapping[ItemKind, int]
+) -> LedgerStatus:
+    """Change how many items of each kind an open instance expects (the other kinds stay).
+
+    Plans change while a period is worked: more days get staged than were expected at the
+    start, and the instance would end at "10 of 3 days filed". The change is a journal entry of
+    its own, so the history shows what was expected and when it changed.
+    """
+    _check_task(task)
+    _check_instance(instance)
+    if not expected:
+        raise LedgerError("Expected at least one KIND=COUNT to change, got none")
+    totals = _check_expected(expected)
+    directory = _existing_instance_dir(config_dir, task, instance)
+    if directory is None:
+        raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
+    with _writing(directory) as journal:
+        folded = _fold(_read(journal, task, instance), task, instance)
+        if folded is None:
+            raise LedgerNotFoundError(
+                f"Expected an instance {instance!r} of task {task!r}, got none"
+            )
+        _require_open(folded, "change what is expected")
+        _append(journal, {"event": "expect", "expected": {k.value: n for k, n in totals.items()}})
+        return _status(journal, task, instance)
+
+
 def instance_status(config_dir: Path, task: str, instance: str) -> LedgerStatus:
     """The folded state of one instance."""
     _check_task(task)
@@ -710,6 +738,9 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
             report_id=None if report_id is None else str(report_id),
             total_confirmed=total_confirmed,
         )
+    elif event == "expect":
+        changed = _check_expected({ItemKind(k): v for k, v in dict(entry["expected"]).items()})
+        folded.expected = {**folded.expected, **changed}
     elif event == "session":
         folded.session = SessionRecord(at=at, outcome=SessionOutcome(entry["outcome"]))
     elif event == "submitted":

@@ -23,6 +23,7 @@ from blumkin.browser.ledger import (
     SessionOutcome,
     begin_instance,
     discard_instance,
+    expect_items,
     instance_status,
     list_instances,
     mark_submitted,
@@ -79,6 +80,13 @@ def ledger_begin(
 ) -> dict[str, Any]:
     """Start an instance; `expect` is `KIND=COUNT` strings such as `day=10`."""
     return _payload(begin_instance(config.config_dir, task, instance, expected=_expected(expect)))
+
+
+def ledger_expect(
+    config: BrowserSetup, task: str, instance: str, *, expect: Sequence[str]
+) -> dict[str, Any]:
+    """Change the expected counts of an open instance; `expect` is `KIND=COUNT` strings."""
+    return _payload(expect_items(config.config_dir, task, instance, _expected(expect)))
 
 
 def ledger_close(
