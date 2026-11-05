@@ -36,6 +36,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from blumkin.browser.cdp import FIELD_ROLES
 from blumkin.browser.profiles import ensure_private_dir, validate_task_name, write_private
 from blumkin.config import BrowserSetup
 
@@ -1101,6 +1102,13 @@ def _step(
             raise SiteModelError(
                 f"Expected a control that belongs to page {page} in {where}, got {_shown(control)}"
             )
+    if action == _VERIFY and control is not None:
+        role = _recorded_role(pages, control, page)
+        if role is not None and role not in FIELD_ROLES:
+            raise SiteModelError(
+                f"Expected a verify step in {where} to name a field, got {_shown(control)} "
+                f"recorded with the role {role!r}"
+            )
     expect = data["expect"]
     if expect is not None:
         expect = _text(expect, f"{where}.expect", plain=True)
@@ -1117,6 +1125,20 @@ def _step(
         starts_on=starts_on,
         value=literal,
     )
+
+
+def _recorded_role(pages: Mapping[str, Page], control: str, page: str | None) -> str | None:
+    """The role a control is recorded with, when its role-and-name locator gives one."""
+    for known_page in pages.values():
+        if page is not None and known_page.page_id != page:
+            continue
+        for known in known_page.controls:
+            if known.name != control:
+                continue
+            for locator in known.locators:
+                if locator.strategy is LocatorStrategy.ROLE_NAME:
+                    return locator.value.partition(":")[0]
+    return None
 
 
 def _cell_keys(

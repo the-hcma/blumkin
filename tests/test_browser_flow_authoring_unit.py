@@ -145,6 +145,19 @@ def test_a_verify_step_must_bind_a_parameter_the_flow_declares(_config_dir: Path
     assert result.exit_code != EXIT_SUCCESS
 
 
+def test_a_verify_step_on_a_button_is_refused_when_the_flow_is_saved(_config_dir: Path) -> None:
+    names = _store(_config_dir)
+    add_line = next(n for n in names if "add" in n)
+
+    result = _run(
+        "expense-report", "bad", "--param", "amount:text",
+        "--step", f"verify {add_line} page=expense-list bind=amount",
+    )  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "to name a field" in result.output
+
+
 @pytest.mark.parametrize(
     ("params", "steps", "match"),
     [
