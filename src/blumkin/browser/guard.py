@@ -407,8 +407,19 @@ class GuardedDriver:
             return None
         return settle(expect_heading=expect_heading)  # type: ignore[no-any-return]
 
+    def navigations(self) -> tuple[str, ...]:
+        """The addresses the page moved through since `track_navigations` (none if unsupported)."""
+        found = getattr(self._raw, "navigations", None)
+        return found() if found is not None else ()
+
     def title(self) -> str:
         return self._raw.title()
+
+    def track_navigations(self) -> None:
+        """Start recording the redirect chain of the top-level page; it reads nothing else."""
+        start = getattr(self._raw, "track_navigations", None)
+        if start is not None:
+            start()
 
     def select(self, label: str, option: str, target: FieldTarget | None = None) -> str | None:
         """Choose an option in a dropdown; an option or field that finalizes a form is refused."""

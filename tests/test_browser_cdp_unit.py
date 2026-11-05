@@ -3006,3 +3006,92 @@ def test_pick_account_does_not_click_a_tile_the_name_vet_refuses() -> None:
 
     assert picked.status == "denied"
     assert not any(call[0] == "tile-click" for call in pw.page.calls)
+
+
+def test_a_browser_with_no_page_is_not_given_one_when_asked_only_to_look(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import cdp
+    from blumkin.browser.cdp import BrowserNoPageError
+
+    context = _NoPageContext(new_page_works=True)
+    monkeypatch.setattr(cdp, "_open_blank_target", lambda endpoint, timeout_s: context.open_blank())
+
+    with pytest.raises(BrowserNoPageError, match="not opening one"):
+        cdp._first_page(context, "http://127.0.0.1:9222", 1.0, open_page=False)
+
+    assert context.opened == 0
+    assert context.pages == []
+
+
+def test_a_deadline_stops_a_block_that_runs_too_long_and_says_to_look_first() -> None:
+    import time as clock
+
+    from blumkin.browser.cdp import BrowserActionError, _deadline
+
+    with pytest.raises(BrowserActionError, match="may or may not have happened"):
+        with _deadline(0.2, "pick the account"):
+            clock.sleep(5)
+
+
+def test_a_deadline_lets_a_quick_block_finish_and_leaves_no_timer_behind() -> None:
+    import signal
+
+    from blumkin.browser.cdp import _deadline
+
+    with _deadline(5.0, "do it"):
+        done = True
+
+    assert done
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+def test_a_deadline_does_nothing_off_the_main_thread() -> None:
+    import threading
+
+    from blumkin.browser.cdp import _deadline
+
+    seen: list[str] = []
+
+    def work() -> None:
+        with _deadline(0.01, "do it"):
+            import time as clock
+
+            clock.sleep(0.1)
+            seen.append("finished")
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    thread.join()
+
+    assert seen == ["finished"]
+
+
+def test_the_driver_records_main_frame_navigations_only_and_drops_repeats() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import PlaywrightDriver
+
+    handlers: dict[str, Any] = {}
+    main = SimpleNamespace(url="")
+    child = SimpleNamespace(url="")
+    page = SimpleNamespace(
+        context=object(),
+        main_frame=main,
+        on=lambda event, fn: handlers.__setitem__(event, fn),
+    )
+    driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=1)
+
+    driver.track_navigations()
+    for frame, url in (
+        (main, "https://a.example/one"),
+        (child, "https://ads.example/frame"),
+        (main, "https://a.example/one"),
+        (main, "https://b.example/two"),
+    ):
+        frame.url = url
+        handlers["framenavigated"](frame)
+
+    assert driver.navigations() == ("https://a.example/one", "https://b.example/two")
+    driver.track_navigations()
+    assert driver.navigations() == ()

@@ -92,8 +92,17 @@ class _Raw:
         self.headings: tuple[str, ...] = ("Expenses",)
         self.quiet = True
         self.settle_calls: list[str | None] = []
+        #: The addresses a goto moved through, as the driver recorded them.
+        self.chain: list[str] = []
+        self.tracking = 0
         #: The address the headings are read from, when not the page's own.
         self.settled_url: str | None = None
+
+    def track_navigations(self) -> None:
+        self.tracking += 1
+
+    def navigations(self) -> tuple[str, ...]:
+        return tuple(self.chain)
 
     def settle_page(self, *, expect_heading: str | None = None) -> PageSettled:
         self.settle_calls.append(expect_heading)
@@ -4401,3 +4410,49 @@ def test_a_frame_action_reports_only_that_the_top_page_went_quiet(
     payload = _json(result)
     assert payload.get("settled") is True
     assert "heading" not in payload and "url" not in payload
+
+
+def test_goto_reports_the_redirect_chain_without_tokens_or_foreign_paths(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(
+        _config_dir,
+        'allowed_hosts = ["erp.example.com"]\nsign_in_hosts = ["idp.example.com"]',
+    )
+    raw.chain = [
+        "https://erp.example.com/expenses",
+        "https://idp.example.com/fed/v1/sp/sso?code=SECRET#frag",
+        "https://idp.example.com/fed/v1/sp/sso?code=SECRET#frag",
+        "https://tracker.example.net/pixel/abc?token=SECRET",
+        "https://erp.example.com/expenses/home",
+    ]
+
+    result = _run("browser", "goto", "expense-report", "https://erp.example.com/expenses")
+
+    payload = _json(result)
+    assert raw.tracking == 1
+    assert payload["chain"] == [
+        "https://erp.example.com/expenses",
+        "https://idp.example.com/fed/v1/sp/sso",
+        "https://tracker.example.net (other host)",
+        "https://erp.example.com/expenses/home",
+    ]
+    assert "SECRET" not in result.output and "/pixel" not in result.output
+
+
+def test_goto_with_a_single_step_has_no_chain(raw: _Raw) -> None:
+    raw.chain = ["https://erp.example.com/expenses"]
+
+    result = _run("browser", "goto", "expense-report", "https://erp.example.com/expenses")
+
+    assert "chain" not in _json(result)
+
+
+def test_a_long_redirect_loop_keeps_its_first_and_last_steps(raw: _Raw) -> None:
+    raw.chain = [f"https://erp.example.com/hop{n}" for n in range(30)]
+
+    payload = _json(_run("browser", "goto", "expense-report", "https://erp.example.com/hop0"))
+
+    assert len(payload["chain"]) == 13
+    assert payload["chain"][0].endswith("/hop0") and payload["chain"][-1].endswith("/hop29")
+    assert "..." in payload["chain"]

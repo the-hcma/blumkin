@@ -115,6 +115,7 @@ class HostBlockedError(BrowserActionError):
 
 
 #: The longest heading text `click --expect-heading` takes or reports, and how long it waits.
+CHAIN_SHOWN = 12
 EXPECT_HEADING_CHARS = 100
 EXPECT_HEADING_WAIT_S = SETTLE_EXPECT_WAIT_S
 MAX_DIALOG_STEPS = 4
@@ -503,6 +504,7 @@ def goto_task(
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         pause = sleep or (lambda seconds: driver.wait_ms(round(seconds * 1000)))
+        driver.track_navigations()
         with driver.sign_in_pass(
             lambda host: host_allowed(host, sign_in_hosts),
             lambda host: not hosts or host_allowed(host, hosts),
@@ -513,6 +515,9 @@ def goto_task(
         if waited is not None:
             payload["sign_in_host"] = waited[1]
             payload["waited_for_sign_in_s"] = round(waited[0], 1)
+        chain = _chain_report(driver.navigations(), hosts, sign_in_hosts)
+        if len(chain) > 1:
+            payload["chain"] = chain
         return payload
 
     return _with_driver(config, task, act, check_before=False, check_after=True)
@@ -1351,7 +1356,7 @@ def where_task(config: BrowserSetup, task: str) -> dict[str, Any]:
     profile = load_profile(config.config_dir, task)
     if profile is None:
         raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
-    page = attach(profile, timeout_s=DEFAULT_ACTION_TIMEOUT_S)
+    page = attach(profile, open_page=False, timeout_s=DEFAULT_ACTION_TIMEOUT_S)
     try:
         url = page.url
         title = page.title()
@@ -1902,6 +1907,32 @@ def _settled_report(
                 "the click WAS made, so read the page instead of clicking again"
             )
     return report
+
+
+def _chain_report(
+    urls: Sequence[str], hosts: Sequence[str], sign_in_hosts: Sequence[str]
+) -> list[str]:
+    """A redirect chain for display: where each step went, without what a token could hide in.
+
+    An address on an allowed or sign-in host shows its host and path (no query, fragment or `;`
+    parameters, long segments masked); any other host shows only the host, never a path. A step
+    that repeats the one before is dropped, and a long chain keeps its first and last steps.
+    """
+    shown: list[str] = []
+    for url in urls:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if parts.scheme not in ("http", "https") or not host:
+            entry = parts.scheme + ":" if parts.scheme else "(no address)"
+        elif host_allowed(host, sign_in_hosts) or not hosts or host_allowed(host, hosts):
+            entry = _display_url(url)
+        else:
+            entry = f"{parts.scheme}://{host} (other host)"
+        if not shown or shown[-1] != entry:
+            shown.append(entry)
+    if len(shown) > CHAIN_SHOWN:
+        shown = [*shown[: CHAIN_SHOWN // 2], "...", *shown[-(CHAIN_SHOWN // 2) :]]
+    return shown
 
 
 def _display_url(url: str) -> str:

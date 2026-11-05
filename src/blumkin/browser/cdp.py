@@ -19,6 +19,8 @@ import dataclasses
 import json
 import math
 import re
+import signal
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -305,6 +307,10 @@ DEFAULT_ACTION_TIMEOUT_S = 30.0
 #: How long a page that was just acted on may take to go quiet, and how long its DOM must stay
 #: unchanged to count as quiet.
 HEADING_REPORT_CHARS = 200
+#: Most addresses a recorded navigation chain keeps.
+_MAX_CHAIN = 40
+#: The longest the cosmetic window mark may take.
+_INDICATOR_DEADLINE_S = 5.0
 HEADINGS_REPORTED = 20
 SETTLE_GRACE_MS = 300
 SETTLE_QUIET_MS = 500
@@ -447,6 +453,8 @@ class PlaywrightDriver:
         self._browser = browser
         self._closed = False
         self._context = page.context
+        self._chain: list[str] = []
+        self._chain_listening = False
         self._dialog_landmarks: tuple[str, ...] = ()
         self._existing_frames = existing_frames
         self._navigation_handler: Any = None
@@ -749,8 +757,11 @@ class PlaywrightDriver:
         on a `blocked` host, nothing is added.
         """
         self._require_open()
-        with contextlib.suppress(_playwright_error()):
-            self._page.evaluate(INDICATOR_JS, indicator_args(task, hosts, blocked))
+        # Cosmetic: a page that refuses it, or hangs, is skipped, and never for more than a few
+        # seconds (a bare page evaluation has no timeout of its own).
+        with contextlib.suppress(_playwright_error(), BrowserActionError):
+            with _deadline(_INDICATOR_DEADLINE_S, "mark the window"):
+                self._page.evaluate(INDICATOR_JS, indicator_args(task, hosts, blocked))
 
     def goto(self, url: str) -> None:
         self._require_open()
@@ -921,6 +932,20 @@ class PlaywrightDriver:
         is not clicked.
         """
         self._require_open()
+        try:
+            with _deadline(self._timeout_s, "pick the account on the sign-in page"):
+                return self._pick_account(email, hosts, blocked, vet_names)
+        except _playwright_error() as exc:
+            raise self._action_error("pick the account on the sign-in page", exc) from exc
+
+    def _pick_account(
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Callable[[Sequence[str]], bool] | None,
+    ) -> AccountPick:
+        """The work of `pick_account`, run under its deadline."""
         try:
             args: dict[str, Any] = {"blocked": list(blocked), "email": email, "hosts": list(hosts)}
             handle = self._page.evaluate_handle(_PICK_ACCOUNT_JS, args)
@@ -1284,12 +1309,34 @@ class PlaywrightDriver:
                 f"select {option!r} in the field labelled {label!r}", exc
             ) from exc
 
+    def navigations(self) -> tuple[str, ...]:
+        """The addresses the top-level page moved through since `track_navigations`."""
+        return tuple(self._chain)
+
     def title(self) -> str:
         self._require_open()
         try:
             return str(self._page.title())
         except _playwright_error() as exc:
             raise self._action_error("read the page title", exc) from exc
+
+    def track_navigations(self) -> None:
+        """Start recording the addresses the top-level page moves through (a redirect chain)."""
+        self._require_open()
+        self._chain.clear()
+        on = getattr(self._page, "on", None)
+        if on is None or self._chain_listening:
+            return
+        self._chain_listening = True
+        main = self._page.main_frame
+
+        def moved(frame: Any) -> None:
+            if frame != main or len(self._chain) >= _MAX_CHAIN:
+                return
+            if not self._chain or self._chain[-1] != frame.url:
+                self._chain.append(str(frame.url))
+
+        on("framenavigated", moved)
 
     def upload(
         self, label: str, path: Path, target: FieldTarget | None = None
@@ -2061,11 +2108,16 @@ def attach(
     attempts: int = ATTACH_ATTEMPTS,
     factory: Callable[[], Any] | None = None,
     fetch_version: Callable[[str, float], dict[str, Any]] | None = None,
+    open_page: bool = True,
     pid_alive: Callable[[int], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     timeout_s: float = DEFAULT_ACTION_TIMEOUT_S,
 ) -> PlaywrightDriver:
-    """Attach to the browser launched for `profile`, refusing profiles blumkin did not make."""
+    """Attach to the browser launched for `profile`, refusing profiles blumkin did not make.
+
+    A browser with no page gets a blank one unless `open_page` is off, which makes it a
+    `BrowserNoPageError` instead: a diagnostic must not change the state it is looking at.
+    """
     require_blumkin_profile(profile.path)
     session = read_session(profile.path, pid_alive=pid_alive)
     if session is None:
@@ -2078,6 +2130,7 @@ def attach(
         attempts=attempts,
         factory=factory,
         fetch_version=fetch_version,
+        open_page=open_page,
         sleep=sleep,
         timeout_s=timeout_s,
     )
@@ -2142,6 +2195,7 @@ def open_driver(
     existing_frames: Any = None,
     factory: Callable[[], Any] | None = None,
     fetch_version: Callable[[str, float], dict[str, Any]] | None = None,
+    open_page: bool = True,
     sleep: Callable[[float], None] = time.sleep,
     timeout_s: float = DEFAULT_ACTION_TIMEOUT_S,
 ) -> PlaywrightDriver:
@@ -2194,6 +2248,7 @@ def open_driver(
                 playwright,
                 endpoint=endpoint,
                 existing_frames=existing_frames,
+                open_page=open_page,
                 read_existing_frames=factory is None,
                 timeout_s=timeout_s,
             )
@@ -2666,6 +2721,34 @@ _DESCRIBE_CONTROL_JS = (
 )
 
 
+@contextlib.contextmanager
+def _deadline(seconds: float, what: str) -> Iterator[None]:
+    """Fail with a `BrowserActionError` when the block runs longer than `seconds`.
+
+    Page evaluations through Playwright have no timeout of their own, so a page that hangs (or
+    a redirect that never settles) would block a command for good. This uses a timer signal,
+    which only works in the main thread of a POSIX process; elsewhere the block runs unbounded,
+    as it always did. The connection is not usable after an expiry: the caller closes it.
+    """
+    if not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def expired(signum: int, frame: Any) -> None:
+        raise BrowserActionError(
+            f"Expected to {what} within {seconds:g} seconds, got no answer from the page; "
+            "the action may or may not have happened, so look at the page before repeating it"
+        )
+
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, max(seconds, 0.001))
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 class _NeverRaised(Exception):
     """Stands in for Playwright's error type when it cannot be imported; nothing raises it."""
 
@@ -2757,6 +2840,7 @@ def _driver_for(
     *,
     endpoint: str,
     existing_frames: Any,
+    open_page: bool,
     read_existing_frames: bool,
     timeout_s: float,
 ) -> PlaywrightDriver:
@@ -2764,7 +2848,7 @@ def _driver_for(
         contexts = list(browser.contexts)
         if not contexts:
             raise BrowserProtocolError(f"Expected a browser context at {endpoint}, got none")
-        page = _first_page(contexts[0], endpoint, timeout_s)
+        page = _first_page(contexts[0], endpoint, timeout_s, open_page=open_page)
         page.set_default_timeout(timeout_s * 1000)
     except BaseException:
         with contextlib.suppress(_playwright_error()):
@@ -2781,8 +2865,11 @@ def _driver_for(
     )
 
 
-def _first_page(context: Any, endpoint: str, timeout_s: float) -> Any:
+def _first_page(context: Any, endpoint: str, timeout_s: float, *, open_page: bool = True) -> Any:
     """The first open page, opening a blank one when the browser has none.
+
+    With `open_page` off a browser without a page is reported (`BrowserNoPageError`), not
+    changed.
 
     A browser started with no page (or whose last tab was closed) cannot always make one
     through the attached context ("Browser context management is not supported"); DevTools can,
@@ -2793,6 +2880,10 @@ def _first_page(context: Any, endpoint: str, timeout_s: float) -> Any:
     pages = list(context.pages)
     if pages:
         return pages[0]
+    if not open_page:
+        raise BrowserNoPageError(
+            f"Expected an open page in the browser at {endpoint}, got none (not opening one)"
+        )
     try:
         return context.new_page()
     except _playwright_error():
