@@ -122,3 +122,42 @@ def test_a_photo_read_with_text_does_not_carry_the_pass_count(tmp_path: Path, mo
     pages = docs_read._read_image(path)
 
     assert "ocr_passes" not in pages[0]
+
+
+def test_a_bracketed_amount_seen_by_one_pass_is_kept_when_a_retry_reads_more() -> None:
+    fake, _ = _fake({"--psm 6": "($12.50)", None: "12.50", "--psm 4": "TOTAL 12.50 VISA 4242"})
+
+    text, _passes = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
+
+    assert "($12.50)" in text
+    assert "TOTAL 12.50 VISA 4242" in text
+
+
+def test_identical_reads_with_a_minus_are_not_doubled() -> None:
+    fake, _ = _fake({"--psm 6": "TOTAL -12.50 USD CAFE", None: "TOTAL -12.50 USD CAFE"})
+
+    text, _passes = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
+
+    assert text == "TOTAL -12.50 USD CAFE"
+
+
+def test_tesseract_missing_during_a_retry_is_not_swallowed() -> None:
+    class _Missing(Exception):
+        pass
+
+    calls = 0
+
+    def image_to_string(image: object, config: str | None = None) -> str:
+        nonlocal calls
+        calls += 1
+        if config == "--psm 4":
+            raise _Missing("gone")
+        return ""
+
+    fake = SimpleNamespace(image_to_string=image_to_string, TesseractNotFoundError=_Missing)
+
+    try:
+        docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
+    except _Missing:
+        return
+    raise AssertionError("expected the missing binary to surface")

@@ -359,7 +359,7 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int]:
     modes before giving up. Returns the text and how many OCR passes it took.
 
     A failure of the cleaned-up pass (other than tesseract being missing) leaves the plain read.
-    When either read shows negative evidence (a minus sign, brackets, CR or a credit near an
+    When any read shows negative evidence (a minus sign, brackets, CR or a credit near an
     amount), both are kept: the receipt parser then sees any disagreement between the two as
     different totals and asks instead of guessing.
     """
@@ -390,13 +390,14 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int]:
                 continue
             if _letters(candidates[-1]) >= _OCR_RETRY_BELOW:
                 break
-    same = " ".join(candidates[0].split()) == " ".join(candidates[-1].split())
-    if (
-        len(candidates) == 2
-        and not same
-        and any(_has_negative_evidence(text) for text in candidates)
-    ):
-        return "\n".join(candidates), passes
+    # One entry per distinct read (ignoring spacing), each kept as it was read.
+    distinct = list(
+        {" ".join(text.split()): text for text in reversed(candidates) if text.strip()}.values()
+    )[::-1]
+    if len(distinct) > 1 and any(_has_negative_evidence(text) for text in distinct):
+        # A minus sign or brackets seen by any pass must reach the receipt parser, even when a
+        # fuller read of another pass lacks them: the parser then sees the disagreement.
+        return "\n".join(distinct), passes
     # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
     return max(candidates, key=_letters), passes
 
