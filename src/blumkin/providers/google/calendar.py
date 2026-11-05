@@ -152,8 +152,9 @@ async def _calendar_rsvp(
         payload = await calendar_today(tz_name=tz_name, config=cfg)
         if payload.get("complete") is False:
             raise ValueError(
-                "Expected today's events to be read in full before accepting the pending ones, "
-                "got a day with more events than one read allows; accept by --event-id"
+                "Expected today's events to be read in full before acting on the pending ones, "
+                "got a day with more events than one read allows; respond to each one with "
+                "its own --event-id"
             )
         event_ids = [
             str(item["id"]) for item in payload["items"] if item.get("id") and _needs_accept(item)
