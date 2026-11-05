@@ -3186,3 +3186,78 @@ def test_closing_an_expired_driver_touches_nothing_on_the_connection() -> None:
     driver.close()
 
     assert touched == []
+
+
+def test_a_driver_call_whose_page_never_answers_hits_a_deadline_and_the_driver_stops_being_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    from blumkin.browser import cdp
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+
+    monkeypatch.setattr(cdp, "_DEADLINE_SLACK_S", 0.2)
+    page = SimpleNamespace(
+        context=object(), inner_text=lambda *_a, **_k: time.sleep(5), title=lambda: "t"
+    )
+    driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=0.1)
+
+    started = time.monotonic()
+    with pytest.raises(BrowserActionError, match="may or may not have happened"):
+        driver.read_text()
+    assert time.monotonic() - started < 3
+
+    with pytest.raises(BrowserActionError, match="stopped answering"):
+        driver.read_text()
+
+
+def test_every_driver_call_that_reaches_the_page_is_bounded() -> None:
+    from blumkin.browser.cdp import _DEADLINE_METHODS, PlaywrightDriver
+
+    for name in _DEADLINE_METHODS:
+        assert hasattr(getattr(PlaywrightDriver, name), "__wrapped__"), name
+
+
+def test_a_deadline_still_fails_when_the_block_swallows_the_error() -> None:
+    import time
+
+    from blumkin.browser.cdp import BrowserActionError, _deadline
+
+    with pytest.raises(BrowserActionError, match="may or may not have happened"):
+        with _deadline(0.2, "wait"):
+            try:
+                time.sleep(2)
+            except Exception:  # noqa: BLE001, S110 - the case under test
+                pass
+
+
+def test_a_nearer_outer_deadline_is_kept_inside_a_longer_inner_one() -> None:
+    import time
+
+    from blumkin.browser.cdp import BrowserActionError, _deadline
+
+    started = time.monotonic()
+    with pytest.raises(BrowserActionError, match="outer"):
+        with _deadline(0.3, "outer"):
+            with _deadline(30, "inner"):
+                time.sleep(3)
+    assert time.monotonic() - started < 2
+
+
+def test_a_control_lookup_that_never_answers_is_bounded_whatever_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    from blumkin.browser import cdp
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+
+    monkeypatch.setattr(cdp, "_DEADLINE_SLACK_S", 0.2)
+    hung = SimpleNamespace(count=lambda: time.sleep(5))
+    page = SimpleNamespace(context=object(), get_by_role=lambda *_a, **_k: hung)
+    driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=0.1)
+
+    started = time.monotonic()
+    with pytest.raises(BrowserActionError, match="may or may not have happened"):
+        driver.matching_roles("Save", ["button"], 0)
+    assert time.monotonic() - started < 3

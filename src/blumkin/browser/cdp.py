@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import json
 import math
 import re
@@ -313,6 +314,8 @@ DEFAULT_ACTION_TIMEOUT_S = 30.0
 HEADING_REPORT_CHARS = 200
 #: Most addresses a recorded navigation chain keeps.
 _MAX_CHAIN = 40
+#: Seconds added to twice the action timeout for a driver call's deadline.
+_DEADLINE_SLACK_S = 10.0
 #: The longest the cosmetic window mark may take.
 _INDICATOR_DEADLINE_S = 5.0
 HEADINGS_REPORTED = 20
@@ -810,7 +813,9 @@ class PlaywrightDriver:
             present: list[tuple[str, int]] = []
             for role in roles:
                 try:
-                    count = int(self._page.get_by_role(role, name=name, exact=True).count())
+                    # Each count is bounded, not the whole wait, which `--wait` sets.
+                    with self._bounded(self._call_deadline_s(), "count the controls"):
+                        count = int(self._page.get_by_role(role, name=name, exact=True).count())
                 except _playwright_error() as exc:
                     raise self._action_error(f"look for a control named {name!r}", exc) from exc
                 if nth is not None:
@@ -2001,6 +2006,12 @@ class PlaywrightDriver:
             self._expired = True
             raise
 
+    def _call_deadline_s(self) -> float:
+        """How long one driver call may take: Playwright's own waits end at the timeout and a
+        call can run a few of them in a row (find, vet, act), so this is only for what has no
+        wait, twice the timeout and some seconds on top."""
+        return 2 * self._timeout_s + _DEADLINE_SLACK_S
+
     def _require_open(self) -> None:
         if self._closed:
             raise BrowserActionError("Expected an attached browser, got a closed driver")
@@ -2009,6 +2020,42 @@ class PlaywrightDriver:
                 "Expected the page to answer, got a connection that stopped answering after a "
                 "deadline; close it and look at the page before trying again"
             )
+
+
+# The driver calls that talk to the page and have no wait of their own to bound them: a page
+# whose script never returns would hold any of them for good (#623). `checked_download`,
+# `edit_cell`, `scroll_frame_text`, the frame reads (`frame_aria_snapshot`, `frame_list`,
+# `read_frame_text`) and the settle waits are left out, since each runs a loop or a wait whose
+# length the caller sets (`--wait` up to 300 seconds).
+_DEADLINE_METHODS = (
+    "aria_snapshot",
+    "checked_click",
+    "checked_pick",
+    "describe_field",
+    "fill",
+    "goto",
+    "list_options",
+    "press_field",
+    "raw_press",
+    "read_field",
+    "read_text",
+    "select",
+    "title",
+    "upload",
+)
+
+
+def _with_deadline(method: Callable[..., Any], name: str) -> Callable[..., Any]:
+    @functools.wraps(method)
+    def bounded(self: PlaywrightDriver, *args: Any, **kwargs: Any) -> Any:
+        with self._bounded(self._call_deadline_s(), f"finish {name}"):
+            return method(self, *args, **kwargs)
+
+    return bounded
+
+
+for _name in _DEADLINE_METHODS:
+    setattr(PlaywrightDriver, _name, _with_deadline(getattr(PlaywrightDriver, _name), _name))
 
 
 class RawBrowserDriver(Protocol):
@@ -2805,26 +2852,41 @@ def _deadline(seconds: float, what: str) -> Iterator[None]:
         yield
         return
 
+    nearer, _ = signal.getitimer(signal.ITIMER_REAL)
+    if 0 < nearer < seconds:  # an outer deadline that is nearer than this one still applies
+        yield
+        return
+
     live = [True]
+    fired = [False]
+    started = time.monotonic()
 
     def expired(signum: int, frame: Any) -> None:
         if not live[0]:  # the block already ended: a late alarm must not raise outside it
             return
-        raise _DeadlineExpired(
+        fired[0] = True  # a broad `except` inside the block may swallow what is raised below
+        raise _DeadlineExpired(message())
+
+    def message() -> str:
+        return (
             f"Expected to {what} within {seconds:g} seconds, got no answer from the page; "
             "the action may or may not have happened, so look at the page before repeating it"
         )
 
     previous = signal.signal(signal.SIGALRM, expired)
-    outer = signal.setitimer(signal.ITIMER_REAL, max(seconds, 0.001))
+    remaining, interval = signal.getitimer(signal.ITIMER_REAL)
+    signal.setitimer(signal.ITIMER_REAL, max(seconds, 0.001))
     try:
         yield
     finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)  # first: a late alarm cannot skip the restore
         live[0] = False
-        signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous if previous is not None else signal.SIG_DFL)
-        if outer[0] > 0:  # a timer that was running before this block keeps its remaining time
-            signal.setitimer(signal.ITIMER_REAL, outer[0], outer[1])
+        if remaining > 0:  # an outer timer keeps what is left of its time
+            left = max(remaining - (time.monotonic() - started), 0.001)
+            signal.setitimer(signal.ITIMER_REAL, left, interval)
+    if fired[0]:  # the alarm went off but something inside the block swallowed the error
+        raise _DeadlineExpired(message())
 
 
 class _NeverRaised(Exception):
