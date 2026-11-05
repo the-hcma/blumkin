@@ -77,3 +77,28 @@ def test_a_digits_only_header_is_named_by_its_text_with_the_text_prefix() -> Non
                 driver._find_cell("Alpha", "text:2030", 1)
         finally:
             browser.close()
+
+
+def test_text_with_nothing_after_it_matches_no_header_and_text_text_reaches_a_text_header() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+    from blumkin.browser.discovery import resolve_browser
+
+    page_html = _PAGE.replace(">2026<", ">-<").replace(">2027<", ">text:2027<")
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(page_html)
+            driver = PlaywrightDriver(browser=browser, page=page, playwright=None, timeout_s=3)
+
+            for empty in ("text:", "text:   "):
+                with pytest.raises(BrowserActionError, match="header text after text:"):
+                    driver._find_cell("Alpha", empty, 1)  # never the one header with no letters
+            element, meta = driver._find_cell("Alpha", "text:text:2027", 1)
+            assert element.inner_text().strip() == "a27" and meta["column"] == 2
+        finally:
+            browser.close()

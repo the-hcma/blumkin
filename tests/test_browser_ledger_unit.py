@@ -704,3 +704,20 @@ def test_a_closed_instance_or_a_bad_expectation_refuses_the_change(tmp_path: Pat
 
     with pytest.raises(LedgerError, match="change what is expected"):
         expect_items(tmp_path, "timesheet", "2026-p21", {ItemKind.DAY: 3})
+
+
+def test_a_second_expect_merges_with_the_first_and_folds_back_from_disk_with_items(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import expect_items
+
+    begin_instance(tmp_path, "timesheet", "2026-p21", expected={ItemKind.DAY: 3})
+    record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.STAGED)
+    expect_items(tmp_path, "timesheet", "2026-p21", {ItemKind.RECEIPT: 2})
+    record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d2", ItemState.STAGED)
+    expect_items(tmp_path, "timesheet", "2026-p21", {ItemKind.DAY: 10})
+
+    again = instance_status(tmp_path, "timesheet", "2026-p21")
+
+    assert again.expected == {ItemKind.DAY: 10, ItemKind.RECEIPT: 2}
+    assert [item.item for item in again.items] == ["d1", "d2"]

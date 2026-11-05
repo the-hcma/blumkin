@@ -677,3 +677,25 @@ def test_a_cell_step_that_names_a_missing_value_fails_before_the_browser(
     with pytest.raises(LedgerError, match="'hours'"):
         run(FlowStep(action="cell", control=None, expect=None, page=None, row="1",
                      column="2", bind="hours"), {})  # fmt: skip
+
+
+def test_a_double_dollar_cell_reference_is_the_literal_header_with_one_dollar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    sent: list[tuple[str, str]] = []
+
+    def fake_cell(config: Any, task: str, row: str, column: str, value: Any = None, **_: Any):
+        sent.append((row, column))
+        return {}
+
+    monkeypatch.setattr(actions, "cell_task", fake_cell)
+    run = ledger_ops._default_run_step("time-sheet")
+
+    run(FlowStep(action="cell", control=None, expect=None, page=None, row="1",
+                 column="$$Budget"), {"Budget": "must not be used"})  # fmt: skip
+
+    assert sent == [("1", "$Budget")]

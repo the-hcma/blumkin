@@ -2604,6 +2604,9 @@ _CELL_JS = r"""
     // which would otherwise be read as a position.
     const byText = text.startsWith('text:');
     if (byText) text = text.slice(5).trim();
+    if (byText && !text) {
+      return {error: `Expected header text after text: for the ${what}, got none`};
+    }
     if (!byText && /^[0-9]+$/.test(text)) {
       const n = parseInt(text, 10);
       if (n < 1 || n > names.length) {

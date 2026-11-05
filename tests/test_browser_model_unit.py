@@ -1213,3 +1213,14 @@ def test_a_model_without_cell_steps_keeps_its_stored_shape(tmp_path: Path) -> No
     )
     loaded = _load_payload(tmp_path, payload)
     assert loaded is not None and loaded.flows[0].steps[0].row is None
+
+
+def test_text_with_nothing_after_it_and_a_double_dollar_are_handled_in_a_cell_step(
+    tmp_path: Path,
+) -> None:
+    for empty in ("text:", "text:   "):
+        with pytest.raises(SiteModelError, match="header text after 'text:'"):
+            _load_payload(tmp_path, _with_cell(_payload(tmp_path), row="1", column=empty))
+    # `$$name` is a literal header, not a reference to a parameter that might not exist.
+    loaded = _load_payload(tmp_path, _with_cell(_payload(tmp_path), row="1", column="$$Budget"))
+    assert loaded is not None and loaded.flows[0].steps[-1].column == "$$Budget"

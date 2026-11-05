@@ -1196,10 +1196,10 @@ is checked after the
 commit: if an editor is still open the
 edit is cancelled and the command fails. A number is a position; a header whose text is only
 digits (a year, a day number) is named by its text with a `text:` prefix (`text:2027`), and a
-header that itself begins with `text:` can only be reached by its number. Rows and columns count
-what the grid has drawn, and a grid inside a frame is not supported. `--grid N` picks the Nth
-data grid on the page. The text that comes back is what the cell shows afterwards, page text,
-untrusted: check it against what you meant to enter.
+header that itself begins with `text:` is `text:text:...` (the prefix is removed once). Rows and
+columns count what the grid has drawn, and a grid inside a frame is not supported. `--grid N`
+picks the Nth data grid on the page. The text that comes back is what the cell shows afterwards,
+page text, untrusted: check it against what you meant to enter.
 """
 
 BROWSER_GRID_EPILOG = """

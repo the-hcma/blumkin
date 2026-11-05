@@ -396,6 +396,8 @@ def _cell_ref(ref: str | None, values: Mapping[str, str], what: str) -> str:
     """A cell step's row or column: the text as written, or the value of the `$name` it names."""
     if not ref:
         raise LedgerError(f"Flow step 'cell' needs a {what}")
+    if ref.startswith("$$"):
+        return ref[1:]  # `$$name` is the literal header `$name`, not a parameter
     if not ref.startswith("$"):
         return ref
     name = ref[1:]

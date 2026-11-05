@@ -1054,7 +1054,9 @@ def _cell_keys(
         if raw is None:
             raise SiteModelError(f"Expected {where}.{key} on a cell step, got none")
         text = _text(raw, f"{where}.{key}", max_len=_MAX_CELL_REF, plain=True)
-        if text.startswith("$"):
+        if text.startswith("text:") and not text[5:].strip():
+            raise SiteModelError(f"Expected {where}.{key} with header text after 'text:', got none")
+        if text.startswith("$") and not text.startswith("$$"):
             name = text[1:]
             if declared.get(name) in (None, ParamKind.FILE):
                 raise SiteModelError(
@@ -1069,8 +1071,6 @@ def _cell_keys(
             if literal == ""
             else _text(literal, f"{where}.value", max_len=_MAX_CELL_VALUE, plain=True)
         )
-        if not isinstance(literal, str) or len(literal) > _MAX_CELL_VALUE:
-            raise SiteModelError(f"Expected {where}.value of at most {_MAX_CELL_VALUE} characters")
     return resolved["row"], resolved["column"], literal
 
 
