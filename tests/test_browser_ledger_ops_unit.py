@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ import pytest
 
 from blumkin.browser.ledger import ItemKind, ItemState, begin_instance, record_item
 from blumkin.browser.ledger_ops import (
+    HandoffRequired,
     apply_item,
     handoff_from_ledger,
     reconcile,
@@ -245,3 +247,142 @@ def test_a_recorded_click_step_keeps_the_button_lookup(
     run(FlowStep(action="click", control="Add line", expect=None, page="form"), {})
     run(FlowStep(action="press", control="Add line", expect=None, page="form"), {})
     assert seen == [("Add line", "button"), ("Add line", "button")]
+
+
+def _handoff_model() -> SiteModel:
+    base = _model()
+    flow = Flow(
+        name="attach",
+        steps=(
+            FlowStep(action="click", control="Add line", expect=None, page="form"),
+            FlowStep(
+                action="handoff",
+                control=None,
+                expect=None,
+                instruction="Click OK in the attachments dialog, then Save.",
+                page=None,
+            ),
+            FlowStep(action="fill", control="Amount", expect=None, page="form"),
+        ),
+    )
+    return dataclasses.replace(base, flows=(flow,))
+
+
+def test_a_handoff_step_pauses_the_run_without_failing_the_item(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    ran: list[str] = []
+
+    def run(step: Any, values: Any) -> None:
+        if step.action == "handoff":
+            raise HandoffRequired(step.instruction)
+        ran.append(step.action)
+
+    result = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=_handoff_model(), run_step=run,
+    )  # fmt: skip
+
+    assert ran == ["click"]
+    assert result.item.state is ItemState.STAGED
+    assert result.paused is not None
+    assert result.paused.step == 2 and result.paused.resume_from_step == 3
+    assert result.paused.instruction == "Click OK in the attachments dialog, then Save."
+    assert result.as_dict()["paused"] == {
+        "instruction": "Click OK in the attachments dialog, then Save.",
+        "resume_from_step": 3,
+        "step": 2,
+    }
+
+
+def test_resuming_from_a_step_skips_the_ones_before_it_and_finishes(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    ran: list[str] = []
+
+    def run(step: Any, values: Any) -> None:
+        ran.append(step.action)
+
+    result = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=_handoff_model(), run_step=run, start_at=3,
+    )  # fmt: skip
+
+    assert ran == ["fill"]
+    assert result.paused is None
+    assert result.item.state is ItemState.FILLED
+    assert "paused" not in result.as_dict()
+
+
+@pytest.mark.parametrize("bad", [0, 4, -1])
+def test_a_start_step_outside_the_flow_is_refused_before_anything_is_staged(
+    tmp_path: Path, bad: int
+) -> None:
+    from blumkin.browser.ledger import LedgerError
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    with pytest.raises(LedgerError, match="step to start from"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="attach", model=_handoff_model(), run_step=lambda s, v: None,
+            start_at=bad,
+        )  # fmt: skip
+
+
+def test_the_default_runner_checks_a_step_heading_and_a_handoff_waits_for_the_human(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    calls: list[tuple[str, float | None, str]] = []
+    shown = {"heading": False}
+
+    def fake_click(config: Any, task: str, name: str, role: str | None = None, **_: Any) -> dict:
+        return {}
+
+    def fake_heading(
+        config: Any, task: str, text: str, *, wait_s: float | None = None, what: str = "step"
+    ) -> dict:
+        calls.append((text, wait_s, what))
+        return {"expect_heading": shown["heading"]}
+
+    monkeypatch.setattr(actions, "click_task", fake_click)
+    monkeypatch.setattr(actions, "heading_task", fake_heading)
+    run = ledger_ops._default_run_step("expense-report")
+
+    run(
+        FlowStep(
+            action="click", control="Add line", expect=None, expect_heading="Edit Report",
+            page="form",
+        ),
+        {},
+    )  # fmt: skip
+    handoff = FlowStep(
+        action="handoff", control=None, expect=None, expect_heading="Report saved",
+        instruction="Click Save.", page=None,
+    )  # fmt: skip
+    with pytest.raises(HandoffRequired, match="Click Save"):
+        run(handoff, {})
+    shown["heading"] = True
+    run(handoff, {})  # the human acted: the heading shows, so the run goes on
+
+    assert calls == [
+        ("Edit Report", None, "click step"),
+        ("Report saved", 0.0, "handoff"),
+        ("Report saved", 0.0, "handoff"),
+    ]
+
+
+def test_a_handoff_step_without_a_heading_always_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import ledger_ops
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    run = ledger_ops._default_run_step("expense-report")
+
+    with pytest.raises(HandoffRequired, match="Press OK"):
+        run(FlowStep(action="handoff", control=None, expect=None, instruction="Press OK",
+                     page=None), {})  # fmt: skip

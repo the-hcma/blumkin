@@ -397,15 +397,22 @@ class GuardedDriver:
     ) -> FrameCapture:
         return self._raw.scroll_frame_text(is_allowed, max_steps=max_steps, wait_s=wait_s)
 
-    def settle_page(self, *, expect_heading: str | None = None) -> PageSettled | None:
+    def settle_page(
+        self, *, expect_heading: str | None = None, expect_wait_s: float | None = None
+    ) -> PageSettled | None:
         """Wait for the page the last action started to settle and say which headings it shows.
 
-        Reads and waits only; it clicks nothing. None when the driver cannot do it.
+        Reads and waits only; it clicks nothing. `expect_wait_s` shortens how long an expected
+        heading is waited for (0 looks once). None when the driver cannot do it.
         """
         settle = getattr(self._raw, "settle_page", None)
         if settle is None:
             return None
-        return settle(expect_heading=expect_heading)  # type: ignore[no-any-return]
+        if expect_wait_s is None:
+            return settle(expect_heading=expect_heading)  # type: ignore[no-any-return]
+        return settle(  # type: ignore[no-any-return]
+            expect_heading=expect_heading, expect_wait_s=expect_wait_s
+        )
 
     def navigations(self) -> tuple[str, ...]:
         """The addresses the page moved through since `track_navigations` (none if unsupported)."""

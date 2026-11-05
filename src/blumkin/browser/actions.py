@@ -471,6 +471,39 @@ def fill_task(
     return _with_driver(config, task, act)
 
 
+def heading_task(
+    config: BrowserSetup, task: str, text: str, *, wait_s: float | None = None, what: str = "step"
+) -> dict[str, Any]:
+    """Whether the page shows a heading containing `text`, waiting up to `wait_s` seconds.
+
+    Reads and waits only. Without `wait_s` it waits as `click --expect-heading` does and fails
+    when the heading never shows, with an error saying the `what` WAS made; with a `wait_s`
+    (0 looks once) it never fails for a miss and says `expect_heading: false` instead, which is
+    how a flow asks whether a human has done their part. The page is checked against the
+    task's `allowed_hosts` first and nothing from a page outside them is shown.
+    """
+    text = " ".join(text.split())
+    if not text or len(text) > EXPECT_HEADING_CHARS:
+        raise ValueError(
+            f"Expected a heading text of 1 to {EXPECT_HEADING_CHARS} characters, got {len(text)}"
+        )
+    declared = config.browser.tasks.get(task)
+    hosts = declared.allowed_hosts if declared else ()
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        report = _settled_report(
+            driver,
+            text,
+            lambda url: _require_allowed_url(url, task, hosts, f"the {what}"),
+            expect_wait_s=wait_s,
+            raise_on_miss=wait_s is None,
+            what=what,
+        )
+        return {"action": "heading", "ok": True, "task": task} | report
+
+    return _with_driver(config, task, act)
+
+
 def goto_task(
     config: BrowserSetup,
     task: str,
@@ -1906,7 +1939,13 @@ def _settled_page(
 
 
 def _settled_report(
-    driver: GuardedDriver, expect_heading: str | None, on_allowed_host: Callable[[str], None]
+    driver: GuardedDriver,
+    expect_heading: str | None,
+    on_allowed_host: Callable[[str], None],
+    *,
+    expect_wait_s: float | None = None,
+    raise_on_miss: bool = True,
+    what: str = "click",
 ) -> dict[str, Any]:
     """Wait for the page a click started to settle and say where it ended up.
 
@@ -1918,12 +1957,12 @@ def _settled_report(
     an error, even if the page moved while it was polled.
     """
     on_allowed_host(driver.url)
-    settled = driver.settle_page(expect_heading=expect_heading)
+    settled = driver.settle_page(expect_heading=expect_heading, expect_wait_s=expect_wait_s)
     if settled is None:
         if expect_heading is not None:
             raise BrowserActionError(
                 "Expected a browser that can wait for a heading, got one that cannot; "
-                "the click WAS made, so read the page instead of clicking again"
+                f"the {what} WAS made, so read the page instead of repeating it"
             )
         return {}
     on_allowed_host(settled.url)
@@ -1943,13 +1982,14 @@ def _settled_report(
     report["untrusted"] = UNTRUSTED_NOTE
     if expect_heading is not None:
         report["expect_heading"] = settled.matched
-        if not settled.matched:
+        if not settled.matched and raise_on_miss:
+            waited = EXPECT_HEADING_WAIT_S if expect_wait_s is None else expect_wait_s
             raise BrowserActionError(
                 f"Expected a heading containing {expect_heading!r} within "
-                f"{EXPECT_HEADING_WAIT_S:g} seconds of the click, got "
+                f"{waited:g} seconds of the {what}, got "
                 f"{'a withheld heading' if report.get('heading_withheld') else first or 'none'!r} "
                 f"on {shown or 'a page'}; "
-                "the click WAS made, so read the page instead of clicking again"
+                f"the {what} WAS made, so read the page instead of repeating it"
             )
     return report
 

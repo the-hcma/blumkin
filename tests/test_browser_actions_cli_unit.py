@@ -111,7 +111,9 @@ class _Raw:
     def navigations(self) -> tuple[str, ...]:
         return tuple(self.chain)
 
-    def settle_page(self, *, expect_heading: str | None = None) -> PageSettled:
+    def settle_page(
+        self, *, expect_heading: str | None = None, expect_wait_s: float | None = None
+    ) -> PageSettled:
         self.settle_calls.append(expect_heading)
         matched = (
             None
@@ -4570,3 +4572,52 @@ def test_a_percent_encoded_address_in_a_chain_path_is_masked(raw: _Raw, _config_
     result = _run("browser", "goto", "expense-report", "https://erp.example.com/start")
 
     assert "ada" not in result.output and "%40" not in result.output
+
+
+def _heading(config_dir_task: str = "expense-report", **kw: Any) -> dict[str, Any]:
+    from blumkin.browser.actions import heading_task
+    from blumkin.config import load_browser_setup
+
+    return heading_task(load_browser_setup(), config_dir_task, **kw)
+
+
+def test_heading_task_reports_a_match_without_failing_and_waits_only_as_asked(
+    raw: _Raw,
+) -> None:
+    raw.headings = ("Edit Expense Report",)
+
+    found = _heading(text="expense report", wait_s=0.0, what="handoff")
+    missing = _heading(text="Something else", wait_s=0.0, what="handoff")
+
+    assert found["expect_heading"] is True and found["heading"] == "Edit Expense Report"
+    assert missing["expect_heading"] is False
+    assert raw.settle_calls == ["expense report", "Something else"]
+
+
+def test_heading_task_without_a_wait_fails_saying_the_step_was_made(raw: _Raw) -> None:
+    raw.headings = ("Create Expense Item",)
+
+    with pytest.raises(BrowserActionError, match="the click step WAS made"):
+        _heading(text="Edit Expense Report", what="click step")
+
+
+def test_heading_task_shows_nothing_from_a_page_off_the_allowed_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import HostBlockedError
+
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.headings = ("Please enter your password",)
+    raw.settled_url = "https://evil.example/login"
+
+    with pytest.raises(HostBlockedError) as caught:
+        _heading(text="password", wait_s=0.0)
+
+    assert "password" not in str(caught.value) and "/login" not in str(caught.value)
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "x" * 101])
+def test_heading_task_refuses_empty_and_overlong_text(raw: _Raw, bad: str) -> None:
+    with pytest.raises(ValueError, match="1 to 100 characters"):
+        _heading(text=bad)
+    assert raw.settle_calls == []

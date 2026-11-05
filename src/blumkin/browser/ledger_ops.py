@@ -34,9 +34,11 @@ class ApplyResult:
     item: ItemRecord
     noop: bool
     status: LedgerStatus
+    #: Set when the run stopped at a `handoff` step to wait for the human.
+    paused: Paused | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "item": {
                 "item": self.item.item,
                 "kind": self.item.kind.value,
@@ -45,6 +47,31 @@ class ApplyResult:
             "noop": self.noop,
             "status": _status_payload(self.status),
         }
+        if self.paused is not None:
+            payload["paused"] = {
+                "instruction": self.paused.instruction,
+                "resume_from_step": self.paused.resume_from_step,
+                "step": self.paused.step,
+            }
+        return payload
+
+
+class HandoffRequired(Exception):  # noqa: N818 - a pause the run reports, not a failure
+    """A `handoff` step needs the human to act before the run can go on."""
+
+    def __init__(self, instruction: str) -> None:
+        super().__init__(instruction)
+        self.instruction = instruction
+
+
+@dataclass(frozen=True, slots=True)
+class Paused:
+    """Where a run stopped for the human: the step (1-based) and what they are asked to do."""
+
+    instruction: str
+    #: The step to start from once the human has acted (`ledger apply --from-step`).
+    resume_from_step: int
+    step: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,8 +113,14 @@ def apply_item(
     model: SiteModel | None = None,
     models_store: Path | None = None,
     run_step: StepRunner | None = None,
+    start_at: int = 1,
 ) -> ApplyResult:
-    """Run a recorded flow for ``item``, then mark it filled (or no-op if already verified)."""
+    """Run a recorded flow for ``item``, then mark it filled (or no-op if already verified).
+
+    A `handoff` step stops the run, without failing the item, and the result says what the
+    human is to do and which step to resume from (`start_at`, 1-based) once they have. The
+    steps before `start_at` are not run again.
+    """
     status = instance_status(config_dir, task, instance)
     existing = _find(status, kind, item)
     if existing is not None and existing.state is ItemState.VERIFIED:
@@ -104,6 +137,10 @@ def apply_item(
     flow = _require_flow(site, flow_name)
     # Checked before the item is staged or the browser touched: a refused run changes nothing.
     validate_params(flow, values or {})
+    if not 1 <= start_at <= len(flow.steps):
+        raise LedgerError(
+            f"Expected a step to start from between 1 and {len(flow.steps)}, got {start_at}"
+        )
     if existing is None or existing.state is ItemState.FAILED:
         stage_item(
             config_dir,
@@ -120,8 +157,24 @@ def apply_item(
     # The item being applied, whatever the caller passed: a value cannot rename it.
     bindings["item"] = item
     try:
-        for step in flow.steps:
-            runner(step, bindings)
+        for number, step in enumerate(flow.steps, start=1):
+            if number < start_at:
+                continue
+            try:
+                runner(step, bindings)
+            except HandoffRequired as pause:
+                paused_status = instance_status(config_dir, task, instance)
+                held = _find(paused_status, kind, item)
+                if held is None:
+                    raise LedgerError(f"Expected {kind.value} {item!r} in the ledger, got none")
+                return ApplyResult(
+                    item=held,
+                    noop=False,
+                    status=paused_status,
+                    paused=Paused(
+                        instruction=pause.instruction, resume_from_step=number + 1, step=number
+                    ),
+                )
     except Exception:
         record_item(
             config_dir,
@@ -315,6 +368,21 @@ def _default_run_step(task: str) -> StepRunner:
 
     def run(step: FlowStep, values: Mapping[str, str]) -> None:
         action = step.action.strip().lower()
+        if action == "handoff":
+            # The human's part: continue only when the page already shows the heading that
+            # proves it was done; otherwise stop and say what is asked of them.
+            if step.expect_heading:
+                done = actions.heading_task(
+                    config, task, step.expect_heading, wait_s=0.0, what="handoff"
+                )
+                if done.get("expect_heading"):
+                    return
+            raise HandoffRequired(step.instruction or "Finish this step by hand.")
+        _run_action(step, action, values)
+        if step.expect_heading:
+            actions.heading_task(config, task, step.expect_heading, what=f"{action} step")
+
+    def _run_action(step: FlowStep, action: str, values: Mapping[str, str]) -> None:
         if action in {"click", "press"}:
             if not step.control:
                 raise LedgerError(f"Flow step {action!r} needs a control")

@@ -52,8 +52,13 @@ def ledger_apply(
     flow: str,
     value: Sequence[str] = (),
     sha256: str | None = None,
+    from_step: int = 1,
 ) -> dict[str, Any]:
-    """Run a recorded flow for one item and mark it filled (no-op if already verified)."""
+    """Run a recorded flow for one item and mark it filled (no-op if already verified).
+
+    A `handoff` step stops the run and says what the human is to do; `from_step` starts the run
+    again from the step after it, without repeating the earlier ones.
+    """
     result = apply_item(
         config.config_dir,
         task,
@@ -64,6 +69,7 @@ def ledger_apply(
         values=_value_map(value),
         sha256=sha256,
         models_store=resolve_store(config),
+        start_at=from_step,
     )
     return result.as_dict() | {"ok": True}
 

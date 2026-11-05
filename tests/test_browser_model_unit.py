@@ -1042,3 +1042,71 @@ def test_a_malformed_parameter_declaration_is_refused(
     mutate(payload["flows"][0])
     with pytest.raises(SiteModelError, match=message):
         _load_payload(tmp_path, payload)
+
+
+def _with_conditions(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = copy.deepcopy(payload)
+    flow = payload["flows"][0]
+    flow["steps"][0]["expect_heading"] = "Edit Expense Report"
+    flow["steps"].append(
+        {
+            "action": "handoff",
+            "control": None,
+            "expect": None,
+            "expect_heading": "Expense Report",
+            "instruction": "Click OK in the attachments dialog, then Save.",
+            "page": None,
+        }
+    )
+    return payload
+
+
+def test_a_heading_postcondition_and_a_handoff_step_round_trip(tmp_path: Path) -> None:
+    loaded = _load_payload(tmp_path, _with_conditions(_payload(tmp_path)))
+    assert loaded is not None
+    steps = loaded.flows[0].steps
+    assert steps[0].expect_heading == "Edit Expense Report" and steps[0].instruction is None
+    assert steps[-1].action == "handoff"
+    assert steps[-1].instruction == "Click OK in the attachments dialog, then Save."
+    assert steps[-1].expect_heading == "Expense Report"
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.flows == saved.flows
+
+
+def test_a_model_without_conditions_keeps_its_stored_shape(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    assert all(
+        "expect_heading" not in step and "instruction" not in step
+        for flow in payload["flows"]
+        for step in flow["steps"]
+    )
+    loaded = _load_payload(tmp_path, payload)
+    assert loaded is not None
+    assert loaded.flows[0].steps[0].expect_heading is None
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"instruction": "Do this."}, "handoff step and nowhere else"),
+        ({"expect_heading": "x" * 101}, "at most"),
+        ({"expect_heading": 'say "hi"'}, "quotes|plain|Expected"),
+    ],
+)
+def test_a_bad_condition_is_refused(tmp_path: Path, change: dict[str, Any], match: str) -> None:
+    payload = _payload(tmp_path)
+    payload["flows"][0]["steps"][0].update(change)
+    with pytest.raises(SiteModelError, match=match):
+        _load_payload(tmp_path, payload)
+
+
+def test_a_handoff_step_needs_an_instruction_and_names_no_control(tmp_path: Path) -> None:
+    payload = _with_conditions(_payload(tmp_path))
+    del payload["flows"][0]["steps"][-1]["instruction"]
+    with pytest.raises(SiteModelError, match="handoff step and nowhere else"):
+        _load_payload(tmp_path, payload)
+    payload = _with_conditions(_payload(tmp_path))
+    payload["flows"][0]["steps"][-1]["control"] = payload["flows"][0]["steps"][0]["control"]
+    with pytest.raises(SiteModelError, match="without a control"):
+        _load_payload(tmp_path, payload)

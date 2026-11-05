@@ -331,3 +331,64 @@ def test_a_task_without_a_profile_fails_before_the_answer_is_recorded() -> None:
 
     assert result.exit_code == EXIT_NOT_FOUND
     assert _json(_run("browser", "ledger", "status", "expense-report", "trip"))["session"] is None
+
+
+def _pausing_apply(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    seen: list[int] = []
+
+    def fake(config: Any, task: str, instance: str, kind: str, item: str, **kw: Any) -> dict:
+        seen.append(kw["from_step"])
+        return {
+            "item": {"item": item, "kind": kind, "state": "staged"},
+            "noop": False,
+            "ok": True,
+            "paused": {
+                "instruction": "Click OK, then Save.",
+                "resume_from_step": 3,
+                "step": 2,
+            },
+            "status": {"summary": "1 staged"},
+        }
+
+    monkeypatch.setattr("blumkin.cli.ledger_apply", fake)
+    return seen
+
+
+def test_apply_prints_what_the_human_is_to_do_and_how_to_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _pausing_apply(monkeypatch)
+
+    result = _text(
+        "browser", "ledger", "apply", "timesheet", "2026-p21", "receipt", "r1", "--flow", "attach"
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "paused at step 2: Click OK, then Save." in result.output
+    assert "--from-step 3" in result.output
+    assert seen == [1]
+
+
+def test_apply_from_step_is_passed_on_and_json_carries_the_pause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _pausing_apply(monkeypatch)
+
+    result = _run(
+        "browser", "ledger", "apply", "timesheet", "2026-p21", "receipt", "r1",
+        "--flow", "attach", "--from-step", "3",
+    )  # fmt: skip
+
+    assert _json(result)["paused"]["resume_from_step"] == 3
+    assert seen == [3]
+
+
+def test_apply_refuses_a_from_step_below_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    _pausing_apply(monkeypatch)
+
+    result = _run(
+        "browser", "ledger", "apply", "timesheet", "2026-p21", "day", "d1",
+        "--flow", "attach", "--from-step", "0",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_USAGE

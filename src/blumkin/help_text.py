@@ -702,6 +702,13 @@ Runs one recorded site-model flow for one ledger item, binding values with --val
 A flow that declares parameters (a date, a choice, a file, text) is checked first: every one must
 be supplied, none undeclared, each valid, and a refusal lists the problems without showing any
 value and changes nothing. Applying a verified item again is a no-op.
+A step of a flow can state a heading the page must show afterwards (`expect_heading`): the run
+waits for it, bounded, and fails at the first step whose heading never shows, naming the step.
+A `handoff` step is the human's part (the attachments dialog's OK, the final Save): the run
+stops there without failing the item, prints what to do and `paused` with the step to resume
+from, and continues only when you run the same command with `--from-step N` (the steps before
+it are not run again; a handoff step that states a heading continues on its own once the page
+shows it).
 """
 
 BROWSER_LEDGER_BEGIN_EPILOG = """

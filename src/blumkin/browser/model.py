@@ -91,6 +91,11 @@ class FlowStep:
     page: str | None
     #: The flow parameter whose value a `fill` or `upload` step uses.
     bind: str | None = None
+    #: A heading the page must show after the step (or, on a `handoff` step, once the human
+    #: has acted); the run waits for it, bounded, and stops when it never shows.
+    expect_heading: str | None = None
+    #: What a `handoff` step tells the human to do before the run goes on.
+    instruction: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,6 +470,7 @@ _HOST = re.compile(
 _LOCK_FILENAME = ".lock"
 #: The steps a flow parameter can feed: a value typed into a field or a file chosen for upload.
 _BOUND_ACTIONS = frozenset({"fill", "upload"})
+_HANDOFF = "handoff"
 _LOGICAL_NAME = re.compile(r"[a-z][a-z0-9_.\[\]-]{0,63}")
 _MAX_CHOICES = 100
 _MAX_CHOICE_CHARS = 80
@@ -472,6 +478,8 @@ _MAX_CONTROLS = 500
 _MAX_FILE_BYTES = 2 * 1024 * 1024
 _MAX_FINGERPRINT = 200
 _MAX_FLOWS = 50
+_MAX_HEADING = 100
+_MAX_INSTRUCTION = 300
 _MAX_LOCATORS = 10
 _MAX_PAGES = 200
 _MAX_PARAMS = 12
@@ -613,6 +621,8 @@ def _flow_payload(flow: Flow) -> dict[str, Any]:
                 "page": step.page,
             }
             | ({"bind": step.bind} if step.bind is not None else {})
+            | ({"expect_heading": step.expect_heading} if step.expect_heading is not None else {})
+            | ({"instruction": step.instruction} if step.instruction is not None else {})
             for step in flow.steps
         ],
     }
@@ -913,9 +923,31 @@ def _step(
     controls: set[str],
     params: Mapping[str, ParamKind] | None = None,
 ) -> FlowStep:
-    data = _keys(data, where, {"action", "control", "expect", "page"}, optional={"bind"})
+    data = _keys(
+        data,
+        where,
+        {"action", "control", "expect", "page"},
+        optional={"bind", "expect_heading", "instruction"},
+    )
     declared = params or {}
     action = _text(data["action"], f"{where}.action", pattern=_LOGICAL_NAME, what="an action name")
+    expect_heading = data.get("expect_heading")
+    if expect_heading is not None:
+        expect_heading = _text(
+            expect_heading, f"{where}.expect_heading", max_len=_MAX_HEADING, plain=True
+        )
+    instruction = data.get("instruction")
+    if (action == _HANDOFF) != (instruction is not None):
+        raise SiteModelError(
+            f"Expected {where}.instruction on a handoff step and nowhere else, got "
+            f"{'none' if action == _HANDOFF else 'one on ' + repr(action)}"
+        )
+    if instruction is not None:
+        instruction = _text(
+            instruction, f"{where}.instruction", max_len=_MAX_INSTRUCTION, plain=True
+        )
+        if data["control"] is not None or data.get("bind") is not None:
+            raise SiteModelError(f"Expected a handoff step without a control or a bind in {where}")
     bind = data.get("bind")
     if bind is not None:
         bind = _text(bind, f"{where}.bind", pattern=_LOGICAL_NAME, what="a logical name")
@@ -961,6 +993,8 @@ def _step(
         bind=bind,
         control=control,
         expect=expect,
+        expect_heading=expect_heading,
+        instruction=instruction,
         page=page,
     )
 
