@@ -593,6 +593,28 @@ def test_step_one_not_made_replaces_a_stale_resume_point_and_a_plain_run_is_allo
     assert ran == ["click", "handoff", "fill"] and done.item.state is ItemState.FILLED
 
 
+def test_matched_verify_steps_are_reported_by_parameter_without_a_value(
+    tmp_path: Path,
+) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    def run(step: Any, values: Any) -> str | None:
+        return "amount" if step.action == "fill" else None
+
+    result = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="add-line", model=_model(), run_step=run,
+    )  # fmt: skip
+
+    assert result.verified == ("amount",)
+    assert result.as_dict()["verified"] == [{"parameter": "amount", "status": "match"}]
+    quiet = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-02",
+        flow_name="add-line", model=_model(), run_step=lambda s, v: None,
+    )  # fmt: skip
+    assert "verified" not in quiet.as_dict()
+
+
 def test_a_step_that_was_not_made_leaves_the_item_staged_and_resumes_at_that_step(
     tmp_path: Path,
 ) -> None:
@@ -698,7 +720,7 @@ def test_the_default_runner_verifies_a_field_without_showing_its_value(
     )
 
     if made:
-        run(step, {"amount": "12.50"})
+        assert run(step, {"amount": "12.50"}) == "amount"  # the parameter, never its value
     else:
         with pytest.raises(StepNotMadeError, match="parameter 'amount'") as caught:
             run(step, {"amount": "12.50"})

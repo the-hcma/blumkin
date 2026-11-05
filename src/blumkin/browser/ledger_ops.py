@@ -54,6 +54,8 @@ class ApplyResult:
     status: LedgerStatus
     #: Set when the run stopped at a `handoff` step to wait for the human.
     paused: Paused | None = None
+    #: The parameters a `verify` step found to match, by name (never a value).
+    verified: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -65,6 +67,8 @@ class ApplyResult:
             "noop": self.noop,
             "status": _status_payload(self.status),
         }
+        if self.verified:
+            payload["verified"] = [{"parameter": name, "status": "match"} for name in self.verified]
         if self.paused is not None:
             payload["paused"] = {
                 "instruction": self.paused.instruction,
@@ -123,7 +127,8 @@ class ReconcileReport:
 
 
 # Click / fill / goto / upload callbacks used while applying a flow step.
-StepRunner = Callable[[FlowStep, Mapping[str, str]], None]
+#: Runs one step; a `verify` step that matched returns the name of the parameter it checked.
+StepRunner = Callable[[FlowStep, Mapping[str, str]], str | None]
 
 
 def apply_item(
@@ -236,6 +241,8 @@ def apply_item(
     # The item being applied, whatever the caller passed: a value cannot rename it.
     bindings["item"] = item
 
+    matched: list[str] = []
+
     def paused_at(number: int, instruction: str) -> ApplyResult:
         _remember_stop(config_dir, task, instance, kind, item, flow_name, number + 1)
         paused_status = instance_status(config_dir, task, instance)
@@ -247,6 +254,7 @@ def apply_item(
             noop=False,
             status=paused_status,
             paused=Paused(instruction=instruction, resume_from_step=number + 1, step=number),
+            verified=tuple(matched),
         )
 
     try:
@@ -258,7 +266,9 @@ def apply_item(
             if number < start_at and not (outstanding and step.expect_heading):
                 continue
             try:
-                runner(step, bindings)
+                outcome = runner(step, bindings)
+                if isinstance(outcome, str):
+                    matched.append(outcome)
             except StepNotMadeError as stopped:
                 if outstanding:
                     # The paused handoff is looked at again and is neither done nor where it
@@ -314,6 +324,7 @@ def apply_item(
         item=record,
         noop=False,
         status=instance_status(config_dir, task, instance),
+        verified=tuple(matched),
     )
 
 
@@ -571,7 +582,7 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
 
     config = load_browser_setup()
 
-    def run(step: FlowStep, values: Mapping[str, str]) -> None:
+    def run(step: FlowStep, values: Mapping[str, str]) -> str | None:
         action = step.action.strip().lower()
         if action == "handoff":
             # The human's part: continue only when the page already shows the heading that
@@ -590,12 +601,13 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             raise HandoffRequired(step.instruction or "Finish this step by hand.")
         if step.starts_on:
             _require_starts_on(step.starts_on)
-        _run_action(step, action, values)
+        matched_key = _run_action(step, action, values)
         if step.expect_heading:
             try:
                 actions.heading_task(config, task, step.expect_heading, what=f"{action} step")
             except (BrowserActionError, BrowserAttachError) as exc:
                 raise StepConditionError(str(exc)) from exc
+        return matched_key
 
     def _require_starts_on(heading: str) -> None:
         try:
@@ -607,7 +619,7 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
         if not shown.get("expect_heading"):
             raise StepNotMadeError("the page does not show the heading the step starts on")
 
-    def _run_action(step: FlowStep, action: str, values: Mapping[str, str]) -> None:
+    def _run_action(step: FlowStep, action: str, values: Mapping[str, str]) -> str | None:
         if action in {"click", "press"}:
             if not step.control:
                 raise LedgerError(f"Flow step {action!r} needs a control")
@@ -683,7 +695,7 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
                 raise StepNotMadeError(
                     f"the field for parameter {key!r} is {checked.get('status')}, not a match"
                 )
-            return
+            return key
         if action == "goto":
             url = values.get("url") or values.get("page_url")
             if not url:
