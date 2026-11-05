@@ -112,8 +112,9 @@ def format_docs_read_human(payload: dict[str, Any]) -> list[str]:
 _IMAGE_EXTENSIONS = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
 _MAX_EXTRACTED_BYTES = 1_000_000
 _MAX_FILE_BYTES = 25_000_000
-#: A money amount with its decimals (`11.80`, `11,80`) in a read of a photo.
-_AMOUNT = re.compile(r"\d[.,]\d{2}\b")
+#: A money amount with its decimals (`11.80`, `11,80`) in a read of a photo; a rate (`8.62%`) or
+#: a date (`10.28.2026`) is not one.
+_AMOUNT = re.compile(r"(?<![\d.,/-])\d{1,6}[.,]\d{2}\b(?!\s*%)(?![./-]\d)")
 _NEGATIVE_EVIDENCE = re.compile(
     r"(?<![\d/])[-\u2212\u2013]\s*[$\u20ac\u00a3]?\s*\d|\d\s*[-\u2212\u2013]\s*(?:$|\s)|"
     r"\(\s*[$\u20ac\u00a3]?\s*\d|\bCR\b|\bcredit\s+(?:note|memo)\b|\d\s*credit\b(?!\s+cards?)|"

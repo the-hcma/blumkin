@@ -243,3 +243,10 @@ def test_a_read_with_words_and_no_amount_is_tried_again_as_sparse_text() -> None
     text, passes, _ = docs_read._ocr_photo(_lined(), fake)
 
     assert "$11.80" in text and "--psm 11" in calls and passes == 3
+
+
+def test_a_percentage_or_a_date_is_not_an_amount() -> None:
+    for text in ("Sales tax 8.62%", "Date 10.28.2026", "Rate 8,62 %"):
+        assert docs_read._AMOUNT.search(text) is None, text
+    for text in ("Total $11.80", "11,80", "Card 35.33"):
+        assert docs_read._AMOUNT.search(text) is not None, text
