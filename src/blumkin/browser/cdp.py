@@ -314,8 +314,9 @@ DEFAULT_ACTION_TIMEOUT_S = 30.0
 HEADING_REPORT_CHARS = 200
 #: Most addresses a recorded navigation chain keeps.
 _MAX_CHAIN = 40
-#: The longest the cosmetic window mark may take.
+#: Seconds added to twice the action timeout for a driver call's deadline.
 _DEADLINE_SLACK_S = 10.0
+#: The longest the cosmetic window mark may take.
 _INDICATOR_DEADLINE_S = 5.0
 HEADINGS_REPORTED = 20
 SETTLE_GRACE_MS = 300
@@ -2015,22 +2016,20 @@ class PlaywrightDriver:
 
 # The driver calls that talk to the page and have no wait of their own to bound them: a page
 # whose script never returns would hold any of them for good (#623). `checked_download`,
-# `edit_cell`, `scroll_frame_text` and the settle waits are left out, since each runs a loop
-# or a wait whose length the caller sets.
+# `edit_cell`, `scroll_frame_text`, the frame reads (`frame_aria_snapshot`, `frame_list`,
+# `read_frame_text`) and the settle waits are left out, since each runs a loop or a wait whose
+# length the caller sets (`--wait` up to 300 seconds).
 _DEADLINE_METHODS = (
     "aria_snapshot",
     "checked_click",
     "checked_pick",
     "describe_field",
     "fill",
-    "frame_aria_snapshot",
-    "frame_list",
     "goto",
     "list_options",
     "press_field",
     "raw_press",
     "read_field",
-    "read_frame_text",
     "read_text",
     "select",
     "upload",
@@ -2847,26 +2846,41 @@ def _deadline(seconds: float, what: str) -> Iterator[None]:
         yield
         return
 
+    nearer, _ = signal.getitimer(signal.ITIMER_REAL)
+    if 0 < nearer < seconds:  # an outer deadline that is nearer than this one still applies
+        yield
+        return
+
     live = [True]
+    fired = [False]
+    started = time.monotonic()
 
     def expired(signum: int, frame: Any) -> None:
         if not live[0]:  # the block already ended: a late alarm must not raise outside it
             return
-        raise _DeadlineExpired(
+        fired[0] = True  # a broad `except` inside the block may swallow what is raised below
+        raise _DeadlineExpired(message())
+
+    def message() -> str:
+        return (
             f"Expected to {what} within {seconds:g} seconds, got no answer from the page; "
             "the action may or may not have happened, so look at the page before repeating it"
         )
 
     previous = signal.signal(signal.SIGALRM, expired)
-    outer = signal.setitimer(signal.ITIMER_REAL, max(seconds, 0.001))
+    remaining, interval = signal.getitimer(signal.ITIMER_REAL)
+    signal.setitimer(signal.ITIMER_REAL, max(seconds, 0.001))
     try:
         yield
     finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)  # first: a late alarm cannot skip the restore
         live[0] = False
-        signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous if previous is not None else signal.SIG_DFL)
-        if outer[0] > 0:  # a timer that was running before this block keeps its remaining time
-            signal.setitimer(signal.ITIMER_REAL, outer[0], outer[1])
+        if remaining > 0:  # an outer timer keeps what is left of its time
+            left = max(remaining - (time.monotonic() - started), 0.001)
+            signal.setitimer(signal.ITIMER_REAL, left, interval)
+    if fired[0]:  # the alarm went off but something inside the block swallowed the error
+        raise _DeadlineExpired(message())
 
 
 class _NeverRaised(Exception):

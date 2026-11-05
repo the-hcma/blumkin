@@ -3216,3 +3216,29 @@ def test_every_driver_call_that_reaches_the_page_is_bounded() -> None:
 
     for name in _DEADLINE_METHODS:
         assert hasattr(getattr(PlaywrightDriver, name), "__wrapped__"), name
+
+
+def test_a_deadline_still_fails_when_the_block_swallows_the_error() -> None:
+    import time
+
+    from blumkin.browser.cdp import BrowserActionError, _deadline
+
+    with pytest.raises(BrowserActionError, match="may or may not have happened"):
+        with _deadline(0.2, "wait"):
+            try:
+                time.sleep(2)
+            except Exception:  # noqa: BLE001, S110 - the case under test
+                pass
+
+
+def test_a_nearer_outer_deadline_is_kept_inside_a_longer_inner_one() -> None:
+    import time
+
+    from blumkin.browser.cdp import BrowserActionError, _deadline
+
+    started = time.monotonic()
+    with pytest.raises(BrowserActionError, match="outer"):
+        with _deadline(0.3, "outer"):
+            with _deadline(30, "inner"):
+                time.sleep(3)
+    assert time.monotonic() - started < 2
