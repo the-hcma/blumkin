@@ -561,7 +561,7 @@ def _read_pdf(
                     "tables": tables,
                     "text": text,
                 }
-                if passes and not text.strip():
+                if photo and passes and not text.strip():
                     extracted_page["ocr_passes"] = passes
                 if conflict:
                     extracted_page["sign_conflict"] = True

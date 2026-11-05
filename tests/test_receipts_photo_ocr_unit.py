@@ -400,3 +400,76 @@ def test_a_split_payment_a_credit_or_a_credit_card_line_alone_is_not_the_total()
     ):
         total = parse_receipt_text(text).total
         assert "card" not in total.note, text
+
+
+def test_a_card_amount_that_only_an_item_or_cash_line_repeats_is_not_the_total() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    for text in (
+        "Cafe\nBurger 12.00\nFries 5.00\nSubtotal 17.00\nVisa 12.00\nCash 5.00\n",
+        "Shop\nPizza 20.00\nTax 1.60\nTL 21.60\nCash tendered 20.00\nVisa 1.60\n",
+    ):
+        total = parse_receipt_text(text).total
+        assert "card charge" not in total.note, text
+        assert total.value in {"17.00", "21.60"}, text
+
+
+def _fake_pdf(monkeypatch: Any, count: int = 1) -> list[tuple[int, bool]]:
+    """`_read_pdf` over blank pages, with `_ocr_pdf_page` recording how it was called (#677)."""
+    calls: list[tuple[int, bool]] = []
+
+    class _Page:
+        def extract_text(self) -> str:
+            return ""
+
+        def extract_tables(self) -> list[Any]:
+            return []
+
+    class _Doc:
+        pages = [_Page() for _ in range(count)]
+
+        def __enter__(self) -> _Doc:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        docs_read, "_import_pdfplumber", lambda: SimpleNamespace(open=lambda _p: _Doc())
+    )
+
+    def ocr(_path: Path, *, page_index: int, photo: bool = False) -> tuple[str, int, bool]:
+        calls.append((page_index, photo))
+        return "", 4, True
+
+    monkeypatch.setattr(docs_read, "_ocr_pdf_page", ocr)
+    return calls
+
+
+def test_read_pdf_forwards_the_photo_flag_and_marks_the_page(monkeypatch: Any) -> None:
+    calls = _fake_pdf(monkeypatch)
+
+    pages, ocr_used = docs_read._read_pdf(Path("x.pdf"), ocr=True, pages=None, photo=True)
+
+    assert calls == [(1, True)] and ocr_used
+    assert pages[0]["ocr_passes"] == 4 and pages[0]["sign_conflict"] is True
+
+
+def test_read_pdf_without_the_photo_flag_adds_no_pass_count(monkeypatch: Any) -> None:
+    calls = _fake_pdf(monkeypatch)
+
+    pages, _ = docs_read._read_pdf(Path("x.pdf"), ocr=True, pages=None)
+
+    assert calls == [(1, False)] and "ocr_passes" not in pages[0]
+
+
+def test_a_sign_conflict_and_a_blank_page_are_both_reported() -> None:
+    async def reader(**kw: Any) -> dict[str, Any]:
+        text = "Total $9.50 refund" if kw["ocr"] else ""
+        pages = [{"index": 1, "tables": [], "text": text, "sign_conflict": bool(kw["ocr"])}]
+        pages.append({"index": 2, "tables": [], "text": ""})
+        return {"ocr_used": bool(kw["ocr"]), "pages": pages}
+
+    reading = asyncio.run(read_receipt(Path("scan.pdf"), config=None, reader=reader))
+
+    assert "minus sign" in reading.message and "pages had no text" in reading.message
