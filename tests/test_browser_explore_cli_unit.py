@@ -602,3 +602,58 @@ def test_a_landmark_must_be_a_storable_control_not_a_heading_and_ignores_case(
 
     assert heading.exit_code != EXIT_SUCCESS and typed.exit_code != EXIT_SUCCESS
     assert cased.exit_code == EXIT_SUCCESS, cased.output
+
+
+def test_observing_a_dialog_again_with_kind_dialog_and_no_landmarks_keeps_its_landmarks(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    first = ["browser", "explore", "observe", "expense-report", "attachments", "--kind", "dialog"]
+    _run(*first, "--landmark", "Add line", "--landmark", "Help")
+
+    again = _run(*first)
+
+    assert again.exit_code == EXIT_SUCCESS, again.output
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+    assert page["landmarks"] == ["Add line", "Help"]
+    assert (
+        _run(
+            *first[:-2], "--kind", "dialog", "--landmark", "Help", "--landmark", "Amount"
+        ).exit_code
+        == 0
+    )
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+    assert page["landmarks"] == ["Help", "Amount"]  # given again: replaced
+
+
+def test_a_landmark_past_the_stored_control_cap_is_refused(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("blumkin.browser.explore.MAX_DRAFT_CONTROLS", 3)
+    driver.snapshot = (
+        '- button "One"\n- button "Two"\n- button "Three"\n- button "Four"\n- button "Five"\n'
+    )
+    base = ["browser", "explore", "observe", "expense-report", "attachments", "--kind", "dialog"]
+
+    late = _run(*base, "--landmark", "One", "--landmark", "Five")
+    early = _run(*base, "--landmark", "One", "--landmark", "Two")
+
+    assert late.exit_code != EXIT_SUCCESS and early.exit_code == EXIT_SUCCESS, early.output
+
+
+def test_the_policy_line_is_valid_toml_for_a_name_with_a_backslash_or_quote_free_text(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    import tomllib
+
+    driver.snapshot = '- button "Add\\\\More"\n- button "Delete"\n'
+    base = ["browser", "explore", "observe", "expense-report", "attachments", "--kind", "dialog"]
+    assert _run(*base, "--landmark", "Add\\More", "--landmark", "Delete").exit_code == EXIT_SUCCESS
+
+    text = CliRunner().invoke(main, ["browser", "explore", "show", "expense-report"]).output
+    line = (
+        next(row for row in text.splitlines() if "dialog_landmarks" in row)
+        .split("config:")[1]
+        .strip()
+    )
+
+    assert tomllib.loads(line)["dialog_landmarks"] == ["Add\\More", "Delete"]

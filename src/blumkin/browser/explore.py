@@ -350,21 +350,23 @@ class ModelDraft:
         existing = self._pages.get(page_id)
         if page_kind is None:
             page_kind = existing.kind if existing is not None else "page"
-            if not landmarks and existing is not None and page_kind == "dialog":
-                landmarks = existing.landmarks
+        if not landmarks and existing is not None and page_kind == existing.kind == "dialog":
+            landmarks = existing.landmarks  # observing a dialog again keeps what marks it
         if page_kind not in PAGE_KINDS:
             raise PageIdError(f"Expected a page kind of {', '.join(PAGE_KINDS)}, got {page_kind!r}")
         if landmarks and page_kind != "dialog":
             raise PageIdError("Expected landmarks only for a dialog page, got some")
         # A landmark is a control that will be stored: one with a control kind and a label that
         # is not skipped as typed data. Names are compared without case, as the guard does.
-        observed = {
-            item.name.casefold()
+        eligible = [
+            item
             for item in controls
             if _KIND_BY_ROLE.get(item.role) is not None
             and is_storable_label(item.name)
             and is_storable_label(f"{item.role}:{item.name}")
-        }
+        ]
+        # Only the first MAX_DRAFT_CONTROLS controls are stored, so only those can be landmarks.
+        observed = {item.name.casefold() for item in eligible[:MAX_DRAFT_CONTROLS]}
         unseen = [name for name in landmarks if name.casefold() not in observed]
         if unseen:
             raise PageIdError(

@@ -3132,7 +3132,11 @@ def browser_explore_show(ctx: click.Context, task: str, as_json_flag: bool) -> N
             f"{page['controls']} control(s){marked}"
         )
         if page.get("dialog_landmarks"):
-            listed = ", ".join(f'"{sanitize_terminal(n)}"' for n in page["dialog_landmarks"])
+            # Each name as a TOML basic string, so the line can be pasted into config.toml.
+            listed = ", ".join(
+                json.dumps(sanitize_terminal(n), ensure_ascii=False)
+                for n in page["dialog_landmarks"]
+            )
             lines.append(f"    config: dialog_landmarks = [{listed}]")
     emit_lines(lines)
 

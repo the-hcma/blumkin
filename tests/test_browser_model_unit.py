@@ -1310,3 +1310,10 @@ def test_a_pick_step_round_trips_with_a_bound_text_or_a_literal(tmp_path: Path) 
 def test_a_bad_pick_step_is_refused(tmp_path: Path, step: dict[str, Any], match: str) -> None:
     with pytest.raises(SiteModelError, match=match):
         _load_payload(tmp_path, _with_pick(_payload(tmp_path), **step))
+
+
+def test_a_dialog_page_with_no_landmarks_at_all_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(SiteModelError, match="at least two distinct"):
+        _load_payload(tmp_path, _with_page_kind(_payload(tmp_path), kind="dialog"))
+    with pytest.raises(SiteModelError, match="at least two distinct"):
+        _load_payload(tmp_path, _with_page_kind(_payload(tmp_path), kind="dialog", landmarks=[]))

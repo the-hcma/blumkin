@@ -808,7 +808,7 @@ def _page(data: Any, where: str) -> Page:
     )
     if landmarks and kind != "dialog":
         raise SiteModelError(f"Expected {where}.landmarks only on a dialog page, got some")
-    if kind == "dialog" and landmarks and len({name.casefold() for name in landmarks}) < 2:
+    if kind == "dialog" and len({name.casefold() for name in landmarks}) < 2:
         raise SiteModelError(f"Expected {where}.landmarks to name at least two distinct controls")
     controls = _list(data["controls"], f"{where}.controls")
     _at_most(controls, _MAX_CONTROLS, f"{where}.controls")
