@@ -669,7 +669,7 @@ def _guess_total(text: str) -> ReceiptField:
         return ReceiptField(
             confidence=Confidence.LOW,
             value=max(paid, key=Decimal),
-            note="no total line found; this is the amount charged to a card or tendered",
+            note="no total line found; this is the amount charged to a card, shown again elsewhere",
         )
     amounts = [_parse_amount(run) for run in _AMOUNT_RUN.findall(text)]
     guesses = [a.value for a in amounts if a.value is not None and a.has_decimals]
@@ -683,18 +683,26 @@ def _guess_total(text: str) -> ReceiptField:
 
 
 def _paid_amounts(text: str) -> list[str]:
-    """The amounts on the lines that say how the bill was paid (a card line, a tender line)."""
-    paid: list[str] = []
+    """Amounts charged to a card that the receipt shows again on a line that is not a payment.
+
+    A total line OCR garbled beyond reading still leaves its amount, which the card line then
+    repeats; that agreement is what makes the card line trustworthy. A lone amount on a card
+    line may be one half of a split payment, a credit or a balance, so it is not used.
+    """
+    on_payment: list[str] = []
+    elsewhere: set[str] = set()
     for raw in text.splitlines():
-        if not _PAID_LINE.search(raw) or _NOT_PAID_LINE.search(raw):
-            continue
-        if _NEGATIVE_AMOUNT.search(raw) or _REFUND_WORDS.search(raw.casefold()):
-            continue  # a refund or credit is money back, not the amount paid
+        is_payment = bool(_PAID_LINE.search(raw))
+        refund = bool(_NEGATIVE_AMOUNT.search(raw) or _REFUND_WORDS.search(raw.casefold()))
         for run in _AMOUNT_RUN.findall(raw):
             amount = _parse_amount(run)
-            if amount.value is not None and amount.has_decimals and not amount.doubtful:
-                paid.append(amount.value)
-    return paid
+            if amount.value is None or not amount.has_decimals or amount.doubtful:
+                continue
+            if not is_payment:
+                elsewhere.add(amount.value)
+            elif not refund and not _NOT_PAID_LINE.search(raw):
+                on_payment.append(amount.value)
+    return [value for value in on_payment if value in elsewhere]
 
 
 def _parse_vendor(text: str, sender: str | None = None) -> ReceiptField:

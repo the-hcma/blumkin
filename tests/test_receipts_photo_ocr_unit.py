@@ -388,3 +388,15 @@ def test_a_card_balance_or_gift_card_line_is_not_the_amount_paid() -> None:
     total = parse_receipt_text("Gift card balance $2.00\nItem $20.00\n").total
 
     assert total.value == "20.00" and "card" not in total.note
+
+
+def test_a_split_payment_a_credit_or_a_credit_card_line_alone_is_not_the_total() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    for text in (
+        "Subtotal $30.00\nCash $10.00\nCard $20.00\n",
+        "Subtotal $22.00\nCard $15.00 CR\n",
+        "Subtotal $40.00\ncredit card $25.00\n",
+    ):
+        total = parse_receipt_text(text).total
+        assert "card" not in total.note, text
