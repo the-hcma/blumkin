@@ -92,9 +92,10 @@ _DIALOG_CONTROL = re.compile(
 )
 _DIALOG_BLOCKERS = ("alertdialog", "dialog")
 _DIALOG_CLOSE_ROUNDS = 2
-_DIALOG_EMPTY_GRID = re.compile(r'^\s*- grid(?: "[^"]*")?\s*$', re.IGNORECASE | re.MULTILINE)
+_DIALOG_GRID = re.compile(r"^(?P<indent>\s*)- grid\b", re.IGNORECASE)
 _DIALOG_LOADING = re.compile(
-    r"^\s*- (?:text|status|progressbar)\b:? *\"?(?:loading[.\u2026 ]*)+\"?\s*$|\[busy\]",
+    r"^\s*- (?:text|status|progressbar)\b:? *\"?"
+    r"(?:(?:loading[.\u2026 ]*)+|loading\b[^\n\"]*[.\u2026]+)\"?\s*$|\[busy\]",
     re.IGNORECASE | re.MULTILINE,
 )
 _DIALOG_POLL_MS = 250
@@ -103,6 +104,7 @@ _OVERLAY_ROLES = ("alertdialog", "dialog", "menu")
 _DOWNLOAD_EXTENSIONS = frozenset({".csv", ".md", ".srt", ".txt", ".vtt"})
 _DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
 _DOWNLOAD_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ ()-]{0,119}")
+_ROW_LINE = re.compile(r"^\s*- row(?:\s|\"|:|$)")
 
 
 class AddressNotAuthorizedError(BrowserActionError):
@@ -1679,8 +1681,13 @@ def _dialog_read(
                 raise BrowserActionError(_scope_failure(str(exc), role, name)) from exc
             driver.wait_ms(_DIALOG_POLL_MS)
             continue
-        loading = _DIALOG_LOADING.search(text) is not None
-        if (loading or _DIALOG_EMPTY_GRID.search(text)) and attempt < polls - 1:
+        loading = (
+            _DIALOG_LOADING.search(text) is not None
+            or _has_grid_without_rows(text)
+            # A dialog still being built shows its frame and nothing to press yet.
+            or (role in _DIALOG_BLOCKERS and not _dialog_controls(text))
+        )
+        if loading and attempt < polls - 1:
             # A list that still says "Loading", or a grid with no row yet, is not what the
             # dialog shows, and a Cancel pressed meanwhile can be ignored: wait for it.
             driver.wait_ms(_DIALOG_POLL_MS)
@@ -1712,6 +1719,24 @@ def _download_name(name: str) -> str:
             f"Expected a {', '.join(sorted(_DOWNLOAD_EXTENSIONS))} file, got {name!r}"
         )
     return name
+
+
+def _has_grid_without_rows(text: str) -> bool:
+    """Whether a grid of the snapshot holds no `row`: it has not been filled in yet."""
+    lines = text.split("\n")
+    for number, line in enumerate(lines):
+        match = _DIALOG_GRID.match(line)
+        if match is None:
+            continue
+        depth = len(match.group("indent"))
+        rows = False
+        for inner in lines[number + 1 :]:
+            if inner.strip() and len(inner) - len(inner.lstrip()) <= depth:
+                break
+            rows = rows or _ROW_LINE.match(inner) is not None
+        if not rows:
+            return True
+    return False
 
 
 def _keep_download(source: Path, staging: Path, target: Path) -> Path:

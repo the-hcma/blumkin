@@ -41,7 +41,7 @@ The values that belong to the user (the time sheet URL, the `period` (`weekly` o
 
 ## Templates (Oracle Fusion)
 
-A saved template is steadier than `Copy Previous Time Card`, which copies whatever the last period held (a period with leave or a holiday copies wrong). The card's `Templates` button opens a menu with `Save as Template`, `Apply` and `Manage`. Declare `Templates`, `Save as Template` and `Apply` in `allowed_controls` (a menu item is never covered by a pattern or by `allow_all_controls`), and never `Manage`, which can delete templates.
+A saved template is steadier than `Copy Previous Time Card`, which copies whatever the last period held (a period with leave or a holiday copies wrong). The card's `Templates` button opens a menu with `Save as Template`, `Apply` and `Manage`. Declare `Templates`, `Save as Template`, `Apply` and `Cancel` in `allowed_controls` (`Cancel` closes the dialogs again) (a menu item is never covered by a pattern or by `allow_all_controls`), and never `Manage`, which can delete templates.
 
 - Read the saved templates without choosing one: `blumkin browser dialog time-sheet --open button:Templates --open menuitem:Apply --close button:Cancel`. It waits for the list to load, reads it, and closes the dialog again (`closed: true` in the result; if it is `false`, look at the page before going on). With no template yet the list says so.
 - Name a template in the Save as Template dialog with `blumkin browser fill time-sheet Name "<name>" --role textbox`: the dialog's own name contains "Name", so the role is needed to pick the field.

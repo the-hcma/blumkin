@@ -3470,6 +3470,76 @@ def test_dialog_does_not_wait_on_a_label_that_merely_contains_loading(
     assert not any(call[0] == "wait_ms" for call in raw.calls)
 
 
+def _stuck_dialog(raw: _Raw, body: str) -> None:
+    """A page whose Apply opens a dialog that never gets past `body`; only Cancel closes it."""
+    shown = _DIALOG_OPEN.replace("  - text: No templates exist\n", body)
+    _dialog_page(raw)
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = shown
+        elif name == "Cancel":
+            raw.aria_text = _DIALOG_CLOSED
+
+    raw.on_event = event
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "  - grid\n",
+        "  - grid:\n    - rowgroup\n",
+        '  - text: Loading templates...\n  - grid:\n    - row "a"\n',
+    ],
+)
+def test_dialog_times_out_on_a_grid_without_rows_or_a_named_loading_message(
+    raw: _Raw, _config_dir: Path, body: str
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _stuck_dialog(raw, body)
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "still loading" in _json(result)["message"]
+    assert "the dialog is closed" in _json(result)["message"]
+
+
+def test_dialog_waits_for_a_dialog_that_has_no_controls_yet(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = "- dialog\n"
+        elif name == "Cancel":
+            raw.aria_text = _DIALOG_CLOSED
+
+    def filled(_seconds: float) -> None:
+        if raw.aria_text == "- dialog\n":
+            raw.aria_text = _DIALOG_OPEN
+
+    raw.on_event = event
+    raw.on_wait = filled
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert {"disabled": False, "name": "Cancel", "role": "button"} in payload["controls"]
+    assert payload["closed"] is True and payload["closed_with"] == "control"
+
+
+def test_dialog_accepts_a_grid_that_has_a_row(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _stuck_dialog(raw, '  - grid:\n    - row "Weekly":\n      - gridcell "Weekly"\n')
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "Weekly" in _json(result)["text"]
+
+
 def test_dialog_reports_a_timeout_when_the_list_never_finishes_loading(
     raw: _Raw, _config_dir: Path
 ) -> None:
