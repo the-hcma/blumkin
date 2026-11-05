@@ -3448,6 +3448,28 @@ def test_dialog_waits_for_a_loading_list_before_reading_and_closing(
     assert payload["closed"] is True and payload["closed_with"] == "control"
 
 
+def test_dialog_reports_a_timeout_when_the_list_never_finishes_loading(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+    loading = _DIALOG_OPEN.replace("No templates exist", "Loading Loading")
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = loading
+        elif name in ("Cancel", ""):
+            raw.aria_text = _DIALOG_CLOSED
+
+    raw.on_event = event
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "still loading" in _json(result)["message"]
+    assert "the dialog is closed" in _json(result)["message"]
+
+
 def test_dialog_closes_on_a_second_round_when_the_first_cancel_is_swallowed(
     raw: _Raw, _config_dir: Path
 ) -> None:

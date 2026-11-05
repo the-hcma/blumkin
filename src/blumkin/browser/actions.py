@@ -92,8 +92,9 @@ _DIALOG_CONTROL = re.compile(
 )
 _DIALOG_BLOCKERS = ("alertdialog", "dialog")
 _DIALOG_CLOSE_ROUNDS = 2
+_DIALOG_EMPTY_GRID = re.compile(r'^\s*- grid(?: "[^"]*")?\s*$', re.IGNORECASE | re.MULTILINE)
 _DIALOG_LOADING = re.compile(
-    r"^\s*- (?:text|status|progressbar)\b[^\n]*\bloading\b|\[busy\]|^\s*- grid(?: \"[^\"]*\")?\s*$",
+    r"^\s*- (?:text|status|progressbar)\b[^\n]*\bloading\b|\[busy\]",
     re.IGNORECASE | re.MULTILINE,
 )
 _DIALOG_POLL_MS = 250
@@ -1668,11 +1669,16 @@ def _dialog_read(
                 raise BrowserActionError(_scope_failure(str(exc), role, name)) from exc
             driver.wait_ms(_DIALOG_POLL_MS)
             continue
-        if _DIALOG_LOADING.search(text) and attempt < polls - 1:
+        loading = _DIALOG_LOADING.search(text) is not None
+        if (loading or _DIALOG_EMPTY_GRID.search(text)) and attempt < polls - 1:
             # A list that still says "Loading", or a grid with no row yet, is not what the
             # dialog shows, and a Cancel pressed meanwhile can be ignored: wait for it.
             driver.wait_ms(_DIALOG_POLL_MS)
             continue
+        if loading:
+            raise BrowserActionError(
+                f"Expected the {role} to finish loading within {wait_s:g} s, got one still loading"
+            )
         warning = scan_for_injection(snapshot, location="page.aria").to_payload()
         return (text if expand_options else collapse_options(text)), matches, warning
     raise AssertionError("unreachable")
