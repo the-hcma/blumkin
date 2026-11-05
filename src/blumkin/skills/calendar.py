@@ -40,6 +40,9 @@ class CalendarEventNotFoundError(Exception):
 # trips on a pathological mailbox or a paging bug, and we raise rather than return
 # a truncated list that name resolution would treat as authoritative.
 _MAX_CALENDARS = 2000
+#: Events asked for per page of a calendar view, and most pages followed (so 5000 events).
+_VIEW_MAX_PAGES = 50
+_VIEW_PAGE_SIZE = 100
 
 
 class CalendarListTooLargeError(Exception):
@@ -249,6 +252,7 @@ async def calendar_today(
     end = start + timedelta(days=1)
     payload = await calendar_view(start=start, end=end, calendar=calendar, config=cfg)
     return {
+        "complete": payload["complete"],
         "date": target.isoformat(),
         "items": payload["items"],
         "timezone": payload["timezone"],
@@ -284,11 +288,25 @@ async def calendar_view(
             "responseStatus",
             "onlineMeeting",
         ],
+        top=_VIEW_PAGE_SIZE,
     )
     view = await view_builder.get(request_config(query))
-    items = [] if view is None else (view.value or [])
+    items: list[Any] = []
+    complete = True
+    pages = 0
+    while view is not None:
+        items.extend(view.value or [])
+        pages += 1
+        link = getattr(view, "odata_next_link", None)
+        if not link:
+            break
+        if pages >= _VIEW_MAX_PAGES:
+            complete = False  # more events exist than the cap allows: say so, never hide it
+            break
+        view = await view_builder.with_url(str(link)).get()
     events = [_event_to_dict(ev, display_tz) for ev in items]
     return {
+        "complete": complete,
         "end": end.isoformat(),
         "items": events,
         "start": start.isoformat(),
@@ -440,6 +458,8 @@ def format_suggest_human(payload: dict[str, Any]) -> list[str]:
 def format_today_human(payload: dict[str, Any]) -> list[str]:
     date_label = payload.get("date") or payload.get("start", "")[:10]
     lines = [f"Calendar ({date_label}, {payload['timezone']}): {len(payload['items'])} event(s)"]
+    if payload.get("complete") is False:
+        lines.append("  warning: more events exist than were read; this list is incomplete")
     if not payload["items"]:
         lines.append("  (none)")
         return lines
@@ -457,6 +477,11 @@ def format_view_human(payload: dict[str, Any]) -> list[str]:
         f"Calendar view ({payload['start']} → {payload['end']}, {payload['timezone']}): "
         f"{len(payload['items'])} event(s)"
     ]
+    if payload.get("complete") is False:
+        lines.append(
+            "  warning: more events exist than were read; this list is incomplete, so narrow "
+            "the range"
+        )
     if not payload["items"]:
         lines.append("  (none)")
         return lines

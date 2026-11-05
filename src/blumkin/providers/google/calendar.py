@@ -150,6 +150,12 @@ async def _calendar_rsvp(
     service = _calendar_service(cfg)
     if today_pending:
         payload = await calendar_today(tz_name=tz_name, config=cfg)
+        if payload.get("complete") is False:
+            raise ValueError(
+                "Expected today's events to be read in full before acting on the pending ones, "
+                "got a day with more events than one read allows; respond to each one with "
+                "its own --event-id"
+            )
         event_ids = [
             str(item["id"]) for item in payload["items"] if item.get("id") and _needs_accept(item)
         ]
@@ -341,6 +347,9 @@ async def calendar_list(*, config: BlumkinConfig | None = None) -> dict[str, Any
 
 
 _MAX_CALENDARS = 2000
+#: Events asked for per page of a calendar view, and most pages followed (so 5000 events).
+_VIEW_MAX_PAGES = 20
+_VIEW_PAGE_SIZE = 250
 
 
 def _all_calendar_list_items(service: Any) -> list[dict[str, Any]]:
@@ -477,6 +486,7 @@ async def calendar_today(
     end = start + timedelta(days=1)
     payload = await calendar_view(start=start, end=end, calendar=calendar, config=cfg)
     return {
+        "complete": payload["complete"],
         "date": target.isoformat(),
         "items": payload["items"],
         "timezone": payload["timezone"],
@@ -616,17 +626,31 @@ async def calendar_view(
     cfg = config or load_config()
     display_tz = start.tzinfo if isinstance(start.tzinfo, ZoneInfo) else ZoneInfo("UTC")
     service = _calendar_service(cfg, required_scopes=CALENDAR_READ_SCOPES)
-    response = execute(
-        service.events().list(
-            calendarId=_resolve_calendar_id(service, calendar),
-            singleEvents=True,
-            orderBy="startTime",
-            timeMax=_rfc3339(end),
-            timeMin=_rfc3339(start),
+    calendar_id = _resolve_calendar_id(service, calendar)
+    raw_items: list[dict[str, Any]] = []
+    complete = True
+    page_token: str | None = None
+    for page_number in range(1, _VIEW_MAX_PAGES + 1):
+        response = execute(
+            service.events().list(
+                calendarId=calendar_id,
+                maxResults=_VIEW_PAGE_SIZE,
+                singleEvents=True,
+                orderBy="startTime",
+                pageToken=page_token,
+                timeMax=_rfc3339(end),
+                timeMin=_rfc3339(start),
+            )
         )
-    )
-    events = [_event_to_dict(item, display_tz) for item in (response.get("items") or [])]
+        raw_items.extend(response.get("items") or [])
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+        if page_number == _VIEW_MAX_PAGES:
+            complete = False  # more events exist than the cap allows: say so, never hide it
+    events = [_event_to_dict(item, display_tz) for item in raw_items]
     return {
+        "complete": complete,
         "end": end.isoformat(),
         "items": events,
         "start": start.isoformat(),

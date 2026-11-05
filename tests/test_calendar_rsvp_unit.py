@@ -35,7 +35,7 @@ _NY = "America/New_York"
 # --------------------------------------------------------------------------- Graph
 
 
-def _graph_client(monkeypatch, *, today_items=None) -> MagicMock:
+def _graph_client(monkeypatch, *, today_items=None, today_complete=True) -> MagicMock:
     client = MagicMock()
     for action in ("accept", "decline", "tentatively_accept"):
         getattr(client.me.events.by_event_id.return_value, action).post = AsyncMock(
@@ -49,7 +49,7 @@ def _graph_client(monkeypatch, *, today_items=None) -> MagicMock:
     if today_items is not None:
 
         async def _fake_today(**_kwargs):
-            return {"items": today_items}
+            return {"items": today_items, "complete": today_complete}
 
         monkeypatch.setattr("blumkin.skills.calendar_writes.calendar_today", _fake_today)
     return client
@@ -347,3 +347,26 @@ def test_cli_decline_routes_not_found(tmp_path, monkeypatch) -> None:
     result = CliRunner().invoke(main, ["calendar", "decline", "--event-id", "e", "--yes", "--json"])
     assert result.exit_code == EXIT_NOT_FOUND
     assert json.loads(result.stderr)["error"] == "not_found"
+
+
+def test_graph_decline_today_pending_refuses_a_day_that_was_not_read_in_full(
+    monkeypatch,
+) -> None:
+    items = [{"id": "a", "is_organizer": False, "response": "ResponseType.NotResponded"}]
+    client = _graph_client(monkeypatch, today_items=items, today_complete=False)
+
+    with pytest.raises(ValueError, match="read in full.*its own --event-id"):
+        asyncio.run(calendar_decline(today_pending=True, tz_name=_NY))
+
+    client.me.events.by_event_id.return_value.decline.post.assert_not_awaited()
+
+
+def test_the_incomplete_day_refusal_never_names_one_rsvp_action(monkeypatch) -> None:
+    items = [{"id": "a", "is_organizer": False, "response": "ResponseType.NotResponded"}]
+    _graph_client(monkeypatch, today_items=items, today_complete=False)
+
+    for action in (calendar_accept, calendar_decline, calendar_tentative):
+        with pytest.raises(ValueError) as caught:
+            asyncio.run(action(today_pending=True, tz_name=_NY))
+        assert "accept" not in str(caught.value).lower()
+        assert "decline" not in str(caught.value).lower()
