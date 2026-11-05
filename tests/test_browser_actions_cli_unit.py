@@ -3448,6 +3448,28 @@ def test_dialog_waits_for_a_loading_list_before_reading_and_closing(
     assert payload["closed"] is True and payload["closed_with"] == "control"
 
 
+def test_dialog_does_not_wait_on_a_label_that_merely_contains_loading(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+    named = _DIALOG_OPEN.replace("No templates exist", "Loading dock template")
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = named
+        elif name == "Cancel":
+            raw.aria_text = _DIALOG_CLOSED
+
+    raw.on_event = event
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "Loading dock template" in _json(result)["text"]
+    assert not any(call[0] == "wait_ms" for call in raw.calls)
+
+
 def test_dialog_reports_a_timeout_when_the_list_never_finishes_loading(
     raw: _Raw, _config_dir: Path
 ) -> None:
@@ -3458,7 +3480,7 @@ def test_dialog_reports_a_timeout_when_the_list_never_finishes_loading(
     def event(name: str) -> None:
         if name == "Apply":
             raw.aria_text = loading
-        elif name in ("Cancel", ""):
+        elif name == "Cancel":  # Escape is ignored while the dialog starts up
             raw.aria_text = _DIALOG_CLOSED
 
     raw.on_event = event
@@ -3468,6 +3490,7 @@ def test_dialog_reports_a_timeout_when_the_list_never_finishes_loading(
     assert result.exit_code != EXIT_SUCCESS
     assert "still loading" in _json(result)["message"]
     assert "the dialog is closed" in _json(result)["message"]
+    assert [call[2] for call in raw.calls if call[0] == "click"][-1] == "Cancel"
 
 
 def test_dialog_closes_on_a_second_round_when_the_first_cancel_is_swallowed(

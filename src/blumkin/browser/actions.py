@@ -94,7 +94,7 @@ _DIALOG_BLOCKERS = ("alertdialog", "dialog")
 _DIALOG_CLOSE_ROUNDS = 2
 _DIALOG_EMPTY_GRID = re.compile(r'^\s*- grid(?: "[^"]*")?\s*$', re.IGNORECASE | re.MULTILINE)
 _DIALOG_LOADING = re.compile(
-    r"^\s*- (?:text|status|progressbar)\b[^\n]*\bloading\b|\[busy\]",
+    r"^\s*- (?:text|status|progressbar)\b:? *\"?(?:loading[.\u2026 ]*)+\"?\s*$|\[busy\]",
     re.IGNORECASE | re.MULTILINE,
 )
 _DIALOG_POLL_MS = 250
@@ -111,6 +111,14 @@ class AddressNotAuthorizedError(BrowserActionError):
 
 class AddressNotSetError(LookupError):
     """The task may read the profile's address, but the profile has none."""
+
+
+class DialogLoadingError(BrowserActionError):
+    """A dialog that was still loading when the wait ran out; `text` is what it showed."""
+
+    def __init__(self, message: str, text: str) -> None:
+        super().__init__(message)
+        self.text = text
 
 
 class DownloadBlockedError(BrowserActionError):
@@ -321,6 +329,8 @@ def dialog_task(
             )
         except BaseException as exc:  # noqa: BLE001 - closed first (Ctrl-C too), then raised
             failure = exc
+            if isinstance(exc, DialogLoadingError):
+                text = exc.text  # so the declared close control is still found among its controls
         if _on_allowed_page(driver, hosts):
             closed, via = _dialog_close(
                 driver, (*_OVERLAY_ROLES, scope_role), baseline, close, _dialog_controls(text)
@@ -1676,8 +1686,9 @@ def _dialog_read(
             driver.wait_ms(_DIALOG_POLL_MS)
             continue
         if loading:
-            raise BrowserActionError(
-                f"Expected the {role} to finish loading within {wait_s:g} s, got one still loading"
+            raise DialogLoadingError(
+                f"Expected the {role} to finish loading within {wait_s:g} s, got one still loading",
+                text,
             )
         warning = scan_for_injection(snapshot, location="page.aria").to_payload()
         return (text if expand_options else collapse_options(text)), matches, warning
