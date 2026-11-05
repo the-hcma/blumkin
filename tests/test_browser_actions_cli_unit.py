@@ -4530,3 +4530,43 @@ def test_a_chain_masks_short_ids_and_addresses_in_a_path(raw: _Raw, _config_dir:
         "https://erp.example.com/home",
     ]
     assert "AbC123" not in result.output and "ada@" not in result.output
+
+
+def test_a_goto_that_never_leaves_the_sign_in_page_still_reports_the_chain(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(
+        _config_dir,
+        'allowed_hosts = ["erp.example.com"]\nsign_in_hosts = ["idp.example.com"]',
+    )
+    raw.lands_on = "https://idp.example.com/fed/v1/sp/sso"
+    raw.chain = [
+        "https://erp.example.com/expenses",
+        "https://idp.example.com/fed/v1/sp/sso?code=SECRET",
+        "https://erp.example.com/expenses",
+        "https://idp.example.com/fed/v1/sp/sso",
+    ]
+
+    result = _run(
+        "browser", "goto", "expense-report", "https://erp.example.com/expenses",
+        "--sign-in-wait", "0",
+    )  # fmt: skip
+
+    assert result.exit_code != EXIT_SUCCESS
+    payload = json.loads(result.stderr) if result.stderr else json.loads(result.output)
+    assert payload["chain"][0] == "https://erp.example.com/expenses"
+    assert "SECRET" not in result.output + result.stderr
+    assert payload["chain"][-1] == "https://idp.example.com/fed/v1/sp/sso"
+
+
+def test_a_percent_encoded_address_in_a_chain_path_is_masked(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.chain = [
+        "https://erp.example.com/start",
+        "https://erp.example.com/login/ada%40corp.example",
+        "https://erp.example.com/home",
+    ]
+
+    result = _run("browser", "goto", "expense-report", "https://erp.example.com/start")
+
+    assert "ada" not in result.output and "%40" not in result.output

@@ -888,7 +888,14 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
         slug, code = "usage_error", EXIT_USAGE
     else:
         _fail(exc, as_json=as_json)
-    _emit_error(error=slug, message=str(exc), as_json=as_json, hint=hint)
+    chain = getattr(exc, "chain", None)  # the redirect chain of a `goto` that did not finish
+    _emit_error(
+        error=slug,
+        message=str(exc),
+        as_json=as_json,
+        hint=hint,
+        extra={"chain": chain} if chain else None,
+    )
     raise SystemExit(code) from exc
 
 
@@ -1173,9 +1180,11 @@ def _emit_error(
     hint: str | None = None,
     agent_instructions: str | None = None,
     retry_after_seconds: float | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """`emit_error` that falls back to `_DEFAULT_HINTS[error]` when no hint is given."""
     emit_error(
+        extra=extra,
         error=error,
         message=message,
         as_json=as_json,

@@ -1336,7 +1336,7 @@ class PlaywrightDriver:
             raise self._action_error("read the page title", exc) from exc
 
     def track_navigations(self) -> None:
-        """Start recording the addresses the top-level page moves through (a redirect chain)."""
+        """Start recording the addresses the top-level page is sent through (a redirect chain)."""
         self._require_open()
         self._chain.clear()
         on = getattr(self._page, "on", None)
@@ -1345,13 +1345,20 @@ class PlaywrightDriver:
         self._chain_listening = True
         main = self._page.main_frame
 
-        def moved(frame: Any) -> None:
-            if frame != main or len(self._chain) >= _MAX_CHAIN:
+        def moved(request: Any) -> None:
+            # Every hop of a redirect is a request of its own (a committed document is not: a
+            # chain of server redirects commits only the last page).
+            if not request.is_navigation_request() or request.frame != main:
                 return
-            if not self._chain or self._chain[-1] != frame.url:
-                self._chain.append(str(frame.url))
+            url = str(request.url)
+            if self._chain and self._chain[-1] == url:
+                return
+            self._chain.append(url)
+            if len(self._chain) > _MAX_CHAIN:
+                # Keep the first half and the most recent hops, dropping the middle of a loop.
+                del self._chain[_MAX_CHAIN // 2]
 
-        on("framenavigated", moved)
+        on("request", moved)
 
     def upload(
         self, label: str, path: Path, target: FieldTarget | None = None

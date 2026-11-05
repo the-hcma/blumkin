@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from blumkin.browser.aria_view import (
     collapse_options,
@@ -506,12 +506,22 @@ def goto_task(
     def act(driver: GuardedDriver) -> dict[str, Any]:
         pause = sleep or (lambda seconds: driver.wait_ms(round(seconds * 1000)))
         driver.track_navigations()
-        with driver.sign_in_pass(
-            lambda host: host_allowed(host, sign_in_hosts),
-            lambda host: not hosts or host_allowed(host, hosts),
-        ):
-            driver.goto(target)
-            waited = _wait_through_sign_in(driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now)
+        try:
+            with driver.sign_in_pass(
+                lambda host: host_allowed(host, sign_in_hosts),
+                lambda host: not hosts or host_allowed(host, hosts),
+            ):
+                driver.goto(target)
+                waited = _wait_through_sign_in(
+                    driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now
+                )
+            _require_allowed_page(driver, task, hosts, "the action")
+        except BrowserActionError as exc:
+            # A sign-in that loops or a navigation that times out is where the chain matters most.
+            chain = _chain_report(driver.navigations(), hosts, sign_in_hosts)
+            if len(chain) > 1:
+                exc.chain = chain  # type: ignore[attr-defined]
+            raise
         payload: dict[str, Any] = {"action": "goto", "ok": True, "task": task, "url": driver.url}
         if waited is not None:
             payload["sign_in_host"] = waited[1]
@@ -1954,8 +1964,8 @@ def _chain_path(path: str) -> str:
     segments = [
         "..."
         if len(segment) > WHERE_SEGMENT_CHARS
-        or "@" in segment
-        or sum(char.isdigit() for char in segment) >= 4
+        or "@" in unquote(segment)
+        or sum(char.isdigit() for char in unquote(segment)) >= 4
         else segment
         for segment in path.split(";", 1)[0].split("/")
     ]

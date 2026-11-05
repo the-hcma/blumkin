@@ -3067,14 +3067,14 @@ def test_a_deadline_does_nothing_off_the_main_thread() -> None:
     assert seen == ["finished"]
 
 
-def test_the_driver_records_main_frame_navigations_only_and_drops_repeats() -> None:
+def test_the_driver_records_main_frame_navigation_requests_including_redirect_hops() -> None:
     from types import SimpleNamespace
 
     from blumkin.browser.cdp import PlaywrightDriver
 
     handlers: dict[str, Any] = {}
-    main = SimpleNamespace(url="")
-    child = SimpleNamespace(url="")
+    main = SimpleNamespace(name="main")
+    child = SimpleNamespace(name="child")
     page = SimpleNamespace(
         context=object(),
         main_frame=main,
@@ -3082,33 +3082,52 @@ def test_the_driver_records_main_frame_navigations_only_and_drops_repeats() -> N
     )
     driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=1)
 
-    driver.track_navigations()
-    for frame, url in (
-        (main, "https://a.example/one"),
-        (child, "https://ads.example/frame"),
-        (main, "https://a.example/one"),
-        (main, "https://b.example/two"),
-    ):
-        frame.url = url
-        handlers["framenavigated"](frame)
+    def request(frame: object, url: str, *, navigation: bool = True) -> object:
+        return SimpleNamespace(frame=frame, url=url, is_navigation_request=lambda: navigation)
 
-    assert driver.navigations() == ("https://a.example/one", "https://b.example/two")
+    driver.track_navigations()
+    for req in (
+        request(main, "https://a.example/one"),
+        request(main, "https://idp.example/sso"),
+        request(child, "https://ads.example/frame"),
+        request(main, "https://a.example/pixel.png", navigation=False),
+        request(main, "https://idp.example/sso"),
+        request(main, "https://a.example/home"),
+    ):
+        handlers["request"](req)
+
+    assert driver.navigations() == (
+        "https://a.example/one",
+        "https://idp.example/sso",
+        "https://a.example/home",
+    )
     driver.track_navigations()
     assert driver.navigations() == ()
 
 
-def test_a_late_alarm_after_the_block_does_not_raise_and_an_outer_timer_survives() -> None:
-    import signal
+def test_a_very_long_chain_keeps_its_first_hops_and_its_latest() -> None:
+    from types import SimpleNamespace
 
-    from blumkin.browser.cdp import _deadline
+    from blumkin.browser.cdp import PlaywrightDriver
 
-    previous = signal.signal(signal.SIGALRM, signal.SIG_DFL)
-    try:
-        signal.setitimer(signal.ITIMER_REAL, 30.0)
-        with _deadline(5.0, "do it"):
-            pass
-        remaining, _interval = signal.getitimer(signal.ITIMER_REAL)
-        assert 0 < remaining <= 30.0
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+    handlers: dict[str, Any] = {}
+    main = SimpleNamespace()
+    page = SimpleNamespace(
+        context=object(),
+        main_frame=main,
+        on=lambda event, fn: handlers.__setitem__(event, fn),
+    )
+    driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=1)
+    driver.track_navigations()
+
+    for number in range(100):
+        handlers["request"](
+            SimpleNamespace(
+                frame=main, url=f"https://a.example/{number}", is_navigation_request=lambda: True
+            )
+        )
+
+    chain = driver.navigations()
+    assert len(chain) == 40
+    assert chain[0] == "https://a.example/0"
+    assert chain[-1] == "https://a.example/99"

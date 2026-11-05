@@ -17,9 +17,12 @@ def emit_error(
     hint: str | None = None,
     agent_instructions: str | None = None,
     retry_after_seconds: float | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     if as_json:
         payload: dict[str, Any] = {"error": error, "message": message, "ok": False}
+        if extra:
+            payload.update(extra)
         if hint:
             payload["hint"] = hint
         if agent_instructions:
@@ -29,6 +32,8 @@ def emit_error(
         print(json.dumps(payload, sort_keys=True), file=sys.stderr)
     else:
         print(message, file=sys.stderr)
+        if extra and extra.get("chain"):
+            print("redirect chain: " + " -> ".join(extra["chain"]), file=sys.stderr)
         if hint:
             print(hint, file=sys.stderr)
         if agent_instructions:
