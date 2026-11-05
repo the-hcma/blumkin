@@ -3253,6 +3253,8 @@ def browser_dialog(
     lines.append(sanitize_terminal(payload["text"].rstrip("\n")))
     if payload["truncated"]:
         lines.append("(the text was cut at the read limit)")
+    if not payload["loaded"]:
+        lines.append("Note: it showed an empty grid or nothing to press when the wait ended.")
     for item in payload["controls"]:
         flag = " (disabled)" if item["disabled"] else ""
         lines.append(f"  {item['role']} {sanitize_terminal(item['name'])!r}{flag}")

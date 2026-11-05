@@ -3418,6 +3418,173 @@ def test_dialog_opens_reads_and_closes_with_the_declared_control(
     assert clicks == ["Templates", "Apply", "Cancel"]
 
 
+def test_dialog_waits_for_a_loading_list_before_reading_and_closing(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+    loading = _DIALOG_OPEN.replace("No templates exist", "Loading Loading").replace(
+        '  - button "Cancel"', "  - grid\n" + '  - button "Cancel"'
+    )
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = loading
+        elif name == "Cancel":
+            raw.aria_text = _DIALOG_CLOSED
+
+    def filled(_seconds: float) -> None:
+        if raw.aria_text == loading:
+            raw.aria_text = _DIALOG_OPEN
+
+    raw.on_event = event
+    raw.on_wait = filled
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert "No templates exist" in payload["text"] and "Loading" not in payload["text"]
+    assert payload["closed"] is True and payload["closed_with"] == "control"
+
+
+def test_dialog_does_not_wait_on_a_label_that_merely_contains_loading(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+    named = _DIALOG_OPEN.replace("No templates exist", "Loading dock template")
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = named
+        elif name == "Cancel":
+            raw.aria_text = _DIALOG_CLOSED
+
+    raw.on_event = event
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "Loading dock template" in _json(result)["text"]
+    assert not any(call[0] == "wait_ms" for call in raw.calls)
+
+
+def _stuck_dialog(raw: _Raw, body: str) -> None:
+    """A page whose Apply opens a dialog that never gets past `body`; only Cancel closes it."""
+    shown = _DIALOG_OPEN.replace("  - text: No templates exist\n", body)
+    _dialog_page(raw)
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = shown
+        elif name == "Cancel":
+            raw.aria_text = _DIALOG_CLOSED
+
+    raw.on_event = event
+
+
+def test_dialog_times_out_on_a_named_loading_message(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _stuck_dialog(raw, '  - text: Loading templates...\n  - grid:\n    - row "a"\n')
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "still loading" in _json(result)["message"]
+    assert "the dialog is closed" in _json(result)["message"]
+
+
+@pytest.mark.parametrize("body", ["  - grid\n", "  - grid:\n    - rowgroup\n"])
+def test_dialog_reports_an_unfilled_grid_as_not_loaded_without_failing(
+    raw: _Raw, _config_dir: Path, body: str
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _stuck_dialog(raw, body)
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["loaded"] is False and payload["closed"] is True
+
+
+def test_dialog_with_text_but_nothing_to_press_is_returned_not_failed(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply"]')
+    _dialog_page(raw)
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = '- dialog "Notice":\n  - text: No templates exist\n'
+        elif name == "":
+            raw.aria_text = _DIALOG_CLOSED
+
+    raw.on_event = event
+
+    payload = _json(_run("browser", "dialog", "expense-report", "--open", "Apply"))
+
+    assert "No templates exist" in payload["text"] and payload["loaded"] is False
+
+
+def test_dialog_accepts_a_grid_that_has_a_row(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _stuck_dialog(raw, '  - grid:\n    - row "Weekly":\n      - gridcell "Weekly"\n')
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "Weekly" in _json(result)["text"] and _json(result)["loaded"] is True
+
+
+def test_dialog_reports_a_timeout_when_the_list_never_finishes_loading(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+    loading = _DIALOG_OPEN.replace("No templates exist", "Loading Loading")
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = loading
+        elif name == "Cancel":  # Escape is ignored while the dialog starts up
+            raw.aria_text = _DIALOG_CLOSED
+
+    raw.on_event = event
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "still loading" in _json(result)["message"]
+    assert "the dialog is closed" in _json(result)["message"]
+    assert [call[2] for call in raw.calls if call[0] == "click"][-1] == "Cancel"
+
+
+def test_dialog_closes_on_a_second_round_when_the_first_cancel_is_swallowed(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+    swallowed: list[str] = []
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = _DIALOG_OPEN
+        elif name == "Cancel":
+            swallowed.append(name)
+            if len(swallowed) > 1:
+                raw.aria_text = _DIALOG_CLOSED
+
+    raw.on_event = event
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["closed"] is True and payload["closed_with"] == "control"
+
+
 def test_dialog_closes_with_escape_when_no_close_control_is_named(
     raw: _Raw, _config_dir: Path
 ) -> None:

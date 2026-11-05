@@ -91,12 +91,20 @@ _DIALOG_CONTROL = re.compile(
     r' "(?P<name>(?:[^"\\]|\\.)*)"(?P<rest>.*)$'
 )
 _DIALOG_BLOCKERS = ("alertdialog", "dialog")
+_DIALOG_CLOSE_ROUNDS = 2
+_DIALOG_GRID = re.compile(r"^(?P<indent>\s*)- grid\b", re.IGNORECASE)
+_DIALOG_LOADING = re.compile(
+    r"^\s*- (?:text|status|progressbar)\b:? *\"?"
+    r"(?:(?:loading[.\u2026 ]*)+|loading\b[^\n\"]*[.\u2026]+)\"?\s*$|\[busy\]",
+    re.IGNORECASE | re.MULTILINE,
+)
 _DIALOG_POLL_MS = 250
 _DIALOG_POLLS = 8
 _OVERLAY_ROLES = ("alertdialog", "dialog", "menu")
 _DOWNLOAD_EXTENSIONS = frozenset({".csv", ".md", ".srt", ".txt", ".vtt"})
 _DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
 _DOWNLOAD_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ ()-]{0,119}")
+_ROW_LINE = re.compile(r"^\s*- row(?:\s|\"|:|$)")
 
 
 class AddressNotAuthorizedError(BrowserActionError):
@@ -105,6 +113,14 @@ class AddressNotAuthorizedError(BrowserActionError):
 
 class AddressNotSetError(LookupError):
     """The task may read the profile's address, but the profile has none."""
+
+
+class DialogLoadingError(BrowserActionError):
+    """A dialog that was still loading when the wait ran out; `text` is what it showed."""
+
+    def __init__(self, message: str, text: str) -> None:
+        super().__init__(message)
+        self.text = text
 
 
 class DownloadBlockedError(BrowserActionError):
@@ -304,17 +320,19 @@ def dialog_task(
         baseline = _overlay_counts(driver, (*_OVERLAY_ROLES, scope_role))
         opened: list[str] = []
         failure: BaseException | None = None
-        text, matches = "", 0
+        text, matches, loaded = "", 0, True
         warning: dict[str, Any] | None = None
         try:
             for name, role in steps:
                 opened.append(driver.click(name, role, _default_wait(role)))
                 _require_allowed_page(driver, task, hosts, f"opening {name!r}")
-            text, matches, warning = _dialog_read(
+            text, matches, warning, loaded = _dialog_read(
                 driver, scope_role, scope_name, wait_s, expand_options
             )
         except BaseException as exc:  # noqa: BLE001 - closed first (Ctrl-C too), then raised
             failure = exc
+            if isinstance(exc, DialogLoadingError):
+                text = exc.text  # so the declared close control is still found among its controls
         if _on_allowed_page(driver, hosts):
             closed, via = _dialog_close(
                 driver, (*_OVERLAY_ROLES, scope_role), baseline, close, _dialog_controls(text)
@@ -336,6 +354,7 @@ def dialog_task(
             "injection_warning": warning,
             "ok": True,
             "opened": opened,
+            "loaded": loaded,
             "task": task,
             "text": shown,
             "truncated": truncated,
@@ -1614,23 +1633,30 @@ def _dialog_close(
     work, Escape closes it.
     """
     via: str | None = None
-    try:
-        if (
-            close is not None
-            and not _overlays_at_baseline(driver, roles, baseline)
-            and any(item["name"] == close[0] and close[1] in (None, item["role"]) for item in shown)
-        ):
-            driver.click(close[0], close[1], _default_wait(close[1]))
-            via = "control"
-    except Exception:  # noqa: BLE001 - closing must not hide what went wrong first
-        _LOGGER.info("browser dialog: the declared close control did not work")
-    try:
-        if not _dialog_gone(driver, roles, baseline):
-            driver.dismiss()
-            via = "escape"
-        return _dialog_gone(driver, roles, baseline), via
-    except Exception:  # noqa: BLE001 - see above
-        return False, via
+    for attempt in range(_DIALOG_CLOSE_ROUNDS):
+        try:
+            if (
+                close is not None
+                and not _overlays_at_baseline(driver, roles, baseline)
+                and any(
+                    item["name"] == close[0] and close[1] in (None, item["role"]) for item in shown
+                )
+            ):
+                driver.click(close[0], close[1], _default_wait(close[1]))
+                via = "control"
+        except Exception:  # noqa: BLE001 - closing must not hide what went wrong first
+            _LOGGER.info("browser dialog: the declared close control did not work")
+        try:
+            if not _dialog_gone(driver, roles, baseline):
+                driver.dismiss()
+                via = "escape"
+            # A dialog that is still starting up can swallow the first Cancel or Escape, so
+            # the whole sequence runs once more before the dialog is reported as still open.
+            if _dialog_gone(driver, roles, baseline):
+                return True, via
+        except Exception:  # noqa: BLE001 - see above
+            _LOGGER.info("browser dialog: closing failed on round %d", attempt + 1)
+    return False, via
 
 
 def _dialog_gone(driver: GuardedDriver, roles: Sequence[str], baseline: dict[str, int]) -> bool:
@@ -1644,8 +1670,12 @@ def _dialog_gone(driver: GuardedDriver, roles: Sequence[str], baseline: dict[str
 
 def _dialog_read(
     driver: GuardedDriver, role: str, name: str | None, wait_s: float, expand_options: bool
-) -> tuple[str, int, dict[str, Any] | None]:
-    """The redacted `role` subtree once it shows, waiting up to `wait_s` for it to open."""
+) -> tuple[str, int, dict[str, Any] | None, bool]:
+    """The redacted `role` subtree once it shows and has stopped loading (up to `wait_s`).
+
+    The last item says whether it looks finished (false: an empty grid or a dialog with
+    nothing to press was still all it showed when the wait ran out).
+    """
     polls = max(1, int(wait_s * 1000 / _DIALOG_POLL_MS))
     for attempt in range(polls):
         snapshot = _redact_aria(driver.aria_snapshot())
@@ -1656,8 +1686,26 @@ def _dialog_read(
                 raise BrowserActionError(_scope_failure(str(exc), role, name)) from exc
             driver.wait_ms(_DIALOG_POLL_MS)
             continue
+        loading = _DIALOG_LOADING.search(text) is not None
+        # These only suggest a dialog that is still being built: a grid with no row yet, or a
+        # dialog with nothing to press. A finished dialog can look the same (an empty list
+        # with its own message), so after the last poll they are reported, not raised.
+        unsettled = _has_grid_without_rows(text) or (
+            role in _DIALOG_BLOCKERS and not _dialog_controls(text)
+        )
+        if (loading or unsettled) and attempt < polls - 1:
+            # A list that still says "Loading" is not what the dialog shows, and a Cancel
+            # pressed meanwhile can be ignored: wait for it to fill in.
+            driver.wait_ms(_DIALOG_POLL_MS)
+            continue
+        if loading:
+            raise DialogLoadingError(
+                f"Expected the {role} to finish loading within {wait_s:g} s, got one still loading",
+                text,
+            )
         warning = scan_for_injection(snapshot, location="page.aria").to_payload()
-        return (text if expand_options else collapse_options(text)), matches, warning
+        shown = text if expand_options else collapse_options(text)
+        return shown, matches, warning, not unsettled
     raise AssertionError("unreachable")
 
 
@@ -1678,6 +1726,24 @@ def _download_name(name: str) -> str:
             f"Expected a {', '.join(sorted(_DOWNLOAD_EXTENSIONS))} file, got {name!r}"
         )
     return name
+
+
+def _has_grid_without_rows(text: str) -> bool:
+    """Whether a grid of the snapshot holds no `row`: it has not been filled in yet."""
+    lines = text.split("\n")
+    for number, line in enumerate(lines):
+        match = _DIALOG_GRID.match(line)
+        if match is None:
+            continue
+        depth = len(match.group("indent"))
+        rows = False
+        for inner in lines[number + 1 :]:
+            if inner.strip() and len(inner) - len(inner.lstrip()) <= depth:
+                break
+            rows = rows or _ROW_LINE.match(inner) is not None
+        if not rows:
+            return True
+    return False
 
 
 def _keep_download(source: Path, staging: Path, target: Path) -> Path:
