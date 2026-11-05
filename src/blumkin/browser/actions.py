@@ -8,6 +8,7 @@ controls, and nothing here can finalize a form.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -18,7 +19,7 @@ import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from blumkin.browser.aria_view import (
     collapse_options,
@@ -115,6 +116,7 @@ class HostBlockedError(BrowserActionError):
 
 
 #: The longest heading text `click --expect-heading` takes or reports, and how long it waits.
+CHAIN_SHOWN = 12
 EXPECT_HEADING_CHARS = 100
 EXPECT_HEADING_WAIT_S = SETTLE_EXPECT_WAIT_S
 MAX_DIALOG_STEPS = 4
@@ -503,16 +505,30 @@ def goto_task(
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         pause = sleep or (lambda seconds: driver.wait_ms(round(seconds * 1000)))
-        with driver.sign_in_pass(
-            lambda host: host_allowed(host, sign_in_hosts),
-            lambda host: not hosts or host_allowed(host, hosts),
-        ):
-            driver.goto(target)
-            waited = _wait_through_sign_in(driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now)
+        driver.track_navigations()
+        try:
+            with driver.sign_in_pass(
+                lambda host: host_allowed(host, sign_in_hosts),
+                lambda host: not hosts or host_allowed(host, hosts),
+            ):
+                driver.goto(target)
+                waited = _wait_through_sign_in(
+                    driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now
+                )
+            _require_allowed_page(driver, task, hosts, "the action")
+        except BrowserActionError as exc:
+            # A sign-in that loops or a navigation that times out is where the chain matters most.
+            chain = _chain_report(driver.navigations(), hosts, sign_in_hosts)
+            if len(chain) > 1:
+                exc.chain = chain  # type: ignore[attr-defined]
+            raise
         payload: dict[str, Any] = {"action": "goto", "ok": True, "task": task, "url": driver.url}
         if waited is not None:
             payload["sign_in_host"] = waited[1]
             payload["waited_for_sign_in_s"] = round(waited[0], 1)
+        chain = _chain_report(driver.navigations(), hosts, sign_in_hosts)
+        if len(chain) > 1:
+            payload["chain"] = chain
         return payload
 
     return _with_driver(config, task, act, check_before=False, check_after=True)
@@ -860,71 +876,83 @@ def read_task(
             if frame is not None or not _on_sign_in_page(driver, sign_in_hosts):
                 raise
             on_sign_in = True
-        start_host = _page_host(driver)
-        within_matches = 0
-        if aria:
-            snapshot = _redact_aria(
-                driver.aria_snapshot()
-                if frame is None
-                else driver.frame_aria_snapshot(frame, allowed, host, wait_s=wait_s)
-            )
+        with contextlib.ExitStack() as stack:
             if on_sign_in:
-                snapshot = redact_addresses(snapshot)
-            warning = scan_for_injection(snapshot, location="page.aria").to_payload()
-            if within is not None:
-                try:
-                    snapshot, within_matches = scope(snapshot, scope_role, scope_name)
-                except LookupError as exc:
-                    raise BrowserActionError(
-                        _scope_failure(str(exc), scope_role, scope_name)
-                    ) from exc
-            if not expand_options:
-                snapshot = collapse_options(snapshot)
-            page = PageText(text=snapshot, injection_warning=warning)
-        else:
-            page = (
-                driver.read_text()
-                if frame is None
-                else driver.read_frame_text(frame, allowed, host, wait_s=wait_s)
-            )
-        if frame is None and _page_host(driver) != start_host:
-            # The page navigated while it was read, so what was captured may belong to a page
-            # the first check never saw (this narrows the window; it cannot close it).
-            raise HostBlockedError(
-                f"Expected the page to stay on {start_host!r} while it is read, got a change; "
-                "nothing was returned"
-            )
-        if on_sign_in and not aria:
-            # An identity-provider error page often echoes the redirect address and request ids,
-            # so the text goes on without them and is scanned again without them.
-            cleaned = redact_addresses(page.text)
-            page = PageText(
-                text=cleaned,
-                injection_warning=scan_for_injection(cleaned, location="page.text").to_payload(),
-            )
-        shown, more, next_offset = window(page.text, offset, limit)
-        return {
-            "action": "read",
-            "frame": frame,
-            "frame_host": host,
-            "injection_warning": page.injection_warning,
-            "mode": "aria" if aria else "text",
-            "next_offset": next_offset,
-            "offset": offset,
-            "ok": True,
-            "sign_in_page": on_sign_in,
-            "task": task,
-            "text": shown,
-            "title": redact_addresses(_one_line(driver.title()))
-            if on_sign_in
-            else _one_line(driver.title()),
-            "total_chars": len(page.text),
-            "truncated": more,
-            "untrusted": UNTRUSTED_NOTE,
-            "url": _display_url(driver.url) if on_sign_in else driver.url,
-            "within": within,
-            "within_matches": within_matches,
-        }
+                # The identity provider may be posting its own form while this reads: the
+                # net that answers a form POST with an empty page would stall the sign-in.
+                stack.enter_context(
+                    driver.sign_in_pass(
+                        lambda name: host_allowed(name, sign_in_hosts),
+                        lambda name: not hosts or host_allowed(name, hosts),
+                    )
+                )
+            start_host = _page_host(driver)
+            within_matches = 0
+            if aria:
+                snapshot = _redact_aria(
+                    driver.aria_snapshot()
+                    if frame is None
+                    else driver.frame_aria_snapshot(frame, allowed, host, wait_s=wait_s)
+                )
+                if on_sign_in:
+                    snapshot = redact_addresses(snapshot)
+                warning = scan_for_injection(snapshot, location="page.aria").to_payload()
+                if within is not None:
+                    try:
+                        snapshot, within_matches = scope(snapshot, scope_role, scope_name)
+                    except LookupError as exc:
+                        raise BrowserActionError(
+                            _scope_failure(str(exc), scope_role, scope_name)
+                        ) from exc
+                if not expand_options:
+                    snapshot = collapse_options(snapshot)
+                page = PageText(text=snapshot, injection_warning=warning)
+            else:
+                page = (
+                    driver.read_text()
+                    if frame is None
+                    else driver.read_frame_text(frame, allowed, host, wait_s=wait_s)
+                )
+            if frame is None and _page_host(driver) != start_host:
+                # The page navigated while it was read, so what was captured may belong to a page
+                # the first check never saw (this narrows the window; it cannot close it).
+                raise HostBlockedError(
+                    f"Expected the page to stay on {start_host!r} while it is read, got a change; "
+                    "nothing was returned"
+                )
+            if on_sign_in and not aria:
+                # An identity-provider error page often echoes the redirect address and request ids,
+                # so the text goes on without them and is scanned again without them.
+                cleaned = redact_addresses(page.text)
+                page = PageText(
+                    text=cleaned,
+                    injection_warning=scan_for_injection(
+                        cleaned, location="page.text"
+                    ).to_payload(),
+                )
+            shown, more, next_offset = window(page.text, offset, limit)
+            return {
+                "action": "read",
+                "frame": frame,
+                "frame_host": host,
+                "injection_warning": page.injection_warning,
+                "mode": "aria" if aria else "text",
+                "next_offset": next_offset,
+                "offset": offset,
+                "ok": True,
+                "sign_in_page": on_sign_in,
+                "task": task,
+                "text": shown,
+                "title": redact_addresses(_one_line(driver.title()))
+                if on_sign_in
+                else _one_line(driver.title()),
+                "total_chars": len(page.text),
+                "truncated": more,
+                "untrusted": UNTRUSTED_NOTE,
+                "url": _display_url(driver.url) if on_sign_in else driver.url,
+                "within": within,
+                "within_matches": within_matches,
+            }
 
     return _with_driver(config, task, act, check_before=False)
 
@@ -1335,6 +1363,28 @@ def verify_task(
     return _with_driver(config, task, act)
 
 
+def reset_session_task(config: BrowserSetup, task: str) -> dict[str, Any]:
+    """Delete the saved sign-in of the task's running browser, keeping its profile.
+
+    A way out of a sign-in loop that does not delete the profile: every cookie the browser
+    holds is cleared, which signs it out of every site (the identity provider too), and the
+    user signs in again by hand. The profile's folder, its settings and any site data kept
+    outside cookies stay. Nothing is read from or done to a page (no form guard is installed,
+    so nothing can swallow the sign-in's own requests), and the count is all that is reported.
+    """
+    profile = load_profile(config.config_dir, task)
+    if profile is None:
+        raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
+    # Strict, since this deletes something: a process that cannot be confirmed as the browser
+    # does not count as running. A blank page is fine to open (the tabs may all be closed).
+    driver = attach(profile, strict=True, timeout_s=DEFAULT_ACTION_TIMEOUT_S)
+    try:
+        cleared = driver.clear_session()
+    finally:
+        driver.close()
+    return {"action": "reset-session", "cookies_cleared": cleared, "ok": True, "task": task}
+
+
 def where_task(config: BrowserSetup, task: str) -> dict[str, Any]:
     """Where the task's browser is now: host, path, title and what the task may do there.
 
@@ -1351,7 +1401,7 @@ def where_task(config: BrowserSetup, task: str) -> dict[str, Any]:
     profile = load_profile(config.config_dir, task)
     if profile is None:
         raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
-    page = attach(profile, timeout_s=DEFAULT_ACTION_TIMEOUT_S)
+    page = attach(profile, open_page=False, timeout_s=DEFAULT_ACTION_TIMEOUT_S)
     try:
         url = page.url
         title = page.title()
@@ -1902,6 +1952,50 @@ def _settled_report(
                 "the click WAS made, so read the page instead of clicking again"
             )
     return report
+
+
+def _chain_path(path: str) -> str:
+    """A path for the chain: no `;` parameters, and a segment that may be an id is masked.
+
+    A segment is masked when it is long, holds an `@` (an address) or has four digits or more
+    (an id, a counter, a timestamp), since a chain is printed for every hop and lives longer in
+    an agent's context than a single page address.
+    """
+    segments = [
+        "..."
+        if len(segment) > WHERE_SEGMENT_CHARS
+        or "@" in unquote(segment)
+        or sum(char.isdigit() for char in unquote(segment)) >= 4
+        else segment
+        for segment in path.split(";", 1)[0].split("/")
+    ]
+    return _one_line("/".join(segments))[:WHERE_PATH_CHARS]
+
+
+def _chain_report(
+    urls: Sequence[str], hosts: Sequence[str], sign_in_hosts: Sequence[str]
+) -> list[str]:
+    """A redirect chain for display: where each step went, without what a token could hide in.
+
+    An address on an allowed or sign-in host shows its host and path (no query, fragment or `;`
+    parameters, long segments masked); any other host shows only the host, never a path. A step
+    that repeats the one before is dropped, and a long chain keeps its first and last steps.
+    """
+    shown: list[str] = []
+    for url in urls:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if parts.scheme not in ("http", "https") or not host:
+            entry = parts.scheme + ":" if parts.scheme else "(no address)"
+        elif host_allowed(host, sign_in_hosts) or not hosts or host_allowed(host, hosts):
+            entry = f"{parts.scheme}://{host}{_chain_path(parts.path)}"
+        else:
+            entry = f"{parts.scheme}://{host} (other host)"
+        if not shown or shown[-1] != entry:
+            shown.append(entry)
+    if len(shown) > CHAIN_SHOWN:
+        shown = [*shown[: CHAIN_SHOWN // 2], "...", *shown[-(CHAIN_SHOWN // 2) :]]
+    return shown
 
 
 def _display_url(url: str) -> str:

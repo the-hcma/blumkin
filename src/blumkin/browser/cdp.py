@@ -19,6 +19,8 @@ import dataclasses
 import json
 import math
 import re
+import signal
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -305,6 +307,10 @@ DEFAULT_ACTION_TIMEOUT_S = 30.0
 #: How long a page that was just acted on may take to go quiet, and how long its DOM must stay
 #: unchanged to count as quiet.
 HEADING_REPORT_CHARS = 200
+#: Most addresses a recorded navigation chain keeps.
+_MAX_CHAIN = 40
+#: The longest the cosmetic window mark may take.
+_INDICATOR_DEADLINE_S = 5.0
 HEADINGS_REPORTED = 20
 SETTLE_GRACE_MS = 300
 SETTLE_QUIET_MS = 500
@@ -447,6 +453,9 @@ class PlaywrightDriver:
         self._browser = browser
         self._closed = False
         self._context = page.context
+        self._chain: list[str] = []
+        self._chain_listening = False
+        self._expired = False
         self._dialog_landmarks: tuple[str, ...] = ()
         self._existing_frames = existing_frames
         self._navigation_handler: Any = None
@@ -461,6 +470,17 @@ class PlaywrightDriver:
         if self._closed:
             return
         self._closed = True
+        if self._expired:
+            # The connection stopped answering after a deadline, and every teardown call would
+            # wait on it: only the frame sockets, which are blumkin's own, are closed. The
+            # process ends right after a command, which drops the connection.
+            if self._existing_frames is not None:
+                with contextlib.suppress(Exception):
+                    self._existing_frames.close()
+            return
+        self._disconnect()
+
+    def _disconnect(self) -> None:
         try:
             if self._existing_frames is not None:
                 with contextlib.suppress(Exception):
@@ -748,9 +768,14 @@ class PlaywrightDriver:
         The page's own address is checked in the evaluation that adds the pill: off `hosts`, or
         on a `blocked` host, nothing is added.
         """
+        if self._expired:
+            return  # the page stopped answering: nothing cosmetic is worth another wait
         self._require_open()
-        with contextlib.suppress(_playwright_error()):
-            self._page.evaluate(INDICATOR_JS, indicator_args(task, hosts, blocked))
+        # Cosmetic: a page that refuses it, or hangs, is skipped, and never for more than a few
+        # seconds (a bare page evaluation has no timeout of its own).
+        with contextlib.suppress(_playwright_error(), BrowserActionError):
+            with self._bounded(_INDICATOR_DEADLINE_S, "mark the window"):
+                self._page.evaluate(INDICATOR_JS, indicator_args(task, hosts, blocked))
 
     def goto(self, url: str) -> None:
         self._require_open()
@@ -922,6 +947,20 @@ class PlaywrightDriver:
         """
         self._require_open()
         try:
+            with self._bounded(self._timeout_s, "pick the account on the sign-in page"):
+                return self._pick_account(email, hosts, blocked, vet_names)
+        except _playwright_error() as exc:
+            raise self._action_error("pick the account on the sign-in page", exc) from exc
+
+    def _pick_account(
+        self,
+        email: str,
+        hosts: Sequence[str],
+        blocked: Sequence[str],
+        vet_names: Callable[[Sequence[str]], bool] | None,
+    ) -> AccountPick:
+        """The work of `pick_account`, run under its deadline."""
+        try:
             args: dict[str, Any] = {"blocked": list(blocked), "email": email, "hosts": list(hosts)}
             handle = self._page.evaluate_handle(_PICK_ACCOUNT_JS, args)
             status = str(handle.get_property("0").json_value())
@@ -952,6 +991,21 @@ class PlaywrightDriver:
             text=text,
             injection_warning=scan_for_injection(text, location="page.text").to_payload(),
         )
+
+    def clear_session(self) -> int:
+        """Delete every cookie the browser holds, returning how many there were.
+
+        This signs the profile out of every site, the identity provider included, and nothing
+        else: its folder, its extensions and its other saved site data stay.
+        """
+        self._require_open()
+        try:
+            context = self._page.context
+            count = len(context.cookies())
+            context.clear_cookies()
+        except _playwright_error() as exc:
+            raise self._action_error("clear the saved sign-in", exc) from exc
+        return count
 
     def restrict_navigation(self, is_allowed: Callable[[str], bool]) -> None:
         """Abort every main-frame navigation to a host `is_allowed` refuses, before it loads.
@@ -1284,12 +1338,41 @@ class PlaywrightDriver:
                 f"select {option!r} in the field labelled {label!r}", exc
             ) from exc
 
+    def navigations(self) -> tuple[str, ...]:
+        """The addresses the top-level page moved through since `track_navigations`."""
+        return tuple(self._chain)
+
     def title(self) -> str:
         self._require_open()
         try:
             return str(self._page.title())
         except _playwright_error() as exc:
             raise self._action_error("read the page title", exc) from exc
+
+    def track_navigations(self) -> None:
+        """Start recording the addresses the top-level page is sent through (a redirect chain)."""
+        self._require_open()
+        self._chain.clear()
+        on = getattr(self._page, "on", None)
+        if on is None or self._chain_listening:
+            return
+        self._chain_listening = True
+        main = self._page.main_frame
+
+        def moved(request: Any) -> None:
+            # Every hop of a redirect is a request of its own (a committed document is not: a
+            # chain of server redirects commits only the last page).
+            if not request.is_navigation_request() or request.frame != main:
+                return
+            url = str(request.url)
+            if self._chain and self._chain[-1] == url:
+                return
+            self._chain.append(url)
+            if len(self._chain) > _MAX_CHAIN:
+                # Keep the first half and the most recent hops, dropping the middle of a loop.
+                del self._chain[_MAX_CHAIN // 2]
+
+        on("request", moved)
 
     def upload(
         self, label: str, path: Path, target: FieldTarget | None = None
@@ -1904,9 +1987,24 @@ class PlaywrightDriver:
                 f"Expected the frame to stay on an allowed host, got {detail!r}"
             )
 
+    @contextlib.contextmanager
+    def _bounded(self, seconds: float, what: str) -> Iterator[None]:
+        """`_deadline` that also marks this driver as no longer trustworthy once it expires."""
+        try:
+            with _deadline(seconds, what):
+                yield
+        except _DeadlineExpired:
+            self._expired = True
+            raise
+
     def _require_open(self) -> None:
         if self._closed:
             raise BrowserActionError("Expected an attached browser, got a closed driver")
+        if self._expired:
+            raise BrowserActionError(
+                "Expected the page to answer, got a connection that stopped answering after a "
+                "deadline; close it and look at the page before trying again"
+            )
 
 
 class RawBrowserDriver(Protocol):
@@ -2061,13 +2159,22 @@ def attach(
     attempts: int = ATTACH_ATTEMPTS,
     factory: Callable[[], Any] | None = None,
     fetch_version: Callable[[str, float], dict[str, Any]] | None = None,
+    open_page: bool = True,
     pid_alive: Callable[[int], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    strict: bool = False,
     timeout_s: float = DEFAULT_ACTION_TIMEOUT_S,
 ) -> PlaywrightDriver:
-    """Attach to the browser launched for `profile`, refusing profiles blumkin did not make."""
+    """Attach to the browser launched for `profile`, refusing profiles blumkin did not make.
+
+    With `strict` a recorded process that cannot be confirmed as the browser (no working `ps`)
+    does not count as running: for a command that deletes something.
+
+    A browser with no page gets a blank one unless `open_page` is off, which makes it a
+    `BrowserNoPageError` instead: a diagnostic must not change the state it is looking at.
+    """
     require_blumkin_profile(profile.path)
-    session = read_session(profile.path, pid_alive=pid_alive)
+    session = read_session(profile.path, pid_alive=pid_alive, strict=strict)
     if session is None:
         raise BrowserNotRunningError(
             f"Expected a running browser for task {profile.task!r}, got none; "
@@ -2078,6 +2185,7 @@ def attach(
         attempts=attempts,
         factory=factory,
         fetch_version=fetch_version,
+        open_page=open_page,
         sleep=sleep,
         timeout_s=timeout_s,
     )
@@ -2142,6 +2250,7 @@ def open_driver(
     existing_frames: Any = None,
     factory: Callable[[], Any] | None = None,
     fetch_version: Callable[[str, float], dict[str, Any]] | None = None,
+    open_page: bool = True,
     sleep: Callable[[float], None] = time.sleep,
     timeout_s: float = DEFAULT_ACTION_TIMEOUT_S,
 ) -> PlaywrightDriver:
@@ -2194,6 +2303,7 @@ def open_driver(
                 playwright,
                 endpoint=endpoint,
                 existing_frames=existing_frames,
+                open_page=open_page,
                 read_existing_frames=factory is None,
                 timeout_s=timeout_s,
             )
@@ -2666,6 +2776,46 @@ _DESCRIBE_CONTROL_JS = (
 )
 
 
+class _DeadlineExpired(BrowserActionError):
+    """A `_deadline` ran out: the page did not answer in time (as opposed to refusing)."""
+
+
+@contextlib.contextmanager
+def _deadline(seconds: float, what: str) -> Iterator[None]:
+    """Fail with a `BrowserActionError` when the block runs longer than `seconds`.
+
+    Page evaluations through Playwright have no timeout of their own, so a page that hangs (or
+    a redirect that never settles) would block a command for good. This uses a timer signal,
+    which only works in the main thread of a POSIX process; elsewhere the block runs unbounded,
+    as it always did. After an expiry the caller should close the connection rather than reuse
+    it: whether the page did what was asked is not known.
+    """
+    if not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    live = [True]
+
+    def expired(signum: int, frame: Any) -> None:
+        if not live[0]:  # the block already ended: a late alarm must not raise outside it
+            return
+        raise _DeadlineExpired(
+            f"Expected to {what} within {seconds:g} seconds, got no answer from the page; "
+            "the action may or may not have happened, so look at the page before repeating it"
+        )
+
+    previous = signal.signal(signal.SIGALRM, expired)
+    outer = signal.setitimer(signal.ITIMER_REAL, max(seconds, 0.001))
+    try:
+        yield
+    finally:
+        live[0] = False
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous if previous is not None else signal.SIG_DFL)
+        if outer[0] > 0:  # a timer that was running before this block keeps its remaining time
+            signal.setitimer(signal.ITIMER_REAL, outer[0], outer[1])
+
+
 class _NeverRaised(Exception):
     """Stands in for Playwright's error type when it cannot be imported; nothing raises it."""
 
@@ -2757,6 +2907,7 @@ def _driver_for(
     *,
     endpoint: str,
     existing_frames: Any,
+    open_page: bool,
     read_existing_frames: bool,
     timeout_s: float,
 ) -> PlaywrightDriver:
@@ -2764,7 +2915,7 @@ def _driver_for(
         contexts = list(browser.contexts)
         if not contexts:
             raise BrowserProtocolError(f"Expected a browser context at {endpoint}, got none")
-        page = _first_page(contexts[0], endpoint, timeout_s)
+        page = _first_page(contexts[0], endpoint, timeout_s, open_page=open_page)
         page.set_default_timeout(timeout_s * 1000)
     except BaseException:
         with contextlib.suppress(_playwright_error()):
@@ -2781,8 +2932,11 @@ def _driver_for(
     )
 
 
-def _first_page(context: Any, endpoint: str, timeout_s: float) -> Any:
+def _first_page(context: Any, endpoint: str, timeout_s: float, *, open_page: bool = True) -> Any:
     """The first open page, opening a blank one when the browser has none.
+
+    With `open_page` off a browser without a page is reported (`BrowserNoPageError`), not
+    changed.
 
     A browser started with no page (or whose last tab was closed) cannot always make one
     through the attached context ("Browser context management is not supported"); DevTools can,
@@ -2793,6 +2947,10 @@ def _first_page(context: Any, endpoint: str, timeout_s: float) -> Any:
     pages = list(context.pages)
     if pages:
         return pages[0]
+    if not open_page:
+        raise BrowserNoPageError(
+            f"Expected an open page in the browser at {endpoint}, got none (not opening one)"
+        )
     try:
         return context.new_page()
     except _playwright_error():

@@ -3006,3 +3006,183 @@ def test_pick_account_does_not_click_a_tile_the_name_vet_refuses() -> None:
 
     assert picked.status == "denied"
     assert not any(call[0] == "tile-click" for call in pw.page.calls)
+
+
+def test_a_browser_with_no_page_is_not_given_one_when_asked_only_to_look(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import cdp
+    from blumkin.browser.cdp import BrowserNoPageError
+
+    context = _NoPageContext(new_page_works=True)
+    monkeypatch.setattr(cdp, "_open_blank_target", lambda endpoint, timeout_s: context.open_blank())
+
+    with pytest.raises(BrowserNoPageError, match="not opening one"):
+        cdp._first_page(context, "http://127.0.0.1:9222", 1.0, open_page=False)
+
+    assert context.opened == 0
+    assert context.pages == []
+
+
+def test_a_deadline_stops_a_block_that_runs_too_long_and_says_to_look_first() -> None:
+    import time as clock
+
+    from blumkin.browser.cdp import BrowserActionError, _deadline
+
+    with pytest.raises(BrowserActionError, match="may or may not have happened"):
+        with _deadline(0.2, "pick the account"):
+            clock.sleep(5)
+
+
+def test_a_deadline_lets_a_quick_block_finish_and_leaves_no_timer_behind() -> None:
+    import signal
+
+    from blumkin.browser.cdp import _deadline
+
+    with _deadline(5.0, "do it"):
+        done = True
+
+    assert done
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+def test_a_deadline_does_nothing_off_the_main_thread() -> None:
+    import threading
+
+    from blumkin.browser.cdp import _deadline
+
+    seen: list[str] = []
+
+    def work() -> None:
+        with _deadline(0.01, "do it"):
+            import time as clock
+
+            clock.sleep(0.1)
+            seen.append("finished")
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    thread.join()
+
+    assert seen == ["finished"]
+
+
+def test_the_driver_records_main_frame_navigation_requests_including_redirect_hops() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import PlaywrightDriver
+
+    handlers: dict[str, Any] = {}
+    main = SimpleNamespace(name="main")
+    child = SimpleNamespace(name="child")
+    page = SimpleNamespace(
+        context=object(),
+        main_frame=main,
+        on=lambda event, fn: handlers.__setitem__(event, fn),
+    )
+    driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=1)
+
+    def request(frame: object, url: str, *, navigation: bool = True) -> object:
+        return SimpleNamespace(frame=frame, url=url, is_navigation_request=lambda: navigation)
+
+    driver.track_navigations()
+    for req in (
+        request(main, "https://a.example/one"),
+        request(main, "https://idp.example/sso"),
+        request(child, "https://ads.example/frame"),
+        request(main, "https://a.example/pixel.png", navigation=False),
+        request(main, "https://idp.example/sso"),
+        request(main, "https://a.example/home"),
+    ):
+        handlers["request"](req)
+
+    assert driver.navigations() == (
+        "https://a.example/one",
+        "https://idp.example/sso",
+        "https://a.example/home",
+    )
+    driver.track_navigations()
+    assert driver.navigations() == ()
+
+
+def test_a_very_long_chain_keeps_its_first_hops_and_its_latest() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import PlaywrightDriver
+
+    handlers: dict[str, Any] = {}
+    main = SimpleNamespace()
+    page = SimpleNamespace(
+        context=object(),
+        main_frame=main,
+        on=lambda event, fn: handlers.__setitem__(event, fn),
+    )
+    driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=1)
+    driver.track_navigations()
+
+    for number in range(100):
+        handlers["request"](
+            SimpleNamespace(
+                frame=main, url=f"https://a.example/{number}", is_navigation_request=lambda: True
+            )
+        )
+
+    chain = driver.navigations()
+    assert len(chain) == 40
+    assert chain[0] == "https://a.example/0"
+    assert chain[-1] == "https://a.example/99"
+
+
+def test_a_driver_whose_deadline_expired_refuses_further_page_calls_and_skips_the_mark() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+
+    page = SimpleNamespace(context=object())
+    driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=1)
+    driver._expired = True
+
+    with pytest.raises(BrowserActionError, match="stopped answering"):
+        driver.aria_snapshot()
+    driver.mark_window("task")  # cosmetic: skipped, never raises
+
+
+def test_an_ordinary_failure_in_a_bounded_block_does_not_mark_the_driver_expired() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+
+    driver = PlaywrightDriver(
+        browser=object(), page=SimpleNamespace(context=object()), playwright=None, timeout_s=1
+    )
+
+    with pytest.raises(BrowserActionError, match="refused"):
+        with driver._bounded(5.0, "do it"):
+            raise BrowserActionError("the page refused")
+
+    assert driver._expired is False
+
+
+def test_closing_an_expired_driver_touches_nothing_on_the_connection() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import PlaywrightDriver
+
+    touched: list[str] = []
+
+    def hang(name: str) -> object:
+        def call(*_args: object, **_kw: object) -> None:
+            touched.append(name)
+
+        return call
+
+    browser = SimpleNamespace(close=hang("browser.close"))
+    playwright = SimpleNamespace(stop=hang("playwright.stop"))
+    page = SimpleNamespace(context=SimpleNamespace(unroute=hang("unroute")))
+    driver = PlaywrightDriver(browser=browser, page=page, playwright=playwright, timeout_s=1)
+    driver._expired = True
+
+    driver.close()
+    driver.close()
+
+    assert touched == []
