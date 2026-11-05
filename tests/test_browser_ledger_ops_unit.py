@@ -572,6 +572,35 @@ def test_the_default_runner_stops_before_a_step_whose_starts_on_heading_is_missi
     assert clicks == ["Add line"]
 
 
+def test_a_finished_handoff_is_recognised_before_its_starts_on_heading_is_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.ledger_ops import StepNotMadeError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    on_page = {"Saved": False, "Edit Report": True}
+
+    def fake_heading(config: Any, task: str, text: str, **_: Any) -> dict:
+        return {"expect_heading": on_page.get(text, False)}
+
+    monkeypatch.setattr(actions, "heading_task", fake_heading)
+    run = ledger_ops._default_run_step("expense-report")
+    handoff = FlowStep(
+        action="handoff", control=None, expect=None, page=None, instruction="Click Save.",
+        starts_on="Edit Report", expect_heading="Saved",
+    )  # fmt: skip
+
+    with pytest.raises(HandoffRequired, match="Click Save"):
+        run(handoff, {})  # not done yet, and the page is where the handoff starts
+    on_page.update({"Saved": True, "Edit Report": False})
+    run(handoff, {})  # the human saved: the page moved on, and that counts as done
+    on_page.update({"Saved": False, "Edit Report": False})
+    with pytest.raises(StepNotMadeError, match="does not show the heading"):
+        run(handoff, {})  # neither done nor where it starts: nothing to ask the human yet
+
+
 @pytest.mark.parametrize(
     ("status", "made"), [("match", True), ("mismatch", False), ("missing", False)]
 )

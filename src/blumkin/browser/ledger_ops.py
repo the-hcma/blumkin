@@ -566,8 +566,6 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
 
     def run(step: FlowStep, values: Mapping[str, str]) -> None:
         action = step.action.strip().lower()
-        if step.starts_on:
-            _require_starts_on(step.starts_on)
         if action == "handoff":
             # The human's part: continue only when the page already shows the heading that
             # proves it was done; otherwise stop and say what is asked of them.
@@ -579,8 +577,12 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
                 except BrowserActionError, BrowserAttachError:
                     done = {}  # the page is somewhere else: the human has not finished
                 if done.get("expect_heading"):
-                    return
+                    return  # already done: the page has moved on from where it started
+            if step.starts_on:
+                _require_starts_on(step.starts_on)
             raise HandoffRequired(step.instruction or "Finish this step by hand.")
+        if step.starts_on:
+            _require_starts_on(step.starts_on)
         _run_action(step, action, values)
         if step.expect_heading:
             try:
