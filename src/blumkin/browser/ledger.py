@@ -476,8 +476,8 @@ def _check_resume(flow: Any, step: Any) -> None:
     """Refuse a flow name that is not a logical name or a step outside a flow's length."""
     if not isinstance(flow, str) or not _FLOW_NAME.fullmatch(flow):
         raise LedgerError(f"Expected a flow name of lowercase words, got {flow!r}")
-    if isinstance(step, bool) or not isinstance(step, int) or not 2 <= step <= _MAX_STEP:
-        raise LedgerError(f"Expected a step to resume from between 2 and {_MAX_STEP}, got {step!r}")
+    if isinstance(step, bool) or not isinstance(step, int) or not 1 <= step <= _MAX_STEP:
+        raise LedgerError(f"Expected a step to resume from between 1 and {_MAX_STEP}, got {step!r}")
 
 
 def _check_expected(expected: Mapping[ItemKind, int]) -> dict[ItemKind, int]:

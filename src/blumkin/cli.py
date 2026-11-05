@@ -3590,6 +3590,7 @@ def browser_ledger_apply(
     state = payload["item"]["state"]
     noop = " (already verified)" if payload["noop"] else ""
     lines = [f"{task}/{instance}: {kind} {item} {state}{noop}; {payload['status']['summary']}"]
+    lines.extend(f"verified {v['parameter']}: {v['status']}" for v in payload.get("verified", ()))
     paused = payload.get("paused")
     if paused:
         lines.append(f"paused at step {paused['step']}: {sanitize_terminal(paused['instruction'])}")

@@ -520,6 +520,214 @@ def test_a_step_whose_heading_never_shows_leaves_the_item_staged_and_names_the_w
     assert [i.state for i in items] == [ItemState.STAGED]
 
 
+def test_a_paused_handoff_that_is_neither_done_nor_where_it_starts_pauses_again(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import instance_status
+    from blumkin.browser.ledger_ops import StepNotMadeError
+
+    model = _handoff_model()
+    flow = model.flows[0]
+    checked = dataclasses.replace(
+        flow,
+        steps=(
+            flow.steps[0],
+            dataclasses.replace(flow.steps[1], expect_heading="Report saved"),
+            flow.steps[2],
+        ),
+    )
+    model = dataclasses.replace(model, flows=(checked,))
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=model,
+        run_step=lambda s, v: (_ for _ in ()).throw(HandoffRequired("x"))
+        if s.action == "handoff" else None,
+    )  # fmt: skip
+
+    def run(step: Any, values: Any) -> None:
+        if step.action == "handoff":
+            raise StepNotMadeError("the page does not show the heading the step starts on")
+
+    again = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=model, run_step=run, start_at=3,
+    )  # fmt: skip
+
+    # Still the person's step: it pauses again where it did, not "resume at the handoff".
+    assert again.paused is not None and again.paused.resume_from_step == 3
+    (held,) = instance_status(tmp_path, "expense-report", "trip-1").items
+    assert (held.resume_flow, held.resume_step) == ("attach", 3)
+
+
+def test_step_one_not_made_replaces_a_stale_resume_point_and_a_plain_run_is_allowed(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import instance_status
+    from blumkin.browser.ledger_ops import StepNotMadeError
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=_handoff_model(),
+        run_step=lambda s, v: (_ for _ in ()).throw(HandoffRequired("x"))
+        if s.action == "handoff" else None,
+    )  # fmt: skip
+
+    def not_made(step: Any, values: Any) -> None:
+        raise StepNotMadeError("the page does not show the heading the step starts on")
+
+    with pytest.raises(StepNotMadeError, match="step 1 .*was not made.*--from-step 1"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="attach", model=_handoff_model(), run_step=not_made, restart=True,
+        )  # fmt: skip
+
+    (held,) = instance_status(tmp_path, "expense-report", "trip-1").items
+    assert held.resume_step == 1  # no longer the stale "resume at step 3"
+    ran: list[str] = []
+    done = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=_handoff_model(), run_step=lambda s, v: ran.append(s.action),
+    )  # fmt: skip
+    assert ran == ["click", "handoff", "fill"] and done.item.state is ItemState.FILLED
+
+
+def test_matched_verify_steps_are_reported_by_parameter_without_a_value(
+    tmp_path: Path,
+) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    def run(step: Any, values: Any) -> str | None:
+        return "amount" if step.action == "fill" else None
+
+    result = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="add-line", model=_model(), run_step=run,
+    )  # fmt: skip
+
+    assert result.verified == ("amount",)
+    assert result.as_dict()["verified"] == [{"parameter": "amount", "status": "match"}]
+    quiet = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-02",
+        flow_name="add-line", model=_model(), run_step=lambda s, v: None,
+    )  # fmt: skip
+    assert "verified" not in quiet.as_dict()
+
+
+def test_a_step_that_was_not_made_leaves_the_item_staged_and_resumes_at_that_step(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import instance_status
+    from blumkin.browser.ledger_ops import StepNotMadeError
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    def run(step: Any, values: Any) -> None:
+        if step.action == "handoff":
+            raise StepNotMadeError("the page does not show the heading the step starts on")
+
+    with pytest.raises(StepNotMadeError, match="step 2 .*was not made.*--from-step 2"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="attach", model=_handoff_model(), run_step=run,
+        )  # fmt: skip
+
+    (held,) = instance_status(tmp_path, "expense-report", "trip-1").items
+    assert held.state is ItemState.STAGED
+    assert (held.resume_flow, held.resume_step) == ("attach", 2)
+
+
+def test_the_default_runner_stops_before_a_step_whose_starts_on_heading_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.ledger_ops import StepNotMadeError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    clicks: list[str] = []
+    shown = {"heading": False}
+
+    def fake_heading(config: Any, task: str, text: str, **_: Any) -> dict:
+        return {"expect_heading": shown["heading"]}
+
+    monkeypatch.setattr(actions, "click_task", lambda c, t, name, **_: clicks.append(name))
+    monkeypatch.setattr(actions, "heading_task", fake_heading)
+    run = ledger_ops._default_run_step("expense-report")
+    step = FlowStep(
+        action="click", control="Add line", expect=None, page="form", starts_on="Edit Report"
+    )
+
+    with pytest.raises(StepNotMadeError, match="does not show the heading"):
+        run(step, {})
+    assert clicks == []  # the step was not made
+    shown["heading"] = True
+    run(step, {})
+    assert clicks == ["Add line"]
+
+
+def test_a_finished_handoff_is_recognised_before_its_starts_on_heading_is_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.ledger_ops import StepNotMadeError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    on_page = {"Saved": False, "Edit Report": True}
+
+    def fake_heading(config: Any, task: str, text: str, **_: Any) -> dict:
+        return {"expect_heading": on_page.get(text, False)}
+
+    monkeypatch.setattr(actions, "heading_task", fake_heading)
+    run = ledger_ops._default_run_step("expense-report")
+    handoff = FlowStep(
+        action="handoff", control=None, expect=None, page=None, instruction="Click Save.",
+        starts_on="Edit Report", expect_heading="Saved",
+    )  # fmt: skip
+
+    with pytest.raises(HandoffRequired, match="Click Save"):
+        run(handoff, {})  # not done yet, and the page is where the handoff starts
+    on_page.update({"Saved": True, "Edit Report": False})
+    run(handoff, {})  # the human saved: the page moved on, and that counts as done
+    on_page.update({"Saved": False, "Edit Report": False})
+    with pytest.raises(StepNotMadeError, match="does not show the heading"):
+        run(handoff, {})  # neither done nor where it starts: nothing to ask the human yet
+
+
+@pytest.mark.parametrize(
+    ("status", "made"), [("match", True), ("mismatch", False), ("missing", False)]
+)
+def test_the_default_runner_verifies_a_field_without_showing_its_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str, made: bool
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.ledger_ops import StepNotMadeError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    compared: list[tuple[str, str]] = []
+
+    def fake_verify(config: Any, task: str, label: str, expected: str, **_: Any) -> dict:
+        compared.append((label, expected))
+        return {"status": status}
+
+    monkeypatch.setattr(actions, "verify_task", fake_verify)
+    run = ledger_ops._default_run_step("expense-report", _model())
+    step = FlowStep(
+        action="verify", control="expense.amount", expect=None, page="form", bind="amount"
+    )
+
+    if made:
+        assert run(step, {"amount": "12.50"}) == "amount"  # the parameter, never its value
+    else:
+        with pytest.raises(StepNotMadeError, match="parameter 'amount'") as caught:
+            run(step, {"amount": "12.50"})
+        assert "12.50" not in str(caught.value)
+    assert compared == [("Amount", "12.50")]
+
+
 def test_the_paused_instruction_is_marked_as_recorded_text(tmp_path: Path) -> None:
     begin_instance(tmp_path, "expense-report", "trip-1")
 

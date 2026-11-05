@@ -36,6 +36,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from blumkin.browser.cdp import FIELD_ROLES
 from blumkin.browser.profiles import ensure_private_dir, validate_task_name, write_private
 from blumkin.config import BrowserSetup
 
@@ -102,6 +103,9 @@ class FlowStep:
     column: str | None = None
     row: str | None = None
     value: str | None = None
+    #: A heading the page must already show before the step runs; when it does not, the run
+    #: stops without making the step (the step's own `expect_heading` is checked afterwards).
+    starts_on: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -506,11 +510,13 @@ _HOST = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"
 )
 _LOCK_FILENAME = ".lock"
-#: The steps a flow parameter can feed: a value typed into a field or a file chosen for upload.
-_BOUND_ACTIONS = frozenset({"fill", "upload"})
+#: The steps a flow parameter can feed: a value typed into a field, a file chosen for upload, or
+#: a value a field is checked against (`verify`, which changes nothing).
+_BOUND_ACTIONS = frozenset({"fill", "upload", "verify"})
 _CELL = "cell"
 _HANDOFF = "handoff"
 _PICK = "pick"
+_VERIFY = "verify"
 #: The steps that can state a heading the page must show afterwards.
 _HEADING_ACTIONS = frozenset(
     {"cell", "click", "fill", "goto", "handoff", "pick", "press", "upload"}
@@ -672,6 +678,7 @@ def _flow_payload(flow: Flow) -> dict[str, Any]:
             | ({"row": step.row} if step.row is not None else {})
             | ({"column": step.column} if step.column is not None else {})
             | ({"value": step.value} if step.value is not None else {})
+            | ({"starts_on": step.starts_on} if step.starts_on is not None else {})
             for step in flow.steps
         ],
     }
@@ -996,7 +1003,15 @@ def _step(
         data,
         where,
         {"action", "control", "expect", "page"},
-        optional={"bind", "column", "expect_heading", "instruction", "row", "value"},
+        optional={
+            "bind",
+            "column",
+            "expect_heading",
+            "instruction",
+            "row",
+            "starts_on",
+            "value",
+        },
     )
     declared = params or {}
     action = _text(data["action"], f"{where}.action", pattern=_LOGICAL_NAME, what="an action name")
@@ -1007,6 +1022,11 @@ def _step(
         )
         if not expect_heading.strip():
             raise SiteModelError(f"Expected {where}.expect_heading with some text, got blanks")
+    starts_on = data.get("starts_on")
+    if starts_on is not None:
+        starts_on = _text(starts_on, f"{where}.starts_on", max_len=_MAX_HEADING, plain=True)
+        if not starts_on.strip():
+            raise SiteModelError(f"Expected {where}.starts_on with some text, got blanks")
     instruction = data.get("instruction")
     if (action == _HANDOFF) != (instruction is not None):
         raise SiteModelError(
@@ -1037,7 +1057,7 @@ def _step(
         bind = _text(bind, f"{where}.bind", pattern=_LOGICAL_NAME, what="a logical name")
         if action not in _BOUND_ACTIONS and action not in (_CELL, _PICK):
             raise SiteModelError(
-                f"Expected {where}.bind only on a fill, upload, cell or pick step, "
+                f"Expected {where}.bind only on a fill, upload, verify, cell or pick step, "
                 f"got it on {action!r}"
             )
         if action in (_CELL, _PICK) and literal is not None:
@@ -1060,6 +1080,10 @@ def _step(
         raise SiteModelError(
             f"Expected {where} to bind a parameter (the flow declares params), got none"
         )
+    if action == _VERIFY and (bind is None or data["control"] is None):
+        raise SiteModelError(
+            f"Expected a verify step to name a control and bind a parameter in {where}"
+        )
     if action == _PICK and bind is None and literal is None:
         raise SiteModelError(f"Expected a pick step to have a bind or a value in {where}, got none")
     control = data["control"]
@@ -1078,6 +1102,13 @@ def _step(
             raise SiteModelError(
                 f"Expected a control that belongs to page {page} in {where}, got {_shown(control)}"
             )
+    if action == _VERIFY and control is not None:
+        role = _recorded_role(pages, control, page)
+        if role is not None and role not in FIELD_ROLES:
+            raise SiteModelError(
+                f"Expected a verify step in {where} to name a field, got {_shown(control)} "
+                f"recorded with the role {role!r}"
+            )
     expect = data["expect"]
     if expect is not None:
         expect = _text(expect, f"{where}.expect", plain=True)
@@ -1091,8 +1122,23 @@ def _step(
         instruction=instruction,
         page=page,
         row=row,
+        starts_on=starts_on,
         value=literal,
     )
+
+
+def _recorded_role(pages: Mapping[str, Page], control: str, page: str | None) -> str | None:
+    """The role a control is recorded with, when its role-and-name locator gives one."""
+    for known_page in pages.values():
+        if page is not None and known_page.page_id != page:
+            continue
+        for known in known_page.controls:
+            if known.name != control:
+                continue
+            for locator in known.locators:
+                if locator.strategy is LocatorStrategy.ROLE_NAME:
+                    return locator.value.partition(":")[0]
+    return None
 
 
 def _cell_keys(

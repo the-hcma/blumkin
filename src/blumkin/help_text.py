@@ -748,8 +748,9 @@ shows it). Where a run stopped, a handoff or a condition that failed after its s
 saved in the ledger (`status` shows it for the item): while it is, a run with no `--from-step` is
 refused and names the step to resume from, since running the flow again from step 1 would repeat
 what was done; `--restart` says that is meant, and the other flow, or an item that stopped in a
-different flow, is refused the same way. `--from-step` is taken as given. A journal that holds
-such an entry is not read by a blumkin from before this change.
+different flow, is refused the same way (except a stop at step 1, where nothing was made yet, so a
+plain re-run, even with another flow, just starts again). `--from-step` is taken as given. A
+journal that holds such an entry is not read by a blumkin from before this change.
 """
 
 BROWSER_LEDGER_BEGIN_EPILOG = """
@@ -1003,11 +1004,14 @@ name a declared parameter, a handoff names no control, and a heading is at most 
 Without `--yes` that check is all that happens and nothing is written. A flow of the same name is
 replaced only with `--replace`; `blumkin browser model diff TASK N` shows what a save changed.
 A parameter is NAME:KIND with KIND one of date, file, text, or NAME:choice=A|B|C. A step is its
-action, then its control when it acts on one (click, press, fill, upload), then key=value words
-(page, bind, expect, expect_heading, instruction, row, column, value; quote a value with spaces
-in the shell's own way). The actions are click, press, fill, upload, goto, cell, pick (choose a
-result row by its text) and handoff. It
-needs a saved model (`blumkin browser explore`), and nothing here touches the browser.
+action, then its control when it acts on one (click, press, fill, upload, verify), then key=value
+words (page, bind, expect, expect_heading, starts_on, instruction, row, column, value; quote a
+value with spaces in the shell's own way). The actions are click, press, fill, upload, goto, cell,
+pick (choose a result row by its text), verify (check that a field holds the value of a bound
+parameter, reporting only match or not) and handoff. `starts_on=HEADING` makes a step refuse to
+run unless the page already shows that heading: the run stops before the step, and resumes at it
+with `--from-step`. It needs a saved model (`blumkin browser explore`), and nothing here touches
+the browser.
 """
 
 BROWSER_MODEL_VERSIONS_EPILOG = """
