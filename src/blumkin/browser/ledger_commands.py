@@ -53,7 +53,8 @@ def ledger_apply(
     flow: str,
     value: Sequence[str] = (),
     sha256: str | None = None,
-    from_step: int = 1,
+    from_step: int | None = None,
+    restart: bool = False,
 ) -> dict[str, Any]:
     """Run a recorded flow for one item and mark it filled (no-op if already verified).
 
@@ -71,6 +72,7 @@ def ledger_apply(
         sha256=sha256,
         models_store=resolve_store(config),
         start_at=from_step,
+        restart=restart,
     )
     return result.as_dict() | {"ok": True}
 
@@ -352,6 +354,11 @@ def _payload(status: LedgerStatus) -> dict[str, Any]:
                 "sha256": item.sha256,
                 "state": item.state.value,
             }
+            | (
+                {"resume": {"flow": item.resume_flow, "step": item.resume_step}}
+                if item.resume_step is not None
+                else {}
+            )
             for item in status.items
         ],
         "local_only": [i.item for i in status.local_only()],

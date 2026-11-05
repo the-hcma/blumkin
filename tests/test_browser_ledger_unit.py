@@ -6,6 +6,7 @@ import json
 import stat
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -721,3 +722,68 @@ def test_a_second_expect_merges_with_the_first_and_folds_back_from_disk_with_ite
 
     assert again.expected == {ItemKind.DAY: 10, ItemKind.RECEIPT: 2}
     assert [item.item for item in again.items] == ["d1", "d2"]
+
+
+def test_a_recorded_stop_is_saved_shown_replaced_and_cleared_by_the_items_next_change(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import record_resume
+
+    begin_instance(tmp_path, "timesheet", "2026-p21")
+    record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.STAGED)
+
+    status = record_resume(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", "fill-day", 3)
+    (held,) = status.items
+    assert (held.resume_flow, held.resume_step) == ("fill-day", 3)
+
+    again = record_resume(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", "fill-day", 5)
+    assert again.items[0].resume_step == 5
+    assert instance_status(tmp_path, "timesheet", "2026-p21").items[0].resume_step == 5  # on disk
+
+    record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.FILLED)
+    cleared = instance_status(tmp_path, "timesheet", "2026-p21").items[0]
+    assert cleared.resume_flow is None and cleared.resume_step is None
+
+
+def test_a_stop_can_only_be_recorded_for_a_staged_item_in_an_open_instance(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import record_resume
+
+    begin_instance(tmp_path, "timesheet", "2026-p21")
+    with pytest.raises(LedgerError, match="staged"):
+        record_resume(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "nope", "f", 2)
+    record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.STAGED)
+    for flow, step in (("Bad Flow", 2), ("f", 1), ("f", 999), ("f", True)):
+        with pytest.raises(LedgerError):
+            record_resume(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", flow, step)
+    record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.FILLED)
+    with pytest.raises(LedgerError, match="staged"):
+        record_resume(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", "f", 2)
+    discard_instance(tmp_path, "timesheet", "2026-p21")
+    with pytest.raises(LedgerError, match="open instance"):
+        record_resume(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", "f", 2)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"flow": "f", "item": "ghost", "kind": "day", "step": 3},  # no such item
+        {"flow": "f", "item": "d1", "kind": "day", "step": 1},  # step before the next one
+        {"flow": "f", "item": "d1", "kind": "day", "step": 999},
+        {"flow": "Bad Flow", "item": "d1", "kind": "day", "step": 3},
+        {"flow": "f", "item": "d1", "kind": "day"},  # no step at all
+    ],
+)
+def test_a_hand_edited_resume_entry_makes_the_journal_invalid_not_a_crash(
+    tmp_path: Path, bad: dict[str, Any]
+) -> None:
+    begin_instance(tmp_path, "timesheet", "2026-p21")
+    record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.STAGED)
+    journal = _journal(tmp_path)
+    lines = journal.read_text().splitlines()
+    lines.append(json.dumps({"at": "2026-11-05T00:00:00Z", "event": "resume", "seq": 3, **bad}))
+    journal.write_text("\n".join(lines) + "\n")
+
+    with pytest.raises(LedgerJournalError):
+        instance_status(tmp_path, "timesheet", "2026-p21")

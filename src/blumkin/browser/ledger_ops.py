@@ -7,6 +7,7 @@ and always reports ``submitted: false``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from collections.abc import Callable, Mapping, Sequence
@@ -25,6 +26,7 @@ from blumkin.browser.ledger import (
     LedgerStatus,
     instance_status,
     record_item,
+    record_resume,
 )
 from blumkin.browser.model import (
     Flow,
@@ -132,18 +134,33 @@ def apply_item(
     model: SiteModel | None = None,
     models_store: Path | None = None,
     run_step: StepRunner | None = None,
-    start_at: int = 1,
+    start_at: int | None = None,
+    restart: bool = False,
 ) -> ApplyResult:
     """Run a recorded flow for ``item``, then mark it filled (or no-op if already verified).
 
     A `handoff` step stops the run, without failing the item, and the result says what the
     human is to do and which step to resume from (`start_at`, 1-based) once they have. The
     steps before `start_at` are not run again.
+
+    The stop is saved in the ledger (the flow and the step to go on from). While it is, a plain
+    run, with no `start_at`, is refused and names the step to resume from: what was done is not
+    undone, so running the flow again from its first step would repeat it. `restart` says that
+    is meant; `start_at` is the person's own say-so and is taken as given.
     """
+    if restart and start_at is not None:
+        raise LedgerError("Expected either a step to start from or a restart, got both")
     status = instance_status(config_dir, task, instance)
     existing = _find(status, kind, item)
     if existing is not None and existing.state is ItemState.VERIFIED:
         return ApplyResult(item=existing, noop=True, status=status)
+    if existing is not None and existing.state is ItemState.FILLED:
+        # Running the flow again would repeat what already filled the item, and the ledger has
+        # no step from filled back to staged: refused before the browser is touched.
+        raise LedgerError(
+            f"Expected {item!r} to be staged or failed to apply a flow, got one that is already "
+            "filled; check it against the page with `ledger verify`"
+        )
     site = (
         model
         if model is not None
@@ -157,6 +174,34 @@ def apply_item(
     # Checked before the item is staged or the browser touched: a refused run changes nothing.
     validate_params(flow, values or {})
     validate_cell_values(flow, values or {})
+    pending_step = (
+        existing.resume_step
+        if existing is not None and existing.state is ItemState.STAGED
+        else None
+    )
+    if pending_step is not None and not restart:
+        stopped_in = existing.resume_flow if existing is not None else None
+        if start_at is None and pending_step > len(flow.steps) + 1:
+            raise LedgerError(
+                f"Expected {item!r} to go on from step {pending_step} of flow {stopped_in!r}, "
+                f"where it stopped, got a flow that now has {len(flow.steps)} steps; look at "
+                "the page, then run again with --restart"
+            )
+        if start_at is None:
+            raise LedgerError(
+                f"Expected {item!r} to go on from step {pending_step} of flow {stopped_in!r}, "
+                f"where it stopped, got a run from the start; look at the page (a handoff step is "
+                f"the person's to do, and a step whose heading never showed was made but did not "
+                f"land as expected), then run again with --from-step {pending_step}, or with "
+                "--restart to run the flow again from step 1 (steps already done are repeated)"
+            )
+        if stopped_in != flow_name:
+            raise LedgerError(
+                f"Expected {item!r} to go on in flow {stopped_in!r}, where it stopped, got "
+                f"flow {flow_name!r}; run again with --restart to start that flow instead"
+            )
+    if start_at is None:
+        start_at = 1
     # One past the last step is allowed: a flow whose last step is a handoff resumes there, with
     # nothing left to run but the item to be marked filled.
     if not 1 <= start_at <= len(flow.steps) + 1:
@@ -195,13 +240,16 @@ def apply_item(
                 runner(step, bindings)
             except StepConditionError as failed:
                 # The step itself was made: the item stays as it is and the way on is named, so
-                # a plain re-run from step 1 does not repeat what already happened.
+                # a plain re-run from step 1 does not repeat what already happened. The place is
+                # saved in the ledger, so a later run says so as well.
+                _remember_stop(config_dir, task, instance, kind, item, flow_name, number + 1)
                 raise StepConditionError(
                     f"Flow step {number} ({step.action}) was made, but its condition failed: "
                     f"{failed}; the item was not marked failed. Look at the page, then resume "
                     f"with --from-step {number + 1}"
                 ) from failed
             except HandoffRequired as pause:
+                _remember_stop(config_dir, task, instance, kind, item, flow_name, number + 1)
                 paused_status = instance_status(config_dir, task, instance)
                 held = _find(paused_status, kind, item)
                 if held is None:
@@ -608,6 +656,20 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
         raise LedgerError(f"Unsupported flow action {step.action!r}")
 
     return run
+
+
+def _remember_stop(
+    config_dir: Path, task: str, instance: str, kind: ItemKind, item: str, flow: str, step: int
+) -> None:
+    """Save where a flow stopped, without ever hiding why it stopped.
+
+    The pause or the failed condition is what the caller must hear about: if the ledger cannot
+    take the entry (the instance was closed meanwhile, the item changed state), that is dropped
+    and the original outcome goes on. The refusal it enables is checked when a run starts, not
+    held across a run, so two runs for one item at the same time are not serialized by it.
+    """
+    with contextlib.suppress(LedgerError, OSError):
+        record_resume(config_dir, task, instance, kind, item, flow, step)
 
 
 def _find(status: LedgerStatus, kind: ItemKind, item: str) -> ItemRecord | None:
