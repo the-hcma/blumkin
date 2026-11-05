@@ -3242,3 +3242,22 @@ def test_a_nearer_outer_deadline_is_kept_inside_a_longer_inner_one() -> None:
             with _deadline(30, "inner"):
                 time.sleep(3)
     assert time.monotonic() - started < 2
+
+
+def test_a_control_lookup_that_never_answers_is_bounded_whatever_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    from blumkin.browser import cdp
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+
+    monkeypatch.setattr(cdp, "_DEADLINE_SLACK_S", 0.2)
+    hung = SimpleNamespace(count=lambda: time.sleep(5))
+    page = SimpleNamespace(context=object(), get_by_role=lambda *_a, **_k: hung)
+    driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=0.1)
+
+    started = time.monotonic()
+    with pytest.raises(BrowserActionError, match="may or may not have happened"):
+        driver.matching_roles("Save", ["button"], 0)
+    assert time.monotonic() - started < 3

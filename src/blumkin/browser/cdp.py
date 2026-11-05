@@ -813,7 +813,9 @@ class PlaywrightDriver:
             present: list[tuple[str, int]] = []
             for role in roles:
                 try:
-                    count = int(self._page.get_by_role(role, name=name, exact=True).count())
+                    # Each count is bounded, not the whole wait, which `--wait` sets.
+                    with self._bounded(self._call_deadline_s(), "count the controls"):
+                        count = int(self._page.get_by_role(role, name=name, exact=True).count())
                 except _playwright_error() as exc:
                     raise self._action_error(f"look for a control named {name!r}", exc) from exc
                 if nth is not None:
@@ -2004,6 +2006,12 @@ class PlaywrightDriver:
             self._expired = True
             raise
 
+    def _call_deadline_s(self) -> float:
+        """How long one driver call may take: Playwright's own waits end at the timeout and a
+        call can run a few of them in a row (find, vet, act), so this is only for what has no
+        wait, twice the timeout and some seconds on top."""
+        return 2 * self._timeout_s + _DEADLINE_SLACK_S
+
     def _require_open(self) -> None:
         if self._closed:
             raise BrowserActionError("Expected an attached browser, got a closed driver")
@@ -2032,6 +2040,7 @@ _DEADLINE_METHODS = (
     "read_field",
     "read_text",
     "select",
+    "title",
     "upload",
 )
 
@@ -2039,10 +2048,7 @@ _DEADLINE_METHODS = (
 def _with_deadline(method: Callable[..., Any], name: str) -> Callable[..., Any]:
     @functools.wraps(method)
     def bounded(self: PlaywrightDriver, *args: Any, **kwargs: Any) -> Any:
-        # Playwright's own waits end at the timeout, and a call can run a few of them in a row
-        # (find, vet, act), so the deadline is only for what has no wait: twice the timeout and
-        # some seconds on top.
-        with self._bounded(2 * self._timeout_s + _DEADLINE_SLACK_S, f"finish {name}"):
+        with self._bounded(self._call_deadline_s(), f"finish {name}"):
             return method(self, *args, **kwargs)
 
     return bounded
