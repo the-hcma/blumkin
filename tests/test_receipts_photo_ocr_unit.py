@@ -250,3 +250,26 @@ def test_a_percentage_or_a_date_is_not_an_amount() -> None:
         assert docs_read._AMOUNT.search(text) is None, text
     for text in ("Total $11.80", "11,80", "Card 35.33"):
         assert docs_read._AMOUNT.search(text) is not None, text
+
+
+def test_a_real_total_line_that_mentions_a_tip_is_kept() -> None:
+    from blumkin.receipts import _without_tip_table, parse_receipt_text
+
+    for line in ("Total incl. 18% tip $45.00", "Tip: 0.00 Total: 35.00", "Tips 5.00  TOTAL 40.00"):
+        assert _without_tip_table(f"Subtotal $30.00\n{line}\n") == f"Subtotal $30.00\n{line}\n"
+    assert parse_receipt_text("Tip: 0.00 Total: 35.00\n").total.value == "35.00"
+
+
+def test_one_printed_dollar_line_does_not_make_a_single_currency_receipt_doubtful() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    cad = parse_receipt_text("Total CA$45.00\nTax $2\n").currency
+    eur = parse_receipt_text("Total €12,50\nApprox $13.50\nRate $1.08\n").currency
+
+    assert (cad.value, cad.confidence.value) == ("CAD", "high")
+    assert (eur.value, eur.confidence.value) == ("EUR", "high")
+
+
+def test_amounts_with_thousands_or_a_minus_count_as_amounts() -> None:
+    for text in ("Total 1,234.56", "Total 1.234,56", "Total -11.80", "Total 11.80"):
+        assert docs_read._AMOUNT.search(text) is not None, text

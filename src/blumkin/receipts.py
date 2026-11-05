@@ -146,9 +146,7 @@ def parse_receipt_text(
     `sender` is the display name or domain the message came from; it names the vendor only when
     the text itself does not.
     """
-    clean = "\n".join(
-        line for line in _ascii_digits(text).splitlines() if not _TIP_SUGGESTION.search(line)
-    )
+    clean = _without_tip_table(_ascii_digits(text))
     return ReceiptFields(
         currency=_parse_currency(clean),
         date=_parse_date(clean, today or date.today()),
@@ -343,6 +341,8 @@ _NOT_A_TOTAL = re.compile(
 _SEPARATORS = " .,'\u2019\u00a0\u202f"
 #: A printed tip table ("18% Tip: $5.02 Total: $40.35") lists totals the diner did not pay; OCR
 #: may lose the `%`, but a real total line never has a tip amount in front of the word total.
+#: Dollar signs it takes to outvote another currency symbol.
+_STRAY_SYMBOL_DOLLARS = 3
 _TIP_SUGGESTION = re.compile(
     r"\b\d{1,2}\s*%\s*tip|\btip\w*\W{0,3}[^\d\s]?\s*\d[\d.,]*\W+(?:total|tetal)", re.IGNORECASE
 )
@@ -482,10 +482,12 @@ def _parse_currency(text: str) -> ReceiptField:
             found.append((match.start(), code))
             near.add(code)
     found.extend((0, code) for code in sorted(near) if all(code != seen for _, seen in found))
-    if found:
-        # A bare `$` is no currency on its own (USD, CAD or AUD), but beside another currency it
-        # is evidence against it: one `£` read out of noise must not outweigh a `$` on every line.
-        found.extend((m.start(), "USD") for m in _BARE_DOLLAR.finditer(text))
+    dollars = [m.start() for m in _BARE_DOLLAR.finditer(text)]
+    if found and len(dollars) >= _STRAY_SYMBOL_DOLLARS:
+        # A bare `$` is no currency on its own (USD, CAD or AUD), but a `$` on most lines is
+        # evidence against one other symbol read out of noise (a `£` for a smudge). A line or
+        # two of `$` beside a printed code (`CA$`, `EUR`) says nothing.
+        found.extend((at, "USD") for at in dollars)
     codes: list[str] = []
     for _, code in sorted(found):
         if code not in codes:
@@ -788,3 +790,16 @@ def _receipt_file(
         path=Path(entry.path),
         size=info.st_size,
     )
+
+
+def _without_tip_table(text: str) -> str:
+    """The text without the rows of a printed tip table (two or more rows, never a lone line).
+
+    A line that mentions a tip and a total can be the real total (`Total incl. 18% tip`), so
+    only a table, which lists several tips and totals the diner did not pay, is dropped.
+    """
+    lines = text.splitlines()
+    rows = [line for line in lines if _TIP_SUGGESTION.search(line)]
+    if len(rows) < 2:
+        return text
+    return "\n".join(line for line in lines if not _TIP_SUGGESTION.search(line))
