@@ -304,6 +304,9 @@ class ControlInfo:
 DEFAULT_ACTION_TIMEOUT_S = 30.0
 #: How long a page that was just acted on may take to go quiet, and how long its DOM must stay
 #: unchanged to count as quiet.
+HEADING_REPORT_CHARS = 200
+HEADINGS_REPORTED = 20
+SETTLE_GRACE_MS = 300
 SETTLE_QUIET_MS = 500
 SETTLE_WAIT_S = 4.0
 #: How long `--expect-heading` waits for the heading before the click is reported as not landed.
@@ -412,6 +415,8 @@ class PageSettled:
     #: None when no heading was awaited.
     matched: bool | None
     quiet: bool
+    #: The address of the document the headings were read from, in the same evaluation.
+    url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1114,6 +1119,10 @@ class PlaywrightDriver:
         self._require_open()
         # One deadline for the whole settle, however many waits it takes.
         deadline = time.monotonic() + timeout_s
+        # Playwright's network-idle state can already hold from before the click, and returns
+        # at once; a short grace lets the request or update the click started begin first.
+        with contextlib.suppress(_playwright_error()):
+            self._page.wait_for_timeout(SETTLE_GRACE_MS)
 
         def left_ms() -> int:
             return max(1, int((deadline - time.monotonic()) * 1000))
@@ -1131,7 +1140,7 @@ class PlaywrightDriver:
                 # A navigation destroyed the page the wait ran in: wait for the new one.
                 with contextlib.suppress(_playwright_error()):
                     self._page.wait_for_load_state("load", timeout=left_ms())
-        headings = self._headings()
+        url, headings = self._headings()
         matched: bool | None = None
         if expect_heading is not None:
             wanted = expect_heading.casefold()
@@ -1142,8 +1151,13 @@ class PlaywrightDriver:
                     break
                 with contextlib.suppress(_playwright_error()):
                     self._page.wait_for_timeout(250)
-                headings = self._headings()
-        return PageSettled(headings=headings, matched=matched, quiet=quiet)
+                url, headings = self._headings()
+        return PageSettled(
+            headings=tuple(text[:HEADING_REPORT_CHARS] for text in headings[:HEADINGS_REPORTED]),
+            matched=matched,
+            quiet=quiet,
+            url=url,
+        )
 
     def list_options(
         self,
@@ -1474,12 +1488,13 @@ class PlaywrightDriver:
         self._commit_typed_cell(value, vet, vet_name)
         self._require_committed(grid)
 
-    def _headings(self) -> tuple[str, ...]:
+    def _headings(self) -> tuple[str, tuple[str, ...]]:
+        """The document's address and its visible headings, read in one evaluation."""
         try:
-            found = self._page.evaluate(_HEADINGS_JS)
+            found = self._page.evaluate(_HEADINGS_JS) or {}
         except _playwright_error():
-            return ()
-        return tuple(str(text) for text in found or ())
+            return "", ()
+        return str(found.get("url", "")), tuple(str(text) for text in found.get("headings", ()))
 
     def _describe(self, handle: Any) -> ControlInfo:
         raw = handle.evaluate(_DESCRIBE_CONTROL_JS, list(self._dialog_landmarks))
@@ -2564,11 +2579,12 @@ _PICK_BLOCKERS_JS = r"""(e) => {
 }"""
 
 _HEADINGS_JS = (
-    "() => Array.from(document.querySelectorAll('h1, h2, h3, [role=heading]'))"
+    "() => ({url: location.href, headings: "
+    "Array.from(document.querySelectorAll('h1, h2, h3, [role=heading]'))"
     ".filter((h) => h.getClientRects().length > 0 && "
     "getComputedStyle(h).visibility !== 'hidden')"
     ".map((h) => String(h.innerText || h.textContent || '').replace(/\\s+/g, ' ').trim()"
-    ".slice(0, 200)).filter(Boolean).slice(0, 20)"
+    ".slice(0, 1000)).filter(Boolean).slice(0, 200)})"
 )
 
 _QUIET_DOM_JS = (

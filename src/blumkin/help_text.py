@@ -271,6 +271,8 @@ After the click the page is given a moment to settle (network idle and a DOM tha
 half a second, at most four seconds; neither is an error), and the output says where it ended:
 `url` (no query or fragment), `heading` (the first visible heading, page text and so untrusted)
 and `settled`. A read straight after a click could otherwise still show the page that was left.
+An update that arrives more than about a second after the click is not waited for: use
+`--expect-heading` for a page that changes late.
 `--expect-heading TEXT` also waits up to 15 seconds for a heading containing TEXT (any case) and
 fails when none shows: the click WAS made, so read the page, and do not click again.
 Clicks one control the task declared in `[browser.tasks.TASK] allowed_controls` in

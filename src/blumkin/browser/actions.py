@@ -248,8 +248,8 @@ def click_task(
         if nth is not None:
             payload["nth"] = nth
 
-        def on_allowed_host() -> None:
-            _require_allowed_page(driver, task, hosts, "the click")
+        def on_allowed_host(url: str) -> None:
+            _require_allowed_url(url, task, hosts, "the click")
 
         payload.update(_settled_report(driver, expect_heading, on_allowed_host))
         return payload
@@ -1790,9 +1790,14 @@ def _require_allowed_page(
     link has already loaded the other page (a GET; nothing from it is returned), and the
     error stops the task before anything is typed into or read from it.
     """
+    _require_allowed_url(driver.url, task, hosts, when)
+
+
+def _require_allowed_url(url: str, task: str, hosts: Sequence[str], when: str) -> None:
+    """The same check on an address captured with the text it must vouch for."""
     if not hosts:
         return
-    parts = urlsplit(driver.url)
+    parts = urlsplit(url)
     host = parts.hostname or "" if parts.scheme in ("http", "https") else ""
     if not host_allowed(host, hosts):
         raise HostBlockedError(
@@ -1802,17 +1807,18 @@ def _require_allowed_page(
 
 
 def _settled_report(
-    driver: GuardedDriver, expect_heading: str | None, on_allowed_host: Callable[[], None]
+    driver: GuardedDriver, expect_heading: str | None, on_allowed_host: Callable[[str], None]
 ) -> dict[str, Any]:
     """Wait for the page a click started to settle and say where it ended up.
 
     The heading is page text: addresses are removed, it is cut short, and it is withheld when
     it reads like an instruction to an agent. A missing expected heading is an error that says
     the click was made. `on_allowed_host` raises when the page is on a host the task may not
-    use: it runs before the page is waited on and again before anything from it is shown, so
-    no word or address of a foreign page reaches the output or an error.
+    use: it runs on the page before it is waited on and then on the address of the very document
+    the headings were read from, so no word or address of a foreign page reaches the output or
+    an error, even if the page moved while it was polled.
     """
-    on_allowed_host()
+    on_allowed_host(driver.url)
     settled = driver.settle_page(expect_heading=expect_heading)
     if settled is None:
         if expect_heading is not None:
@@ -1821,9 +1827,10 @@ def _settled_report(
                 "the click WAS made, so read the page instead of clicking again"
             )
         return {}
-    on_allowed_host()
+    on_allowed_host(settled.url)
+    on_allowed_host(driver.url)
     report: dict[str, Any] = {"settled": settled.quiet}
-    shown = _display_url(driver.url)
+    shown = _display_url(settled.url)
     if shown:
         report["url"] = shown
     headings = [

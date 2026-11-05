@@ -2808,6 +2808,8 @@ def browser_click(
         return
     which = f" (match {nth})" if nth is not None else ""
     lines = [f"{task}: clicked {payload['role']} {sanitize_terminal(name)!r}{which}"]
+    if payload.get("settled") is False:
+        lines.append("warning: the page was still changing, so the heading below may be stale")
     if payload.get("url"):
         lines.append(f"now on: {payload['url']}")
     if payload.get("heading_withheld"):

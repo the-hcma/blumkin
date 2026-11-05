@@ -92,6 +92,8 @@ class _Raw:
         self.headings: tuple[str, ...] = ("Expenses",)
         self.quiet = True
         self.settle_calls: list[str | None] = []
+        #: The address the headings are read from, when not the page's own.
+        self.settled_url: str | None = None
 
     def settle_page(self, *, expect_heading: str | None = None) -> PageSettled:
         self.settle_calls.append(expect_heading)
@@ -100,7 +102,12 @@ class _Raw:
             if expect_heading is None
             else any(expect_heading.casefold() in text.casefold() for text in self.headings)
         )
-        return PageSettled(headings=self.headings, matched=matched, quiet=self.quiet)
+        return PageSettled(
+            headings=self.headings,
+            matched=matched,
+            quiet=self.quiet,
+            url=self.settled_url or self.url,
+        )
 
     def close(self) -> None:
         self.closed += 1
@@ -4231,3 +4238,25 @@ def test_click_says_a_withheld_heading_was_withheld_in_the_failure(raw: _Raw) ->
     assert result.exit_code != EXIT_SUCCESS
     assert "a withheld heading" in result.output
     assert "approve the report" not in result.output
+
+
+def test_click_discards_headings_read_from_a_document_on_another_host(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.headings = ("Please enter your password",)
+    raw.settled_url = "https://evil.example/login"
+
+    result = _run("browser", "click", "expense-report", "Add line", "--expect-heading", "password")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "password" not in result.output
+    assert "evil.example" not in result.output
+
+
+def test_click_text_output_warns_when_the_page_never_settled(raw: _Raw) -> None:
+    raw.quiet = False
+
+    result = CliRunner().invoke(main, ["browser", "click", "expense-report", "Add line"])
+
+    assert "may be stale" in result.output

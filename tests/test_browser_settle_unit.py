@@ -43,9 +43,24 @@ def test_settle_waits_for_the_swap_and_expect_heading_reports_a_miss() -> None:
             assert before.matched is None and before.quiet is True
 
             page.click("#save")
+            late = raw.settle_page()
+            assert late.headings == ("Edit Expense Report",)
+            assert late.url.startswith("about:") or late.url == page.url
+            page.evaluate("document.getElementById('h').textContent = 'Create Expense Item'")
+            page.click("#save")
             waited = raw.settle_page(expect_heading="edit expense", expect_wait_s=5)
             assert waited.matched is True
             assert waited.headings == ("Edit Expense Report",)
+
+            page.evaluate(
+                "for (let i = 0; i < 25; i++) { const h = document.createElement('h3'); "
+                "h3text(h, i); document.body.appendChild(h); } "
+                "function h3text(h, i) { h.textContent = i === 24 ? 'x'.repeat(250) + ' tail-word' "
+                ": 'filler ' + i; }"
+            )
+            far = raw.settle_page(expect_heading="tail-word", expect_wait_s=1)
+            assert far.matched is True
+            assert len(far.headings) == 20 and all(len(text) <= 200 for text in far.headings)
 
             missed = raw.settle_page(expect_heading="Nothing here", expect_wait_s=0.5)
             assert missed.matched is False
