@@ -112,6 +112,8 @@ def format_docs_read_human(payload: dict[str, Any]) -> list[str]:
 _IMAGE_EXTENSIONS = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
 _MAX_EXTRACTED_BYTES = 1_000_000
 _MAX_FILE_BYTES = 25_000_000
+#: A money amount with its decimals (`11.80`, `11,80`) in a read of a photo.
+_AMOUNT = re.compile(r"\d[.,]\d{2}\b")
 _NEGATIVE_EVIDENCE = re.compile(
     r"(?<![\d/])[-\u2212\u2013]\s*[$\u20ac\u00a3]?\s*\d|\d\s*[-\u2212\u2013]\s*(?:$|\s)|"
     r"\(\s*[$\u20ac\u00a3]?\s*\d|\bCR\b|\bcredit\s+(?:note|memo)\b|\d\s*credit\b(?!\s+cards?)|"
@@ -382,7 +384,8 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
         pass
     passes += 1
     candidates.append(str(pytesseract.image_to_string(image)).strip())
-    if prepared is not None and max(_letters(text) for text in candidates) < _OCR_RETRY_BELOW:
+    retried = prepared is not None and max(_letters(t) for t in candidates) < _OCR_RETRY_BELOW
+    if retried:
         for variant, mode in _retry_passes(prepared):
             try:
                 passes += 1
@@ -395,6 +398,16 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
                 continue
             if _letters(candidates[-1]) >= _OCR_RETRY_BELOW:
                 break
+    if prepared is not None and not retried and not any(_AMOUNT.search(t) for t in candidates):
+        # Plenty of words and no amount: an app screenshot or a receipt with its total in large
+        # print is read best as sparse text.
+        try:
+            passes += 1
+            candidates.append(str(pytesseract.image_to_string(prepared, config="--psm 11")).strip())
+        except not_found:
+            raise
+        except Exception:  # noqa: BLE001 - the reads so far still stand
+            pass
     # One entry per distinct read (ignoring spacing), each kept as it was read.
     distinct = list(
         {" ".join(text.split()): text for text in reversed(candidates) if text.strip()}.values()
@@ -404,7 +417,12 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
         # fuller read of another pass lacks them: the parser then sees the disagreement.
         return "\n".join(distinct), passes, True
     # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
-    return max(candidates, key=_letters), passes, False
+    # A read that holds an amount beats a longer one that holds none.
+    return (
+        max(candidates, key=lambda text: (bool(_AMOUNT.search(text)), _letters(text))),
+        passes,
+        False,
+    )
 
 
 def _prepare_for_ocr(image: Any) -> Any:

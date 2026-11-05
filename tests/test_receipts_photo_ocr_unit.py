@@ -207,3 +207,39 @@ def test_every_pass_reads_the_photo_turned_the_way_its_exif_says() -> None:
     docs_read._ocr_photo(sideways, SimpleNamespace(image_to_string=image_to_string))
 
     assert seen and all(width < height for width, height in seen)
+
+
+def test_a_tip_table_does_not_make_a_larger_total() -> None:
+    """The tip suggestions list totals the diner did not pay; the real total line may be garbled."""
+    from blumkin.receipts import parse_receipt_text
+
+    text = (
+        "Subtotal $27.90\nSale tax (8.625%) $2.41\nTip $5.02\nTotalihit $35.33\n"
+        "Tip Suggestions\n16% Tip:$4.46 Total: $39.79\n18% Tip:$5.02 Total: $40.35\n"
+        "20% Tip:$5.58 tetal: $40.91\nPiha a 18 Ae Tip:$5.02 Total: $40.35\n"
+    )
+
+    fields = parse_receipt_text(text)
+
+    assert fields.total.value == "35.33"
+
+
+def test_one_stray_symbol_does_not_outvote_the_dollar_signs() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    text = "Sale tax #£Bt (8.625%) $2.41\nSubtotal $27.90\nTip $5.02\nCard $35.33\n"
+
+    currency = parse_receipt_text(text).currency
+
+    assert currency.value == "USD"
+    assert "several currencies" in currency.note
+
+
+def test_a_read_with_words_and_no_amount_is_tried_again_as_sparse_text() -> None:
+    """An app screenshot reads as words but loses its amount, which only `--psm 11` finds (#627)."""
+    prose = "Clipper card Virtual card replaced your card details for this purchase"
+    fake, calls = _fake({None: prose, "--psm 6": prose, "--psm 11": prose + "\n$11.80"})
+
+    text, passes, _ = docs_read._ocr_photo(_lined(), fake)
+
+    assert "$11.80" in text and "--psm 11" in calls and passes == 3

@@ -146,7 +146,9 @@ def parse_receipt_text(
     `sender` is the display name or domain the message came from; it names the vendor only when
     the text itself does not.
     """
-    clean = _ascii_digits(text)
+    clean = "\n".join(
+        line for line in _ascii_digits(text).splitlines() if not _TIP_SUGGESTION.search(line)
+    )
     return ReceiptFields(
         currency=_parse_currency(clean),
         date=_parse_date(clean, today or date.today()),
@@ -265,6 +267,7 @@ class _Amount:
 
 
 _AMOUNT_RUN = re.compile("[0-9](?:[0-9 .,'\u2019\u00a0\u202f]*[0-9])?")
+_BARE_DOLLAR = re.compile(r"(?<![A-Za-z])\$")
 _BIDI_AND_ZERO_WIDTH = re.compile("[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]")
 _CODE_WORDS = "AUD|BRL|CAD|CHF|CNY|DKK|EURO|EUR|GBP|INR|JPY|MXN|NOK|NZD|SEK|USD"
 _CODE_ALIASES = {"EURO": "EUR"}
@@ -338,6 +341,11 @@ _NOT_A_TOTAL = re.compile(
     r"saving|savings|sub\s*-?\s*total|tender|tendered|tip)\b"
 )
 _SEPARATORS = " .,'\u2019\u00a0\u202f"
+#: A printed tip table ("18% Tip: $5.02 Total: $40.35") lists totals the diner did not pay; OCR
+#: may lose the `%`, but a real total line never has a tip amount in front of the word total.
+_TIP_SUGGESTION = re.compile(
+    r"\b\d{1,2}\s*%\s*tip|\btip\w*\W{0,3}[^\d\s]?\s*\d[\d.,]*\W+(?:total|tetal)", re.IGNORECASE
+)
 _TAX_WORDS = re.compile(r"\b(?:gst|hst|tax|vat)\b")
 #: A vendor name counts only near the top, where a receipt prints its letterhead.
 _KNOWN_VENDOR_LINES = 15
@@ -474,11 +482,19 @@ def _parse_currency(text: str) -> ReceiptField:
             found.append((match.start(), code))
             near.add(code)
     found.extend((0, code) for code in sorted(near) if all(code != seen for _, seen in found))
+    if found:
+        # A bare `$` is no currency on its own (USD, CAD or AUD), but beside another currency it
+        # is evidence against it: one `£` read out of noise must not outweigh a `$` on every line.
+        found.extend((m.start(), "USD") for m in _BARE_DOLLAR.finditer(text))
     codes: list[str] = []
     for _, code in sorted(found):
         if code not in codes:
             codes.append(code)
     if len(codes) > 1:
+        # The one seen most often leads: a single symbol OCR made out of noise (`£` for a smudge)
+        # must not outweigh the `$` printed beside every amount.
+        counts = {code: sum(1 for _, seen in found if seen == code) for code in codes}
+        codes.sort(key=lambda code: -counts[code])
         return ReceiptField(
             confidence=Confidence.LOW,
             value=codes[0],
