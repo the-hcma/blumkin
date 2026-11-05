@@ -39,6 +39,14 @@ The values that belong to the user (the time sheet URL, the `period` (`weekly` o
 7. Show the user what is filled in (hours per day and the totals) and ask them to confirm what is filled in. End the session with `blumkin browser ledger handoff time-sheet <instance> --step "…" --step "…"` (add `--decision` for blanks). There is no ledger-free handoff for this task: if the ledger cannot be used, stop and ask the user instead. Relay `submitted: false`, then stop. A period that has not ended yet is saved and confirmed saved only; nothing more is done for it. A complete period is saved, then the user submits it themselves.
 8. When the user says they submitted: `blumkin browser ledger submitted time-sheet <instance> --yes`. To abandon: `blumkin browser ledger discard time-sheet <instance> --yes`.
 
+## Templates (Oracle Fusion)
+
+A saved template is steadier than `Copy Previous Time Card`, which copies whatever the last period held (a period with leave or a holiday copies wrong). The card's `Templates` button opens a menu with `Save as Template`, `Apply` and `Manage`. Declare `Templates`, `Save as Template` and `Apply` in `allowed_controls` (a menu item is never covered by a pattern or by `allow_all_controls`), and never `Manage`, which can delete templates.
+
+- Read the saved templates without choosing one: `blumkin browser dialog time-sheet --open button:Templates --open menuitem:Apply --close button:Cancel`. It waits for the list to load, reads it, and closes the dialog again (`closed: true` in the result; if it is `false`, look at the page before going on). With no template yet the list says so.
+- Name a template in the Save as Template dialog with `blumkin browser fill time-sheet Name "<name>" --role textbox`: the dialog's own name contains "Name", so the role is needed to pick the field.
+- With a site model that has the pages `timecard-landing`, `timecard-templates-menu`, `template-save` and `template-apply`, the flows `save-as-template` (parameter `name`) and `apply-template` (parameter `name`) are written with `blumkin browser model flow add`. Saving a template changes the user's account: do it only when the user asked for it, and apply one only to a period the user named.
+
 ## When something goes wrong
 
 - `not_found`: there is no browser profile for the task, so setup was skipped (check `blumkin browser status` and ask the user to run `blumkin browser profile create time-sheet`), or the command named a missing file or folder.

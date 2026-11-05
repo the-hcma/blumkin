@@ -3418,6 +3418,60 @@ def test_dialog_opens_reads_and_closes_with_the_declared_control(
     assert clicks == ["Templates", "Apply", "Cancel"]
 
 
+def test_dialog_waits_for_a_loading_list_before_reading_and_closing(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+    loading = _DIALOG_OPEN.replace("No templates exist", "Loading Loading").replace(
+        '  - button "Cancel"', "  - grid\n" + '  - button "Cancel"'
+    )
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = loading
+        elif name == "Cancel":
+            raw.aria_text = _DIALOG_CLOSED
+
+    def filled(_seconds: float) -> None:
+        if raw.aria_text == loading:
+            raw.aria_text = _DIALOG_OPEN
+
+    raw.on_event = event
+    raw.on_wait = filled
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert "No templates exist" in payload["text"] and "Loading" not in payload["text"]
+    assert payload["closed"] is True and payload["closed_with"] == "control"
+
+
+def test_dialog_closes_on_a_second_round_when_the_first_cancel_is_swallowed(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+    swallowed: list[str] = []
+
+    def event(name: str) -> None:
+        if name == "Apply":
+            raw.aria_text = _DIALOG_OPEN
+        elif name == "Cancel":
+            swallowed.append(name)
+            if len(swallowed) > 1:
+                raw.aria_text = _DIALOG_CLOSED
+
+    raw.on_event = event
+
+    result = _run("browser", "dialog", "expense-report", "--open", "Apply", "--close", "Cancel")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["closed"] is True and payload["closed_with"] == "control"
+
+
 def test_dialog_closes_with_escape_when_no_close_control_is_named(
     raw: _Raw, _config_dir: Path
 ) -> None:

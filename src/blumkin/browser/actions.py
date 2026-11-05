@@ -91,6 +91,11 @@ _DIALOG_CONTROL = re.compile(
     r' "(?P<name>(?:[^"\\]|\\.)*)"(?P<rest>.*)$'
 )
 _DIALOG_BLOCKERS = ("alertdialog", "dialog")
+_DIALOG_CLOSE_ROUNDS = 2
+_DIALOG_LOADING = re.compile(
+    r"^\s*- (?:text|status|progressbar)\b[^\n]*\bloading\b|\[busy\]|^\s*- grid(?: \"[^\"]*\")?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 _DIALOG_POLL_MS = 250
 _DIALOG_POLLS = 8
 _OVERLAY_ROLES = ("alertdialog", "dialog", "menu")
@@ -1614,23 +1619,30 @@ def _dialog_close(
     work, Escape closes it.
     """
     via: str | None = None
-    try:
-        if (
-            close is not None
-            and not _overlays_at_baseline(driver, roles, baseline)
-            and any(item["name"] == close[0] and close[1] in (None, item["role"]) for item in shown)
-        ):
-            driver.click(close[0], close[1], _default_wait(close[1]))
-            via = "control"
-    except Exception:  # noqa: BLE001 - closing must not hide what went wrong first
-        _LOGGER.info("browser dialog: the declared close control did not work")
-    try:
-        if not _dialog_gone(driver, roles, baseline):
-            driver.dismiss()
-            via = "escape"
-        return _dialog_gone(driver, roles, baseline), via
-    except Exception:  # noqa: BLE001 - see above
-        return False, via
+    for attempt in range(_DIALOG_CLOSE_ROUNDS):
+        try:
+            if (
+                close is not None
+                and not _overlays_at_baseline(driver, roles, baseline)
+                and any(
+                    item["name"] == close[0] and close[1] in (None, item["role"]) for item in shown
+                )
+            ):
+                driver.click(close[0], close[1], _default_wait(close[1]))
+                via = "control"
+        except Exception:  # noqa: BLE001 - closing must not hide what went wrong first
+            _LOGGER.info("browser dialog: the declared close control did not work")
+        try:
+            if not _dialog_gone(driver, roles, baseline):
+                driver.dismiss()
+                via = "escape"
+            # A dialog that is still starting up can swallow the first Cancel or Escape, so
+            # the whole sequence runs once more before the dialog is reported as still open.
+            if _dialog_gone(driver, roles, baseline):
+                return True, via
+        except Exception:  # noqa: BLE001 - see above
+            _LOGGER.info("browser dialog: closing failed on round %d", attempt + 1)
+    return False, via
 
 
 def _dialog_gone(driver: GuardedDriver, roles: Sequence[str], baseline: dict[str, int]) -> bool:
@@ -1645,7 +1657,7 @@ def _dialog_gone(driver: GuardedDriver, roles: Sequence[str], baseline: dict[str
 def _dialog_read(
     driver: GuardedDriver, role: str, name: str | None, wait_s: float, expand_options: bool
 ) -> tuple[str, int, dict[str, Any] | None]:
-    """The redacted `role` subtree once it shows, waiting up to `wait_s` for it to open."""
+    """The redacted `role` subtree once it shows and has stopped loading (up to `wait_s`)."""
     polls = max(1, int(wait_s * 1000 / _DIALOG_POLL_MS))
     for attempt in range(polls):
         snapshot = _redact_aria(driver.aria_snapshot())
@@ -1654,6 +1666,11 @@ def _dialog_read(
         except LookupError as exc:
             if attempt == polls - 1:
                 raise BrowserActionError(_scope_failure(str(exc), role, name)) from exc
+            driver.wait_ms(_DIALOG_POLL_MS)
+            continue
+        if _DIALOG_LOADING.search(text) and attempt < polls - 1:
+            # A list that still says "Loading", or a grid with no row yet, is not what the
+            # dialog shows, and a Cancel pressed meanwhile can be ignored: wait for it.
             driver.wait_ms(_DIALOG_POLL_MS)
             continue
         warning = scan_for_injection(snapshot, location="page.aria").to_payload()
