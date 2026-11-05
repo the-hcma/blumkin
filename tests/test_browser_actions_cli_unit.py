@@ -4510,3 +4510,23 @@ def test_a_sign_in_page_is_read_inside_the_sign_in_allowance_and_an_ordinary_pag
 
     assert during_sign_in == [True]
     assert raw.sign_ins == []
+
+
+def test_a_chain_masks_short_ids_and_addresses_in_a_path(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.chain = [
+        "https://erp.example.com/start",
+        "https://erp.example.com/saml/consume/AbC123xyz9",
+        "https://erp.example.com/login/ada@corp.example",
+        "https://erp.example.com/home",
+    ]
+
+    result = _run("browser", "goto", "expense-report", "https://erp.example.com/start")
+
+    assert _json(result)["chain"] == [
+        "https://erp.example.com/start",
+        "https://erp.example.com/saml/consume/...",
+        "https://erp.example.com/login/...",
+        "https://erp.example.com/home",
+    ]
+    assert "AbC123" not in result.output and "ada@" not in result.output

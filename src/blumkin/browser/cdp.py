@@ -2126,15 +2126,19 @@ def attach(
     open_page: bool = True,
     pid_alive: Callable[[int], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    strict: bool = False,
     timeout_s: float = DEFAULT_ACTION_TIMEOUT_S,
 ) -> PlaywrightDriver:
     """Attach to the browser launched for `profile`, refusing profiles blumkin did not make.
+
+    With `strict` a recorded process that cannot be confirmed as the browser (no working `ps`)
+    does not count as running: for a command that deletes something.
 
     A browser with no page gets a blank one unless `open_page` is off, which makes it a
     `BrowserNoPageError` instead: a diagnostic must not change the state it is looking at.
     """
     require_blumkin_profile(profile.path)
-    session = read_session(profile.path, pid_alive=pid_alive)
+    session = read_session(profile.path, pid_alive=pid_alive, strict=strict)
     if session is None:
         raise BrowserNotRunningError(
             f"Expected a running browser for task {profile.task!r}, got none; "
@@ -2743,25 +2747,33 @@ def _deadline(seconds: float, what: str) -> Iterator[None]:
     Page evaluations through Playwright have no timeout of their own, so a page that hangs (or
     a redirect that never settles) would block a command for good. This uses a timer signal,
     which only works in the main thread of a POSIX process; elsewhere the block runs unbounded,
-    as it always did. The connection is not usable after an expiry: the caller closes it.
+    as it always did. After an expiry the caller should close the connection rather than reuse
+    it: whether the page did what was asked is not known.
     """
     if not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
         yield
         return
 
+    live = [True]
+
     def expired(signum: int, frame: Any) -> None:
+        if not live[0]:  # the block already ended: a late alarm must not raise outside it
+            return
         raise BrowserActionError(
             f"Expected to {what} within {seconds:g} seconds, got no answer from the page; "
             "the action may or may not have happened, so look at the page before repeating it"
         )
 
     previous = signal.signal(signal.SIGALRM, expired)
-    signal.setitimer(signal.ITIMER_REAL, max(seconds, 0.001))
+    outer = signal.setitimer(signal.ITIMER_REAL, max(seconds, 0.001))
     try:
         yield
     finally:
+        live[0] = False
         signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+        signal.signal(signal.SIGALRM, previous if previous is not None else signal.SIG_DFL)
+        if outer[0] > 0:  # a timer that was running before this block keeps its remaining time
+            signal.setitimer(signal.ITIMER_REAL, outer[0], outer[1])
 
 
 class _NeverRaised(Exception):

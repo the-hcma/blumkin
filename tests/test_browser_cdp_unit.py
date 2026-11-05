@@ -3095,3 +3095,20 @@ def test_the_driver_records_main_frame_navigations_only_and_drops_repeats() -> N
     assert driver.navigations() == ("https://a.example/one", "https://b.example/two")
     driver.track_navigations()
     assert driver.navigations() == ()
+
+
+def test_a_late_alarm_after_the_block_does_not_raise_and_an_outer_timer_survives() -> None:
+    import signal
+
+    from blumkin.browser.cdp import _deadline
+
+    previous = signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 30.0)
+        with _deadline(5.0, "do it"):
+            pass
+        remaining, _interval = signal.getitimer(signal.ITIMER_REAL)
+        assert 0 < remaining <= 30.0
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)

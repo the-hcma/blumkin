@@ -1365,7 +1365,9 @@ def reset_session_task(config: BrowserSetup, task: str) -> dict[str, Any]:
     profile = load_profile(config.config_dir, task)
     if profile is None:
         raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
-    driver = attach(profile, open_page=False, timeout_s=DEFAULT_ACTION_TIMEOUT_S)
+    # Strict, since this deletes something: a process that cannot be confirmed as the browser
+    # does not count as running. A blank page is fine to open (the tabs may all be closed).
+    driver = attach(profile, strict=True, timeout_s=DEFAULT_ACTION_TIMEOUT_S)
     try:
         cleared = driver.clear_session()
     finally:
@@ -1942,6 +1944,24 @@ def _settled_report(
     return report
 
 
+def _chain_path(path: str) -> str:
+    """A path for the chain: no `;` parameters, and a segment that may be an id is masked.
+
+    A segment is masked when it is long, holds an `@` (an address) or has four digits or more
+    (an id, a counter, a timestamp), since a chain is printed for every hop and lives longer in
+    an agent's context than a single page address.
+    """
+    segments = [
+        "..."
+        if len(segment) > WHERE_SEGMENT_CHARS
+        or "@" in segment
+        or sum(char.isdigit() for char in segment) >= 4
+        else segment
+        for segment in path.split(";", 1)[0].split("/")
+    ]
+    return _one_line("/".join(segments))[:WHERE_PATH_CHARS]
+
+
 def _chain_report(
     urls: Sequence[str], hosts: Sequence[str], sign_in_hosts: Sequence[str]
 ) -> list[str]:
@@ -1958,7 +1978,7 @@ def _chain_report(
         if parts.scheme not in ("http", "https") or not host:
             entry = parts.scheme + ":" if parts.scheme else "(no address)"
         elif host_allowed(host, sign_in_hosts) or not hosts or host_allowed(host, hosts):
-            entry = _display_url(url)
+            entry = f"{parts.scheme}://{host}{_chain_path(parts.path)}"
         else:
             entry = f"{parts.scheme}://{host} (other host)"
         if not shown or shown[-1] != entry:
