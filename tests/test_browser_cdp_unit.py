@@ -3186,3 +3186,33 @@ def test_closing_an_expired_driver_touches_nothing_on_the_connection() -> None:
     driver.close()
 
     assert touched == []
+
+
+def test_a_driver_call_whose_page_never_answers_hits_a_deadline_and_the_driver_stops_being_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    from blumkin.browser import cdp
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+
+    monkeypatch.setattr(cdp, "_DEADLINE_SLACK_S", 0.2)
+    page = SimpleNamespace(
+        context=object(), inner_text=lambda *_a, **_k: time.sleep(5), title=lambda: "t"
+    )
+    driver = PlaywrightDriver(browser=object(), page=page, playwright=None, timeout_s=0.1)
+
+    started = time.monotonic()
+    with pytest.raises(BrowserActionError, match="may or may not have happened"):
+        driver.read_text()
+    assert time.monotonic() - started < 3
+
+    with pytest.raises(BrowserActionError, match="stopped answering"):
+        driver.read_text()
+
+
+def test_every_driver_call_that_reaches_the_page_is_bounded() -> None:
+    from blumkin.browser.cdp import _DEADLINE_METHODS, PlaywrightDriver
+
+    for name in _DEADLINE_METHODS:
+        assert hasattr(getattr(PlaywrightDriver, name), "__wrapped__"), name

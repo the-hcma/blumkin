@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import json
 import math
 import re
@@ -314,6 +315,7 @@ HEADING_REPORT_CHARS = 200
 #: Most addresses a recorded navigation chain keeps.
 _MAX_CHAIN = 40
 #: The longest the cosmetic window mark may take.
+_DEADLINE_SLACK_S = 10.0
 _INDICATOR_DEADLINE_S = 5.0
 HEADINGS_REPORTED = 20
 SETTLE_GRACE_MS = 300
@@ -2009,6 +2011,46 @@ class PlaywrightDriver:
                 "Expected the page to answer, got a connection that stopped answering after a "
                 "deadline; close it and look at the page before trying again"
             )
+
+
+# The driver calls that talk to the page and have no wait of their own to bound them: a page
+# whose script never returns would hold any of them for good (#623). `checked_download`,
+# `edit_cell`, `scroll_frame_text` and the settle waits are left out, since each runs a loop
+# or a wait whose length the caller sets.
+_DEADLINE_METHODS = (
+    "aria_snapshot",
+    "checked_click",
+    "checked_pick",
+    "describe_field",
+    "fill",
+    "frame_aria_snapshot",
+    "frame_list",
+    "goto",
+    "list_options",
+    "press_field",
+    "raw_press",
+    "read_field",
+    "read_frame_text",
+    "read_text",
+    "select",
+    "upload",
+)
+
+
+def _with_deadline(method: Callable[..., Any], name: str) -> Callable[..., Any]:
+    @functools.wraps(method)
+    def bounded(self: PlaywrightDriver, *args: Any, **kwargs: Any) -> Any:
+        # Playwright's own waits end at the timeout, and a call can run a few of them in a row
+        # (find, vet, act), so the deadline is only for what has no wait: twice the timeout and
+        # some seconds on top.
+        with self._bounded(2 * self._timeout_s + _DEADLINE_SLACK_S, f"finish {name}"):
+            return method(self, *args, **kwargs)
+
+    return bounded
+
+
+for _name in _DEADLINE_METHODS:
+    setattr(PlaywrightDriver, _name, _with_deadline(getattr(PlaywrightDriver, _name), _name))
 
 
 class RawBrowserDriver(Protocol):
