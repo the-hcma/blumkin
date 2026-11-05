@@ -2779,6 +2779,13 @@ def browser_address(ctx: click.Context, task: str, as_json_flag: bool) -> None:
     help="Which match to click, 1-based in DOM order (the order `browser read --aria` lists "
     "them), when the page legitimately repeats the name (default: refuse more than one).",
 )
+@click.option(
+    "--expect-heading",
+    "expect_heading",
+    default=None,
+    help="After the click, wait up to 15 s for a heading with this text; fail (the click WAS "
+    "made) when none shows.",
+)
 @click.pass_context
 def browser_click(
     ctx: click.Context,
@@ -2788,18 +2795,24 @@ def browser_click(
     role: str | None,
     wait_s: float | None,
     nth: int | None,
+    expect_heading: str | None,
 ) -> None:
     """Click a control the task declared (never a submit or finalizing control)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = click_task(load_browser_setup(), task, name, role, wait_s, nth)
+        payload = click_task(load_browser_setup(), task, name, role, wait_s, nth, expect_heading)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     if as_json:
         emit_json(payload)
         return
     which = f" (match {nth})" if nth is not None else ""
-    emit_lines([f"{task}: clicked {payload['role']} {sanitize_terminal(name)!r}{which}"])
+    lines = [f"{task}: clicked {payload['role']} {sanitize_terminal(name)!r}{which}"]
+    if payload.get("url"):
+        lines.append(f"now on: {payload['url']}")
+    if payload.get("heading"):
+        lines.append(f"heading (page text, untrusted): {sanitize_terminal(payload['heading'])}")
+    emit_lines(lines)
 
 
 @browser.command("close", epilog=help_text.BROWSER_CLOSE_EPILOG)

@@ -1,0 +1,53 @@
+"""`click` waits for the page to settle and says where it ended (#625), in a real Chrome."""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("BLUMKIN_BROWSER_TESTS") != "1", reason="needs BLUMKIN_BROWSER_TESTS=1"
+)
+
+# Clicking Save swaps the page 700 ms later, as Oracle does after "Save and Close".
+_PAGE = """
+<h1 id=h>Create Expense Item</h1>
+<button id=save type=button onclick="swap()">Save and Close</button>
+<script>
+  const swap = () => setTimeout(() => {
+    document.getElementById('h').textContent = 'Edit Expense Report';
+  }, 700);
+</script>
+<h2 style="display:none">Hidden heading</h2>
+"""
+
+
+def test_settle_waits_for_the_swap_and_expect_heading_reports_a_miss() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.cdp import PlaywrightDriver
+    from blumkin.browser.discovery import resolve_browser
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_PAGE)
+            raw = PlaywrightDriver(browser=browser, page=page, playwright=None, timeout_s=3)
+
+            before = raw.settle_page()
+            assert before.headings == ("Create Expense Item",)
+            assert before.matched is None and before.quiet is True
+
+            page.click("#save")
+            waited = raw.settle_page(expect_heading="edit expense", expect_wait_s=5)
+            assert waited.matched is True
+            assert waited.headings == ("Edit Expense Report",)
+
+            missed = raw.settle_page(expect_heading="Nothing here", expect_wait_s=0.5)
+            assert missed.matched is False
+        finally:
+            browser.close()

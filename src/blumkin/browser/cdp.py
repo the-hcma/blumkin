@@ -302,6 +302,12 @@ class ControlInfo:
 
 
 DEFAULT_ACTION_TIMEOUT_S = 30.0
+#: How long a page that was just acted on may take to go quiet, and how long its DOM must stay
+#: unchanged to count as quiet.
+SETTLE_QUIET_MS = 500
+SETTLE_WAIT_S = 4.0
+#: How long `--expect-heading` waits for the heading before the click is reported as not landed.
+SETTLE_EXPECT_WAIT_S = 15.0
 
 #: Most file names, and most characters of each, reported back from an input (page-supplied).
 _MAX_FILES = 10
@@ -395,6 +401,17 @@ class FrameInfo:
     #: 1-based position among the page's child frames, as `browser frames` numbers them.
     index: int
     origin: str
+
+
+@dataclass(frozen=True, slots=True)
+class PageSettled:
+    """Where a page stood after an action: its visible headings (untrusted page text), whether
+    the DOM was quiet before the wait ran out, and whether an expected heading showed up."""
+
+    headings: tuple[str, ...]
+    #: None when no heading was awaited.
+    matched: bool | None
+    quiet: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -1078,6 +1095,52 @@ class PlaywrightDriver:
         with contextlib.suppress(_playwright_error()):
             self._page.wait_for_load_state("load", timeout=timeout_s * 1000)
 
+    def settle_page(
+        self,
+        *,
+        expect_heading: str | None = None,
+        expect_wait_s: float = SETTLE_EXPECT_WAIT_S,
+        quiet_ms: int = SETTLE_QUIET_MS,
+        timeout_s: float = SETTLE_WAIT_S,
+    ) -> PageSettled:
+        """Wait for the page an action started to settle, then say what heading it ended on.
+
+        Settled means the network went idle and the DOM stayed unchanged for `quiet_ms`; both
+        waits are bounded by `timeout_s` and neither is an error (a page that keeps polling
+        never goes idle). With `expect_heading`, the page's headings are then polled up to
+        `expect_wait_s` for one that contains the text (ignoring case): `matched` says whether
+        one did. Nothing on the page is touched.
+        """
+        self._require_open()
+        with contextlib.suppress(_playwright_error()):
+            self._page.wait_for_load_state("networkidle", timeout=timeout_s * 1000)
+        quiet = False
+        for _ in range(2):
+            try:
+                quiet = bool(
+                    self._page.evaluate(
+                        _QUIET_DOM_JS, {"quiet": quiet_ms, "total": int(timeout_s * 1000)}
+                    )
+                )
+                break
+            except _playwright_error():
+                # A navigation destroyed the page the wait ran in: wait for the new one.
+                with contextlib.suppress(_playwright_error()):
+                    self._page.wait_for_load_state("load", timeout=timeout_s * 1000)
+        headings = self._headings()
+        matched: bool | None = None
+        if expect_heading is not None:
+            wanted = expect_heading.casefold()
+            deadline = time.monotonic() + expect_wait_s
+            while True:
+                matched = any(wanted in heading.casefold() for heading in headings)
+                if matched or time.monotonic() >= deadline:
+                    break
+                with contextlib.suppress(_playwright_error()):
+                    self._page.wait_for_timeout(250)
+                headings = self._headings()
+        return PageSettled(headings=headings, matched=matched, quiet=quiet)
+
     def list_options(
         self,
         label: str,
@@ -1406,6 +1469,13 @@ class PlaywrightDriver:
             self._page.keyboard.type(value[1:])
         self._commit_typed_cell(value, vet, vet_name)
         self._require_committed(grid)
+
+    def _headings(self) -> tuple[str, ...]:
+        try:
+            found = self._page.evaluate(_HEADINGS_JS)
+        except _playwright_error():
+            return ()
+        return tuple(str(text) for text in found or ())
 
     def _describe(self, handle: Any) -> ControlInfo:
         raw = handle.evaluate(_DESCRIBE_CONTROL_JS, list(self._dialog_landmarks))
@@ -2488,6 +2558,27 @@ _PICK_BLOCKERS_JS = r"""(e) => {
   if ([e, ...e.querySelectorAll('*')].some((n) => n.shadowRoot)) return true;
   return !!(e.parentElement && e.parentElement.closest(controls));
 }"""
+
+_HEADINGS_JS = (
+    "() => Array.from(document.querySelectorAll('h1, h2, h3, [role=heading]'))"
+    ".filter((h) => h.getClientRects().length > 0 && "
+    "getComputedStyle(h).visibility !== 'hidden')"
+    ".map((h) => String(h.innerText || h.textContent || '').replace(/\\s+/g, ' ').trim()"
+    ".slice(0, 200)).filter(Boolean).slice(0, 20)"
+)
+
+_QUIET_DOM_JS = (
+    "({quiet, total}) => new Promise((resolve) => { "
+    "let timer = null; "
+    "const finish = (value) => { observer.disconnect(); clearTimeout(timer); "
+    "clearTimeout(cap); resolve(value); }; "
+    "const observer = new MutationObserver(() => { clearTimeout(timer); "
+    "timer = setTimeout(() => finish(true), quiet); }); "
+    "observer.observe(document, {subtree: true, childList: true, attributes: true, "
+    "characterData: true}); "
+    "timer = setTimeout(() => finish(true), quiet); "
+    "const cap = setTimeout(() => finish(false), total); })"
+)
 
 _DESCRIBE_CONTROL_JS = (
     "(e, landmarks) => { const sel = 'dialog, [role=dialog], [role=alertdialog]'; "

@@ -33,6 +33,7 @@ from blumkin.browser.cdp import (
     DEFAULT_FRAME_WAIT_S,
     DEFAULT_SCROLL_MAX_STEPS,
     FIELD_ROLES,
+    SETTLE_EXPECT_WAIT_S,
     BrowserActionError,
     FieldTarget,
     PageText,
@@ -113,6 +114,9 @@ class HostBlockedError(BrowserActionError):
     """The page is on a host the task did not declare in `allowed_hosts`."""
 
 
+#: The longest heading text `click --expect-heading` takes or reports, and how long it waits.
+EXPECT_HEADING_CHARS = 100
+EXPECT_HEADING_WAIT_S = SETTLE_EXPECT_WAIT_S
 MAX_DIALOG_STEPS = 4
 MAX_GRID_ROWS = 500
 
@@ -202,6 +206,7 @@ def click_task(
     role: str | None = None,
     wait_s: float | None = None,
     nth: int | None = None,
+    expect_heading: str | None = None,
 ) -> dict[str, Any]:
     """Click a control the task declared (never a submit control or a finalizing name).
 
@@ -210,9 +215,23 @@ def click_task(
     when finding it by name, the full action timeout when the role is given. `nth` (1-based,
     DOM order) picks one of several controls the page legitimately gives the same name; it is
     reported back, and nothing else about the policy changes.
+
+    A click returns before the page it started has finished, so a read straight afterwards
+    can still show the page that was left. After the click this waits (bounded) for the page to
+    settle, then reports `url` (no query or fragment), `heading` (the first visible heading,
+    which is page text and so untrusted) and `settled`. `expect_heading` waits up to
+    `EXPECT_HEADING_WAIT_S` for a heading containing that text and, when none shows, fails
+    saying the click WAS made, so the caller reads the page instead of clicking again.
     """
     waited = wait_s if wait_s is not None else _default_wait(role)
     _require_declared_controls(config, task, name)
+    if expect_heading is not None:
+        expect_heading = " ".join(expect_heading.split())
+        if not expect_heading or len(expect_heading) > EXPECT_HEADING_CHARS:
+            raise ValueError(
+                f"Expected a heading text of 1 to {EXPECT_HEADING_CHARS} characters, "
+                f"got {len(expect_heading)}"
+            )
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         found = driver.click(name, role, waited, nth=nth)
@@ -225,6 +244,7 @@ def click_task(
         }
         if nth is not None:
             payload["nth"] = nth
+        payload.update(_settled_report(driver, expect_heading))
         return payload
 
     return _with_driver(config, task, act, check_after=True)
@@ -1772,6 +1792,40 @@ def _require_allowed_page(
             f"Expected the page to be on an allowed_hosts host of task {task!r} after {when}, "
             f"got {host or 'no host'!r}"
         )
+
+
+def _settled_report(driver: GuardedDriver, expect_heading: str | None) -> dict[str, Any]:
+    """Wait for the page a click started to settle and say where it ended up.
+
+    The heading is page text: addresses are removed, it is cut short, and it is withheld when
+    it reads like an instruction to an agent. A missing expected heading is an error that says
+    the click was made.
+    """
+    settled = driver.settle_page(expect_heading=expect_heading)
+    if settled is None:
+        return {}
+    report: dict[str, Any] = {"settled": settled.quiet}
+    shown = _display_url(driver.url)
+    if shown:
+        report["url"] = shown
+    headings = [
+        redact_addresses(_one_line(text))[:EXPECT_HEADING_CHARS] for text in settled.headings
+    ]
+    if headings and scan_for_injection("\n".join(headings), location="page.text").to_payload():
+        report["heading_withheld"] = True
+        headings = []
+    report["heading"] = headings[0] if headings else None
+    report["untrusted"] = UNTRUSTED_NOTE
+    if expect_heading is not None:
+        report["expect_heading"] = settled.matched
+        if not settled.matched:
+            raise BrowserActionError(
+                f"Expected a heading containing {expect_heading!r} within "
+                f"{EXPECT_HEADING_WAIT_S:g} seconds of the click, got "
+                f"{headings[0] if headings else 'none'!r} on {shown or 'a page'}; "
+                "the click WAS made, so read the page instead of clicking again"
+            )
+    return report
 
 
 def _display_url(url: str) -> str:
