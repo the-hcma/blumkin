@@ -320,13 +320,13 @@ def dialog_task(
         baseline = _overlay_counts(driver, (*_OVERLAY_ROLES, scope_role))
         opened: list[str] = []
         failure: BaseException | None = None
-        text, matches = "", 0
+        text, matches, loaded = "", 0, True
         warning: dict[str, Any] | None = None
         try:
             for name, role in steps:
                 opened.append(driver.click(name, role, _default_wait(role)))
                 _require_allowed_page(driver, task, hosts, f"opening {name!r}")
-            text, matches, warning = _dialog_read(
+            text, matches, warning, loaded = _dialog_read(
                 driver, scope_role, scope_name, wait_s, expand_options
             )
         except BaseException as exc:  # noqa: BLE001 - closed first (Ctrl-C too), then raised
@@ -354,6 +354,7 @@ def dialog_task(
             "injection_warning": warning,
             "ok": True,
             "opened": opened,
+            "loaded": loaded,
             "task": task,
             "text": shown,
             "truncated": truncated,
@@ -1669,8 +1670,12 @@ def _dialog_gone(driver: GuardedDriver, roles: Sequence[str], baseline: dict[str
 
 def _dialog_read(
     driver: GuardedDriver, role: str, name: str | None, wait_s: float, expand_options: bool
-) -> tuple[str, int, dict[str, Any] | None]:
-    """The redacted `role` subtree once it shows and has stopped loading (up to `wait_s`)."""
+) -> tuple[str, int, dict[str, Any] | None, bool]:
+    """The redacted `role` subtree once it shows and has stopped loading (up to `wait_s`).
+
+    The last item says whether it looks finished (false: an empty grid or a dialog with
+    nothing to press was still all it showed when the wait ran out).
+    """
     polls = max(1, int(wait_s * 1000 / _DIALOG_POLL_MS))
     for attempt in range(polls):
         snapshot = _redact_aria(driver.aria_snapshot())
@@ -1681,15 +1686,16 @@ def _dialog_read(
                 raise BrowserActionError(_scope_failure(str(exc), role, name)) from exc
             driver.wait_ms(_DIALOG_POLL_MS)
             continue
-        loading = (
-            _DIALOG_LOADING.search(text) is not None
-            or _has_grid_without_rows(text)
-            # A dialog still being built shows its frame and nothing to press yet.
-            or (role in _DIALOG_BLOCKERS and not _dialog_controls(text))
+        loading = _DIALOG_LOADING.search(text) is not None
+        # These only suggest a dialog that is still being built: a grid with no row yet, or a
+        # dialog with nothing to press. A finished dialog can look the same (an empty list
+        # with its own message), so after the last poll they are reported, not raised.
+        unsettled = _has_grid_without_rows(text) or (
+            role in _DIALOG_BLOCKERS and not _dialog_controls(text)
         )
-        if loading and attempt < polls - 1:
-            # A list that still says "Loading", or a grid with no row yet, is not what the
-            # dialog shows, and a Cancel pressed meanwhile can be ignored: wait for it.
+        if (loading or unsettled) and attempt < polls - 1:
+            # A list that still says "Loading" is not what the dialog shows, and a Cancel
+            # pressed meanwhile can be ignored: wait for it to fill in.
             driver.wait_ms(_DIALOG_POLL_MS)
             continue
         if loading:
@@ -1698,7 +1704,8 @@ def _dialog_read(
                 text,
             )
         warning = scan_for_injection(snapshot, location="page.aria").to_payload()
-        return (text if expand_options else collapse_options(text)), matches, warning
+        shown = text if expand_options else collapse_options(text)
+        return shown, matches, warning, not unsettled
     raise AssertionError("unreachable")
 
 
