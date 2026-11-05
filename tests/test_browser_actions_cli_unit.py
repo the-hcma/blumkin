@@ -4290,11 +4290,20 @@ def test_fill_select_and_upload_wait_for_the_page_and_report_where_it_ended(
     assert raw.settle_calls == [None, None, None]
 
 
-def test_no_settle_skips_the_wait_for_fill_select_and_upload(raw: _Raw) -> None:
+def test_no_settle_skips_the_wait_for_fill_select_and_upload(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    receipt = tmp_path / "r.png"
+    receipt.write_bytes(b"x")
+    _policy(_config_dir, f'upload_dirs = ["{tmp_path}"]\nallowed_hosts = ["erp.example.com"]')
     filled = _json(_run("browser", "fill", "expense-report", "Amount", "12.50", "--no-settle"))
     chosen = _json(_run("browser", "select", "expense-report", "Type", "Taxi", "--no-settle"))
+    sent = _json(
+        _run("browser", "upload", "expense-report", "Receipt", str(receipt), "--no-settle")
+    )
 
-    assert "settled" not in filled and "settled" not in chosen
+    for payload in (filled, chosen, sent):
+        assert "settled" not in payload
     assert raw.settle_calls == []
 
 
@@ -4363,3 +4372,32 @@ def test_text_output_of_a_field_action_shows_where_the_page_ended(raw: _Raw) -> 
     assert "now on: https://erp.example.com/expenses" in result.output
     assert "heading (page text, untrusted): Edit Expense Report" in result.output
     assert "may be stale" in result.output
+
+
+def test_a_field_that_cannot_be_read_back_reports_no_heading(raw: _Raw) -> None:
+    raw.returns_nothing = True
+    raw.headings = ("Welcome back, hunter2",)
+
+    result = _run("browser", "fill", "expense-report", "Password", "hunter2")
+
+    payload = _json(result)
+    assert payload["settled"] is True
+    assert "heading" not in payload and "url" not in payload
+    assert "hunter2" not in result.output.replace('hunter2"', "")
+
+
+def test_a_frame_action_reports_only_that_the_top_page_went_quiet(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.headings = ("Top page heading",)
+    raw.child_frames = [("https://erp.example.com", "inner")]
+
+    result = _run(
+        "browser", "select", "expense-report", "Type", "Taxi", "--frame", "1", "--host",
+        "erp.example.com",
+    )  # fmt: skip
+
+    payload = _json(result)
+    assert payload.get("settled") is True
+    assert "heading" not in payload and "url" not in payload

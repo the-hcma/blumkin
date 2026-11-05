@@ -460,7 +460,10 @@ def fill_task(
         )
         if settle:
             # A value kept out of the result (a sensitive one) can come back in a heading.
-            payload.update(_settled_page(config, task, driver, "fill", private=not show_read_back))
+            # A value kept out of the result (hidden, or a field that cannot be read back, such
+            # as a password) can come back in a heading; a frame's own document is not watched.
+            quiet_only = not show_read_back or read_back is None or target.frame is not None
+            payload.update(_settled_page(config, task, driver, "fill", private=quiet_only))
         return payload
 
     return _with_driver(config, task, act)
@@ -1045,7 +1048,9 @@ def select_task(
         read_back = driver.select(label, option, target)
         payload = _field_payload("select", task, label, target, read_back, option)
         if settle:
-            payload.update(_settled_page(config, task, driver, "selection"))
+            payload.update(
+                _settled_page(config, task, driver, "selection", private=target.frame is not None)
+            )
         return payload
 
     return _with_driver(config, task, act)
@@ -1285,7 +1290,11 @@ def upload_task(
             payload["warnings"] = warnings
         if settle:
             # A private upload shows no page text or address, only whether the page went quiet.
-            payload.update(_settled_page(config, task, driver, "upload", private=private))
+            payload.update(
+                _settled_page(
+                    config, task, driver, "upload", private=private or target.frame is not None
+                )
+            )
         return payload
 
     return _with_driver(config, task, act, check_after=True, check_before=False)
@@ -1828,6 +1837,8 @@ def _settled_page(
 
     A page that left `allowed_hosts` while it settled raises `HostBlockedError` and shows
     nothing from it. With `private` only `settled` is reported, never an address or a heading.
+    Only the top-level page is watched: after an action inside a child frame, `settled` says
+    nothing of that frame, which is why a frame action reports nothing else.
     """
     declared = config.browser.tasks.get(task)
     hosts = declared.allowed_hosts if declared else ()
