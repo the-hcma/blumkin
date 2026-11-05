@@ -18,6 +18,7 @@ was observed, and `diff_models` compares two stored versions of a model.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -159,9 +160,10 @@ def best_matching_page(
 def check_page(page: Page, observed: Sequence[ControlObservation]) -> PageCheck:
     """Grade the recorded `page` against what was `observed` on the live page."""
     live = {(item.role, item.name) for item in observed if is_storable_label(item.name)}
+    shapes = Counter((role, _fold_counts(name)) for role, name in live if role in _COUNT_ROLES)
     findings: list[Finding] = []
     for control in page.controls:
-        findings.extend(_control_findings(control, live))
+        findings.extend(_control_findings(control, live, shapes))
     findings.extend(_new_field_findings(page, observed))
     findings.extend(_appearance_findings(page, observed))
     grade = worst(finding.grade for finding in findings)
@@ -313,11 +315,15 @@ def _canonical(mark: str) -> str:
     """A `role:name` mark with alias roles folded together (search box and text box alike)."""
     role, sep, name = mark.partition(":")
     folded = {"combobox": "listbox", "searchbox": "textbox"}.get(role, role)
+    if folded in _COUNT_ROLES:
+        name = _fold_counts(name)  # a count that moved does not change which page this is
     return f"{folded}{sep}{name}"
 
 
-def _control_findings(control: Control, live: set[tuple[str, str]]) -> list[Finding]:
-    verdicts = [_locator_verdict(loc.strategy, loc.value, live) for loc in control.locators]
+def _control_findings(
+    control: Control, live: set[tuple[str, str]], shapes: Counter[tuple[str, str]]
+) -> list[Finding]:
+    verdicts = [_locator_verdict(loc.strategy, loc.value, live, shapes) for loc in control.locators]
     verifiable = [v for v in verdicts if v is not None]
     if not verifiable:
         return [
@@ -366,7 +372,10 @@ def _fold_counts(name: str) -> str:
 
 
 def _locator_verdict(
-    strategy: LocatorStrategy, value: str, live: set[tuple[str, str]]
+    strategy: LocatorStrategy,
+    value: str,
+    live: set[tuple[str, str]],
+    shapes: Counter[tuple[str, str]],
 ) -> str | None:
     """`found`, `alias` (a role the page treats alike), `absent`, or None when unverifiable."""
     if strategy is LocatorStrategy.ROLE_NAME:
@@ -375,11 +384,12 @@ def _locator_verdict(
             return "found"
         if any((alias, name) in live for alias in _ALIASES.get(role, ())):
             return "alias"
-        if role in _COUNT_ROLES and _fold_counts(name) != name:
+        folded = _fold_counts(name)
+        if role in _COUNT_ROLES and folded != name and any(c.isalpha() for c in folded):
             # A count, date or amount in a link or button name is data: `(7 more...)` is the
-            # same control as `(8 more...)`, so only the shape around the number is compared.
-            folded = _fold_counts(name)
-            if any(r == role and _fold_counts(n) == folded for r, n in live):
+            # same control as `(8 more...)`. Only when exactly one live control of the role has
+            # that shape: two (`Delete row 5`, `Delete row 6`) cannot say which one it was.
+            if shapes[(role, folded)] == 1:
                 return "found"
         return "absent"
     if strategy is LocatorStrategy.LABEL:

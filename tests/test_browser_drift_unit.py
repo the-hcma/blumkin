@@ -496,7 +496,7 @@ def test_a_count_link_that_is_really_gone_is_still_reported() -> None:
     grade, controls = _checked(_WITH_COUNT, live)
 
     assert grade is not Grade.COMPATIBLE
-    assert any(control and "more" in control for control in controls) or controls
+    assert any(control and "more" in control for control in controls)
 
 
 def test_a_renamed_word_around_the_number_is_still_drift() -> None:
@@ -513,3 +513,35 @@ def test_the_count_comparison_never_mixes_roles() -> None:
     grade, _ = _checked(_WITH_COUNT, live)
 
     assert grade is not Grade.COMPATIBLE
+
+
+def test_two_live_controls_of_one_shape_cannot_say_which_one_the_recorded_was() -> None:
+    recorded = _RECORDED + '  - button "Delete row 3"\n'
+    live = _RECORDED + '  - button "Delete row 5"\n  - button "Delete row 6"\n'
+
+    grade, controls = _checked(recorded, live)
+
+    assert grade is not Grade.COMPATIBLE
+    assert controls
+
+
+def test_a_name_that_is_only_a_number_is_never_folded() -> None:
+    recorded = _RECORDED + '  - link "2"\n'
+    live = _RECORDED + '  - link "3"\n'
+
+    grade, _ = _checked(recorded, live)
+
+    assert grade is not Grade.COMPATIBLE
+
+
+def test_count_bearing_buttons_do_not_change_which_page_it_is() -> None:
+    recorded = (
+        '- button "Attachments (2)"\n- button "Notes (4)"\n- tab "Items (9)"\n'
+        '- textbox "Amount"\n- button "Save"\n'
+    )
+    live = recorded.replace("(2)", "(3)").replace("(4)", "(5)").replace("(9)", "(10)")
+
+    grade, controls = _checked(recorded, live)
+
+    assert grade is Grade.COMPATIBLE
+    assert controls == []
