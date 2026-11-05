@@ -581,3 +581,15 @@ def test_a_small_page_whose_only_landmark_count_moved_is_not_another_page() -> N
 
     assert grade is Grade.COMPATIBLE
     assert controls == []
+
+
+def test_a_literal_hash_in_a_name_is_not_a_folded_number() -> None:
+    grade, _ = _checked(
+        _RECORDED + '  - link "Attachments (2)"\n', _RECORDED + '  - link "Attachments (#)"\n'
+    )
+    assert grade is not Grade.COMPATIBLE
+
+    grade, _ = _checked(
+        _RECORDED + '  - button "Report #7"\n', _RECORDED + '  - button "Report 8#"\n'
+    )
+    assert grade is not Grade.COMPATIBLE

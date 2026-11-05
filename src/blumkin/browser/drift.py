@@ -262,6 +262,7 @@ _FIELD_ROLES = frozenset(
 )
 #: Fewer recorded landmarks than this say too little to judge a page by their share.
 _MIN_LANDMARKS = 3
+_NUMBER_MARK = "\x00"
 _NUMBER = re.compile(r"\d+(?:[.,:/]\d+)*")
 _RANK = {Grade.COMPATIBLE: 0, Grade.DEGRADED: 1, Grade.INCOMPATIBLE: 2}
 #: A page whose recorded landmarks are mostly gone is no longer the recorded page.
@@ -392,8 +393,12 @@ def _shape(mark: str) -> str | None:
 
 
 def _fold_counts(name: str) -> str:
-    """`name` with every number (a count, a day, an amount, a time) replaced by `#`."""
-    return _NUMBER.sub("#", name)
+    """`name` with every number (a count, a day, an amount, a time) replaced by a marker.
+
+    The marker is a character no stored or observed label can hold, so a literal `#` in a name
+    never looks like a folded number.
+    """
+    return _NUMBER.sub(_NUMBER_MARK, name)
 
 
 def _locator_verdict(
