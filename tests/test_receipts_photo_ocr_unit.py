@@ -473,3 +473,12 @@ def test_a_sign_conflict_and_a_blank_page_are_both_reported() -> None:
     reading = asyncio.run(read_receipt(Path("scan.pdf"), config=None, reader=reader))
 
     assert "minus sign" in reading.message and "pages had no text" in reading.message
+
+
+def test_a_total_looking_line_with_two_amounts_does_not_back_a_card_charge() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    total = parse_receipt_text("Item $40.00\nTotl $30.00 Tax $5.00\nVisa $5.00\n").total
+
+    assert "card charge" not in total.note
+    assert total.value == "40.00"

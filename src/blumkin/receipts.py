@@ -697,17 +697,16 @@ def _paid_amounts(text: str) -> list[str]:
     on_payment: list[str] = []
     elsewhere: set[str] = set()
     for raw in text.splitlines():
-        is_payment = bool(_PAID_LINE.search(raw))
-        refund = bool(_NEGATIVE_AMOUNT.search(raw) or _REFUND_WORDS.search(raw.casefold()))
-        for run in _AMOUNT_RUN.findall(raw):
-            amount = _parse_amount(run)
-            if amount.value is None or not amount.has_decimals or amount.doubtful:
-                continue
-            if not is_payment:
-                if _TOTAL_LOOKING_LINE.search(raw):
-                    elsewhere.add(amount.value)
-            elif not refund and not _NOT_PAID_LINE.search(raw):
-                on_payment.append(amount.value)
+        amounts = [_parse_amount(run) for run in _AMOUNT_RUN.findall(raw)]
+        clear = [a.value for a in amounts if a.value and a.has_decimals and not a.doubtful]
+        if len(clear) != 1:
+            continue  # no amount, or several: which one the line means is a guess
+        if _PAID_LINE.search(raw):
+            refund = _NEGATIVE_AMOUNT.search(raw) or _REFUND_WORDS.search(raw.casefold())
+            if not refund and not _NOT_PAID_LINE.search(raw):
+                on_payment.append(clear[0])
+        elif _TOTAL_LOOKING_LINE.search(raw):
+            elsewhere.add(clear[0])
     return [value for value in on_payment if value in elsewhere]
 
 
