@@ -743,6 +743,21 @@ expense report. `--expect KIND=COUNT` (repeatable; kinds are day and receipt) sa
 items to expect, so status can read "3 of 10 days filed".
 """
 
+BROWSER_LEDGER_EXPECT_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger expect timesheet 2026-p21 --expect day=14
+  blumkin browser ledger expect expense-report trip-lisbon --expect receipt=6 --json
+
+Changes how many items of each kind an open instance expects, for when the plan changed after
+`ledger begin` (a period ended at "10 of 3 days filed" because more days were staged than were
+expected). The kinds you name get the new count and the others keep theirs; nothing is
+removed from the ledger, and an instance that was submitted or discarded refuses the change.
+The change is a journal entry of its own, so the history shows what was expected and when it
+changed. A journal that holds such an entry is not read by a blumkin from before this command.
+"""
+
 BROWSER_LEDGER_DISCARD_EPILOG = """
 Examples:
 
@@ -1179,11 +1194,12 @@ begins with a finalizing word (`Submit`, `Pay now`), or that is a submit control
 so is a value that begins that way, while `Regular Pay` is fine. A value
 is checked after the
 commit: if an editor is still open the
-edit is cancelled and the command fails. A number is always a position, so a header whose text
-is only digits cannot be named by it. Rows and columns count what the grid has drawn, and a
-grid inside a frame is not supported. `--grid N` picks the Nth data grid on the page. The text
-that comes back is what the cell shows afterwards, page text, untrusted: check it against what
-you meant to enter.
+edit is cancelled and the command fails. A number is a position; a header whose text is only
+digits (a year, a day number) is named by its text with a `text:` prefix (`text:2027`), and a
+header that itself begins with `text:` can only be reached by its number. Rows and columns count
+what the grid has drawn, and a grid inside a frame is not supported. `--grid N` picks the Nth
+data grid on the page. The text that comes back is what the cell shows afterwards, page text,
+untrusted: check it against what you meant to enter.
 """
 
 BROWSER_GRID_EPILOG = """

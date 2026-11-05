@@ -392,6 +392,18 @@ def verify_item(
     )
 
 
+def _cell_ref(ref: str | None, values: Mapping[str, str], what: str) -> str:
+    """A cell step's row or column: the text as written, or the value of the `$name` it names."""
+    if not ref:
+        raise LedgerError(f"Flow step 'cell' needs a {what}")
+    if not ref.startswith("$"):
+        return ref
+    name = ref[1:]
+    if name not in values:
+        raise LedgerError(f"Expected a value for {name!r} (the cell {what}), got none")
+    return values[name]
+
+
 def _default_run_step(task: str) -> StepRunner:
     from blumkin.browser import actions
     from blumkin.config import load_browser_setup
@@ -425,6 +437,17 @@ def _default_run_step(task: str) -> StepRunner:
             if not step.control:
                 raise LedgerError(f"Flow step {action!r} needs a control")
             actions.click_task(config, task, step.control, role="button")
+            return
+        if action == "cell":
+            row = _cell_ref(step.row, values, "row")
+            column = _cell_ref(step.column, values, "column")
+            if step.bind is not None:
+                if step.bind not in values:
+                    raise LedgerError(f"Expected a value for {step.bind!r}, got none")
+                cell_value: str | None = values[step.bind]
+            else:
+                cell_value = step.value  # a literal (empty clears the cell), or None to read
+            actions.cell_task(config, task, row, column, cell_value)
             return
         if action == "fill":
             if not step.control:

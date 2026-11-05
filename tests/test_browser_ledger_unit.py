@@ -669,3 +669,38 @@ def test_an_event_this_version_does_not_know_says_it_may_come_from_a_newer_blumk
 
     with pytest.raises(LedgerJournalError, match="newer blumkin"):
         instance_status(tmp_path, "expense-report", "trip-lisbon")
+
+
+def test_the_expected_counts_of_an_open_instance_can_be_changed_and_the_rest_keep_theirs(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import expect_items
+
+    begin_instance(
+        tmp_path, "timesheet", "2026-p21", expected={ItemKind.DAY: 3, ItemKind.RECEIPT: 2}
+    )
+    for day in range(1, 6):
+        record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, f"d{day}", ItemState.STAGED)
+
+    status = expect_items(tmp_path, "timesheet", "2026-p21", {ItemKind.DAY: 10})
+
+    assert status.expected == {ItemKind.DAY: 10, ItemKind.RECEIPT: 2}
+    assert "0 of 10 days filed" in status.summary()
+    again = instance_status(tmp_path, "timesheet", "2026-p21")  # the journal folds back the same
+    assert again.expected == {ItemKind.DAY: 10, ItemKind.RECEIPT: 2}
+
+
+def test_a_closed_instance_or_a_bad_expectation_refuses_the_change(tmp_path: Path) -> None:
+    from blumkin.browser.ledger import expect_items
+
+    begin_instance(tmp_path, "timesheet", "2026-p21")
+    with pytest.raises(LedgerError, match="at least one"):
+        expect_items(tmp_path, "timesheet", "2026-p21", {})
+    with pytest.raises(LedgerError):
+        expect_items(tmp_path, "timesheet", "2026-p21", {ItemKind.DAY: -1})
+    with pytest.raises(LedgerNotFoundError):
+        expect_items(tmp_path, "timesheet", "nope", {ItemKind.DAY: 3})
+    discard_instance(tmp_path, "timesheet", "2026-p21")
+
+    with pytest.raises(LedgerError, match="change what is expected"):
+        expect_items(tmp_path, "timesheet", "2026-p21", {ItemKind.DAY: 3})

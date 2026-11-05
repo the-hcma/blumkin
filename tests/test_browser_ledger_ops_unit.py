@@ -629,3 +629,51 @@ def test_a_browser_that_cannot_be_attached_pauses_a_handoff_and_leaves_a_step_re
                      page="form"),
             {},
         )  # fmt: skip
+
+
+def test_the_default_runner_sends_a_cell_step_with_its_row_column_and_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    sent: list[tuple[str, str, str | None]] = []
+
+    def fake_cell(config: Any, task: str, row: str, column: str, value: str | None = None,
+                  **_: Any) -> dict:  # fmt: skip
+        sent.append((row, column, value))
+        return {}
+
+    monkeypatch.setattr(actions, "cell_task", fake_cell)
+    run = ledger_ops._default_run_step("time-sheet")
+    values = {"hours": "8", "day": "text:2026", "project": "Alpha"}
+
+    run(FlowStep(action="cell", control=None, expect=None, page=None, row="$project",
+                 column="$day", bind="hours"), values)  # fmt: skip
+    run(FlowStep(action="cell", control=None, expect=None, page=None, row="1", column="3",
+                 value=""), values)  # fmt: skip
+    run(FlowStep(action="cell", control=None, expect=None, page=None, row="1", column="3"), values)
+
+    assert sent == [("Alpha", "text:2026", "8"), ("1", "3", ""), ("1", "3", None)]
+
+
+def test_a_cell_step_that_names_a_missing_value_fails_before_the_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.ledger import LedgerError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    monkeypatch.setattr(
+        actions, "cell_task", lambda *a, **k: (_ for _ in ()).throw(AssertionError("touched"))
+    )
+    run = ledger_ops._default_run_step("time-sheet")
+
+    with pytest.raises(LedgerError, match="'day'"):
+        run(FlowStep(action="cell", control=None, expect=None, page=None, row="1",
+                     column="$day", value="8"), {})  # fmt: skip
+    with pytest.raises(LedgerError, match="'hours'"):
+        run(FlowStep(action="cell", control=None, expect=None, page=None, row="1",
+                     column="2", bind="hours"), {})  # fmt: skip

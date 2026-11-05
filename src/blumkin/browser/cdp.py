@@ -2599,8 +2599,12 @@ _CELL_JS = r"""
   const rowHeads = kids(scroller('.oj-datagrid-row-header')).map(first);
   const columns = [...frozenCols, ...mainCols];
   const resolve = (want, names, what) => {
-    const text = String(want).trim();
-    if (/^[0-9]+$/.test(text)) {
+    let text = String(want).trim();
+    // `text:` names a header by its text even when that is only digits (a year, a day number),
+    // which would otherwise be read as a position.
+    const byText = text.startsWith('text:');
+    if (byText) text = text.slice(5).trim();
+    if (!byText && /^[0-9]+$/.test(text)) {
       const n = parseInt(text, 10);
       if (n < 1 || n > names.length) {
         return {error: `Expected ${what} 1 to ${names.length}, got ${n}`};
