@@ -459,3 +459,147 @@ def test_a_page_with_few_landmarks_inside_a_richer_page_does_not_win_a_tie() -> 
     drifted = parse_aria_snapshot(rich.replace('- checkbox "Billable"\n', ""))
     best = best_matching_page(pages, drifted, prefer="rich-page")
     assert best is not None and best[0] == "rich-page"
+
+
+_WITH_COUNT = _RECORDED + '  - link "(7 more...)"\n  - button "Attachments (2)"\n'
+
+
+def _checked(recorded: str, live: str) -> tuple[Grade, list[str | None]]:
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    draft.add_page("expense-list", "https://erp.example.com/expenses", _obs(recorded))
+    page = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0").pages[0]
+    check = check_page(page, _obs(live))
+    return check.grade, [finding.control for finding in check.findings]
+
+
+def test_a_link_or_button_whose_count_changed_is_the_same_control() -> None:
+    live = _WITH_COUNT.replace("(7 more...)", "(8 more...)").replace("(2)", "(10)")
+
+    grade, controls = _checked(_WITH_COUNT, live)
+
+    assert grade is Grade.COMPATIBLE
+    assert controls == []
+
+
+def test_a_date_or_an_amount_in_a_name_is_data_too() -> None:
+    recorded = _RECORDED + '  - link "Report of Oct 30"\n  - button "Pay 12.50 USD"\n'
+    live = recorded.replace("Oct 30", "Oct 31").replace("12.50", "1,200")
+
+    grade, _ = _checked(recorded, live)
+
+    assert grade is Grade.COMPATIBLE
+
+
+def test_a_count_link_that_is_really_gone_is_still_reported() -> None:
+    live = _WITH_COUNT.replace('  - link "(7 more...)"\n', "")
+
+    grade, controls = _checked(_WITH_COUNT, live)
+
+    assert grade is not Grade.COMPATIBLE
+    assert any(control and "more" in control for control in controls)
+
+
+def test_a_renamed_word_around_the_number_is_still_drift() -> None:
+    live = _WITH_COUNT.replace("(7 more...)", "(7 fewer...)")
+
+    grade, _ = _checked(_WITH_COUNT, live)
+
+    assert grade is not Grade.COMPATIBLE
+
+
+def test_the_count_comparison_never_mixes_roles() -> None:
+    live = _WITH_COUNT.replace('link "(7 more...)"', 'textbox "(8 more...)"')
+
+    grade, _ = _checked(_WITH_COUNT, live)
+
+    assert grade is not Grade.COMPATIBLE
+
+
+def test_two_live_controls_of_one_shape_cannot_say_which_one_the_recorded_was() -> None:
+    recorded = _RECORDED + '  - button "Delete row 3"\n'
+    live = _RECORDED + '  - button "Delete row 5"\n  - button "Delete row 6"\n'
+
+    grade, controls = _checked(recorded, live)
+
+    assert grade is not Grade.COMPATIBLE
+    assert controls
+
+
+def test_a_name_that_is_only_a_number_is_never_folded() -> None:
+    recorded = _RECORDED + '  - link "2"\n'
+    live = _RECORDED + '  - link "3"\n'
+
+    grade, _ = _checked(recorded, live)
+
+    assert grade is not Grade.COMPATIBLE
+
+
+def test_count_bearing_buttons_do_not_change_which_page_it_is() -> None:
+    recorded = (
+        '- button "Attachments (2)"\n- button "Notes (4)"\n- tab "Items (9)"\n'
+        '- textbox "Amount"\n- button "Save"\n'
+    )
+    live = recorded.replace("(2)", "(3)").replace("(4)", "(5)").replace("(9)", "(10)")
+
+    grade, controls = _checked(recorded, live)
+
+    assert grade is Grade.COMPATIBLE
+    assert controls == []
+
+
+def test_the_page_share_keeps_distinct_marks_that_only_differ_in_their_numbers() -> None:
+    from blumkin.browser.drift import best_matching_page
+
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    snapshot = '- heading "Rows"\n- button "Delete row 5"\n- button "Delete row 6"\n'
+    draft.add_page("rows", "https://erp.example.com/rows", _obs(snapshot))
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+
+    assert best_matching_page(model.pages, _obs(snapshot)) is not None
+
+
+def test_number_only_buttons_do_not_make_two_pages_look_alike() -> None:
+    from blumkin.browser.drift import best_matching_page
+
+    common = '- button "Save"\n- textbox "Amount"\n- heading "Items"\n'
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    draft.add_page("one", "https://erp.example.com/a", _obs(common + '- button "1"\n'))
+    draft.add_page("two", "https://erp.example.com/b", _obs(common + '- button "2"\n'))
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+
+    live = _obs(common + '- button "2"\n')
+    best = best_matching_page(model.pages, live, prefer="one")
+
+    assert best is not None and best[0] == "two"
+
+
+def test_a_small_page_whose_only_landmark_count_moved_is_not_another_page() -> None:
+    recorded = '- button "Attachments (2)"\n- link "Help"\n'
+    live = recorded.replace("(2)", "(3)")
+
+    grade, controls = _checked(recorded, live)
+
+    assert grade is Grade.COMPATIBLE
+    assert controls == []
+
+
+def test_a_literal_hash_in_a_name_is_not_a_folded_number() -> None:
+    grade, _ = _checked(
+        _RECORDED + '  - link "Attachments (2)"\n', _RECORDED + '  - link "Attachments (#)"\n'
+    )
+    assert grade is not Grade.COMPATIBLE
+
+    grade, _ = _checked(
+        _RECORDED + '  - button "Report #7"\n', _RECORDED + '  - button "Report 8#"\n'
+    )
+    assert grade is not Grade.COMPATIBLE
+
+
+def test_a_live_control_an_exact_match_claims_cannot_stand_in_for_another_recorded_one() -> None:
+    recorded = _RECORDED + '  - button "Delete row 3"\n  - button "Delete row 5"\n'
+    live = _RECORDED + '  - button "Delete row 5"\n'
+
+    grade, controls = _checked(recorded, live)
+
+    assert grade is not Grade.COMPATIBLE
+    assert any(control and "delete-row" in control for control in controls)
