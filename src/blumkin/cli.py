@@ -3388,6 +3388,14 @@ def browser_ledger() -> None:
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option("--sha256", default=None, help="SHA-256 of a receipt's file (64 hex digits).")
+@click.option(
+    "--from-step",
+    "from_step",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Start from this step (1-based), after a handoff step paused the run.",
+)
 @click.pass_context
 def browser_ledger_apply(
     ctx: click.Context,
@@ -3399,6 +3407,7 @@ def browser_ledger_apply(
     value: tuple[str, ...],
     as_json_flag: bool,
     sha256: str | None,
+    from_step: int,
 ) -> None:
     """Run a recorded flow for one item and mark it filled (no-op if already verified)."""
     as_json = _as_json(ctx, as_json_flag)
@@ -3412,6 +3421,7 @@ def browser_ledger_apply(
             flow=flow,
             value=value,
             sha256=sha256,
+            from_step=from_step,
         )
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
@@ -3420,7 +3430,14 @@ def browser_ledger_apply(
         return
     state = payload["item"]["state"]
     noop = " (already verified)" if payload["noop"] else ""
-    emit_lines([f"{task}/{instance}: {kind} {item} {state}{noop}; {payload['status']['summary']}"])
+    lines = [f"{task}/{instance}: {kind} {item} {state}{noop}; {payload['status']['summary']}"]
+    paused = payload.get("paused")
+    if paused:
+        lines.append(f"paused at step {paused['step']}: {sanitize_terminal(paused['instruction'])}")
+        lines.append(
+            f"when it is done, run the same command with --from-step {paused['resume_from_step']}"
+        )
+    emit_lines(lines)
 
 
 @browser_ledger.command("begin", epilog=help_text.BROWSER_LEDGER_BEGIN_EPILOG)
