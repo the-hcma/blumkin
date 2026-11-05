@@ -35,8 +35,10 @@ from blumkin.browser.explore import (
 from blumkin.browser.guard import validate_control_patterns, validate_dialog_landmarks
 from blumkin.browser.model import (
     SiteModel,
+    check_model,
     discard_draft,
     is_logical_name,
+    is_storable_label,
     load_draft,
     load_model,
     resolve_store,
@@ -45,6 +47,8 @@ from blumkin.browser.model import (
 )
 from blumkin.browser.profiles import validate_task_name
 from blumkin.config import BrowserSetup
+
+_MAX_HEADING_CHARS = 100
 
 
 def declared_controls(config: BrowserSetup, task: str) -> tuple[str, ...]:
@@ -316,17 +320,107 @@ def _describe(draft: SiteModel) -> str:
     return f"The draft has {len(draft.pages)} page(s) and {controls} control(s)."
 
 
-def _record_step(store: Path, task: str, page_id: str, role: str, name: str) -> bool:
+def require_recordable_click(
+    config: BrowserSetup,
+    task: str,
+    page_id: str,
+    name: str,
+    *,
+    expect_heading: str | None = None,
+    nth: int | None = None,
+    role: str | None = None,
+) -> None:
+    """Refuse, before a click is made, when it could not be recorded as a step of `page_id`.
+
+    The page must be in the draft (or the stored model that `observe` continues) and hold
+    exactly one control of that accessible name (and role, when given) that is not finalizing,
+    so the step records the control that is clicked and never a guess between several (`nth`
+    picks a position, which a recorded step cannot keep). A heading that a model would refuse
+    is found out here as well, not after the click.
+    """
+    if nth is not None:
+        raise PageIdError(
+            "Expected --record without --nth, got both: a step cannot keep a position"
+        )
+    if expect_heading is not None and (
+        not expect_heading.strip()
+        or len(expect_heading) > _MAX_HEADING_CHARS
+        or not is_storable_label(expect_heading)
+    ):
+        raise PageIdError(
+            f"Expected an --expect-heading to record of 1 to {_MAX_HEADING_CHARS} characters "
+            "without quotes, '=' or long runs of digits, got one the model would refuse"
+        )
+    store = resolve_store(config)
+    current = load_draft(store, task) or load_model(store, task)
+    if current is None:
+        raise DraftNotFoundError(
+            f"Expected an exploration draft or a saved model for task {task!r} to record the "
+            "click in, got none; observe the page first"
+        )
+    found = ModelDraft.from_model(current).controls_named(page_id, name, role)
+    if len(found) != 1:
+        raise PageIdError(
+            f"Expected page {page_id!r} to hold exactly one control named {name!r}"
+            f"{f' with role {role}' if role else ''} to record the click as, got {len(found)}; "
+            "observe the page first (`blumkin browser explore observe`)"
+        )
+    if found[0].safety.value == "finalizing":
+        raise PageIdError(
+            f"Expected a control that is not finalizing to record a click as, got {name!r}, "
+            "which the model records as finalizing"
+        )
+    draft = ModelDraft.from_model(current)
+    draft.add_step("click", page_id=page_id, control=found[0].name, expect_heading=expect_heading)
+    check_model(
+        _to_model(draft)
+    )  # a step the model would refuse (a full flow, say) is found out here
+
+
+def record_browser_click(
+    config: BrowserSetup,
+    task: str,
+    page_id: str,
+    role: str,
+    name: str,
+    *,
+    expect_heading: str | None = None,
+) -> None:
+    """Record a click that `browser click` made as the next step of the recorded flow.
+
+    Raises `PageIdError` saying why when nothing was recorded (the control is not on the page
+    in that role any more, say), so the caller never reports a silent miss.
+    """
+    if not _record_step(
+        resolve_store(config), task, page_id, role, name, expect_heading=expect_heading
+    ):
+        raise PageIdError(
+            f"Expected page {page_id!r} to hold a {role} named {name!r} to record the click "
+            "as, got none (the draft changed, or the click found another role)"
+        )
+
+
+def _record_step(
+    store: Path,
+    task: str,
+    page_id: str,
+    role: str,
+    name: str,
+    *,
+    expect_heading: str | None = None,
+) -> bool:
     recorded: list[bool] = []
 
     def change(current: SiteModel | None) -> SiteModel | None:
         if current is None:
             return None
         draft = ModelDraft.from_model(current)
-        control = draft.control_for(page_id, role, name)
-        if control is None:
+        found = draft.controls_named(page_id, name, role)
+        if len(found) != 1 or found[0].safety.value == "finalizing":
             return None
-        draft.add_step("click", page_id=page_id, control=control)
+        draft.add_step(
+            "click", page_id=page_id, control=found[0].name, expect_heading=expect_heading
+        )
         recorded.append(True)
         return _to_model(draft)
 

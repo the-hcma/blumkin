@@ -657,3 +657,149 @@ def test_the_policy_line_is_valid_toml_for_a_name_with_a_backslash_or_quote_free
     )
 
     assert tomllib.loads(line)["dialog_landmarks"] == ["Add\\More", "Delete"]
+
+
+def _fake_click(monkeypatch: pytest.MonkeyPatch, role: str = "button") -> list[str]:
+    clicked: list[str] = []
+
+    def fake(config: Any, task: str, name: str, role_arg: Any, *rest: Any) -> dict[str, Any]:
+        clicked.append(name)
+        return {"action": "click", "name": name, "ok": True, "role": role, "task": task}
+
+    monkeypatch.setattr("blumkin.cli.click_task", fake)
+    return clicked
+
+
+def _draft_steps(config: Path) -> list[dict[str, Any]]:
+    stored = json.loads(_draft_path(config).read_text())
+    return [step for flow in stored["flows"] for step in flow["steps"]]
+
+
+def test_browser_click_with_record_adds_the_click_as_a_step_of_the_draft(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    clicked = _fake_click(monkeypatch)
+
+    result = _run(
+        "browser", "click", "expense-report", "Add line", "--record", "expense-list",
+        "--expect-heading", "Edit Expense Report",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["recorded_step"] is True and clicked == ["Add line"]
+    (step,) = _draft_steps(_config_dir)
+    assert step["action"] == "click" and step["page"] == "expense-list"
+    assert step["control"].endswith("add-line") or "add" in step["control"]
+    assert step["expect_heading"] == "Edit Expense Report"
+
+
+def test_a_click_that_cannot_be_recorded_is_refused_before_it_is_made(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clicked = _fake_click(monkeypatch)
+
+    no_draft = _run("browser", "click", "expense-report", "Add line", "--record", "expense-list")
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    no_page = _run("browser", "click", "expense-report", "Add line", "--record", "nowhere")
+    no_control = _run("browser", "click", "expense-report", "Not there", "--record", "expense-list")
+
+    assert no_draft.exit_code != EXIT_SUCCESS
+    assert no_page.exit_code != EXIT_SUCCESS and no_control.exit_code != EXIT_SUCCESS
+    assert clicked == []  # no click was made for any of them
+    assert _draft_steps(_config_dir) == []
+
+
+def test_a_click_without_record_changes_nothing_in_the_draft(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    _fake_click(monkeypatch)
+
+    result = _run("browser", "click", "expense-report", "Add line")
+
+    assert "recorded_step" not in _json(result) and _draft_steps(_config_dir) == []
+
+
+def test_a_recording_that_fails_after_the_click_is_reported_next_to_it(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    _fake_click(monkeypatch)
+
+    def boom(*_a: Any, **_k: Any) -> bool:
+        raise OSError("disk full at https://x.example/secret?token=abc")
+
+    monkeypatch.setattr("blumkin.cli.record_browser_click", boom)
+
+    result = _run("browser", "click", "expense-report", "Add line", "--record", "expense-list")
+    text = (
+        CliRunner()
+        .invoke(
+            main, ["browser", "click", "expense-report", "Add line", "--record", "expense-list"]
+        )
+        .output
+    )
+
+    payload = _json(result)
+    assert result.exit_code == EXIT_SUCCESS and payload["recorded_step"] is False
+    assert "disk full" in payload["record_error"] and "secret" not in result.output
+    assert "the click was made but not recorded" in text
+
+
+def test_a_click_is_refused_before_it_is_made_when_its_step_could_be_misrecorded(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    clicked = _fake_click(monkeypatch)
+    base = ["browser", "click", "expense-report", "Add line", "--record", "expense-list"]
+
+    with_nth = _run(*base, "--nth", "2")
+    wrong_role = _run(*base, "--role", "link")
+    bad_heading = _run(*base, "--expect-heading", 'Edit "Report" a=b')
+
+    for refused in (with_nth, wrong_role, bad_heading):
+        assert refused.exit_code != EXIT_SUCCESS, refused.output
+    assert clicked == [] and _draft_steps(_config_dir) == []
+
+
+def test_a_finalizing_control_is_not_recorded_as_a_click_step(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver.snapshot = '- button "Submit report"\n- button "Add line"\n'
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    clicked = _fake_click(monkeypatch)
+
+    result = _run("browser", "click", "expense-report", "Submit report", "--record", "expense-list")
+
+    assert result.exit_code != EXIT_SUCCESS and clicked == []
+
+
+def test_a_recording_miss_after_the_click_says_why(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    _fake_click(monkeypatch, role="link")
+
+    result = _run("browser", "click", "expense-report", "Add line", "--record", "expense-list")
+
+    payload = _json(result)
+    assert payload["recorded_step"] is False and "Add line" in payload["record_error"]
+
+
+def test_a_full_flow_refuses_the_click_before_it_is_made(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    clicked = _fake_click(monkeypatch)
+    base = ["browser", "click", "expense-report", "Add line", "--record", "expense-list"]
+    assert _run(*base).exit_code == EXIT_SUCCESS
+    stored = json.loads(_draft_path(_config_dir).read_text())
+    stored["flows"][0]["steps"] *= 200
+    _draft_path(_config_dir).write_text(json.dumps(stored))
+    clicked.clear()
+
+    result = _run(*base)
+
+    assert result.exit_code != EXIT_SUCCESS and clicked == [], result.output
+    assert "steps" in result.output, result.output

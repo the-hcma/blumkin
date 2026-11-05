@@ -119,6 +119,8 @@ from blumkin.browser.explore_commands import (
     explore_observe,
     explore_save,
     explore_show,
+    record_browser_click,
+    require_recordable_click,
 )
 from blumkin.browser.flow_authoring import FlowSpecError
 from blumkin.browser.guard import CLICKABLE_ROLES, PICK_ROLES, SubmitBlockedError
@@ -2874,6 +2876,13 @@ def browser_address(ctx: click.Context, task: str, as_json_flag: bool) -> None:
     help="After the click, wait up to 15 s for a heading with this text; fail (the click WAS "
     "made) when none shows.",
 )
+@click.option(
+    "--record",
+    "record_page",
+    default=None,
+    help="Also record the click as the next step of the exploration draft, on this page "
+    "(observe it first); checked before the click is made.",
+)
 @click.pass_context
 def browser_click(
     ctx: click.Context,
@@ -2884,18 +2893,41 @@ def browser_click(
     wait_s: float | None,
     nth: int | None,
     expect_heading: str | None,
+    record_page: str | None,
 ) -> None:
     """Click a control the task declared (never a submit or finalizing control)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = click_task(load_browser_setup(), task, name, role, wait_s, nth, expect_heading)
+        setup = load_browser_setup()
+        if record_page is not None:
+            require_recordable_click(
+                setup, task, record_page, name, expect_heading=expect_heading, nth=nth, role=role
+            )
+        payload = click_task(setup, task, name, role, wait_s, nth, expect_heading)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
+    if record_page is not None:
+        # The click was made, so a failure to record it is reported next to it, not raised.
+        try:
+            record_browser_click(
+                setup, task, record_page, payload["role"], name, expect_heading=expect_heading
+            )
+            payload["recorded_step"] = True
+        except Exception as exc:  # noqa: BLE001 - reported, not raised
+            payload["recorded_step"] = False
+            payload["record_error"] = redact_addresses(_clean_line(str(exc)))
     if as_json:
         emit_json(payload)
         return
     which = f" (match {nth})" if nth is not None else ""
     lines = [f"{task}: clicked {payload['role']} {sanitize_terminal(name)!r}{which}"]
+    if record_page is not None:
+        lines.append(
+            f"recorded as a step of the draft on {record_page}"
+            if payload["recorded_step"]
+            else "the click was made but not recorded"
+            + (f": {payload['record_error']}" if payload.get("record_error") else "")
+        )
     if payload.get("settled") is False:
         lines.append("warning: the page was still changing, so the heading below may be stale")
     if payload.get("url"):
