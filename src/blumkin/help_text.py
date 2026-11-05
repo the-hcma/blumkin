@@ -1501,6 +1501,10 @@ Examples:
   blumkin calendar view --from 2026-09-01 --to 2026-09-02
 
 The range is half-open `[--from, --to)`: `--to` is the first day NOT shown.
+Every page of the range is read (Graph and Google return a limited number of events per
+request). `complete` in the JSON says whether the whole range was read: it is false only when the
+range holds more events than the safety cap allows, and the human output then warns; narrow the
+range to see the rest. `calendar today` carries the same `complete`.
 """
 
 CHAT_ATTACHMENTS_DOWNLOAD_EPILOG = """
