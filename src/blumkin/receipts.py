@@ -146,7 +146,7 @@ def parse_receipt_text(
     `sender` is the display name or domain the message came from; it names the vendor only when
     the text itself does not.
     """
-    clean = _ascii_digits(text)
+    clean = _without_tip_table(_ascii_digits(text))
     return ReceiptFields(
         currency=_parse_currency(clean),
         date=_parse_date(clean, today or date.today()),
@@ -265,6 +265,7 @@ class _Amount:
 
 
 _AMOUNT_RUN = re.compile("[0-9](?:[0-9 .,'\u2019\u00a0\u202f]*[0-9])?")
+_BARE_DOLLAR = re.compile(r"(?<![A-Za-z])\$")
 _BIDI_AND_ZERO_WIDTH = re.compile("[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]")
 _CODE_WORDS = "AUD|BRL|CAD|CHF|CNY|DKK|EURO|EUR|GBP|INR|JPY|MXN|NOK|NZD|SEK|USD"
 _CODE_ALIASES = {"EURO": "EUR"}
@@ -338,6 +339,14 @@ _NOT_A_TOTAL = re.compile(
     r"saving|savings|sub\s*-?\s*total|tender|tendered|tip)\b"
 )
 _SEPARATORS = " .,'\u2019\u00a0\u202f"
+#: A printed tip table ("18% Tip: $5.02 Total: $40.35") lists totals the diner did not pay; OCR
+#: may lose the `%`, but a real total line never has a tip amount in front of the word total.
+#: Dollar signs it takes to outvote another currency symbol.
+_STRAY_SYMBOL_DOLLARS = 3
+_TIP_SUGGESTION = re.compile(
+    r"\b\d{1,2}\s*%\s*tip|\btips?\W{0,3}\d{1,2}\s*%|\btip\w*\W{0,3}[^\d\s]?\s*\d[\d.,]*\W+(?:total|tetal)",
+    re.IGNORECASE,
+)
 _TAX_WORDS = re.compile(r"\b(?:gst|hst|tax|vat)\b")
 #: A vendor name counts only near the top, where a receipt prints its letterhead.
 _KNOWN_VENDOR_LINES = 15
@@ -469,16 +478,32 @@ def _parse_currency(text: str) -> ReceiptField:
         code = _CURRENCY_PREFIX_TO_CODE[match.group(1)]
         found.append((match.start(), code))
         near.add(code)
+    explicit = bool(found or near)  # a printed code or a labelled one: `$` cannot argue with it
     for symbol, code in _CURRENCY_SYMBOLS.items():
         for match in re.finditer(re.escape(symbol), text):
+            # A symbol with no digit beside it is OCR noise (`syeS£E`), not part of an amount.
+            before = text[max(0, match.start() - 2) : match.start()].split("\n")[-1]
+            after = text[match.end() : match.end() + 3].split("\n")[0]
+            if not any(char.isdigit() for char in before + after):
+                continue
             found.append((match.start(), code))
             near.add(code)
     found.extend((0, code) for code in sorted(near) if all(code != seen for _, seen in found))
+    dollars = [m.start() for m in _BARE_DOLLAR.finditer(text)]
+    if found and not explicit and len(dollars) >= _STRAY_SYMBOL_DOLLARS:
+        # A bare `$` is no currency on its own (USD, CAD or AUD), but a `$` on most lines is
+        # evidence against one other symbol read out of noise (a `£` for a smudge). A line or
+        # two of `$` beside a printed code (`CA$`, `EUR`) says nothing.
+        found.extend((at, "USD") for at in dollars)
     codes: list[str] = []
     for _, code in sorted(found):
         if code not in codes:
             codes.append(code)
     if len(codes) > 1:
+        # The one seen most often leads: a single symbol OCR made out of noise (`£` for a smudge)
+        # must not outweigh the `$` printed beside every amount.
+        counts = {code: sum(1 for _, seen in found if seen == code) for code in codes}
+        codes.sort(key=lambda code: -counts[code])
         return ReceiptField(
             confidence=Confidence.LOW,
             value=codes[0],
@@ -772,3 +797,16 @@ def _receipt_file(
         path=Path(entry.path),
         size=info.st_size,
     )
+
+
+def _without_tip_table(text: str) -> str:
+    """The text without the rows of a printed tip table (two or more rows, never a lone line).
+
+    A line that mentions a tip and a total can be the real total (`Total incl. 18% tip`), so
+    only a table, which lists several tips and totals the diner did not pay, is dropped.
+    """
+    lines = text.splitlines()
+    rows = [line for line in lines if _TIP_SUGGESTION.search(line)]
+    if len(rows) < 2:
+        return text
+    return "\n".join(line for line in lines if not _TIP_SUGGESTION.search(line))

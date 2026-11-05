@@ -112,6 +112,12 @@ def format_docs_read_human(payload: dict[str, Any]) -> list[str]:
 _IMAGE_EXTENSIONS = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
 _MAX_EXTRACTED_BYTES = 1_000_000
 _MAX_FILE_BYTES = 25_000_000
+#: A money amount with its decimals (`11.80`, `11,80`) in a read of a photo; a rate (`8.62%`) or
+#: a date (`10.28.2026`) is not one.
+_AMOUNT = re.compile(r"(?<![\d/])(?:\d{1,3}(?:[.,]\d{3})+|\d{1,6})[.,]\d{2}\b(?!\s*%)(?![./-]\d)")
+#: A figure right after the word total (`TOTAL $12`): a total printed without decimals, never a
+#: percentage (`Total 8.62%`).
+_TOTAL_FIGURE = re.compile(r"\btotal\w*\W{0,4}[^\d\s]?\s*\d[\d.,]*+(?!\s*%)", re.IGNORECASE)
 _NEGATIVE_EVIDENCE = re.compile(
     r"(?<![\d/])[-\u2212\u2013]\s*[$\u20ac\u00a3]?\s*\d|\d\s*[-\u2212\u2013]\s*(?:$|\s)|"
     r"\(\s*[$\u20ac\u00a3]?\s*\d|\bCR\b|\bcredit\s+(?:note|memo)\b|\d\s*credit\b(?!\s+cards?)|"
@@ -124,6 +130,9 @@ _OCR_DESKEW_WIDTH = 400
 _OCR_MAX_PIXELS = 25_000_000
 _OCR_MAX_WIDTH = 2400
 _OCR_MIN_WIDTH = 1500
+#: Orientation confidence (Tesseract's own scale) from which a turn it asks for is believed.
+_OCR_ORIENTATION_MIN_CONFIDENCE = 3.0
+_OCR_ORIENTATION_WIDTH = 1600
 #: A read with fewer letters and digits than this is retried with other settings.
 _OCR_RETRY_BELOW = 8
 #: Page-segmentation modes tried, in order, when the first reads leave almost nothing:
@@ -341,6 +350,11 @@ def _flatten_background(grey: Any) -> Any:
     return ImageOps.autocontrast(flat, cutoff=1).point([0] * 200 + [255] * 56)
 
 
+def _has_amount(text: str) -> bool:
+    """Whether a read of a photo holds an amount: one with decimals or a figure after `total`."""
+    return bool(_AMOUNT.search(text) or _TOTAL_FIGURE.search(text))
+
+
 def _has_negative_evidence(text: str) -> bool:
     """Whether an amount looks negative: a leading or trailing minus (also the Unicode one),
     brackets, CR, or the words credit and refund."""
@@ -364,6 +378,10 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
     amount), both are kept: the receipt parser then sees any disagreement between the two as
     different totals and asks instead of guessing.
     """
+    # A phone stores a photo as the sensor saw it and says in EXIF how to turn it: every pass
+    # reads the upright photo, or the plain read of a sideways one is long garbage that outweighs
+    # the cleaned-up read of the same photo.
+    image = _oriented(_upright(image), pytesseract)
     candidates = []
     passes = 0
     not_found = getattr(pytesseract, "TesseractNotFoundError", RuntimeError)
@@ -378,7 +396,8 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
         pass
     passes += 1
     candidates.append(str(pytesseract.image_to_string(image)).strip())
-    if prepared is not None and max(_letters(text) for text in candidates) < _OCR_RETRY_BELOW:
+    retried = prepared is not None and max(_letters(t) for t in candidates) < _OCR_RETRY_BELOW
+    if retried:
         for variant, mode in _retry_passes(prepared):
             try:
                 passes += 1
@@ -391,6 +410,34 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
                 continue
             if _letters(candidates[-1]) >= _OCR_RETRY_BELOW:
                 break
+    if prepared is not None and not retried and not any(_has_amount(t) for t in candidates):
+        # Plenty of words and no amount: an app screenshot or a receipt with its total in large
+        # print is read best as sparse text.
+        try:
+            passes += 1
+            candidates.append(str(pytesseract.image_to_string(prepared, config="--psm 11")).strip())
+        except not_found:
+            raise
+        except Exception:  # noqa: BLE001 - the reads so far still stand
+            pass
+    if prepared is not None and not retried and not any(_has_amount(t) for t in candidates):
+        # Still no amount: a photo taken sideways or upside down with no EXIF flag and no
+        # orientation Tesseract could judge. Try each quarter turn and keep the first that reads.
+        for quarter in (90, 180, 270):
+            try:
+                passes += 1
+                turned = str(
+                    pytesseract.image_to_string(
+                        prepared.rotate(quarter, expand=True), config="--psm 6"
+                    )
+                ).strip()
+            except not_found:
+                raise
+            except Exception:  # noqa: BLE001 - another turn may still read it
+                continue
+            candidates.append(turned)
+            if _has_amount(turned):
+                break
     # One entry per distinct read (ignoring spacing), each kept as it was read.
     distinct = list(
         {" ".join(text.split()): text for text in reversed(candidates) if text.strip()}.values()
@@ -400,14 +447,43 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
         # fuller read of another pass lacks them: the parser then sees the disagreement.
         return "\n".join(distinct), passes, True
     # Count letters and digits, not characters: noise on a skewed photo is long but not useful.
-    return max(candidates, key=_letters), passes, False
+    # A read that holds an amount beats a longer one that holds none.
+    return (
+        max(candidates, key=lambda text: (_has_amount(text), _letters(text))),
+        passes,
+        False,
+    )
+
+
+def _oriented(image: Any, pytesseract: Any) -> Any:
+    """The photo turned the way Tesseract's orientation detection says its print is upright.
+
+    A phone photo can be stored sideways or upside down with nothing in EXIF to say so; every
+    pass over it then reads garbage. Detection that fails or is not confident leaves the photo
+    as it is.
+    """
+    from PIL import ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
+
+    small = ImageOps.grayscale(image)
+    small.thumbnail((_OCR_ORIENTATION_WIDTH, _OCR_ORIENTATION_WIDTH))
+    try:
+        found = pytesseract.image_to_osd(small, output_type=pytesseract.Output.DICT)
+        turn = int(found.get("rotate", 0))
+        confidence = float(found.get("orientation_conf", 0))
+    except Exception:  # noqa: BLE001 - too little print to judge, or no detection data
+        return image
+    if turn not in (90, 180, 270) or confidence < _OCR_ORIENTATION_MIN_CONFIDENCE:
+        return image
+    # Tesseract's `rotate` is the clockwise turn that makes the page upright; Pillow turns
+    # counter-clockwise.
+    return image.rotate(-turn, expand=True)
 
 
 def _prepare_for_ocr(image: Any) -> Any:
     """Greyscale, stretch the contrast and enlarge a small photo so thin print is readable."""
     from PIL import Image, ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
 
-    grey = ImageOps.exif_transpose(image).convert("L")
+    grey = _upright(image).convert("L")
     if grey.width > _OCR_MAX_WIDTH:
         # A 3000 pixel phone photo is slower to read and no clearer than a 2400 pixel one.
         grey = grey.resize(
@@ -610,6 +686,13 @@ def _trim_row(row: list[str]) -> list[str]:
     while trimmed and not trimmed[-1]:
         trimmed.pop()
     return trimmed
+
+
+def _upright(image: Any) -> Any:
+    """The photo turned the way its EXIF orientation says (the photo as it is without one)."""
+    from PIL import ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
+
+    return ImageOps.exif_transpose(image)
 
 
 def _validate_flags(kind: str, *, ocr: bool, pages: str | None, sheet: str | None) -> None:

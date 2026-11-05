@@ -190,3 +190,123 @@ def test_reads_that_agree_do_not_raise_a_sign_conflict() -> None:
     _text, _passes, conflict = docs_read._ocr_photo(Image.new("RGB", (900, 700), "white"), fake)
 
     assert conflict is False
+
+
+def test_every_pass_reads_the_photo_turned_the_way_its_exif_says() -> None:
+    """A phone photo stored sideways reads as garbage unless it is turned upright first (#627)."""
+    sideways = Image.new("L", (800, 600), 255)
+    exif = sideways.getexif()
+    exif[274] = 6  # EXIF orientation: turn 90 degrees clockwise to view
+    sideways.info["exif"] = exif.tobytes()
+    seen: list[tuple[int, int]] = []
+
+    def image_to_string(image: Image.Image, config: str | None = None) -> str:
+        seen.append(image.size)
+        return ""
+
+    docs_read._ocr_photo(sideways, SimpleNamespace(image_to_string=image_to_string))
+
+    assert seen and all(width < height for width, height in seen)
+
+
+def test_a_tip_table_does_not_make_a_larger_total() -> None:
+    """The tip suggestions list totals the diner did not pay; the real total line may be garbled."""
+    from blumkin.receipts import parse_receipt_text
+
+    text = (
+        "Subtotal $27.90\nSale tax (8.625%) $2.41\nTip $5.02\nTotalihit $35.33\n"
+        "Tip Suggestions\n16% Tip:$4.46 Total: $39.79\n18% Tip:$5.02 Total: $40.35\n"
+        "20% Tip:$5.58 tetal: $40.91\nPiha a 18 Ae Tip:$5.02 Total: $40.35\n"
+    )
+
+    fields = parse_receipt_text(text)
+
+    assert fields.total.value == "35.33"
+
+
+def test_one_stray_symbol_does_not_outvote_the_dollar_signs() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    text = "Sale tax #£Bt (8.625%) $2.41\nSubtotal $27.90\nTip $5.02\nCard $35.33\n"
+
+    currency = parse_receipt_text(text).currency
+
+    assert currency.value == "USD"
+
+
+def test_a_read_with_words_and_no_amount_is_tried_again_as_sparse_text() -> None:
+    """An app screenshot reads as words but loses its amount, which only `--psm 11` finds (#627)."""
+    prose = "Clipper card Virtual card replaced your card details for this purchase"
+    fake, calls = _fake({None: prose, "--psm 6": prose, "--psm 11": prose + "\n$11.80"})
+
+    text, passes, _ = docs_read._ocr_photo(_lined(), fake)
+
+    assert "$11.80" in text and "--psm 11" in calls and passes == 3
+
+
+def test_a_percentage_or_a_date_is_not_an_amount() -> None:
+    for text in ("Sales tax 8.62%", "Date 10.28.2026", "Rate 8,62 %"):
+        assert docs_read._AMOUNT.search(text) is None, text
+    for text in ("Total $11.80", "11,80", "Card 35.33"):
+        assert docs_read._AMOUNT.search(text) is not None, text
+
+
+def test_a_real_total_line_that_mentions_a_tip_is_kept() -> None:
+    from blumkin.receipts import _without_tip_table, parse_receipt_text
+
+    for line in ("Total incl. 18% tip $45.00", "Tip: 0.00 Total: 35.00", "Tips 5.00  TOTAL 40.00"):
+        assert _without_tip_table(f"Subtotal $30.00\n{line}\n") == f"Subtotal $30.00\n{line}\n"
+    assert parse_receipt_text("Tip: 0.00 Total: 35.00\n").total.value == "35.00"
+
+
+def test_one_printed_dollar_line_does_not_make_a_single_currency_receipt_doubtful() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    cad = parse_receipt_text("Total CA$45.00\nTax $2\n").currency
+    eur = parse_receipt_text("Total €12,50\nApprox $13.50\nRate $1.08\n").currency
+
+    assert (cad.value, cad.confidence.value) == ("CAD", "high")
+    assert (eur.value, eur.confidence.value) == ("EUR", "high")
+
+
+def test_amounts_with_thousands_or_a_minus_count_as_amounts() -> None:
+    for text in ("Total 1,234.56", "Total 1.234,56", "Total -11.80", "Total 11.80"):
+        assert docs_read._AMOUNT.search(text) is not None, text
+
+
+def test_dollar_signs_do_not_outvote_an_explicit_currency_code() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    currency = parse_receipt_text(
+        "Currency CAD\nSubtotal $27.90\nTax $2.41\nTotal $30.31\n"
+    ).currency
+
+    assert currency.value == "CAD"
+
+
+def test_a_read_with_an_integer_total_is_not_beaten_by_one_with_only_a_tax_amount() -> None:
+    assert docs_read._has_amount("TOTAL $12") and docs_read._has_amount("Tax $1.50")
+    assert not docs_read._has_amount("Thank you, total pending")
+    assert not docs_read._has_amount("Total 8.62%") and not docs_read._has_amount("Total 8 %")
+
+
+def test_a_tip_table_with_the_percentage_after_the_word_tip_is_dropped() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    text = (
+        "Subtotal $27.90\nTip $5.02\nTotalihit $35.33\n"
+        "Suggested Tip 18%: $5.02 Total $40.35\nSuggested Tip 20%: $5.58 Total $40.91\n"
+    )
+
+    assert parse_receipt_text(text).total.value == "35.33"
+
+
+def test_a_currency_symbol_among_letters_is_noise_but_beside_a_digit_is_an_amount() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    noise = parse_receipt_text("syeS£E a 5\n€ - “\nThank you\n").currency
+    amount = parse_receipt_text("Total £12.50\n").currency
+    spaced = parse_receipt_text("Total € 12,50\n").currency
+
+    assert noise.value is None
+    assert amount.value == "GBP" and spaced.value == "EUR"
