@@ -699,3 +699,102 @@ def test_a_double_dollar_cell_reference_is_the_literal_header_with_one_dollar(
                  column="$$Budget"), {"Budget": "must not be used"})  # fmt: skip
 
     assert sent == [("1", "$Budget")]
+
+
+def _cell_flow_model() -> SiteModel:
+    from blumkin.browser.model import FlowParam, ParamKind
+
+    base = _model()
+    flow = Flow(
+        name="day",
+        params=(
+            FlowParam(name="hours", kind=ParamKind.TEXT),
+            FlowParam(name="project", kind=ParamKind.TEXT),
+        ),
+        steps=(
+            FlowStep(action="click", control="Add line", expect=None, page="form"),
+            FlowStep(
+                action="cell",
+                control=None,
+                expect=None,
+                page=None,
+                row="$project",
+                column="2",
+                bind="hours",
+            ),  # fmt: skip
+        ),
+    )
+    return dataclasses.replace(base, flows=(flow,))
+
+
+def test_a_cell_value_that_is_too_long_is_refused_before_anything_is_staged_or_run(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import LedgerError
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    ran: list[str] = []
+
+    for values in ({"hours": "x" * 81, "project": "Alpha"}, {"hours": "8", "project": "p" * 81}):
+        with pytest.raises(LedgerError, match="fit the grid") as caught:
+            apply_item(
+                tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+                flow_name="day", values=values, model=_cell_flow_model(),
+                run_step=lambda s, v: ran.append(s.action),
+            )  # fmt: skip
+        assert "x" * 81 not in str(caught.value) and "p" * 81 not in str(caught.value)
+
+    assert ran == [] and instance_status_items(tmp_path) == []
+
+
+def test_an_error_from_a_cell_step_names_a_parameter_instead_of_echoing_its_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.cdp import BrowserActionError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+
+    def refuse(config: Any, task: str, row: str, column: str, value: Any = None, **_: Any):
+        raise BrowserActionError(f"Expected one row named {row}, got 0 (value {value!r})")
+
+    monkeypatch.setattr(actions, "cell_task", refuse)
+    run = ledger_ops._default_run_step("time-sheet")
+    step = FlowStep(action="cell", control=None, expect=None, page=None, row="$project",
+                    column="2", bind="hours")  # fmt: skip
+
+    with pytest.raises(BrowserActionError) as caught:
+        run(step, {"project": "Acme Secret Project", "hours": "7.5"})
+
+    text = str(caught.value)
+    assert "Acme Secret Project" not in text and "7.5" not in text
+    assert "<project>" in text and "<hours>" in text
+
+
+def test_an_edit_that_was_made_but_could_not_be_read_back_leaves_the_item_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.cdp import CellEditedError
+    from blumkin.browser.ledger_ops import StepConditionError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+
+    def edited(*_a: Any, **_k: Any) -> dict:
+        raise CellEditedError("Expected one cell, got 0; the edit itself was made, so check it")
+
+    monkeypatch.setattr(actions, "cell_task", edited)
+    runner = ledger_ops._default_run_step("expense-report")
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    with pytest.raises(StepConditionError, match="step 2 .*was made.*--from-step 3"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="day", values={"hours": "8", "project": "Alpha"},
+            model=_cell_flow_model(),
+            run_step=lambda s, v: runner(s, v) if s.action == "cell" else None,
+        )  # fmt: skip
+
+    assert [i.state for i in instance_status_items(tmp_path)] == [ItemState.STAGED]

@@ -56,6 +56,10 @@ class BrowserActionError(RuntimeError):
     """A page action failed or was refused."""
 
 
+class CellEditedError(BrowserActionError):
+    """A grid cell was edited, but the cell could not be read again afterwards."""
+
+
 class AmbiguousFieldError(BrowserActionError):
     """More than one field matched the label, so none was used."""
 
@@ -1510,7 +1514,7 @@ class PlaywrightDriver:
         try:
             return self._find_cell(row, column, grid)
         except BrowserActionError as exc:
-            raise BrowserActionError(
+            raise CellEditedError(
                 f"{exc}; the edit itself was made, so check the cell before editing it again"
             ) from exc
 

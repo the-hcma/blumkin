@@ -431,4 +431,4 @@ def test_expect_needs_an_expectation_and_an_open_instance() -> None:
     )
     _run("browser", "ledger", "discard", "timesheet", "2026-p21", "--yes")
     closed = _run("browser", "ledger", "expect", "timesheet", "2026-p21", "--expect", "day=3")
-    assert closed.exit_code == EXIT_OTHER or closed.exit_code == EXIT_USAGE
+    assert closed.exit_code == EXIT_USAGE

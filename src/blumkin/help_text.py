@@ -751,7 +751,7 @@ Examples:
   blumkin browser ledger expect expense-report trip-lisbon --expect receipt=6 --json
 
 Changes how many items of each kind an open instance expects, for when the plan changed after
-`ledger begin` (a period ended at "10 of 3 days filed" because more days were staged than were
+`ledger begin` (a period ended at "10 of 3 days filed" because 10 days were staged where 3 were
 expected). The kinds you name get the new count and the others keep theirs; nothing is
 removed from the ledger, and an instance that was submitted or discarded refuses the change.
 The change is a journal entry of its own, so the history shows what was expected and when it
