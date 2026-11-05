@@ -160,7 +160,18 @@ def best_matching_page(
 def check_page(page: Page, observed: Sequence[ControlObservation]) -> PageCheck:
     """Grade the recorded `page` against what was `observed` on the live page."""
     live = {(item.role, item.name) for item in observed if is_storable_label(item.name)}
-    shapes = Counter((role, _fold_counts(name)) for role, name in live if role in _COUNT_ROLES)
+    # A live control an exact match already claims cannot also stand in for a moved count.
+    claimed = {
+        tuple(loc.value.partition(":")[::2])
+        for control in page.controls
+        for loc in control.locators
+        if loc.strategy is LocatorStrategy.ROLE_NAME
+    }
+    shapes = Counter(
+        (role, _fold_counts(name))
+        for role, name in live
+        if role in _COUNT_ROLES and (role, name) not in claimed
+    )
     findings: list[Finding] = []
     for control in page.controls:
         findings.extend(_control_findings(control, live, shapes))

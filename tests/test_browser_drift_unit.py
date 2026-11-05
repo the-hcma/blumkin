@@ -593,3 +593,13 @@ def test_a_literal_hash_in_a_name_is_not_a_folded_number() -> None:
         _RECORDED + '  - button "Report #7"\n', _RECORDED + '  - button "Report 8#"\n'
     )
     assert grade is not Grade.COMPATIBLE
+
+
+def test_a_live_control_an_exact_match_claims_cannot_stand_in_for_another_recorded_one() -> None:
+    recorded = _RECORDED + '  - button "Delete row 3"\n  - button "Delete row 5"\n'
+    live = _RECORDED + '  - button "Delete row 5"\n'
+
+    grade, controls = _checked(recorded, live)
+
+    assert grade is not Grade.COMPATIBLE
+    assert any(control and "delete-row" in control for control in controls)
