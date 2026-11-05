@@ -437,9 +437,12 @@ def fill_task(
     host: str | None = None,
     nth: int | None = None,
     role: str | None = None,
+    settle: bool = True,
     show_read_back: bool = True,
 ) -> dict[str, Any]:
     """Fill the field labelled `label` and report the value the field holds afterwards.
+
+    With `settle` the page is then waited on, as after a click (`_settled_page`).
 
     `exact`, `role` and `nth` (1-based, DOM order) narrow a label the page repeats; `frame`
     (its number from `frames_task`, pinned to `host`) fills inside a child frame on an allowed
@@ -452,9 +455,12 @@ def fill_task(
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         read_back = driver.fill(label, value, target)
-        return _field_payload(
+        payload = _field_payload(
             "fill", task, label, target, read_back, value, show_read_back=show_read_back
         )
+        if settle:
+            payload.update(_settled_page(config, task, driver))
+        return payload
 
     return _with_driver(config, task, act)
 
@@ -1024,6 +1030,7 @@ def select_task(
     host: str | None = None,
     nth: int | None = None,
     role: str | None = None,
+    settle: bool = True,
 ) -> dict[str, Any]:
     """Choose `option` in the dropdown (a native select or an ARIA combobox) labelled `label`.
 
@@ -1035,7 +1042,10 @@ def select_task(
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         read_back = driver.select(label, option, target)
-        return _field_payload("select", task, label, target, read_back, option)
+        payload = _field_payload("select", task, label, target, read_back, option)
+        if settle:
+            payload.update(_settled_page(config, task, driver))
+        return payload
 
     return _with_driver(config, task, act)
 
@@ -1145,6 +1155,7 @@ def upload_task(
     receipt_ref: str | None = None,
     instance: str | None = None,
     private: bool = False,
+    settle: bool = True,
 ) -> dict[str, Any]:
     """Attach an existing file to the file field labelled `label`.
 
@@ -1271,6 +1282,9 @@ def upload_task(
         warnings = _upload_warnings(seen)
         if warnings:
             payload["warnings"] = warnings
+        if settle:
+            # A private upload shows no page text or address, only whether the page went quiet.
+            payload.update(_settled_page(config, task, driver, private=private))
         return payload
 
     return _with_driver(config, task, act, check_after=True, check_before=False)
@@ -1804,6 +1818,24 @@ def _require_allowed_url(url: str, task: str, hosts: Sequence[str], when: str) -
             f"Expected the page to be on an allowed_hosts host of task {task!r} after {when}, "
             f"got {host or 'no host'!r}"
         )
+
+
+def _settled_page(
+    config: BrowserSetup, task: str, driver: GuardedDriver, *, private: bool = False
+) -> dict[str, Any]:
+    """Wait for the page after a field action, as `click` does, within the task's hosts.
+
+    A page that left `allowed_hosts` while it settled raises `HostBlockedError` and shows
+    nothing from it. With `private` only `settled` is reported, never an address or a heading.
+    """
+    declared = config.browser.tasks.get(task)
+    hosts = declared.allowed_hosts if declared else ()
+    report = _settled_report(
+        driver, None, lambda url: _require_allowed_url(url, task, hosts, "the action")
+    )
+    if private:
+        return {"settled": report["settled"]} if "settled" in report else {}
+    return report
 
 
 def _settled_report(

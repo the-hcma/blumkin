@@ -524,6 +524,9 @@ that starts with a dash needs `--` before it, for example
 asks) or pass `--stdin`, which keeps it out of shell history and `ps`; `--no-read-back` never
 prints the field's value (`matches` still says whether it is what was set), and a hidden prompt or
 `--stdin` implies it. `blumkin browser verify` checks a field without printing anything.
+After the action the page is given a moment to settle (bounded, never an error) and the
+result says `settled`, `url` and `heading` (page text, untrusted; a private upload reports only
+`settled`); `--no-settle` skips that wait.
 """
 
 BROWSER_VERIFY_EPILOG = """
@@ -1098,6 +1101,9 @@ or zero-size input, such as a drop zone's, which may not be the one the form sav
 list says what to check. On a form that re-renders after a field changes (Oracle ADF, for
 one), set the file last: fill the row's other fields first, because a later edit of the same
 row loses a file chosen earlier.
+After the action the page is given a moment to settle (bounded, never an error) and the
+result says `settled`, `url` and `heading` (page text, untrusted; a private upload reports only
+`settled`); `--no-settle` skips that wait.
 """
 
 BROWSER_CELL_EPILOG = """
@@ -1189,6 +1195,9 @@ or a script link is refused), and `--role` for a dropdown is one of combobox, li
 or textbox; `fill` and `upload` accept the field roles checkbox, combobox, listbox, radio,
 searchbox, slider, spinbutton, switch and textbox. A frame reached only over its own DevTools
 socket can be read but not filled, and a frame's host is checked again right before each write.
+After the action the page is given a moment to settle (bounded, never an error) and the
+result says `settled`, `url` and `heading` (page text, untrusted; a private upload reports only
+`settled`); `--no-settle` skips that wait.
 """
 
 CAPABILITIES_EPILOG = """

@@ -326,7 +326,7 @@ def _default_run_step(task: str) -> StepRunner:
             key = step.bind or step.control
             if key not in values:
                 raise LedgerError(f"Expected a value for {key!r}, got none")
-            actions.fill_task(config, task, step.control, values[key])
+            actions.fill_task(config, task, step.control, values[key], settle=False)
             return
         if action == "goto":
             url = values.get("url") or values.get("page_url")

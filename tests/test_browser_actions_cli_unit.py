@@ -4265,3 +4265,64 @@ def test_click_text_output_warns_when_the_page_never_settled(raw: _Raw) -> None:
     result = CliRunner().invoke(main, ["browser", "click", "expense-report", "Add line"])
 
     assert "may be stale" in result.output
+
+
+def test_fill_select_and_upload_wait_for_the_page_and_report_where_it_ended(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    raw.headings = ("Edit Expense Report",)
+    receipt = tmp_path / "r.png"
+    receipt.write_bytes(b"x")
+    _policy(
+        _config_dir,
+        f'upload_dirs = ["{tmp_path}"]\nallowed_hosts = ["erp.example.com"]\n'
+        'allowed_controls = ["Add line"]',
+    )
+
+    filled = _json(_run("browser", "fill", "expense-report", "Amount", "12.50"))
+    chosen = _json(_run("browser", "select", "expense-report", "Type", "Taxi"))
+    sent = _json(_run("browser", "upload", "expense-report", "Receipt", str(receipt)))
+
+    for payload in (filled, chosen, sent):
+        assert payload["heading"] == "Edit Expense Report"
+        assert payload["settled"] is True
+        assert payload["url"] == "https://erp.example.com/expenses"
+    assert raw.settle_calls == [None, None, None]
+
+
+def test_no_settle_skips_the_wait_for_fill_select_and_upload(raw: _Raw) -> None:
+    filled = _json(_run("browser", "fill", "expense-report", "Amount", "12.50", "--no-settle"))
+    chosen = _json(_run("browser", "select", "expense-report", "Type", "Taxi", "--no-settle"))
+
+    assert "settled" not in filled and "settled" not in chosen
+    assert raw.settle_calls == []
+
+
+def test_a_private_upload_reports_only_whether_the_page_went_quiet(
+    raw: _Raw, _config_dir: Path, tmp_path: Path
+) -> None:
+    raw.headings = ("Receipt of Jane Doe",)
+    receipt = tmp_path / "r.png"
+    receipt.write_bytes(b"x")
+    _policy(_config_dir, f'upload_dirs = ["{tmp_path}"]\nallowed_hosts = ["erp.example.com"]')
+
+    result = _run("browser", "upload", "expense-report", "Receipt", str(receipt), "--private")
+
+    payload = _json(result)
+    assert payload["settled"] is True
+    assert "heading" not in payload and "url" not in payload
+    assert "Jane Doe" not in result.output
+
+
+def test_a_field_action_that_moves_the_page_off_the_allowed_hosts_shows_nothing_from_it(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.headings = ("Please enter your password",)
+    raw.settled_url = "https://evil.example/login"
+
+    result = _run("browser", "select", "expense-report", "Type", "Taxi")
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "password" not in result.output
+    assert "/login" not in result.output

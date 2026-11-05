@@ -173,7 +173,7 @@ def test_the_default_runner_fills_and_uploads_the_bound_values(
     monkeypatch.setattr(
         actions,
         "fill_task",
-        lambda config, task, label, value: calls.append(("fill", (label, value))),
+        lambda config, task, label, value, settle=True: calls.append(("fill", (label, value))),
     )
     monkeypatch.setattr(
         actions,
