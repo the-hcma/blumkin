@@ -1879,12 +1879,16 @@ def _wait_through_sign_in(
     if host_allowed(host, hosts) or not host_allowed(host, sign_in_hosts):
         return None
     waiting_on = host
-    if on_wait is not None and wait_s > 0:
-        with contextlib.suppress(Exception):
-            on_wait()  # best effort: raising the window never fails the goto
+    notified = False
     while now() - started < wait_s:
         sleep(SIGN_IN_POLL_S)
         host = host_of(driver.url)
+        if on_wait is not None and not notified and host_allowed(host, sign_in_hosts):
+            # Still on the identity provider after a poll: the user is needed (a silent hop
+            # that forwards at once does not pull the window to the front).
+            notified = True
+            with contextlib.suppress(Exception):
+                on_wait()  # best effort: raising the window never fails the goto
         if host_allowed(host, hosts):
             return now() - started, waiting_on
         if not host_allowed(host, sign_in_hosts):

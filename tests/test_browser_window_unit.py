@@ -40,6 +40,19 @@ class _Runner:
         return subprocess.CompletedProcess(argv, code, stdout=stdout, stderr=stderr)
 
 
+class _Sequence:
+    """A runner that answers with each result in turn."""
+
+    def __init__(self, *results: tuple[str, int, str]) -> None:
+        self.calls = 0
+        self._results = list(results)
+
+    def __call__(self, argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        stdout, code, stderr = self._results[min(self.calls, len(self._results) - 1)]
+        self.calls += 1
+        return subprocess.CompletedProcess(argv, code, stdout=stdout, stderr=stderr)
+
+
 def test_the_window_of_that_process_is_raised_and_its_title_reported() -> None:
     run = _Runner(stdout="Expense Report - Edge\n")
 
@@ -204,6 +217,7 @@ def test_launch_raises_the_window_by_default_and_no_raise_skips_it(
     write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
     seen = _fake_raise(monkeypatch)
 
+    monkeypatch.setattr("blumkin.cli.sys.platform", "darwin")
     default = _run("browser", "launch", "expense-report")
     skipped = _run("browser", "launch", "expense-report", "--no-raise")
 
@@ -216,15 +230,45 @@ def test_launch_raises_the_window_by_default_and_no_raise_skips_it(
     assert seen == [os.getpid()]
 
 
-def test_a_window_that_cannot_be_raised_never_fails_the_launch(_config_dir: Path) -> None:
+def test_a_window_that_cannot_be_raised_never_fails_the_launch(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+    monkeypatch.setattr("blumkin.cli.sys.platform", "darwin")
+
+    def refuse(pid: int, **_kw: Any) -> Any:
+        raise WindowRaiseError("Expected System Events to raise the window, got a failure")
+
+    monkeypatch.setattr("blumkin.browser.commands.raise_window", refuse)
 
     result = _run("browser", "launch", "expense-report")
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     raised = json.loads(result.output)["raised"]
-    if os.uname().sysname != "Darwin":
-        assert raised["raised"] is False and "macOS" in raised["reason"]
+    assert raised["raised"] is False and "System Events" in raised["reason"]
+
+
+def test_off_macos_a_launch_has_no_raised_entry_at_all(_config_dir: Path) -> None:
+    write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+
+    result = _run("browser", "launch", "expense-report")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "raised" not in json.loads(result.output)
+
+
+def test_a_web_address_in_a_window_title_is_removed(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+    _fake_raise(monkeypatch, title="Sign in https://idp.example/cb?code=SECRET - Edge")
+    monkeypatch.setattr("blumkin.cli.sys.platform", "darwin")
+
+    raised = _run("browser", "raise", "expense-report")
+    launched = _run("browser", "launch", "expense-report")
+
+    assert "SECRET" not in raised.output + launched.output
+    assert "[address removed]" in json.loads(raised.output)["title"]
 
 
 def test_status_shows_the_process_and_verbose_the_window_title(
@@ -246,4 +290,68 @@ def test_status_shows_the_process_and_verbose_the_window_title(
 
     assert f"process {os.getpid()}" in plain.output and "window:" not in plain.output
     assert "window: Expense Report - Edge" in verbose.output
-    assert json.loads(as_json.output)["window_title"] == "Expense Report - Edge"
+    shown = json.loads(as_json.output)
+    assert shown["window_title"] == "Expense Report - Edge"
+    assert "page text" in shown["window_title_note"]
+
+
+def test_status_withholds_the_window_title_of_a_page_the_task_may_not_use(
+    _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_session(create_profile(_config_dir, "expense-report").path, _SESSION)
+    monkeypatch.setattr("blumkin.cli.window_title", lambda pid: "Secret words from a stranger")
+    monkeypatch.setattr(
+        "blumkin.cli.where_task",
+        lambda config, task: {
+            "host": "evil.example", "on_allowed_host": False, "on_sign_in_host": False,
+            "path": "", "scheme": "https", "title": "",
+        },
+    )  # fmt: skip
+
+    result = _run("browser", "status", "expense-report", "--verbose")
+
+    assert "window_title" not in json.loads(result.output)
+    assert "Secret words" not in result.output
+
+
+def test_a_process_system_events_does_not_list_yet_is_tried_again_once() -> None:
+    run = _Sequence(("", 1, "execution error: Can't get process (-1728)"), ("Edge", 0, ""))
+    waits: list[float] = []
+
+    raised = raise_window(4242, platform="darwin", run=run, sleep=waits.append)
+
+    assert raised.title == "Edge" and run.calls == 2 and waits == [1.0]
+
+
+def test_a_process_that_stays_unlisted_is_reported_as_gone_not_as_a_permission_problem() -> None:
+    run = _Sequence(("", 1, "execution error: Can't get process (-1728)"))
+
+    with pytest.raises(WindowRaiseError, match="may have exited") as caught:
+        raise_window(4242, platform="darwin", run=run, sleep=lambda _s: None)
+
+    assert "Accessibility" not in str(caught.value) and run.calls == 2
+
+
+def test_an_oserror_or_a_decode_error_is_a_window_error_and_a_title_survives_them() -> None:
+    def broken(argv: list[str], **_kw: Any) -> Any:
+        raise PermissionError("denied")
+
+    def garbled(argv: list[str], **_kw: Any) -> Any:
+        raise UnicodeDecodeError("ascii", b"\xe4", 0, 1, "bad")
+
+    with pytest.raises(WindowRaiseError, match="PermissionError"):
+        raise_window(4242, platform="darwin", run=broken)
+    assert window_title(4242, platform="darwin", run=broken) is None
+    assert window_title(4242, platform="darwin", run=garbled) is None
+
+
+def test_osascript_is_asked_for_utf8_so_a_non_ascii_title_is_not_a_crash() -> None:
+    captured: dict[str, Any] = {}
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="Rechnung", stderr="")
+
+    raise_window(4242, platform="darwin", run=run)
+
+    assert captured["encoding"] == "utf-8" and captured["errors"] == "replace"

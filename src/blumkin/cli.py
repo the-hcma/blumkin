@@ -94,6 +94,7 @@ from blumkin.browser.cdp import (
     BrowserProtocolError,
 )
 from blumkin.browser.commands import (
+    WINDOW_TITLE_NOTE,
     TaskNotFoundError,
     close_task_browser,
     create_task_profile,
@@ -922,11 +923,17 @@ def _raise_quietly(task: str) -> None:
 
 def _try_raise(task: str) -> dict[str, Any]:
     """Raise the task's window without ever failing the command that asked for it."""
+    if sys.platform != "darwin":
+        return {}  # nothing to raise off macOS: no entry at all, rather than a failure per launch
     try:
         payload = raise_task_window(config_dir(), task)
     except Exception as exc:  # noqa: BLE001 - best effort: the browser is running either way
         return {"raised": False, "reason": _clean_line(str(exc))}
-    return {"raised": True, "title": payload["title"], "untrusted": payload["untrusted"]}
+    return {
+        "raised": True,
+        "title": redact_addresses(payload["title"]),
+        "untrusted": payload["untrusted"],
+    }
 
 
 def _browser_profile_lines(payload: dict[str, Any]) -> list[str]:
@@ -2765,8 +2772,8 @@ def browser_launch(
         payload = launch_task_browser(setup, task)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
-    if raise_window:
-        payload["raised"] = _try_raise(task)
+    if raise_window and (raised_entry := _try_raise(task)):
+        payload["raised"] = raised_entry
     if open_page:
         try:
             payload["opened"] = goto_task(
@@ -3369,6 +3376,7 @@ def browser_raise(ctx: click.Context, task: str, as_json_flag: bool) -> None:
         payload = raise_task_window(config_dir(), task)
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
+    payload["title"] = redact_addresses(payload["title"])
     if as_json:
         emit_json(payload)
         return
@@ -4710,8 +4718,14 @@ def browser_status(ctx: click.Context, task: str | None, as_json_flag: bool, ver
             payload["page"] = None
             payload["page_error"] = redact_addresses(_clean_line(str(exc)))
         pid = payload["profiles"][0].get("pid")
-        if pid:
-            payload["window_title"] = window_title(pid)
+        page_info = payload.get("page")
+        # The window title is the page title read through the OS: it is shown only for a page
+        # the task may use (an allowed or sign-in host), as the title in `page` is.
+        if pid and page_info and (page_info["on_allowed_host"] or page_info["on_sign_in_host"]):
+            title_text = window_title(pid)
+            if title_text:
+                payload["window_title"] = redact_addresses(title_text)
+                payload["window_title_note"] = WINDOW_TITLE_NOTE
     if as_json:
         emit_json(payload)
         return

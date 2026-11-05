@@ -11,49 +11,61 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 #: Seconds the System Events script may take (it can wait on an accessibility prompt).
 RAISE_TIMEOUT_S = 10.0
+#: How long to wait before trying again when the process is not listed yet.
+RETRY_AFTER_S = 1.0
 #: The longest window title kept.
 _MAX_TITLE_CHARS = 200
 
-# `{pid}` is replaced by an integer only. The script un-minimizes and raises every window of
-# that one process and returns the title of the first, so the user can be told which it was.
+# `{pid}` is replaced by an integer only. The script un-hides the process, un-minimizes its
+# windows and raises them from the rearmost to the frontmost, so the window that was in front
+# ends up in front again, and returns the title of that frontmost window.
 _RAISE_SCRIPT = """
 tell application "System Events"
-    set target to first process whose unix id is {pid}
-    set frontmost of target to true
+    set proc to first process whose unix id is {pid}
+    set visible of proc to true
+    set frontmost of proc to true
     set shown to ""
-    repeat with candidate in windows of target
+    set total to count of windows of proc
+    if total > 0 then
         try
-            set value of attribute "AXMinimized" of candidate to false
+            set shown to name of window 1 of proc
         end try
-        try
-            perform action "AXRaise" of candidate
-        end try
-        if shown is "" then
+        repeat with slot from total to 1 by -1
+            set candidate to window slot of proc
             try
-                set shown to name of candidate
+                set value of attribute "AXMinimized" of candidate to false
             end try
-        end if
-    end repeat
+            try
+                perform action "AXRaise" of candidate
+            end try
+        end repeat
+    end if
     return shown
 end tell
 """
 
 _TITLE_SCRIPT = """
 tell application "System Events"
-    set target to first process whose unix id is {pid}
-    if (count of windows of target) is 0 then return ""
-    return name of window 1 of target
+    set proc to first process whose unix id is {pid}
+    if (count of windows of proc) is 0 then return ""
+    return name of window 1 of proc
 end tell
 """
 
 
 class WindowRaiseError(RuntimeError):
     """The window could not be raised (not macOS, no permission, no such window)."""
+
+    def __init__(self, message: str, *, not_listed: bool = False) -> None:
+        super().__init__(message)
+        #: System Events does not list that process (yet, or any more).
+        self.not_listed = not_listed
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,11 +80,25 @@ Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 
 def raise_window(
-    pid: int, *, platform: str | None = None, run: Runner | None = None
+    pid: int,
+    *,
+    platform: str | None = None,
+    run: Runner | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> RaisedWindow:
-    """Un-minimize and raise every window of process `pid`; report the first one's title."""
+    """Un-hide, un-minimize and raise every window of process `pid`; report the front one's title.
+
+    A browser that was only just started may not be listed by System Events yet: that one
+    failure is tried again after a second before it is reported.
+    """
     _require_supported(platform)
-    title = _osascript(_RAISE_SCRIPT, pid, run)
+    try:
+        title = _osascript(_RAISE_SCRIPT, pid, run)
+    except WindowRaiseError as exc:
+        if not exc.not_listed:
+            raise
+        sleep(RETRY_AFTER_S)
+        title = _osascript(_RAISE_SCRIPT, pid, run)
     return RaisedWindow(pid=pid, title=_clean(title))
 
 
@@ -81,7 +107,7 @@ def window_title(pid: int, *, platform: str | None = None, run: Runner | None = 
     try:
         _require_supported(platform)
         return _clean(_osascript(_TITLE_SCRIPT, pid, run))
-    except WindowRaiseError:
+    except Exception:  # noqa: BLE001 - best effort: a title is never worth a traceback
         return None
 
 
@@ -100,6 +126,8 @@ def _osascript(script: str, pid: int, run: Runner | None) -> str:
             ["osascript", "-e", script.format(pid=pid)],
             capture_output=True,
             check=False,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             timeout=RAISE_TIMEOUT_S,
         )
@@ -110,8 +138,16 @@ def _osascript(script: str, pid: int, run: Runner | None) -> str:
             f"Expected the window to be raised within {RAISE_TIMEOUT_S:g} seconds, got no answer "
             "(a permission prompt may be waiting)"
         ) from exc
+    except OSError as exc:
+        raise WindowRaiseError(f"Expected osascript to run, got {type(exc).__name__}") from exc
     if result.returncode != 0:
         detail = _clean(str(result.stderr))[:120] or "no detail"
+        if "-1728" in detail or "Can't get" in detail or "Can\u2019t get" in detail:
+            raise WindowRaiseError(
+                f"Expected System Events to list the browser process {pid}, got none ({detail}); "
+                "the browser may have exited, or its window is not up yet",
+                not_listed=True,
+            )
         raise WindowRaiseError(
             "Expected System Events to raise the browser window, got a failure "
             f"({detail}); allow your terminal under System Settings > Privacy & Security > "
