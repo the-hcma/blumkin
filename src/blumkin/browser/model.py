@@ -138,8 +138,16 @@ class Page:
     page_id: str
     #: A path with `{placeholders}`; never a query string or fragment (that is where values live).
     url_template: str
+    #: What the page is: an ordinary `page`, a `dialog` or popup the page does not mark as one
+    #: (its `landmarks` are the controls that together tell the popup's container), or a
+    #: `list-of-values` dialog whose result rows are chosen by their text.
+    kind: str = "page"
+    #: For a `dialog`: the names of controls (at least two) that together mark its container,
+    #: the `dialog_landmarks` of the task's policy.
+    landmarks: tuple[str, ...] = ()
 
 
+PAGE_KINDS = ("page", "dialog", "list-of-values")
 SCHEMA_VERSION = 1
 
 
@@ -177,6 +185,8 @@ class SiteModel:
                     "page_id": page.page_id,
                     "url_template": page.url_template,
                 }
+                | ({"kind": page.kind} if page.kind != "page" else {})
+                | ({"landmarks": list(page.landmarks)} if page.landmarks else {})
                 for page in self.pages
             ],
             "recorded_at": self.recorded_at,
@@ -500,8 +510,11 @@ _LOCK_FILENAME = ".lock"
 _BOUND_ACTIONS = frozenset({"fill", "upload"})
 _CELL = "cell"
 _HANDOFF = "handoff"
+_PICK = "pick"
 #: The steps that can state a heading the page must show afterwards.
-_HEADING_ACTIONS = frozenset({"cell", "click", "fill", "goto", "handoff", "press", "upload"})
+_HEADING_ACTIONS = frozenset(
+    {"cell", "click", "fill", "goto", "handoff", "pick", "press", "upload"}
+)
 _LOGICAL_NAME = re.compile(r"[a-z][a-z0-9_.\[\]-]{0,63}")
 _MAX_CELL_REF = 80
 _MAX_CELL_VALUE = 80
@@ -778,7 +791,25 @@ def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _page(data: Any, where: str) -> Page:
-    data = _keys(data, where, {"controls", "fingerprint", "page_id", "url_template"})
+    data = _keys(
+        data,
+        where,
+        {"controls", "fingerprint", "page_id", "url_template"},
+        optional={"kind", "landmarks"},
+    )
+    kind = data.get("kind", "page")
+    if kind not in PAGE_KINDS:
+        raise SiteModelError(
+            f"Expected {where}.kind to be one of {', '.join(PAGE_KINDS)}, got {_shown(kind)}"
+        )
+    landmarks = tuple(
+        _text(item, f"{where}.landmarks[{n}]", max_len=_MAX_CHOICE_CHARS, plain=True)
+        for n, item in enumerate(_list(data.get("landmarks", []), f"{where}.landmarks"))
+    )
+    if landmarks and kind != "dialog":
+        raise SiteModelError(f"Expected {where}.landmarks only on a dialog page, got some")
+    if kind == "dialog" and len({name.casefold() for name in landmarks}) < 2:
+        raise SiteModelError(f"Expected {where}.landmarks to name at least two distinct controls")
     controls = _list(data["controls"], f"{where}.controls")
     _at_most(controls, _MAX_CONTROLS, f"{where}.controls")
     fingerprint = _list(data["fingerprint"], f"{where}.fingerprint")
@@ -795,6 +826,8 @@ def _page(data: Any, where: str) -> Page:
     return Page(
         controls=parsed,
         fingerprint=tuple(sorted(set(marks))),
+        kind=kind,
+        landmarks=landmarks,
         page_id=_text(
             data["page_id"], f"{where}.page_id", pattern=_LOGICAL_NAME, what="a logical name"
         ),
@@ -1002,20 +1035,23 @@ def _step(
     bind = data.get("bind")
     if bind is not None:
         bind = _text(bind, f"{where}.bind", pattern=_LOGICAL_NAME, what="a logical name")
-        if action not in _BOUND_ACTIONS and action != _CELL:
+        if action not in _BOUND_ACTIONS and action not in (_CELL, _PICK):
             raise SiteModelError(
-                f"Expected {where}.bind only on a fill, upload or cell step, got it on {action!r}"
+                f"Expected {where}.bind only on a fill, upload, cell or pick step, "
+                f"got it on {action!r}"
             )
-        if action == _CELL and literal is not None:
+        if action in (_CELL, _PICK) and literal is not None:
             raise SiteModelError(f"Expected {where} with a bind or a value, not both")
         if bind not in declared:
             raise SiteModelError(
                 f"Expected {where}.bind to name a parameter of the flow, got {_shown(bind)}"
             )
         # A file path is checked as one and never typed into a field; text never uploads.
-        if action == _CELL and declared[bind] is ParamKind.FILE:
+        if action in (_CELL, _PICK) and declared[bind] is ParamKind.FILE:
             raise SiteModelError(f"Expected {where}.bind of a non-file parameter, got a file one")
-        if action != _CELL and (declared[bind] is ParamKind.FILE) != (action == "upload"):
+        if action not in (_CELL, _PICK) and (declared[bind] is ParamKind.FILE) != (
+            action == "upload"
+        ):
             raise SiteModelError(
                 f"Expected {where}.bind of a {'file' if action == 'upload' else 'non-file'} "
                 f"parameter for a {action} step, got {_shown(bind)}"
@@ -1024,6 +1060,8 @@ def _step(
         raise SiteModelError(
             f"Expected {where} to bind a parameter (the flow declares params), got none"
         )
+    if action == _PICK and bind is None and literal is None:
+        raise SiteModelError(f"Expected a pick step to have a bind or a value in {where}, got none")
     control = data["control"]
     page = data["page"]
     if control is not None:
@@ -1062,6 +1100,13 @@ def _cell_keys(
 ) -> tuple[str | None, str | None, str | None]:
     """The row, column and literal value of a `cell` step; none of them on any other step."""
     present = [key for key in ("row", "column", "value") if data.get(key) is not None]
+    if action == _PICK:
+        if data["control"] is not None or any(key != "value" for key in present):
+            raise SiteModelError(f"Expected a pick step with only a bind or a value in {where}")
+        text = data.get("value")
+        if text is None:
+            return None, None, None
+        return None, None, _text(text, f"{where}.value", max_len=_MAX_CELL_VALUE, plain=True)
     if action != _CELL:
         if present:
             raise SiteModelError(

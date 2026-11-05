@@ -7,6 +7,7 @@ and always reports ``submitted: false``.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -400,6 +401,18 @@ def verify_item(
     )
 
 
+def _withheld(exc: BrowserActionError, name: str) -> Exception:
+    """An error of the same kind as `exc` that names the parameter and quotes nothing."""
+    message = (
+        f"Expected to choose the row named by parameter {name!r}, got a failure "
+        f"({type(exc).__name__}); the row text is withheld"
+    )
+    try:
+        return type(exc)(message)
+    except TypeError:
+        return BrowserActionError(message)
+
+
 def _rescrubbed(exc: BrowserActionError, step: FlowStep, values: Mapping[str, str]) -> Exception:
     """`exc` again with every value a parameter supplied to the step replaced by its name."""
     message = _scrubbed(str(exc), step, values)
@@ -416,7 +429,10 @@ def _scrubbed(message: str, step: FlowStep, values: Mapping[str, str]) -> str:
               and not ref.startswith("$$")]  # fmt: skip
     for name in sorted({n for n in names if n in values}, key=lambda n: -len(values[n])):
         if values[name]:
-            message = message.replace(values[name], f"<{name}>")
+            # The raw text, and the forms a message quotes it in (repr and JSON escape a
+            # backslash or a quote).
+            for form in {values[name], repr(values[name])[1:-1], json.dumps(values[name])[1:-1]}:
+                message = message.replace(form, f"<{name}>")
     return message
 
 
@@ -515,6 +531,25 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
                 site, step.control, step.page, default_role="button"
             )
             actions.click_task(config, task, name, role=role)
+            return
+        if action == "pick":
+            if step.bind is not None:
+                if step.bind not in values:
+                    raise LedgerError(f"Expected a value for {step.bind!r}, got none")
+                chosen = values[step.bind]
+            else:
+                chosen = step.value or ""
+            if not chosen:
+                raise LedgerError("Flow step 'pick' needs the text of the row to choose")
+            try:
+                actions.pick_task(config, task, chosen)
+            except BrowserActionError as exc:
+                if step.bind is None:
+                    raise
+                # The text a parameter supplied is the user's data, and a message can quote it
+                # in forms no replacement finds (escaped, cut): the error keeps its kind and
+                # names the parameter, and says nothing else of what the page held.
+                raise _withheld(exc, step.bind) from None
             return
         if action == "cell":
             row = _cell_ref(step.row, values, "row")

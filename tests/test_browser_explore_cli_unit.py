@@ -496,3 +496,164 @@ def test_forget_can_drop_a_stored_page_whose_id_exploration_would_not_make(
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert _json(result)["forgotten"] is True
+
+
+def test_observe_records_a_popup_as_a_dialog_with_the_landmarks_that_mark_its_container(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    result = _run(
+        "browser", "explore", "observe", "expense-report", "attachments", "--kind", "dialog",
+        "--landmark", "Add line", "--landmark", "Help",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["kind"] == "dialog"
+    stored = json.loads(_draft_path(_config_dir).read_text())
+    (page,) = stored["pages"]
+    assert page["kind"] == "dialog" and page["landmarks"] == ["Add line", "Help"]
+    shown = _json(_run("browser", "explore", "show", "expense-report"))
+    assert shown["pages"][0]["kind"] == "dialog"
+    assert shown["pages"][0]["dialog_landmarks"] == ["Add line", "Help"]
+    text = CliRunner().invoke(main, ["browser", "explore", "show", "expense-report"]).output
+    assert "attachments [dialog]" in text
+    assert 'config: dialog_landmarks = ["Add line", "Help"]' in text
+
+
+def test_observe_records_a_list_of_values_dialog_as_its_own_page_kind(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    result = _run(
+        "browser", "explore", "observe", "expense-report", "location-search",
+        "--kind", "list-of-values",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+    assert page["kind"] == "list-of-values" and "landmarks" not in page
+
+
+def test_an_ordinary_page_keeps_its_stored_shape_with_no_kind(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+
+    assert "kind" not in page and "landmarks" not in page
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--kind", "dialog"],  # no landmarks
+        ["--kind", "dialog", "--landmark", "Add line"],  # only one
+        ["--kind", "dialog", "--landmark", "Add line", "--landmark", "Submit report"],
+        ["--kind", "dialog", "--landmark", "Add line", "--landmark", "Not on the page"],
+        ["--landmark", "Add line", "--landmark", "Help"],  # landmarks on an ordinary page
+        ["--kind", "list-of-values", "--landmark", "Add line", "--landmark", "Help"],
+    ],
+)
+def test_a_dialog_without_good_landmarks_is_refused_and_leaves_no_draft(
+    driver: _Driver, _config_dir: Path, extra: list[str]
+) -> None:
+    result = _run("browser", "explore", "observe", "expense-report", "attachments", *extra)
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert not _draft_path(_config_dir).exists()
+
+
+def test_observing_a_dialog_page_again_without_a_kind_keeps_its_kind_and_landmarks(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    first = ["browser", "explore", "observe", "expense-report", "attachments"]
+    _run(*first, "--kind", "dialog", "--landmark", "Add line", "--landmark", "Help")
+    driver.snapshot = _SNAPSHOT + '- button "Extra"\n'
+
+    again = _run(*first)
+
+    assert again.exit_code == EXIT_SUCCESS, again.output
+    assert _json(again)["kind"] == "dialog"
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+    assert page["kind"] == "dialog" and page["landmarks"] == ["Add line", "Help"]
+    assert any("Extra" in str(control) for control in page["controls"])
+
+
+def test_a_kind_that_is_given_again_replaces_the_old_one_and_page_demotes_on_purpose(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    first = ["browser", "explore", "observe", "expense-report", "attachments"]
+    _run(*first, "--kind", "dialog", "--landmark", "Add line", "--landmark", "Help")
+
+    demoted = _run(*first, "--kind", "page")
+
+    assert demoted.exit_code == EXIT_SUCCESS and _json(demoted)["kind"] == "page"
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+    assert "kind" not in page and "landmarks" not in page
+
+
+def test_a_landmark_must_be_a_storable_control_not_a_heading_and_ignores_case(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    base = ["browser", "explore", "observe", "expense-report", "attachments", "--kind", "dialog"]
+
+    heading = _run(*base, "--landmark", "Add line", "--landmark", "Expenses")  # a heading
+    typed = _run(*base, "--landmark", "Add line", "--landmark", "Report 20261024123")  # skipped
+    cased = _run(*base, "--landmark", "add LINE", "--landmark", "help")
+
+    assert heading.exit_code != EXIT_SUCCESS and typed.exit_code != EXIT_SUCCESS
+    assert cased.exit_code == EXIT_SUCCESS, cased.output
+
+
+def test_observing_a_dialog_again_with_kind_dialog_and_no_landmarks_keeps_its_landmarks(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    first = ["browser", "explore", "observe", "expense-report", "attachments", "--kind", "dialog"]
+    _run(*first, "--landmark", "Add line", "--landmark", "Help")
+
+    again = _run(*first)
+
+    assert again.exit_code == EXIT_SUCCESS, again.output
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+    assert page["landmarks"] == ["Add line", "Help"]
+    assert (
+        _run(
+            *first[:-2], "--kind", "dialog", "--landmark", "Help", "--landmark", "Amount"
+        ).exit_code
+        == 0
+    )
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+    assert page["landmarks"] == ["Help", "Amount"]  # given again: replaced
+
+
+def test_a_landmark_past_the_stored_control_cap_is_refused(
+    driver: _Driver, _config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("blumkin.browser.explore.MAX_DRAFT_CONTROLS", 3)
+    driver.snapshot = (
+        '- button "One"\n- button "Two"\n- button "Three"\n- button "Four"\n- button "Five"\n'
+    )
+    base = ["browser", "explore", "observe", "expense-report", "attachments", "--kind", "dialog"]
+
+    late = _run(*base, "--landmark", "One", "--landmark", "Five")
+    early = _run(*base, "--landmark", "One", "--landmark", "Two")
+
+    assert late.exit_code != EXIT_SUCCESS and early.exit_code == EXIT_SUCCESS, early.output
+
+
+def test_the_policy_line_is_valid_toml_for_a_name_with_a_backslash_or_quote_free_text(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    import tomllib
+
+    driver.snapshot = '- button "Add\\\\More"\n- button "Delete"\n'
+    base = ["browser", "explore", "observe", "expense-report", "attachments", "--kind", "dialog"]
+    assert _run(*base, "--landmark", "Add\\More", "--landmark", "Delete").exit_code == EXIT_SUCCESS
+
+    text = CliRunner().invoke(main, ["browser", "explore", "show", "expense-report"]).output
+    line = (
+        next(row for row in text.splitlines() if "dialog_landmarks" in row)
+        .split("config:")[1]
+        .strip()
+    )
+
+    assert tomllib.loads(line)["dialog_landmarks"] == ["Add\\More", "Delete"]

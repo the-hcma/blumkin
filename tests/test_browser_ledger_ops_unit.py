@@ -798,3 +798,81 @@ def test_an_edit_that_was_made_but_could_not_be_read_back_leaves_the_item_resuma
         )  # fmt: skip
 
     assert [i.state for i in instance_status_items(tmp_path)] == [ItemState.STAGED]
+
+
+def test_the_default_runner_picks_a_row_by_a_bound_text_or_a_literal_and_hides_the_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.cdp import BrowserActionError
+    from blumkin.browser.ledger import LedgerError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    chosen: list[str] = []
+
+    def fake_pick(config: Any, task: str, text: str, **_: Any) -> dict:
+        chosen.append(text)
+        if text == "Secret City, ZZ":
+            raise BrowserActionError(f"Expected one row named {text}, got 0")
+        return {}
+
+    monkeypatch.setattr(actions, "pick_task", fake_pick)
+    run = ledger_ops._default_run_step("expense-report")
+
+    run(FlowStep(action="pick", control=None, expect=None, page=None, bind="city"),
+        {"city": "Boston, MA"})  # fmt: skip
+    run(FlowStep(action="pick", control=None, expect=None, page=None, value="Austin, TX"), {})
+    with pytest.raises(BrowserActionError) as caught:
+        run(FlowStep(action="pick", control=None, expect=None, page=None, bind="city"),
+            {"city": "Secret City, ZZ"})  # fmt: skip
+    with pytest.raises(LedgerError, match="'city'"):
+        run(FlowStep(action="pick", control=None, expect=None, page=None, bind="city"), {})
+
+    assert chosen == ["Boston, MA", "Austin, TX", "Secret City, ZZ"]
+    assert "Secret City" not in str(caught.value) and "'city'" in str(caught.value)
+    assert "withheld" in str(caught.value)
+
+
+def test_a_bound_pick_text_with_a_backslash_never_appears_in_any_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.cdp import BrowserActionError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+
+    def refuse(config: Any, task: str, text: str, **_: Any) -> dict:
+        raise BrowserActionError(f"Expected one row named {text!r}, got 0")  # repr doubles \\
+
+    monkeypatch.setattr(actions, "pick_task", refuse)
+    run = ledger_ops._default_run_step("expense-report")
+
+    with pytest.raises(BrowserActionError) as caught:
+        run(FlowStep(action="pick", control=None, expect=None, page=None, bind="city"),
+            {"city": "ACME\\Boston"})  # fmt: skip
+
+    assert "ACME" not in str(caught.value) and "Boston" not in str(caught.value)
+
+
+def test_a_cell_error_hides_the_escaped_form_of_a_parameter_value_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.cdp import BrowserActionError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+
+    def refuse(config: Any, task: str, row: str, column: str, value: Any = None, **_: Any):
+        raise BrowserActionError(f"Expected one row named {row!r}, got 0")
+
+    monkeypatch.setattr(actions, "cell_task", refuse)
+    run = ledger_ops._default_run_step("time-sheet")
+
+    with pytest.raises(BrowserActionError) as caught:
+        run(FlowStep(action="cell", control=None, expect=None, page=None, row="$project",
+                     column="2", value="8"), {"project": "ACME\\Boston"})  # fmt: skip
+
+    assert "ACME" not in str(caught.value) and "<project>" in str(caught.value)

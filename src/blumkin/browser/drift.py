@@ -196,6 +196,8 @@ def diff_models(old: SiteModel, new: SiteModel) -> ModelDiff:
         if (
             before_page.url_template != after_page.url_template
             or before_page.fingerprint != after_page.fingerprint
+            or before_page.kind != after_page.kind
+            or before_page.landmarks != after_page.landmarks
         ):
             page_changes.append(page_id)
         before = {c.name: c for c in before_page.controls}
